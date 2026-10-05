@@ -15,6 +15,37 @@ export type RemoteHttpEndpointGuardOptions = {
 
 export type RemoteHttpEndpointErrorFactory = (message: string, code: string) => Error;
 
+/**
+ * Parse an operator-configured, comma-separated list of origins that may be
+ * reached on a private network, dropping anything that is not a bare
+ * `scheme://host[:port]` origin.
+ *
+ * Shared by every caller that guards an outbound request against a URL it did
+ * not choose, so one spelling of the rule covers them all and a deployment
+ * that legitimately imports from an internal host names that host once.
+ */
+export function parsePrivateEndpointAllowlist(raw: string): ReadonlySet<string> {
+  return new Set(
+    raw
+      .split(",")
+      .map((entry) => normalizeAllowlistedOrigin(entry.trim()))
+      .filter((entry): entry is string => entry !== null),
+  );
+}
+
+function normalizeAllowlistedOrigin(value: string): string | null {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value);
+  } catch {
+    return null;
+  }
+  if (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") return null;
+  if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash) return null;
+  if (endpoint.pathname !== "/") return null;
+  return endpoint.origin.toLowerCase();
+}
+
 export function parseRemoteHttpEndpoint(
   value: unknown,
   error: RemoteHttpEndpointErrorFactory,

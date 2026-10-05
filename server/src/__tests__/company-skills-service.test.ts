@@ -23,6 +23,20 @@ import {
 import { companySkillService } from "../services/company-skills.ts";
 import { removeRuntimeSkillCache } from "../services/runtime-skill-cache.js";
 import { folderService } from "../services/folders.js";
+import * as githubFetch from "../services/github-fetch.js";
+
+/**
+ * Stand in for the guarded GitHub fetcher.
+ *
+ * Every GitHub read this service makes goes through `ghFetch`, which refuses a
+ * private or reserved destination, pins the connection to the address it
+ * approved and never follows a redirect. A test that replaced platform fetch
+ * would walk past that guard and reach the network for real, so it replaces the
+ * fetcher itself.
+ */
+function stubGitHubFetch(impl: (url: string) => Promise<Response>) {
+  return vi.spyOn(githubFetch, "ghFetch").mockImplementation(async (url) => impl(String(url)));
+}
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -106,7 +120,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
   it("refreshes once, reuses pinned runtime contents across service instances, and ignores cosmetic changes", async () => {
     const { companyId, skillId, key } = await createPinnedRuntimeFixture();
     const upstream = vi.fn(async (url: string | URL) => new Response(String(url)));
-    vi.stubGlobal("fetch", upstream);
+    const remote = stubGitHubFetch(upstream);
     const select = vi.spyOn(db, "select");
     try {
       const cold = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === key)!;
@@ -136,14 +150,14 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       expect(next.source).not.toBe(cold.source);
       expect(await fs.readFile(path.join(next.source, "references/0.md"), "utf8")).toContain("b".repeat(40));
       expect(await fs.readFile(path.join(cold.source, "references/0.md"), "utf8")).toContain("a".repeat(40));
-    } finally { select.mockRestore(); vi.unstubAllGlobals(); }
+    } finally { select.mockRestore(); remote.mockRestore(); }
   });
 
   it("deduplicates runtime downloads for twenty concurrent service callers and isolates companies", async () => {
     const first = await createPinnedRuntimeFixture();
     const second = await createPinnedRuntimeFixture();
     const upstream = vi.fn(async (url: string | URL) => new Response(String(url)));
-    vi.stubGlobal("fetch", upstream);
+    const remote = stubGitHubFetch(upstream);
     try {
       const batches = await Promise.all(Array.from({ length: 20 }, () => companySkillService(db).listRuntimeSkillEntries(first.companyId)));
       const sources = batches.map((entries) => entries.find((entry) => entry.key === first.key)!);
@@ -153,7 +167,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       const other = (await svc.listRuntimeSkillEntries(second.companyId)).find((entry) => entry.key === second.key)!;
       expect(other.source).not.toBe(sources[0].source);
       expect(upstream).toHaveBeenCalledTimes(42);
-    } finally { vi.unstubAllGlobals(); }
+    } finally { remote.mockRestore(); }
   });
 
   it("keeps upstream changes dormant until explicit update and refreshes supporting-only changes", async () => {
@@ -169,7 +183,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       if (url.endsWith("/reference.md")) return new Response(url.includes("a".repeat(40)) ? "old supporting file" : "new supporting file");
       return Response.json({ default_branch: "main" });
     });
-    vi.stubGlobal("fetch", upstream);
+    const remote = stubGitHubFetch(upstream);
     try {
       const imported = await svc.importFromSource(companyId, "https://github.com/acme/cache");
       const skill = imported.imported[0];
@@ -193,7 +207,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       } finally { lockFailure.mockRestore(); }
       await svc.deleteSkill(companyId, skill.id);
       await expect(fs.stat(path.dirname(path.dirname(next.source)))).rejects.toMatchObject({ code: "ENOENT" });
-    } finally { vi.unstubAllGlobals(); }
+    } finally { remote.mockRestore(); }
   });
 
   it("observes edits to a direct local source on the next preparation", async () => {
@@ -1591,8 +1605,8 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     })));
 
     const remoteReads: string[] = [];
-    vi.stubGlobal("fetch", async (url: string | URL) => {
-      remoteReads.push(String(url));
+    const remote = stubGitHubFetch(async (url) => {
+      remoteReads.push(url);
       return new Response("# Remote Skill\n", { status: 200 });
     });
     try {
@@ -1610,7 +1624,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         expect(second.skill.slug).toBe(`${normalizedForkSlug}-2`);
       }
     } finally {
-      vi.unstubAllGlobals();
+      remote.mockRestore();
     }
     expect(remoteReads).toEqual(expect.arrayContaining([
       "https://raw.githubusercontent.com/acme/github-skill/main/SKILL.md",
@@ -2441,8 +2455,8 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
 
     const requestedUrls: string[] = [];
-    vi.stubGlobal("fetch", async (url: string | URL) => {
-      requestedUrls.push(String(url));
+    const remote = stubGitHubFetch(async (url) => {
+      requestedUrls.push(url);
       return new Response("# Root Skill (remote)\n", { status: 200 });
     });
     try {
@@ -2453,14 +2467,14 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         "https://raw.githubusercontent.com/acme/root-skill/main/SKILL.md",
       ]);
 
-      vi.stubGlobal("fetch", async () => {
+      remote.mockImplementation(async () => {
         throw new Error("network down");
       });
       await expect(svc.readFile(companyId, skillId, "SKILL.md")).resolves.toMatchObject({
         content: "# Root Skill (stored)\n",
       });
     } finally {
-      vi.unstubAllGlobals();
+      remote.mockRestore();
     }
   });
 
@@ -2510,8 +2524,8 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     ]);
 
     const requestedUrls: string[] = [];
-    vi.stubGlobal("fetch", async (url: string | URL) => {
-      requestedUrls.push(String(url));
+    const remote = stubGitHubFetch(async (url) => {
+      requestedUrls.push(url);
       return new Response("# Remote Skill\n", { status: 200 });
     });
     try {
@@ -2526,7 +2540,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         "https://raw.githubusercontent.com/acme/skills/main/slug-skill/SKILL.md",
       ]);
     } finally {
-      vi.unstubAllGlobals();
+      remote.mockRestore();
     }
   });
 
@@ -3378,10 +3392,18 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       metadata: row.metadata,
     })));
 
-    for (const row of inserted) {
-      await expect(svc.renameSkill(companyId, row.id, { name: "Renamed" })).rejects.toMatchObject({
-        status: 422,
-      });
+    // Two of these rows carry a GitHub locator, and a rename refreshes the
+    // inventory before it refuses. Answer those reads here so the refusal is
+    // measured rather than the round trip to github.com.
+    const remote = stubGitHubFetch(async () => new Response("Not Found", { status: 404 }));
+    try {
+      for (const row of inserted) {
+        await expect(svc.renameSkill(companyId, row.id, { name: "Renamed" })).rejects.toMatchObject({
+          status: 422,
+        });
+      }
+    } finally {
+      remote.mockRestore();
     }
   });
 

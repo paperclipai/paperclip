@@ -2,7 +2,10 @@ import {
   guardedRemoteHttpFetch,
   type GuardedRemoteHttpFetchOptions,
 } from "../../services/remote-http-fetch.js";
-import { parseRemoteHttpEndpoint } from "../../services/remote-http-endpoint-guard.js";
+import {
+  parsePrivateEndpointAllowlist,
+  parseRemoteHttpEndpoint,
+} from "../../services/remote-http-endpoint-guard.js";
 
 const PRIVATE_ENDPOINT_ALLOWLIST_ENV = "PAPERCLIP_HTTP_ADAPTER_PRIVATE_ENDPOINT_ALLOWLIST";
 
@@ -25,28 +28,10 @@ function endpointError(message: string, code: string) {
   );
 }
 
-function normalizeAllowlistedOrigin(value: string): string | null {
-  let endpoint: URL;
-  try {
-    endpoint = new URL(value);
-  } catch {
-    return null;
-  }
-  if (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") return null;
-  if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash) return null;
-  if (endpoint.pathname !== "/") return null;
-  return endpoint.origin.toLowerCase();
-}
-
 export function httpAdapterPrivateEndpointAllowlist(
   raw = process.env[PRIVATE_ENDPOINT_ALLOWLIST_ENV] ?? "",
 ): ReadonlySet<string> {
-  return new Set(
-    raw
-      .split(",")
-      .map((entry) => normalizeAllowlistedOrigin(entry.trim()))
-      .filter((entry): entry is string => entry !== null),
-  );
+  return parsePrivateEndpointAllowlist(raw);
 }
 
 type HttpAdapterFetchOptions = Omit<

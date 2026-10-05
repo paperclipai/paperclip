@@ -224,6 +224,57 @@ describeEmbeddedPostgres("companySkillPolicyService", () => {
     })).resolves.toMatchObject({ allowed: true, reason: "policy_default" });
   });
 
+  it("denies a catalog install submitted under another name for the same skill", async () => {
+    const seeded = await seedAgent();
+    const service = companySkillPolicyService(db);
+    const catalogId = "paperclipai:bundled:software-development:review";
+    const catalogKey = "paperclipai/bundled/software-development/review";
+    await service.replace({
+      companyId: seeded.companyId,
+      expectedRevision: 0,
+      policy: {
+        schemaVersion: 1,
+        defaultEffect: "allow",
+        rules: [{
+          id: "deny-review",
+          priority: 1,
+          effect: "deny",
+          subject: { type: "all_agents" },
+          actions: ["skills.install"],
+          resources: { sourceLocators: [catalogId] },
+        }],
+      },
+      activity: { actorType: "agent", actorId: seeded.agentId, agentId: seeded.agentId },
+    });
+
+    // The install route accepts the id, the key or the unambiguous slug and
+    // resolves all three to one skill, so a rule naming any of them has to
+    // match a request that arrived under either of the other two.
+    for (const [canonical, ...aliases] of [
+      [catalogId, catalogKey, "review"],
+      [catalogKey, "review", catalogId],
+      ["review", catalogId, catalogKey],
+    ]) {
+      await expect(service.evaluate({
+        companyId: seeded.companyId,
+        principal: seeded.principal,
+        action: "skills.install",
+        resource: { sourceType: "catalog", sourceLocator: canonical, sourceLocatorAliases: aliases },
+      })).resolves.toMatchObject({ allowed: false, reason: "explicit_rule", matchedRuleId: "deny-review" });
+    }
+
+    await expect(service.evaluate({
+      companyId: seeded.companyId,
+      principal: seeded.principal,
+      action: "skills.install",
+      resource: {
+        sourceType: "catalog",
+        sourceLocator: "paperclipai:bundled:software-development:docs",
+        sourceLocatorAliases: ["paperclipai/bundled/software-development/docs", "docs"],
+      },
+    })).resolves.toMatchObject({ allowed: true, reason: "policy_default" });
+  });
+
   it("matches deny rules persisted before locator normalization existed", async () => {
     const seeded = await seedAgent();
     const service = companySkillPolicyService(db);

@@ -58,6 +58,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import {
   companySkillPolicyService,
   normalizeSkillPolicySourceType,
+  type SkillPolicyEvaluationTarget,
   type SkillPolicyPrincipal,
 } from "../services/company-skill-policy.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -91,9 +92,9 @@ type SkillTestRunAssignmentAuthorizationScope = {
 };
 
 type SkillPolicyResourceInput =
-  | SkillPolicyEvaluationResource
-  | Promise<SkillPolicyEvaluationResource>
-  | (() => SkillPolicyEvaluationResource | Promise<SkillPolicyEvaluationResource>);
+  | SkillPolicyEvaluationTarget
+  | Promise<SkillPolicyEvaluationTarget>
+  | (() => SkillPolicyEvaluationTarget | Promise<SkillPolicyEvaluationTarget>);
 
 export function companySkillRoutes(db: Db) {
   const router = Router();
@@ -191,6 +192,34 @@ export function companySkillRoutes(db: Db) {
         sourceType: normalizeSkillPolicySourceType(input.sourceType ?? stored?.sourceType),
       } : {}),
       ...(sourceLocator ? { sourceLocator: normalizeSkillPolicySourceLocator(sourceLocator) } : {}),
+    };
+  }
+
+  /**
+   * Evaluate a catalog install against the skill the reference resolves to, not
+   * against the text the caller submitted.
+   *
+   * `install-catalog` accepts a catalog id, a catalog key or an unambiguous
+   * slug and resolves all three to the same skill. A policy evaluated on the
+   * submitted text alone therefore missed a deny rule written with either of
+   * the other two: the rule did not match and the skill installed anyway. All
+   * three names of the resolved skill go to the policy, so a rule naming any
+   * one of them matches every spelling of the same install.
+   *
+   * Resolution happens inside the policy resource, which the gate builds only
+   * after authentication and the company boundary have been enforced.
+   */
+  function catalogInstallPolicyResource(reference: string): SkillPolicyEvaluationTarget {
+    const catalogSkill = getCatalogSkillOrThrow(reference);
+    const [canonical, ...aliases] = [...new Set(
+      [catalogSkill.id, catalogSkill.key, catalogSkill.slug]
+        .filter((name): name is string => typeof name === "string" && name.trim().length > 0)
+        .map(normalizeSkillPolicySourceLocator),
+    )];
+    return {
+      sourceType: normalizeSkillPolicySourceType("catalog"),
+      ...(canonical ? { sourceLocator: canonical } : {}),
+      ...(aliases.length > 0 ? { sourceLocatorAliases: aliases } : {}),
     };
   }
 
@@ -1383,10 +1412,12 @@ export function companySkillRoutes(db: Db) {
     validate(companySkillInstallCatalogSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      await assertCanMutateCompanySkills(req, companyId, "skills.install", {
-        sourceType: "catalog",
-        sourceLocator: req.body.catalogSkillId,
-      });
+      await assertCanMutateCompanySkills(
+        req,
+        companyId,
+        "skills.install",
+        () => catalogInstallPolicyResource(String(req.body.catalogSkillId ?? "")),
+      );
       const result = await svc.installFromCatalog(companyId, req.body);
 
       const actor = getActorInfo(req);

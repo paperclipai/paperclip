@@ -1319,6 +1319,37 @@ describe("company skill mutation permissions", () => {
     }));
   });
 
+  it("checks a catalog install against every name the reference resolves to", async () => {
+    // The catalog accepts an id, a key or an unambiguous slug for one skill.
+    // Evaluating the policy on the submitted text alone let a deny rule written
+    // with the id be bypassed by sending the slug, so the gate resolves the
+    // reference first and offers all three names to the policy.
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/install-catalog")
+      .send({ catalogSkillId: "review" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockCatalogService.getCatalogSkillOrThrow).toHaveBeenCalledWith("review");
+    expect(mockCompanySkillPolicyService.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      action: "skills.install",
+      resource: {
+        sourceType: "catalog",
+        sourceLocator: "paperclipai:bundled:software-development:review",
+        sourceLocatorAliases: [
+          "paperclipai/bundled/software-development/review",
+          "review",
+        ],
+      },
+    }));
+  });
+
   it("tracks public GitHub skill imports with an explicit skill reference", async () => {
     mockCompanySkillService.importFromSource.mockResolvedValue({
       imported: [

@@ -161,11 +161,17 @@ describe("skills catalog service", () => {
       { path: "SKILL.md", kind: "skill", sizeBytes: Buffer.byteLength(markdown), sha256: sha256(markdown) },
     ];
     manifestJson = manifest([remoteSkill]);
-    const fetchMock = vi.fn(async (url: string) => {
+    // Stand in for the guarded GitHub fetcher, not for platform fetch: the
+    // catalog reaches GitHub through `ghFetch`, which refuses a private
+    // destination and pins the connection to the address it approved.
+    const ghFetchMock = vi.fn(async (url: string) => {
       expect(url).toBe("https://raw.githubusercontent.com/example/remote-skill/0123456789abcdef0123456789abcdef01234567/skills/remote/SKILL.md");
       return new Response(markdown, { status: 200 });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.doMock("../services/github-fetch.js", async () => ({
+      ...await vi.importActual<typeof import("../services/github-fetch.js")>("../services/github-fetch.js"),
+      ghFetch: ghFetchMock,
+    }));
     const service = await import("../services/skills-catalog.js");
 
     await expect(service.readCatalogSkillFile(remoteSkill.id, "SKILL.md")).resolves.toMatchObject({
@@ -174,7 +180,7 @@ describe("skills catalog service", () => {
       content: markdown,
       markdown: true,
     });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(ghFetchMock).toHaveBeenCalledTimes(1);
     expect(mockReadFile).not.toHaveBeenCalled();
   });
 

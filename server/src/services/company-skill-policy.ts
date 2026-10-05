@@ -21,6 +21,20 @@ export type SkillPolicyPrincipal = {
   role: string | null;
 };
 
+/**
+ * What the policy is evaluated against, plus the other names the same resource
+ * answers to.
+ *
+ * A catalog install accepts a skill's id, its key or its unambiguous slug and
+ * resolves all three to one skill. Matching a rule against the submitted text
+ * alone therefore let a deny rule written with the id be bypassed by resending
+ * the install with the key or the slug. Callers that know a resource has
+ * several names pass the rest here, and a rule naming any of them matches.
+ */
+export type SkillPolicyEvaluationTarget = SkillPolicyEvaluationResource & {
+  sourceLocatorAliases?: readonly string[];
+};
+
 const OPEN_DEFAULT_POLICY: EffectiveSkillPolicy = {
   schemaVersion: 1,
   revision: 0,
@@ -51,7 +65,7 @@ function subjectMatches(rule: SkillPolicyRule, principal: SkillPolicyPrincipal) 
   return Boolean(role && rule.subject.roles.some((candidate) => normalizeRole(candidate) === role));
 }
 
-function resourceMatches(rule: SkillPolicyRule, resource: SkillPolicyEvaluationResource) {
+function resourceMatches(rule: SkillPolicyRule, resource: SkillPolicyEvaluationTarget) {
   const selector = rule.resources;
   if (!selector) return true;
   if (selector.skillIds && (!resource.skillId || !selector.skillIds.includes(resource.skillId))) return false;
@@ -61,11 +75,12 @@ function resourceMatches(rule: SkillPolicyRule, resource: SkillPolicyEvaluationR
     // Compare in canonical form on both sides: rules written before locator
     // normalization existed are stored raw, and callers may pass un-normalized
     // resources; strict equality on mixed forms would silently skip deny rules.
-    const resourceLocator = resource.sourceLocator ? normalizeSkillPolicySourceLocator(resource.sourceLocator) : null;
-    if (!resourceLocator) return false;
-    if (!selector.sourceLocators.some((locator) => normalizeSkillPolicySourceLocator(locator) === resourceLocator)) {
-      return false;
-    }
+    const resourceLocators = [resource.sourceLocator, ...(resource.sourceLocatorAliases ?? [])]
+      .filter((locator): locator is string => typeof locator === "string" && locator.trim().length > 0)
+      .map(normalizeSkillPolicySourceLocator);
+    if (resourceLocators.length === 0) return false;
+    const ruleLocators = new Set(selector.sourceLocators.map(normalizeSkillPolicySourceLocator));
+    if (!resourceLocators.some((locator) => ruleLocators.has(locator))) return false;
   }
   return true;
 }
@@ -156,7 +171,7 @@ export function companySkillPolicyService(db: Db) {
     companyId: string;
     principal: SkillPolicyPrincipal;
     action: SkillPolicyAction;
-    resource?: SkillPolicyEvaluationResource;
+    resource?: SkillPolicyEvaluationTarget;
   }): Promise<SkillPolicyDecision> {
     const policy = await get(input.companyId);
     if (!policy.materialized) {
