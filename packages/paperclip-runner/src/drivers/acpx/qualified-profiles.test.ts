@@ -34,7 +34,7 @@ describe("qualified ACPX profiles", () => {
   it("binds Codex ACP to the CLI runtime it launches", () => {
     expect(QUALIFIED_ACPX_PROFILES.codex).toMatchObject({
       agentRuntimePackage: "@openai/codex",
-      agentRuntimeVersion: "0.156.0",
+      agentRuntimeVersion: "0.160.0",
     });
   });
 

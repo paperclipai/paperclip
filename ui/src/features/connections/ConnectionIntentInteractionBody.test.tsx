@@ -767,3 +767,58 @@ describe("AgentMail inline setup", () => {
     expect(emailConnectMock).not.toHaveBeenCalled();
   });
 });
+
+describe("embedded agent access request", () => {
+  const accessRequest = {
+    connectionId: "22222222-2222-4222-8222-222222222222",
+    connectionName: "Saved Composio",
+    tools: [
+      { catalogEntryId: "33333333-3333-4333-8333-333333333333", toolName: "COMPOSIO_SEARCH_TOOLS", versionHash: "v1", permission: "allowed" as const },
+      { catalogEntryId: "44444444-4444-4444-8444-444444444444", toolName: "COMPOSIO_MANAGE_CONNECTIONS", versionHash: "v1", permission: "ask_first" as const },
+    ],
+  };
+  const interaction: ConnectionIntentInteraction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload, serviceName: "Composio", accessRequest } };
+
+  it("shows the exact tool permissions before granting inline without a setup modal", async () => {
+    setupOptionsMock.mockResolvedValue({ canGrantAccess: true });
+    getAgentMock.mockResolvedValue({ id: interaction.payload.requestingAgentId, name: "Researcher" });
+    completeMock.mockResolvedValue({ ...interaction, status: "accepted", result: { version: 1, outcome: "connected", connectionId: accessRequest.connectionId } });
+    renderBody(interaction);
+    await waitForAssertion(() => expect(button("Grant access")?.disabled).toBe(false));
+    expect(document.body.textContent).toContain("Grant Researcher access to “Saved Composio”?");
+    expect(document.body.querySelector('[data-slot="agent-avatar"]')?.getAttribute("aria-label")).toBe("Researcher");
+    expect(Array.from(document.body.querySelectorAll('ul[aria-label="Tool permissions"] li'), row => row.textContent)).toEqual([
+      "COMPOSIO_SEARCH_TOOLSAllowed",
+      "COMPOSIO_MANAGE_CONNECTIONSAsk first",
+    ]);
+    expect(completeMock).not.toHaveBeenCalled();
+    await act(() => button("Grant access")?.click());
+    await waitForAssertion(() => expect(completeMock).toHaveBeenCalledWith(interaction.id, accessRequest.connectionId));
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("keeps errors visible and does not allow a non-manager to grant", async () => {
+    setupOptionsMock.mockResolvedValue({ canGrantAccess: false });
+    renderBody(interaction);
+    await waitForAssertion(() => expect(document.body.textContent).toContain("Connection manager required"));
+    expect(button("Grant access")?.disabled).toBe(true);
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
+  it("supports declining and displays permission errors on the card", async () => {
+    setupOptionsMock.mockResolvedValue({ canGrantAccess: true });
+    completeMock.mockRejectedValue(new Error("Tools changed. Request access again."));
+    renderBody(interaction);
+    await waitForAssertion(() => expect(button("Grant access")?.disabled).toBe(false));
+    await act(() => button("Grant access")?.click());
+    await waitForAssertion(() => expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("Tools changed"));
+    await act(() => button("Not now")?.click());
+    await waitForAssertion(() => expect(declineMock).toHaveBeenCalledWith(interaction.id));
+  });
+
+  it("shows resolved access and does not expose controls to other users", () => {
+    renderBody({ ...interaction, status: "accepted", result: { version: 1, outcome: "connected", connectionId: accessRequest.connectionId } });
+    expect(document.body.textContent).toContain("Composio access granted");
+    expect(button("Grant access")).toBeUndefined();
+  });
+});

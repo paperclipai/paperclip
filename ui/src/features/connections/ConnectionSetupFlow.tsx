@@ -1,4 +1,5 @@
 import { RemoteMcpProductionSetup } from "./remote-mcp/RemoteMcpProductionSetup";
+import { findAggregatorApp } from "@paperclipai/shared/aggregator-app-catalog";
 import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
 import { ConnectionChoiceList } from "./ConnectionChoiceList";
@@ -554,7 +555,8 @@ export function ConnectionSetupFlow(props: ConnectionSetupFlowProps = {}) {
   }
   if (!props.byoOnly && (props.credentialSource ?? "paperclip_vault") === "paperclip_vault"
     && isRemoteMcpConnectorId(provider) && (!method || isRemoteMcpConnectorMethod(provider, method))) {
-    return <RemoteMcpProductionSetup key={`${interactionId || "page"}:${provider}`} {...props} interactionId={interactionId} providerId={provider} connection={existing.data} />;
+    const target = findAggregatorApp(provider, searchParams.get("targetToolkit"));
+    return <RemoteMcpProductionSetup key={`${interactionId || "page"}:${provider}`} {...props} upstreamServiceName={props.upstreamServiceName ?? target?.name} interactionId={interactionId} providerId={provider} connection={existing.data} />;
   }
   return <StandardConnectionSetupFlow {...props} />;
 }
@@ -4390,7 +4392,7 @@ export function connectionDefaultSummarySentence(input: {
 }
 
 /**
- * The stated default plus the collapsed Advanced disclosure that replaced the
+ * The stated default plus the collapsed Change disclosure that replaced the
  * Access step. It sits in the same place on every connector and never blocks
  * the primary action: opening it is optional, and everything inside it can
  * also be changed on the Permissions tab after connecting.
@@ -4428,38 +4430,30 @@ export function ConnectionAccessDefaults({
   const [open, setOpen] = useState(false);
   const expanded = open || forceOpen;
   return (
-    <div className="mt-6 rounded-lg border border-border bg-muted/30 px-4 py-3">
+    <Collapsible open={expanded} onOpenChange={setOpen} className="mt-6 rounded-lg border border-border bg-muted/30 px-4 py-3">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <p className="text-sm text-muted-foreground">{sentence}</p>
-        <Button
+        <CollapsibleTrigger asChild><Button
           type="button"
           variant="link"
           className="h-auto p-0 text-xs font-semibold underline underline-offset-2"
-          aria-expanded={expanded}
           disabled={disabled}
-          onClick={() => setOpen((previous) => !previous)}
         >
           Change
-        </Button>
+        </Button></CollapsibleTrigger>
       </div>
       {(notice ?? []).map((reason) => (
         <p key={reason} className="mt-2 text-xs text-muted-foreground">{reason}</p>
       ))}
-      <Collapsible open={expanded} onOpenChange={setOpen}>
-        <CollapsibleTrigger className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground">
-          {expanded ? <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" /> : <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />}
-          Advanced
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="mt-3 space-y-6">
-            {extra}
-            {agents
-              ? <AccessStepContent {...accessProps} agents={agents} bare hideFooter submitLabel="" onBack={() => {}} onContinue={() => {}} />
-              : <AccessStep {...accessProps} companyId={companyId} bare hideFooter submitLabel="" onBack={() => {}} onContinue={() => {}} />}
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-    </div>
+      <CollapsibleContent>
+        <div className="mt-3 space-y-6">
+          {extra}
+          {agents
+            ? <AccessStepContent {...accessProps} agents={agents} bare hideFooter submitLabel="" onBack={() => {}} onContinue={() => {}} />
+            : <AccessStep {...accessProps} companyId={companyId} bare hideFooter submitLabel="" onBack={() => {}} onContinue={() => {}} />}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

@@ -1,3 +1,5 @@
+import { composioAppSetupSchema, composioAppsRefreshSchema, composioAppsSyncSchema, composioAppAccountSchema } from "@paperclipai/shared";
+import { aggregatorAppsSyncSchema, aggregatorAppsRefreshSchema, arcadeDiscoverySetupSchema } from "@paperclipai/shared/aggregator-apps";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { agents, companies, connectionGrants, issueThreadInteractions, toolConnectionInstalls } from "@paperclipai/db";
@@ -2030,6 +2032,68 @@ function connectorEnrollmentPrincipal(req: Request): string {
       agentId,
     });
     res.json({ access: accessSummary });
+  });
+
+  async function composioAppManager(req: Request, res: Response) {
+    assertBoard(req);
+    const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!connection) return null;
+    if (!await isToolConnectionManager(req, connection.companyId)) throw forbidden("Only a connection manager can configure apps and grant agent access");
+    return connection;
+  }
+
+  router.get("/tool-connections/:connectionId/aggregator/apps", async (req, res) => {
+    const connection = await composioAppManager(req, res);
+    if (!connection) return;
+    res.set("Cache-Control", "private, no-store");
+    res.json(await svc.listAggregatorApps(connection.id, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+  });
+  router.post("/tool-connections/:connectionId/aggregator/apps/sync", validate(aggregatorAppsSyncSchema), async (req, res) => {
+    const connection = await composioAppManager(req, res);
+    if (!connection) return;
+    res.json(await svc.syncAggregatorApps(connection.id, req.body.force, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+  });
+  router.post("/tool-connections/:connectionId/aggregator/apps/refresh", validate(aggregatorAppsRefreshSchema), async (req, res) => {
+    const connection = await composioAppManager(req, res);
+    if (!connection) return;
+    res.json(await svc.refreshAggregatorApps(connection.id, req.body.toolkits, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+  });
+  router.put("/tool-connections/:connectionId/aggregator/discovery", validate(arcadeDiscoverySetupSchema), async (req, res) => {
+    const connection = await composioAppManager(req, res);
+    if (!connection) return;
+    res.json(await svc.configureArcadeDiscovery(connection.id, req.body, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+  });
+
+  router.get("/tool-connections/:connectionId/composio/apps", async (req, res) => {
+    const connection = await composioAppManager(req, res);
+    if (!connection) return;
+    res.json(await svc.listComposioApps(connection.id, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+  });
+
+  router.post("/tool-connections/:connectionId/composio/apps/sync", validate(composioAppsSyncSchema), async (req, res) => {
+    const connection = await composioAppManager(req, res);
+    if (!connection) return;
+    res.json(await svc.syncComposioApps(connection.id, req.body.force, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+  });
+
+  router.post("/tool-connections/:connectionId/composio/apps/refresh", validate(composioAppsRefreshSchema), async (req, res) => {
+    const connection = await composioAppManager(req, res);
+    if (!connection) return;
+    res.json(await svc.refreshComposioApps(connection.id, req.body.toolkits, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+  });
+
+  router.post("/tool-connections/:connectionId/composio/apps/:toolkit/accounts", validate(composioAppAccountSchema), async (req, res) => {
+    const connection = await composioAppManager(req, res);
+    if (!connection) return;
+    res.json(await svc.manageComposioAppAccount(connection.id, req.params.toolkit as string, req.body, { actorType: "user", actorId: req.actor.userId ?? "board" }));
+  });
+
+  router.post("/tool-connections/:connectionId/composio/apps/:toolkit/setup", validate(composioAppSetupSchema), async (req, res) => {
+    const connection = await composioAppManager(req, res);
+    if (!connection) return;
+    const result = await svc.setupComposioApp(connection.id, req.params.toolkit as string, req.body,
+      { actorType: "user", actorId: req.actor.userId ?? "board" });
+    res.json(result);
   });
 
   router.post("/tool-connections/:connectionId/test-calls", validate(toolConnectionTestCallSchema), async (req, res) => {

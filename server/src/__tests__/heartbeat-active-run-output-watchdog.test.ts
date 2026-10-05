@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -19,6 +19,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { truncateTablesWithDeadlockRetry } from "./helpers/truncate-with-deadlock-retry.js";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
@@ -43,29 +44,6 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-function errorHasPostgresCode(error: unknown, code: string): boolean {
-  let current: unknown = error;
-  for (let depth = 0; depth < 4; depth += 1) {
-    if (!current || typeof current !== "object") return false;
-    const record = current as { code?: unknown; cause?: unknown };
-    if (record.code === code) return true;
-    current = record.cause;
-  }
-  return false;
-}
-
-async function truncateCompaniesWithDeadlockRetry(db: ReturnType<typeof createDb>) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
-      return;
-    } catch (error) {
-      if (!errorHasPostgresCode(error, "40P01") || attempt === 4) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
-    }
-  }
-}
-
 describeEmbeddedPostgres("active-run output watchdog", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
@@ -77,7 +55,10 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
   afterEach(async () => {
     mockedAppendHeartbeatRunEvent.mockClear();
-    await truncateCompaniesWithDeadlockRetry(db);
+    await truncateTablesWithDeadlockRetry(db, `TRUNCATE TABLE "companies" CASCADE`, {
+      attempts: 5,
+      delayMs: (attempt) => 50 * (attempt + 1),
+    });
   });
 
   afterAll(async () => {

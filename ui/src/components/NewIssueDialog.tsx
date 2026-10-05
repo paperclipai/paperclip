@@ -15,6 +15,7 @@ import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
 import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
+import { useNavigate } from "../lib/router";
 import {
   defaultExecutionWorkspaceModeForProject,
   defaultProjectWorkspaceIdForProject,
@@ -26,6 +27,7 @@ import { getRecentAssigneeIds, getRecentAssigneeSelectionIds, sortAgentsByRecenc
 import { getLastProjectId, getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { recordRecentTask } from "../lib/recent-tasks";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
+import { createUuid } from "../lib/uuid";
 import { isIssueWorkMode, nextWorkMode } from "../lib/work-mode-meta";
 import { useToastActions } from "../context/ToastContext";
 import { assigneeValueFromSelection, currentUserAssigneeOption, parseAssigneeValue } from "../lib/assignees";
@@ -279,6 +281,7 @@ export function NewIssueDialog() {
   const dialogBodyRef = useRef<HTMLDivElement>(null);
   const { companies, selectedCompanyId: effectiveCompanyId } = useCompany();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { pushToast } = useToastActions();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const [title, setTitle] = useState("");
@@ -311,6 +314,7 @@ export function NewIssueDialog() {
   const initializationKeyRef = useRef<string | null>(null);
   const defaultAssigneePendingRef = useRef(false);
   const defaultProjectPendingRef = useRef(false);
+  const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
 
   const isSubIssueMode = Boolean(newIssueDefaults.parentId);
   const parentIssueLabel =
@@ -406,8 +410,9 @@ export function NewIssueDialog() {
     mutationFn: async ({
       companyId,
       stagedFiles: pendingStagedFiles,
+      navigateOnCreate,
       ...data
-    }: { companyId: string; stagedFiles: StagedIssueFile[] } & Record<string, unknown>) => {
+    }: { companyId: string; stagedFiles: StagedIssueFile[]; navigateOnCreate?: boolean } & Record<string, unknown>) => {
       const issue = await issuesApi.create(companyId, data);
       const failures: string[] = [];
 
@@ -429,9 +434,9 @@ export function NewIssueDialog() {
         }
       }
 
-      return { issue, companyId, failures };
+      return { issue, companyId, failures, navigateOnCreate };
     },
-    onSuccess: ({ issue, companyId, failures }) => {
+    onSuccess: ({ issue, companyId, failures, navigateOnCreate }) => {
       trackRecentProject(issue.projectId ?? "", companyId);
       if (issue.assigneeAgentId) trackRecentAssignee(issue.assigneeAgentId, companyId);
       if (issue.assigneeUserId) trackRecentAssigneeUser(issue.assigneeUserId, companyId);
@@ -442,19 +447,29 @@ export function NewIssueDialog() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
+      const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
+      const issueRef = issue.identifier ?? issue.id;
+      const openIssueAction = prefix
+        ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
+        : undefined;
       if (failures.length > 0) {
-        const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
-        const issueRef = issue.identifier ?? issue.id;
         pushToast({
           title: `Created ${issueRef} with upload warnings`,
           body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
           tone: "warn",
-          action: prefix ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` } : undefined,
+          action: openIssueAction,
+        });
+      } else {
+        pushToast({
+          title: `Created ${issueRef}`,
+          tone: "success",
+          action: openIssueAction,
         });
       }
       clearDraft();
       reset();
       closeNewIssue();
+      if (navigateOnCreate) navigate(openIssueAction?.href ?? `/issues/${issueRef}`);
     },
   });
 
@@ -719,6 +734,7 @@ export function NewIssueDialog() {
   }, []);
 
   function reset() {
+    createRequestRef.current = null;
     setIssueText("", "");
     setStatus("todo");
     setPriority("");
@@ -791,7 +807,7 @@ export function NewIssueDialog() {
     const assigneeAdapterOverrides = settings
       ? mergeComposerRunSettings(inheritedOverrides, assigneeAdapterType ?? undefined, settings)
       : inheritedOverrides;
-    await createIssue.mutateAsync({
+    const createData = {
       companyId: effectiveCompanyId,
       stagedFiles,
       ...(currentTitle ? { title: currentTitle } : {}),
@@ -820,6 +836,18 @@ export function NewIssueDialog() {
       ...(watchdogAgentId
         ? { watchdog: { agentId: watchdogAgentId, instructions: watchdogInstructions.trim() || null } }
         : {}),
+    };
+    // An explicit board create is a new task even when its title already exists.
+    // Reuse the request key only for retries of the same submitted draft.
+    const fingerprint = JSON.stringify(createData);
+    if (createRequestRef.current?.fingerprint !== fingerprint) {
+      createRequestRef.current = { fingerprint, idempotencyKey: createUuid() };
+    }
+    await createIssue.mutateAsync({
+      ...createData,
+      allowDuplicate: true,
+      idempotencyKey: createRequestRef.current.idempotencyKey,
+      navigateOnCreate: newIssueDefaults.navigateOnCreate === true,
     });
   }
 

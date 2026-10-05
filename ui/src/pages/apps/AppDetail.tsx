@@ -52,6 +52,9 @@ import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs
 import { ConnectionProvenanceChip } from "./ConnectionProvenanceChip";
 import { IdentitiesSection } from "./app-detail/IdentitiesSection";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
+import { AgentConnectionAccess } from "./app-detail/AgentConnectionAccess";
+import { ConnectedAggregatorApps } from "./app-detail/ConnectedAggregatorApps";
+import { isAppAggregator } from "@paperclipai/shared/aggregator-apps";
 import { actionPermissionMutation } from "./app-detail/action-permissions";
 import { RailwayAccessPanel } from "./app-detail/RailwayAccessPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
@@ -622,6 +625,8 @@ export function AppDetail({ renderActions, onReconnect }: {
           : permissionsLoading
           ? <ToolsLoading />
           : <div className="space-y-10">
+              {isAppAggregator(brandKey) && grantsQuery.data?.capabilities.canConfigure === true
+                ? <ConnectedAggregatorApps key={connection.id} connection={connection} /> : null}
               {connection.config?.sourceTemplateKey === "browser-use-cloud" && <BrowserUseSettingsPanel connection={connection} grants={grantsQuery.data} />}
               {connection.config?.sourceTemplateKey === "railway" && <RailwayAccessPanel connection={connection} grants={grantsQuery.data} />}
               {connection.config?.provider === "agentmail" && <EmailConnectionInboxes companyId={connection.companyId} connectionId={connection.id} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}
@@ -657,19 +662,10 @@ export function AppDetail({ renderActions, onReconnect }: {
                 onReplaceAudience={(grant, memberUserIds) =>
                   replaceAudience.mutate({ grantId: grant.id, memberUserIds })}
               />
-              {isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey) && <p className="text-sm text-muted-foreground">Paperclip controls access to the tools listed here. App and action permissions inside these tools are managed in {baseAppName}.</p>}
-              {connection.authKind === "oauth" && (
-                <div className="space-y-2">
-                  <p className="text-sm text-muted-foreground">
-                    Provider permissions come from your last sign-in. Reconnect to grant missing write access, then enable the actions you need here.
-                  </p>
-                  {canReconnect && <Button variant="outline" onClick={() => onReconnect
-                    ? onReconnect(connection)
-                    : navigate(`/apps/connect?source=${connection.config?.sourceTemplateKey}&reconnect=${connection.id}`)}>
-                    Reconnect to update permissions
-                  </Button>}
-                </div>
-              )}
+              {connection.config?.sourceTemplateKey === "composio" ? <p className="text-sm text-muted-foreground">
+                These permissions apply to all apps available through this Composio connection. Manage app accounts and sign-in in Composio.
+              </p> : null}
+              {connection.config?.sourceTemplateKey !== "composio" && isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey) && <p className="text-sm text-muted-foreground">Paperclip controls access to the tools listed here. App and action permissions inside these tools are managed in {baseAppName}.</p>}
               <PermissionsPanel
                 actions={actionsContent}
                 connectionId={connectionId}
@@ -694,6 +690,19 @@ export function AppDetail({ renderActions, onReconnect }: {
                 onRefreshActions={() => refreshTools.mutate()}
                 onSetActionPermission={(ids, next) => apply(actionPermissionMutation(ids, next, enabledIds, askFirstIds))}
                 onReviewQuarantined={reviewQuarantined}
+              />
+              <AgentConnectionAccess
+                connectionId={connectionId}
+                profiles={profilesQuery.data?.profiles ?? []}
+                policies={policiesQuery.data?.policies ?? []}
+                catalog={catalog}
+                agents={agents}
+                canManage={grantsQuery.data?.capabilities.canConfigure === true}
+                onRemove={async (profileId) => {
+                  await toolsApi.deleteProfile(profileId);
+                  await profilesQuery.refetch();
+                  queryClient.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccessesForConnection(connectionId) });
+                }}
               />
               {managesRemoteMcpAccess && isRemoteMcpConnectorId(connection.config?.sourceTemplateKey) && <RemoteMcpManagement
                 providerName={baseAppName} canReconnect={canReconnect} canDisconnect={grantsQuery.data?.capabilities.canConfigure === true}
@@ -957,4 +966,3 @@ function galleryEntryFor(
     apps.find((app) => appDefinitionSlug(app) === name) ??
     null;
 }
-

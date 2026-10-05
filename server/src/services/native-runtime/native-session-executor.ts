@@ -9407,8 +9407,8 @@ const RUNNERD_BINARY_CONTRACT_VERSION = 2;
 const REMOTE_PROVIDER_PACK_SCHEMA = "paperclip-runner/remote-provider-pack/v1";
 const REMOTE_PROVIDER_PACK_PINS = {
   nodeMinimum: "24.11.0",
-  codex: "0.156.0",
-  opencode: "1.18.32",
+  codex: "0.160.0",
+  opencode: "1.18.34",
   acpx: "0.13.1",
   claudeAcp: "0.73.0",
   codexAcp: "1.6.2",

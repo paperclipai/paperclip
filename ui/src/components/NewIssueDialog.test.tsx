@@ -46,6 +46,7 @@ const companyState = vi.hoisted(() => ({
 const toastState = vi.hoisted(() => ({
   pushToast: vi.fn(),
 }));
+const navigateMock = vi.hoisted(() => vi.fn());
 
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -93,6 +94,11 @@ vi.mock("../context/CompanyContext", () => ({
 
 vi.mock("../context/ToastContext", () => ({
   useToastActions: () => toastState,
+}));
+
+vi.mock("../lib/router", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/router")>(),
+  useNavigate: () => navigateMock,
 }));
 
 vi.mock("../api/issues", () => ({
@@ -356,6 +362,7 @@ describe("NewIssueDialog", () => {
     dialogContentState.onEscapeKeyDown = null;
     dialogContentState.onPointerDownOutside = null;
     toastState.pushToast.mockReset();
+    navigateMock.mockReset();
     mockIssuesApi.create.mockReset();
     mockIssuesApi.list.mockReset().mockResolvedValue([]);
     mockIssuesApi.upsertDocument.mockReset();
@@ -1228,6 +1235,115 @@ describe("NewIssueDialog", () => {
     expect(submitButton?.getAttribute("aria-busy")).toBe("true");
     expect(container.textContent).not.toContain("Creating issue");
 
+    act(() => root.unmount());
+  });
+
+  it("creates separate tasks with the same title and confirms each with a link", async () => {
+    dialogState.newIssueDefaults = { title: "Connect Circleback through Composio" };
+    const { root, queryClient } = renderDialog(container);
+    await flush();
+    const submit = () => Array.from(container.querySelectorAll("button"))
+      .find((button) => button.getAttribute("aria-label") === "Create task")!;
+
+    act(() => submit().click());
+    await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(1));
+    const firstPayload = mockIssuesApi.create.mock.calls[0][1];
+    expect(firstPayload).toMatchObject({
+      title: "Connect Circleback through Composio",
+      allowDuplicate: true,
+      idempotencyKey: expect.any(String),
+    });
+    expect(toastState.pushToast).toHaveBeenCalledWith({
+      title: "Created PAP-2",
+      tone: "success",
+      action: { label: "Open PAP-2", href: "/PAP/issues/PAP-2" },
+    });
+
+    dialogState.newIssueOpen = false;
+    act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+    dialogState.newIssueOpen = true;
+    act(() => root.render(<QueryClientProvider client={queryClient}><NewIssueDialog /></QueryClientProvider>));
+    await flush();
+    act(() => submit().click());
+    await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(2));
+    const secondPayload = mockIssuesApi.create.mock.calls[1][1];
+    expect(secondPayload.title).toBe(firstPayload.title);
+    expect(secondPayload.allowDuplicate).toBe(true);
+    expect(secondPayload.idempotencyKey).not.toBe(firstPayload.idempotencyKey);
+    act(() => root.unmount());
+  });
+
+  it("creates a task on plain HTTP when randomUUID is unavailable", async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) });
+    try {
+      dialogState.newIssueDefaults = { title: "LAN preview task" };
+      const { root } = renderDialog(container);
+      await flush();
+      act(() => Array.from(container.querySelectorAll("button"))
+        .find(button => button.getAttribute("aria-label") === "Create task")!.click());
+      await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(1));
+      expect(mockIssuesApi.create.mock.calls[0][1].idempotencyKey)
+        .toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      act(() => root.unmount());
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([undefined, false, true])("navigates after creation only when navigateOnCreate is true (%s)", async (navigateOnCreate) => {
+    dialogState.newIssueDefaults = { title: "Connect Circleback through Composio", navigateOnCreate };
+    const { root } = renderDialog(container);
+    await flush();
+    const submit = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.getAttribute("aria-label") === "Create task")!;
+    act(() => submit.click());
+    await waitForAssertion(() => expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(1));
+    expect(mockIssuesApi.create.mock.calls[0][1]).not.toHaveProperty("navigateOnCreate");
+    if (navigateOnCreate) {
+      expect(navigateMock).toHaveBeenCalledExactlyOnceWith("/PAP/issues/PAP-2");
+      expect(navigateMock.mock.invocationCallOrder[0]).toBeGreaterThan(dialogState.closeNewIssue.mock.invocationCallOrder[0]);
+    } else {
+      expect(navigateMock).not.toHaveBeenCalled();
+    }
+    act(() => root.unmount());
+  });
+
+  it("navigates to the returned task ID when it has no identifier", async () => {
+    dialogState.newIssueDefaults = { title: "Connect Circleback through Composio", navigateOnCreate: true };
+    mockIssuesApi.create.mockResolvedValue({ id: "created-task", companyId: "company-1", identifier: null });
+    const { root } = renderDialog(container);
+    await flush();
+    act(() => Array.from(container.querySelectorAll("button"))
+      .find((button) => button.getAttribute("aria-label") === "Create task")!.click());
+    await waitForAssertion(() => expect(navigateMock).toHaveBeenCalledExactlyOnceWith("/PAP/issues/created-task"));
+    act(() => root.unmount());
+  });
+
+  it("reuses a create request key after a failure until the submitted draft changes", async () => {
+    dialogState.newIssueDefaults = { title: "Connect Circleback through Composio", navigateOnCreate: true };
+    mockIssuesApi.create.mockRejectedValue(new Error("Request failed"));
+    const { root } = renderDialog(container);
+    await flush();
+    const submit = () => Array.from(container.querySelectorAll("button"))
+      .find((button) => button.getAttribute("aria-label") === "Create task")!;
+
+    act(() => submit().click());
+    await waitForAssertion(() => expect(container.textContent).toContain("Request failed"));
+    const firstPayload = mockIssuesApi.create.mock.calls[0][1];
+    expect(dialogState.closeNewIssue).not.toHaveBeenCalled();
+    expect(toastState.pushToast).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalled();
+
+    act(() => submit().click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(2));
+    await flush();
+    expect(mockIssuesApi.create.mock.calls[1][1].idempotencyKey).toBe(firstPayload.idempotencyKey);
+
+    await typeTextareaValue(container.querySelector<HTMLInputElement>('input[aria-label="Task title"]')!, "Connect another app");
+    act(() => submit().click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(3));
+    expect(mockIssuesApi.create.mock.calls[2][1].idempotencyKey).not.toBe(firstPayload.idempotencyKey);
     act(() => root.unmount());
   });
 

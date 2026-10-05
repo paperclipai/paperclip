@@ -47,6 +47,9 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     await sql`DROP TABLE IF EXISTS "browser_use_runs"`;
     await sql`DROP TABLE IF EXISTS "browser_use_sessions"`;
     await sql`DROP TABLE IF EXISTS "browser_use_settings"`;
+    // Managed-account observations are later consumers of the same connection key.
+    await sql`DROP TABLE IF EXISTS "tool_connection_app_syncs"`;
+    await sql`DROP TABLE IF EXISTS "tool_connection_app_snapshots"`;
     await sql`DROP TABLE IF EXISTS "connection_grants"`;
     await sql`DROP INDEX IF EXISTS "tool_connections_company_uid_uq"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_company_id_uq"`;

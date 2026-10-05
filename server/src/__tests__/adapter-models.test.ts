@@ -50,6 +50,7 @@ describe("adapter model listing", () => {
     expect(models).toEqual(codexFallbackModels);
     // The bare gpt-5.6 alias is intentionally not advertised (Codex has no metadata for it).
     expect(models.some((model) => model.id === "gpt-5.6")).toBe(false);
+    expect(models.some((model) => model.id === "gpt-6.1-sol")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
@@ -170,9 +171,11 @@ describe("adapter model listing", () => {
     // Fable 5.1 leads here too, using its documented dateless Bedrock ID.
     expect(models[0]?.id).toBe("us.anthropic.claude-fable-5-1");
     expect(models.map((model) => model.id)).toEqual(expect.arrayContaining([
-      "us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5", "us.anthropic.claude-sonnet-5",
-      "us.anthropic.claude-fable-5-1", "us.anthropic.claude-opus-4-7", "us.anthropic.claude-sonnet-4-6",
+      "us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5", "us.anthropic.claude-sonnet-5-5",
+      "us.anthropic.claude-sonnet-5", "us.anthropic.claude-fable-5-1", "us.anthropic.claude-opus-4-7",
+      "us.anthropic.claude-sonnet-4-6",
     ]));
+    expect(models.some((model) => model.id === "claude-sonnet-5-5")).toBe(false);
     expect(models.map((model) => model.id)).not.toEqual(expect.arrayContaining(["us.anthropic.claude-opus-4-8-v1"]));
     expect(models.some((model) => model.id === "claude-fable-5-1")).toBe(false);
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -293,7 +296,7 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("opencode_local");
 
     expect(models).toEqual(opencodeFallbackModels);
-    expect(models.map((model) => model.id)).toEqual(expect.arrayContaining(["openai/gpt-6-astra", "openai/gpt-6-sol", "openai/gpt-6-luna", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5", "anthropic/claude-fable-5-1", "anthropic/claude-sonnet-5", "google/gemini-3.8-flash", "xai/grok-4.7"]));
+    expect(models.map((model) => model.id)).toEqual(expect.arrayContaining(["openai/gpt-6-astra", "openai/gpt-6.1-sol", "openai/gpt-6-sol", "openai/gpt-6-luna", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5", "anthropic/claude-fable-5-1", "anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5", "google/gemini-3.8-flash", "xai/grok-4.7"]));
   });
 
   it("loads cursor models dynamically and caches them", async () => {
