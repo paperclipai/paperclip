@@ -65,6 +65,31 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
 ]);
 export type AiConnectionBinding = z.infer<typeof aiConnectionBindingSchema>;
 export const aiConnectionMetadataSchema = z.object(requirement).strict();
+
+/**
+ * Adapters whose provider credentials are managed by Paperclip's AI connection
+ * service. Remote gateways authenticate against credentials in their own
+ * adapter configuration and must not inherit a local provider connection.
+ */
+const SELF_AUTHENTICATED_ADAPTERS = new Set([
+  "cursor_cloud",
+  "gemini_local",
+  "hermes_gateway",
+  "hermes_local",
+  "kimi_local",
+  "pi_local",
+  "cursor",
+  "openclaw_gateway",
+]);
+
+export function isAiConnectionManagedAdapter(adapterType: string): boolean {
+  return adapterType === "paperclip_runner" ||
+    ["claude_local", "codex_local", "opencode_local", "grok_local"].includes(adapterType);
+}
+
+export function isAiConnectionSelfAuthenticatedAdapter(adapterType: string): boolean {
+  return SELF_AUTHENTICATED_ADAPTERS.has(adapterType);
+}
 export type AiConnectionMetadata = z.infer<typeof aiConnectionMetadataSchema>;
 
 /** Existing integrations only. This table describes compatibility, never routing. */
@@ -115,6 +140,8 @@ export function isAiConnectionCompatible(
   runnerProvider?: unknown,
   acpxAgent?: unknown,
 ): boolean {
+  if (!isAiConnectionManagedAdapter(adapterType))
+    return isAiConnectionSelfAuthenticatedAdapter(adapterType);
   if (adapterType === "paperclip_runner")
     adapterType =
       runnerProvider === "claude" ||

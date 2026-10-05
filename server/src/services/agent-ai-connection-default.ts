@@ -2,6 +2,7 @@ import {
   AI_PROVIDERS,
   aiConnectionBindingSchema,
   isAiConnectionCompatible,
+  isAiConnectionManagedAdapter,
   type AiConnectionBinding,
   type AiProvider,
 } from "@paperclipai/shared";
@@ -21,6 +22,7 @@ export function defaultAiConnectionForHire(
   config: Record<string, unknown>,
   managerBinding: unknown,
 ): AiConnectionBinding | undefined {
+  if (!isAiConnectionManagedAdapter(adapterType)) return undefined;
   const compatible = (binding: AiConnectionBinding) =>
     isAiConnectionCompatible(binding, adapterType, config.model, config.provider, config.acpxAgent);
   const inherited = aiConnectionBindingSchema.safeParse(managerBinding);
