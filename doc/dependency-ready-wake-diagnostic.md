@@ -32,6 +32,12 @@ For queue hygiene, cover issue-less intentional system work separately from orph
 
 Keep the external queue hygiene safety net until separately approved activation and real live-runs plus single-issue measurement prove the 15-minute bound. This branch does not alter runtime configuration, jobs, policy, sessions, permissions or live evidence issues. No merge or deployment is authorized.
 
+## Recorder review follow-up
+
+The verbose suite name now says characterization, not safety. The double records the tables passed to `from`, `innerJoin` and `leftJoin`; it still does not interpret predicates, joins or authorization. Nine fixture-only sensitivity controls cover each of those three methods for interactions, approvals and issue-approval links. Before the recorder fix, the six join controls failed while the three from controls passed; afterward all nine controls plus the original seven selector characterizations passed.
+
+A temporary mock-only selector mutation added ``leftJoin(approvals, sql`true`)`` to the blocker lookup. The four human-gate characterization cases then failed on the recorded approvals table instead of silently passing. The mutation was removed before delivery; no production service change is included. This demonstrates sensitivity to a direct gate-table join in this selector, not complete SQL dependency tracking or human-gate enforcement.
+
 ## Independent boundary review and follow-up characterization
 
 The independent review reproduced the pinned route RED and requires one shared transactional writer, called with the existing transaction by REST status/dependency mutations and the native status committer. Preserve native decision/statusVersion/effect-ledger semantics, canonical status metadata cleanup and execution leases. Finalize and recovery reconcile through that same writer; never add independent detached repairs. Readiness includes workspace finalization, not just done status. Serialize relation mutation, owner change and re-block with restoration; capture the blocked cycle before canonical metadata cleanup and use the cycle-aware state key across emitters.

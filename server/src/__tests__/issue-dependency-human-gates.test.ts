@@ -1,8 +1,9 @@
+import { approvals, issueApprovals, issueThreadInteractions, issues } from "@paperclipai/db";
 import { getTableName } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { issueService } from "../services/issues.ts";
 
-// Safety characterization. Execute the real selector with a recording
+// Selector characterization. Execute the real selector with a recording
 // query double, never a DB, adapter, approval resolver or live evidence issue.
 // This double serves named projections; it does NOT execute SQL predicates,
 // establish authorization, or prove transactional status+wake atomicity.
@@ -45,8 +46,14 @@ function fixture(input: {
         }] : [];
         else throw new Error(`Unmodeled selector read: ${name}/${Object.keys(projection).join(",")}`);
         const query = {
-          innerJoin: (_table: unknown, _condition: unknown) => query,
-          leftJoin: (_table: unknown, _condition: unknown) => query,
+          innerJoin: (table: Parameters<typeof getTableName>[0], _condition: unknown) => {
+            reads.push(getTableName(table));
+            return query;
+          },
+          leftJoin: (table: Parameters<typeof getTableName>[0], _condition: unknown) => {
+            reads.push(getTableName(table));
+            return query;
+          },
           where: (_condition: unknown) => query,
           limit: (_count: number) => query,
           then: (resolve: (value: unknown[]) => unknown, reject?: (reason: unknown) => unknown) =>
@@ -60,6 +67,7 @@ function fixture(input: {
     insert: vi.fn(() => { throw new Error("Selector must not replace gate rows"); }),
   };
   return {
+    db,
     select: () => issueService(db as any).listWakeableBlockedDependents("blocker-1"),
     reads,
     assertPreserved: () => {
@@ -71,7 +79,21 @@ function fixture(input: {
   };
 }
 
-describe("dependency-ready selector human-gate safety (mock-only diagnostic)", () => {
+describe("query-double table-read recording (fixture sensitivity only)", () => {
+  for (const table of [issueThreadInteractions, approvals, issueApprovals]) {
+    it.each(["from", "innerJoin", "leftJoin"] as const)(
+      `records ${getTableName(table)} via %s`, async (method) => {
+        const f = fixture();
+        if (method === "from") await f.db.select().from(table);
+        else await f.db.select().from(issues)[method](table, undefined);
+        expect(f.reads).toContain(getTableName(table));
+        f.assertPreserved();
+      },
+    );
+  }
+});
+
+describe("dependency-ready selector human-gate characterization (mock-only diagnostic)", () => {
   it("retains ordinary dependency recovery without a human wait", async () => {
     const f = fixture();
     expect(await f.select()).toEqual([expect.objectContaining({
