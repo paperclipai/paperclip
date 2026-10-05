@@ -121,6 +121,12 @@ export const issues = pgTable(
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
     projectWorkspaceIdx: index("issues_company_project_workspace_idx").on(table.companyId, table.projectWorkspaceId),
     executionWorkspaceIdx: index("issues_company_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
+    // readCheckedOutIssueId anchors a run to the issue it holds checked out
+    // or is executing. Both columns are null for the vast majority of rows,
+    // so the partial predicates keep the indexes tiny while covering the
+    // per-write claim lookup.
+    companyCheckoutRunIdx: index("issues_company_checkout_run_idx").on(table.companyId, table.checkoutRunId).where(sql`${table.checkoutRunId} is not null`),
+    companyExecutionRunIdx: index("issues_company_execution_run_idx").on(table.companyId, table.executionRunId).where(sql`${table.executionRunId} is not null`),
     dueMonitorIdx: index("issues_company_monitor_due_idx").on(table.companyId, table.monitorNextCheckAt),
     companyUpdatedIdx: index("issues_company_updated_idx").on(table.companyId, table.updatedAt),
     companyCreatedIdx: index("issues_company_created_idx").on(table.companyId, table.createdAt),
