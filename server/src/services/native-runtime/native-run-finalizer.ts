@@ -1332,6 +1332,9 @@ export async function finalizeNativeRun(input: {
         // The old decision refers to its original assessment through a
         // composite foreign key. Replace this pair together in the status
         // committer, after the new decision and its effects are durable.
+        // Before any decision exists, retain the assessment for crash recovery.
+        assessmentId: sql`case when ${nativeRunFinalizations.decisionId} is null
+          then ${assessmentRow.id}::uuid else ${nativeRunFinalizations.assessmentId} end`,
         updatedAt: new Date(),
       })
       .where(

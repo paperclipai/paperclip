@@ -10,6 +10,8 @@ import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createProjectSchema,
+  projectDiscoverySchema,
+  type ProjectDiscoveryPage,
   createProjectWorkspaceSchema,
   findWorkspaceCommandDefinition,
   isUuidLike,
@@ -210,6 +212,25 @@ export function projectRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const includeArchived = req.query.includeArchived === "true";
+    if (req.query.view === "summary") {
+      const page = projectDiscoverySchema.extend({ limit: z.coerce.number().int().min(1).max(50).default(50) }).parse({
+        limit: req.query.limit, cursor: req.query.cursor,
+      });
+      const visible: ProjectDiscoveryPage["projects"] = [];
+      let cursor = page.cursor;
+      // Scan bounded projections; authorization runs before selecting the public
+      // page/cursor so denied projects neither fill pages nor leak their IDs.
+      while (visible.length <= page.limit) {
+        const batch = await svc.listSummaries(companyId, { limit: 51, cursor, includeArchived });
+        const allowed = await filterProjectsForActor(req, batch.map(project => ({ ...project, companyId })));
+        visible.push(...allowed.map(({ companyId: _companyId, ...project }) => project));
+        if (batch.length < 51) break;
+        cursor = batch.at(-1)!.id;
+      }
+      const selected = visible.slice(0, page.limit);
+      res.json({ projects: selected, nextCursor: visible.length > page.limit ? selected.at(-1)!.id : null } satisfies ProjectDiscoveryPage);
+      return;
+    }
     const result = await svc.list(companyId, { includeArchived });
     res.json(await filterProjectsForActor(req, result));
   });

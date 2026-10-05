@@ -1217,6 +1217,10 @@ the updated sandbox image with the matching runner qualification changes.
 ### Native runner restart recovery
 
 Project discovery through `list_projects` returns up to 50 compact summaries.
+It uses `GET /api/companies/:companyId/projects?view=summary&limit=50&cursor=...`;
+the cursor is optional. The database reads bounded summary projections, and
+project authorization is applied before choosing each page and its cursor.
+The default project-list API response remains unchanged.
 Use its `nextCursor` as the next call's `cursor` until it is null; `limit` accepts
 1–50. Descriptions include at most 1,000 characters and an explicit truncation
 flag. Full project records remain available through the authorized project API.

@@ -9,22 +9,14 @@ const input = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("project discovery result bounds", () => {
-  it("pages large project records without losing discovery IDs or sending workspace configuration", async () => {
-    const projects = Array.from({ length: 53 }, (_, i) => ({
-      id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
-      name: `Project ${i}`, status: "in_progress", description: "日本語🦀".repeat(100_000),
-      workspaces: [{ executionConfig: { content: "x".repeat(600_000) } }],
-    }));
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => [...projects].reverse() })));
-    const first = await callProjectTool(input);
-    expect(first.projects).toHaveLength(50);
-    expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThan(256 * 1024);
-    expect(first.projects[0]).toMatchObject({ id: projects[0].id, name: "Project 0", descriptionTruncated: true });
-    expect(first.projects[0]).not.toHaveProperty("workspaces");
-    expect(first.nextCursor).toBe(projects[49].id);
-    const last = await callProjectTool({ ...input, arguments: { cursor: first.nextCursor } });
-    expect([...first.projects, ...last.projects].map(p => p.id)).toEqual(projects.map(p => p.id));
-    expect(last.nextCursor).toBeNull();
+  it("requests bounded summaries and normalizes continuation cursors", async () => {
+    const page = { projects: [{ id: "abcdefab-0000-4000-8000-000000000001", name: "Project", status: "in_progress", description: "Summary", descriptionTruncated: true }], nextCursor: "abcdefab-0000-4000-8000-000000000001" };
+    const fetch = vi.fn(async (_url: string, _options: RequestInit) => ({ ok: true, json: async () => page }));
+    vi.stubGlobal("fetch", fetch);
+    expect(await callProjectTool(input)).toEqual(page);
+    expect(fetch.mock.calls[0]?.[0]).toBe("http://paperclip.test/api/companies/company/projects?view=summary&limit=50");
+    await callProjectTool({ ...input, arguments: { limit: 3, cursor: page.nextCursor.toUpperCase() } });
+    expect(fetch.mock.calls[1]?.[0]).toBe(`http://paperclip.test/api/companies/company/projects?view=summary&limit=3&cursor=${page.nextCursor}`);
     expect(projectToolDefinitions("standard").find(t => t.name === "list_projects")?.inputSchema)
       .toMatchObject({ properties: { cursor: expect.any(Object), limit: expect.any(Object) } });
   });

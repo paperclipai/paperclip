@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
@@ -18,6 +18,7 @@ import {
   normalizeProjectUrlKey,
   type BudgetWindowKind,
   type ProjectBudgetSummary,
+  type ProjectDiscoverySummary,
   type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
@@ -620,6 +621,21 @@ export function projectService(db: Db) {
   };
 
   return {
+    // Project discovery never reads workspace JSON, goals, metrics, or full descriptions.
+    listSummaries: async (companyId: string, opts: { limit: number; cursor?: string; includeArchived: boolean }): Promise<ProjectDiscoverySummary[]> => {
+      return db.select({
+        id: projects.id,
+        name: sql<string>`left(${projects.name}, 500)`,
+        status: projects.status,
+        description: sql<string | null>`left(${projects.description}, 1000)`,
+        descriptionTruncated: sql<boolean>`coalesce(length(${projects.description}) > 1000, false)`,
+      }).from(projects).where(and(
+        eq(projects.companyId, companyId),
+        opts.includeArchived ? undefined : isNull(projects.archivedAt),
+        opts.cursor ? gt(projects.id, opts.cursor) : undefined,
+      )).orderBy(asc(projects.id)).limit(opts.limit);
+    },
+
     list: async (companyId: string, opts: { includeArchived?: boolean } = {}): Promise<ProjectWithGoals[]> => {
       // NOTE: this service default is intentionally the inverse of the HTTP route default.
       // The route (`GET /companies/:companyId/projects`) defaults `includeArchived` to `false`

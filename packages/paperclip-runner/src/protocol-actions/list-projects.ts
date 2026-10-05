@@ -2,7 +2,7 @@ export const listProjectsInputSchema = {
   type: "object",
   properties: {
     limit: { type: "integer", minimum: 1, maximum: 50, description: "Page size (default 50)." },
-    cursor: { type: "string", format: "uuid", description: "The nextCursor returned by the previous page." },
+    cursor: { type: "string", pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", description: "The nextCursor returned by the previous page." },
   },
   required: [],
   additionalProperties: false,
