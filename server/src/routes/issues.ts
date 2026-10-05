@@ -14183,30 +14183,46 @@ export function issueRoutes(
       if (!existing) return;
 
       const actor = getActorInfo(req);
-      const policy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
-      const transition = applyIssueExecutionStageReassignment({
-        issue: existing,
-        policy,
-        actor: {
-          agentId: actor.agentId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        },
-        isBoardActor: req.actor.type === "board",
-        toParticipant: req.body.toParticipant,
-        comment: req.body.comment,
-      });
-
       const decisionId = randomUUID();
-      const nextExecutionState = transition.patch.executionState;
-      if (!nextExecutionState || typeof nextExecutionState !== "object") {
-        throw new Error("Execution policy reassignment patch is missing executionState");
-      }
-      transition.patch.executionState = {
-        ...nextExecutionState,
-        lastDecisionId: decisionId,
-      };
+
+      // The transition is computed from a row locked inside the transaction,
+      // not from `existing`: without the lock, a concurrent approve/reassign
+      // landing between the initial read and this write could have its
+      // outcome silently overwritten by a transition built against stale
+      // state (e.g. an approval undone, or the stage handed to a participant
+      // who is no longer current).
+      let transition:
+        | ReturnType<typeof applyIssueExecutionStageReassignment>
+        | undefined;
+      let previousExecutionState: ParsedExecutionState | null = null;
 
       const issue = await db.transaction(async (tx) => {
+        const locked = await svc.getByIdForUpdate(id, tx);
+        if (!locked) return null;
+
+        previousExecutionState = parseIssueExecutionState(locked.executionState);
+        const policy = normalizeIssueExecutionPolicy(locked.executionPolicy ?? null);
+        transition = applyIssueExecutionStageReassignment({
+          issue: locked,
+          policy,
+          actor: {
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          isBoardActor: req.actor.type === "board",
+          toParticipant: req.body.toParticipant,
+          comment: req.body.comment,
+        });
+
+        const nextExecutionState = transition.patch.executionState;
+        if (!nextExecutionState || typeof nextExecutionState !== "object") {
+          throw new Error("Execution policy reassignment patch is missing executionState");
+        }
+        transition.patch.executionState = {
+          ...nextExecutionState,
+          lastDecisionId: decisionId,
+        };
+
         const updated = await svc.update(
           id,
           {
@@ -14231,7 +14247,7 @@ export function issueRoutes(
         });
         return updated;
       });
-      if (!issue) {
+      if (!issue || !transition) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
@@ -14253,6 +14269,34 @@ export function issueRoutes(
         },
       });
 
+      // Best-effort wake of the new participant, mirroring the normal
+      // issue-update wake dispatch: the reassignment has already committed,
+      // so a transient enqueue failure here must not fail the request (and
+      // cannot be retried without redoing the reassignment itself).
+      let wakeQueued = false;
+      const executionStageWakeup = buildExecutionStageWakeup({
+        issueId: issue.id,
+        previousState: previousExecutionState,
+        nextState: parseIssueExecutionState(issue.executionState),
+        interruptedRunId: null,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+      if (executionStageWakeup) {
+        try {
+          const wake = await heartbeat.wakeup(
+            executionStageWakeup.agentId,
+            executionStageWakeup.wakeup,
+          );
+          wakeQueued = wake !== null;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, agentId: executionStageWakeup.agentId },
+            "failed to enqueue execution-policy reassignment wake",
+          );
+        }
+      }
+
       res.json({
         issue,
         decision: {
@@ -14262,6 +14306,7 @@ export function issueRoutes(
           outcome: transition.decision.outcome,
           body: transition.decision.body,
         },
+        wakeQueued,
       });
     },
   );
