@@ -51,6 +51,38 @@ export async function linkIssueApprovalInTransaction(tx: Transaction, input: {
   return persistApprovalLink(tx, issueId, approvalId, actor, companyId);
 }
 
+async function persistApprovalUnlink(
+  writer: Pick<Db, "select" | "delete">, issueId: string, approvalId: string, companyId?: string,
+) {
+  const issue = await writer.select().from(issues)
+    .where(and(eq(issues.id, issueId), companyId === undefined ? undefined : eq(issues.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!issue) throw notFound("Issue not found");
+  const approval = await writer.select().from(approvals)
+    .where(and(eq(approvals.id, approvalId), companyId === undefined ? undefined : eq(approvals.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!approval) throw notFound("Approval not found");
+  if (issue.companyId !== approval.companyId || (companyId !== undefined && issue.companyId !== companyId)) {
+    throw unprocessable("Issue and approval must belong to the same company");
+  }
+  await writer.delete(issueApprovals).where(and(
+    eq(issueApprovals.issueId, issueId), eq(issueApprovals.approvalId, approvalId),
+    companyId === undefined ? undefined : eq(issueApprovals.companyId, companyId),
+  ));
+}
+
+// Dark supplied-tx participant, not authorization or a production opt-in.
+export async function unlinkIssueApprovalInTransaction(tx: Transaction, input: {
+  companyId: string; issueId: string; approvalId: string;
+}) {
+  const companyId = input.companyId;
+  const issueId = input.issueId;
+  const approvalId = input.approvalId;
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval unlink requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  return persistApprovalUnlink(tx, issueId, approvalId, companyId);
+}
+
 export function issueApprovalService(db: Db) {
   async function getIssue(issueId: string) {
     return db
@@ -66,20 +98,6 @@ export function issueApprovalService(db: Db) {
       .from(approvals)
       .where(eq(approvals.id, approvalId))
       .then((rows) => rows[0] ?? null);
-  }
-
-  async function assertIssueAndApprovalSameCompany(issueId: string, approvalId: string) {
-    const issue = await getIssue(issueId);
-    if (!issue) throw notFound("Issue not found");
-
-    const approval = await getApproval(approvalId);
-    if (!approval) throw notFound("Approval not found");
-
-    if (issue.companyId !== approval.companyId) {
-      throw unprocessable("Issue and approval must belong to the same company");
-    }
-
-    return { issue, approval };
   }
 
   return {
@@ -159,11 +177,14 @@ export function issueApprovalService(db: Db) {
       return persistApprovalLink(db, issueId, approvalId, actor);
     },
 
-    unlink: async (issueId: string, approvalId: string) => {
-      await assertIssueAndApprovalSameCompany(issueId, approvalId);
-      await db
-        .delete(issueApprovals)
-        .where(and(eq(issueApprovals.issueId, issueId), eq(issueApprovals.approvalId, approvalId)));
+    unlink: async (issueId: string, approvalId: string,
+      options?: { lifecycleFence?: boolean; companyId?: string }) => {
+      if (options?.lifecycleFence) {
+        const companyId = options.companyId;
+        if (!companyId) throw unprocessable("Lifecycle-fenced approval unlink requires companyId");
+        return db.transaction((tx) => unlinkIssueApprovalInTransaction(tx, { companyId, issueId, approvalId }));
+      }
+      return persistApprovalUnlink(db, issueId, approvalId);
     },
 
     linkManyForApproval: async (approvalId: string, issueIds: string[], actor?: LinkActor) => {
