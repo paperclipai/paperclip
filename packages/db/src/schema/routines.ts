@@ -51,6 +51,17 @@ export const routines = pgTable(
     updatedByUserId: text("updated_by_user_id"),
     lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
     lastEnqueuedAt: timestamp("last_enqueued_at", { withTimezone: true }),
+    // Rolling count of consecutive fires that terminated without a healthy outcome
+    // (execution issue reached blocked/cancelled). Reset to 0 on any healthy fire.
+    consecutiveFailureCount: integer("consecutive_failure_count").notNull().default(0),
+    // Set when the failure circuit trips: scheduled fires are suppressed until a healthy
+    // fire or an explicit routine edit clears it, and exactly one aggregate escalation issue
+    // is opened (tracked below) instead of stacking a blocked issue per stranded fire.
+    failureCircuitOpenedAt: timestamp("failure_circuit_opened_at", { withTimezone: true }),
+    failureEscalationIssueId: uuid("failure_escalation_issue_id").references(
+      (): AnyPgColumn => issues.id,
+      { onDelete: "set null" },
+    ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
