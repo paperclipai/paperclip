@@ -868,5 +868,64 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     });
   });
 
+  it("lets a connection manager replace an agent's revoked dedicated GitHub identity", async () => {
+    const [agent] = await db.insert(agents).values({
+      companyId: claims.company_id, name: "GitHub worker", role: "engineer", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    }).returning();
+    const [issue] = await db.insert(issues).values({
+      companyId: claims.company_id, title: "Push a fix", status: "in_progress", priority: "medium",
+      assigneeAgentId: agent!.id,
+    }).returning();
+    const githubRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: githubRunId, companyId: claims.company_id, agentId: agent!.id, status: "running",
+      responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId: issue!.id },
+    });
+    const githubClaims: RuntimeToolsTokenClaims = { ...claims, sub: agent!.id, run_id: githubRunId };
+    const service = connectionIntentService(db);
+    const request = await service.request(githubClaims, "github");
 
+    const [application] = await db.insert(toolApplications).values({
+      companyId: claims.company_id, applicationKey: `github-${randomUUID()}`, name: "GitHub",
+      type: "mcp_http", status: "active", metadata: { sourceTemplateKey: "github" },
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: claims.company_id, applicationId: application!.id, name: "Org GitHub",
+      uid: `github/${randomUUID()}`, transport: "mcp_remote", authKind: "api_key", credentialPolicy: "per_user",
+      status: "active", enabled: true, healthStatus: "ok",
+      config: { sourceTemplateKey: "github" }, transportConfig: { sourceTemplateKey: "github" },
+    }).returning();
+    await db.insert(toolConnectionInstalls).values({
+      companyId: claims.company_id, connectionId: connection!.id, targetType: "agent", targetId: agent!.id,
+    });
+    const [personal] = await db.insert(connectionGrants).values({
+      companyId: claims.company_id, connectionId: connection!.id, kind: "user",
+      subjectUserId: claims.responsible_user_id, status: "active", isDefault: false,
+    }).returning();
+    const [revoked] = await db.insert(connectionGrants).values({
+      companyId: claims.company_id, connectionId: connection!.id, kind: "agent",
+      subjectAgentId: agent!.id, status: "revoked", isDefault: false,
+    }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: claims.company_id, name: "GitHub", profileKey: `github-${randomUUID()}`, defaultAction: "allow", status: "active",
+    }).returning();
+    await db.insert(toolProfileBindings).values({
+      companyId: claims.company_id, profileId: profile!.id, targetType: "agent", targetId: agent!.id,
+    });
+    await db.insert(toolCatalogEntries).values({
+      companyId: claims.company_id, connectionId: connection!.id, toolName: "get_pull_request", name: "get_pull_request",
+      versionHash: "fixture-v1", status: "active", entryKind: "tool",
+    });
+
+    await expect(service.complete(request.interactionId!, connection!.id, claims.responsible_user_id))
+      .rejects.toThrow("requires connection-management authority");
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, revoked!.id))).toHaveLength(1);
+
+    await expect(service.complete(request.interactionId!, connection!.id, claims.responsible_user_id, {
+      canManageOrganizationGrant: true,
+    })).resolves.toMatchObject({ status: "accepted", result: { outcome: "connected", connectionId: connection!.id } });
+    expect(await db.select({ id: connectionGrants.id }).from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connection!.id))).toEqual([{ id: personal!.id }]);
+  });
 });

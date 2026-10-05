@@ -90,7 +90,7 @@ a reconnect requirement.
 
 ## Dedicated accounts and diagnostics
 
-An explicit dedicated-agent grant overrides personal selection. Revoked, disabled, unavailable, or ambiguous dedicated grants do not fall back to a person's account. Removing the dedicated configuration restores personal selection.
+An explicit dedicated-agent grant overrides personal selection. Revoked, disabled, unavailable, or ambiguous dedicated grants do not fall back to a person's account. Removing the dedicated configuration restores personal selection. Revoking a dedicated grant keeps it as an override. When a connection manager approves the agent's GitHub connection request with another identity, Paperclip removes the revoked dedicated grant and records `tool_connection.grant_removed` in the activity log.
 
 Connection setup and permissions display: “This agent uses this GitHub account for everyone's work, instead of the person giving instructions.”
 
