@@ -820,6 +820,94 @@ const support = await getEmbeddedPostgresTestSupport();
         eventType: "session.capabilities.updated", sourceRunId: run.id, sourceSeq: 500, payload: {},
       })).toBeNull();
     });
+    it("lets a monitor-woken run that holds the chat reply, and refuses one without applying half the write", async () => {
+      const svc = issueService(db);
+      const chat = await create();
+      await svc.addComment(chat.id, "Where did we land on this?", { userId: "local-board" });
+      // Woken by the issue monitor, not by a comment on this chat, so the server
+      // never started a turn on it: the run carries no conversation session.
+      const unstamped = async (contextSnapshot: Record<string, unknown>) =>
+        (await db.insert(heartbeatRuns).values({
+          companyId, agentId, status: "running", contextSnapshot,
+        }).returning())[0]!;
+      const holder = await unstamped({
+        issueId: chat.id, taskKey: chat.id, wakeReason: "issue_monitor_due",
+      });
+      await db.update(issues).set({
+        conversationState: "active", status: "blocked", executionRunId: holder.id,
+      }).where(eq(issues.id, chat.id));
+      expect(
+        (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, holder.id)))[0]
+          .contextSnapshot?.conversationSessionGeneration,
+      ).toBeUndefined();
+
+      const previousSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      process.env.PAPERCLIP_AGENT_JWT_SECRET = "test-monitor-woken-reply-secret";
+      try {
+        const app = express();
+        app.use(express.json());
+        app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+        app.use("/api", issueRoutes(db, { wakeup: async () => null } as never));
+        app.use(errorHandler);
+        const as = (runId: string) =>
+          `Bearer ${createLocalAgentJwt(agentId, companyId, "process", runId)!}`;
+
+        // 1. The reply the guard used to refuse.
+        const posted = await request(app)
+          .post(`/api/issues/${chat.id}/comments`)
+          .set("Authorization", as(holder.id))
+          .send({ body: "Still waiting on the build." });
+        expect(posted.status).toBe(201);
+        expect(posted.body.body).toBe("Still waiting on the build.");
+
+        // 2. A genuinely older session is still refused, and the refusal now
+        //    names the session the chat is on and the one the reply carries.
+        const stale = await unstamped({
+          issueId: chat.id, taskKey: chat.id, conversationSessionGeneration: 99,
+        });
+        const refusedStale = await request(app)
+          .post(`/api/issues/${chat.id}/comments`)
+          .set("Authorization", as(stale.id))
+          .send({ body: "Reply from a session that has ended." });
+        expect(refusedStale.status).toBe(409);
+        expect(refusedStale.body.error).toContain("is on session 0");
+        expect(refusedStale.body.error).toContain("carries session 99");
+
+        // 3. A run that does not hold the chat is refused, and the combined
+        //    update it carried leaves the task exactly as it was.
+        const intruder = await unstamped({ issueId: randomUUID(), wakeReason: "issue_monitor_due" });
+        const before = (await db.select().from(issues).where(eq(issues.id, chat.id)))[0];
+        const refusedPatch = await request(app)
+          .patch(`/api/issues/${chat.id}`)
+          .set("Authorization", as(intruder.id))
+          .send({
+            comment: "Reply from a run that does not hold this chat.",
+            status: "in_review",
+            executionPolicy: {
+              stages: [],
+              monitor: {
+                nextCheckAt: "2026-10-05T06:30:00.000Z",
+                notes: "check the build",
+                scheduledBy: "assignee",
+              },
+            },
+          });
+        expect(refusedPatch.status).toBe(409);
+        expect(refusedPatch.body.error).toMatch(/does not hold this conversation/);
+        expect(refusedPatch.body.error).toMatch(/check the task out/i);
+        const after = (await db.select().from(issues).where(eq(issues.id, chat.id)))[0];
+        expect(after.status).toBe(before.status);
+        expect(after.monitorNextCheckAt).toEqual(before.monitorNextCheckAt);
+        expect(after.executionPolicy).toEqual(before.executionPolicy);
+        expect(
+          (await db.select().from(issueComments).where(eq(issueComments.issueId, chat.id)))
+            .some((row) => row.body.includes("does not hold this chat")),
+        ).toBe(false);
+      } finally {
+        if (previousSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+        else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousSecret;
+      }
+    });
     it("ignores execution dependency wakes during active and idle chat turns", async () => {
       const chat = await create();
       const heartbeat = heartbeatService(db);

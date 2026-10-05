@@ -13707,12 +13707,28 @@ export function issueRoutes(
       const commentWithAdapterOverrides = Boolean(
         commentBody && updateFields.assigneeAdapterOverrides !== undefined,
       );
-      const transactionalCommentSourceTrust = commentAttachmentIds?.length || commentWithAdapterOverrides
+      // A reply from a run into a conversation is the one comment this route can
+      // still refuse after the issue update has been decided: the conversation
+      // session guard in `addComment` rejects a run that does not hold the chat.
+      // Off the transactional path `updateIssue()` commits the status and the
+      // execution policy on its own, and the comment is attempted far below with
+      // nothing left to roll back, so the 409 lands half a write. Committing the
+      // two together makes the refusal leave the task exactly as it was.
+      const conversationReplyNeedsAtomicUpdate = Boolean(
+        commentBody && existing.conversationAgentId && actor.runId,
+      );
+      const transactionalCommentInTransaction =
+        Boolean(commentAttachmentIds?.length) ||
+        commentWithAdapterOverrides ||
+        conversationReplyNeedsAtomicUpdate;
+      // Resolved before the transaction opens: this lookup takes its own pooled
+      // connection, and running it inside a transaction that already holds one
+      // deadlocks the pool once enough chats are answered at the same time.
+      const transactionalCommentSourceTrust = transactionalCommentInTransaction
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
       const shouldUseTransactionalIssueUpdate =
-        Boolean(commentAttachmentIds?.length) ||
-        commentWithAdapterOverrides ||
+        transactionalCommentInTransaction ||
         Boolean(decision) ||
         shouldRelayStop ||
         persistReviewActivityTransactionally ||
@@ -13727,9 +13743,10 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
-            if (commentAttachmentIds?.length || commentWithAdapterOverrides) {
+            if (transactionalCommentInTransaction) {
               // Adapter settings, reassignment, comment and upload binding commit together.
               // A failed comment or invalid receipt rolls back the issue update.
+              // A refused conversation reply rolls it back for the same reason.
               transactionalComment = await svc.addComment(
                 id,
                 commentBody,

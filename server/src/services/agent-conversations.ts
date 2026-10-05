@@ -58,6 +58,94 @@ export function isSupersededConversationRun(
       issue.executionRunId !== run.id)
   );
 }
+
+/** A run that has stopped can no longer be the one speaking for a conversation. */
+const FINISHED_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
+
+export type ConversationReplyRun = {
+  id: string;
+  agentId: string;
+  status: string;
+  contextSnapshot: Record<string, unknown> | null;
+};
+
+export type ConversationReplySession =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+/**
+ * May this run post a reply into this conversation?
+ *
+ * The session stamp is written onto the run only when the server starts a turn
+ * on this conversation. A run woken by another path — an issue monitor, a wake
+ * scoped to a different task — carries no stamp at all, so there is no older
+ * session to compare against. `isSupersededConversationRun` above already
+ * reads a missing stamp as "not superseded"; so does the finalization guard in
+ * heartbeat. This is that same tolerance for the reply path, narrowed to a run
+ * that verifiably holds this conversation at the moment it writes: the issue
+ * row must still name the run as its execution run, the run must still be
+ * going, and the credential must be the run's own agent.
+ *
+ * `issue` must be read under the issue row lock. An unlocked read lets a run
+ * that lost the conversation to a newer turn in between post into that turn.
+ */
+export function conversationReplySession(input: {
+  actorAgentId: string | null | undefined;
+  actorRunId: string;
+  run: ConversationReplyRun | null | undefined;
+  issue: {
+    conversationAgentId: string | null;
+    conversationSessionGeneration: number;
+    executionRunId: string | null;
+  };
+}): ConversationReplySession {
+  const { actorAgentId, actorRunId, run, issue } = input;
+  const expected = issue.conversationSessionGeneration;
+  const carried = run?.contextSnapshot?.conversationSessionGeneration;
+
+  // A stamped run is judged on the stamp alone, exactly as before — including
+  // on a conversation the user has reset, where `expected` is above zero.
+  if (typeof carried === "number") {
+    return carried === expected
+      ? { ok: true }
+      : {
+          ok: false,
+          reason:
+            `Conversation session changed; this reply belongs to an earlier session. ` +
+            `The conversation is on session ${expected}; this reply carries session ${carried}.`,
+        };
+  }
+
+  // No stamp. Admit it only on proof that the run holds the conversation now.
+  const head =
+    `This reply carries no conversation session, and run ${actorRunId} does not hold this conversation. ` +
+    `The conversation is on session ${expected}.`;
+  const hold =
+    `To reply, hold the conversation: check the task out so the issue names this run as its execution run, ` +
+    `or reply from the run the server started on this conversation.`;
+  if (!run) return { ok: false, reason: `${head} That run does not exist. ${hold}` };
+  if (!actorAgentId || run.agentId !== actorAgentId)
+    return {
+      ok: false,
+      reason: `${head} The credential posting it does not belong to that run. ${hold}`,
+    };
+  if (run.agentId !== issue.conversationAgentId)
+    return {
+      ok: false,
+      reason: `${head} That run belongs to a different agent than the one holding this conversation. ${hold}`,
+    };
+  if (FINISHED_RUN_STATUSES.has(run.status))
+    return { ok: false, reason: `${head} That run already finished (${run.status}). ${hold}` };
+  if (issue.executionRunId !== actorRunId)
+    return {
+      ok: false,
+      reason:
+        `${head} The conversation is held by ` +
+        `${issue.executionRunId ? `run ${issue.executionRunId}` : "no run"}. ${hold}`,
+    };
+  return { ok: true };
+}
+
 /** Execution tasks may link to a conversation, but never drive its turns.
  * Apply before enqueue, including while a reply is still running: waiting until
  * finalization is too late to prevent a deferred dependency follow-up.

@@ -1,4 +1,5 @@
 import { recordChatHandoff, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
+import { conversationReplySession } from "./agent-conversations.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
@@ -12270,11 +12271,19 @@ export function issueService(db: Db) {
       }
       if (issue.conversationAgentId && actor.runId) {
         const [run] = await dbOrTx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, actor.runId));
-        const [current] = await dbOrTx.select().from(issues).where(eq(issues.id, issueId));
+        // Locked, not merely re-read: the hold this reports decides whether the
+        // reply is admitted, so it must be the hold at write time and not one a
+        // newer turn has already taken. The issue row is locked above on every
+        // path that reaches here; taking it again keeps that guarantee local.
+        const [current] = await dbOrTx.select().from(issues).where(eq(issues.id, issueId)).for("update");
         if (run?.status === "cancelled") throw conflict("This conversation turn was cancelled; it cannot post a reply");
-        if (run?.contextSnapshot?.conversationSessionGeneration !== current.conversationSessionGeneration) {
-          throw conflict("Conversation session changed; this reply belongs to an earlier session");
-        }
+        const session = conversationReplySession({
+          actorAgentId: actor.agentId,
+          actorRunId: actor.runId,
+          run,
+          issue: current,
+        });
+        if (!session.ok) throw conflict(session.reason);
       }
       if (options?.completionReply && actor.agentId && actor.runId) {
         const delivered = await existingChatCompletionReply(dbOrTx, actor.runId, issueId);
