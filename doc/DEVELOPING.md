@@ -1218,8 +1218,11 @@ the updated sandbox image with the matching runner qualification changes.
 
 Project discovery through `list_projects` returns up to 50 compact summaries.
 It uses `GET /api/companies/:companyId/projects?view=summary&limit=50&cursor=...`;
-the cursor is optional. The database reads bounded summary projections, and
-project authorization is applied before choosing each page and its cursor.
+the cursor is optional. Each request reads at most `limit + 1` summary projections
+and authorizes at most `limit` projects. Continuations carry a scan position,
+never an unauthorized project ID. A page can be empty after permission filtering;
+continue until `nextCursor` is null. As with offset pagination generally, changes
+to the project list between requests can shift page boundaries.
 The default project-list API response remains unchanged.
 Use its `nextCursor` as the next call's `cursor` until it is null; `limit` accepts
 1–50. Descriptions include at most 1,000 characters and an explicit truncation

@@ -19,7 +19,7 @@ const support = await getEmbeddedPostgresTestSupport();
   afterAll(async () => { await server?.close(); if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET; else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret; });
   const call = (fixture: Awaited<ReturnType<typeof server.fixture>>, tool: string, args: Record<string, unknown>) => fixture.authority.execute({ tool, arguments: args, callId: randomUUID() });
 
-  it("discovers bounded project pages from the database and applies authorization before choosing a cursor", async () => {
+  it("bounds project reads and authorization checks while continuing past denied projects", async () => {
     const f = await server.fixture({ disableWakeOnDemand: true });
     const ids = Array.from({ length: 53 }, (_, i) => `abcdefab-0000-4000-8000-${String(i).padStart(12, "0")}`);
     await server.db.insert(projects).values(ids.map((id, i) => ({
@@ -33,17 +33,17 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(Buffer.byteLength(JSON.stringify(first))).toBeLessThan(256 * 1024);
     expect(first.projects.find((p: { id: string }) => p.id === ids[0])).toMatchObject({ descriptionTruncated: true });
     expect(first.projects.every((p: object) => !Object.hasOwn(p, "executionWorkspacePolicy") && !Object.hasOwn(p, "workspaces"))).toBe(true);
-    const last = await callProjectTool({ ...toolInput, arguments: { cursor: first.nextCursor.toUpperCase() } });
+    const last = await callProjectTool({ ...toolInput, arguments: { cursor: first.nextCursor } });
     expect([...first.projects, ...last.projects].map((p: { id: string }) => p.id).sort()).toEqual([...ids, f.projectId].sort());
     expect(last.nextCursor).toBeNull();
     // A permitted project beyond the first database batch must remain discoverable.
     const policy = { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: { mode: "low_trust_review", companyId: f.companyId, projectIds: ids.slice(-2) } } };
     await server.db.update(agents).set({ permissions: policy }).where(eq(agents.id, f.agentId));
-    const restricted = await callProjectTool({ ...toolInput, arguments: { limit: 1 } });
-    expect(restricted.projects.map((p: { id: string }) => p.id)).toEqual([ids[51]]);
-    expect(restricted.nextCursor).toBe(ids[51]);
-    const restrictedLast = await callProjectTool({ ...toolInput, arguments: { limit: 1, cursor: restricted.nextCursor.toUpperCase() } });
-    expect(restrictedLast.projects.map((p: { id: string }) => p.id)).toEqual([ids[52]]);
+    const restricted = await callProjectTool({ ...toolInput, arguments: {} });
+    expect(restricted.projects).toEqual([]);
+    expect(restricted.nextCursor).toBe("50");
+    const restrictedLast = await callProjectTool({ ...toolInput, arguments: { cursor: restricted.nextCursor } });
+    expect(restrictedLast.projects.map((p: { id: string }) => p.id)).toEqual(ids.slice(-2));
     expect(restrictedLast.nextCursor).toBeNull();
   });
 

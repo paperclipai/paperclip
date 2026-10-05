@@ -6,7 +6,7 @@ import { objectWithoutDefaults } from "./partial.js";
 
 export const projectDiscoverySchema = z.object({
   limit: z.number().int().min(1).max(50).default(50),
-  cursor: z.string().uuid().transform(value => value.toLowerCase()).optional(),
+  cursor: z.string().regex(/^(0|[1-9][0-9]{0,14})$/).optional(),
 }).strict();
 
 const executionWorkspaceStrategySchema = z

@@ -1874,14 +1874,14 @@
       "planning",
       "skill_test"
     ],
-    "description": "List company project summaries (IDs, names, status, and up to 1,000 characters of description). Returns up to 50 projects and nextCursor; continue with cursor until it is null. Read a project's API resource for full details.",
+    "description": "List company project summaries (IDs, names, status, and up to 1,000 characters of description). Returns up to 50 projects and nextCursor; continue with cursor until it is null, even if a page is empty after permission filtering. Read a project's API resource for full details.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "cursor": {
           "description": "The nextCursor returned by the previous page.",
-          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "pattern": "^(0|[1-9][0-9]{0,14})$",
           "type": "string"
         },
         "limit": {

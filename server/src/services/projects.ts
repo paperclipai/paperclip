@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
@@ -622,7 +622,7 @@ export function projectService(db: Db) {
 
   return {
     // Project discovery never reads workspace JSON, goals, metrics, or full descriptions.
-    listSummaries: async (companyId: string, opts: { limit: number; cursor?: string; includeArchived: boolean }): Promise<ProjectDiscoverySummary[]> => {
+    listSummaries: async (companyId: string, opts: { limit: number; offset: number; includeArchived: boolean }): Promise<ProjectDiscoverySummary[]> => {
       return db.select({
         id: projects.id,
         name: sql<string>`left(${projects.name}, 500)`,
@@ -632,8 +632,7 @@ export function projectService(db: Db) {
       }).from(projects).where(and(
         eq(projects.companyId, companyId),
         opts.includeArchived ? undefined : isNull(projects.archivedAt),
-        opts.cursor ? gt(projects.id, opts.cursor) : undefined,
-      )).orderBy(asc(projects.id)).limit(opts.limit);
+      )).orderBy(asc(projects.id)).limit(opts.limit).offset(opts.offset);
     },
 
     list: async (companyId: string, opts: { includeArchived?: boolean } = {}): Promise<ProjectWithGoals[]> => {
