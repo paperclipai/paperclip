@@ -35,9 +35,36 @@ function fixture(owned: boolean, kind: string) {
   };
   const root: any = { select: () => { throw new Error("root-read"); }, transaction: vi.fn(async (cb: any) => cb(tx)) };
   const data = { companyGuard: "company-1", title: "Edited", parentId: kind === "self" ? "issue-1" : kind === "clear" ? null : "parent-1" };
-  return { root, data, reads, events, writes, release, entered, run: (...args: [boolean?]) => issueService(root).update("issue-1",data,owned ? root : tx,[],[],{lifecycleFence: args.length ? args[0] : true}) };
+  return { root, data, reads, events, writes, release, entered, setExistingParent: (parentId: string | null) => { row.parentId = parentId; }, run: (...args: [boolean?]) => issueService(root).update("issue-1",data,owned ? root : tx,[],[],{lifecycleFence: args.length ? args[0] : true}) };
 }
 describe("dark parent edit complete-ancestry veto (not common serialization)", () => {
+  it.each([false,true].flatMap(owned => ["omitted","unchanged"].flatMap(input => ["missing","cycle","existing-cycle","company","malformed","depth"].map(kind => ({owned,input,kind})))))
+    ("revalidates retained $kind ancestry input=$input owned=$owned before writes", async ({owned,input,kind}) => {
+      const f=fixture(owned,kind); f.setExistingParent("parent-1");
+      if (input === "omitted") delete (f.data as any).parentId;
+      f.release();
+      await expect(f.run()).rejects.toMatchObject({status:422});
+      expect(f.writes).toEqual([]);
+    });
+  it.each([false,true].flatMap(owned => ["omitted","unchanged"].flatMap(input => ["valid","conversation","deep-clear"].map(kind => ({owned,input,kind})))))
+    ("accepts complete retained $kind ancestry input=$input owned=$owned", async ({owned,input,kind}) => {
+      const f=fixture(owned,kind); f.setExistingParent("parent-1");
+      if (input === "omitted") delete (f.data as any).parentId;
+      f.release();
+      await expect(f.run()).resolves.toMatchObject({parentId:"parent-1",title:"Edited"});
+      expect(f.reads.filter(r => r.name === "issues" && r.params[0] === "parent-1")).toHaveLength(1);
+      expect(f.writes).toHaveLength(1);
+    });
+  it.each([false,true])("permits explicit removal of invalid retained ancestry owned=%s", async owned => {
+    const f=fixture(owned,"cycle"); f.setExistingParent("parent-1"); f.data.parentId=null as any; f.release();
+    await expect(f.run()).resolves.toMatchObject({parentId:null});
+    expect(f.reads.filter(r => r.params[0] === "parent-1")).toEqual([]);
+  });
+  it.each([undefined,false])("keeps ordinary retained-parent behavior opt-in=%s", async optIn => {
+    const f=fixture(false,"missing"); f.setExistingParent("parent-1"); delete (f.data as any).parentId; f.release();
+    await expect(f.run(optIn as any)).resolves.toMatchObject({parentId:"parent-1"});
+    expect(f.events).not.toContain("fence");
+  });
   it.each([false,true])("rejects self-parent before writes owned=%s", async owned => {
     const f=fixture(owned,"self"); f.release();
     await expect(f.run()).rejects.toMatchObject({status:422}); expect(f.writes).toEqual([]);

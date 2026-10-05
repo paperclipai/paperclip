@@ -10704,12 +10704,14 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
-      if (data.parentId !== undefined && data.parentId !== existing.parentId) {
-        if (options.lifecycleFence && data.parentId !== null) {
-          // Dark parent edits require a complete same-company ancestry snapshot.
-          // Other writers do not yet participate: this is not serialization.
+      const parentChanged = data.parentId !== undefined && data.parentId !== existing.parentId;
+      const effectiveParentId = data.parentId !== undefined ? data.parentId : existing.parentId;
+      if (options.lifecycleFence || parentChanged) {
+        if (options.lifecycleFence && effectiveParentId !== null) {
+          // Dark updates require a complete effective same-company ancestry,
+          // including retained parents. Other writers do not yet participate.
           const visited = new Set<string>([id]);
-          let parentId: string | null = data.parentId;
+          let parentId: string | null = effectiveParentId;
           for (let depth = 0; parentId !== null; depth++) {
             if (depth >= 100 || visited.has(parentId)) {
               throw unprocessable("Lifecycle parent ancestry is cyclic or exceeds depth limit");
@@ -10723,12 +10725,12 @@ export function issueService(db: Db) {
               || (parent.parentId !== null && typeof parent.parentId !== "string")) {
               throw unprocessable("Lifecycle parent ancestry is incomplete");
             }
-            if (depth === 0 && parent.conversationAgentId) {
+            if (depth === 0 && parentChanged && parent.conversationAgentId) {
               throw unprocessable("Conversations cannot have new subtasks; create a task in a project instead");
             }
             parentId = parent.parentId;
           }
-        } else {
+        } else if (parentChanged) {
           await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
         }
       }
