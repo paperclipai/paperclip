@@ -3144,6 +3144,62 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(stagedDir, "secret1.txt"), "utf8")).resolves.toBe("must stay\n");
   });
 
+  it("escapes a selected subfolder's own ignored paths before they reach tar", async () => {
+    // The referenced-project path escapes its ignore set. The anchor workspace
+    // of a selected subfolder resolves ITS ignore set through the same
+    // resolver, and has to escape it the same way: the resolver returns the
+    // literal paths Git named, and `excludePatternMatches` reads the escape
+    // back off, so an unescaped entry is a pattern to tar and a literal to the
+    // matcher. The two then disagree about which file is excluded — the
+    // ignored secret ships, and the sibling the glob happens to name is the
+    // one left behind.
+    //
+    // A backslash is a legal filename character on both Linux and macOS, so
+    // this is not only about `[`: an ignored `odd\name.txt` unescapes to
+    // `oddname.txt` in the matcher, and the baseline then stops protecting the
+    // file Git actually named.
+    expect(shouldExcludePath("odd\\name.txt", [escapeTarExcludeLiteral("odd\\name.txt")])).toBe(true);
+    expect(shouldExcludePath("odd\\name.txt", ["odd\\name.txt"])).toBe(false);
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-subfolder-ignore-glob-"));
+    cleanupDirs.push(rootDir);
+    const repoDir = path.join(rootDir, "repo");
+    await initGitRepo(repoDir);
+    const workspaceDir = path.join(repoDir, "app");
+    await mkdir(workspaceDir, { recursive: true });
+    // The gitignore pattern escapes its own `[` and `]`, so it ignores ONLY
+    // the literal file `app/secret[1].txt`.
+    await writeFile(path.join(repoDir, ".gitignore"), "app/secret\\[1\\].txt\n", "utf8");
+    await writeFile(path.join(workspaceDir, "secret[1].txt"), "TOKEN=abc\n", "utf8");
+    // A sibling that ALSO matches the UNESCAPED tar exclude glob
+    // `secret[1].txt`, whose `[1]` is a one-character class matching `1`.
+    await writeFile(path.join(workspaceDir, "secret1.txt"), "must stay\n", "utf8");
+    await writeFile(path.join(workspaceDir, "tracked.md"), "kept\n", "utf8");
+
+    // A subfolder of a repository has no cloneable Git snapshot, so staging
+    // takes the `resolveReferencedSourceIgnore` path for the anchor workspace.
+    const resolution = await resolveReferencedSourceIgnore(workspaceDir);
+    expect(resolution).toEqual({ kind: "git", ignoredPaths: ["secret[1].txt"] });
+
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await prepareCommandManagedRuntime({
+      runner: makeInlineSpawnRunner(),
+      spec: { remoteCwd: remoteWorkspaceDir, timeoutMs: 30_000 },
+      adapterKey: "test-adapter",
+      workspaceLocalDir: workspaceDir,
+    });
+
+    await expect(
+      readFile(path.join(remoteWorkspaceDir, "secret[1].txt"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(path.join(remoteWorkspaceDir, "secret1.txt"), "utf8"),
+    ).resolves.toBe("must stay\n");
+    await expect(
+      readFile(path.join(remoteWorkspaceDir, "tracked.md"), "utf8"),
+    ).resolves.toBe("kept\n");
+  });
+
   it("never ships a Git-ignored secret in a referenced project's staged tree", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ignore-secret-"));
     cleanupDirs.push(rootDir);

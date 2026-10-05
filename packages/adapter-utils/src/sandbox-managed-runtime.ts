@@ -1186,7 +1186,16 @@ export async function prepareSandboxManagedRuntime(input: {
   if (directoryIgnore?.kind === "failed") {
     throw new Error(`Workspace ignore scan failed: ${directoryIgnore.reason}`);
   }
-  const gitIgnoredExcludes = directoryIgnore?.kind === "git" ? directoryIgnore.ignoredPaths : undefined;
+  // The resolver returns the literal paths Git named. They become tar
+  // `--exclude` entries, where `*`, `?`, `[` and `\` are glob syntax, so they
+  // go through the same escaping the referenced-project trees already use.
+  // Unescaped, the entry is a pattern to tar and a literal to
+  // `excludePatternMatches`, and the two disagree about which file it names:
+  // an ignored `secret[1].txt` ships while the sibling `secret1.txt` is held
+  // back, and an ignored `odd\name.txt` loses the baseline's protection.
+  const gitIgnoredExcludes = directoryIgnore
+    ? referencedSourceIgnoreExcludeEntries(directoryIgnore)
+    : undefined;
   const workspaceArchiveExclude = mergeExcludes(
     input.workspaceFileMode === "all" ? [] : WORKSPACE_HEAVY_DIR_EXCLUDES,
     input.workspaceFileMode === "all" ? [] : [...GIT_ARCHIVE_EXCLUDES],
