@@ -257,6 +257,8 @@ export type IssuePostCommitAction =
       companyId: string;
       issueId: string;
       issueStatus: string;
+      /** When the transition that queued this sweep committed. */
+      closedAt: string;
     };
 
 /** Execute side effects that must never run before the issue transaction commits. */
@@ -274,17 +276,38 @@ export async function executeIssuePostCommitActions(
       if (sweptIssueIds.has(action.issueId)) continue;
       sweptIssueIds.add(action.issueId);
       try {
+        // This runs after the transaction released its locks, so the issue can
+        // have been reopened in between. Read the status that holds now, not the
+        // one the transition recorded, and leave a task that is open again
+        // alone. The directory carries the same guard on its own marker, so a
+        // reopen that lands after this read is still caught.
+        const current = await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, action.issueId))
+          .limit(1);
+        const currentStatus = current[0]?.status ?? null;
+        if (currentStatus !== "done" && currentStatus !== "cancelled") {
+          logger.info(
+            { issueId: action.issueId, issueStatus: currentStatus },
+            "task scratch sweep skipped: issue is no longer terminal",
+          );
+          continue;
+        }
         const { sweepHeartbeatTaskScratchForIssue } = await import("./run-scratch.js");
         const sweep = await sweepHeartbeatTaskScratchForIssue({
           companyId: action.companyId,
           issueId: action.issueId,
+          closedAt: new Date(action.closedAt),
         });
-        if (sweep.removed.length > 0 || sweep.skipped.length > 0) {
+        if (sweep.removed.length > 0 || sweep.deferred.length > 0 || sweep.skipped.length > 0) {
           logger.info(
             {
               issueId: action.issueId,
               issueStatus: action.issueStatus,
               removed: sweep.removed,
+              // A run is still using these; its teardown completes the removal.
+              deferred: sweep.deferred,
               skipped: sweep.skipped,
             },
             "swept task scratch for terminal issue",
@@ -11151,6 +11174,7 @@ export function issueService(db: Db) {
                 companyId: updated.companyId,
                 issueId: updated.id,
                 issueStatus: updated.status,
+                closedAt: new Date().toISOString(),
               });
             }
             // Every terminal transition funnels through here, including direct

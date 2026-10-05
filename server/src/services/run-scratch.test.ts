@@ -4,16 +4,22 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
+  HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER,
   HEARTBEAT_TASK_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
   cleanupHeartbeatTaskScratch,
   prepareHeartbeatRunScratch,
   prepareHeartbeatTaskScratch,
+  releaseHeartbeatTaskScratchLease,
   resolveHeartbeatTaskScratchRoot,
   sweepHeartbeatTaskScratchForIssue,
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
+
+/** The server process of a lease: one that is still running, and one that is not. */
+const aliveProcess = () => true;
+const deadProcess = () => false;
 
 const cleanupDirs = new Set<string>();
 
@@ -393,5 +399,319 @@ describe("heartbeat task scratch", () => {
 
     expect(result).toEqual({ removed: true, dir: scratch.dir });
     await expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+describe("heartbeat task scratch is not removed from under a running run", () => {
+  it("defers the sweep while a run holds a lease and keeps the files", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-1",
+    });
+    await fs.writeFile(path.join(scratch.dir, "corpus.txt"), "work in progress");
+
+    const sweep = await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      isProcessAlive: aliveProcess,
+    });
+
+    expect(sweep.removed).toEqual([]);
+    expect(sweep.deferred).toEqual([scratch.dir]);
+    // Deferral is not a failure, so it is not reported as one.
+    expect(sweep.skipped).toEqual([]);
+    await expect(fs.readFile(path.join(scratch.dir, "corpus.txt"), "utf8")).resolves.toBe(
+      "work in progress",
+    );
+  });
+
+  it("completes the deferred sweep when the last lease is released", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-1",
+    });
+    const closedAt = new Date();
+    await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      closedAt,
+      isProcessAlive: aliveProcess,
+    });
+    expect(await fs.readdir(scratch.dir)).toContain(HEARTBEAT_TASK_SCRATCH_CLOSED_MARKER);
+
+    const release = await releaseHeartbeatTaskScratchLease({
+      scratch,
+      instanceRoot,
+      isProcessAlive: aliveProcess,
+      now: new Date(closedAt.getTime() + 1000),
+    });
+
+    expect(release.released).toBe(true);
+    expect(release.deferredCleanup).toEqual({ removed: true, dir: scratch.dir });
+    await expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the directory while another run still holds a lease", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const first = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-1",
+    });
+    const second = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-2",
+    });
+    const closedAt = new Date(Date.now() + 60_000);
+    await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      closedAt,
+      isProcessAlive: aliveProcess,
+    });
+
+    const release = await releaseHeartbeatTaskScratchLease({
+      scratch: first,
+      instanceRoot,
+      isProcessAlive: aliveProcess,
+    });
+
+    expect(release.deferredCleanup).toEqual({
+      removed: false,
+      dir: second.dir,
+      reason: "run_active",
+    });
+    await expect(fs.stat(second.dir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+  });
+
+  it("does not let a lease from a dead server pin the directory", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      runId: "run-1",
+      serverPid: 999_999,
+    });
+
+    const sweep = await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      isProcessAlive: deadProcess,
+    });
+
+    expect(sweep.removed).toEqual([scratch.dir]);
+    expect(sweep.deferred).toEqual([]);
+  });
+});
+
+describe("heartbeat task scratch survives a reopened issue", () => {
+  it("refuses a sweep whose issue was adopted again after the close", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const closedAt = new Date("2026-10-05T12:00:00.000Z");
+    const first = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      now: new Date("2026-10-05T11:00:00.000Z"),
+    });
+    await fs.writeFile(path.join(first.dir, "corpus.txt"), "work of the reopened task");
+    // The issue is reopened and a new heartbeat adopts the directory before the
+    // sweep queued by the close gets to run.
+    await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      now: new Date("2026-10-05T12:00:01.000Z"),
+    });
+
+    const sweep = await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      closedAt,
+      isProcessAlive: deadProcess,
+    });
+
+    expect(sweep.removed).toEqual([]);
+    expect(sweep.skipped).toEqual([{ dir: first.dir, reason: "reopened" }]);
+    await expect(fs.readFile(path.join(first.dir, "corpus.txt"), "utf8")).resolves.toBe(
+      "work of the reopened task",
+    );
+  });
+
+  it("sweeps a task no heartbeat adopted after the close", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      now: new Date("2026-10-05T11:00:00.000Z"),
+    });
+
+    const sweep = await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      closedAt: new Date("2026-10-05T12:00:00.000Z"),
+      isProcessAlive: deadProcess,
+    });
+
+    expect(sweep.removed).toEqual([scratch.dir]);
+    await expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the original creation time when a later heartbeat adopts the directory", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const first = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      now: new Date("2026-10-05T11:00:00.000Z"),
+    });
+    const second = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+      now: new Date("2026-10-05T13:00:00.000Z"),
+    });
+
+    expect(second.metadata.createdAt).toBe(first.metadata.createdAt);
+    expect(second.metadata.lastPreparedAt).toBe("2026-10-05T13:00:00.000Z");
+  });
+});
+
+describe("heartbeat task scratch refuses links and unverifiable markers", () => {
+  it("refuses to prepare a task directory whose agent component is a link", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const root = resolveHeartbeatTaskScratchRoot({ instanceRoot });
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-outside-task-scratch-"));
+    cleanupDirs.add(outside);
+    await fs.mkdir(path.join(root, "company-1"), { recursive: true });
+    await fs.symlink(outside, path.join(root, "company-1", "agent-1"), "dir");
+
+    await expect(
+      prepareHeartbeatTaskScratch({
+        companyId: "company-1",
+        agentId: "agent-1",
+        issueId: "issue-1",
+        instanceRoot,
+      }),
+    ).rejects.toThrow(/is a link/);
+    // Nothing was written through the link, so nothing outside the root can
+    // later be removed as though it were ours.
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
+  it("refuses to remove through a linked path component", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const root = resolveHeartbeatTaskScratchRoot({ instanceRoot });
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-outside-task-scratch-"));
+    cleanupDirs.add(outside);
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+    });
+    // Swap the real agent directory for a link to a tree that is not ours,
+    // carrying a marker that would otherwise pass the ownership check.
+    await fs.rm(path.join(root, "company-1", "agent-1"), { recursive: true, force: true });
+    const decoy = path.join(outside, "issue-1");
+    await fs.mkdir(decoy, { recursive: true });
+    await fs.writeFile(path.join(decoy, "keep-me.txt"), "not ours to delete");
+    await fs.writeFile(
+      path.join(decoy, HEARTBEAT_TASK_SCRATCH_MARKER),
+      JSON.stringify({ ...scratch.metadata }),
+    );
+    await fs.symlink(outside, path.join(root, "company-1", "agent-1"), "dir");
+
+    const sweep = await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      isProcessAlive: deadProcess,
+    });
+
+    expect(sweep.removed).toEqual([]);
+    expect(sweep.skipped).toEqual([
+      { dir: path.join(root, "company-1", "agent-1", "issue-1"), reason: "outside_root" },
+    ]);
+    await expect(fs.readFile(path.join(decoy, "keep-me.txt"), "utf8")).resolves.toBe(
+      "not ours to delete",
+    );
+  });
+
+  it("refuses to adopt a directory whose marker cannot be verified", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+    });
+    await fs.writeFile(path.join(scratch.dir, HEARTBEAT_TASK_SCRATCH_MARKER), "{ not json");
+
+    await expect(
+      prepareHeartbeatTaskScratch({
+        companyId: "company-1",
+        agentId: "agent-1",
+        issueId: "issue-1",
+        instanceRoot,
+      }),
+    ).rejects.toThrow(/cannot be verified/);
+    // The damaged marker is left as it was rather than replaced by one that
+    // would make this run the recorded owner.
+    await expect(
+      fs.readFile(path.join(scratch.dir, HEARTBEAT_TASK_SCRATCH_MARKER), "utf8"),
+    ).resolves.toBe("{ not json");
+  });
+
+  it("refuses to sweep a directory whose marker cannot be verified", async () => {
+    const instanceRoot = await makeInstanceRoot();
+    const scratch = await prepareHeartbeatTaskScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      instanceRoot,
+    });
+    await fs.writeFile(
+      path.join(scratch.dir, HEARTBEAT_TASK_SCRATCH_MARKER),
+      JSON.stringify({ version: 2, companyId: "company-1", agentId: "agent-1", issueId: "issue-1" }),
+    );
+
+    const sweep = await sweepHeartbeatTaskScratchForIssue({
+      companyId: "company-1",
+      issueId: "issue-1",
+      instanceRoot,
+      isProcessAlive: deadProcess,
+    });
+
+    expect(sweep.removed).toEqual([]);
+    expect(sweep.skipped).toEqual([{ dir: scratch.dir, reason: "marker_unverifiable" }]);
+    await expect(fs.stat(scratch.dir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
   });
 });

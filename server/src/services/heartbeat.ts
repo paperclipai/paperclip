@@ -480,6 +480,7 @@ import {
   cleanupHeartbeatRunScratch,
   prepareHeartbeatRunScratch,
   prepareHeartbeatTaskScratch,
+  releaseHeartbeatTaskScratchLease,
   type HeartbeatRunScratch,
   type HeartbeatTaskScratch,
 } from "./run-scratch.js";
@@ -22871,6 +22872,9 @@ export function heartbeatService(
                 agentId: agent.id,
                 issueId: issueRef.id,
                 issueIdentifier: issueRef.identifier ?? null,
+                // The lease a sweep defers to while this run is executing. It
+                // is released in this run's teardown below.
+                runId: run.id,
               });
             } catch (taskScratchPrepareError) {
               taskScratch = null;
@@ -26749,6 +26753,43 @@ export function heartbeatService(
             nativeLifecycleTelemetry: nativeLifecycleTelemetryForRun,
           }));
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+        }
+        if (
+          taskScratch?.leaseRunId &&
+          latestRun &&
+          isHeartbeatRunTerminalStatus(latestRun.status)
+        ) {
+          // The task directory outlives this run, so this is not its cleanup:
+          // it drops the lease that tells a sweep a run is still using the
+          // directory, and completes a sweep that deferred to this run.
+          const taskScratchForRelease = taskScratch;
+          try {
+            const release = await releaseHeartbeatTaskScratchLease({
+              scratch: taskScratchForRelease,
+            });
+            if (release.deferredCleanup) {
+              await appendRunEvent(latestRun, {
+                eventType: "lifecycle",
+                stream: "system",
+                level: release.deferredCleanup.removed ? "info" : "warn",
+                message: release.deferredCleanup.removed
+                  ? "task scratch cleaned after deferred sweep"
+                  : `deferred task scratch cleanup skipped: ${release.deferredCleanup.reason}`,
+                payload: release.deferredCleanup,
+              }).catch(() => undefined);
+            }
+          } catch (taskScratchReleaseError) {
+            // A lease left behind delays one directory's removal until the next
+            // close of the issue. It never costs the run anything.
+            logger.warn(
+              {
+                err: taskScratchReleaseError,
+                runId: run.id,
+                taskScratchDir: taskScratchForRelease.dir,
+              },
+              "failed to release heartbeat task scratch lease",
+            );
+          }
         }
         if (
           runScratch &&
