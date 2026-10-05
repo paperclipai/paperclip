@@ -15,6 +15,10 @@ import { decideCodexAuthMerge } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
+import {
+  decideClaudeAuthMerge,
+  isRefreshableClaudeDocument,
+} from "./claude-credential-document.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -234,9 +238,7 @@ export async function prepareManagedAiRuntime(
     runnerProvider: input.config.provider,
     acpxAgent: input.config.acpxAgent,
   });
-  const subscriptionFile =
-    selection.attribution.method === "subscription" &&
-    input.binding.provider !== "anthropic";
+  const subscriptionSelected = selection.attribution.method === "subscription";
   let home: string | undefined;
   try {
     const selectedGrantId = selection.grant.id;
@@ -252,6 +254,15 @@ export async function prepareManagedAiRuntime(
         "The selected default changed. Retry this execution.",
       );
     const value = await service.credential(selection);
+    // Anthropic joins the file topology only when the stored credential is a
+    // Claude credential document the CLI can refresh. Connections saved before
+    // this change hold a bare token, and a `claude setup-token` credential has
+    // no refresh token; both keep the env-var delivery, as does a document
+    // without a readable expiry, so `.credentials.json` only ever holds a
+    // document the write-back can compare.
+    const subscriptionFile =
+      subscriptionSelected &&
+      (input.binding.provider !== "anthropic" || isRefreshableClaudeDocument(value));
     home = await mkdtemp(
       path.join(
         os.tmpdir(),
@@ -269,7 +280,12 @@ export async function prepareManagedAiRuntime(
       AI_CONNECTION_CAPABILITIES[input.binding.provider].methods[
         selection.attribution.method
       ]!;
-    const authFile = path.join(providerHome, "auth.json");
+    // Claude Code reads its credentials from `.credentials.json` under
+    // CLAUDE_CONFIG_DIR. Codex and Grok read `auth.json` from their own homes.
+    const authFile = path.join(
+      providerHome,
+      input.binding.provider === "anthropic" ? ".credentials.json" : "auth.json",
+    );
     if (input.binding.provider === "openai")
       await writeFile(
         path.join(providerHome, "config.toml"),
@@ -357,13 +373,15 @@ export async function prepareManagedAiRuntime(
                 );
                 await writeFile(destination, current, { mode: 0o600 });
                 const decision =
-                  input.binding.provider === "openai"
-                    ? await decideCodexAuthMerge(authFile, destination, {
-                        errorLabel: "AI account refresh",
-                      })
-                    : await decideGrokAuthMerge(authFile, destination, {
-                        errorLabel: "AI account refresh",
-                      });
+                  input.binding.provider === "anthropic"
+                    ? decideClaudeAuthMerge(refreshed, current)
+                    : input.binding.provider === "openai"
+                      ? await decideCodexAuthMerge(authFile, destination, {
+                          errorLabel: "AI account refresh",
+                        })
+                      : await decideGrokAuthMerge(authFile, destination, {
+                          errorLabel: "AI account refresh",
+                        });
                 if (decision !== 10) return;
                 await secretService(tx).rotate(
                   ref.secretId,

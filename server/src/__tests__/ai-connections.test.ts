@@ -225,6 +225,85 @@ describe("managed AI connections", () => {
     } finally { await Promise.all([subRun.cleanup(), apiRun.cleanup()]); }
   });
 
+  it("puts a Claude subscription document in a rotatable credential file and leaves the token env var empty", async () => {
+    // Claude Code rotates the short-lived access token inside this document.
+    // The run must read it from a file the CLI can rewrite. An environment
+    // variable cannot be rotated, so the credential would freeze at sign-in.
+    const userId = "claude-document-user";
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const document = JSON.stringify({ claudeAiOauth: { accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresAt: 1000 } });
+    await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Claude document", loginSessionId: "fixture", allAgents: true, agentIds: [] }, document);
+    const run = await prepareManagedAiRuntime(db, { ...input, binding: { provider: "anthropic", method: "subscription", mode: "responsible_user" } as const, responsibleUserId: userId, config: { env: {} } });
+    try {
+      const env = run.config.env as Record<string, string>;
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("");
+      expect(await readFile(path.join(env.CLAUDE_CONFIG_DIR, ".credentials.json"), "utf8")).toBe(document);
+    } finally { await run.cleanup(); }
+  });
+
+  describe("Claude subscription write-back", () => {
+    const claude = (marker: string, hoursAhead: number, extra: Record<string, unknown> = {}) => JSON.stringify({
+      claudeAiOauth: { accessToken: `access-${marker}`, refreshToken: `refresh-${marker}`, expiresAt: Date.now() + hoursAhead * 3_600_000, subscriptionType: "max", ...extra },
+    });
+    const claudeRun = async (userId: string, credential: string) => {
+      await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: `Claude ${userId}`, loginSessionId: "fixture", allAgents: true, agentIds: [] }, credential);
+      return { ...input, binding: { provider: "anthropic", method: "subscription", mode: "responsible_user" } as const, responsibleUserId: userId, config: { env: {} } };
+    };
+    const stored = async (runInput: Awaited<ReturnType<typeof claudeRun>>) =>
+      service.credential(await service.select({ ...runInput, userId: runInput.responsibleUserId }));
+    const credentialFile = (run: { config: { env?: unknown } }) =>
+      path.join((run.config.env as Record<string, string>).CLAUDE_CONFIG_DIR, ".credentials.json");
+
+    it("persists the document the CLI refreshed during the run", async () => {
+      const runInput = await claudeRun("claude-refresh-user", claude("start", 1));
+      const run = await prepareManagedAiRuntime(db, runInput);
+      const refreshed = claude("refreshed", 8);
+      await writeFile(credentialFile(run), refreshed);
+      await run.cleanup();
+      expect(await stored(runInput)).toBe(refreshed);
+    });
+
+    it("resolves two concurrent write-backs by expiry, not by order", async () => {
+      const runInput = await claudeRun("claude-concurrent-user", claude("start", 1));
+      const older = await prepareManagedAiRuntime(db, runInput);
+      const newer = await prepareManagedAiRuntime(db, runInput);
+      const olderDocument = claude("older", 7);
+      const newerDocument = claude("newer", 8);
+      await writeFile(credentialFile(older), olderDocument);
+      await writeFile(credentialFile(newer), newerDocument);
+      // The newer refresh lands first; the older one must not overwrite it.
+      await newer.cleanup();
+      await older.cleanup();
+      expect(await stored(runInput)).toBe(newerDocument);
+    });
+
+    it("refuses a refreshed document that belongs to a different account", async () => {
+      // The provider home is writable by the agent process, so a document it
+      // leaves there must not swap the connection to another account.
+      const start = claude("start", 1, { subscriptionType: "max" });
+      const runInput = await claudeRun("claude-identity-user", start);
+      const run = await prepareManagedAiRuntime(db, runInput);
+      await writeFile(credentialFile(run), claude("other", 8, { subscriptionType: "pro" }));
+      await run.cleanup();
+      expect(await stored(runInput)).toBe(start);
+    });
+
+    it("never writes back over a connection stored as a bare token", async () => {
+      // A bare token (a setup-token, or a connection saved before the document
+      // format) is delivered on the env var. A document the run leaves in the
+      // provider home must not replace it.
+      const runInput = await claudeRun("claude-bare-token-user", "bare-token");
+      const run = await prepareManagedAiRuntime(db, runInput);
+      const env = run.config.env as Record<string, string>;
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("bare-token");
+      await expect(access(credentialFile(run))).rejects.toThrow();
+      await writeFile(credentialFile(run), claude("planted", 8));
+      await run.cleanup();
+      expect(await stored(runInput)).toBe("bare-token");
+    });
+  });
+
   it("has one provider default across methods, retains unavailable defaults and honors explicit account methods", async () => {
     const userId = "provider-default-user";
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
