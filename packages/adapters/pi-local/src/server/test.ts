@@ -22,7 +22,6 @@ import {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   prepareAdapterExecutionTargetRuntime,
-  overrideAdapterExecutionTargetRemoteCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverPiModelsCached } from "./models.js";
 import { parsePiJsonl } from "./parse.js";
@@ -132,25 +131,38 @@ export async function testEnvironment(
     if (typeof value === "string") env[key] = value;
   }
   const preparedRuntimeConfig = await preparePiRuntimeConfig({ env });
-  let runtimeTarget = target;
-  let runtimeCwd = cwd;
+  const runtimeTarget = target;
+  const runtimeCwd = cwd;
   let runtimeWorkspaceLocalDir: string | null = null;
-  let restoreWorkspace: (() => Promise<void>) | null = null;
+  let remoteConfigRoot: string | null = null;
   try {
     if (targetIsRemote && preparedRuntimeConfig.agentConfigDir && !checks.some((check) => check.code === "pi_cwd_invalid")) {
+      const temporaryDirectory = await runAdapterExecutionTargetProcess(
+        runId,
+        target,
+        "mktemp",
+        ["-d", "/tmp/paperclip-pi-envtest-XXXXXX"],
+        { cwd, env: {}, timeoutSec: 20, graceSec: 5, onLog: async () => {} },
+      );
+      const remoteDirectory = temporaryDirectory.stdout.trim();
+      if (
+        temporaryDirectory.timedOut ||
+        temporaryDirectory.exitCode !== 0 ||
+        !/^\/tmp\/paperclip-pi-envtest-[A-Za-z0-9]{6}$/.test(remoteDirectory)
+      ) {
+        throw new Error("Pi environment test could not create an owned remote configuration directory.");
+      }
+      remoteConfigRoot = remoteDirectory;
       runtimeWorkspaceLocalDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-envtest-"));
       const preparedTarget = await prepareAdapterExecutionTargetRuntime({
         runId,
         target,
         adapterKey: "pi",
         workspaceLocalDir: runtimeWorkspaceLocalDir,
-        workspaceRemoteDir: cwd,
+        workspaceRemoteDir: remoteConfigRoot,
         syncWorkspace: false,
         assets: [{ key: "agentConfig", localDir: preparedRuntimeConfig.agentConfigDir }],
       });
-      restoreWorkspace = () => preparedTarget.restoreWorkspace();
-      runtimeCwd = preparedTarget.workspaceRemoteDir ?? cwd;
-      runtimeTarget = overrideAdapterExecutionTargetRemoteCwd(target, runtimeCwd) ?? null;
       preparedRuntimeConfig.env.PI_CODING_AGENT_DIR = preparedTarget.assetDirs.agentConfig;
     }
     const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env }));
@@ -365,7 +377,18 @@ export async function testEnvironment(
     };
   } finally {
     try {
-      await restoreWorkspace?.();
+      if (remoteConfigRoot) {
+        const cleanup = await runAdapterExecutionTargetProcess(
+          runId,
+          target,
+          "rm",
+          ["-rf", "--", remoteConfigRoot],
+          { cwd, env: {}, timeoutSec: 20, graceSec: 5, onLog: async () => {} },
+        );
+        if (cleanup.timedOut || cleanup.exitCode !== 0) {
+          throw new Error("Pi environment test could not remove its remote configuration directory.");
+        }
+      }
     } finally {
       try {
         if (runtimeWorkspaceLocalDir) {

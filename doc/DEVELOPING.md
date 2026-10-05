@@ -751,8 +751,10 @@ Local adapters require their corresponding CLI/session setup on the machine runn
 For `pi_local`, **Test your agent** uses the same `PAPERCLIP_PI_PROVIDERS`
 configuration as an agent run. It prepares a temporary `models.json` for local
 model discovery and the hello probe, or stages that configuration in a remote
-execution target. The test removes its temporary local configuration when it finishes
-and preserves an operator's static `PI_CODING_AGENT_DIR` profile.
+execution target. Each remote probe uses its own disposable configuration
+directory. The test removes its temporary local and remote configuration when
+it finishes, including after an upload or probe failure, and preserves the
+operator's static `PI_CODING_AGENT_DIR` profile and working directory.
 
 ## Project Repository Checkouts
 
