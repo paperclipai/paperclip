@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { parseNativeExecutionInput, type NativeExecutionInput } from "../contracts/native-execution.js";
-import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION, nativeRuntimePromptDigest, canonicalNativeRuntimeContextDigest } from "../contracts/runtime-context.js";
+import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION, nativeRuntimePromptDigest, canonicalNativeRuntimeContextDigest, composeNativeSystemInstructions } from "../contracts/runtime-context.js";
 
 const contextRoots: string[] = [];
 afterEach(() => { for (const root of contextRoots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -346,6 +346,29 @@ describe("native backend factory", () => {
     expect(
       transport.calls.find((call) => call.method === "thread/start")?.params,
     ).toMatchObject({ cwd: remoteWorkspace });
+    await session.close({ reason: "test complete" });
+  });
+
+  it("supplies freshly composed instructions before the transport can read a recovered thread", async () => {
+    const prepared = preparedExecution(execution());
+    if (!("runtimeContext" in prepared)) throw new Error("fixture requires runtime context");
+    const input = { ...acpxExecution("codex"), runtimeContext: prepared.runtimeContext };
+    writeFileSync(join(input.runtimeContext.instructions.bundle.rootPath, "AGENTS.md"), "Updated custom entry.");
+    const transport = new FakeCodexTransport();
+    let captured: string | undefined;
+    const backend = createNativeSessionBackend(input, {
+      codexTransportFactory: (context) => {
+        expect(transport.calls).toHaveLength(0);
+        captured = context?.baseInstructions;
+        return transport;
+      },
+      environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+    });
+    const session = await backend.openSession({
+      identity: { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" },
+      workingDirectory: WORKSPACE,
+    });
+    expect(captured).toBe(composeNativeSystemInstructions(input.runtimeContext, "Updated custom entry."));
     await session.close({ reason: "test complete" });
   });
 

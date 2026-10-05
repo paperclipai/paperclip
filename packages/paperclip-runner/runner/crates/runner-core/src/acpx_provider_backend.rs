@@ -178,7 +178,7 @@ impl AcpxProviderDescriptor {
                 "2026.09.26-dd393fe",
                 None,
                 None,
-                "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+                "sha256:b1440d559ebc4eef5c7a582f1c81fc153270cfbafa1731a8ee76d83713bdf61b",
             ),
             "copilot" => (
                 self.model.as_str(),
@@ -2734,7 +2734,7 @@ mod tests {
                 "cursor",
                 "cursor-agent",
                 "2026.09.26-dd393fe",
-                "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+                "sha256:b1440d559ebc4eef5c7a582f1c81fc153270cfbafa1731a8ee76d83713bdf61b",
                 None,
                 None,
                 "explicit-model",

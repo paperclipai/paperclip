@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { QUALIFIED_ACPX_PROFILES } from "../drivers/acpx/qualified-profiles.js";
 import { describe, expect, it } from "vitest";
 
 import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, type NativeExecutionInputV1 } from "./native-execution.js";
@@ -295,7 +296,7 @@ describe("NativeExecutionInputV1", () => {
     })).toThrow("eventExpiryDays");
   });
 
-  it.each([1, 2, 3, 4, 5] as const)("accepts only a closed ACPX profile matching the driver and agent at profile version %s", (agentProfileVersion) => {
+  it.each([1, 2, 3, 4, 5, 6] as const)("accepts only a closed ACPX profile matching the driver and agent at profile version %s", (agentProfileVersion) => {
     const provider = {
       kind: "acpx",
       agent: "pi",
@@ -327,7 +328,7 @@ describe("NativeExecutionInputV1", () => {
       profile: provider.profile,
     });
     expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
-    for (const unsupportedVersion of [0, 6, 1.5, "5", null]) {
+    for (const unsupportedVersion of [0, 7, 1.5, "6", null]) {
       expect(() => parseNativeExecutionInput({
         ...input,
         session: { ...input.session, driverKind: "acpx_runtime" },
@@ -346,6 +347,26 @@ describe("NativeExecutionInputV1", () => {
       provider,
     })).toThrow("does not match");
   });
+
+  it.each(Object.values(QUALIFIED_ACPX_PROFILES))(
+    "admits the current $agent profile through the native execution boundary",
+    (declaration) => {
+      const { qualificationModel, reportedModelId: _reported, permissionPolicy,
+        modelPolicy: _modelPolicy, qualificationStatus: _status, ...profile } = declaration;
+      const provider = {
+        kind: "acpx", agent: declaration.agent,
+        model: qualificationModel || "explicit-provider-model",
+        permissionPolicy, profile,
+      };
+      const parsed = parseNativeExecutionInput({
+        ...input,
+        session: { ...input.session, driverKind: "acpx_runtime" },
+        provider,
+      });
+      expect(parsed.provider).toEqual(provider);
+      expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+    },
+  );
 
   it("defaults legacy lifecycle state to per-turn and validates warm timeouts", () => {
     const legacy = structuredClone(input) as Record<string, unknown>;

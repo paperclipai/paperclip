@@ -141,6 +141,7 @@ export interface CodexAcpxDriverOptions {
   model: string;
   permissionMode?: NativeAcpxPermissionMode;
   providerPolicy?: { readOnly: boolean };
+  runtimeContext?: OpenAcpxRuntimeHostOptions["runtimeContext"];
   systemInstructions?: string;
   environment?: NodeJS.ProcessEnv;
   managedCodexCredentialSourcePath?: string;
@@ -453,6 +454,7 @@ export class CodexAcpxDriver implements HarnessDriver {
         model: this.#options.model,
         permissionMode: this.#options.permissionMode ?? "approve-all",
         providerPolicy: this.#options.providerPolicy,
+        runtimeContext: this.#options.runtimeContext,
         systemInstructions: this.#options.systemInstructions,
         environment: this.#options.environment,
         managedCodexCredentialSourcePath:

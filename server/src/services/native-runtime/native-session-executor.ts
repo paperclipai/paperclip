@@ -12610,6 +12610,7 @@ async function createRunnerdBackendWithinSessionClaim(
             ? input.execution.runtimeContext
             : null,
         runnerRuntimeContext: remoteRuntimeContext,
+        baseInstructions: recoveryContext?.baseInstructions,
         runnerFilesystemRoot: remoteRunnerFilesystemRoot ?? undefined,
         resumeWorkingDirectory: runnerExecution.workspace.cwd,
         externallySandboxed: remoteTarget?.transport === "sandbox",

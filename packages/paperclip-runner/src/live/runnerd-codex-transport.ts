@@ -67,7 +67,7 @@ import {
   createSanitizedAwsAgentCoreEnvironment,
   createSanitizedClaudeManagedEnvironment,
 } from "../drivers/claude-managed/environment.js";
-import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
+import { composeNativeSystemInstructions, type NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 import type {
   NativeAcpxPermissionMode,
   NativeOpenCodePermissionMode,
@@ -421,6 +421,8 @@ function rotatedRunAttachPayload(
   authorizedTools: Record<string, unknown> | null,
   completionContract:
     { revision: string; criterionIds: readonly string[] } | undefined,
+  runtimeContext?: NativeRuntimeContextSnapshot | null,
+  currentInstructions?: { text: string; context: NativeRuntimeContextSnapshot | null },
 ): Record<string, unknown> {
   const commands = Array.isArray(state.commands)
     ? state.commands.map(record)
@@ -446,7 +448,30 @@ function rotatedRunAttachPayload(
     desired,
     authorizedTools,
     completionContract,
+    runtimeContext,
+    currentInstructions,
   );
+}
+
+function retargetComposedInstructions(
+  instructions: string,
+  prior: NativeRuntimeContextSnapshot,
+  current: NativeRuntimeContextSnapshot | null,
+): string {
+  const priorPrefix = prior.prompt.text;
+  const priorSuffix = composeNativeSystemInstructions(prior, "").slice(priorPrefix.length);
+  // Legacy callers can supply opaque system instructions. Only the composer's
+  // exact framing identifies a trusted asset block; never rewrite their text.
+  if (!instructions.startsWith(priorPrefix) || !instructions.endsWith(priorSuffix)) {
+    return instructions;
+  }
+  const custom = instructions.slice(priorPrefix.length, -priorSuffix.length);
+  if (custom && !custom.startsWith("\n\n")) return instructions;
+  // Keep custom entry bytes intact, including historical path examples or an
+  // identical paragraph quoted inside the entry. Only replace the final block.
+  return (current?.prompt.text ?? priorPrefix) + custom + (current
+    ? composeNativeSystemInstructions(current, "").slice(current.prompt.text.length)
+    : "");
 }
 
 function retargetRunAttachPayload(
@@ -455,12 +480,31 @@ function retargetRunAttachPayload(
   authorizedTools: Record<string, unknown> | null,
   completionContract:
     { revision: string; criterionIds: readonly string[] } | undefined,
+  runtimeContext?: NativeRuntimeContextSnapshot | null,
+  currentInstructions?: { text: string; context: NativeRuntimeContextSnapshot | null },
 ): Record<string, unknown> {
   const payload = structuredClone(seedPayload);
   const provider = record(payload.provider);
   if (provider.kind === "acpx" || provider.provider === "acpx") {
     provider.runId = desired.runId;
     provider.normalizedSessionId = desired.normalizedSessionId;
+    // A run-scoped registered instruction copy is collected after shutdown.
+    // Restore the durable provider identity with the current authenticated
+    // context, never the prior run's now-stale filesystem grant.
+    if (runtimeContext !== undefined) {
+      if (currentInstructions !== undefined) {
+        provider.instructions = currentInstructions.context
+          ? retargetComposedInstructions(currentInstructions.text, currentInstructions.context, runtimeContext)
+          : currentInstructions.text;
+      } else if (typeof provider.instructions === "string" && provider.runtimeContext) {
+        provider.instructions = retargetComposedInstructions(
+          provider.instructions,
+          provider.runtimeContext as NativeRuntimeContextSnapshot,
+          runtimeContext,
+        );
+      }
+      provider.runtimeContext = structuredClone(runtimeContext);
+    }
     payload.provider = provider;
   }
   if (authorizedTools !== null) payload.authorizedTools = authorizedTools;
@@ -5154,6 +5198,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         desiredIdentity,
         this.#authorizedTools,
         this.options.resumeCompletionContract,
+        runtimeContext,
+        this.options.baseInstructions === undefined
+          ? undefined
+          : { text: this.options.baseInstructions, context: sourceRuntimeContext },
       );
       if (provider === "codex") {
         // These controller-owned, token-free paths belong to the new run.

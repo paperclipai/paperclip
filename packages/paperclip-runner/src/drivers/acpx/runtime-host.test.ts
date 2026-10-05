@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -830,6 +830,43 @@ describe("ACPX runtime host", () => {
     }));
     await host.close({ reason: "policy verified" });
     expect(openRuntime).toHaveBeenCalledOnce();
+  });
+
+  it.each(["cursor", "copilot", "pi"] as const)("binds %s agent files from each registered run copy, never ambient roots", async (agent) => {
+    const fixture = await hostFixture();
+    const copies = await mkdtemp(join(tmpdir(), "paperclip-agent-copies-"));
+    temporaryDirectories.push(copies);
+    const model = agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "explicit-test-model";
+    const options = { ...fixture.options, agent, model, permissionMode: "approve-all" as const,
+      providerPolicy: { readOnly: false }, environment: { AGENT_HOME: "/ambient/other-agent", PAPERCLIP_PI_AGENT_HOME: "/ambient/other-agent",
+        ...(agent === "pi" ? { OPENROUTER_API_KEY: "test" } : agent === "cursor" ? { CURSOR_API_KEY: "test" } : { COPILOT_GITHUB_TOKEN: "test" }),
+      },
+    };
+    const opened: AcpxRuntimePortOpenOptions[] = [];
+    const dependencies = fixture.dependencies({ openRuntime: async launch => {
+      opened.push(launch);
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }) });
+    } });
+    // Missing trusted context must not turn ambient values into authority.
+    const withoutCopy = await AcpxRuntimeHost.open(options, dependencies);
+    expect(opened.at(-1)!.launchEnvironment.AGENT_HOME).toBeUndefined();
+    expect(opened.at(-1)!.launchEnvironment.PAPERCLIP_PI_AGENT_HOME).toBeUndefined();
+    await withoutCopy.close({ reason: "no registered copy" });
+    for (const run of ["first", "second"]) {
+      const rootPath = join(copies, run); await mkdir(rootPath);
+      const runtimeContext = { instructions: { workingCopy: { kind: "agent_files", rootPath, entryPath: "AGENTS.md" } }, skills: [], mcp: { bindingId: null } } as unknown as NativeRuntimeContextSnapshot;
+      const host = await AcpxRuntimeHost.open({ ...options, runtimeContext }, dependencies);
+      const launch = opened.at(-1)!;
+      expect(launch.launchEnvironment.AGENT_HOME?.endsWith(`/${run}`)).toBe(true);
+      expect(launch.launchEnvironment.PAPERCLIP_PI_AGENT_HOME).toBe(agent === "pi" ? launch.launchEnvironment.AGENT_HOME : undefined);
+      expect(launch.launchEnvironment.HOME).not.toBe(launch.launchEnvironment.AGENT_HOME);
+      if (run === "second") {
+        await rename(rootPath, `${rootPath}-replaced`); await mkdir(rootPath);
+        expect(() => launch.assertWorkspaceHeld?.()).toThrow("changed");
+        expect(() => host.startTurn({ text: "test", requestId: "stale-directory" })).toThrow("changed");
+      }
+      await host.close({ reason: "registered copy test complete" });
+    }
   });
 
   it("selects and verifies Claude's qualified reported model", async () => {

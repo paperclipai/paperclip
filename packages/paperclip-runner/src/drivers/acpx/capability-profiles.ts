@@ -47,7 +47,7 @@ export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxC
     recovery: "session-load", usage: "unverified", steering: "unsupported", followUp: "controller-queue",
     artifacts: "references-pending",
     extensionRequests: ["cursor/ask_question", "cursor/create_plan", "cursor/update_todos", "cursor/task", "cursor/generate_image"],
-    extensionNotifications: ["cursor/update_todos", "cursor/task", "cursor/generate_image"],
+    extensionNotifications: ["cursor/update_todos", "cursor/task", "cursor/generate_image", "cursor/subagent_update"],
   },
   copilot: {
     displayName: "GitHub Copilot", qualification: "pending", models: "explicit-provider-verified",

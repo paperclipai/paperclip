@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { cursorInstructionBinding } from "./cursor-instructions.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -52,6 +53,16 @@ describe("Codex ACPX runtime adapter", () => {
     await expect(created.onPermissionRequest!({ sessionId: "forged", raw: {}, inferredKind: "edit" } as never, { signal })).resolves.toEqual({ outcome: "reject_once" });
     pending.settle(); await turn.result; await port.close({ reason: "session checks complete" });
   });
+  it("fails Cursor adapter admission when the provider never acknowledges instructions", async () => {
+    const runtime = fakeRuntime();
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "cursor" };
+    await expect(openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
+    })).rejects.toThrow("Cursor instruction admission failed");
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalled();
+  });
   it("routes only profile-allowed extensions to the owning turn and expires late responses", async () => {
     const runtime = fakeRuntime();
     const first = pendingExtensionTurn("turn-1");
@@ -63,7 +74,14 @@ describe("Codex ACPX runtime adapter", () => {
     options.clientCapabilities = { _meta: { cursor: { test: true } } };
     const port = await openCodexAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
-      createRuntime: (value) => { created = value; return runtime; },
+      createRuntime: (value) => {
+        created = value;
+        const guard = value.protocolGuardFactory!();
+        const binding = cursorInstructionBinding(options.systemInstructions);
+        guard("outbound", { id: 0, method: "session/new", params: {} });
+        guard("inbound", { id: 0, result: { sessionId: "backend-1", _meta: { paperclipCursorInstructions: { schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength } } } });
+        return runtime;
+      },
     });
     expect(created.clientCapabilities).toEqual(options.clientCapabilities);
     expect(JSON.stringify(vi.mocked(runtime.ensureSession).mock.calls)).not.toContain("clientCapabilities");

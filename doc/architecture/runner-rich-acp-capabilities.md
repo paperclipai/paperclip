@@ -21,6 +21,18 @@ recommends Cursor and Copilot, followed by Pi, using the existing qualified ACPX
 path. Codex app-server is the richness benchmark. The legacy Cursor and Pi
 adapters are outside this change.
 
+## Registered persistent agent files
+
+Candidate ACP processes receive `AGENT_HOME` only from the authenticated
+runtime context's server-registered `agent_files` working copy. Ambient
+environment values cannot grant a directory. Admission rejects symlink roots,
+filesystem roots and overlap with provider runtime state; directory identity is
+rechecked at launch and before each turn. Each provider reopen receives the
+current run's registered copy. The native executor requires provider shutdown
+before collecting and synchronizing the copy. Pi additionally receives a
+runner-owned native-tool root binding; its task read-only policy still applies.
+These checks do not by themselves qualify provider-specific native file tools.
+
 ## Branches and evidence ownership
 
 | Branch | Deliverable |

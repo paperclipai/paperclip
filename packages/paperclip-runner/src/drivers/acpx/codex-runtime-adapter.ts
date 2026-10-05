@@ -30,6 +30,7 @@ import {
 import type { AcpxModelStatus } from "./model-verification.js";
 import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-policy.js";
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
+import { createCursorInstructionAdmission } from "./cursor-instructions.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
 const DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS = 2_000;
@@ -297,8 +298,12 @@ export async function openQualifiedAcpxRuntime(
     );
   };
   const commandLaunches = { count: 0, refreshConsumedCommand: options.refreshConsumedCommand };
+  const cursorInstructions = options.profile.agent === "cursor"
+    ? createCursorInstructionAdmission(options.systemInstructions)
+    : null;
   const runtimeOptions: GoalAwareAcpRuntimeOptions = {
     cwd: options.cwd,
+    ...(cursorInstructions ? { protocolGuardFactory: () => cursorInstructions.createGuard() } : {}),
     sessionStore,
     agentRegistry: createRegistry({
       // Preserve Claude's ACP capability identity. This is metadata only: the
@@ -469,6 +474,7 @@ export async function openQualifiedAcpxRuntime(
     handle = options.signal
       ? await raceRuntimeHandshakeWithAbort(boundedHandshake, options.signal)
       : await boundedHandshake;
+    cursorInstructions?.assertReady();
     // A provider can answer only after the verified sentinel is armed, but do
     // not admit the session until the owner has observed that exact handoff.
     await children.verifyLifetimeOwnership();
