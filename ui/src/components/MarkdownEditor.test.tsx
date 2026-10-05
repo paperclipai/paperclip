@@ -15,8 +15,7 @@ import {
   type MentionOption,
   placeCaretAfterMentionAnchor,
   placeCaretAtEditableEnd,
-  shouldAcceptAutocompleteKey,
-} from "./MarkdownEditor";
+  shouldAcceptAutocompleteKey, shouldSubmitOnPlainReturn } from "./MarkdownEditor";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 
 const mdxEditorMockState = vi.hoisted(() => ({
@@ -1231,6 +1230,7 @@ describe("MarkdownEditor", () => {
       },
     ],
     matchText = "Paperclip App",
+    submitProps: { onSubmit?: () => void; submitKey?: "enter" | "mod-enter" } = {},
   ): Promise<{ option: HTMLButtonElement; root: ReturnType<typeof createRoot>; menu: HTMLElement }> {
     const root = createRoot(container);
 
@@ -1240,6 +1240,7 @@ describe("MarkdownEditor", () => {
           value="@Pap"
           onChange={handleChange}
           mentions={mentions}
+          {...submitProps}
         />,
       );
     });
@@ -1270,6 +1271,126 @@ describe("MarkdownEditor", () => {
     expect(menu).toBeTruthy();
     return { option: option!, root, menu: menu! };
   }
+
+  async function renderSubmitEditor(submitKey?: "enter" | "mod-enter") {
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value="hello" onChange={() => {}} onSubmit={onSubmit} submitKey={submitKey} />,
+      );
+    });
+    await flush();
+    const editable = container.querySelector('[contenteditable="true"]')!;
+    const press = (init: KeyboardEventInit) =>
+      act(() => {
+        editable.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init }));
+      });
+    return { onSubmit, root, press };
+  }
+
+  it("submits only on Cmd/Ctrl+Enter by default", async () => {
+    const { onSubmit, root, press } = await renderSubmitEditor();
+    press({});
+    press({ shiftKey: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+    press({ metaKey: true });
+    press({ ctrlKey: true });
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    await act(async () => root.unmount());
+  });
+
+  it('submitKey="enter": Return submits, Shift+Return and IME composition do not', async () => {
+    const { onSubmit, root, press } = await renderSubmitEditor("enter");
+    press({ shiftKey: true });
+    press({ isComposing: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+    press({});
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    press({ metaKey: true });
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    await act(async () => root.unmount());
+  });
+
+  it("keeps plain Return with the editor while autocomplete is open, in code, or while sending is blocked", () => {
+    const base = { submitKey: "enter" as const, autocompleteOpen: false, inCodeBlock: false, submitDisabled: false };
+    expect(shouldSubmitOnPlainReturn(base)).toBe(true);
+    // An open slash menu with no armed option must not send the draft.
+    expect(shouldSubmitOnPlainReturn({ ...base, autocompleteOpen: true })).toBe(false);
+    expect(shouldSubmitOnPlainReturn({ ...base, inCodeBlock: true })).toBe(false);
+    expect(shouldSubmitOnPlainReturn({ ...base, submitDisabled: true })).toBe(false);
+    expect(shouldSubmitOnPlainReturn({ ...base, submitKey: "mod-enter" })).toBe(false);
+  });
+
+  it('submitKey="enter": Return still sends when @ text has no matches and no menu is shown', async () => {
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="@Zzzz"
+          onChange={() => {}}
+          onSubmit={onSubmit}
+          submitKey="enter"
+          mentions={[{ id: "agent:a1", kind: "agent", name: "Alpha", agentId: "a1" } as never]}
+        />,
+      );
+    });
+    await flush();
+    const editable = container.querySelector('[contenteditable="true"]')!;
+    const textNode = editable.firstChild!;
+    const range = document.createRange();
+    range.setStart(textNode, "@Zzzz".length);
+    range.collapse(true);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    act(() => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await flush();
+    expect(document.body.querySelector('[data-testid="mention-autocomplete-menu"]')).toBeNull();
+    act(() => {
+      editable.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+  });
+
+  it('submitKey="enter": Return is not swallowed while sending is blocked', async () => {
+    const onSubmit = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value="hello" onChange={() => {}} onSubmit={onSubmit} submitKey="enter" submitDisabled />,
+      );
+    });
+    await flush();
+    const editable = container.querySelector('[contenteditable="true"]')!;
+    const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    act(() => {
+      editable.dispatchEvent(event);
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it('submitKey="enter": Return picks the open mention instead of submitting', async () => {
+    const handleChange = vi.fn();
+    const onSubmit = vi.fn();
+    const { root } = await openMentionMenuFor(handleChange, undefined, "Paperclip App", {
+      onSubmit,
+      submitKey: "enter",
+    });
+    const editable = container.querySelector('[contenteditable="true"]')!;
+    act(() => {
+      editable.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[data-testid="mention-autocomplete-menu"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
 
   it("accepts mention selection from a touch tap", async () => {
     const handleChange = vi.fn();

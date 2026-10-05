@@ -8,6 +8,8 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import { submitShortcutLabel, useResolvedSubmitKey } from "@/lib/submitKeyPreference";
+import { SendKeyMenu } from "../SendKeyMenu";
 import { useComposerStop } from "@/hooks/useComposerStop";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
@@ -455,6 +457,7 @@ export function TaskChatComposer({
   pendingAssigneeRef.current = pendingAssignee;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
+  const submitKey = useResolvedSubmitKey("mod-enter");
   const bodyRef = useRef(body);
   bodyRef.current = body;
   const pendingDraftRef = useRef<{
@@ -827,6 +830,16 @@ export function TaskChatComposer({
   }, [queuedEdit, takeoverVisible]);
 
   const canResetPausedConversation = conversationMode && !queuedEdit && body.trim() === "/new" && attachments.length === 0;
+  // Same conditions that disable the Send button; the editor keeps Return as a
+  // line break while they hold.
+  const sendBlocked =
+    disabled ||
+    (Boolean(pause) && !canResetPausedConversation) ||
+    submitting ||
+    !!uncertainSubmission ||
+    uploadPending ||
+    uploadFailed ||
+    (body.trim().length === 0 && attachedRefs.length === 0);
 
   async function submit() {
     if (disabled || (pause && !canResetPausedConversation)) return;
@@ -1283,6 +1296,8 @@ export function TaskChatComposer({
                 disabled,
               }] : [goalCommandOption]}
               onSubmit={() => void submit()}
+              submitKey={submitKey}
+              submitDisabled={sendBlocked}
               imageUploadHandler={
                 canAcceptFiles ? uploadInlineImage : undefined
               }
@@ -1483,65 +1498,57 @@ export function TaskChatComposer({
                 Cancel
               </button>
             ) : null}
-            <button
-              type="button"
-              onClick={() => void (showStop ? stopControl.stop() : submit())}
-              disabled={
-                showStop
-                  ? disabled || stopControl.stopping
-                  : disabled ||
-                    (Boolean(pause) && !canResetPausedConversation) ||
-                    submitting ||
-                    !!uncertainSubmission ||
-                    uploadPending ||
-                    uploadFailed ||
-                    (body.trim().length === 0 && attachedRefs.length === 0)
-              }
-              title={
-                showStop
-                  ? stopControl.stopping
-                    ? "Stopping…"
-                    : "Stop response"
-                  : queuedEdit
-                    ? queuedEdit.stale
-                      ? "Queue as new message"
-                      : "Save queued message"
-                    : uploadPending
-                      ? "Waiting for upload to finish"
-                      : uploadFailed
-                        ? "Remove the failed attachment to send"
-                        : "Send (⌘+Enter)"
-              }
-              aria-label={
-                showStop
-                  ? stopControl.stopping
-                    ? "Stopping…"
-                    : "Stop"
-                  : queuedEdit
-                    ? queuedEdit.stale
-                      ? "Queue as new message"
-                      : "Save queued message"
-                    : "Send"
-              }
-              className={cn(
-                "flex size-8 min-h-8 min-w-8 shrink-0 aspect-square items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",
-                streamlined
-                  ? "bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
-                  : "bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",
-              )}
-              data-testid={
-                showStop ? "task-chat-composer-stop" : "task-chat-composer-send"
-              }
-              data-slot="icon-button"
-            >
-              {submitting || (showStop && stopControl.stopping) ? (
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-              ) : showStop ? (
-                <Square className="h-4 w-4 fill-current" aria-hidden />
-              ) : (
-                <ArrowUp className="h-4 w-4" aria-hidden />
-              )}
-            </button>
+            <SendKeyMenu mode={submitKey} disabled={showStop}>
+              <button
+                type="button"
+                onClick={() => void (showStop ? stopControl.stop() : submit())}
+                disabled={showStop ? disabled || stopControl.stopping : sendBlocked}
+                title={
+                  showStop
+                    ? stopControl.stopping
+                      ? "Stopping…"
+                      : "Stop response"
+                    : queuedEdit
+                      ? queuedEdit.stale
+                        ? "Queue as new message"
+                        : "Save queued message"
+                      : uploadPending
+                        ? "Waiting for upload to finish"
+                        : uploadFailed
+                          ? "Remove the failed attachment to send"
+                          : `Send (${submitShortcutLabel(submitKey)})`
+                }
+                aria-label={
+                  showStop
+                    ? stopControl.stopping
+                      ? "Stopping…"
+                      : "Stop"
+                    : queuedEdit
+                      ? queuedEdit.stale
+                        ? "Queue as new message"
+                        : "Save queued message"
+                      : "Send"
+                }
+                className={cn(
+                  "flex size-8 min-h-8 min-w-8 shrink-0 aspect-square items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",
+                  streamlined
+                    ? "bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
+                    : "bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",
+                )}
+                data-testid={
+                  showStop ? "task-chat-composer-stop" : "task-chat-composer-send"
+                }
+                data-slot="icon-button"
+              >
+                {submitting || (showStop && stopControl.stopping) ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                ) : showStop ? (
+                  <Square className="h-4 w-4 fill-current" aria-hidden />
+                ) : (
+                  <ArrowUp className="h-4 w-4" aria-hidden />
+                )}
+              </button>
+            </SendKeyMenu>
             </div>
           </div>
           {stopControl.error ? (

@@ -58,6 +58,7 @@ import {
 import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
+import { isSubmitKeyEvent, type SubmitKeyMode } from "../lib/submitKeyPreference";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
 
 /* ---- Mention types ---- */
@@ -96,8 +97,20 @@ interface MarkdownEditorProps {
   mentions?: MentionOption[];
   /** Capability-aware action commands supplied by the owning composer. */
   actionCommands?: SlashCommandOption[];
-  /** Called on Cmd/Ctrl+Enter */
+  /** Called on the submit key (Cmd/Ctrl+Enter by default, see `submitKey`). */
   onSubmit?: () => void;
+  /**
+   * Which key calls `onSubmit`. Message composers pass the user's send-key
+   * preference; other editors keep the default `"mod-enter"`. In `"enter"`
+   * mode Return submits and Shift+Return inserts a line break, except while
+   * the autocomplete menu takes Return or the caret is in a code block.
+   */
+  submitKey?: SubmitKeyMode;
+  /**
+   * True while the owner cannot send (upload pending, conversation paused, …).
+   * Plain Return then stays a line break instead of being swallowed.
+   */
+  submitDisabled?: boolean;
   /** Render the rich editor without allowing edits. */
   readOnly?: boolean;
 }
@@ -584,6 +597,26 @@ export function shouldAcceptAutocompleteKey(
   return trigger === "mention" || (trigger === "skill" && skillEnterArmed);
 }
 
+/**
+ * Whether a plain Return should call `onSubmit` in `"enter"` send-key mode.
+ * Return stays with the editor while an autocomplete menu is open (even when
+ * no slash option is armed yet), inside code blocks, and while sending is
+ * blocked, so it is never swallowed without a send.
+ */
+export function shouldSubmitOnPlainReturn({
+  submitKey,
+  autocompleteOpen,
+  inCodeBlock,
+  submitDisabled,
+}: {
+  submitKey: SubmitKeyMode;
+  autocompleteOpen: boolean;
+  inCodeBlock: boolean;
+  submitDisabled: boolean;
+}): boolean {
+  return submitKey === "enter" && !autocompleteOpen && !inCodeBlock && !submitDisabled;
+}
+
 export function isSameAutocompleteSession(
   left: Pick<MentionState, "trigger" | "marker" | "query" | "textNode" | "atPos" | "endPos"> | null,
   right: Pick<MentionState, "trigger" | "marker" | "query" | "textNode" | "atPos" | "endPos"> | null,
@@ -716,6 +749,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   mentions,
   actionCommands = [],
   onSubmit,
+  submitKey = "mod-enter",
+  submitDisabled = false,
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
@@ -1343,7 +1378,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }}
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
-            if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            if (onSubmit && isSubmitKeyEvent(event, submitKey)) {
               event.preventDefault();
               onSubmit();
             }
@@ -1368,8 +1403,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       )}
       onKeyDownCapture={(e) => {
         if (readOnly) return;
-        // Cmd/Ctrl+Enter to submit
-        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        // Cmd/Ctrl+Enter to submit (in either send-key mode)
+        if (onSubmit && (e.metaKey || e.ctrlKey) && isSubmitKeyEvent(e, submitKey)) {
           e.preventDefault();
           e.stopPropagation();
           onSubmit();
@@ -1422,6 +1457,23 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               return;
             }
           }
+        }
+
+        // Plain Return submits in "enter" mode unless the editor still owns it.
+        if (
+          onSubmit
+          && isSubmitKeyEvent(e, submitKey)
+          && shouldSubmitOnPlainReturn({
+            submitKey,
+            // Only a visible menu owns Return; unmatched @ or / text still sends.
+            autocompleteOpen: mentionActive && filteredMentions.length > 0,
+            inCodeBlock: e.target instanceof Element && Boolean(e.target.closest(".cm-editor")),
+            submitDisabled,
+          })
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          onSubmit();
         }
       }}
       onDragEnter={(evt) => {

@@ -214,6 +214,8 @@ import {
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { useComposerStop } from "@/hooks/useComposerStop";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { submitShortcutLabel, useResolvedSubmitKey } from "../lib/submitKeyPreference";
+import { SendKeyMenu } from "./SendKeyMenu";
 import { liveBlueBadge } from "../lib/status-colors";
 import {
   nextWorkMode,
@@ -4798,6 +4800,7 @@ const IssueChatComposer = forwardRef<
   const focusAssigneeOnDialogCloseRef = useRef(false);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
+  const submitKey = useResolvedSubmitKey("mod-enter");
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canAcceptFiles =
     !uncertainSubmission && Boolean(onImageUpload || onAttachImage);
@@ -5488,6 +5491,8 @@ const IssueChatComposer = forwardRef<
         placeholder="Reply"
         mentions={mentions}
         onSubmit={handleSubmit}
+        submitKey={submitKey}
+        submitDisabled={!canSubmit}
         imageUploadHandler={
           canAcceptFiles
             ? async (file) => {
@@ -5692,13 +5697,16 @@ const IssueChatComposer = forwardRef<
             )}
           </Button>
         ) : (
-          <Button
-            size="sm"
-            disabled={!canSubmit}
-            onClick={() => void handleSubmit()}
-          >
-            {submitting ? "Posting..." : "Send"}
-          </Button>
+          <SendKeyMenu mode={submitKey}>
+            <Button
+              size="sm"
+              disabled={!canSubmit}
+              onClick={() => void handleSubmit()}
+              title={`Send (${submitShortcutLabel(submitKey)})`}
+            >
+              {submitting ? "Posting..." : "Send"}
+            </Button>
+          </SendKeyMenu>
         )}
       </div>
 
