@@ -1530,5 +1530,120 @@ describe("issue execution policy routes", () => {
         }),
       );
     });
+
+    it("rejects a reassignment that races a concurrent decision resolved under the update lock", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      // The row locked inside the transaction shows the stage already
+      // completed by a concurrent approve/reject that landed between the
+      // initial read and this request's write.
+      mockIssueService.getByIdForUpdate.mockResolvedValue({
+        ...issue,
+        status: "done",
+        executionState: {
+          ...issue.executionState,
+          status: "completed",
+        },
+      });
+      mockUpdateMergesPatch(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Trying to hand this off after it was already resolved",
+        });
+
+      expect(res.status).toBe(422);
+      expect(mockIssueService.getByIdForUpdate).toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockDbInsertValues).not.toHaveBeenCalled();
+    });
+
+    it("rejects a reassignment back to the executor whose own work is under review", async () => {
+      const executorAsParticipantPolicy = normalizeIssueExecutionPolicy({
+        stages: [
+          {
+            id: reviewStageId,
+            type: "review",
+            participants: [
+              { type: "agent", agentId: qaAgentId },
+              { type: "agent", agentId: otherAgentId },
+            ],
+          },
+        ],
+      })!;
+      const issue = {
+        ...pendingIssue(),
+        executionPolicy: executorAsParticipantPolicy,
+      };
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "agent", agentId: otherAgentId },
+          comment: "Handing this back to the executor",
+        });
+
+      expect(res.status).toBe(422);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("queues a wake for a newly reassigned agent participant", async () => {
+      const secondAgentId = "88888888-8888-4888-8888-888888888888";
+      const threeParticipantPolicy = normalizeIssueExecutionPolicy({
+        stages: [
+          {
+            id: reviewStageId,
+            type: "review",
+            participants: [
+              { type: "agent", agentId: qaAgentId },
+              { type: "agent", agentId: secondAgentId },
+              { type: "user", userId: ctoUserId },
+            ],
+          },
+        ],
+      })!;
+      const issue = {
+        ...pendingIssue(),
+        executionPolicy: threeParticipantPolicy,
+      };
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+      mockHeartbeatService.wakeup.mockResolvedValueOnce({
+        id: "99999999-9999-4999-8999-999999999999",
+      });
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "agent", agentId: secondAgentId },
+          comment: "Passing this to the other reviewer",
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.wakeQueued).toBe(true);
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        secondAgentId,
+        expect.objectContaining({ reason: "execution_review_requested" }),
+      );
+    });
   });
 });

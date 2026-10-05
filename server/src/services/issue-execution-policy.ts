@@ -1107,6 +1107,15 @@ export function applyIssueExecutionStageReassignment(input: ReassignStageInput):
     throw unprocessable("The reassignment target must already be a configured participant on this stage");
   }
 
+  if (
+    existingState.returnAssignee &&
+    principalsEqual(input.toParticipant, existingState.returnAssignee)
+  ) {
+    throw unprocessable(
+      "Cannot reassign this stage to the executor whose own work is under review",
+    );
+  }
+
   if (!input.comment?.trim()) {
     throw unprocessable(`Reassigning a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
   }
