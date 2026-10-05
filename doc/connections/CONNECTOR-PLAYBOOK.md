@@ -73,6 +73,7 @@ for compatibility, personal defaults, resolver isolation, and legacy adoption.
 - [Production validation evidence](#step-9-align-with-production-validation)
 - [AppDefinition field reference](#appdefinition-field-reference)
 - [Troubleshooting](#troubleshooting-and-failure-classification)
+- [Launch kit inputs](#phase-13-launch-kit-inputs)
 - [Definition of done](#definition-of-done)
 - [Detailed design checklist](#detailed-design-checklist)
 - [Hosted MCP and OAuth protocol notes](#mcp-direct-connections-hosted-mcp--oauth)
@@ -93,6 +94,7 @@ A complete connector proposal produces:
   discover catalog, allowed read call, correctly governed write call,
   denied/quarantined call when the method declares one, revoke, and audit
   evidence.
+- Launch-kit inputs and one shared brand record, as specified in Phase 13.
 
 ## Use This Document As The Checklist
 
@@ -627,7 +629,8 @@ only a runtime image-failure fallback.
    the normal mark loses contrast in dark mode.
 6. Add the provider to `ui/public/brands/apps/manifest.json` with slug, name,
    local asset, optional dark asset, visibility, and optional aliases. Keep source
-   URLs and verification notes in the review record, outside the public manifest.
+   URLs, usage-rights evidence, and theme asset checksums in the shared brand
+   record described in Phase 13, outside the public manifest.
 7. Let the ingestion script derive `branding.logoUrl` and `darkLogoUrl` from the
    runtime manifest.
 
@@ -1086,8 +1089,11 @@ unrelated worktree change, or temporary evidence file is staged.
    link only to search results or third-party tutorials.
 6. Mark live proof that was not run as outstanding; never equate a mocked OAuth
    test with provider validation.
-7. Do not merge as part of connection authoring unless the task explicitly
-   authorizes merging.
+7. Complete Phase 13 before opening the connector PR. Link its launch-kit
+   inputs and shared brand record in the PR body.
+8. Bots and agents open draft PRs only. Michael forwards the runbook change to
+   Dotta and Devin for approval. Michael retains all merges and publication
+   decisions; authoring does not authorize them.
 
 Suggested PR verification block:
 
@@ -1103,6 +1109,116 @@ Suggested PR verification block:
   connect ✓, list tools ✓, safe read ✓, refresh/reconnect ✓, revoke ✓,
   secret scan ✓
 ```
+
+### Phase 13: Launch kit inputs
+
+Prepare these inputs in the connector PR, before its product merge. They are
+reviewable source material for the website page and docs guide. The same
+requirements apply to Paperclip authors and vendor contributors.
+
+Save a launch-kit section in `doc/connections/<PROVIDER>-ACCEPTANCE.md` (reuse
+the provider's existing acceptance record). Link it from the PR body. Record
+the product commit used for the evidence and the connector slug and method keys.
+
+| Required input | Evidence and contents |
+| --- | --- |
+| One-line capability summary | State what an agent can do with the supported method. Cite the product definition at the recorded commit and provider docs. Label any workflow without live proof as untested. |
+| Top use cases | List the main operator jobs, the method/tool that supports each, and its live-proof link or an explicit untested label. Do not infer capabilities from a provider name or advertise an unobserved tool. |
+| Setup prerequisites | State required account/plan, admin consent or provider approval, tenant/region, credential type and permissions, and deployment limits. Link official setup docs and distinguish required steps from optional configuration. State explicitly when a prerequisite does not apply. |
+| Safety-note links | Link the method permission review and redacted lifecycle evidence. Cover read/write/destructive actions, data access, current governance defaults, credential ownership, revocation, and known limits. Use the runbook's production-validation results; an offline test is not live proof. |
+| Shared brand record | Link the single record below, with official source, usage-rights evidence, and the light and dark assets. Missing or uncertain public-use rights block public artwork, even if product assets already exist. |
+
+Keep credentials, private account data, secret-bearing URLs, and private
+permission correspondence out of committed inputs. When rights evidence is
+private, record a public-safe decision and the accountable reviewer; provide
+the evidence through the approved private review path.
+
+#### One shared brand record
+
+Maintain one record per connector at `doc/connections/brands/<slug>.json`,
+outside the browser-served manifest. Product and website authors refer to this
+same record at a pinned product commit. A provider's existing provenance record
+can be moved here without creating a second authority. This is an authoring
+contract; the current runtime manifest and ingestion script still consume
+artwork paths, not this record.
+
+Use this shape. Replace every example value with evidence before submission.
+The example is a template, not a provider permission or a completed record.
+
+```json
+{
+  "schemaVersion": 1,
+  "slug": "example-provider",
+  "provider": "Example Provider",
+  "source": {
+    "brandPageUrl": "https://example.com/brand",
+    "assetUrl": "https://example.com/brand/mark.svg",
+    "retrievedAt": "YYYY-MM-DD"
+  },
+  "usageRights": {
+    "status": "approved",
+    "evidenceUrl": "https://example.com/brand/terms",
+    "allowedUse": "Describe the permitted product and public website use.",
+    "restrictions": "Record attribution, modification, and placement limits.",
+    "reviewedBy": "Accountable rights reviewer",
+    "reviewedAt": "YYYY-MM-DD"
+  },
+  "light": {
+    "path": "ui/public/brands/apps/example-provider.svg",
+    "sha256": "SHA-256 of the committed light asset"
+  },
+  "dark": {
+    "path": "ui/public/brands/apps/example-provider.svg",
+    "sha256": "SHA-256 of the committed dark asset"
+  }
+}
+```
+
+`usageRights.status` is `approved`, `pending`, or `restricted`. Approval must
+cover both product and public website use under the recorded restrictions.
+An official download is provenance, not permission. For `pending` or
+`restricted`, record the missing permission or restriction and its review
+owner. Do not publish artwork until the reviewer confirms the intended use.
+Check rights again when the source, asset, or intended use changes.
+
+Both theme entries are required. When one mark works in both modes, point both
+entries to the same file and checksum; omit `darkAsset` in the runtime manifest.
+For a separate dark mark, record its official source as `dark.sourceUrl` and
+any permitted transformation, then use its path and checksum. Check contrast
+and optical fit using [Connector icons](./CONNECTOR-ICONS.md).
+
+Set the runtime manifest's `localAsset` to the light path with `ui/public`
+removed; set `darkAsset` to the dark path only when it differs. Let ingestion
+derive `branding.logoUrl` and `darkLogoUrl` as Phase 4 requires. Website copies
+must use those exact asset bytes and retain the product commit, record path,
+and checksums in their receipts. Preserve the file format, including PNG.
+
+Do not keep a website-only logo override or independently replace a mark.
+For example, `google-calendar.svg` must resolve to the asset approved in
+`brands/google-calendar.json`; a filename alone is not provenance. Reconcile
+existing overrides against the shared record before the next batch uses them.
+Change the record and product assets together, then update the website from
+that revision. A checksum or path mismatch stops the artwork handoff until
+both consumers agree. The website sync work must implement this contract;
+this phase does not claim that a cross-repository check already exists.
+
+#### Handoff and release gates
+
+A merge to product master starts the launch kit for the batch of connectors
+added since the previous batch. Pin the actual merge commit and record batch
+membership. Draft the website page and docs guide as **upcoming**, visible
+only on previews. Derive tool lists from the pinned product definition; keep
+untested claims labelled.
+
+A stable release must include the connector before public pages become live.
+A bot opens the stable publication PR as a draft. Michael reviews each batch
+and merges it. Release-post sections, notable-connector spotlights, and joint
+vendor announcements also require Michael's approval. Do not merge, publish,
+or post as part of this phase.
+
+To verify adoption, retain the next eligible connector PR link and head commit,
+its launch-kit section and brand record, and the review evidence that each
+required input is present. A green runbook PR alone does not prove adoption.
 
 ## AppDefinition Field Reference
 
@@ -1215,6 +1331,9 @@ A catalog connection is ready only when every applicable item is true:
 - [ ] Optional own-OAuth and expert fields are folded under Advanced.
 - [ ] Scopes are explicit and contained; caller widening is rejected.
 - [ ] Official local branding and provenance pass validation in light and dark themes.
+- [ ] Phase 13 inputs include the one-line capability summary, top use cases, setup prerequisites, and safety links, with pinned sources and tested/untested labels.
+- [ ] One shared brand record covers official source, reviewed public-use rights, and both theme asset paths/checksums; product paths match it and the website handoff references that same revision.
+- [ ] The PR links the launch-kit inputs and brand record; preview-only upcoming and stable-publication approval gates are recorded.
 - [ ] Ingestion source and generated definitions are synchronized.
 - [ ] Credentials and tokens are stored only as encrypted/external refs.
 - [ ] Shared and personal grant semantics are correct.

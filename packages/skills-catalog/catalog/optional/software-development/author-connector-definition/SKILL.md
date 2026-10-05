@@ -330,7 +330,12 @@ report that you now own keeping it current.
 Generation fails closed without a branding row, so do this first. Obtain the
 official mark from the provider's brand kit, product site, or official
 repository; prefer SVG; never use a favicon proxy, a scraped icon, or an
-imitation. Add the asset and its manifest row, then run the two brand checks in
+imitation. Add the asset and its manifest row. Record its official source,
+usage rights, and light/dark asset paths and checksums in the single shared brand record
+required by runbook Phase 13. Both themes may use the same asset. Product and
+website authors must use that record at the same product revision; reject
+website-only logo overrides. An official download does not establish permission
+for public use. Then run the two brand checks in
 `references/catalog-contract.md`.
 
 If you cannot obtain an official mark, stop and report it. A placeholder is
@@ -379,6 +384,29 @@ in the `connect-agent-tools` skill's `references/deployment-support-matrix.md`.
 A pass on a
 self-hosted instance makes that row `verified` for self-hosted and leaves Cloud
 `untested`; the reverse is equally true.
+
+## Step 7 — Prepare Launch Kit Inputs
+
+Before handing off the local change, complete **Phase 13: Launch kit inputs** in
+`doc/connections/CONNECTOR-PLAYBOOK.md`. Reuse the provider acceptance record
+for the one-line capability summary, top use cases, setup prerequisites, and
+safety-note links. Cite pinned product definitions, official provider docs,
+method permission reviews, and redacted live evidence. Label workflows without
+live proof as untested; never convert an offline pass into a public claim.
+
+Include `doc/connections/brands/<slug>.json` with official source and retrieval
+date, reviewed usage rights for product and public website use, restrictions,
+review owner/date, and explicit light/dark paths and checksums. Follow the
+runbook's record shape rather than creating another provenance authority. Mark
+unconfirmed rights pending and name the missing evidence; public artwork waits
+for rights approval. Keep private permissions and credentials out of the record.
+
+These inputs accompany the local output even when live acceptance is pending.
+They do not authorize a PR, publication, or provider action. The separately
+authorized release owner pins the product merge, groups the batch, and keeps
+website/docs drafts upcoming on previews until stable inclusion. Bots and
+agents open drafts only; Michael retains forwarding, merge, publication, and
+announcement decisions. Record gaps for that owner.
 
 ## Optional Live Acceptance Handoff
 
@@ -442,7 +470,10 @@ Deliver exactly this, and nothing that implies more:
    as the shape.
 6. **Remaining gaps** — unprobed constraints, the account-bound lifecycle, and
    anything a reviewer must authorize before release.
-7. **An explicit statement** of what did not happen: no push, no PR, no deploy,
+7. **Launch-kit inputs** — capability summary, top use cases, prerequisites,
+   safety links, and the single shared brand record required by Phase 13, with
+   source commits, tested/untested labels, and rights gaps made explicit.
+8. **An explicit statement** of what did not happen: no push, no PR, no deploy,
    no install, no credential grant, no external write.
 
 ## Verification Checklist
@@ -459,6 +490,12 @@ Tick each item only with evidence, and mark the ones you could not run:
 - [ ] `ownershipModes` reflects what the provider advertises; `dcr` omitted for
       a provider Paperclip must not auto-register.
 - [ ] Official artwork present, manifest row added, both brand checks pass.
+- [ ] Shared brand record includes official source, usage-rights evidence and
+      status, restrictions, review owner/date, and both theme paths/checksums.
+- [ ] Capability summary, top use cases, prerequisites, and safety links are
+      present with pinned sources and tested/untested labels.
+- [ ] Handoff records preview-only upcoming, stable inclusion, and Michael
+      approval gates; it does not imply permission to publish.
 - [ ] Slug registered so the definition is connectable at the intended
       visibility.
 - [ ] Generator source and generated output are consistent in one change.

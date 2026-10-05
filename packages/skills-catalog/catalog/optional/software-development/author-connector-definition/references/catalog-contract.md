@@ -21,7 +21,9 @@ commit wins — record the drift in your report so this file gets corrected.
 | --- | --- | --- |
 | `scripts/ingest-app-definitions.mjs` | Human-authored provider source. The `apps` array and, after it, the tuple mapper — grep `const apps = [` and `schemaVersion: 1,`. | Yes — this is the source. |
 | `ui/public/brands/apps/<slug>.svg` | Official mark. | Yes. |
-| `ui/public/brands/apps/manifest.json` | Branding provenance: slug, provider name, `catalogVisible`, `localAsset`, optional `darkAsset`, optional `aliases`. | Yes. |
+| `doc/connections/<PROVIDER>-ACCEPTANCE.md` | Phase 13 capability summary, top use cases, prerequisites, safety links, and pinned evidence. Reuse the existing provider acceptance record. | Yes. |
+| `doc/connections/brands/<slug>.json` | One shared source/usage-rights/light-and-dark asset record for product and website. Use the Phase 13 shape. | Yes. |
+| `ui/public/brands/apps/manifest.json` | Runtime artwork projection from the shared brand record: slug, provider name, `catalogVisible`, `localAsset`, optional `darkAsset`, optional `aliases`. | Yes. |
 | `packages/shared/src/app-definitions.ts` | `CONNECTABLE_APP_SLUGS` and `APP_STORE_HIDDEN_SLUGS`. | Yes. |
 | `packages/shared/src/types/app-definition.ts` | The field contract the generator output has to satisfy. | Read-only for authoring. |
 | `packages/shared/src/app-definitions/<slug>.json` | Generated definition. | **Generated** — see the exception below. |
