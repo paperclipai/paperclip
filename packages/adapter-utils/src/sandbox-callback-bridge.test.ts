@@ -1397,6 +1397,17 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/companies/co-1/approvals" },
       { method: "GET", path: "/api/companies/co-1/routines" },
       { method: "GET", path: "/api/companies/co-1/skills" },
+      // Company skill library: the catalog and library reads, the managed create
+      // whose body carries the skill markdown inline, and the two installers.
+      { method: "GET", path: "/api/skills/catalog" },
+      { method: "GET", path: "/api/skills/catalog/ref" },
+      { method: "GET", path: "/api/skills/catalog/cat-1" },
+      { method: "GET", path: "/api/skills/catalog/cat-1/files" },
+      { method: "GET", path: "/api/companies/co-1/skills/skill-1" },
+      { method: "GET", path: "/api/companies/co-1/skills/skill-1/files" },
+      { method: "POST", path: "/api/companies/co-1/skills" },
+      { method: "POST", path: "/api/companies/co-1/skills/install-catalog" },
+      { method: "POST", path: "/api/companies/co-1/skills/import" },
       { method: "GET", path: "/api/companies/co-1/email/inboxes" },
       { method: "GET", path: "/api/companies/co-1/email/tasks/issue-1" },
       { method: "GET", path: "/api/companies/co-1/email/deliveries/send-1" },
@@ -1471,6 +1482,24 @@ describe("sandbox callback bridge", () => {
       // grows new actions later.
       { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/delete" },
       { method: "POST", path: "/api/companies/co-1/agents" },
+      // The skill-library rules must not over-match. Deleting or editing a
+      // library skill, walking the host project folders, moving a pinned origin,
+      // forking, and writing the files of a skill all stay denied. So does every
+      // extra path segment under the catalog and library reads.
+      { method: "DELETE", path: "/api/companies/co-1/skills/skill-1" },
+      { method: "PATCH", path: "/api/companies/co-1/skills/skill-1" },
+      { method: "POST", path: "/api/companies/co-1/skills/scan-projects" },
+      { method: "POST", path: "/api/companies/co-1/skills/browse-project" },
+      { method: "POST", path: "/api/companies/co-1/skills/skill-1/reset" },
+      { method: "POST", path: "/api/companies/co-1/skills/skill-1/install-update" },
+      { method: "POST", path: "/api/companies/co-1/skills/skill-1/fork" },
+      { method: "POST", path: "/api/companies/co-1/skills/skill-1/rename" },
+      { method: "PATCH", path: "/api/companies/co-1/skills/skill-1/files" },
+      { method: "DELETE", path: "/api/companies/co-1/skills/skill-1/files" },
+      { method: "POST", path: "/api/companies/co-1/skills/skill-1/versions" },
+      { method: "POST", path: "/api/skills/catalog" },
+      { method: "GET", path: "/api/skills/catalog/cat-1/files/extra" },
+      { method: "GET", path: "/api/companies/co-1/skills/skill-1/files/extra" },
       // The hire allowlist must not over-match: only the exact .txt discovery
       // files, only agent-hires (not /agents), and no sub-resources beyond it.
       { method: "GET", path: "/llms/agent-configuration" },

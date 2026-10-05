@@ -151,6 +151,29 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
   { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
 
+  // Company skill library. The reads above already let a run list the library,
+  // and the agent sync route above lets it attach a library skill to a seat. So
+  // without these a run can only attach what a person installed by hand. The
+  // three catalog reads are the lookup between a catalog listing and a catalog
+  // install. The managed create carries the skill markdown in the request body,
+  // so it needs no host path, and it is the only route that can add a skill the
+  // app catalog does not hold. `install-catalog` and `import` add a catalog
+  // skill or an external one. The controller enforces the company skill policy
+  // and the company boundary on every route here, and it keeps a local `import`
+  // source inside the company's own workspace roots.
+  // These stay denied on purpose: DELETE and PATCH of a library skill,
+  // `scan-projects` and `browse-project` (they walk the host project folders),
+  // `reset` and `install-update` (they move a pinned origin), `fork`, and every
+  // write to the files of a skill.
+  { method: "GET", path: /^\/api\/skills\/catalog$/ },
+  { method: "GET", path: /^\/api\/skills\/catalog\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/skills\/catalog\/[^/]+\/files$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/skills\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/skills\/[^/]+\/files$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/skills$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/skills\/install-catalog$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/skills\/import$/ },
+
   // Task-bound email actions. Company, inbox ownership, task/run authority,
   // and action policies are enforced by the controller; mailbox setup stays denied.
   { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/inboxes$/ },
