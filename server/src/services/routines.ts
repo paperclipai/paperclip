@@ -681,6 +681,15 @@ export function routineService(
     pluginWorkerManager: deps.pluginWorkerManager,
   });
 
+  // Number of consecutive stranded fires (execution issue reached blocked/cancelled) that
+  // trips a routine's failure circuit breaker. Below this, failures accumulate silently and
+  // reset on the next healthy fire; at or above it, a single aggregate escalation issue is
+  // opened and further scheduled fires are suppressed until the routine runs cleanly again.
+  const routineFailureCircuitThreshold = (() => {
+    const raw = Number(runtimeEnv.PAPERCLIP_ROUTINE_FAILURE_CIRCUIT_THRESHOLD);
+    return Number.isInteger(raw) && raw >= 1 ? raw : 3;
+  })();
+
   async function getRoutineById(id: string) {
     return db
       .select()
@@ -1583,6 +1592,109 @@ export function routineService(
       .then((rows) => rows[0] ?? null);
   }
 
+  // Opens exactly one aggregate escalation issue for a routine whose failure circuit just
+  // tripped, surfaced to the routine owner instead of stacking a blocked recovery issue per
+  // stranded fire. Returns the created issue, or null if creation failed (escalation must
+  // never break run finalization).
+  async function openRoutineFailureEscalationIssue(
+    routine: typeof routines.$inferSelect,
+    failureCount: number,
+  ) {
+    const description = [
+      `The scheduled routine **${routine.title}** has produced ${failureCount} consecutive stranded fires — ` +
+        "each execution issue reached `blocked`/`cancelled` without completing.",
+      "",
+      "Paperclip opened this single aggregate escalation instead of stacking one blocked recovery issue per " +
+        "fire, and tripped the routine's failure circuit breaker: scheduled fires are suppressed until the " +
+        "routine runs cleanly again or it is explicitly resumed.",
+      "",
+      "- Investigate why fires are stranding (adapter/session-init failures, workspace or configuration errors, " +
+        "or a persistent task error).",
+      "- Resolve the underlying cause, then run the routine manually. A healthy fire clears the breaker and " +
+        "resumes the schedule automatically.",
+      "- Alternatively, resume the routine once the cause is fixed to re-arm it.",
+    ].join("\n");
+
+    try {
+      return await issueSvc.create(routine.companyId, {
+        projectId: routine.projectId,
+        goalId: routine.goalId,
+        parentId: routine.parentIssueId ?? undefined,
+        title: `Routine "${routine.title}" stranded ${failureCount} consecutive fires`,
+        description,
+        status: "todo",
+        priority: "high",
+        responsibleUserId: routine.responsibleUserId ?? null,
+        trustExplicitResponsibleUserId: true,
+        originKind: "routine_failure_circuit",
+        originId: routine.id,
+        createdByAgentId: null,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  // Updates a routine's cross-fire failure counter when one of its fires reaches a terminal
+  // outcome. A healthy fire resets the counter and clears any tripped breaker; a stranded fire
+  // increments it and, at the threshold, trips the breaker + opens one aggregate escalation.
+  // Routine fires are serialized per routine (sequential scheduler tick + coalesce policy), so
+  // the read-modify-write below does not race against itself in practice.
+  async function reconcileRoutineFailureCircuit(
+    routineId: string,
+    outcome: "completed" | "failed",
+  ) {
+    const routine = await db
+      .select()
+      .from(routines)
+      .where(eq(routines.id, routineId))
+      .then((rows) => rows[0] ?? null);
+    if (!routine) return;
+
+    if (outcome === "completed") {
+      if (
+        routine.consecutiveFailureCount === 0 &&
+        !routine.failureCircuitOpenedAt &&
+        !routine.failureEscalationIssueId
+      ) {
+        return;
+      }
+      await db
+        .update(routines)
+        .set({
+          consecutiveFailureCount: 0,
+          failureCircuitOpenedAt: null,
+          failureEscalationIssueId: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(routines.id, routineId));
+      return;
+    }
+
+    const nextCount = routine.consecutiveFailureCount + 1;
+    const shouldTrip =
+      nextCount >= routineFailureCircuitThreshold && !routine.failureEscalationIssueId;
+
+    if (!shouldTrip) {
+      await db
+        .update(routines)
+        .set({ consecutiveFailureCount: nextCount, updatedAt: new Date() })
+        .where(eq(routines.id, routineId));
+      return;
+    }
+
+    const escalationIssue = await openRoutineFailureEscalationIssue(routine, nextCount);
+    await db
+      .update(routines)
+      .set({
+        consecutiveFailureCount: nextCount,
+        failureCircuitOpenedAt: new Date(),
+        failureEscalationIssueId: escalationIssue?.id ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(routines.id, routineId));
+  }
+
   async function createWebhookSecret(
     companyId: string,
     routineId: string,
@@ -2441,6 +2553,18 @@ export function routineService(
         }
         return routine;
       });
+      // Explicitly resuming a routine re-arms its failure circuit breaker and clears the
+      // rolling counter, so a previously tripped routine resumes firing on schedule.
+      if (patch.status === "active") {
+        await db
+          .update(routines)
+          .set({
+            consecutiveFailureCount: 0,
+            failureCircuitOpenedAt: null,
+            failureEscalationIssueId: null,
+          })
+          .where(and(eq(routines.id, id), isNotNull(routines.failureCircuitOpenedAt)));
+      }
       return updatedRoutine;
     },
 
@@ -3194,6 +3318,9 @@ export function routineService(
             eq(routineTriggers.enabled, true),
             eq(routineTriggers.archived, false),
             eq(routines.status, "active"),
+            // Suppress scheduled fires while the routine's failure circuit breaker is tripped.
+            // The breaker clears on a healthy (e.g. manual) fire or an explicit resume.
+            isNull(routines.failureCircuitOpenedAt),
             isNotNull(routineTriggers.nextRunAt),
             lte(routineTriggers.nextRunAt, now),
           ),
@@ -3308,6 +3435,7 @@ export function routineService(
       const run = await db
         .select({
           id: routineRuns.id,
+          routineId: routineRuns.routineId,
           status: routineRuns.status,
           failureReason: routineRuns.failureReason,
           triggerPayload: routineRuns.triggerPayload,
@@ -3320,7 +3448,7 @@ export function routineService(
         const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
           ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
         const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
-        return finalizeRun(issue.originRunId, {
+        const finalized = await finalizeRun(issue.originRunId, {
           status: "completed",
           failureReason: null,
           completedAt: new Date(),
@@ -3338,10 +3466,12 @@ export function routineService(
             }
             : {}),
         });
+        await reconcileRoutineFailureCircuit(run.routineId, "completed");
+        return finalized;
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
         const failureReason = executionIssueTransientFailureReason(issue.status);
-        return finalizeRun(issue.originRunId, {
+        const finalized = await finalizeRun(issue.originRunId, {
           status: "failed",
           failureReason,
           completedAt: new Date(),
@@ -3355,6 +3485,8 @@ export function routineService(
             },
           },
         });
+        await reconcileRoutineFailureCircuit(run.routineId, "failed");
+        return finalized;
       }
       const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
         ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);

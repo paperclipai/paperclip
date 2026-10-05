@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -374,6 +374,146 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run?.triggerPayload).toMatchObject({
       transientFailure: { clearedAt: expect.any(String) },
     });
+  });
+
+  // Simulates a single routine fire whose execution issue reached `finalStatus`, driving the
+  // same path the scheduler + recovery produce: a fresh run + execution issue per fire, then
+  // syncRunStatusForIssue to finalize the run and reconcile the routine's failure circuit.
+  async function simulateFire(input: {
+    companyId: string;
+    issueSvc: ReturnType<typeof issueService>;
+    svc: ReturnType<typeof routineService>;
+    routine: { id: string; projectId: string | null; title: string; priority: string; assigneeAgentId: string | null };
+    finalStatus: "done" | "blocked";
+  }) {
+    const runId = randomUUID();
+    const executionIssue = await input.issueSvc.create(input.companyId, {
+      projectId: input.routine.projectId,
+      title: input.routine.title,
+      description: "fire",
+      status: "in_progress",
+      priority: input.routine.priority,
+      assigneeAgentId: input.routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: input.routine.id,
+      originRunId: runId,
+    });
+    await db.insert(routineRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      routineId: input.routine.id,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: new Date(),
+      linkedIssueId: executionIssue.id,
+    });
+    await db.update(issues).set({ status: input.finalStatus }).where(eq(issues.id, executionIssue.id));
+    await input.svc.syncRunStatusForIssue(executionIssue.id);
+    return executionIssue;
+  }
+
+  async function readRoutineCircuit(routineId: string) {
+    const [row] = await db
+      .select({
+        consecutiveFailureCount: routines.consecutiveFailureCount,
+        failureCircuitOpenedAt: routines.failureCircuitOpenedAt,
+        failureEscalationIssueId: routines.failureEscalationIssueId,
+      })
+      .from(routines)
+      .where(eq(routines.id, routineId));
+    return row;
+  }
+
+  async function countEscalationIssues(companyId: string, routineId: string) {
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "routine_failure_circuit"),
+          eq(issues.originId, routineId),
+        ),
+      );
+  }
+
+  it("trips the failure circuit once after N consecutive stranded fires and resets on a healthy fire", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+
+    // Two stranded fires stay below the default threshold (3): counter climbs, no escalation.
+    await simulateFire({ companyId, issueSvc, svc, routine, finalStatus: "blocked" });
+    await simulateFire({ companyId, issueSvc, svc, routine, finalStatus: "blocked" });
+    let circuit = await readRoutineCircuit(routine.id);
+    expect(circuit.consecutiveFailureCount).toBe(2);
+    expect(circuit.failureCircuitOpenedAt).toBeNull();
+    expect(circuit.failureEscalationIssueId).toBeNull();
+    expect(await countEscalationIssues(companyId, routine.id)).toHaveLength(0);
+
+    // Third consecutive stranded fire trips the breaker + opens exactly one escalation issue.
+    await simulateFire({ companyId, issueSvc, svc, routine, finalStatus: "blocked" });
+    circuit = await readRoutineCircuit(routine.id);
+    expect(circuit.consecutiveFailureCount).toBe(3);
+    expect(circuit.failureCircuitOpenedAt).toBeInstanceOf(Date);
+    const escalations = await countEscalationIssues(companyId, routine.id);
+    expect(escalations).toHaveLength(1);
+    expect(circuit.failureEscalationIssueId).toBe(escalations[0]!.id);
+    expect(escalations[0]!.title).toContain("stranded 3 consecutive fires");
+
+    // A fourth stranded fire keeps counting but must NOT open a second escalation.
+    await simulateFire({ companyId, issueSvc, svc, routine, finalStatus: "blocked" });
+    circuit = await readRoutineCircuit(routine.id);
+    expect(circuit.consecutiveFailureCount).toBe(4);
+    expect(await countEscalationIssues(companyId, routine.id)).toHaveLength(1);
+
+    // A healthy fire resets the counter and clears the tripped breaker + escalation link.
+    await simulateFire({ companyId, issueSvc, svc, routine, finalStatus: "done" });
+    circuit = await readRoutineCircuit(routine.id);
+    expect(circuit.consecutiveFailureCount).toBe(0);
+    expect(circuit.failureCircuitOpenedAt).toBeNull();
+    expect(circuit.failureEscalationIssueId).toBeNull();
+  });
+
+  it("honours a configurable failure circuit threshold", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture({
+      runtimeEnv: { PAPERCLIP_ROUTINE_FAILURE_CIRCUIT_THRESHOLD: "2" },
+    });
+
+    await simulateFire({ companyId, issueSvc, svc, routine, finalStatus: "blocked" });
+    expect((await readRoutineCircuit(routine.id)).failureCircuitOpenedAt).toBeNull();
+
+    await simulateFire({ companyId, issueSvc, svc, routine, finalStatus: "blocked" });
+    const circuit = await readRoutineCircuit(routine.id);
+    expect(circuit.consecutiveFailureCount).toBe(2);
+    expect(circuit.failureCircuitOpenedAt).toBeInstanceOf(Date);
+    expect(await countEscalationIssues(companyId, routine.id)).toHaveLength(1);
+  });
+
+  it("suppresses scheduled fires while the breaker is tripped and resumes after re-arming", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture({
+      runtimeEnv: { PAPERCLIP_ROUTINE_FAILURE_CIRCUIT_THRESHOLD: "1" },
+    });
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", cronExpression: "*/5 * * * *", timezone: "UTC", enabled: true },
+      {},
+    );
+    // Tick at the trigger's own nextRunAt so the fire is genuinely due; any suppression then
+    // comes from the breaker, not from the schedule being in the future.
+    const dueAt = new Date(trigger.nextRunAt!.getTime() + 1000);
+
+    // One stranded fire trips the breaker (threshold 1).
+    await simulateFire({ companyId, issueSvc, svc, routine, finalStatus: "blocked" });
+    expect((await readRoutineCircuit(routine.id)).failureCircuitOpenedAt).toBeInstanceOf(Date);
+
+    // The scheduler must skip a due routine whose breaker is open.
+    expect(await svc.tickScheduledTriggers(dueAt)).toEqual({ triggered: 0 });
+
+    // Explicitly resuming the routine re-arms the breaker and clears the counter.
+    await svc.update(routine.id, { status: "active" }, {});
+    const circuit = await readRoutineCircuit(routine.id);
+    expect(circuit.failureCircuitOpenedAt).toBeNull();
+    expect(circuit.consecutiveFailureCount).toBe(0);
+    expect(await svc.tickScheduledTriggers(dueAt)).toEqual({ triggered: 1 });
   });
 
   it("filters listed routines by project", async () => {
