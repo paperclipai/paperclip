@@ -1803,6 +1803,8 @@ export {
 export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
+  backupRetentionPolicySchema,
+  patchBackupRetentionPolicySchema,
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,

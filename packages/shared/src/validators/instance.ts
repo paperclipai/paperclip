@@ -24,6 +24,13 @@ export const backupRetentionPolicySchema = z.object({
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
 });
 
+// Patch variant with no defaults: an omitted tier field stays absent so a
+// partial update from an older client never resets a stored hourly value.
+export const patchBackupRetentionPolicySchema = z
+  .object(shapeWithoutDefaults(backupRetentionPolicySchema.shape))
+  .partial()
+  .strict();
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(
@@ -36,7 +43,10 @@ export const instanceGeneralSettingsSchema = z.object({
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
-  .object(shapeWithoutDefaults(instanceGeneralSettingsSchema.shape))
+  .object({
+    ...shapeWithoutDefaults(instanceGeneralSettingsSchema.shape),
+    backupRetention: patchBackupRetentionPolicySchema.optional(),
+  })
   .partial()
   .strict();
 

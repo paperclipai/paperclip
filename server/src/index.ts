@@ -92,7 +92,7 @@ import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
 import type { Request as ExpressRequest, RequestHandler } from "express";
 import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
-import type { BackupRetentionPolicy } from "@paperclipai/shared";
+import { DEFAULT_BACKUP_RETENTION, type BackupRetentionPolicy } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
 import {
   createDb,
@@ -1897,7 +1897,14 @@ async function startServerWithDatabaseTeardown(
   
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
-    startupDatabaseBackupRetention = (await backupSettingsSvc.getGeneral()).backupRetention;
+    try {
+      startupDatabaseBackupRetention = (await backupSettingsSvc.getGeneral()).backupRetention;
+    } catch (err) {
+      // A transient settings read must not block startup. The scheduled path
+      // re-reads retention on every interval and logs its own failures.
+      logger.warn({ err }, "Failed to read backup retention for startup banner; using default");
+      startupDatabaseBackupRetention = DEFAULT_BACKUP_RETENTION;
+    }
 
     logger.info(
       {
