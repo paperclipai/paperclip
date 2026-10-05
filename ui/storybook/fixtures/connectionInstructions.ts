@@ -17,7 +17,7 @@ export function installConnectionGuidanceFixtures(client: QueryClient, provider:
   let connected = !options.setup;
   const connection = {
     id, uid: id, companyId: company, applicationId: "guidance-app", name: provider,
-    connectionPurpose: "tools", credentialPolicy: "shared", transport: "mcp_remote",
+    connectionPurpose: "tool", credentialPolicy: "shared", transport: "mcp_remote",
     authKind: provider === "Honcho" ? "api_key" : "oauth", status: "active", enabled: true,
     healthStatus: "ok", healthMessage: null, requiresReauthorization: false,
     createdByUserId: "user-storybook", createdByAgentId: null,
