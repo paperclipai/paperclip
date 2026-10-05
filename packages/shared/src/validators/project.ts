@@ -128,7 +128,11 @@ export type CreateProject = z.infer<typeof createProjectSchema>;
 
 export const updateProjectSchema = objectWithoutDefaults(
   z.object(projectFields),
-).partial();
+).partial().extend({
+  budgetMonthlyCents: z.never({
+    error: "Set project budgets through /api/companies/{companyId}/budgets/policies.",
+  }).optional(),
+});
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
 

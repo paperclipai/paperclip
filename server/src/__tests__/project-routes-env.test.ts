@@ -170,6 +170,19 @@ describe("project env routes", () => {
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
   });
 
+  it.each([0, 5000, null, "5000", {}])("rejects unsupported project budget writes (%j) without applying other fields", async (budgetMonthlyCents) => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.update.mockResolvedValue(buildProject({ name: "Renamed" }));
+    const app = await createApp();
+    const response = await request(app)
+      .patch("/api/projects/project-1")
+      .send({ name: "Renamed", budgetMonthlyCents })
+      .expect(422);
+    expect(response.body.error).toContain("/budgets/policies");
+    expect(mockProjectService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("normalizes env bindings on create and logs only env keys", async () => {
     const normalizedEnv = {
       API_KEY: {
