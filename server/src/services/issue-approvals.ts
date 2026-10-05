@@ -3,10 +3,52 @@ import type { Db } from "@paperclipai/db";
 import { approvals, issueApprovals, issues } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactEventPayload } from "../redaction.js";
+import { acquireIssueLifecycleFenceInTransaction } from "./issue-lifecycle-fence.js";
+
+type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type LinkWriter = Pick<Db, "select" | "insert">;
 
 interface LinkActor {
   agentId?: string | null;
   userId?: string | null;
+}
+
+async function persistApprovalLink(
+  writer: LinkWriter, issueId: string, approvalId: string, actor?: LinkActor, companyId?: string,
+) {
+  const issue = await writer.select().from(issues)
+    .where(and(eq(issues.id, issueId), companyId === undefined ? undefined : eq(issues.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!issue) throw notFound("Issue not found");
+  const approval = await writer.select().from(approvals)
+    .where(and(eq(approvals.id, approvalId), companyId === undefined ? undefined : eq(approvals.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!approval) throw notFound("Approval not found");
+  if (issue.companyId !== approval.companyId || (companyId !== undefined && issue.companyId !== companyId)) {
+    throw unprocessable("Issue and approval must belong to the same company");
+  }
+  await writer.insert(issueApprovals).values({
+    companyId: issue.companyId, issueId, approvalId,
+    linkedByAgentId: actor?.agentId ?? null, linkedByUserId: actor?.userId ?? null,
+  }).onConflictDoNothing();
+  return writer.select().from(issueApprovals)
+    .where(and(eq(issueApprovals.issueId, issueId), eq(issueApprovals.approvalId, approvalId),
+      companyId === undefined ? undefined : eq(issueApprovals.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+}
+
+// Dark supplied-tx participant; no production caller opts in. Caller must acquire
+// this company protocol before earlier domain reads/locks too. Not authorization.
+export async function linkIssueApprovalInTransaction(tx: Transaction, input: {
+  companyId: string; issueId: string; approvalId: string; actor?: LinkActor;
+}) {
+  const companyId = input.companyId;
+  const issueId = input.issueId;
+  const approvalId = input.approvalId;
+  const actor = { agentId: input.actor?.agentId ?? null, userId: input.actor?.userId ?? null };
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval link requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  return persistApprovalLink(tx, issueId, approvalId, actor, companyId);
 }
 
 export function issueApprovalService(db: Db) {
@@ -104,25 +146,17 @@ export function issueApprovalService(db: Db) {
         .orderBy(desc(issueApprovals.createdAt));
     },
 
-    link: async (issueId: string, approvalId: string, actor?: LinkActor) => {
-      const { issue } = await assertIssueAndApprovalSameCompany(issueId, approvalId);
-
-      await db
-        .insert(issueApprovals)
-        .values({
-          companyId: issue.companyId,
-          issueId,
-          approvalId,
-          linkedByAgentId: actor?.agentId ?? null,
-          linkedByUserId: actor?.userId ?? null,
-        })
-        .onConflictDoNothing();
-
-      return db
-        .select()
-        .from(issueApprovals)
-        .where(and(eq(issueApprovals.issueId, issueId), eq(issueApprovals.approvalId, approvalId)))
-        .then((rows) => rows[0] ?? null);
+    link: async (issueId: string, approvalId: string, actor?: LinkActor,
+      options?: { lifecycleFence?: boolean; companyId?: string }) => {
+      if (options?.lifecycleFence) {
+        const companyId = options.companyId;
+        if (!companyId) throw unprocessable("Lifecycle-fenced approval link requires companyId");
+        const capturedActor = { agentId: actor?.agentId ?? null, userId: actor?.userId ?? null };
+        return db.transaction((tx) => linkIssueApprovalInTransaction(tx, {
+          companyId, issueId, approvalId, actor: capturedActor,
+        }));
+      }
+      return persistApprovalLink(db, issueId, approvalId, actor);
     },
 
     unlink: async (issueId: string, approvalId: string) => {

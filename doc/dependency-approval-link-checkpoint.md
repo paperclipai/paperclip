@@ -1,0 +1,14 @@
+# Dark approval-link participant checkpoint
+
+SOURCE/MOCK only; intentionally no production opt-in. This does not repair the ordinary dependency restore path.
+
+The canonical issueApprovalService.link now accepts a dark lifecycleFence/companyId option. It synchronously captures routing/actor attribution, starts the owning transaction before domain reads, then delegates to linkIssueApprovalInTransaction. The supplied entry awaits the shared company fence before the real issue and approval reads and reuses private canonical persistApprovalLink. Dark issue/approval/result queries are explicitly company-scoped. Default omitted/false callers keep root/non-owning behavior and existing same-company validation/conflict handling.
+
+Verification from server cwd, with PAPERCLIP_API_KEY/DATABASE_URL/FORGEJO_TOKEN unset and TMPDIR set to the infra profile scratch:
+/opt/homebrew/bin/node ../node_modules/vitest/vitest.mjs run --config vitest.config.ts src/__tests__/issue-approval-lifecycle-link.test.ts --pool=forks --maxWorkers=1 --testTimeout=15000
+
+Initial clean RED: one failure, expected tx/fence but none (735ms). Earlier run also exposed an unhandled test promise; rejection observer was added before clean reproduction. After implementation: one PASS; expanded recording: 18 PASS. Fifteen explicit targeted suites: 316 PASS (19.02s). Original writer/route/human characterization diagnostics: 27 PASS / 2 original known RED (11.32s): route still blocked and ordinary writer lacks durable intent. Temporary missing-await mutant: one FAIL /17 skipped (751ms), domain reads before settled fence; removed before delivery.
+
+Recording executes actual canonical issue/approval/link code and real SQL builder/key generation, not SQL. Synthetic rows intentionally model missing/foreign vetoes; SQL predicates are not executed. Owned/supplied fence rejection, exact scoped predicates, supplied input containment, deferred owned startup actor capture, and ordinary undefined/false behavior are covered. This is attribution containment, not authenticated authority. Pending approval status is not changed. Conflict/retry SQL semantics, insert failure/rollback and actual PostgreSQL exclusion are not proved.
+
+Remaining gate participants: unlink, bulk links, approval create/decisions/revision and interaction creation/resolution. Existing writers do not participate in the shared protocol. Creation/deletion/checkout/native/finalize and ledger/statusVersion/effects/flush/legacy intents still require integration; restoration is UNWIRED. The caller must acquire the protocol before any earlier domain read/row lock, not merely at this downstream entry. No common serialization, production wiring, queue admission/orphan expiry/15min live bound or acceptance claim. Typecheck/build/full gates not executed. Human DB-scope question remains pending; no DB/server/adapter/merge/deploy/activation or live queue_hygiene/evidence/policy mutation.
