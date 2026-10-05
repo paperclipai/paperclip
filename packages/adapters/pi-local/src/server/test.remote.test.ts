@@ -29,6 +29,10 @@ describe("pi remote environment provider configuration", () => {
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const command = process.argv[process.argv.length - 1];
+if (process.env.PI_TEST_FAIL_CLEANUP === "1" && command.includes("/tmp/paperclip-pi-envtest-") && command.includes("-rf") && /\\brm\\b/.test(command)) {
+  console.error("Simulated SSH disconnect before cleanup.");
+  process.exit(255);
+}
 const remoteEnv = { ...process.env, HOME: process.env.PI_TEST_REMOTE_HOME };
 const child = spawn("/bin/sh", ["-c", command], { env: remoteEnv, stdio: ["inherit", "pipe", "pipe"] });
 let stdout = "";
@@ -154,5 +158,20 @@ const path = require("node:path");
     vi.stubEnv("PI_TEST_FAIL_UPLOAD", "1");
     await expect(probe("gateway")).rejects.toThrow("Simulated SSH failure");
     await expectRemoteCleanup(1);
+  });
+
+  it("reports cleanup failure without hiding completed hello checks", async () => {
+    vi.stubEnv("PI_TEST_FAIL_CLEANUP", "1");
+    const result = await probe("gateway");
+    expect(result.status).toBe("warn");
+    expect(result.checks.some((check) => check.code === "pi_hello_probe_passed")).toBe(true);
+    const warning = result.checks.find((check) => check.code === "pi_remote_config_cleanup_failed");
+    expect(warning?.level).toBe("warn");
+    const directories = await createdRemoteDirectories();
+    expect(directories).toHaveLength(1);
+    expect(warning?.detail).toBe(directories[0]);
+    // The failed cleanup really left a file; the warning tells the operator where.
+    await expect(fs.access(path.join(directories[0], ".paperclip-runtime/pi/agentConfig/models.json"))).resolves.toBeUndefined();
+    expect(await fs.readFile(path.join(workspace, "user-file.txt"), "utf8")).toBe("Keep this workspace intact.\n");
   });
 });

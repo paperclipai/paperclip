@@ -755,6 +755,8 @@ execution target. Each remote probe uses its own disposable configuration
 directory. The test removes its temporary local and remote configuration when
 it finishes, including after an upload or probe failure, and preserves the
 operator's static `PI_CODING_AGENT_DIR` profile and working directory.
+If remote cleanup fails, the result keeps the completed probe checks and adds
+a warning with the temporary directory to remove in that environment.
 
 ## Project Repository Checkouts
 

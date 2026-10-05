@@ -369,12 +369,6 @@ export async function testEnvironment(
       }
     }
 
-    return {
-      adapterType: ctx.adapterType,
-      status: summarizeStatus(checks),
-      checks,
-      testedAt: new Date().toISOString(),
-    };
   } finally {
     try {
       if (remoteConfigRoot) {
@@ -389,6 +383,14 @@ export async function testEnvironment(
           throw new Error("Pi environment test could not remove its remote configuration directory.");
         }
       }
+    } catch {
+      checks.push({
+        code: "pi_remote_config_cleanup_failed",
+        level: "warn",
+        message: "Pi probe checks completed, but the remote provider configuration could not be removed.",
+        detail: remoteConfigRoot ?? undefined,
+        hint: "Remove this temporary directory from the selected execution environment, then retry the test.",
+      });
     } finally {
       try {
         if (runtimeWorkspaceLocalDir) {
@@ -399,4 +401,10 @@ export async function testEnvironment(
       }
     }
   }
+  return {
+    adapterType: ctx.adapterType,
+    status: summarizeStatus(checks),
+    checks,
+    testedAt: new Date().toISOString(),
+  };
 }
