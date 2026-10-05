@@ -16,7 +16,7 @@ import {
 // yet still below the 30s hook timeout.
 vi.setConfig({ testTimeout: 30000 });
 
-const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
+const mockWakeup = vi.hoisted(() => vi.fn(async (_agentId: string, _options?: unknown) => undefined));
 const mockFindExistingIssueBlockersResolvedWakeForReadyState = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
@@ -121,6 +121,7 @@ async function createApp() {
   const emptyRows: unknown[] = [];
   const whereResult = {
     limit: vi.fn(async () => emptyRows),
+    orderBy: vi.fn(async () => emptyRows),
     then: async (resolve: (rows: unknown[]) => unknown) => resolve(emptyRows),
   };
   const query: Record<string, unknown> = {};
@@ -240,6 +241,51 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+  });
+
+  it("restores the dependent status before dispatching the final-blocker recovery wake", async () => {
+    // Mock-only diagnostic contract: exercise the real route, not a database or adapter.
+    // The service mock records writes but does not invent an unblock transition.
+    const blocker = {
+      id: "issue-1", companyId: "company-1", identifier: "PAP-100",
+      title: "Final blocker", description: null, status: "in_progress",
+      priority: "medium", parentId: null, assigneeAgentId: "agent-1",
+      assigneeUserId: null, createdByAgentId: null, createdByUserId: null,
+      executionWorkspaceId: null, labels: [], labelIds: [],
+    };
+    const dependent = { ...blocker, id: "issue-2", status: "blocked", assigneeAgentId: "agent-2" };
+    mockIssueService.getById.mockImplementation(async (id: string) =>
+      id === dependent.id ? dependent : blocker,
+    );
+    mockIssueService.getByIdForUpdate.mockImplementation(async (id: string) =>
+      id === dependent.id ? dependent : blocker,
+    );
+    mockIssueService.update.mockImplementation(async (id: string, patch: Record<string, unknown>) => {
+      if (id === dependent.id) {
+        Object.assign(dependent, patch);
+        return { ...dependent };
+      }
+      // The real service returns a new row; do not mutate the route's before snapshot.
+      return { ...blocker, ...patch };
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      { id: dependent.id, assigneeAgentId: dependent.assigneeAgentId, blockerIssueIds: [blocker.id] },
+    ]);
+    const observedStatuses: string[] = [];
+    mockWakeup.mockImplementation(async (agentId: string) => {
+      if (agentId === dependent.assigneeAgentId) observedStatuses.push(dependent.status);
+      return undefined;
+    });
+    try {
+      const res = await request(await createApp()).patch(`/api/issues/${blocker.id}`).send({ status: "done" });
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => expect(observedStatuses).toHaveLength(1));
+      // A queued recovery wake behind stale blocked is the reported defect.
+      expect(observedStatuses[0]).not.toBe("blocked");
+      expect(dependent.status).not.toBe("blocked");
+    } finally {
+      mockWakeup.mockImplementation(async () => undefined);
+    }
   });
 
   it("wakes an assigned blocked issue when blockers are applied after the blocker is already done", async () => {
