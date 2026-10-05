@@ -38,6 +38,7 @@ import {
   syncAgentAdapterEnvBindings,
 } from "./agent-secret-bindings.js";
 import { logActivity } from "./activity-log.js";
+import { removeBudgetStateForScope } from "./budgets.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
@@ -1083,6 +1084,7 @@ export function agentService(db: Db) {
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+        await removeBudgetStateForScope(tx as unknown as Db, "agent", id);
         const deleted = await tx
           .delete(agents)
           .where(eq(agents.id, id))
