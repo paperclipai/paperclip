@@ -1872,6 +1872,49 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it.each([false, true])(
+    "continues original work after recovery is restored with metadata present (resumed: %s)",
+    (resumedSession) => {
+      const wake = {
+        reason: "issue_recovery_action_restored",
+        issue: {
+          id: "issue-1",
+          identifier: "DEMO-1",
+          title: "Produce an intake brief",
+          status: "todo",
+        },
+        recovery: {
+          cause: "workspace_validation_failed",
+          originalAssignee: { id: "agent-1", name: "Writer" },
+          attemptCount: 1,
+          nextAction: "Repair the workspace, then explicitly retry.",
+        },
+        commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+        comments: [],
+        fallbackFetchNeeded: false,
+      };
+      const prompt = renderPaperclipWakePrompt(wake, {
+        resumedSession,
+        includeExecutionContract: true,
+      });
+
+      expect(prompt).toContain(
+        resumedSession
+          ? "continue the current task without restating the full heartbeat boilerplate."
+          : "Use this wake to continue the task, applying new user direction and preserving its approval gates.",
+      );
+      expect(prompt).toContain("lead with the work.");
+      expect(prompt).toContain("Produce an intake brief");
+      expect(prompt).not.toContain("Do not produce the deliverable yourself.");
+      expect(prompt).not.toContain("Recovery contract:");
+      expect(prompt).not.toContain("Cause-specific instruction:");
+      expect(prompt).not.toContain("Fallback preference order:");
+      expect(
+        JSON.parse(stringifyPaperclipWakePayload(wake)!).recovery,
+      ).toMatchObject(wake.recovery);
+    },
+  );
+
   it("keeps connection guidance without a generic manual in a composed fresh prompt", () => {
     const wakePrompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",
