@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { restoreDependencyReadyIssueInTransaction } from "../services/issue-dependency-restoration.js";
 import { buildIssueBlockersResolvedWakeStateKey } from "../services/issue-dependency-wakeups.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
+import { issueService } from "../services/issues.js";
 
 vi.mock("../services/instance-settings.ts", () => ({
   instanceSettingsService: () => ({ getExperimental: async () => ({ enableIsolatedWorkspaces: false }) }),
@@ -27,7 +28,7 @@ function fixture() {
   const pauseHolds: Record<string, any>[] = [];
   const writes: Array<{ table: string; values: Record<string, unknown> }> = [];
   const events: string[] = [];
-  const root = { transaction: vi.fn(() => { throw new Error("root-transaction-not-owned"); }),
+  const root = { transaction: vi.fn<(callback: any) => Promise<any>>(() => { throw new Error("root-transaction-not-owned"); }),
     select: () => { throw new Error("root-read-outside-transaction"); } };
   function query(rows: unknown[], resolveTarget?: (predicate: SQL) => unknown[]) {
     const q = { where: (predicate: SQL) => { if (resolveTarget) rows = resolveTarget(predicate); return q; }, innerJoin: () => q, leftJoin: () => q,
@@ -91,6 +92,46 @@ function fixture() {
       companyId: "company-1", dependentIssueId: "dependent-1", resolvedBlockerIssueId: "blocker-1",
     }, postCommit as any) };
 }
+
+describe("opt-in canonical lifecycle boundary (recording, not SQL serialization)", () => {
+  it.each([false, true])("blocks all canonical domain effects while fence is pending (owned=%s)", async (owned) => {
+    const f = fixture();
+    let release!: () => void;
+    f.tx.execute.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }) as any);
+    if (owned) f.root.transaction.mockImplementation(async (callback: any) => callback(f.tx));
+    const running = issueService(f.root as any).update("dependent-1", { status: "todo", companyGuard: "company-1" },
+      owned ? f.root : f.tx, f.postCommit.activityPublications, f.postCommit.actions, { lifecycleFence: true });
+    await Promise.resolve(); await Promise.resolve();
+    expect(f.tx.execute).toHaveBeenCalledOnce(); expect(f.events).toEqual([]); expect(f.writes).toEqual([]);
+    release(); await running;
+    expect(f.getRow().status).toBe("todo"); expect(f.tx.transaction).not.toHaveBeenCalled();
+    expect(f.root.transaction).toHaveBeenCalledTimes(owned ? 1 : 0);
+  });
+  it.each([false, true])("rejects before domain effects when fence fails (owned=%s)", async (owned) => {
+    const f = fixture(); f.tx.execute.mockRejectedValue(new Error("fence-denied"));
+    if (owned) f.root.transaction.mockImplementation(async (callback: any) => callback(f.tx));
+    await expect(issueService(f.root as any).update("dependent-1", { status: "todo", companyGuard: "company-1" },
+      owned ? f.root : f.tx, f.postCommit.activityPublications, f.postCommit.actions, { lifecycleFence: true }))
+      .rejects.toThrow("fence-denied");
+    expect(f.events).toEqual([]); expect(f.writes).toEqual([]); expect(f.getRow()).toEqual(f.before);
+    expect(f.tx.transaction).not.toHaveBeenCalled();
+  });
+  it("requires company routing before opening the owned transaction", async () => {
+    const f = fixture();
+    await expect(issueService(f.root as any).update("dependent-1", { status: "todo" }, f.root,
+      [], [], { lifecycleFence: true })).rejects.toThrow("requires companyGuard");
+    expect(f.root.transaction).not.toHaveBeenCalled(); expect(f.events).toEqual([]);
+  });
+  it("awaits the supplied fence before the first canonical read", async () => {
+    const f = fixture();
+    await issueService(f.root as any).update("dependent-1", { status: "todo", companyGuard: "company-1" },
+      f.tx, f.postCommit.activityPublications, f.postCommit.actions, { lifecycleFence: true } as any);
+    expect(f.events[0]).toBe("lifecycle-fence");
+    expect(f.events.indexOf("read:issues")).toBeLessThan(f.events.indexOf("lock:update"));
+    expect(f.events.indexOf("lock:update")).toBeLessThan(f.events.indexOf("canonical-write"));
+    expect(f.root.transaction).not.toHaveBeenCalled(); expect(f.tx.transaction).not.toHaveBeenCalled();
+  });
+});
 
 describe("dark coordinator with actual canonical update (mock recording, not atomicity)", () => {
   it.each([false, true])("missing ancestor is indeterminate with unrelated hold=%s", async (withHold) => {

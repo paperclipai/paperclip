@@ -142,6 +142,7 @@ import {
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { acquireIssueLifecycleFenceInTransaction } from "./issue-lifecycle-fence.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
@@ -10631,14 +10632,24 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
       postCommitActions?: IssuePostCommitAction[],
-      options: { bindRuntimeSharedWorkspace?: boolean } = {},
+      options: { bindRuntimeSharedWorkspace?: boolean; lifecycleFence?: boolean } = {},
     ) => {
+      // Dark opt-in only. Callers supply trusted routing before domain reads;
+      // an outer transaction must enter here before taking other row locks.
+      if (options.lifecycleFence && !data.companyGuard) {
+        throw new Error("Lifecycle-fenced update requires companyGuard");
+      }
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications =
         postCommitActivityPublications ?? ownedActivityPublications;
       const ownedPostCommitActions: IssuePostCommitAction[] = [];
       const queuedPostCommitActions =
         postCommitActions ?? ownedPostCommitActions;
+      const ownsTransaction = dbOrTx === db;
+      const prepareUpdate = async (dbOrTx: any) => {
+      if (options.lifecycleFence) {
+        await acquireIssueLifecycleFenceInTransaction(dbOrTx, data.companyGuard!);
+      }
       // A caller that supplies `companyGuard` gets the company added to
       // every read, lock, and write predicate below. A check before this
       // call is not a boundary: `issues.company_id` can change between
@@ -11095,7 +11106,7 @@ export function issueService(db: Db) {
                 const nativeQuestion =
                   nativeQuestionCancellationIdentity(interaction);
                 if (nativeQuestion) {
-                  if (dbOrTx !== db && !postCommitActions) {
+                  if (!ownsTransaction && !postCommitActions) {
                     throw new Error(
                       "Terminal native question updates in an external transaction require a post-commit action queue",
                     );
@@ -11306,14 +11317,16 @@ export function issueService(db: Db) {
         };
       };
 
-      const result = await (dbOrTx === db
-        ? db.transaction(runUpdate)
-        : runUpdate(dbOrTx));
-      if (dbOrTx === db && !postCommitActivityPublications) {
+      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+      };
+      const result = await (options.lifecycleFence && ownsTransaction
+        ? db.transaction(prepareUpdate)
+        : prepareUpdate(dbOrTx));
+      if (ownsTransaction && !postCommitActivityPublications) {
         for (const publication of ownedActivityPublications)
           publishActivity(publication);
       }
-      if (dbOrTx === db && !postCommitActions) {
+      if (ownsTransaction && !postCommitActions) {
         await executeIssuePostCommitActions(db, ownedPostCommitActions);
       }
       return result;
