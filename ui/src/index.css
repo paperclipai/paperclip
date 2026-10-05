@@ -1808,7 +1808,7 @@ select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="
   align-items: center;
   gap: 0.25rem;
   margin: 0 0.1rem;
-  padding: 0 0.625rem;
+  padding: 1px 0.625rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.75rem;
@@ -2399,7 +2399,7 @@ span.paperclip-project-mention-chip {
   align-items: center;
   gap: 0.25rem;
   margin: 0 0.1rem;
-  padding: 0 0.625rem;
+  padding: 1px 0.625rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.75rem;
