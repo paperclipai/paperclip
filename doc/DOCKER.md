@@ -96,14 +96,27 @@ All persisted under your bind mount (`./data/docker-paperclip` in the example ab
 
 ## Docker Compose
 
+### Persistent signing secrets
+
+Before the first launch, generate two independent values with `openssl rand -hex 32`
+and save them in `docker/.env`. Keep any existing deployment's values unchanged:
+
+```dotenv
+BETTER_AUTH_SECRET=<session-signing-secret>
+PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=<tool-action-signing-secret>
+```
+
+Restrict this file to its owner (`chmod 600 docker/.env`) and keep it out of version
+control. Compose reads it for both commands below. Reuse the values on every
+restart. Rotate the tool-action secret only after outstanding approvals are
+resolved, because pending signatures use the previous value.
+
 ### Quickstart (embedded SQLite)
 
 Single container, no external database. Data persists via a bind mount.
 
 ```sh
-BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
-PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32) \
-  docker compose -f docker/docker-compose.quickstart.yml up --build
+docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
 Defaults:
@@ -129,9 +142,7 @@ Pass `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` to enable local adapter runs.
 Paperclip server + PostgreSQL 17. The database is health-checked before the server starts.
 
 ```sh
-BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
-PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32) \
-  docker compose -f docker/docker-compose.yml up --build
+docker compose -f docker/docker-compose.yml up --build
 ```
 
 PostgreSQL data persists in a named Docker volume (`pgdata`). Paperclip data persists in `paperclip-data`.

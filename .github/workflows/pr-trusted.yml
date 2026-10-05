@@ -656,6 +656,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
+      - name: Verify Compose signing secret forwarding
+        run: node --test scripts/docker-compose-secrets.test.mjs
+
       # Same .dockerignore semantics as the real image builds: a
       # context-slimming change that strips a committed build input must
       # fail here, on the pull request, instead of failing every

@@ -2,8 +2,9 @@
 # Copy this file and set the required env vars before running.
 #
 #   cd docker
-#   export BETTER_AUTH_SECRET="$(openssl rand -hex 32)"
-#   export PAPERCLIP_TOOL_ACTION_SIGNING_SECRET="$(openssl rand -hex 32)"
+#   Set BETTER_AUTH_SECRET and PAPERCLIP_TOOL_ACTION_SIGNING_SECRET in .env
+#   once, using a separate `openssl rand -hex 32` value for each. Reuse them
+#   on restarts; do not replace existing deployment secrets.
 #   export ANTHROPIC_API_KEY="sk-ant-..."
 #   docker compose -f docker-compose.quickstart.yml up --build
 #
