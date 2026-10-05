@@ -398,7 +398,13 @@ export function folderService(db: Db, mutationLockHeld = false) {
     return { kind: input.kind, itemId: row.id, folderId: row.folderId ?? null };
   }
 
-  async function uniqueSiblingSlug(companyId: string, parentId: string | null, baseSlug: string, stableSuffix: string) {
+  async function uniqueSiblingSlug(
+    companyId: string,
+    parentId: string | null,
+    baseSlug: string,
+    stableSuffix: string,
+    excludeFolderId?: string,
+  ) {
     const siblingSlugs = new Set(await db
       .select({ slug: folders.slug })
       .from(folders)
@@ -406,6 +412,7 @@ export function folderService(db: Db, mutationLockHeld = false) {
         eq(folders.companyId, companyId),
         eq(folders.kind, "skill"),
         parentId === null ? sql`${folders.parentId} is null` : eq(folders.parentId, parentId),
+        excludeFolderId ? sql`${folders.id} != ${excludeFolderId}` : undefined,
       ))
       .then((rows) => rows.map((row) => row.slug)));
     if (!siblingSlugs.has(baseSlug)) return baseSlug;
@@ -523,6 +530,34 @@ export function folderService(db: Db, mutationLockHeld = false) {
     throw conflict("Could not create personal skill folder");
   }
 
+  async function resyncProjectFolder(
+    companyId: string,
+    projectId: string,
+    projectName: string,
+    folderId: string,
+  ): Promise<Folder | null> {
+    const existing = await getFolderRow(companyId, folderId);
+    if (!existing) return null;
+    const name = normalizeName(projectName);
+    const desiredSlug = normalizeFolderSlug(name);
+    const patch: { name?: string; slug?: string } = {};
+    if (existing.name !== name) patch.name = name;
+    if (existing.slug !== desiredSlug) {
+      // Exclude this folder's own (stale) slug from the collision check, so
+      // repeated resyncs of an unchanged desired slug converge on the same
+      // result instead of appending a new suffix every time.
+      const slug = await uniqueSiblingSlug(companyId, existing.parentId, desiredSlug, projectId, existing.id);
+      if (slug !== existing.slug) patch.slug = slug;
+    }
+    if (Object.keys(patch).length > 0) {
+      await db
+        .update(folders)
+        .set({ ...patch, updatedAt: new Date() })
+        .where(and(eq(folders.companyId, companyId), eq(folders.id, existing.id)));
+    }
+    return getFolder(companyId, existing.id);
+  }
+
   async function ensureProjectFolder(companyId: string, projectId: string, projectName: string): Promise<Folder> {
     if (!mutationLockHeld) {
       return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).ensureProjectFolder(companyId, projectId, projectName));
@@ -531,7 +566,11 @@ export function folderService(db: Db, mutationLockHeld = false) {
     const systemKey = `project:${projectId}`;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const resolved = await uniqueSystemSlug(companyId, parent.id, normalizeFolderSlug(projectName), systemKey);
-      if (resolved.id) return (await getFolder(companyId, resolved.id))!;
+      if (resolved.id) {
+        const synced = await resyncProjectFolder(companyId, projectId, projectName, resolved.id);
+        if (!synced) continue;
+        return synced;
+      }
       const created = await insertSystemFolder({
         companyId,
         parentId: parent.id,
@@ -542,6 +581,19 @@ export function folderService(db: Db, mutationLockHeld = false) {
       if (created) return created;
     }
     throw conflict("Could not create project skill folder");
+  }
+
+  /**
+   * Resync-only counterpart to `ensureProjectFolder`, for the project rename
+   * path: it must never create a folder for a project that never had one.
+   */
+  async function renameProjectFolder(companyId: string, projectId: string, projectName: string): Promise<Folder | null> {
+    if (!mutationLockHeld) {
+      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).renameProjectFolder(companyId, projectId, projectName));
+    }
+    const existing = await findSystemFolder(companyId, `project:${projectId}`);
+    if (!existing) return null;
+    return resyncProjectFolder(companyId, projectId, projectName, existing.id);
   }
 
   async function ensureBundledCategory(companyId: string, category: string): Promise<Folder> {
@@ -613,6 +665,7 @@ export function folderService(db: Db, mutationLockHeld = false) {
     validateSkillFolder,
     ensureMyFolder,
     ensureProjectFolder,
+    renameProjectFolder,
     ensureBundledCategory,
     pruneEmptyBundledCategories,
   };
