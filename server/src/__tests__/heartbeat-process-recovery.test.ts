@@ -5717,6 +5717,70 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(JSON.stringify(repair?.contextSnapshot?.dispositionRepairInstruction)).not.toContain(bearerSecret);
   });
 
+  it.each([
+    { name: "old assignee cancelled before start", reassign: true, runStatus: "cancelled", started: false, monitor: true },
+    { name: "old assignee finished a failed attempt", reassign: true, runStatus: "failed", started: true, monitor: false },
+    { name: "current assignee cancelled before start", reassign: false, runStatus: "cancelled", started: false, monitor: true },
+  ] as const)("ignores stale successful-run handoff evidence: $name", async ({ reassign, runStatus, started, monitor }) => {
+    const nextCheckAt = monitor ? new Date(Date.now() + 24 * 60 * 60 * 1000) : null;
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus,
+      runErrorCode: started ? "adapter_failed" : "issue_assignee_changed",
+      runError: started ? "The old owner failed its handoff attempt." : "Issue owner changed before claim.",
+      monitorNextCheckAt: nextCheckAt,
+    });
+    const currentAgentId = reassign ? randomUUID() : agentId;
+    if (reassign) {
+      await db.insert(agents).values({
+        id: currentAgentId,
+        companyId,
+        name: "New task owner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+    await db.update(issues).set({
+      assigneeAgentId: currentAgentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    }).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({
+      startedAt: started ? new Date("2026-03-19T00:00:00.000Z") : null,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+        sourceRunId: randomUUID(),
+        handoffRequired: true,
+        handoffReason: "successful_run_missing_state",
+        missingDisposition: "clear_next_step",
+        handoffAttempt: 1,
+        maxHandoffAttempts: 1,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+    const enqueueWakeup = vi.fn(async () => null);
+
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({
+      skipped: 1,
+      successfulRunHandoffEscalated: 0,
+      escalated: 0,
+      continuationRequeued: 0,
+      issueIds: [],
+    });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ status: "in_progress", assigneeAgentId: currentAgentId, monitorNextCheckAt: nextCheckAt });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
     const { companyId, agentId, runId, issueId } =
       await seedStrandedIssueFixture({

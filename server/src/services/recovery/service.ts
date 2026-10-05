@@ -5238,6 +5238,15 @@ export function recoveryService(
       }
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
+        // A prior owner's attempt cannot exhaust the current owner's handoff.
+        // A corrective wake cancelled before it starts is not a spent attempt.
+        if (
+          latestRun?.agentId !== agentId ||
+          (latestRun.status === "cancelled" && !latestRun.startedAt)
+        ) {
+          result.skipped += 1;
+          continue;
+        }
         if (isPluginManagedIssueLifecycle(issue)) {
           result.skipped += 1;
           continue;
