@@ -88,6 +88,19 @@ describe("ProfileSettings", () => {
     vi.clearAllMocks();
   });
 
+  it("does not render a keyboard shortcuts toggle because shortcuts are always enabled", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+    expect(container.textContent).toContain("Jane Example");
+    expect(container.textContent).not.toContain("Keyboard shortcuts");
+    expect(container.querySelector('[aria-label="Toggle keyboard shortcuts"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
   it("uploads a clicked avatar into Paperclip storage and persists the returned asset path", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({

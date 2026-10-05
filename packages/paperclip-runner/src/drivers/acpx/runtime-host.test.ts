@@ -20,7 +20,10 @@ import type {
   VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
-import { prepareAcpxRuntimeSandbox } from "./runtime-sandbox.js";
+import {
+  prepareAcpxRuntimeSandbox,
+  type AcpxRuntimeSandbox,
+} from "./runtime-sandbox.js";
 import {
   AcpxRuntimeHost,
   type AcpxRuntimeHostDependencies,
@@ -30,6 +33,15 @@ import {
 } from "./runtime-host.js";
 
 const temporaryDirectories: string[] = [];
+// A published skill snapshot is sealed read-only by `protectStagedTree`
+// (runtime-context-materializer.ts:125, :133). Only
+// `releaseMaterializedNativeRuntimeSkills` restores write permission before
+// removal. `hostFixture` records every sandbox's skills home here as soon as
+// the sandbox exists, before the materialize step that seals it and before
+// any later step in the same open() call can fail or stall past this file's
+// per-test timeout. `afterEach` releases every recorded home first, so a
+// forced-open directory removal never has to unlink inside a sealed tree.
+const materializedSkillsHomes: string[] = [];
 const admissionControllers: AbortController[] = [];
 const pendingAdmissionOpenings = new Set<Promise<void>>();
 const pendingAdmissionCleanups = new Set<Promise<void>>();
@@ -167,6 +179,14 @@ afterEach(async () => {
   }
   await Promise.all([...pendingAdmissionOpenings]);
   await Promise.all([...pendingAdmissionCleanups]);
+  // Release every sealed skills tree before the plain `rm` below. `rm` does
+  // not restore write permission, so a tree still sealed at this point would
+  // otherwise fail with EACCES and hide the real test failure.
+  await Promise.all(
+    materializedSkillsHomes
+      .splice(0)
+      .map((skillsHome) => releaseMaterializedNativeRuntimeSkills(skillsHome)),
+  );
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -281,7 +301,12 @@ describe("ACPX runtime host", () => {
     const providerStartTurn = vi.fn(() => runtimeTurn());
     let assigned = true;
     let expectedReference = "ASSIGNED_SKILL_MARKER";
+    // Prepare the real sandbox once. Each reopen still exercises the host's
+    // real skill refresh, including changed references and removed assignments,
+    // without repeating unrelated durable directory and file writes. Sandbox
+    // preparation itself also has dedicated runtime-sandbox coverage.
     const dependencies = fixture.dependencies({
+      reuseSandbox: true,
       openRuntime: async (options) => {
         skillsHome = join(options.launchEnvironment.CLAUDE_CONFIG_DIR!, "skills");
         expect(await readdir(skillsHome)).toEqual(assigned ? ["assigned"] : []);
@@ -333,6 +358,32 @@ describe("ACPX runtime host", () => {
         await writeFile(join(skillRoot, "references", "answer.txt"), expectedReference);
         await writeFile(join(skillRoot, "SKILL.md"), "---\nname: assigned\ndescription: Updated instructions.\n---\nRead references/answer.txt before responding.");
       }
+      // The prepared native envelope v3 carries the selected skill explicitly;
+      // its task object intentionally has no internal description field. Keep
+      // this boundary covered across a fresh open and a provider reopen.
+      for (let index = 0; index < 2; index += 1) {
+        const host = await AcpxRuntimeHost.open(
+          { ...options, runtimeContext: context },
+          dependencies,
+        );
+        const message = JSON.stringify({
+          schema: "paperclip.native-model-envelope.v3",
+          requestedSkills: ["assigned"],
+          task: {
+            identifier: "PAP-1",
+            title: "Assigned task",
+            prompt: "A prepared direct user request",
+            workMode: "standard",
+          },
+          interactionResponses: index ? [{ response: { status: "accepted" } }] : [],
+        });
+        host.startTurn({ text: message, requestId: `prepared-skill-turn-${index}` });
+        expect(providerStartTurn).toHaveBeenLastCalledWith({
+          text: `/assigned ${message}`,
+          requestId: `prepared-skill-turn-${index}`,
+        });
+        await host.close({ reason: "prepared envelope reopen test" });
+      }
       // The same agent's next ordinary task must not inherit the command.
       const ordinary = await AcpxRuntimeHost.open(
         { ...options, runtimeContext: context }, dependencies,
@@ -346,6 +397,25 @@ describe("ACPX runtime host", () => {
         text: ordinaryMessage, requestId: "ordinary-task",
       });
       await ordinary.close({ reason: "ordinary task verified" });
+      const ordinaryPrepared = await AcpxRuntimeHost.open(
+        { ...options, runtimeContext: context }, dependencies,
+      );
+      const ordinaryPreparedMessage = JSON.stringify({
+        schema: "paperclip.native-model-envelope.v3",
+        requestedSkills: [],
+        task: {
+          identifier: "PAP-2",
+          title: "An ordinary task",
+          prompt: "Mention /assigned in a note",
+          workMode: "standard",
+        },
+      });
+      ordinaryPrepared.startTurn({ text: ordinaryPreparedMessage, requestId: "ordinary-prepared-task" });
+      expect(providerStartTurn).toHaveBeenLastCalledWith({
+        text: ordinaryPreparedMessage,
+        requestId: "ordinary-prepared-task",
+      });
+      await ordinaryPrepared.close({ reason: "ordinary prepared task verified" });
       // No stale assignment survives a later launch without runtime context.
       assigned = false;
       const host = await AcpxRuntimeHost.open(options, dependencies);
@@ -713,7 +783,7 @@ describe("ACPX runtime host", () => {
     ).rejects.toThrow();
   });
 
-  it("rejects Pi before installation or runtime launch", async () => {
+  it("rejects Pi without an explicit task policy before installation or runtime launch", async () => {
     const fixture = await hostFixture();
     const verifyInstallation = vi.fn();
     const openRuntime = vi.fn();
@@ -731,9 +801,35 @@ describe("ACPX runtime host", () => {
           reportRetainedCleanupFailure: vi.fn(),
         },
       ),
-    ).rejects.toThrow("descriptor-confined verified launch");
+    ).rejects.toThrow("explicit task execution policy");
     expect(verifyInstallation).not.toHaveBeenCalled();
     expect(openRuntime).not.toHaveBeenCalled();
+  });
+
+  it("binds Pi task policy independently of permissions and rejects an uninstalled candidate", async () => {
+    const fixture = await hostFixture();
+    const model = "openrouter/deepseek/deepseek-v4-flash-0731";
+    const profile = resolveQualifiedAcpxProfile("pi", model);
+    const openRuntime = vi.fn(async (options: AcpxRuntimePortOpenOptions) => {
+      expect(options.launchEnvironment.PAPERCLIP_PI_READ_ONLY).toBe("1");
+      expect(options.launchEnvironment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS).toBe("Bound instructions");
+      expect(JSON.parse(options.launchEnvironment.PAPERCLIP_PI_READ_ROOTS!)).toEqual([]);
+      expect(options.permissionMode).toBe("approve-all");
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }) });
+    });
+    const options = { ...fixture.options, agent: "pi" as const, model,
+      permissionMode: "approve-all" as const, providerPolicy: { readOnly: true }, systemInstructions: "Bound instructions" };
+    await expect(AcpxRuntimeHost.open(options, { openRuntime, reportRetainedCleanupFailure: vi.fn() }))
+      .rejects.toThrow("verified candidate distribution is not installed");
+    expect(openRuntime).not.toHaveBeenCalled();
+    const host = await AcpxRuntimeHost.open(options, fixture.dependencies({
+      verifyInstallation: async () => ({ commandDigest: profile.commandDigest,
+        agentServerPackageJsonPath: join(fixture.root, "package.json"), agentRuntimePackageJsonPath: null,
+        openCommand: async () => ({ spawn: () => { throw new Error("not used"); }, close: async () => {} }),
+      }), openRuntime,
+    }));
+    await host.close({ reason: "policy verified" });
+    expect(openRuntime).toHaveBeenCalledOnce();
   });
 
   it("selects and verifies Claude's qualified reported model", async () => {
@@ -826,6 +922,25 @@ describe("ACPX runtime host", () => {
       ),
     ).rejects.toThrow(/does not match its profile/);
     expect(openRuntime).not.toHaveBeenCalled();
+  });
+
+  it.each(["expired credential", "provider process died"])("cleans Grok credentials after failed initialization: %s", async (failure) => {
+    const fixture = await hostFixture();
+    let home = "";
+    await expect(AcpxRuntimeHost.open({
+      ...fixture.options, agent: "grok", model: "grok-4.7", permissionMode: "approve-reads",
+      environment: { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: JSON.stringify({ "https://accounts.x.ai::11111111-1111-4111-8111-111111111111": { key: "test-expired", refresh_token: "test-refresh" } }) },
+    }, fixture.dependencies({ openRuntime: async (options) => {
+      home = options.launchEnvironment.GROK_HOME!;
+      expect(options.permissionMode).toBe("approve-reads");
+      expect(options.launchEnvironment).not.toHaveProperty("PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET");
+      expect(await readFile(join(home, "auth.json"), "utf8")).toContain("test-expired");
+      throw new Error(failure);
+    } }))).rejects.toThrow(failure);
+    for (const filename of ["auth.json", "auth-refresh.json"]) {
+      await expect(readFile(join(home, filename))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
   it("cleans credentials and command leases when provider open fails", async () => {
@@ -1176,6 +1291,8 @@ describe("ACPX runtime host", () => {
     const turn = runtimeTurn();
     const startTurn = vi.fn(() => turn);
     const onElicitation = vi.fn();
+    const onExtensionRequest = vi.fn();
+    const onExtensionNotification = vi.fn();
     const runtime = runtimePort({ startTurn });
     const host = await AcpxRuntimeHost.open(
       {
@@ -1193,12 +1310,16 @@ describe("ACPX runtime host", () => {
         text: "Complete the task.",
         requestId: "turn-1",
         onElicitation,
+        onExtensionRequest,
+        onExtensionNotification,
       }),
     ).toBe(turn);
     expect(startTurn).toHaveBeenCalledWith({
       text: "Complete the task.",
       requestId: "turn-1",
       onElicitation,
+      onExtensionRequest,
+      onExtensionNotification,
     });
     expect(() =>
       host.startTurn({ text: "Concurrent", requestId: "turn-2" }),
@@ -1213,6 +1334,34 @@ describe("ACPX runtime host", () => {
     expect(() => host.startTurn({ text: "Late", requestId: "turn-3" })).toThrow(
       "is closing",
     );
+  });
+
+  it("clones ephemeral capabilities and fences steering controls to an acknowledged active turn", async () => {
+    const fixture = await hostFixture();
+    const turn = runtimeTurn();
+    const runtime = Object.assign(runtimePort({ startTurn: () => turn }), {
+      steeringCapability: () => ({ steering: true, queuedFollowUp: true }),
+      steerActiveTurn: vi.fn(async () => undefined),
+      queueFollowUp: vi.fn(async () => undefined),
+    });
+    const clientCapabilities = { _meta: { fixture: { enabled: true } } };
+    let observed: Record<string, unknown> | undefined;
+    const host = await AcpxRuntimeHost.open({
+      ...fixture.options, agent: "codex", model: "gpt-5.6-sol", permissionMode: "approve-reads",
+      environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" }, clientCapabilities,
+    }, fixture.dependencies({ openRuntime: async (options) => { observed = options.clientCapabilities; return runtime; } }));
+    expect(observed).toEqual(clientCapabilities);
+    expect(observed).not.toBe(clientCapabilities);
+    await expect(host.steerActiveTurn("Early")).rejects.toThrow("active turn");
+    host.startTurn({ text: "Start", requestId: "turn-1" });
+    await expect(host.steerActiveTurn("Wrong turn", "turn-other")).rejects.toThrow("active turn");
+    await host.steerActiveTurn("Steer", "turn-1");
+    await host.queueFollowUp("Next", "turn-1");
+    expect(runtime.steerActiveTurn).toHaveBeenCalledExactlyOnceWith("Steer", "turn-1");
+    expect(runtime.queueFollowUp).toHaveBeenCalledExactlyOnceWith("Next", "turn-1");
+    expect(runtime.startTurn).toHaveBeenCalledOnce();
+    await host.close({ reason: "controls tested" });
+    await expect(host.queueFollowUp("Too late", "turn-1")).rejects.toThrow("active turn");
   });
 
   it("rejects oversized turn inputs before calling the runtime", async () => {
@@ -1392,6 +1541,16 @@ describe("ACPX runtime host", () => {
             agentRuntimePackageJsonPath: null,
             openCommand,
           }),
+          // This test builds its own dependency object instead of
+          // `fixture.dependencies()`, so it must record the skills home
+          // itself. Command admission starts after the sandbox exists and
+          // Claude's skills are already materialized and sealed, and abort
+          // can land right there — before this test's own cleanup runs.
+          prepareSandbox: async (sandboxInput) => {
+            const sandbox = await prepareAcpxRuntimeSandbox(sandboxInput);
+            materializedSkillsHomes.push(join(sandbox.agentHomeDirectory, "skills"));
+            return sandbox;
+          },
           openRuntime,
           retainAdmissionCleanup: trackAdmissionCleanup,
           reportRetainedCleanupFailure: vi.fn(),
@@ -1705,8 +1864,15 @@ async function hostFixture() {
       input: Pick<AcpxRuntimeHostDependencies, "openRuntime"> &
         Partial<
           Pick<AcpxRuntimeHostDependencies, "reportRetainedCleanupFailure">
-        >,
+        > & {
+          // Opt-in only. When true, `prepareSandbox` runs the real
+          // preparation once, then returns that same sandbox for every
+          // later open in the test. Every other test omits this flag, so
+          // the file still proves that a reopen re-prepares the sandbox.
+          reuseSandbox?: boolean;
+        },
     ): AcpxRuntimeHostDependencies {
+      let reusedSandbox: AcpxRuntimeSandbox | null = null;
       return {
         verifyInstallation: async (profile) =>
           ({
@@ -1716,6 +1882,19 @@ async function hostFixture() {
             openCommand: async () => command,
           }) satisfies VerifiedAcpxInstallation,
         openRuntime: input.openRuntime,
+        // Record the skills home the instant the sandbox exists, ahead of
+        // the materialize call that seals it. A test that overrides
+        // `prepareSandbox` for a non-Claude agent replaces this wrapper, but
+        // those agents never materialize skills, so nothing is lost.
+        prepareSandbox: async (sandboxInput) => {
+          if (input.reuseSandbox && reusedSandbox) return reusedSandbox;
+          const sandbox = await prepareAcpxRuntimeSandbox(sandboxInput);
+          if (sandboxInput.agent === "claude") {
+            materializedSkillsHomes.push(join(sandbox.agentHomeDirectory, "skills"));
+          }
+          if (input.reuseSandbox) reusedSandbox = sandbox;
+          return sandbox;
+        },
         retainAdmissionCleanup: trackAdmissionCleanup,
         reportRetainedCleanupFailure:
           input.reportRetainedCleanupFailure ?? vi.fn(),

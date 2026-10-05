@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -18,6 +19,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { activityService } from "../services/activity.ts";
+import { issueService } from "../services/issues.ts";
+import { documentService } from "../services/documents.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -70,6 +73,36 @@ describeEmbeddedPostgres("activity service", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it.each(["standard", "planning", "ask"] as const)("LCA-05 persists explicit %s mode across wording edits and uses it in ledger backfill", async (workMode) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Mode fixture", issuePrefix: `M${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Writer", role: "engineer", status: "idle", adapterType: "codex_local" });
+    const service = issueService(db);
+    const task = await service.create(companyId, { title: "Making a plan", description: "Create a report and research proposal.", status: "in_progress", assigneeAgentId: agentId, ...(workMode === "standard" ? {} : { workMode }) });
+    expect(task.workMode).toBe(workMode);
+    for (const prose of [
+      { title: "Implement exporter", description: "Change the code now." },
+      { title: "Making a plan", description: "Create a plan for the report exporter." },
+    ]) {
+      await service.update(task.id, prose);
+      expect((await service.getById(task.id))?.workMode).toBe(workMode);
+    }
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", contextSnapshot: { issueId: task.id }, resultJson: { summary: "I will inspect the repository next." } });
+    const expected = workMode === "planning" ? "advanced" : "plan_only";
+    await waitForIssueRun(activityService(db), companyId, task.id, run => run.runId === runId && run.livenessState === expected);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].livenessState).toBe(expected);
+    if (workMode === "standard") {
+      await documentService(db).upsertIssueDocument({ issueId: task.id, key: "plan", title: "Requested plan", format: "markdown", body: "1. Inspect files.\n2. Implement the exporter.", createdByAgentId: agentId });
+      expect((await service.getById(task.id))?.workMode).toBe("standard");
+      expect(await documentService(db).getIssueDocumentByKey(task.id, "plan")).toBeTruthy();
+    }
+    const nextMode = workMode === "planning" ? "standard" : "planning";
+    await service.update(task.id, { workMode: nextMode });
+    expect((await service.getById(task.id))?.workMode).toBe(nextMode);
   });
 
   it("limits company activity lists", async () => {

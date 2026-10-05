@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import os from "node:os";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -9,6 +9,11 @@ import {
 
 const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
 const mockRedactCurrentUserText = vi.hoisted(() => vi.fn());
+const mockResolveSecret = vi.hoisted(() => vi.fn());
+
+vi.mock("../../secrets/provider-registry.js", () => ({
+  getSecretProvider: () => ({ resolveVersion: mockResolveSecret }),
+}));
 
 vi.mock("../../sentry.js", () => ({
   captureRunFailure: mockCaptureRunFailure,
@@ -23,8 +28,7 @@ vi.mock("../../log-redaction.js", async (importOriginal) => {
 });
 
 import { reportRunFailure, waitForPendingRunFailureReports } from "../run-failure-report.js";
-import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../../redaction.js";
-import { redactCurrentUserText } from "../../log-redaction.js";
+import { REDACTED_EVENT_VALUE } from "../../redaction.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -34,14 +38,29 @@ describeEmbeddedPostgres("reportRunFailure", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let companyId!: string;
   let agentId!: string;
+  let inheritedEnv: NodeJS.ProcessEnv;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-run-failure-report-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
+  beforeEach(() => {
+    // Unknown host values intentionally count as secrets, including short values
+    // such as "1". Keep these fixtures independent of the developer/CI environment
+    // and add secret values explicitly in the tests that exercise redaction.
+    inheritedEnv = process.env;
+    process.env = Object.fromEntries(
+      ["PATH", "HOME", "USER", "USERNAME", "LOGNAME", "USERPROFILE", "TMPDIR", "TEMP", "TMP"]
+        .flatMap((key) => inheritedEnv[key] === undefined ? [] : [[key, inheritedEnv[key]]]),
+    );
+  });
+
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    process.env = inheritedEnv;
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -112,6 +131,127 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     );
   });
 
+  it("forwards stored exit evidence even when the adapter error is generic", async () => {
+    await seedCompanyAndAgent();
+    for (const processExit of [
+      { exitCode: 1, signal: null },
+      { exitCode: null, signal: "SIGTERM" },
+      { exitCode: null, signal: null },
+    ]) {
+      mockCaptureRunFailure.mockClear();
+      await reportRunFailure(db, buildRun({
+        error: "Adapter failed",
+        errorCode: "adapter_failed",
+        ...processExit,
+        stdoutExcerpt: "private-output",
+        stderrExcerpt: "private-error-output",
+        resultJson: { private: "adapter-result" },
+      }));
+
+      expect(mockCaptureRunFailure).toHaveBeenCalledWith(expect.objectContaining({
+        errorMessage: "Adapter failed",
+        errorCode: "adapter_failed",
+        ...processExit,
+      }));
+      const captured = mockCaptureRunFailure.mock.calls[0][0];
+      expect(captured).not.toHaveProperty("stdoutExcerpt");
+      expect(captured).not.toHaveProperty("stderrExcerpt");
+      expect(captured).not.toHaveProperty("resultJson");
+    }
+  });
+
+  it("reports selected provider diagnostics and the original cause without copying arbitrary payloads", async () => {
+    await seedCompanyAndAgent();
+    const cause = Object.assign(new Error("provider unreachable"), {
+      code: "ECONNRESET", requestId: "request-123", status: 503,
+      response: { body: "private-response" },
+    });
+    const error = new Error("adapter threw", { cause });
+    const run = buildRun({
+      runtimeMode: "legacy",
+      executionStage: "execute",
+      error: "adapter threw",
+      stderrExcerpt: "private-stderr",
+      stdoutExcerpt: "private-stdout",
+      contextSnapshot: { prompt: "private-prompt" },
+      resultJson: {
+        terminalSessionFailure: { category: "service", title: "Provider unavailable", details: "request-123 failed", raw: "private-provider-raw" },
+        timeoutFired: false, summary: "private-summary", env: { SECRET: "private-env" },
+      },
+    });
+    await reportRunFailure(db, run, { error, phase: "execute", adapterErrorMeta: { phase: "turn", retryable: true, response: "private-adapter-response" } });
+    const captured = mockCaptureRunFailure.mock.calls[0][0];
+    expect(captured.diagnostics).toMatchObject({
+      execution: { runtimeMode: "legacy", executionStage: "execute", failurePhase: "execute", timeoutFired: false },
+      adapter: { phase: "turn", retryable: true },
+      provider: { category: "service", title: "Provider unavailable", details: "request-123 failed" },
+      exceptions: [{ message: "adapter threw" }, { message: "provider unreachable", code: "ECONNRESET", status: 503, requestId: "request-123" }],
+    });
+    expect(captured.diagnostics.exceptions[0].stack).toContain("run-failure-report.test.ts");
+    expect(JSON.stringify(captured)).not.toContain("private-");
+    expect(error.cause).toBe(cause);
+  });
+
+  it.each([false, true])("redacts registered run secrets and fails closed when resolution fails: %s", async (fails) => {
+    await seedCompanyAndAgent();
+    const secret = "opaque-registered-value";
+    const run = buildRun({
+      error: `connection failed: ${secret}`,
+      contextSnapshot: { paperclipSecretRedactions: [{ fingerprintSha256: "fixture", material: { encrypted: "fixture" } }] },
+      resultJson: { terminalSessionFailure: { category: "service", details: `upstream rejected ${secret}` } },
+    });
+    await db.insert(heartbeatRuns).values(run);
+    if (fails) mockResolveSecret.mockRejectedValueOnce(new Error("fixture resolution failed"));
+    else mockResolveSecret.mockResolvedValueOnce(secret);
+
+    await expect(reportRunFailure(db, run, {
+      error: new Error(`failed ${secret}`, { cause: new Error(`cause ${secret}`) }),
+      adapterErrorMeta: { causeMessage: `adapter ${secret}` },
+    })).resolves.toBeUndefined();
+    expect(mockResolveSecret).toHaveBeenCalledTimes(1);
+    if (fails) {
+      expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    } else {
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+      const captured = mockCaptureRunFailure.mock.calls[0][0];
+      expect(JSON.stringify(captured)).not.toContain(secret);
+      expect(captured.diagnostics.provider.details).toContain(REDACTED_EVENT_VALUE);
+      expect(captured.diagnostics.exceptions[1].message).toContain(REDACTED_EVENT_VALUE);
+    }
+  });
+
+  it("redacts runtime and host environment secret values even without a persisted registry", async () => {
+    await seedCompanyAndAgent();
+    const runtimeSecret = "opaque-runtime-value";
+    const hostSecret = "opaque-host-value";
+    vi.stubEnv("FIXTURE_CUSTOM_VALUE", hostSecret);
+    const text = `connection failed: ${runtimeSecret} ${hostSecret}`;
+    const run = buildRun({ error: text, contextSnapshot: null,
+      resultJson: { terminalSessionFailure: { details: text } },
+    });
+    await reportRunFailure(db, run, {
+      error: new Error(text, { cause: new Error(text) }),
+      adapterErrorMeta: { causeMessage: text, stackPreview: text },
+      secretValues: [runtimeSecret],
+    });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    const captured = mockCaptureRunFailure.mock.calls[0][0];
+    expect(JSON.stringify(captured)).not.toContain(runtimeSecret);
+    expect(JSON.stringify(captured)).not.toContain(hostSecret);
+    expect(captured.diagnostics.exceptions).toHaveLength(2);
+    expect(captured).not.toHaveProperty("secretValues");
+  });
+
+  it("still redacts short values from unknown host settings", async () => {
+    await seedCompanyAndAgent();
+    vi.stubEnv("FIXTURE_CUSTOM_VALUE", "1");
+
+    await reportRunFailure(db, buildRun());
+
+    expect(mockCaptureRunFailure.mock.calls[0][0].errorMessage)
+      .toBe(`the provider process exited with code ${REDACTED_EVENT_VALUE}`);
+  });
+
   it("captures nothing for succeeded, cancelled, and interrupted", async () => {
     await seedCompanyAndAgent();
     for (const status of ["succeeded", "cancelled", "interrupted"] as const) {
@@ -119,6 +259,25 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       await reportRunFailure(db, run);
     }
 
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+  it.each(["provider", "unknown"])("reports an unexpected started cancellation from %s", async source => {
+    await seedCompanyAndAgent();
+    const run = buildRun({ status: "cancelled", startedAt: new Date(0), finishedAt: new Date(1000),
+      resultJson: { cancellation: { source, expected: false, initiator: { type: "provider", id: "private-actor" },
+        reason: "private-reason", recordedAt: new Date(1000).toISOString() } } });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    expect(mockCaptureRunFailure.mock.calls[0][0]).toMatchObject({ runStatus: "cancelled",
+      diagnostics: { execution: { cancellationSource: source, cancellationExpected: false } } });
+    expect(JSON.stringify(mockCaptureRunFailure.mock.calls)).not.toMatch(/private-actor|private-reason/);
+  });
+  it("does not report an operator's Stop as a failure", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ status: "cancelled", startedAt: new Date(0), resultJson: {
+      cancellation: { source: "operator", expected: true, initiator: { type: "user", id: "board" },
+        reason: "Stop", recordedAt: new Date().toISOString() },
+    } }));
     expect(mockCaptureRunFailure).not.toHaveBeenCalled();
   });
 
@@ -230,9 +389,10 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     await reportRunFailure(db, run);
 
-    const expectedErrorMessage = redactSensitiveText(redactCurrentUserText(rawError));
     const { errorMessage } = mockCaptureRunFailure.mock.calls[0][0];
-    expect(errorMessage).toBe(expectedErrorMessage);
+    // Environment-value redaction can fully mask the username before the
+    // current-user redactor applies its partial mask. Both remove the home path.
+    expect(errorMessage).toContain("workspace/report.log");
     expect(errorMessage).not.toContain(homeDir);
   });
 
@@ -247,10 +407,13 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     const { errorMessage } = mockCaptureRunFailure.mock.calls[0][0];
     expect(errorMessage).toHaveLength(MAX_ERROR_MESSAGE_LENGTH);
-    expect(errorMessage).toBe("x".repeat(MAX_ERROR_MESSAGE_LENGTH));
+    expect(errorMessage).toBe("x".repeat(MAX_ERROR_MESSAGE_LENGTH - 12) + "\n[truncated]");
   });
 
-  it("does not change a short error message", async () => {
+  it("preserves a short error message with known public host settings", async () => {
+    vi.stubEnv("PAPERCLIP_DB_BACKUP_ENABLED", "false");
+    vi.stubEnv("PAPERCLIP_DB_BACKUP_RETENTION_DAYS", "1");
+    vi.stubEnv("GITHUB_RUN_ATTEMPT", "1");
     await seedCompanyAndAgent();
     const shortError = "the provider process exited with code 1";
     const run = buildRun({ status: "failed", error: shortError });
@@ -297,7 +460,7 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     const { errorCode } = mockCaptureRunFailure.mock.calls[0][0];
     expect(errorCode).toHaveLength(MAX_ERROR_CODE_LENGTH);
-    expect(errorCode).toBe("y".repeat(MAX_ERROR_CODE_LENGTH));
+    expect(errorCode).toBe("y".repeat(MAX_ERROR_CODE_LENGTH - 12) + "\n[truncated]");
   });
 
   it("sends errorCode null unchanged when the run holds no error code", async () => {

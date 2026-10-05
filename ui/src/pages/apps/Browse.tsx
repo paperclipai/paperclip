@@ -1,4 +1,8 @@
-import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
+import {
+  connectionSetupVerbForApp,
+  isRetiredComposioConnection,
+  RETIRED_COMPOSIO_MESSAGE,
+} from "@paperclipai/shared";
 import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -19,20 +23,22 @@ import {
 import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
 import {
   getAppDefinitionForUrl,
-  isRemoteMcpConnectorId,
+  isMemoryConnectorId,
   getAppStoreDefinition,
   isToolConnectionAttentionHealth,
   aiSubscriptionNeedsIsolatedLogin,
+  GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
 } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
-import { useMcpAggregatorsEnabled } from "@/hooks/useMcpAggregatorsEnabled";
+import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
 import { appCopyFor } from "@/lib/app-gallery-copy";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
+import { emailApi } from "@/api/email";
 import {
   chatEndpointsApi,
   type ChatEndpoint,
@@ -63,6 +69,7 @@ import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { AppLogo } from "./AppLogo";
 import {
   appApplicationSourceSlug,
+  appConnectionSourceSlug,
   appDefinitionDarkLogoUrl,
   appDefinitionDescription,
   appDefinitionLogoUrl,
@@ -103,13 +110,18 @@ type ConnectionState = {
 };
 
 type ConnectionRemovalTarget = {
-  kind?: "chat";
   id: string;
   accountName: string;
   providerName: string;
   remainingConnectionCount: number;
+} & ({ kind: "chat"; provider: ChatProvider } | { kind?: undefined });
 
-};
+// Temporary, page-only hold until Google OAuth verification is approved.
+// Keep definitions, direct setup/management routes, and runtime access intact.
+// Remove this filter after approval; reviewer instances stay on their pinned build.
+const GOOGLE_CONNECTOR_SLUGS = new Set(
+  Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug),
+);
 
 function chatProviderForSlug(slug: string): ChatProvider | null {
   const method = getAppStoreDefinition(slug)?.methods.find(
@@ -219,7 +231,7 @@ function connectorAction(
   title?: string;
 } {
   const applicationId = row.applications[0]?.id ?? null;
-  const chatHref = chatConnectorsEnabled
+  const chatHref = (row.slug === "agentmail" || chatConnectorsEnabled)
     ? chatConnectHref(
         row.slug,
         row.entry ? connectHrefFor(row.entry) : null,
@@ -250,7 +262,14 @@ function connectorAction(
     };
   }
   if (chatHref) return { label: "Connect", href: chatHref };
-  if (row.entry) return { label: "Connect", href: connectHrefFor(row.entry) };
+  // PAP-659 C4: the card's verb comes from the same four-state resolver the
+  // connect screen uses, so "Connect" never turns out to mean "paste a key".
+  if (row.entry) {
+    return {
+      label: connectionSetupVerbForApp(row.entry),
+      href: connectHrefFor(row.entry),
+    };
+  }
   return {
     label: "Connect",
     href: applicationId ? `/apps/app/${applicationId}/permissions` : null,
@@ -282,7 +301,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const { pushToast } = useToast();
   const { selectedCompanyId } = useCompany();
   const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
-  const { enabled: mcpAggregatorsEnabled } = useMcpAggregatorsEnabled();
+  const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [query, setQuery] = useState("");
   const [connectionToRemove, setConnectionToRemove] =
@@ -311,7 +330,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const chatEndpointsQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.list(selectedCompanyId ?? "__none__"),
     queryFn: () => chatEndpointsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && chatConnectorsEnabled,
+    enabled: !!selectedCompanyId,
   });
   const userDirectoryQuery = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(
@@ -323,12 +342,17 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const removeConnection = useMutation({
     mutationFn: async (target: ConnectionRemovalTarget) => {
       if (target.kind === "chat") {
-        await chatEndpointsApi.setup(target.id, { action: "remove" });
+        if (target.provider === "agentmail") {
+          await emailApi.control(target.id, "remove");
+        } else {
+          await chatEndpointsApi.setup(target.id, { action: "remove" });
+        }
       } else {
         await toolsApi.archiveConnection(target.id);
       }
     },
     onSuccess: (_connection, target) => {
+      queryClient.invalidateQueries({ queryKey: ["email-inboxes", selectedCompanyId!] });
       queryClient.invalidateQueries({
         queryKey: queryKeys.chatEndpoints.list(selectedCompanyId!),
       });
@@ -364,10 +388,10 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const gallery = (
     (galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[]
   ).filter((entry) => {
-    if (!mcpAggregatorsEnabled && isRemoteMcpConnectorId(appDefinitionSlug(entry))) return false;
+    if (!memoryConnectorsEnabled && isMemoryConnectorId(appDefinitionSlug(entry))) return false;
     const definition = getAppStoreDefinition(appDefinitionSlug(entry));
     return (
-      chatConnectorsEnabled ||
+      appDefinitionSlug(entry) === "agentmail" || chatConnectorsEnabled ||
       !definition?.methods.some((method) => method.purpose === "channel") ||
       appSupportsToolCatalogSetup(definition)
     );
@@ -388,9 +412,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     ).filter(
       (application) =>
         application.status !== "archived" &&
-        (chatConnectorsEnabled ||
-          (application.type !== "chat" &&
-            application.metadata?.purpose !== "channel")),
+        application.type !== "chat" &&
+        application.metadata?.purpose !== "channel",
     );
     const connectionsByApplicationId = new Map<string, ToolConnection[]>();
     for (const connection of activeConnections) {
@@ -417,7 +440,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         slug,
         name: appDefinitionName(entry),
         description:
-          !chatConnectorsEnabled && chatProviderForSlug(slug)
+          !chatConnectorsEnabled && slug !== "agentmail" && chatProviderForSlug(slug)
             ? appCopyFor(slug).tagline
             : appDefinitionDescription(entry),
         brandKey: slug,
@@ -429,51 +452,47 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         chatEndpoints: [],
       });
     }
-    const nativeChatProviders = [
-      { provider: "imessage-photon", name: "iMessage Photon", description: "Message agents and share photos from Apple Messages with a dedicated Photon number." },
+    const nativeChatApps = [
+      { slug: "agentmail", name: "AgentMail", description: "Give agents email inboxes and handle each conversation as a task." },
+      { slug: "imessage-photon", name: "iMessage Photon", description: "Message agents and share photos from Apple Messages with a dedicated Photon number." },
       {
-        provider: "slack",
+        slug: "slack",
         name: "Slack",
         description:
           "Chat with agents from Slack channels and direct messages.",
       },
       {
-        provider: "github",
-        name: "GitHub",
+        slug: "github-code-review-bot",
+        name: "GitHub Code Review Bot",
         description:
-          "Chat with agents from issues, pull requests, and review threads.",
+          "Have an agent review pull requests and respond to GitHub mentions.",
       },
       {
-        provider: "discord",
+        slug: "discord",
         name: "Discord",
         description:
           "Chat with agents from Discord channels, threads, and direct messages.",
       },
       {
-        provider: "microsoft-teams",
+        slug: "microsoft-teams",
         name: "Microsoft Teams",
         description: "Chat with agents from Teams channels and conversations.",
       },
       {
-        provider: "telegram",
+        slug: "telegram",
         name: "Telegram",
         description:
           "Chat with agents from Telegram direct messages, groups, and topics.",
       },
     ] as const;
-    for (const item of chatConnectorsEnabled ? nativeChatProviders : []) {
-      if (
-        [...rowsBySlug.values()].some(
-          (row) => chatProviderForSlug(row.slug) === item.provider,
-        )
-      )
-        continue;
-      rowsBySlug.set(item.provider, {
-        key: `native-chat:${item.provider}`,
-        slug: item.provider,
+    for (const item of nativeChatApps.filter(item => item.slug === "agentmail" || chatConnectorsEnabled)) {
+      if (rowsBySlug.has(item.slug)) continue;
+      rowsBySlug.set(item.slug, {
+        key: `native-chat:${item.slug}`,
+        slug: item.slug,
         name: item.name,
         description: item.description,
-        brandKey: item.provider,
+        brandKey: item.slug,
         entry: null,
         applications: [],
         connections: [],
@@ -483,8 +502,18 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
 
     const customRows: ConnectorRowModel[] = [];
     for (const application of activeApplications) {
-      const appConnections =
+      const applicationSlug = appApplicationSourceSlug(application);
+      const savedAppConnections =
         connectionsByApplicationId.get(application.id) ?? [];
+      const appConnections = savedAppConnections.filter(
+        (connection) => !GOOGLE_CONNECTOR_SLUGS.has(appConnectionSourceSlug(connection) ?? ""),
+      );
+      // Hide source-only Google rows, but keep independently identified connectors.
+      if (
+        (!applicationSlug || applicationSlug === "link") &&
+        savedAppConnections.length > 0 &&
+        appConnections.length === 0
+      ) continue;
       const configuredConnectionSlug = appConnections
         .map(
           (connection) =>
@@ -506,7 +535,6 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
             : null,
         )
         .find((value): value is string => Boolean(value));
-      const applicationSlug = appApplicationSourceSlug(application);
       const resolvedSlug =
         applicationSlug &&
         applicationSlug !== "link" &&
@@ -540,9 +568,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       });
     }
 
-    for (const endpoint of chatConnectorsEnabled
-      ? (chatEndpointsQuery.data ?? [])
-      : []) {
+    for (const endpoint of (chatEndpointsQuery.data ?? []).filter(endpoint => endpoint.provider === "agentmail" || chatConnectorsEnabled)) {
       if (endpoint.status === "archived") continue;
       let target = [...rowsBySlug.values()].find(
         (row) => chatProviderForSlug(row.slug) === endpoint.provider,
@@ -574,6 +600,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     }
 
     return [...rowsBySlug.values(), ...customRows]
+      .filter((row) => !GOOGLE_CONNECTOR_SLUGS.has(row.slug))
       .map((row) => ({
         ...row,
         connections: [...row.connections].sort(
@@ -630,12 +657,12 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     galleryQuery.isLoading ||
     applicationsQuery.isLoading ||
     connectionsQuery.isLoading ||
-    (chatConnectorsEnabled && chatEndpointsQuery.isLoading);
+    chatEndpointsQuery.isLoading;
   const loadFailed =
     galleryQuery.isError ||
     applicationsQuery.isError ||
     connectionsQuery.isError ||
-    (chatConnectorsEnabled && chatEndpointsQuery.isError);
+    chatEndpointsQuery.isError;
   const nothingMatches = visibleRows.length === 0 && !showCustomConnector;
 
   return (
@@ -672,7 +699,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               void galleryQuery.refetch();
               void applicationsQuery.refetch();
               void connectionsQuery.refetch();
-              if (chatConnectorsEnabled) void chatEndpointsQuery.refetch();
+              void chatEndpointsQuery.refetch();
             }}
           >
             Try again
@@ -812,7 +839,8 @@ export function ConnectorCard({
           disabled={!action.href}
           title={action.title}
           onClick={() => {
-            if (action.href) onNavigate(action.href);
+            if (action.href) onNavigate(row.slug === "agentmail"
+              ? `${action.href}&setupId=${crypto.randomUUID()}` : action.href);
           }}
           aria-label={`${action.label} ${row.name}`}
         >
@@ -857,17 +885,17 @@ export function ConnectorCard({
           {row.chatEndpoints.map((endpoint) => (
             <div
               key={endpoint.id}
-              className="flex flex-wrap items-center gap-3 px-4 py-3"
+              className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:gap-3"
             >
               <div className="min-w-0 flex-1">
                 <button
                   type="button"
-                  className="truncate text-left text-sm font-medium hover:underline"
+                  className="block max-w-full truncate text-left text-sm font-medium hover:underline"
                   onClick={() =>
                     onNavigate(`/apps/chat/${endpoint.id}/settings`)
                   }
                 >
-                  {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : "Chat"}
+                  {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : endpoint.provider === "github" ? "Code review bot" : "Chat"}
                 </button>
                 <p className="truncate text-xs text-muted-foreground">
                   {endpoint.providerAccountLabel ??
@@ -875,10 +903,10 @@ export function ConnectorCard({
                     "Provider identity"}
                 </p>
               </div>
-              <span className="text-xs text-muted-foreground">
-                {endpoint.status.replace(/_/g, " ")}
-              </span>
               <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">
+                  {endpoint.status.replace(/_/g, " ")}
+                </span>
                 {endpoint.status === "draft" ? (
                   <Button
                     size="sm"
@@ -908,6 +936,7 @@ export function ConnectorCard({
                       variant="destructive"
                       onSelect={() => onRequestRemove({
                         kind: "chat",
+                        provider: endpoint.provider,
                         id: endpoint.id,
                         accountName: `${endpoint.assignedAgentName} · ${row.name}`,
                         providerName: row.name,

@@ -3,6 +3,8 @@ import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createWorkspaceManifest, workspacePaths, WorkspaceNulParser, type WorkspacePaths } from "./workspace-manifest.js";
+import { runWorkspaceGitProcess } from "./workspace-git-stream.js";
 
 export interface GitCommandResult {
   stdout: string;
@@ -12,9 +14,9 @@ export interface GitCommandResult {
 export interface GitWorkspaceSnapshot {
   headCommit: string;
   branchName: string | null;
-  overlayPaths: string[];
-  deletedPaths: string[];
-  ignoredPaths: string[];
+  overlayPaths: WorkspacePaths;
+  deletedPaths: WorkspacePaths;
+  ignoredPaths: WorkspacePaths;
   /** Managed, editable repositories inside the task workspace. */
   repositories?: Array<{ path: string; snapshot: GitWorkspaceSnapshot }>;
 }
@@ -27,6 +29,8 @@ export interface ExpensiveWorkspaceGitInput {
   operation: string;
   timeout: number;
   maxBuffer: number;
+  onStdout?: (chunk: Buffer) => Promise<void> | void;
+  signal?: AbortSignal;
   /**
    * Optional environment override for the invocation. Absent for the anchor
    * workspace's own full-tree walks (they inherit the process environment, a
@@ -60,7 +64,7 @@ export const WORKSPACE_GIT_SCAN_SATURATED_CODE = "workspace_git_scan_saturated";
 /**
  * Lets a host process apply its process-wide admission policy to the adapter
  * package's full-tree Git walks. Standalone adapter-utils consumers retain the
- * existing timeout/buffer-bounded fallback.
+ * streaming process fallback for filename scans.
  */
 export function setExpensiveWorkspaceGitExecutor(executor: ExpensiveWorkspaceGitExecutor | null): void {
   expensiveWorkspaceGitExecutor = executor;
@@ -125,7 +129,7 @@ async function runExpensiveWorkspaceGit(
   localDir: string,
   args: string[],
   operation: string,
-  options: { timeout: number; maxBuffer: number; env?: NodeJS.ProcessEnv },
+  options: { timeout: number; maxBuffer: number; env?: NodeJS.ProcessEnv; onStdout?: ExpensiveWorkspaceGitInput["onStdout"]; signal?: AbortSignal },
 ): Promise<GitCommandResult> {
   if (expensiveWorkspaceGitExecutor) {
     return await expensiveWorkspaceGitExecutor({
@@ -135,30 +139,36 @@ async function runExpensiveWorkspaceGit(
       timeout: options.timeout,
       maxBuffer: options.maxBuffer,
       env: options.env,
+      onStdout: options.onStdout,
+      signal: options.signal,
     });
   }
+  if (options.onStdout) return runWorkspaceGitProcess({
+    cwd: localDir, args, timeoutMs: options.timeout, maxStdoutBytes: options.maxBuffer,
+    maxStderrBytes: options.maxBuffer, onStdout: options.onStdout, signal: options.signal, env: options.env,
+  });
   return await runLocalGit(localDir, args, options);
 }
 
-export async function readGitWorkspaceSnapshot(localDir: string, includeRepositories = true): Promise<GitWorkspaceSnapshot | null> {
+const ownedSnapshots = new WeakMap<GitWorkspaceSnapshot, string>();
+
+export async function disposeGitWorkspaceSnapshot(snapshot: GitWorkspaceSnapshot | null): Promise<void> {
+  if (!snapshot) return;
+  const ownedDirectory = ownedSnapshots.get(snapshot);
+  if (!ownedDirectory) return;
+  ownedSnapshots.delete(snapshot);
+  for (const repository of snapshot.repositories ?? []) await disposeGitWorkspaceSnapshot(repository.snapshot);
+  await fs.rm(ownedDirectory, { recursive: true, force: true });
+}
+
+/** Snapshot deadlines include disk backpressure. Operators can allow up to 24h. */
+export function workspaceSnapshotTimeoutMs(): number {
+  const configured = Number(process.env.PAPERCLIP_WORKSPACE_GIT_SNAPSHOT_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured >= 1000 ? Math.min(configured, 86_400_000) : 30 * 60_000;
+}
+
+export async function readGitWorkspaceSnapshot(localDir: string, includeRepositories = true, options: { signal?: AbortSignal } = {}): Promise<GitWorkspaceSnapshot | null> {
   const repositories: NonNullable<GitWorkspaceSnapshot["repositories"]> = [];
-  if (includeRepositories) {
-    const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
-    const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    });
-    if (rootStat) {
-      if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Invalid project repositories directory");
-      for (const entry of (await fs.readdir(root, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
-        if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) throw new Error("Invalid project repository directory");
-        const relative = `${PROJECT_REPOSITORIES_DIR}/${entry.name}`;
-        const snapshot = await readGitWorkspaceSnapshot(path.join(localDir, relative), false);
-        if (!snapshot) throw new Error(`Project repository is not a Git checkout: ${relative}`);
-        repositories.push({ path: relative, snapshot });
-      }
-    }
-  }
   // Only repository discovery may report an ordinary directory. A failed
   // snapshot of a confirmed repository must never fall back to directory sync.
   let insideWorkTree: GitCommandResult;
@@ -188,62 +198,86 @@ export async function readGitWorkspaceSnapshot(localDir: string, includeReposito
   ]);
   if (workspacePath !== repositoryPath) return null;
 
-  const [headCommitResult, branchResult, overlayDiffResult, untrackedResult, deletedResult, ignoredResult] = await Promise.all([
-    runLocalGit(localDir, ["rev-parse", "HEAD"], {
-      timeout: 10_000,
-      maxBuffer: 16 * 1024,
-    }),
-    runLocalGit(localDir, ["rev-parse", "--abbrev-ref", "HEAD"], {
-      timeout: 10_000,
-      maxBuffer: 16 * 1024,
-    }),
-    runExpensiveWorkspaceGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD", "--"], "adapter_sync.overlay_diff", {
-      timeout: 10_000,
-      maxBuffer: 1024 * 1024,
-    }),
-    runExpensiveWorkspaceGit(localDir, ["ls-files", "--others", "--exclude-standard", "-z"], "adapter_sync.untracked_files", {
-      timeout: 10_000,
-      maxBuffer: 1024 * 1024,
-    }),
-    runExpensiveWorkspaceGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", "--"], "adapter_sync.deleted_files", {
-      timeout: 10_000,
-      maxBuffer: 256 * 1024,
-    }),
-    // Collapse ignored directories instead of walking their contents, and
-    // avoid producing unrelated tracked/untracked status records.
-    runExpensiveWorkspaceGit(localDir, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], "adapter_sync.ignored_files", {
-      timeout: 10_000,
-      maxBuffer: 1024 * 1024,
-    }),
-  ]);
+  const writer = await createWorkspaceManifest();
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) abort();
+  try {
+    if (includeRepositories) {
+      const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
+      const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (rootStat) {
+        if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error("Invalid project repositories directory");
+        for await (const entry of await fs.opendir(root)) {
+          if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]+$/.test(entry.name)) throw new Error("Invalid project repository directory");
+          const relative = `${PROJECT_REPOSITORIES_DIR}/${entry.name}`;
+          const snapshot = await readGitWorkspaceSnapshot(path.join(localDir, relative), false, options);
+          if (!snapshot) throw new Error(`Project repository is not a Git checkout: ${relative}`);
+          repositories.push({ path: relative, snapshot });
+        }
+      }
+    }
 
-  const branchName = branchResult.stdout.trim();
-  // `-z` already delimits each record with a NUL byte, so a leading or
-  // trailing space in a record is part of the path itself, not padding to
-  // remove — trimming it would resolve to a path that does not exist. A
-  // length check finds the one genuinely empty record `-z` appends after
-  // the last NUL, without eating a real path's own leading or trailing
-  // whitespace. This applies to all four NUL-delimited outputs below (the
-  // overlay diff, the untracked list, the deleted list, and the ignored
-  // list); `branchName` and `headCommit` come from non-`-z` commands and
-  // keep their own `.trim()` above and below, which is safe.
-  const splitNul = (value: string) => value.split("\0").filter((entry) => entry.length > 0);
-  return {
-    headCommit: headCommitResult.stdout.trim(),
-    branchName: branchName && branchName !== "HEAD" ? branchName : null,
-    overlayPaths: [...new Set([...splitNul(overlayDiffResult.stdout), ...splitNul(untrackedResult.stdout),
-      ...repositories.flatMap((repo) => repo.snapshot.overlayPaths.map((entry) => `${repo.path}/${entry}`))])]
-      .sort((left, right) => left.localeCompare(right)),
-    deletedPaths: [...new Set([...splitNul(deletedResult.stdout),
-      ...repositories.flatMap((repo) => repo.snapshot.deletedPaths.map((entry) => `${repo.path}/${entry}`))])]
-      .sort((left, right) => left.localeCompare(right)),
-    ignoredPaths: [...splitNul(ignoredResult.stdout)
-      .map((entry) => entry.replace(/\/+$/, ""))
-      .filter((entry) => Boolean(entry) && !(repositories.length > 0 && entry === PROJECT_REPOSITORIES_DIR)),
-      ...repositories.flatMap((repo) => repo.snapshot.ignoredPaths.map((entry) => `${repo.path}/${entry}`))]
-      .sort((left, right) => left.localeCompare(right)),
-    ...(repositories.length > 0 ? { repositories } : {}),
-  };
+    const scan = async (args: string[], operation: string, category: string) => {
+      const parser = new WorkspaceNulParser((record) => {
+        const relative = category === "ignored" ? record.replace(/\/+$/, "") : record;
+        if (category === "ignored" && repositories.length && relative === PROJECT_REPOSITORIES_DIR) return;
+        // Managed children have their own exact file selections. Never stage a
+        // parent Git directory record that could admit files created later.
+        if (repositories.some((repo) => relative === repo.path || relative.startsWith(`${repo.path}/`))) return;
+        writer.add(category, relative);
+      });
+      const result = await runExpensiveWorkspaceGit(localDir, args, operation, {
+        timeout: workspaceSnapshotTimeoutMs(), maxBuffer: 64 * 1024,
+        signal: controller.signal,
+        onStdout: (chunk) => writer.batch(() => parser.write(chunk)),
+      });
+      if (result.stdout) throw new Error("Workspace Git executor did not stream stdout");
+      try { parser.finish(); }
+      catch (error) { throw Object.assign(error as Error, { code: "workspace_git_scan_failed" }); }
+    };
+    // Cancellation is followed by an all-settled barrier BEFORE storage cleanup.
+    const tasks = [
+      runLocalGit(localDir, ["rev-parse", "HEAD"], { timeout: 10_000, maxBuffer: 16 * 1024 }),
+      runLocalGit(localDir, ["rev-parse", "--abbrev-ref", "HEAD"], { timeout: 10_000, maxBuffer: 16 * 1024 }),
+      scan(["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD", "--"], "adapter_sync.overlay_diff", "overlay"),
+      scan(["ls-files", "--others", "--exclude-standard", "-z"], "adapter_sync.untracked_files", "overlay"),
+      scan(["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", "--"], "adapter_sync.deleted_files", "deleted"),
+      scan(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], "adapter_sync.ignored_files", "ignored"),
+    ];
+    let firstError: unknown;
+    const settled = await Promise.allSettled(tasks.map((task) => task.catch((error) => {
+      if (firstError === undefined) firstError = error;
+      controller.abort();
+      throw error;
+    })));
+    if (firstError !== undefined) throw firstError;
+    if (controller.signal.aborted) throw Object.assign(new Error("Workspace snapshot cancelled"), { code: "workspace_git_scan_cancelled" });
+    for (const repo of repositories) {
+      for (const [category, paths] of [["overlay", repo.snapshot.overlayPaths], ["deleted", repo.snapshot.deletedPaths], ["ignored", repo.snapshot.ignoredPaths]] as const) {
+        for (const relative of workspacePaths(paths)) writer.add(category, `${repo.path}/${relative}`);
+      }
+    }
+    const head = (settled[0] as PromiseFulfilledResult<GitCommandResult>).value.stdout.trim();
+    const branch = (settled[1] as PromiseFulfilledResult<GitCommandResult>).value.stdout.trim();
+    const snapshot: GitWorkspaceSnapshot = {
+      headCommit: head, branchName: branch && branch !== "HEAD" ? branch : null,
+      overlayPaths: writer.paths("overlay"), deletedPaths: writer.paths("deleted"), ignoredPaths: writer.paths("ignored"),
+      ...(repositories.length ? { repositories } : {}),
+    };
+    writer.close();
+    ownedSnapshots.set(snapshot, path.dirname(writer.filePath));
+    return snapshot;
+  } catch (error) {
+    writer.close(false);
+    for (const repo of repositories) await disposeGitWorkspaceSnapshot(repo.snapshot);
+    await fs.rm(path.dirname(writer.filePath), { recursive: true, force: true });
+    throw error;
+  } finally { options.signal?.removeEventListener("abort", abort); }
 }
 
 /** The `git ls-files --others --ignored` output for one directory, read by {@link readReferencedSourceGitIgnoredPaths}. */
@@ -538,6 +572,17 @@ export async function readSanitizedOriginRemoteUrl(localDir: string): Promise<st
   }
 }
 
+async function copyCloneTree(source: string, target: string): Promise<void> {
+  await fs.mkdir(target, { recursive: true });
+  for await (const entry of await fs.opendir(source)) {
+    const from = path.join(source, entry.name);
+    const to = path.join(target, entry.name);
+    if (entry.isDirectory()) await copyCloneTree(from, to);
+    else if (entry.isSymbolicLink()) await fs.symlink(await fs.readlink(from), to);
+    else { await fs.copyFile(from, to); await fs.chmod(to, (await fs.stat(from)).mode); }
+  }
+}
+
 export async function withShallowGitWorkspaceClone<T>(
   input: {
     localDir: string;
@@ -593,7 +638,10 @@ export async function withShallowGitWorkspaceClone<T>(
         localDir: path.join(input.localDir, repository.path),
         snapshot: repository.snapshot,
       }, async (nestedClone) => {
-        await fs.cp(nestedClone, path.join(cloneDir, repository.path), { recursive: true });
+        // Preserve repository-relative links. fs.cp otherwise rewrites them to
+        // absolute paths into nestedClone, which is deleted after this callback
+        // and is outside the workspace when the sandbox restores its files.
+        await copyCloneTree(nestedClone, path.join(cloneDir, repository.path));
       });
     }
     if (input.snapshot.repositories?.length) {
@@ -742,11 +790,13 @@ export function buildRemoteGitDeltaBundleScript(input: {
     "fi",
     statusPath
       ? [
-        `if [ -z "$(git -C ${remoteDir} status --porcelain=v1 --untracked-files=normal)" ]; then`,
+        `git -C ${remoteDir} status --porcelain=v1 --untracked-files=normal -z > ${shellQuote(`${input.statusPath}.git-status`)}`,
+        `if [ ! -s ${shellQuote(`${input.statusPath}.git-status`)} ]; then`,
         `  printf clean > ${statusPath}`,
         "else",
         `  printf dirty > ${statusPath}`,
         "fi",
+        `rm -f -- ${shellQuote(`${input.statusPath}.git-status`)}`,
       ].join("\n")
       : "",
     input.catBundle ? `cat ${bundlePath}` : "",
@@ -808,8 +858,13 @@ export async function integrateImportedGitHead(input: {
   };
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const snapshot = await readGitWorkspaceSnapshot(input.localDir);
-    if (!snapshot) return;
+    const snapshot = {
+      headCommit: (await runLocalGit(input.localDir, ["rev-parse", "HEAD"])).stdout.trim(),
+      branchName: (await runLocalGit(input.localDir, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch((error) => {
+        if (error.code === 1) return { stdout: "" };
+        throw error;
+      })).stdout.trim() || null,
+    };
 
     const currentHead = snapshot.headCommit;
     if (!currentHead || currentHead === input.importedHead) return;
@@ -938,25 +993,14 @@ export async function resetLocalGitIndexToHead(input: {
     throw new Error(`Failed to reset local git index to HEAD after workspace restore: ${detail}`);
   }
 
-  const stagedDiff = await runLocalGit(input.localDir, ["diff", "--cached", "--name-status", "HEAD", "--"], {
-    timeout: 10_000,
-    maxBuffer: 1024 * 1024,
-  });
-  if (stagedDiff.stdout.trim().length > 0) {
-    throw new Error(
-      `Workspace restore left staged git index changes after reset:\n${stagedDiff.stdout.trim()}`,
-    );
+  const hasDiff = async (args: string[]) => {
+    try { await runLocalGit(input.localDir, args, { timeout: workspaceSnapshotTimeoutMs(), maxBuffer: 64 * 1024 }); return false; }
+    catch (error) { if ((error as { code?: unknown }).code === 1) return true; throw error; }
+  };
+  if (await hasDiff(["diff", "--quiet", "--cached", "HEAD", "--"])) {
+    throw new Error("Workspace restore left staged git index changes after reset");
   }
-
-  if (!input.checkWorkingTreeClean) return;
-
-  const workingTreeDiff = await runLocalGit(input.localDir, ["diff", "--name-status", "HEAD", "--"], {
-    timeout: 10_000,
-    maxBuffer: 1024 * 1024,
-  });
-  if (workingTreeDiff.stdout.trim().length > 0) {
-    console.warn(
-      "[paperclip] Workspace restore preserved local working tree changes after clean sandbox restore.",
-    );
+  if (input.checkWorkingTreeClean && await hasDiff(["diff", "--quiet", "HEAD", "--"])) {
+    console.warn("[paperclip] Workspace restore preserved local working tree changes after clean sandbox restore.");
   }
 }

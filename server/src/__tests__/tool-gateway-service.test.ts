@@ -1439,16 +1439,14 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const tool = (await gateway.listToolsForSession(session.token))
       .find((candidate) => candidate.providerType === "mcp_remote_http");
 
-    const result = await gateway.executeTool({
+    await expect(gateway.executeTool({
       sessionToken: session.token,
       tool: tool!.name,
       parameters: {},
+    })).rejects.toMatchObject({
+      reasonCode: "tool_error",
+      message: expect.stringContaining("enroll the signed-in Workspace account and this OAuth client's Google Cloud project"),
     });
-
-    expect(result.status).toBe("completed");
-    expect((result.result as { content?: string }).content).toContain(
-      "enroll the signed-in Workspace account and this OAuth client's Google Cloud project",
-    );
   });
 
   it("injects Vercel tokens at dispatch and refreshes exactly once after an upstream 401", async () => {

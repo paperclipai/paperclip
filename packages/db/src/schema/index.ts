@@ -115,6 +115,7 @@ export {
 export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
+export { runnerApiResponseReservations } from "./runner_api_response_reservations.js";
 export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
@@ -210,3 +211,10 @@ export { aiConnectionDefaults } from "./ai_connection_defaults.js";
 export { aiProviderDefaults } from "./ai_provider_defaults.js";
 export * from "./email.js";
 export { announcementDismissals, announcementPublications } from "./announcement_dismissals.js";
+export { chatTaskHandoffs, chatCompletionDeliveries } from "./chat_completion_deliveries.js";
+
+export { agentInstructionRevisions, agentInstructionHeads, agentInstructionWorkingCopies } from "./agent_instruction_revisions.js";
+export { browserUseSettings, browserUseSessions, browserUseRuns, browserUseBrowsers } from "./browser_use.js";
+
+
+export * from "./company_skill_sources.js";

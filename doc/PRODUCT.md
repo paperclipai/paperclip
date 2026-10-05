@@ -66,6 +66,13 @@ The governing rule is: **skill permissions are opt-in restrictions, not opt-in c
 
 Core Paperclip owns the skill runtime, company-boundary enforcement, policy evaluation contract, API denials, validation, path containment, secret redaction, and activity logging. Those safety invariants cannot be disabled by policy. Open-by-default skill work never authorizes arbitrary host-path reads, unsafe executable content, or policy edits: local imports and scans must stay within Paperclip-known workspace or managed-skill roots, remote sources must resolve to validated immutable content, and platform safety denials must stay distinct from optional administrative restrictions. Paperclip EE may provide detailed administration for per-agent, per-role, per-action, per-source, and protected-skill rules, but EE is not required to use skills and is not an enforcement boundary. Without EE, companies remain open by default and any already-configured restrictions continue to be enforced by core.
 
+GitHub repositories are first-class sources within Skills. People import selected
+skills through their existing GitHub connection and manually refresh installed
+snapshots. The source records repository, branch, path, and installed commit;
+the connection supplies caller-authorized access. Originals remain viewable and
+testable, with independent editable copies. New upstream skills require selection,
+and deselection, source disconnection, or upstream removal retains installed content.
+
 An explicit restricted policy may deny selected operations or switch to a default-deny preset with explicit allow rules. Core exposes a stable versioned policy API so EE and other administrative clients configure and simulate the same evaluator used by skill mutation routes. Core Skill Studio only needs to perform normal skill work, explain an explicit denial, and point administrators to EE when its richer policy UI is available; it must not recreate a partial enterprise permission editor.
 
 ## Principles
@@ -202,10 +209,26 @@ telemetry. See [Announcements](ANNOUNCEMENTS.md).
 
 ### Agent chat discovery
 
-With Agent Chat enabled, the Chats sidebar always includes the company's
-earliest-created agent, plus personal starred agents and up to four other recent
-conversations. First use has the same compact rows as returning use. The compose
-icon shares a column with stars and appears on hover or keyboard focus (always on
-touch). It opens a company-wide name/role search, independent of sidebar membership.
+With Agent Chat enabled, Chat is the first row of the Work section and opens a
+secondary sidebar beside the primary nav. It lists every agent you can chat
+with: the open conversation first, then your other conversations by recent
+activity, then the rest of the roster alphabetically. Terminated agents and
+agents you have left are omitted unless you have history with them. Search
+filters by name, title, or role; **+** starts or reopens a conversation.
 Selecting an agent opens their persistent conversation; it does not reset history
 or create a task until the existing first-write flow requires one.
+
+Beside a conversation, the side panel opens on the agent's tasks: one card per
+task the agent created, was assigned, commented on, or acted on, newest first,
+with the task list's filters and a sort control. The agent's artifacts are a
+second card stack available from the panel's **+** menu. Both open in a new tab
+so the conversation stays open.
+
+### Combined Inbox + Task List
+
+An opt-in experimental setting (`enableCombinedInboxTasks`, off by default)
+folds Inbox into Tasks. The Inbox nav row goes away and its unread badge moves
+to Tasks. A Views menu on the task list covers the inbox views (Mine, Unread,
+Blocked, Recent, Everything) and the task-status views (All, Active, Backlog,
+Done). Bare `/issues` opens the last-used view, defaulting to Mine; links that
+carry a task filter open All. Old `/inbox` links redirect to the matching view.

@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
@@ -811,14 +812,14 @@ describeEmbeddedPostgres("tool access service", () => {
       process.env.PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL?.trim();
     if (externalDatabaseUrl) {
       db = createDb(externalDatabaseUrl);
-      await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
+      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
       return;
     }
     tempDb = await startEmbeddedPostgresTestDatabase(
       "paperclip-tool-access-service-",
     );
     db = createDb(tempDb.connectionString);
-    await instanceSettingsService(db).updateExperimental({ enableMcpAggregators: true });
+    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
   }, 20_000);
 
   afterEach(async () => {
@@ -2439,6 +2440,34 @@ describeEmbeddedPostgres("tool access service", () => {
         .rejects.toMatchObject({ status: 400, details: { code: "oauth_scope_widening_rejected", scopes: [removedScope] } });
     }
   });
+
+  it.each(["airtable", "beehiiv", "miro", "neon", "netlify", "sentry", "supabase", "todoist", "ticktick", "hugging-face"])(
+    "requests the reviewed read/write scopes for %s without adopting advertised admin scopes",
+    async (slug) => {
+      const company = await createCompany(db);
+      const actor = { actorType: "user" as const, actorId: "alice" };
+      const service = createTestToolAccessService(db, {
+        remoteHttpRequest: async (url, init) => {
+          const origin = new URL(url).origin;
+          if (init.method === "POST") return Response.json({ client_id: "fixture-client", ...JSON.parse(String(init.body)) });
+          return Response.json({ issuer: origin, authorization_endpoint: `${origin}/authorize`,
+            token_endpoint: `${origin}/token`, registration_endpoint: `${origin}/register`,
+            scopes_supported: ["unrelated:admin"], response_types_supported: ["code"],
+            code_challenge_methods_supported: ["S256"], token_endpoint_auth_methods_supported: ["none"],
+          });
+        },
+      });
+      const connected = await service.connectGalleryApp(company.id, { galleryKey: slug, connectionMethodKey: "mcp-oauth", grantKind: "user", ...(slug === "supabase" ? { configValues: { projectRef: "abcdefghijklmnopqrst" } } : {}) }, actor);
+      const started = await service.startOAuth(company.id, connected.connectionId, { redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor });
+      const review = JSON.parse(await fs.readFile(new URL("../../../doc/connections/tool-method-permission-reviews.json", import.meta.url), "utf8"))
+        .methods.find((entry: { app: string; method: string }) => entry.app === slug && entry.method === "mcp-oauth");
+      expect(new URL(started.authorizationUrl).searchParams.get("scope")?.split(" ")).toEqual(review.requestedScopes);
+      expect(new URL(started.authorizationUrl).searchParams.get("scope")).not.toContain("unrelated:admin");
+      await expect(service.startOAuth(company.id, connected.connectionId, {
+        redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor, scopes: ["unrelated:admin"],
+      })).rejects.toMatchObject({ details: { code: "oauth_scope_widening_rejected" } });
+    },
+  );
 
   it("keeps tools outside a Google Workspace capability profile disabled", async () => {
     const company = await createCompany(db);
@@ -5069,6 +5098,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     expect(res.body.apps.map((app: { slug: string }) => app.slug)).toEqual(
       expect.arrayContaining([
+        "browser-use-cloud",
         "agentmail",
         "imessage-photon",
         "jira",
@@ -5089,10 +5119,11 @@ describeEmbeddedPostgres("tool access service", () => {
         "google-people",
         "google-workspace-search",
         "github",
+        "github-code-review-bot",
         "youcom",
       ]),
     );
-    expect(res.body.apps).toHaveLength(52);
+    expect(res.body.apps).toHaveLength(59);
     expect(
       res.body.apps.find((app: { slug: string }) => app.slug === "gmail")
         .ownershipAvailability,
@@ -6098,6 +6129,52 @@ describeEmbeddedPostgres("tool access service", () => {
         state: restartedStateRow!.state,
         actor,
       }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("projects Neon's optional project pin and read-only mode into the hosted server URL", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+
+    const pinned = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "neon",
+        connectionMethodKey: "mcp-oauth",
+        name: "Neon pinned",
+        configValues: { projectId: "shy-sun-12345678", readOnly: true },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(pinned.connection.config).toMatchObject({
+      url: "https://mcp.neon.tech/mcp?projectId=shy-sun-12345678&readonly=true",
+      sourceTemplateKey: "neon",
+      connectionMethodKey: "mcp-oauth",
+      methodConfig: { projectId: "shy-sun-12345678", readOnly: true },
+    });
+
+    // The default path sends Neon's own defaults: no pin, no readonly flag.
+    const unpinned = await service.connectGalleryApp(
+      company.id,
+      { galleryKey: "neon", connectionMethodKey: "mcp-oauth", name: "Neon unpinned" },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(unpinned.connection.config).toMatchObject({
+      url: "https://mcp.neon.tech/mcp",
+      methodConfig: { readOnly: false },
+    });
+
+    await expect(
+      service.connectGalleryApp(
+        company.id,
+        {
+          galleryKey: "neon",
+          connectionMethodKey: "mcp-oauth",
+          name: "Neon invalid",
+          configValues: { projectId: "Shy Sun!" },
+        },
+        { actorType: "user", actorId: "board" },
+      ),
     ).rejects.toMatchObject({ status: 400 });
   });
 
@@ -8010,7 +8087,6 @@ describeEmbeddedPostgres("tool access service", () => {
           ),
         );
       expect(bindings.map((binding) => binding.configPath).sort()).toEqual([
-        "credentials.oauth.access_token",
         "oauth.access_token",
         "oauth.refresh_token",
       ]);
@@ -10001,6 +10077,64 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toHaveLength(2);
   });
 
+  it("registers Linear against its MCP authorization server instead of the pinned console endpoints", async () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_LINEAR_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_LINEAR_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const company = await createCompany(db);
+    const userId = `linear-owner-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "owner", userId),
+    );
+    const fetched: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      fetched.push(href);
+      if (href === "https://mcp.linear.app/.well-known/oauth-protected-resource/mcp") {
+        return mcpHttpResponse({
+          resource: "https://mcp.linear.app/mcp",
+          authorization_servers: ["https://mcp.linear.app"],
+          scopes_supported: ["read", "write"],
+        });
+      }
+      if (href === "https://mcp.linear.app/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({
+          issuer: "https://mcp.linear.app",
+          authorization_endpoint: "https://mcp.linear.app/authorize",
+          token_endpoint: "https://mcp.linear.app/token",
+          registration_endpoint: "https://mcp.linear.app/register",
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+        });
+      }
+      if (href === "https://mcp.linear.app/register") {
+        return mcpHttpResponse({
+          client_id: "linear-registered-client",
+          redirect_uris: ["https://paperclip.example/api/tools/oauth/callback"],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ galleryKey: "linear", name: "Linear", grantKind: "user" })
+      .expect(201);
+
+    const startUrl = new URL(connectRes.body.auth.startUrl);
+    expect(startUrl.origin + startUrl.pathname).toBe("https://mcp.linear.app/authorize");
+    expect(startUrl.searchParams.get("client_id")).toBe("linear-registered-client");
+    expect(fetched).toContain("https://mcp.linear.app/register");
+    expect(fetched.some((href) => href.startsWith("https://linear.app/"))).toBe(false);
+  });
+
   it("returns a pre-scoped personal Notion callback directly to Permissions", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "");
@@ -10086,9 +10220,31 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     expect(state).toBeTruthy();
 
+    // The provider's redirect is a cross-site navigation: Paperclip commits a
+    // page at once (Railway's consent page otherwise replaces itself after ~2s)
+    // and leaves the state unconsumed for the same-origin repeat.
+    const interstitialRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .set("Accept", "text/html")
+      .set("Sec-Fetch-Site", "cross-site")
+      .set("Sec-Fetch-Mode", "navigate")
+      .query({ state, code: "notion-choice-code" });
+    expect(interstitialRes.status).toBe(200);
+    expect(interstitialRes.headers["cache-control"]).toBe("no-store");
+    expect(interstitialRes.text).toContain(
+      `<meta http-equiv="refresh" content="0;url=/api/tools/oauth/callback?state=${state}&amp;code=notion-choice-code">`,
+    );
+    const [pendingConnection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connectRes.body.connectionId));
+    expect(pendingConnection?.status).not.toBe("active");
+
     const callbackRes = await request(app)
       .get("/api/tools/oauth/callback")
       .set("Accept", "text/html")
+      .set("Sec-Fetch-Site", "same-origin")
+      .set("Sec-Fetch-Mode", "navigate")
       .query({ state, code: "notion-choice-code" });
 
     expect(callbackRes.status).toBe(303);
@@ -10201,6 +10357,7 @@ describeEmbeddedPostgres("tool access service", () => {
   ])(
     "starts and completes OAuth with the same redirect URI at %s",
     async (origin) => {
+      const callbackOrigin = origin.replace("http://127.0.0.1:", "http://localhost:");
       vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
       vi.stubEnv(
         "PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET",
@@ -10239,7 +10396,7 @@ describeEmbeddedPostgres("tool access service", () => {
         /^[A-Za-z0-9_-]{43}$/,
       );
       expect(startUrl.searchParams.get("redirect_uri")).toBe(
-        `${origin}/api/tools/oauth/callback`,
+        `${callbackOrigin}/api/tools/oauth/callback`,
       );
       const state = startUrl.searchParams.get("state");
       expect(state).toBeTruthy();
@@ -10265,7 +10422,7 @@ describeEmbeddedPostgres("tool access service", () => {
             expect(body.get("client_secret")).toBe("slack-client-secret");
             expect(body.get("code_verifier")).toBeTruthy();
             expect(body.get("redirect_uri")).toBe(
-              `${origin}/api/tools/oauth/callback`,
+              `${callbackOrigin}/api/tools/oauth/callback`,
             );
             return {
               ok: true,
@@ -10307,7 +10464,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
       const callbackRes = await request(app)
         .get("/api/tools/oauth/callback")
-        .set("Host", new URL(origin).host)
+        .set("Host", new URL(callbackOrigin).host)
         .query({ state, code: "oauth-code" });
 
       expect(callbackRes.status).toBe(200);
@@ -10352,7 +10509,7 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(redirectState).toBeTruthy();
       const redirectCallbackRes = await request(app)
         .get("/api/tools/oauth/callback")
-        .set("Host", new URL(origin).host)
+        .set("Host", new URL(callbackOrigin).host)
         .set("Accept", "text/html")
         .query({ state: redirectState, code: "oauth-code" });
 
@@ -10364,7 +10521,7 @@ describeEmbeddedPostgres("tool access service", () => {
       await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
       await expect(
         db.select().from(companySecretBindings),
-      ).resolves.toHaveLength(6);
+      ).resolves.toHaveLength(4);
       const [connection] = await db
         .select()
         .from(toolConnections)
@@ -10387,6 +10544,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const connectRes = await request(app)
       .post(`/api/companies/${company.id}/tools/apps/connect`)
       .set("Host", "127.0.0.1:3200")
+      .set("Origin", "http://127.0.0.1:3200")
       .send({ galleryKey: "slack", name: "Loopback Slack workspace" });
 
     expect(connectRes.status).toBe(201);
@@ -10878,7 +11036,7 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     expect(
       new URL(first.authorizationUrl).searchParams.get("scope"),
-    ).toBeNull();
+    ).toBe("default");
     expect(
       new URL(concurrent.authorizationUrl).searchParams.get("client_id"),
     ).toBe("notion-dcr-client");
@@ -10971,7 +11129,7 @@ describeEmbeddedPostgres("tool access service", () => {
         clientTokenEndpointAuthMethod: "none",
         clientRedirectUri: redirectUri,
         registrationUrl: "https://mcp.notion.com/register",
-        scopes: [],
+        scopes: ["default"],
       },
     });
     expect(connection.credentialSecretRefs).toEqual([
@@ -11506,11 +11664,89 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it("uses Asana v2 metadata instead of stale v1 endpoints for a saved custom app", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", name: "Asana",
+      oauthClient: { clientId: "asana-client", clientSecret: "asana-secret" },
+    });
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    await db.update(toolConnections).set({ config: {
+      ...connection.config,
+      oauth: { ...connection.config.oauth as Record<string, unknown>,
+        issuer: "https://mcp.asana.com", authorizationUrl: "https://mcp.asana.com/authorize",
+        tokenUrl: "https://mcp.asana.com/token", resource: "https://mcp.asana.com",
+        clientIssuer: "https://mcp.asana.com", clientResource: "https://mcp.asana.com",
+        clientRedirectUri: "http://localhost:3200/api/tools/oauth/callback" },
+    } }).where(eq(toolConnections.id, connected.connectionId));
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      calls.push(String(url));
+      if (String(url) === "https://mcp.asana.com/.well-known/oauth-protected-resource/v2") {
+        return mcpHttpResponse({ resource: "https://mcp.asana.com/v2/mcp",
+          authorization_servers: ["https://app.asana.com"], scopes_supported: ["default"] });
+      }
+      if (String(url) === "https://app.asana.com/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({ issuer: "https://app.asana.com",
+          authorization_endpoint: "https://app.asana.com/-/oauth_authorize",
+          token_endpoint: "https://app.asana.com/-/oauth_token",
+          token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+          code_challenge_methods_supported: ["S256"] });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "http://localhost:3200/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const authorization = new URL(started.authorizationUrl);
+    expect(authorization.origin + authorization.pathname).toBe("https://app.asana.com/-/oauth_authorize");
+    expect(authorization.searchParams.get("resource")).toBe("https://mcp.asana.com/v2/mcp");
+    expect(authorization.searchParams.get("scope")).toBe("default");
+    expect(authorization.searchParams.get("client_id")).toBe("asana-client");
+    expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(calls).toEqual([
+      "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
+      "https://app.asana.com/.well-known/oauth-authorization-server",
+    ]);
+    const migrated = await service.getConnection(connected.connectionId, company.id);
+    expect(migrated.config?.oauth).toMatchObject({
+      clientIssuer: "https://app.asana.com", clientResource: "https://mcp.asana.com/v2/mcp",
+    });
+    expect(migrated.credentialSecretRefs).toEqual(connection.credentialSecretRefs);
+    for (const invalidBinding of [
+      { clientIssuer: "https://other.example" },
+      { clientResource: "https://other.example/mcp" },
+      { clientCompanyId: randomUUID() },
+      { clientRedirectUri: "https://other.example/api/tools/oauth/callback" },
+    ]) {
+      await db.update(toolConnections).set({ config: { ...connection.config, oauth: {
+        ...connection.config.oauth as Record<string, unknown>,
+        clientIssuer: "https://mcp.asana.com", clientResource: "https://mcp.asana.com",
+        clientRedirectUri: "http://localhost:3200/api/tools/oauth/callback", ...invalidBinding,
+      } } }).where(eq(toolConnections.id, connection.id));
+      await expect(service.startOAuth(company.id, connection.id, {
+        redirectUri: "http://localhost:3200/api/tools/oauth/callback",
+        actor: { actorType: "user", actorId: "board" },
+      })).rejects.toMatchObject({ status: 422, details: { code: "oauth_manual_client_rebinding_required" } });
+    }
+    const missingSecret = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth",
+      oauthClient: { clientId: "another-client" },
+    });
+    await expect(service.startOAuth(company.id, missingSecret.connectionId, {
+      redirectUri: "http://localhost:3200/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    })).rejects.toMatchObject({ status: 422, message: expect.stringContaining("requires an OAuth client secret") });
+  });
+
   it("stores a curated customer-owned OAuth client without exposing its secret", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       oauthClient: {
         clientId: "asana-customer-client",
@@ -11543,6 +11779,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const resumed = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       resumeConnectionId: connected.connectionId,
       oauthClient: {
@@ -11558,11 +11795,101 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it.each([false, true])("finishes a second Asana account with a colliding profile name (installed: %s)", async (installed) => {
+    const company = await createCompany(db);
+    const userId = "asana-owner";
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const agent = await createAgent(db, company.id);
+    const actor = { actorType: "user" as const, actorId: userId };
+    const credentials = {
+      v: 1 as const, accessToken: "asana-access", refreshToken: "asana-refresh", tokenType: "Bearer",
+      accessTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      refreshTokenExpiresAt: null, scopes: ["default"], subject: userId, companyId: company.id,
+      instanceId: "test-instance", environment: "staging" as const,
+      provider: "asana" as const, profile: "asana.mcp" as const,
+    };
+    const connector: PaperclipCloudConnector = {
+      getCapabilities: vi.fn(async () => ["asana.mcp"]),
+      startAuthorization: vi.fn(async ({ returnState }) => ({
+        authorizationUrl: `https://app.asana.com/-/oauth_authorize?state=${encodeURIComponent(returnState)}`,
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      })),
+      claim: vi.fn(async () => credentials), refresh: vi.fn(async () => credentials),
+      revoke: vi.fn(async () => undefined),
+    };
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const custom = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", name: "Asana", grantKind: "user",
+      oauthClient: { clientId: "asana-client", clientSecret: "asana-secret" },
+    }, actor);
+    const first = await service.finishGalleryAppConnection(company.id, custom.connectionId, {
+      enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [] },
+    }, actor);
+    await service.updateConnection(custom.connectionId, { name: "Asana custom app" });
+    const managed = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "managed", name: "Asana", grantKind: "user",
+      applicationId: custom.application.id,
+    }, actor);
+    expect(managed.connection.name).toBe("Asana");
+    if (installed) await service.putConnectionInstalls(managed.connectionId, {
+      installs: [{ targetType: "agent", targetId: agent.id }],
+    }, actor);
+    const started = await service.startOAuth(company.id, managed.connectionId, {
+      redirectUri: "https://tenant.example/api/tools/oauth/cloud-connector/callback", actor,
+    });
+    mockToolsList([{ name: "get_me", annotations: { readOnlyHint: true } }]);
+    const completed = await service.completePaperclipCloudConnectorCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: "asana-claim", actor,
+    });
+    expect(completed.connection).toMatchObject({ status: "active", enabled: true });
+    expect(completed.catalog).toEqual([expect.objectContaining({ toolName: "get_me", status: "active" })]);
+    const repeat = await service.finishGalleryAppConnection(company.id, managed.connectionId, {
+      enabledCatalogEntryIds: completed.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [],
+      access: { agentIds: installed ? [agent.id] : [] },
+    }, actor);
+    expect(repeat.profile.name).not.toBe(first.profile.name);
+    expect(repeat.profileBindings.map((binding) => binding.targetId)).toEqual(installed ? [agent.id] : []);
+    expect(await db.select().from(toolProfiles).where(eq(toolProfiles.companyId, company.id))).toHaveLength(2);
+    expect(await db.select().from(toolProfiles).where(eq(toolProfiles.id, first.profile.id)))
+      .toEqual([expect.objectContaining({ name: first.profile.name })]);
+  });
+
+  it("resumes personal Asana client credentials with database timestamp precision", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "asana-owner" };
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", grantKind: "user",
+      oauthClient: { clientId: "asana-client", clientSecret: "asana-secret" },
+    }, actor);
+    const before = await service.listConnectionGrants(connected.connectionId, company.id);
+    const grant = before.grants[0]!;
+    await db.update(connectionGrants).set({ updatedAt: sql`'2026-01-01 12:00:00.123456'::timestamp` })
+      .where(eq(connectionGrants.id, grant.id));
+    await service.connectGalleryApp(company.id, {
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth", grantKind: "user",
+      resumeConnectionId: connected.connectionId, oauthClient: { clientId: "asana-client" },
+    }, actor);
+    const after = await service.listConnectionGrants(connected.connectionId, company.id);
+    expect(after.grants).toHaveLength(1);
+    expect(after.grants[0]!.credentialSecretRefs).toEqual(grant.credentialSecretRefs);
+    expect((await service.getConnection(connected.connectionId, company.id)).credentialSecretRefs).toEqual([]);
+    expect((await service.getConnection(connected.connectionId, company.id, actor.actorId)).hasSavedOAuthClientSecret).toBe(true);
+    expect((await service.listConnections(company.id, actor.actorId))[0].hasSavedOAuthClientSecret).toBe(true);
+    expect((await service.getConnection(connected.connectionId, company.id, "another-user")).hasSavedOAuthClientSecret).toBe(false);
+    expect((await service.getConnection(connected.connectionId, company.id)).hasSavedOAuthClientSecret).toBe(false);
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grant.id));
+    expect((await service.getConnection(connected.connectionId, company.id, actor.actorId)).hasSavedOAuthClientSecret).toBe(false);
+    await db.update(connectionGrants).set({ status: "active", credentialSecretRefs: [] }).where(eq(connectionGrants.id, grant.id));
+    expect((await service.getConnection(connected.connectionId, company.id, actor.actorId)).hasSavedOAuthClientSecret).toBe(false);
+  });
+
   it("does not retain a customer OAuth secret when the client id changes", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       oauthClient: {
         clientId: "asana-first-client",
@@ -11572,6 +11899,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const resumed = await service.connectGalleryApp(company.id, {
       galleryKey: "asana",
+      connectionMethodKey: "mcp-own-oauth",
       name: "Asana own app",
       resumeConnectionId: connected.connectionId,
       oauthClient: {
@@ -11587,6 +11915,149 @@ describeEmbeddedPostgres("tool access service", () => {
         expect.objectContaining({ configPath: "oauth.client_secret" }),
       ]),
     );
+  });
+
+  it.each(["mem0", "zep", "supermemory", "cognee", "honcho"])("rejects %s setup before creating credentials when memory connectors are disabled", async (provider) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: false });
+    try {
+      const response = await request(createRouteApp(db)).get(`/api/companies/${company.id}/tools/gallery`).expect(200);
+      expect(response.body.apps.some((app: { slug: string }) => app.slug === provider)).toBe(false);
+      await expect(service.connectGalleryApp(company.id, { galleryKey: provider })).rejects.toMatchObject({ status: 403, details: { code: "memory_connectors_disabled" } });
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toHaveLength(0);
+      expect(await db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id))).toHaveLength(0);
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+    }
+  });
+
+  it("rotates an existing Mem0 key while new memory setup is disabled", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "search_memories", annotations: { readOnlyHint: true } }]);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "mem0", credentialValues: { "credentials.authorization": "old-key" },
+    });
+    await db.update(toolConnections).set({ status: "active" }).where(eq(toolConnections.id, connected.connectionId));
+    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: false });
+    try {
+      const result = await service.reconnectGalleryApp(connected.connectionId, company.id,
+        { credentialValues: { "credentials.authorization": "new-key" } });
+      expect(result.connection.id).toBe(connected.connectionId);
+      expect(result.connection.healthStatus).toBe("ok");
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+    }
+  });
+
+  it("keeps active Cognee tools available during a transient Cloud probe outage", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }));
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "cognee", credentialValues: { "env.COGNEE_BASE_URL": "https://fixture.aws.cognee.ai", "env.COGNEE_API_KEY": "key" },
+    });
+    await db.update(toolConnections).set({ status: "active" }).where(eq(toolConnections.id, connected.connectionId));
+    fetchMock.mockReset().mockRejectedValue(new Error("temporary timeout"));
+    const result = await service.checkHealth(connected.connectionId);
+    expect(result.connection.healthStatus).toBe("ok");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const catalog = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connected.connectionId));
+    expect(catalog).toHaveLength(3);
+  });
+
+  it("creates a user-owned value when reconnect restores a missing personal credential field", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "search_memories", annotations: { readOnlyHint: true } }]);
+    const actor = { actorType: "user" as const, actorId: "personal-reconnect-owner" };
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "mem0", grantKind: "user", credentialValues: { "credentials.authorization": "old-key" },
+    }, actor);
+    const { grants } = await service.listConnectionGrants(connected.connectionId, company.id);
+    await db.update(connectionGrants).set({ credentialSecretRefs: [] }).where(eq(connectionGrants.id, grants[0]!.id));
+    await service.reconnectGalleryApp(connected.connectionId, company.id,
+      { credentialValues: { "credentials.authorization": "restored-key" } }, actor);
+    const after = await service.listConnectionGrants(connected.connectionId, company.id);
+    const ref = after.grants[0]!.credentialSecretRefs[0]!;
+    const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+    expect(secret).toMatchObject({ scope: "user", ownerUserId: actor.actorId });
+    const resolved = await secretService(db).resolveUserSecretValue(company.id, {
+      definitionId: secret.userSecretDefinitionId!, responsibleUserId: actor.actorId,
+    }, { consumerType: "tool_connection", consumerId: connected.connectionId, configPath: ref.configPath,
+      actorType: "system", actorId: null, responsibleUserId: actor.actorId });
+    expect(resolved?.value).toBe("restored-key");
+    expect((await service.getConnection(connected.connectionId, company.id)).credentialSecretRefs).toEqual([]);
+  });
+
+  it("keeps rejected Mem0 API keys on the key-entry path rather than switching to OAuth", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unauthorized", { status: 401, headers: { "www-authenticate": "Bearer" } }));
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "mem0", credentialValues: { "credentials.authorization": "invalid-key" },
+    })).rejects.toMatchObject({ status: 422, details: { code: "memory_api_key_rejected" } });
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id))).toHaveLength(0);
+  });
+
+  it("vaults Cognee environment credentials and verifies Cloud access before exposing its reviewed tools", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }));
+    const key = "cognee-private-fixture-key";
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "cognee",
+      credentialValues: { "env.COGNEE_BASE_URL": "https://fixture.aws.cognee.ai", "env.COGNEE_API_KEY": key },
+    });
+    expect(fetchMock).toHaveBeenCalledWith("https://fixture.aws.cognee.ai/api/v1/datasets/", expect.objectContaining({
+      method: "GET", headers: { "X-Api-Key": key }, redirect: "manual",
+    }));
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    expect(connection.config).toMatchObject({ templateId: "paperclip.cognee-cloud" });
+    expect(connection.credentialSecretRefs.map(ref => ref.configPath).sort()).toEqual(["env.COGNEE_API_KEY", "env.COGNEE_BASE_URL"]);
+    expect(JSON.stringify(connected)).not.toContain(key);
+    expect(JSON.stringify(connection)).not.toContain(key);
+    const catalog = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connected.connectionId));
+    expect(catalog.map(entry => [entry.toolName, entry.riskLevel]).sort()).toEqual([["forget", "destructive"], ["recall", "read"], ["remember", "write"]]);
+  });
+
+  it("resolves personal Cognee credentials through their owner and durable declarations", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }));
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "cognee", grantKind: "user",
+      credentialValues: { "env.COGNEE_BASE_URL": "https://fixture.aws.cognee.ai", "env.COGNEE_API_KEY": "personal-cognee-key" },
+    }, { actorType: "user", actorId: "carol" });
+    const { grants } = await service.listConnectionGrants(connected.connectionId, company.id);
+    expect(grants).toHaveLength(1);
+    expect(connected.connection.credentialSecretRefs).toEqual([]);
+    const vault = secretService(db);
+    for (const ref of grants[0]!.credentialSecretRefs) {
+      const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+      expect(secret).toMatchObject({ scope: "user", ownerUserId: "carol" });
+      const resolved = await vault.resolveUserSecretValue(company.id, {
+        definitionId: secret.userSecretDefinitionId, responsibleUserId: "carol",
+      }, { consumerType: "tool_connection", consumerId: connected.connectionId, configPath: ref.configPath,
+        actorType: "system", actorId: null, responsibleUserId: "carol" });
+      expect(resolved?.value).toBe(ref.configPath === "env.COGNEE_API_KEY" ? "personal-cognee-key" : "https://fixture.aws.cognee.ai");
+      await expect(vault.resolveUserSecretValue(company.id, {
+        definitionId: secret.userSecretDefinitionId, responsibleUserId: "another-user",
+      })).rejects.toMatchObject({ status: 422, details: { code: "user_secret_missing" } });
+    }
+  });
+
+  it.each(["organization", "user"] as const)("cleans up a rejected %s Cognee connection and its vault records", async (grantKind) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unauthorized", { status: 401 }));
+    await expect(service.connectGalleryApp(company.id, {
+      galleryKey: "cognee", grantKind, credentialValues: { "env.COGNEE_BASE_URL": "https://fixture.aws.cognee.ai", "env.COGNEE_API_KEY": "invalid-key" },
+    }, { actorType: "user", actorId: "carol" })).rejects.toMatchObject({ status: 422, details: { code: "cognee_access_unverified" } });
+    expect(await db.select().from(userSecretDefinitions).where(eq(userSecretDefinitions.companyId, company.id))).toHaveLength(0);
+    expect(await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.companyId, company.id))).toHaveLength(0);
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id))).toHaveLength(0);
   });
 
   it("retains an encrypted API key when the same draft method resumes", async () => {
@@ -11898,7 +12369,7 @@ describeEmbeddedPostgres("tool access service", () => {
           outcome: "success",
         }),
         expect.objectContaining({
-          configPath: "credentials.oauth.access_token",
+          configPath: "oauth.access_token",
           outcome: "success",
         }),
       ]),
@@ -15225,18 +15696,8 @@ describeEmbeddedPostgres("tool access service", () => {
         ),
       );
 
-    await db.insert(toolProfiles).values({
-      companyId: company.id,
-      profileKey: `conflict-${randomUUID()}`,
-      name: "Conflicting app profile",
-      status: "active",
-      defaultAction: "deny",
-    });
-    await db
-      .update(toolConnections)
-      .set({ name: "Conflicting app profile", updatedAt: new Date() })
-      .where(eq(toolConnections.id, connect.connectionId));
-
+    // An absent actor trips the binding's foreign key after profile state is
+    // replaced. Profile-name collisions are now resolved during finalization.
     await expect(
       service.finishGalleryAppConnection(
         company.id,
@@ -15246,7 +15707,7 @@ describeEmbeddedPostgres("tool access service", () => {
           askFirstCatalogEntryIds: [updateEntry.id],
           access: { agentIds: [agent.id] },
         },
-        { actorType: "user", actorId: "board" },
+        { actorType: "agent", actorId: randomUUID() },
       ),
     ).rejects.toThrow();
 
@@ -15401,7 +15862,7 @@ describeEmbeddedPostgres("tool access service", () => {
         { actorType: "user", actorId: "board" },
       ),
     ).rejects.toMatchObject({
-      message: expect.stringContaining("Paste a new key"),
+      message: expect.stringContaining("Enter a replacement credential"),
     });
 
     const result = await service.reconnectGalleryApp(

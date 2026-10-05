@@ -1163,7 +1163,7 @@ describe("agent live run routes", () => {
         expect(res.status, JSON.stringify(res.body)).toBe(202);
         expect(res.body).toEqual(receipt);
         expect(mockHeartbeatService.getRun).toHaveBeenCalledWith(
-          failedChatRunId,
+          failedChatRunId, { includeExecutionEvidence: true },
         );
         expect(
           mockChatRunRetries.prepareFailedChatRunRetry,

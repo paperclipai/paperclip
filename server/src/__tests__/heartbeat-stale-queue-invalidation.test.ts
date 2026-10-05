@@ -9,6 +9,8 @@ import {
   createDb,
   documentRevisions,
   documents,
+  environmentLeases,
+  nativeRunFinalizations,
   heartbeatRuns,
   issueComments,
   issueDocuments,
@@ -27,6 +29,7 @@ import {
 } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { recoveryService } from "../services/recovery/service.ts";
+import { withQueuedCommentIdsInWakePayload } from "../services/issue-queued-comment-queue.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -310,6 +313,105 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
     });
   }
+
+  it.each([
+    { name: "assignments", sameIssue: true, first: "assignment", second: "assignment" },
+    { name: "unrelated tasks", sameIssue: false, first: "assignment", second: "assignment" },
+    { name: "assignment then direct comment", sameIssue: true, first: "assignment", second: "direct" },
+    { name: "direct comment then assignment", sameIssue: true, first: "direct", second: "assignment" },
+    { name: "assignment then queued comment", sameIssue: true, first: "assignment", second: "queued" },
+    { name: "queued comment then assignment", sameIssue: true, first: "queued", second: "assignment" },
+    { name: "queued comments", sameIssue: true, first: "queued", second: "queued" },
+  ])("serializes issue claims without serializing unrelated work: $name", async ({ sameIssue, first, second }) => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ maxConcurrentRuns: 2 });
+    const firstIssueId = randomUUID();
+    const secondIssueId = sameIssue ? firstIssueId : randomUUID();
+    for (const id of new Set([firstIssueId, secondIssueId])) {
+      await db.insert(issues).values({ id, companyId, title: "Concurrent assignment", status: "todo", assigneeAgentId: agentId });
+    }
+    async function queue(issueId: string, kind: string) {
+      const commentId = kind === "assignment" ? null : randomUUID();
+      if (commentId) await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: "local-board", body: "Continue this task." });
+      const queued = await seedQueuedRun({ companyId, agentId, issueId,
+        wakeReason: commentId ? "issue_commented" : "issue_assigned",
+        invocationSource: commentId ? "automation" : "assignment",
+        contextExtras: commentId ? { wakeCommentIds: [commentId], wakeCommentId: commentId } : {},
+      });
+      if (kind === "queued") await db.update(agentWakeupRequests).set({
+        payload: withQueuedCommentIdsInWakePayload({ issueId }, [commentId!]),
+      }).where(eq(agentWakeupRequests.id, queued.wakeupRequestId));
+    }
+    await queue(firstIssueId, first);
+    await queue(secondIssueId, second);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mockAdapterExecute.mockImplementation(async () => {
+      await gate;
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "Assignment finished.", provider: "test", model: "test-model" };
+    });
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect(await waitForCondition(() => Promise.resolve(mockAdapterExecute.mock.calls.length > 0))).toBe(true);
+      const runs = await db.select().from(heartbeatRuns);
+      const running = runs.filter((run) => run.status === "running");
+      expect(running).toHaveLength(sameIssue ? 1 : 2);
+      expect(runs.filter((run) => run.status === "queued")).toHaveLength(sameIssue ? 1 : 0);
+      for (const run of running) {
+        const [issue] = await db.select().from(issues).where(eq(issues.id, (run.contextSnapshot as { issueId: string }).issueId));
+        expect(issue.executionRunId).toBe(run.id);
+      }
+    } finally {
+      release();
+      await heartbeat.drainActiveRunExecutions();
+    }
+  });
+
+  it.each(["active_lease", "pending_cleanup", "failed_cleanup", "finalizer_lease", "workspace_finalization",
+    "retained_ready", "retained_missing_receipt", "retained_failed", "retained_wrong_policy"])(
+    "waits for durable cleanup from another controller: %s", async (pending) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID(), previousId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title: "Remote cleanup", status: "todo", assigneeAgentId: agentId });
+      await db.insert(heartbeatRuns).values({ id: previousId, companyId, agentId,
+        status: "succeeded", runtimeMode: "native", nativeIssueId: issueId,
+        invocationSource: "assignment", contextSnapshot: { issueId }, finishedAt: new Date() });
+      await db.update(issues).set({ executionRunId: previousId }).where(eq(issues.id, issueId));
+      const leaseId = randomUUID();
+      const retained = pending.startsWith("retained_");
+      const hasLease = retained || ["active_lease", "pending_cleanup", "failed_cleanup"].includes(pending);
+      if (hasLease) await db.insert(environmentLeases).values({ id: leaseId, companyId, issueId,
+        heartbeatRunId: previousId, provider: "daytona",
+        status: retained ? "retained" : pending === "pending_cleanup" ? "pending_cleanup" : "released",
+        leasePolicy: pending === "retained_wrong_policy" ? "retain_on_failure" : retained ? "reuse_by_environment" : "ephemeral",
+        releasedAt: retained || pending === "active_lease" ? null : new Date(),
+        cleanupStatus: ["retained_ready", "retained_wrong_policy"].includes(pending) ? "success"
+          : ["failed_cleanup", "retained_failed"].includes(pending) ? "failed" : null });
+      await db.insert(nativeRunFinalizations).values({ runId: previousId, companyId, issueId,
+        phase: pending === "workspace_finalization" ? "workspace_finalizing" : "committed",
+        leaseOwner: pending === "finalizer_lease" ? "another-controller" : null });
+      const next = await seedQueuedRun({ companyId, agentId, issueId, wakeReason: "issue_assigned", invocationSource: "assignment" });
+      mockAdapterExecute.mockImplementation(async () => {
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+        return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+          summary: "Task completed", provider: "test", model: "test-model" };
+      });
+      // No in-memory executor exists in this service. Durable ownership alone
+      // must fence a second controller until cleanup settles. A verified warm
+      // retention receipt is already a settled boundary and allows continuation.
+      await heartbeat.resumeQueuedRuns();
+      if (pending !== "retained_ready") {
+        expect((await heartbeat.getRun(next.runId))?.status).toBe("queued");
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].executionRunId).toBe(previousId);
+        if (hasLease) await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" }).where(eq(environmentLeases.id, leaseId));
+        await db.update(nativeRunFinalizations).set({ phase: "committed", leaseOwner: null }).where(eq(nativeRunFinalizations.runId, previousId));
+        await heartbeat.resumeQueuedRuns();
+      }
+      await heartbeat.drainActiveRunExecutions();
+      expect((await heartbeat.getRun(next.runId))?.status).toBe("succeeded");
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("skips generic timer wakes with no actionable assigned work before adapter execution", async () => {
     const { agentId } = await seedCompanyAndAgent({

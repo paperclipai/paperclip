@@ -8,8 +8,10 @@ describe("tool app gallery URL matching", () => {
   it("matches pasted links against gallery URL patterns", () => {
     expect(getAppDefinitionForUrl("https://mcp.zapier.com/api/mcp")?.slug).toBe("zapier");
     expect(getAppDefinitionForUrl("https://api.githubcopilot.com/mcp/")?.slug).toBe("github");
+    expect(getAppDefinitionForUrl("https://github.com/paperclipai/paperclip/pull/1")?.slug).toBe("github");
     expect(getAppDefinitionForUrl("https://docs.google.com/spreadsheets/d/sheet_123/edit")?.slug).toBe("google-sheets");
     expect(getAppDefinitionForUrl("https://gmailmcp.googleapis.com/mcp/v1")?.slug).toBe("gmail");
+    expect(getAppDefinitionForUrl("https://mcp.neon.tech/mcp")?.slug).toBe("neon");
   });
 
   it("returns null for invalid or unknown links", () => {
@@ -40,8 +42,8 @@ describe("tool app gallery URL matching", () => {
     ]);
   });
 
-  it("keeps every gallery entry reachable through at least one pattern", () => {
-    for (const app of CONNECTABLE_APP_DEFINITIONS) {
+  it("keeps tool gallery entries reachable through at least one pattern", () => {
+    for (const app of CONNECTABLE_APP_DEFINITIONS.filter((app) => app.methods.some((method) => method.purpose !== "channel"))) {
       const example = app.urlPatterns[0]?.replace("*", "example");
       expect(example, `${app.slug} has a pattern`).toBeTruthy();
       expect(getAppDefinitionForUrl(example!)?.slug).toBe(app.slug);

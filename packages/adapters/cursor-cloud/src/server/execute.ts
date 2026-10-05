@@ -20,8 +20,8 @@ import {
   joinPromptSections,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
-  renderPaperclipWakePrompt,
-  selectPaperclipTaskMarkdown,
+  hydrateFreshSessionHandoff,
+  selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
   renderTemplate,
@@ -416,13 +416,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   };
   const instructions = await buildInstructionsPrefix(config, onLog);
-  const taskContextNote = context.conversationMode === true
-    ? selectPaperclipTaskMarkdown(context, { resumedSession: canReuseSession, includeCommunicationGuidance: false })
-    : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-    conversationMode: context.conversationMode === true,
+  await hydrateFreshSessionHandoff(ctx, { resumedSession: canReuseSession });
+  const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
     resumedSession: canReuseSession,
-    suppressIssueDescription: taskContextNote.length > 0,
+    includeCommunicationGuidance: false,
   });
   const renderedBootstrapPrompt =
     !canReuseSession && bootstrapPromptTemplate.trim().length > 0
@@ -444,6 +441,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   ]);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const finalPrompt = joinPromptSections([prompt, sessionHandoffNote]);
+  const promptMetrics = {
+    promptChars: finalPrompt.length,
+    instructionsChars: instructions.chars,
+    bootstrapPromptChars: renderedBootstrapPrompt.length,
+    wakePromptChars: wakePrompt.length,
+    taskContextChars: taskContextNote.length,
+    heartbeatPromptChars: renderedPrompt.length,
+  };
 
   const agentOptions = buildAgentOptions({
     apiKey,
@@ -473,14 +478,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       command: "@cursor/sdk",
       commandNotes,
       prompt: finalPrompt,
-      promptMetrics: {
-        promptChars: finalPrompt.length,
-        instructionsChars: instructions.chars,
-        bootstrapPromptChars: renderedBootstrapPrompt.length,
-        wakePromptChars: wakePrompt.length,
-    taskContextChars: taskContextNote.length,
-        heartbeatPromptChars: renderedPrompt.length,
-      },
+      promptMetrics,
       context: {
         cursorCloud: {
           envType,

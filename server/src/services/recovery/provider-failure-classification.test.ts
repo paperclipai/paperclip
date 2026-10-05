@@ -1,3 +1,5 @@
+import { classifyRunLiveness } from "../run-liveness.js";
+import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import { describe, expect, it } from "vitest";
 import {
   PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
@@ -7,6 +9,20 @@ import {
 import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
+  it.each(["acpx_auth_required", "claude_auth_required", "codex_auth_required", "adapter_auth_missing", "refresh_token_reused", "authentication_required"])("does not automatically retry provider authentication failure %s", (errorCode) => {
+    const classification = classifyRunLiveness({ runStatus: "failed", issue: null, errorCode, authenticationRepairRequested: true });
+    const run = { errorCode, ...classification };
+    expect(isAiAuthenticationBlocked(run)).toBe(true);
+    expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
+
+  it.each(["kimi_auth_required", "acpx_auth_required", "gemini_auth_required"])("preserves recovery when %s did not produce an inline repair card", (errorCode) => {
+    const classification = classifyRunLiveness({ runStatus: "failed", issue: null, errorCode, authenticationRepairRequested: false });
+    const run = { errorCode, ...classification };
+    expect(isAiAuthenticationBlocked(run)).toBe(false);
+    expect(classifyContinuationFailure(run as never).kind).toBe("default");
+  });
+
   it("uses a typed ACP quota reset without needing the provider's original message", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     expect(classifyAdapterFailureForRecovery({
@@ -155,5 +171,11 @@ describe("classifyAdapterFailureForRecovery", () => {
       error: "Workspace storage capacity limit reached.",
       resultJson: null,
     })).toBeNull();
+  });
+  it("holds invalid provider definitions for repair even with stale transient metadata", () => {
+    const run = { errorCode: "provider_tool_definition_invalid", error: "Tool name is too long.",
+      resultJson: { errorFamily: "transient_upstream" } };
+    expect(classifyAdapterFailureForRecovery(run)).toEqual({ kind: "configuration_incomplete" });
+    expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
   });
 });

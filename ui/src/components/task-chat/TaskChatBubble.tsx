@@ -1,3 +1,5 @@
+import { TextAttachmentContext } from "@/context/TextAttachmentContext";
+import { isTextAttachment } from "@/lib/issue-attachments";
 import { ArtifactPreview } from "@/components/artifacts/ArtifactCard";
 import { isVideoLikeOutput } from "@/lib/issue-output";
 import { AgentAvatar, type AvatarAgent } from "../AgentAvatar";
@@ -140,6 +142,7 @@ function TaskChatBubbleContent({
   tryAgainNoLiveExecutionPathPending,
 }: TaskChatBubbleProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const openText = useContext(TextAttachmentContext);
   // Task attachments share the page gallery; standalone images retain the bubble viewer.
   const openIssueGallery = useContext(IssueGalleryContext);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -331,6 +334,11 @@ function TaskChatBubbleContent({
                     render={video ? <button type="button" /> :
                       <a
                         href={ref.openPath ?? ref.url}
+                        onClick={(event) => {
+                          if (openText && ref.id && isTextAttachment({ contentType: ref.contentType ?? "", originalFilename: ref.name }) && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+                            event.preventDefault(); openText(ref.id, ref.name);
+                          }
+                        }}
                         target="_blank"
                         rel="noreferrer"
                       />

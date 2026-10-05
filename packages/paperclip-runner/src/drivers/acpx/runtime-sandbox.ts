@@ -51,6 +51,8 @@ export interface AcpxRuntimeSandbox {
   workspaceRecordPath: string;
   launchEnvironment: Readonly<NodeJS.ProcessEnv>;
   persistedEnvironment: Readonly<NodeJS.ProcessEnv>;
+  /** The host sandbox must protect these runtime/config paths from tools. */
+  protectedPaths: readonly string[];
 }
 
 /** A recovered workspace pinned until the provider process is admitted. */
@@ -320,6 +322,15 @@ async function closeRecoveryHandles(
   }
 }
 
+export interface AcpxProviderRuntimePolicy {
+  /** Task execution policy, independent of provider permission auto-approval. */
+  readOnly: boolean;
+  /** Assigned, verified skill roots. Never taken from ambient provider config. */
+  readRoots?: readonly string[];
+  systemInstructions?: string;
+  protectedPaths?: readonly string[];
+}
+
 /** Prepare the private filesystem and environment visible to an ACPX agent. */
 export async function prepareAcpxRuntimeSandbox(input: {
   binding: AcpxRecoveryBinding;
@@ -327,7 +338,12 @@ export async function prepareAcpxRuntimeSandbox(input: {
   environment?: NodeJS.ProcessEnv;
   /** Public operations on the runner-owned Paperclip MCP bridge only. */
   tools?: readonly Readonly<Record<string, unknown>>[];
+  providerPolicy?: AcpxProviderRuntimePolicy;
 }): Promise<AcpxRuntimeSandbox> {
+  if (input.agent === "pi" && (input.providerPolicy === undefined || typeof input.providerPolicy.readOnly !== "boolean")) {
+    throw new Error("Pi admission requires an explicit task execution policy");
+  }
+  const policy = await validateProviderPolicy(input.providerPolicy);
   const expectedRoot = input.binding.runtimeRoot;
   if (resolve(expectedRoot) !== expectedRoot) {
     throw new Error("ACPX runtime root must be an absolute normalized path");
@@ -364,6 +380,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     join(root, `${input.agent}-home`),
     root,
   );
+  const protectedPaths = Object.freeze([...new Set([physicalRuntimeDirectory, ...policy.protectedPaths])]);
   const workspaceRecordPath = join(root, "workspace");
   await writePrivateFile(
     workspaceRecordPath,
@@ -384,6 +401,27 @@ export async function prepareAcpxRuntimeSandbox(input: {
       })}\n`,
     );
   }
+  if (input.agent === "grok") {
+    // Native project rules merge with global rules. Ask rules win over project
+    // allows, keeping operation approval at the runner's authenticated boundary.
+    await writePrivateFile(join(agentHomeDirectory, "config.toml"), [
+      "[permission]",
+      'ask = ["Bash", "Read", "Edit", "Grep", "MCPTool", "WebFetch", "WebSearch"]',
+      "[ui]", 'permission_mode = "ask"',
+      "[compat.claude]", "hooks = false", "mcps = false",
+      "[compat.cursor]", "hooks = false", "mcps = false",
+      "[managed_mcps]", "enabled = false", "gateway_tools_enabled = false",
+      "[toolset.bash]", "login_shell_capture = false",
+      "[shell_environment_policy]", 'exclude = ["XAI_API_KEY"]',
+      "[subagents]", "enabled = false",
+      "[workflows]", "enabled = false",
+      "[goal]", "enabled = false", "",
+    ].join("\n"));
+    // Always-approve may otherwise be enabled by compatible project settings.
+    // Even approve-all runs use one host decision per requested operation.
+    await writePrivateFile(join(agentHomeDirectory, "requirements.toml"),
+      "[ui]\ndisable_bypass_permissions_mode = true\n");
+  }
   if (input.agent === "pi") {
     await writePrivateFile(
       join(agentHomeDirectory, "settings.json"),
@@ -393,6 +431,15 @@ export async function prepareAcpxRuntimeSandbox(input: {
         enableInstallTelemetry: false,
       })}\n`,
     );
+  }
+  if (input.agent === "copilot") {
+    await writePrivateFile(join(agentHomeDirectory, "config.json"), `${JSON.stringify({
+      autoUpdate: false,
+      trustedFolders: [],
+      disableAllHooks: true,
+      memory: false,
+      ide: { autoConnect: false, openDiffOnEdit: false },
+    })}\n`);
   }
   if (input.agent === "codex") {
     await writePrivateFile(
@@ -428,11 +475,37 @@ export async function prepareAcpxRuntimeSandbox(input: {
     XDG_CACHE_HOME: cacheDirectory,
     PAPERCLIP_ACPX_PROFILE: input.agent,
     PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+    ...(input.agent === "grok" ? { GROK_HOME: agentHomeDirectory, NO_BROWSER: "1", GROK_DISABLE_AUTOUPDATER: "1" } : {}),
     ...(input.agent === "pi"
       ? {
           PI_CODING_AGENT_DIR: agentHomeDirectory,
           PI_SKIP_VERSION_CHECK: "1",
           PI_TELEMETRY: "0",
+          PAPERCLIP_PI_READ_ONLY: policy.readOnly ? "1" : "0",
+          PAPERCLIP_PI_READ_ROOTS: JSON.stringify(policy.readRoots),
+          PAPERCLIP_PI_PROTECTED_ROOTS: JSON.stringify(protectedPaths),
+          PAPERCLIP_PI_SYSTEM_INSTRUCTIONS: policy.systemInstructions,
+        }
+      : {}),
+    ...(input.agent === "cursor"
+      ? {
+          CURSOR_CONFIG_DIR: agentHomeDirectory,
+          CURSOR_DATA_DIR: dataDirectory,
+          AGENT_CLI_CREDENTIAL_STORE: "memory",
+          NO_OPEN_BROWSER: "1",
+          NODE_DISABLE_COMPILE_CACHE: "1",
+        }
+      : {}),
+    ...(input.agent === "copilot"
+      ? {
+          COPILOT_HOME: agentHomeDirectory,
+          COPILOT_CACHE_HOME: cacheDirectory,
+          COPILOT_AUTO_UPDATE: "false",
+          COPILOT_ALLOW_ALL: "false",
+          COPILOT_DISABLE_TERMINAL_TITLE: "true",
+          NO_COLOR: "1",
+          // COPILOT_PKG_CACHE_HOME belongs to the per-spawn immutable command
+          // lease. Reusing a persistent extraction cache invalidates its proof.
         }
       : {}),
     ...(input.agent === "claude"
@@ -465,8 +538,31 @@ export async function prepareAcpxRuntimeSandbox(input: {
     cacheDirectory,
     agentHomeDirectory,
     workspaceRecordPath,
+    protectedPaths,
     launchEnvironment: Object.freeze({ ...launchEnvironment }),
     persistedEnvironment: Object.freeze(persistedEnvironment),
+  };
+}
+
+async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefined): Promise<{
+  readOnly: boolean; readRoots: string[]; protectedPaths: string[]; systemInstructions: string;
+}> {
+  if (policy !== undefined && typeof policy.readOnly !== "boolean") throw new Error("Provider task execution policy is invalid");
+  const paths = async (values: readonly string[] | undefined, requireExisting: boolean): Promise<string[]> => {
+    if (values !== undefined && (!Array.isArray(values) || values.length > 128)) throw new Error("Provider runtime paths are invalid");
+    return await Promise.all((values ?? []).map(async (value) => {
+      if (typeof value !== "string" || !isAbsolute(value) || value === dirname(value) || /[\0\r\n]/.test(value)) throw new Error("Provider runtime path is invalid");
+      const normalized = resolve(value);
+      return requireExisting ? await realpath(normalized) : normalized;
+    }));
+  };
+  const systemInstructions = policy?.systemInstructions ?? "";
+  if (typeof systemInstructions !== "string" || systemInstructions.includes("\0") || Buffer.byteLength(systemInstructions) > 32 * 1024) throw new Error("Provider runtime instructions exceed their bounded size");
+  return {
+    readOnly: policy?.readOnly ?? true,
+    readRoots: await paths(policy?.readRoots, true),
+    protectedPaths: await paths(policy?.protectedPaths, false),
+    systemInstructions,
   };
 }
 
@@ -595,6 +691,8 @@ function isPersistableEnvironmentName(name: string): boolean {
     /^(?:HOME|XDG_CONFIG_HOME|XDG_DATA_HOME|XDG_CACHE_HOME)$/.test(name) ||
     /^(?:PAPERCLIP_ACPX_PROFILE|PAPERCLIP_ACPX_ISOLATED_CONTEXT)$/.test(name) ||
     /^(?:PI_CODING_AGENT_DIR|PI_SKIP_VERSION_CHECK|PI_TELEMETRY)$/.test(name) ||
+    /^(?:CURSOR_CONFIG_DIR|CURSOR_DATA_DIR|AGENT_CLI_CREDENTIAL_STORE|NO_OPEN_BROWSER|NODE_DISABLE_COMPILE_CACHE)$/.test(name) ||
+    /^(?:COPILOT_HOME|COPILOT_CACHE_HOME|COPILOT_AUTO_UPDATE|COPILOT_ALLOW_ALL|COPILOT_DISABLE_TERMINAL_TITLE|NO_COLOR)$/.test(name) ||
     /^(?:CLAUDE_CONFIG_DIR|CODEX_HOME|NO_BROWSER|DEFAULT_AUTH_REQUEST)$/.test(
       name,
     )

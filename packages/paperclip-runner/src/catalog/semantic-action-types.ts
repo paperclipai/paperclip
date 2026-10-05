@@ -1,6 +1,7 @@
 export type PaperclipSemanticActionId =
   | "search_api"
   | "call_api"
+  | "set_task_title"
   | "get_task_context"
   | "get_task_history"
   | "list_documents"
@@ -26,6 +27,7 @@ export type PaperclipSemanticActionId =
   | "reassign_task"
   | "set_dependencies"
   | "create_skill"
+  | "update_skill"
   | "create_project"
   | "list_project_repositories"
   | "list_projects"

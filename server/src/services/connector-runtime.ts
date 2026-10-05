@@ -19,12 +19,14 @@ import {
   executeAgentmailTool,
 } from "./connectors/agentmail.js";
 import { materializeAsset } from "./native-runtime/runtime-context.js";
+import { BROWSER_USE_CLOUD_SKILL } from "./connectors/browser-use-cloud/skill.js";
 
 type AgentBinding = { companyId: string; agentId: string; runId?: string; issueId?: string };
 type ToolBinding = AgentBinding & {
   runId: string;
   issueId: string;
   workMode?: string;
+  endpointId?: string;
 };
 type Resource = {
   id: string;
@@ -41,6 +43,10 @@ interface ConnectorDefinition {
   key: string;
   label: string;
   skillName: string;
+  /** Trusted connector-owned content; never discovered through global skills/. */
+  skillMarkdown?: string;
+  /** Retired bundled keys are removed from run-scoped selections and overlays. */
+  legacySkillKeys?: string[];
   tools: Tool[];
   resolve: (db: Db, binding: AgentBinding) => Promise<Resource[]>;
   execute: (
@@ -54,6 +60,14 @@ interface ConnectorDefinition {
 // Trusted connector packages declare their contributions here. Assignments and
 // current access, not credential availability or agent-authored config, select them.
 const connectors: ConnectorDefinition[] = [
+  { key: "browser-use-cloud", label: "Browser Use Cloud", skillName: "browser-use-cloud", skillMarkdown: BROWSER_USE_CLOUD_SKILL, tools: [],
+    legacySkillKeys: ["paperclipai/paperclip/browser-use"],
+    async resolve(db, binding) {
+      const { getAssignedMcpGateway } = await import("./native-runtime/assigned-mcp-tools.js");
+      try { return await getAssignedMcpGateway(db).browserUseResources(binding); } catch { return []; }
+    },
+    async execute() { throw forbidden("Use Browser Use Cloud through the connection tool gateway."); },
+  },
   { key: "slack", label: "Slack", skillName: "slack",
     tools: SLACK_TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })),
     resolve: slackAssignedResource,
@@ -120,7 +134,7 @@ export async function resolveConnectorAssignments(
 }
 
 export function isConnectorSkill(key: string) {
-  return connectors.some((connector) => skillKey(connector) === key);
+  return connectors.some((connector) => skillKey(connector) === key || connector.legacySkillKeys?.includes(key));
 }
 
 export function isConnectorTool(name: string) {
@@ -153,6 +167,7 @@ export async function applyConnectorSkills(
     connectors.flatMap((connector) => [
       skillKey(connector),
       connector.skillName,
+      ...(connector.legacySkillKeys ?? []),
     ]),
   );
   const desired = readPaperclipSkillSyncPreference(
@@ -163,16 +178,19 @@ export async function applyConnectorSkills(
   );
   for (const assignment of assignments) {
     const connector = connectors.find((entry) => entry.key === assignment.key)!;
-    const root = await resolvePaperclipSkillsDir(
-      path.dirname(fileURLToPath(import.meta.url)),
-      [fileURLToPath(new URL("../../../skills", import.meta.url))],
-    );
-    if (!root)
-      throw new Error(`Bundled connector skill is missing: ${connector.key}`);
-    const markdown = await fs.readFile(
-      path.join(root, connector.skillName, "SKILL.md"),
-      "utf8",
-    );
+    let markdown = connector.skillMarkdown;
+    if (markdown === undefined) {
+      const root = await resolvePaperclipSkillsDir(
+        path.dirname(fileURLToPath(import.meta.url)),
+        [fileURLToPath(new URL("../../../skills", import.meta.url))],
+      );
+      if (!root)
+        throw new Error(`Bundled connector skill is missing: ${connector.key}`);
+      markdown = await fs.readFile(
+        path.join(root, connector.skillName, "SKILL.md"),
+        "utf8",
+      );
+    }
     const toolRevision = createHash("sha256")
       .update(JSON.stringify(assignment.tools))
       .digest("hex");

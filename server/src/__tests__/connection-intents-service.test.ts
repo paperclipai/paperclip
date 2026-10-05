@@ -42,6 +42,15 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describe("wakeConnectionIntentAfterResolution", () => {
+  it("preserves the fresh-session fence for repaired provider authentication", async () => {
+    const wakeup = vi.fn().mockResolvedValue(null);
+    await wakeConnectionIntentAfterResolution({ wakeup } as Parameters<typeof wakeConnectionIntentAfterResolution>[0], {
+      loaded: { issue: { id: "issue-1", assigneeAgentId: "agent-1", status: "in_progress" }, interaction: { id: "interaction-1", payload: { purpose: "ai" } } },
+      status: "accepted", actorId: "user-1",
+    });
+    expect(wakeup.mock.calls[0][1].contextSnapshot).toMatchObject({ forceFreshSession: true });
+    expect(wakeup.mock.calls[0][1].contextSnapshot.refreshTools).toBeUndefined();
+  });
   it("preserves resolved interaction evidence in the queued run snapshot", async () => {
     const wakeup = vi.fn().mockResolvedValue(null);
     await wakeConnectionIntentAfterResolution(
@@ -67,8 +76,10 @@ describe("wakeConnectionIntentAfterResolution", () => {
         interactionResolvedAt: "2026-08-28T13:30:00.000Z",
         mutation: "interaction",
         wakeReason: "issue_commented",
+        refreshTools: true,
       }),
     }));
+    expect(wakeup.mock.calls[0][1].contextSnapshot.forceFreshSession).toBeUndefined();
   });
 });
 
@@ -671,7 +682,8 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId }).where(eq(heartbeatRuns.id, runId));
     const authority = new PaperclipRunnerToolAuthority(db, { companyId: claims.company_id, issueId, agentId: claims.sub, runId });
-    const result = await authority.execute({ tool: "connections_search", callId: "discover", arguments: { query: "github" } });
+    const query = "Please help me find tools to continue this task. ".repeat(8) + "Look at my Git Hub pull requests";
+    const result = await authority.execute({ tool: "connections_search", callId: "discover", arguments: { query } });
     expect(result).toMatchObject({ results: expect.arrayContaining([expect.objectContaining({ service: "github", state: "available" })]) });
     const request = await authority.execute({ tool: "connection_request", callId: "request", arguments: { service: "github" } });
     expect(request).toMatchObject({ state: "needs_user_action", interactionId: expect.any(String) });
@@ -840,8 +852,20 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(service.complete(toolRequest.id, connection!.id, claims.responsible_user_id!)).rejects.toThrow("cannot satisfy");
     await expect(service.complete(aiRequest.interactionId!, connection!.id, claims.responsible_user_id!)).resolves.toMatchObject({ status: "accepted" });
     expect((await service.request(aiClaims, "anthropic", { purpose: "ai" })).state).toBe("ready");
+    const search = await service.search(aiClaims, "Find Anthropic authentication for this agent");
+    expect(search.results[0]).toMatchObject({ service: "anthropic", state: "ready", connectionId: connection!.id });
+    expect(search.instruction).not.toContain("Share its setupPath");
+    const multipleAi = await service.search(aiClaims, "Anthropic and xAI");
+    expect(multipleAi.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ service: "anthropic", state: "ready" }),
+      expect.objectContaining({ service: "xai", state: "available" }),
+    ]));
+    expect(multipleAi.instruction).toContain("setupPath");
+    expect(multipleAi.instruction).toContain("ready AI");
     await expect(service.request(aiClaims, "anthropic")).rejects.toMatchObject({ status: 422 });
-    expect((await service.search(aiClaims, "openrouter")).results.some(result => result.service === "openrouter")).toBe(false);
+    expect((await service.search(aiClaims, "openrouter")).results[0]).toMatchObject({
+      service: "openrouter", methods: [expect.objectContaining({ purpose: "ai", setupPath: expect.any(String) })],
+    });
   });
 
 

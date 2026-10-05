@@ -15,6 +15,7 @@ exact execution ID explicitly.
 | Hire a teammate and use them again | `hire-reuse` | One Morgan QA reporting to the lead, native runner and the same encrypted connection bindings, real child execution, then a second usable delivery from that same agent. |
 | Decide on an installed service action | `service-approve`, `service-decline` | Assign an authenticated local MCP fixture with Ask first; match its tool action and connection ID; no provider call before approval; exactly one after approval and a verified document; none after decline. |
 | Decline a new connection | `connection-decline` | Start without service connections; match a Notion connection intent; click Not now; verify the saved rejection, no new connection or repeated request, and an explanation followed by Done. |
+| Request an email address | `agentmail-setup` | Enable Chat connectors, ask for an email address, and require a durable AgentMail card for the requesting agent and user. Reload and verify one password field, the direct API-key link, and no access selectors or modal. Decline and verify no connection or repeated request. |
 | Continue work after a controller restart | `recover-controller` | Observe saved source, persist a user message, restart the isolated controller, and independently test the delivered result. |
 | Stop work and change direction | `stop-redirect` | Click Stop, send one new request, reload, observe exactly one stored user message and the new answer, and reach Done. |
 | Create and edit a company skill | `create-skill-studio` | Create one skill through the runner, verify its persisted library entry and activity-feed card, open Skill Studio, save an edit, and verify the edit after returning. Local Codex, local ACPX Claude, and warm Daytona cells are explicit. |
@@ -36,8 +37,8 @@ See [controlled recovery tests](../runner-recovery/README.md).
 
 ## Matrix and running
 
-The local matrix has nine cases on native Codex `gpt-5.6-sol`, native ACPX Claude
-`claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 27 cells. The two core profiles
+The local matrix has fourteen cases on native Codex `gpt-5.6-sol`, native ACPX Claude
+`claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 42 cells. The two core profiles
 also declare build/revise, delegation, controller-restart, and skill-creation cases
 on Daytona: eight cells. Remote runner-process killing is not supported. For remote controller
 restart, a verified first download supplies the persistence checkpoint; the
@@ -196,3 +197,42 @@ remote**. The test opens the created skill from its task-feed card, checks the
 canonical skill identity in Studio, saves an edit, and returns to the same skill
 in the task sidebar. A model's authored document heading is not used as the
 identity check.
+
+## External-provider fallback
+
+Three explicit local cases cover aggregator routing with the normal production
+agent guidance. They add nine local cells. The AgentMail setup case adds three
+local cells; the suite now has 50 cells total.
+
+The AgentMail case uses real model discovery and production interaction/UI paths,
+but declines before sending credentials to AgentMail. Its independent grader is
+calibrated against missing, duplicate, misaddressed, hidden, and malformed cards.
+The email integration suite separately proves credential/inbox creation, access
+defaults, assignment checks, and completion using a fixture provider. Neither
+test qualifies live AgentMail delivery. Run a bounded local model cell with:
+
+```sh
+pnpm test:e2e:runner -- --id everyday-workflows.runner-codex-mini.local.agentmail-setup --max-automatic-retries 0
+```
+
+- `provider-native`: Jira is supported natively and by aggregators. Require the
+  Jira connection card directly, decline it in the browser, and verify no provider
+  question, connection creation, or repeated request.
+- `provider-decline`: HubSpot has no built-in connector in this fixture. Require
+  Composio, Arcade, Zapier, and None in that order with external-service disclosure.
+  Restart the controller, reload the question, choose None through the UI, and
+  verify one saved answer, no connection changes, and no fabricated result.
+- `provider-second`: Install a deterministic Arcade gateway with a read-only
+  HubSpot action through public APIs. Choose Arcade in the browser after restart.
+  Require no calls before selection, exactly one call afterwards, the independently
+  generated contact marker in the agent response, and no duplicate connection.
+
+These use the existing native profiles and 12-minute local attempt deadline;
+expected provider runs are two per case. There are no real third-party mutations.
+The fixture server is closed and the harness cleans its disposable instance.
+Provider-choice screenshots, persisted interactions, gateway call counts, source
+revision, harness digest, and existing usage/cost evidence accompany each attempt.
+`connection-routing-evidence.test.ts` calibrates the grader against undisclosed
+routing, incorrect ordering, early calls, duplicate questions, and fabricated reads.
+Run a single `everyday-workflows.runner-codex-mini.local.provider-decline` cell
+first; do not treat these fixtures as live provider compatibility tests.

@@ -71,8 +71,10 @@
     "test:e2e:runner:models:update": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/openrouter-models-update.ts",
     "test:e2e:runner:history:publish": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/history-publish.ts",
     "test:runner-recovery": "vitest run server/src/services/native-runtime/native-replacement-evidence.test.ts server/src/services/native-runtime/stopped-codex-turn.test.ts server/src/services/native-runtime/native-safe-replacement.test.ts",
+    "test:e2e:browser-context": "playwright test --config tests/e2e/playwright-company-context.config.ts",
     "test:e2e:runner:browser-support": "playwright test --config tests/runner-e2e/playwright-support.config.ts",
     "test:e2e:runner:unit": "vitest run --config tests/runner-e2e/vitest.config.ts",
+    "test:e2e:runner:stock-harness": "node tests/runner-e2e/stock-harness-checks.mjs",
     "test:e2e:runner:typecheck": "tsc -p tests/runner-e2e/tsconfig.json",
     "test:e2e:runner:report": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/report.ts",
     "test:runner-workflow-evals": "pnpm --filter @paperclipai/paperclip-eval-kernel build && pnpm --filter @paperclipai/paperclip-runner test:runner-workflow-evals",
@@ -86,11 +88,14 @@
     "test:canary-onboarding-smoke": "npx playwright test --config tests/canary-onboarding/playwright.config.ts",
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
     "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs",
-    "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs"
+    "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs",
+    "test:lifecycle-baseline": "node tests/lifecycle-baseline/run.mjs",
+    "test:lifecycle-baseline:support": "node --test tests/lifecycle-baseline/report.test.mjs",
+    "test:lifecycle-baseline:typecheck": "tsc -p tests/lifecycle-baseline/tsconfig.json"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
-    "agentmail": "^0.5.14",
+    "agentmail": "^0.5.31",
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",

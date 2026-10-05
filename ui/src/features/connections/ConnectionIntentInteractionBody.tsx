@@ -8,10 +8,13 @@ import {
   RotateCcw,
   XCircle,
 } from "lucide-react";
-import type { ConnectionIntentInteraction } from "@paperclipai/shared";
+import type { AiAuthMethod, ConnectionIntentInteraction } from "@paperclipai/shared";
+import { AgentMailIntentSetup } from "./AgentMailIntentSetup";
 import { connectionIntentsApi } from "@/api/connection-intents";
+import { aiConnectionsApi } from "@/api/ai-connections";
+import { agentsApi } from "@/api/agents";
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
-import { AI_PROVIDERS } from "@/components/ai-connections/model";
+import { defaultAiConnectionName } from "@/components/ai-connections/model";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,6 +35,7 @@ export interface ConnectionIntentInteractionBodyProps {
   interaction: ConnectionIntentInteraction;
   currentUserId?: string | null;
   addresseeLabel: string;
+  addresseeName?: string;
   renderSetup?: (props: ConnectionSetupFlowProps) => ReactNode;
 }
 
@@ -39,14 +43,17 @@ export function ConnectionIntentInteractionBody({
   interaction,
   currentUserId,
   addresseeLabel,
+  addresseeName,
   renderSetup,
 }: ConnectionIntentInteractionBodyProps) {
   const [open, setOpen] = useState(false);
+  const [adoptionConnectionId, setAdoptionConnectionId] = useState<string | null>(null);
   const focusTargetRef = useRef<HTMLDivElement>(null);
   const setupGeneration = useRef(0);
   const generation = setupGeneration.current;
   const closeSetup = () => {
     setupGeneration.current += 1;
+    selectAiAccountMutation.reset();
     setOpen(false);
   };
   const queryClient = useQueryClient();
@@ -55,6 +62,7 @@ export function ConnectionIntentInteractionBody({
   );
   const isPending = interaction.status === "pending";
   const isAi = interaction.payload.purpose === "ai";
+  const isEmail = interaction.payload.purpose === "channel" && interaction.payload.serviceSlug === "agentmail";
   const focusTargetId = `connection-intent-focus-target-${interaction.id}`;
 
   const invalidateTask = async (
@@ -122,6 +130,17 @@ export function ConnectionIntentInteractionBody({
       returnFocusToCard();
     },
   });
+  const adoptMutation = useMutation({
+    mutationFn: (connectionId: string) => agentsApi.adoptAiConnection(
+      interaction.payload.requestingAgentId, interaction.id, connectionId, interaction.companyId,
+    ),
+    onSuccess: async (updatedInteraction) => {
+      await invalidateTask(updatedInteraction);
+      setAdoptionConnectionId(null);
+      setOpen(false);
+      returnFocusToCard();
+    },
+  });
   const declineMutation = useMutation({
     mutationFn: () => connectionIntentsApi.decline(interaction.id),
     onSuccess: async (updatedInteraction) => {
@@ -158,11 +177,44 @@ export function ConnectionIntentInteractionBody({
       returnFocusToCard();
       return;
     }
-    completeMutation.mutate(completion.connectionId);
+    if (setupQuery.data?.aiConnectionRequiresAdoption) {
+      setAdoptionConnectionId(completion.connectionId);
+    } else {
+      completeMutation.mutate(completion.connectionId);
+    }
   };
+
+  const selectAiAccountMutation = useMutation({
+    mutationFn: async (result: { connectionId: string; grantId: string; method: AiAuthMethod; generation: number }) => {
+      if (result.generation !== setupGeneration.current) {
+        await setupQuery.refetch();
+        return;
+      }
+      const binding = setupQuery.data?.aiConnection;
+      const previous = setupQuery.data?.aiRepair?.connection;
+      if (binding && previous && result.connectionId !== previous.id) {
+        if (binding.mode === "responsible_user") {
+          await aiConnectionsApi.setDefault(interaction.companyId, result.grantId);
+        } else {
+          const agent = await agentsApi.get(interaction.payload.requestingAgentId, interaction.companyId);
+          const current = agent.runtimeConfig.aiConnection;
+          if (!current || current.mode === "responsible_user" || current.connectionId !== previous.id || current.grantId !== previous.grantId) {
+            throw new Error("The agent’s AI connection changed. Reload the task and try again.");
+          }
+          if (result.generation !== setupGeneration.current) return;
+          await agentsApi.update(agent.id, {
+            runtimeConfig: { ...agent.runtimeConfig, aiConnection: { ...binding, method: result.method, connectionId: result.connectionId, grantId: result.grantId } },
+          }, interaction.companyId);
+        }
+        await queryClient.invalidateQueries({ queryKey: ["ai-connections", interaction.companyId] });
+      }
+      if (result.generation === setupGeneration.current) await finishNewConnection(result);
+    },
+  });
 
   const setupProps: ConnectionSetupFlowProps | null = setupQuery.data ? {
     host: "dialog",
+    upstreamServiceName: interaction.payload.upstreamService?.name,
     serviceSlug: interaction.payload.serviceSlug.startsWith("connection:") ? undefined : interaction.payload.serviceSlug,
     configuredConnection: interaction.payload.serviceSlug.startsWith("connection:") ? setupQuery.data.existingConnections[0] : undefined,
     requestedAgentId: setupQuery.data.requestedAgentId,
@@ -181,8 +233,8 @@ export function ConnectionIntentInteractionBody({
     interaction.status === "accepted"
       ? {
           icon: CheckCircle2,
-          title: `${interaction.payload.serviceName} connected`,
-          body: isAi ? "This agent can now use the connection." : `${interaction.payload.requestingAgentName} can use this connection on the continuation run.`,
+          title: interaction.payload.upstreamService ? "External provider connected" : `${interaction.payload.serviceName} connected`,
+          body: interaction.payload.upstreamService ? `${interaction.payload.requestingAgentName} can now verify and authorize ${interaction.payload.upstreamService.name} through this provider. The app is not yet verified.` : isAi ? "This agent can now use the connection." : `${interaction.payload.requestingAgentName} can use this connection on the continuation run.`,
         }
       : interaction.status === "rejected"
         ? {
@@ -259,6 +311,9 @@ export function ConnectionIntentInteractionBody({
 
   const repair = setupQuery.data?.aiRepair;
   const selectedReady = repair && setupQuery.data?.existingConnections.some((connection) => connection.id === repair.connection.id);
+  const readyForAdoption = setupQuery.data?.aiConnectionRequiresAdoption
+    ? adoptionConnectionId ?? (selectedReady ? repair.connection.id : null)
+    : null;
   const setupContent = setupQuery.isLoading ? (
                 <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" /> Loading
@@ -285,7 +340,17 @@ export function ConnectionIntentInteractionBody({
               ) : setupProps ? (
                 renderSetup ? renderSetup(setupProps) : <ConnectionSetupFlow {...setupProps} />
               ) : null;
+  const aiConnection = setupQuery.data?.aiConnection;
   const inlineContent = setupQuery.isLoading || setupQuery.isError ? setupContent
+    : readyForAdoption ? <div className="space-y-3">
+        <p className="text-sm">
+          Use Connections for {interaction.payload.requestingAgentName}? This replaces the agent’s existing authentication
+          with the responsible person’s {interaction.payload.serviceName} connection. The model stays the same.
+        </p>
+        <Button disabled={adoptMutation.isPending} onClick={() => adoptMutation.mutate(readyForAdoption)}>
+          {adoptMutation.isPending ? "Checking connection…" : "Use connection and continue"}
+        </Button>
+      </div>
     : selectedReady ? <div className="space-y-3">
         <p className="text-sm">{repair.connection.name} is ready.</p>
         <Button disabled={completeMutation.isPending} onClick={() => completeMutation.mutate(repair.connection.id)}>
@@ -296,28 +361,32 @@ export function ConnectionIntentInteractionBody({
         companyId={interaction.companyId}
         provider={repair.connection.provider}
         initialMethod={repair.connection.method}
-        fixedMethod
+        fixedMethod={false}
         connectionId={repair.connection.id}
         name={repair.connection.name}
+        nameForMethod={(method) => defaultAiConnectionName(addresseeName ?? addresseeLabel, repair.connection.provider, method)}
+        hideName
         ownership={repair.connection.ownership}
         agentIds={[interaction.payload.requestingAgentId]}
         allAgents={false}
-        onComplete={(result) => { void finishNewConnection(result); }}
+        onComplete={(result) => selectAiAccountMutation.mutate({ ...result, generation })}
         onCancel={() => { closeSetup(); returnFocusToCard(); }}
       /> : <p role="status" className="text-sm text-muted-foreground">
         {repair.connection.ownership === "personal" ? `${repair.connection.ownerName ?? "The account owner"} must reconnect ${repair.connection.name}.` : `The account owner must reconnect ${repair.connection.name}.`}
         {" "}You can continue here once it is restored.
       </p>
-    : setupQuery.data?.aiConnection && setupQuery.data.aiConnection.mode !== "responsible_user"
+    : aiConnection && aiConnection.mode !== "responsible_user"
       ? <p role="status" className="text-sm text-muted-foreground">The selected account is no longer available to you. Ask its owner to restore access, or choose an available AI connection in the agent’s settings.</p>
-      : setupQuery.data?.aiConnection ? <AiConnectionCredentialStep
+      : aiConnection ? <AiConnectionCredentialStep
           companyId={interaction.companyId}
-          provider={setupQuery.data.aiConnection.provider}
-          name={`My ${AI_PROVIDERS[setupQuery.data.aiConnection.provider].name} account`}
+          provider={aiConnection.provider}
+          name={defaultAiConnectionName(addresseeName ?? addresseeLabel, aiConnection.provider, "subscription")}
+          hideName
+          nameForMethod={(method) => defaultAiConnectionName(addresseeName ?? addresseeLabel, aiConnection.provider, method)}
           ownership="personal"
           agentIds={[interaction.payload.requestingAgentId]}
           allAgents={false}
-          onComplete={(result) => { void finishNewConnection(result); }}
+          onComplete={(result) => selectAiAccountMutation.mutate({ ...result, generation })}
           onCancel={() => { closeSetup(); returnFocusToCard(); }}
         /> : setupContent;
 
@@ -338,11 +407,12 @@ export function ConnectionIntentInteractionBody({
           />
           <div>
             <p className="font-medium text-foreground">
-              {isAi ? "AI connection needs attention" : `${interaction.payload.requestingAgentName} needs ${interaction.payload.serviceName}`}
+              {isAi ? `${interaction.payload.serviceName} authentication required` : `${interaction.payload.requestingAgentName} needs ${interaction.payload.serviceName}`}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
               {interaction.payload.purpose === "ai"
                 ? "This task can’t run until the agent has a valid AI connection. Connect here and the task will resume automatically."
+                : isEmail ? "Connect AgentMail to create an email address for this agent."
                 : "Connect your identity or reuse an eligible connection. Access is added only for this agent."}
             </p>
           </div>
@@ -356,7 +426,19 @@ export function ConnectionIntentInteractionBody({
           </p>
         ) : null}
 
-        <div className="mt-4 flex flex-wrap justify-end gap-2">
+        {isEmail ? setupQuery.isLoading || setupQuery.isError ? <>
+          {setupContent}
+          <Button type="button" variant="ghost" disabled={declineMutation.isPending} onClick={() => declineMutation.mutate()}>Not now</Button>
+        </> : <AgentMailIntentSetup
+          companyId={interaction.companyId}
+          agentId={interaction.payload.requestingAgentId}
+          requestId={interaction.id}
+          savedCredentialId={setupQuery.data?.emailSetup?.credentialConnectionId}
+          readyConnectionId={setupQuery.data?.emailSetup?.readyConnectionId}
+          onComplete={async connectionId => { await completeMutation.mutateAsync(connectionId); }}
+          onDecline={() => declineMutation.mutate()}
+          declining={declineMutation.isPending}
+        /> : <div className="mt-4 flex flex-wrap justify-end gap-2">
           {!isAi && <Button
             type="button"
             variant="ghost"
@@ -365,7 +447,7 @@ export function ConnectionIntentInteractionBody({
           >
             Not now
           </Button>}
-          {isAi ? <Button type="button" disabled={completeMutation.isPending} onClick={() => open ? closeSetup() : setOpen(true)}>
+          {isAi ? <Button type="button" disabled={completeMutation.isPending || adoptMutation.isPending || selectAiAccountMutation.isPending} onClick={() => open ? closeSetup() : setOpen(true)}>
             <Plug className="h-4 w-4" />{open ? "Close setup" : "Fix connection"}
           </Button> : <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
@@ -401,24 +483,35 @@ export function ConnectionIntentInteractionBody({
               {setupContent}
             </DialogContent>
           </Dialog>}
-        </div>
+        </div>}
         {isAi && open ? <div className="mt-4 border-t border-border pt-4" data-testid="ai-connection-inline-repair">{inlineContent}</div> : null}
 
-        {completeMutation.isError ||
+        {(!isEmail && completeMutation.isError) ||
+        (selectAiAccountMutation.isError && selectAiAccountMutation.variables?.generation === generation) ||
+        adoptMutation.isError ||
         declineMutation.isError ||
         phaseMutation.isError ? (
           <p className="mt-3 text-sm text-destructive" role="alert">
             {(completeMutation.error ??
+              selectAiAccountMutation.error ??
+              adoptMutation.error ??
               declineMutation.error ??
               phaseMutation.error) instanceof Error
               ? (
                   completeMutation.error ??
+                  selectAiAccountMutation.error ??
+                  adoptMutation.error ??
                   declineMutation.error ??
                   phaseMutation.error
                 )?.message
               : "Couldn’t update this connection request."}
           </p>
         ) : null}
+        {selectAiAccountMutation.isError && selectAiAccountMutation.variables?.generation === generation && (
+          <Button className="mt-3" onClick={() => selectAiAccountMutation.mutate(selectAiAccountMutation.variables!)}>
+            Retry using this connection
+          </Button>
+        )}
       </div>
     </div>
   );

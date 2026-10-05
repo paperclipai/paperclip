@@ -1,6 +1,11 @@
 /** Provider-neutral semantic completion tools and their strict model-facing schemas. */
 export const PRP_COMPLETION_TOOL_NAME = "paperclip_finish" as const;
 export const PRP_BLOCK_TOOL_NAME = "paperclip_block" as const;
+/** Native Runner guidance; legacy adapters use their own skill/API completion paths. */
+export const PRP_COMPLETION_TOOL_DESCRIPTION =
+  "Report completed work (done), work requiring review (needs_review), or an explicit wait for the next response (yielded with response_wake). Use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome; do not claim completion while gated. Explain any required approval with its supplied link and action, then write the final response and end the turn without further tool calls.";
+export const PRP_BLOCK_TOOL_DESCRIPTION =
+  "Report work that cannot continue because of a concrete blocker. Identify the blocker, its owner, and the action needed to unblock it; use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome, explain the blocker and any required action in the final response, and end the turn without further tool calls.";
 export const PRP_SEMANTIC_TOOL_NAMES = [
   PRP_COMPLETION_TOOL_NAME,
   PRP_BLOCK_TOOL_NAME,

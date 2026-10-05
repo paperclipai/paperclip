@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { pendingRequestConfirmationInteraction } from "../fixtures/issueThreadInteractionFixtures";
 import {
   buildAnsweredQuestionsDeliveryText,
   buildIssueThreadInteractionSummary,
@@ -10,6 +11,7 @@ import {
   getRequestConfirmationTargetHref,
   getQuestionAnswerLabels,
   interactionReplacesComposerSkip,
+  interactionReadinessRefetchInterval,
   isDegenerateAskUserQuestions,
   isSupersededByNewerSiblingInteraction,
   shouldHideInteractionCard,
@@ -711,5 +713,16 @@ describe("isSupersededByNewerSiblingInteraction", () => {
     });
     expect(isSupersededByNewerSiblingInteraction(degenerate)).toBe(false);
     expect(shouldHideInteractionCard(degenerate)).toBe(true);
+  });
+});
+
+
+describe("interaction readiness polling", () => {
+  it("uses a fast cadence only for pending preparation and preserves the idle fallback", () => {
+    const preparing = { ...pendingRequestConfirmationInteraction, acceptanceBlocker: "workspace_sync_pending" as const };
+    expect(interactionReadinessRefetchInterval([preparing], 20_000)).toBe(2_000);
+    expect(interactionReadinessRefetchInterval([pendingRequestConfirmationInteraction], 20_000)).toBe(20_000);
+    expect(interactionReadinessRefetchInterval([{ ...preparing, status: "expired" }])).toBe(false);
+    expect(interactionReadinessRefetchInterval(undefined)).toBe(false);
   });
 });

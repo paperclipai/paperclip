@@ -58,6 +58,8 @@ export interface EvalSessionAgentCoreProfile {
   timeoutSeconds: number;
 }
 
+export type EvalCandidateProfile = "pi" | "cursor" | "copilot";
+
 export interface EvalSessionRequest {
   schema: typeof EVAL_SESSION_REQUEST_SCHEMA;
   attemptId: string;
@@ -66,7 +68,7 @@ export interface EvalSessionRequest {
   provider?: EvalSessionProvider;
   driver?: EvalSessionDriver;
   opencodeVersion?: string;
-  acpxAgent?: Exclude<QualifiedAcpxAgent, "pi">;
+  acpxAgent?: QualifiedAcpxAgent;
   managedProfile?: EvalSessionManagedProfile;
   agentCoreProfile?: EvalSessionAgentCoreProfile;
   runnerd: { path: string; sha256: string };
@@ -81,14 +83,19 @@ export interface EvalSessionRequest {
   includeCollaborationModeInstructions?: true;
 }
 
-export interface EvalSessionUsage extends EstimatedModelCost {
+export interface EvalSessionUsage {
   agentTurns: number;
   providerRequests: number;
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
   reasoningTokens: number;
-  providerReportedCostNanodollars: number;
+  providerReportedCostNanodollars: number | null;
+  providerReportedCostProvenance: "legacy_runner_usage_ledger" | "unavailable";
+  estimatedCostNanodollars: number | null;
+  pricingVersion: EstimatedModelCost["pricingVersion"] | null;
+  ratesUsdPerMillionTokens: EstimatedModelCost["ratesUsdPerMillionTokens"] | null;
+  costCoverage: "estimated" | "unpriced" | "legacy_ledger_and_estimate";
 }
 
 function object(value: unknown, path: string): Record<string, unknown> {
@@ -211,7 +218,10 @@ function parseAgentCoreProfile(value: unknown): EvalSessionAgentCoreProfile {
 }
 
 /** Fail-closed validation for the executable boundary. */
-export function parseEvalSessionRequest(value: unknown): EvalSessionRequest {
+export function parseEvalSessionRequest(
+  value: unknown,
+  options: { candidateProfile?: EvalCandidateProfile } = {},
+): EvalSessionRequest {
   const input = object(value, "request");
   if (input.schema !== EVAL_SESSION_REQUEST_SCHEMA) {
     throw new Error("unsupported request schema");
@@ -237,16 +247,23 @@ export function parseEvalSessionRequest(value: unknown): EvalSessionRequest {
   // options as JSON null. Preserve compatibility with those immutable request
   // artifacts while continuing to reject non-null values for the wrong lane.
   const acpxAgent = input.acpxAgent === null ? undefined : input.acpxAgent;
-  if (acpxAgent === "pi") throw new Error("The Pi ACPX profile is not available");
   if (
     acpxAgent !== undefined &&
     acpxAgent !== "codex" &&
-    acpxAgent !== "claude"
+    acpxAgent !== "claude" && acpxAgent !== "grok" &&
+    acpxAgent !== "pi" && acpxAgent !== "cursor" && acpxAgent !== "copilot"
   ) {
-    throw new Error("eval-session acpxAgent must be codex or claude");
+    throw new Error("eval-session acpxAgent must be a registered ACPX profile");
   }
   if (provider !== "acpx" && acpxAgent !== undefined) {
     throw new Error("eval-session acpxAgent requires provider acpx");
+  }
+  const candidate = acpxAgent === "pi" || acpxAgent === "cursor" || acpxAgent === "copilot";
+  if (options.candidateProfile !== undefined && (provider !== "acpx" || acpxAgent !== options.candidateProfile || !candidate)) {
+    throw new Error("--candidate-profile must match the request's registered candidate ACPX agent");
+  }
+  if (candidate && options.candidateProfile !== acpxAgent) {
+    throw new Error("Candidate ACPX profiles require an explicit matching --candidate-profile diagnostic flag");
   }
   const managedProfileInput = input.managedProfile === null
     ? undefined
@@ -306,8 +323,8 @@ export function parseEvalSessionRequest(value: unknown): EvalSessionRequest {
   ) {
     throw new Error("request.session.requestedModel must match request.model");
   }
-  if (session.acpxAgent === "pi") {
-    throw new Error("The Pi ACPX profile is not available");
+  if (session.acpxAgent !== undefined && session.acpxAgent !== acpxAgent) {
+    throw new Error("request.session.acpxAgent must match request.acpxAgent");
   }
 
   return {
@@ -376,8 +393,28 @@ export function evalSessionUsage(
   if (unique.size === 0) {
     throw new Error("completed turn omitted usage accounting");
   }
+  const candidate = snapshot.config?.provider === "acpx"
+    && ["pi", "cursor", "copilot"].includes(snapshot.config.acpxAgent ?? "");
+  let estimate: EstimatedModelCost | null;
+  try {
+    estimate = estimateModelCostNanodollars(model, totals);
+  } catch (error) {
+    // An exact candidate model can be advertised before our pricing catalog
+    // contains it. Preserve unpriced usage for billing reconciliation instead
+    // of substituting a model or converting unknown spend into zero.
+    if (!candidate || !(error instanceof Error) || !error.message.startsWith("model pricing unavailable for ")) throw error;
+    estimate = null;
+  }
   return {
     ...totals,
-    ...estimateModelCostNanodollars(model, totals),
+    // Candidate ACP adapters do not supply authenticated USD receipts. The
+    // shared legacy ledger fills absent cost with zero, so its numeric value
+    // cannot establish an invoice amount for these profiles.
+    providerReportedCostNanodollars: candidate ? null : totals.providerReportedCostNanodollars,
+    providerReportedCostProvenance: candidate ? "unavailable" : "legacy_runner_usage_ledger",
+    estimatedCostNanodollars: estimate?.estimatedCostNanodollars ?? null,
+    pricingVersion: estimate?.pricingVersion ?? null,
+    ratesUsdPerMillionTokens: estimate?.ratesUsdPerMillionTokens ?? null,
+    costCoverage: candidate ? (estimate === null ? "unpriced" : "estimated") : "legacy_ledger_and_estimate",
   };
 }

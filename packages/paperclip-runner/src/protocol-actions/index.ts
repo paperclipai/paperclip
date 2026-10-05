@@ -1,5 +1,11 @@
+import { setTaskTitleAction } from "./set-task-title.js";
+import { readAgentInstructionsAction } from "./read-agent-instructions.js";
+import { updateAgentInstructionsAction } from "./update-agent-instructions.js";
+import { getAgentInstructionHistoryAction } from "./get-agent-instruction-history.js";
+import { restoreAgentInstructionsAction } from "./restore-agent-instructions.js";
 import { reassignTaskAction } from "./reassign-task.js";
 import { createSkillAction } from "./create-skill.js";
+import { updateSkillAction } from "./update-skill.js";
 import { createProjectAction } from "./create-project.js";
 import { listProjectRepositoriesAction } from "./list-project-repositories.js";
 import { searchApiAction } from "./search-api.js";
@@ -49,7 +55,14 @@ import { writeDocumentAction } from "./write-document.js";
 import { deepFreezeProtocolAction } from "./freeze.js";
 
 export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
+  setTaskTitleAction,
+  readAgentInstructionsAction,
+  updateAgentInstructionsAction,
+  getAgentInstructionHistoryAction,
+  restoreAgentInstructionsAction,
+
   createSkillAction,
+  updateSkillAction,
   createProjectAction,
   listProjectRepositoriesAction,
   searchApiAction,

@@ -30,7 +30,7 @@ import type {
   IssueAssigneeAdapterOverrides,
   IssueAttachment,
   IssueThreadInteraction,
-  CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   Approval,
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
@@ -662,6 +662,9 @@ export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDri
 }
 
 export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
+  /** Stop the exact allocation while preserving its files, regardless of its
+   * ordinary release policy. A failed stop must throw, never fall back to delete. */
+  resourceDisposition?: "stop_and_retain";
   /** Explicit operator cancellation: terminate active work instead of waiting
    * for command/sync activity to drain. Still requires a provider receipt. */
   cancelActiveWork?: boolean;
@@ -1375,6 +1378,10 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentReleaseLeaseParams,
     result: PluginEnvironmentTerminationReceipt | void,
   ];
+  environmentStopLease: [
+    params: PluginEnvironmentReleaseLeaseParams,
+    result: PluginEnvironmentTerminationReceipt,
+  ];
   environmentDestroyLease: [
     params: PluginEnvironmentDestroyLeaseParams,
     result: PluginEnvironmentTerminationReceipt | void,
@@ -1478,6 +1485,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentAcquireLease",
   "environmentResumeLease",
   "environmentReleaseLease",
+  "environmentStopLease",
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
@@ -1995,7 +2003,7 @@ export interface WorkerToHostMethods {
     params: {
       issueId: string;
       companyId: string;
-      interaction: CreateIssueThreadInteraction;
+      interaction: CreateIssueThreadInteractionInput;
       authorAgentId?: string | null;
     },
     result: IssueThreadInteraction,

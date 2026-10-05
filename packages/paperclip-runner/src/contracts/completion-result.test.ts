@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   PRP_BLOCK_RESULT_OUTPUT_SCHEMA,
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_BLOCK_TOOL_DESCRIPTION,
   PRP_COMPLETION_RESULT_OUTPUT_SCHEMA,
   PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
 } from "./completion-result.js";
 import { codexSemanticToolSpecs } from "../drivers/codex/codex-driver-values.js";
 
@@ -83,6 +85,8 @@ describe("provider-neutral completion result schema", () => {
     );
     expect(finish.inputSchema).toEqual(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
     expect(block.inputSchema).toEqual(PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA);
+    expect(finish.description).toBe(PRP_COMPLETION_TOOL_DESCRIPTION);
+    expect(block.description).toBe(PRP_BLOCK_TOOL_DESCRIPTION);
   });
 
   it("allows only a response-wake continuation when completion explicitly yields", () => {

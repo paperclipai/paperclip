@@ -124,7 +124,6 @@ describe("instance settings routes", () => {
       defaultEnvironmentId: null,
       general: {
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
       },
       experimental: {
@@ -149,7 +148,6 @@ describe("instance settings routes", () => {
     });
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
@@ -174,7 +172,6 @@ describe("instance settings routes", () => {
       defaultEnvironmentId: "env-1",
       general: {
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
       },
       experimental: {
@@ -201,7 +198,6 @@ describe("instance settings routes", () => {
       id: "instance-settings-1",
       general: {
         censorUsernameInLogs: true,
-        keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
       },
     });
@@ -593,7 +589,6 @@ describe("instance settings routes", () => {
     expect(getRes.status).toBe(200);
     expect(getRes.body).toEqual({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
 
@@ -601,14 +596,12 @@ describe("instance settings routes", () => {
       .patch("/api/instance/settings/general")
       .send({
         censorUsernameInLogs: true,
-        keyboardShortcuts: true,
         feedbackDataSharingPreference: "allowed",
       });
 
     expect(patchRes.status).toBe(200);
     expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
       censorUsernameInLogs: true,
-      keyboardShortcuts: true,
       feedbackDataSharingPreference: "allowed",
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
@@ -628,7 +621,6 @@ describe("instance settings routes", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       censorUsernameInLogs: false,
-      keyboardShortcuts: false,
       feedbackDataSharingPreference: "prompt",
     });
   });
@@ -660,7 +652,7 @@ describe("instance settings routes", () => {
 
     const res = await request(app)
       .patch("/api/instance/settings/general")
-      .send({ censorUsernameInLogs: true, keyboardShortcuts: true });
+      .send({ censorUsernameInLogs: true });
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
@@ -701,7 +693,6 @@ describe("instance settings routes", () => {
     it("rejects a write that changes executionMode", async () => {
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         executionMode: "kubernetes",
       });
@@ -730,7 +721,6 @@ describe("instance settings routes", () => {
     it("allows a same-value executionMode echo so full-object settings forms keep working", async () => {
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         executionMode: "kubernetes",
       });
@@ -738,12 +728,12 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ executionMode: "kubernetes", keyboardShortcuts: true });
+        .send({ executionMode: "kubernetes", censorUsernameInLogs: true });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
         executionMode: "kubernetes",
-        keyboardShortcuts: true,
+        censorUsernameInLogs: true,
       });
     });
 
@@ -752,11 +742,11 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ keyboardShortcuts: true });
+        .send({ censorUsernameInLogs: true });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
-      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ keyboardShortcuts: true });
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ censorUsernameInLogs: true });
     });
 
     it("keeps executionMode writable on self-hosted instances", async () => {
@@ -809,12 +799,12 @@ describe("instance settings routes", () => {
 
       const res = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ censorUsernameInLogs: false, keyboardShortcuts: true });
+        .send({ censorUsernameInLogs: false, feedbackDataSharingPreference: "allowed" });
 
       expect(res.status).toBe(200);
       expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
         censorUsernameInLogs: false,
-        keyboardShortcuts: true,
+        feedbackDataSharingPreference: "allowed",
       });
     });
 
@@ -822,7 +812,6 @@ describe("instance settings routes", () => {
       process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.general.backupRetention";
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
-        keyboardShortcuts: false,
         feedbackDataSharingPreference: "prompt",
         backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       });
@@ -848,6 +837,40 @@ describe("instance settings routes", () => {
         .patch("/api/instance/settings/experimental")
         .send({ enableEnvironments: true });
 
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "settings_operator_managed" });
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    });
+
+    it("enforces a wildcard allowlist at the API and preserves hidden values", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS =
+        "instance.experimental.*,!instance.experimental.enableIsolatedWorkspaces";
+      const app = await createApp(adminActor);
+
+      const rejected = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableEnvironments: true, enableIsolatedWorkspaces: true });
+      expect(rejected.status).toBe(403);
+      expect(rejected.body.details).toMatchObject({ code: "settings_operator_managed" });
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+
+      // Existing full-form clients may echo hidden values without changing them.
+      const allowed = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableEnvironments: false, enableIsolatedWorkspaces: true });
+      expect(allowed.status).toBe(200);
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+        enableEnvironments: false, enableIsolatedWorkspaces: true,
+      });
+    });
+
+    it("does not let an allowlist exception bypass an explicit API restriction", async () => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS =
+        "instance.experimental.*,!instance.experimental.enableEnvironments,instance.experimental.enableEnvironments";
+      const app = await createApp(adminActor);
+      const res = await request(app)
+        .patch("/api/instance/settings/experimental")
+        .send({ enableEnvironments: true });
       expect(res.status).toBe(403);
       expect(res.body.details).toMatchObject({ code: "settings_operator_managed" });
       expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();

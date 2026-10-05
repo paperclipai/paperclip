@@ -1,14 +1,17 @@
 import {
+  chmod,
   cp,
   mkdir,
   lstat,
   mkdtemp,
+  open,
   readFile,
   readdir,
   readlink,
   rename,
   rm,
   stat,
+  truncate,
   writeFile,
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -32,7 +35,10 @@ import type {
   PrpTerminalState,
 } from "../protocol/replay-contract.js";
 import { executeNativeSession } from "../native-session-runtime.js";
+import { redactCapabilityEvidenceData } from "./evidence-redaction.js";
 import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
+import { parsePaperclipQuestionSet } from "../contracts/question-set.js";
+import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
 import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import * as durableControlPlane from "../control-plane/durable-prp-control-plane.js";
 
@@ -49,6 +55,10 @@ import {
   createCodexTaskEnvelope,
 } from "../contracts/codex.js";
 import {
+  PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
+} from "../contracts/completion-result.js";
+import {
   CodexAppServerDriver,
   codexSemanticToolSpecs,
 } from "../drivers/codex/codex-app-server-driver.js";
@@ -56,6 +66,7 @@ import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-conte
 import { RUNNERD_CANONICAL_ITEM } from "../drivers/codex/codex-driver-values.js";
 
 import {
+  parseAcpxTurnControlCapabilities,
   authorizedToolSetForProvider,
   createCapabilityRunnerdCodexTransport,
   createCapabilityRunnerdProviderEnvironment,
@@ -91,6 +102,20 @@ import {
 const defaultCapabilityRunnerdBinary = () =>
   process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ??
   qualifiedCapabilityRunnerdBinary();
+
+it("attributes opened candidate sessions to the harness biller instead of the model vendor", () => {
+  const provider = runnerdLaunchProfileInternals.openedThreadModelProvider;
+  for (const model of ["gpt-5.6-luna[context=272k,reasoning=medium,fast=false]", "claude-sonnet-5"]) {
+    expect(provider("acpx", "cursor", model)).toBe("cursor");
+    expect(provider("acpx", "copilot", model)).toBe("github");
+  }
+  expect(provider("acpx", "pi", "openrouter/deepseek/deepseek-v4-flash-0731")).toBe("openrouter");
+  expect(provider("acpx", "claude", "claude-sonnet-5")).toBe("anthropic");
+  expect(provider("acpx", "codex", "gpt-5.6-sol")).toBe("openai");
+  expect(provider("opencode", "codex", "openrouter/openai/gpt-6-astra")).toBe("openrouter");
+  expect(provider("claude_managed", "codex", "claude-sonnet-5")).toBe("anthropic");
+  expect(provider("aws_agentcore", "codex", "global.anthropic.claude-sonnet-4-6")).toBe("aws");
+});
 
 async function expectTurnStarted(
   notifications: AsyncIterator<{ method: string }>,
@@ -402,6 +427,38 @@ it("requires an explicit retained state directory before adopting a runner", () 
   expect(signal).not.toHaveBeenCalled();
 });
 
+it("reads valid control-plane history above 64 MiB and rejects it above 256 MiB", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-large-control-state-"));
+  const stateDirectory = join(root, "control-plane");
+  const statePath = join(stateDirectory, "control-plane-state.json");
+  try {
+    await mkdir(stateDirectory, { recursive: true });
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        committedEvents: [
+          {
+            eventType: "history",
+            payload: { text: "x".repeat(64 * 1024 * 1024 + 1) },
+          },
+        ],
+      }),
+    );
+    expect(
+      runnerdRecoveryInternals.readControlPlaneState(stateDirectory),
+    ).toMatchObject({
+      committedEvents: [{ eventType: "history" }],
+    });
+
+    await truncate(statePath, 256 * 1024 * 1024 + 1);
+    expect(() =>
+      runnerdRecoveryInternals.readControlPlaneState(stateDirectory),
+    ).toThrow("native_runner_control_plane_state_unsafe");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("carries the provider attachment seed across consecutive authority rotations", () => {
   const baseIdentity = {
     runnerInstanceId: "runner-warm-seed",
@@ -684,9 +741,10 @@ it("refuses a reusable close checkpoint when the local provider snapshot is unre
   }
 }, 15_000);
 
-it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
+it.each(["after_budget", "within_budget", "interrupted_within_budget", "persistence_failure"] as const)(
   "fences reusable suspension against late semantic completion (%s)",
   async (mode) => {
+    const settles = mode === "within_budget" || mode === "interrupted_within_budget";
     const stateDirectory = await mkdtemp(
       join(tmpdir(), "runnerd-late-semantic-close-"),
     );
@@ -703,20 +761,30 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
     const bundle = createCapabilityRunnerdCodexTransport({
       runnerBinary: defaultCapabilityRunnerdBinary(),
       codexCommand: fakeCodex,
-      codexArgs: fakeCodexArgs(stateDirectory, "--split-event-burst"),
+      // Exercise a real output suffix around the held semantic callback.
+      // The default 96/48-frame stress burst spends seconds on unrelated
+      // durable text fsyncs before handler entry, consuming this barrier test's
+      // wall-clock budget under the full suite. Stress cases retain defaults.
+      codexArgs: mode === "interrupted_within_budget"
+        ? fakeCodexArgs(stateDirectory, "--emit-tool-call")
+        : fakeCodexArgs(
+        stateDirectory, "--split-event-burst",
+        "--split-event-prefix-count", "2", "--split-event-suffix-count", "2",
+      ),
       stateDirectory,
-      closeGraceMs: 2_000,
+      closeGraceMs: 5_000,
       controlPlaneRegistration: async (authority) => {
         core = authority;
         await authority.start();
         return { checkpoint, release: () => undefined };
       },
     });
-    bundle.transport.setServerRequestHandler(async () => {
+    const handler = vi.fn(async () => {
       entered();
       await handlerRelease;
       return { success: true, contentItems: [] };
     });
+    bundle.transport.setServerRequestHandler(handler);
     try {
       await bundle.transport.request("thread/start", {
         cwd: tmpdir(),
@@ -755,6 +823,10 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
           return queue(type, ...args);
         });
       }
+      if (mode === "interrupted_within_budget") {
+        await bundle.transport.request("turn/interrupt", { reason: "test-stop-during-server-write" });
+        expect(core.semanticToolResultsSettled()).toBe(false);
+      }
       const closing = bundle.transport.close().then(
         () => null,
         (error: unknown) => error,
@@ -765,7 +837,8 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
         release();
       }
       const closeFailure = await closing;
-      if (mode !== "within_budget") {
+      expect(handler).toHaveBeenCalledTimes(1);
+      if (!settles) {
         const artifact = readRunnerdArtifactBinding(
           defaultCapabilityRunnerdBinary(),
         );
@@ -803,9 +876,9 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
             control.identity.runId,
           );
           expect(late[0].status).toBe(
-            mode === "within_budget" ? "completed" : "pending",
+            settles ? "completed" : "pending",
           );
-          if (mode === "within_budget") {
+          if (settles) {
             const results = control.committedEvents.filter(
               (event: { eventType: string }) =>
                 event.eventType === "semantic_tool.result",
@@ -815,7 +888,7 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
           }
         });
       }
-      if (mode === "within_budget") {
+      if (settles) {
         expect(closeFailure).toBeNull();
         expect(core.semanticToolResultsSettled()).toBe(true);
         expect(checkpoint).toHaveBeenCalledWith("settled");
@@ -823,6 +896,10 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
         expect(closeFailure).toBeInstanceOf(
           NativeSessionCloseUnrecoverableError,
         );
+        expect(closeFailure).toHaveProperty("settlement.semanticTools.pending", expect.arrayContaining([
+          expect.objectContaining({ callId: expect.any(String), operationId: expect.any(String),
+            sourceEventId: expect.any(String), inputDigest: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+        ]));
         expect(checkpoint).toHaveBeenCalledWith("unsettled");
         expect(checkpoint).not.toHaveBeenCalledWith("settled");
       }
@@ -832,7 +909,7 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
       await rm(stateDirectory, { recursive: true, force: true });
     }
   },
-  15_000,
+  25_000,
 );
 
 it("infers a remote provider turn until its own terminal event is durable", () => {
@@ -1089,6 +1166,30 @@ it("quiesces the control route before checkpoint and containment regardless of p
   expect(failedCheckpointSteps).toEqual(["release", "checkpoint", "kill"]);
 });
 
+it("does not release a session before asynchronous process containment settles", async () => {
+  let finishKill!: () => void;
+  const killed = new Promise<void>((resolve) => { finishKill = resolve; });
+  const steps: string[] = [];
+  const released = runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: false,
+    release: () => { steps.push("route-closed"); },
+    checkpoint: () => { steps.push("checkpoint"); },
+    forceKill: async () => { steps.push("kill-dispatched"); await killed; steps.push("process-exited"); },
+  }).then(() => { steps.push("session-reusable"); });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(steps).toEqual(["route-closed", "checkpoint", "kill-dispatched"]);
+  finishKill();
+  await released;
+  expect(steps).toEqual(["route-closed", "checkpoint", "kill-dispatched", "process-exited", "session-reusable"]);
+});
+
+it("refuses session reuse when asynchronous process containment fails", async () => {
+  await expect(runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: true, release: null, checkpoint: null,
+    forceKill: async () => { throw new Error("remote process still alive"); },
+  })).rejects.toThrow("remote process still alive");
+});
+
 it("waits for the exact durable suspension command behind prior close work", async () => {
   const commands = [
     {
@@ -1239,14 +1340,19 @@ it("includes ACPX terminal tools in the authenticated bridge catalog", () => {
   });
 });
 
-it("preserves answer and internal wait descriptions in the serialized native tool catalog", () => {
+it.each(["codex", "opencode", "claude_managed", "aws_agentcore", "acpx"] as const)("preserves answer and internal wait descriptions in the serialized native %s tool catalog", (provider) => {
   const catalog = JSON.parse(
-    JSON.stringify(authorizedToolSetForProvider("codex", codexSemanticToolSpecs())),
+    JSON.stringify(authorizedToolSetForProvider(provider, codexSemanticToolSpecs())),
   );
   const finish = catalog.operations.find(
     (operation: { operationId: string }) =>
       operation.operationId === "paperclip_finish",
   );
+  const block = catalog.operations.find(
+    (operation: { operationId: string }) => operation.operationId === "paperclip_block",
+  );
+  expect(finish.description).toBe(PRP_COMPLETION_TOOL_DESCRIPTION);
+  expect(block.description).toBe(PRP_BLOCK_TOOL_DESCRIPTION);
   expect(finish.inputSchema.properties.summary.description).toContain(
     "complete user-facing answer",
   );
@@ -1344,6 +1450,15 @@ it("derives the ACPX package authority only from the verified dist/cli layout", 
       "/unverified/acpx-runtime-sidecar.cjs",
     ),
   ).toThrow("ACPX sidecar must use the provider package dist/cli layout");
+});
+
+it("uses the public server npm package as the authority for vendored sidecars", () => {
+  expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+    "/clean/node_modules/@paperclipai/server/dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs",
+  )).toEqual({
+    root: "/clean/node_modules/@paperclipai/server",
+    manifest: "/clean/node_modules/@paperclipai/server/package.json",
+  });
 });
 
 it("keeps a self-rooted pnpm deployment inside its dependency authority", async () => {
@@ -1647,6 +1762,10 @@ it("uses file-backed AWS workload identity without forwarding access keys or Pap
 });
 
 it.each([
+  { agent: "cursor" as const, allowed: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
+    denied: ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] },
+  { agent: "copilot" as const, allowed: ["COPILOT_GITHUB_TOKEN"],
+    denied: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] },
   {
     agent: "pi" as const,
     allowed: ["OPENROUTER_API_KEY"],
@@ -1682,6 +1801,8 @@ it.each([
   "passes only $agent ACPX credentials and the durable runtime binding",
   ({ agent, allowed, denied }) => {
     const credentialEnvironment: Record<string, string> = {
+      CURSOR_API_KEY: "cursor-key-canary", CURSOR_AUTH_TOKEN: "cursor-token-canary",
+      COPILOT_GITHUB_TOKEN: "copilot-canary", GH_TOKEN: "ambient-gh-canary", GITHUB_TOKEN: "ambient-github-canary",
       OPENROUTER_API_KEY: "openrouter-canary",
       ANTHROPIC_API_KEY: "anthropic-canary",
       CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth-canary",
@@ -1698,6 +1819,8 @@ it.each([
         environment: {
           PATH: "/bin",
           ...credentialEnvironment,
+          [ACPX_CREDENTIAL_BINDING_ENV]: "untrusted-caller-marker",
+          PAPERCLIP_ACPX_BUILTIN_ROOT: "/attacker/builtin",
           PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: "/attacker/package-root",
           PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
             "/attacker/package-root/package.json",
@@ -1726,6 +1849,7 @@ it.each([
       PAPERCLIP_RUN_ID: "run-1",
       PAPERCLIP_NORMALIZED_SESSION_ID: "session-1",
       PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH: "/isolated/runtime-context.json",
+      PAPERCLIP_ACPX_BUILTIN_ROOT: "/verified/provider-pack/dist/providers",
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: "/verified/provider-pack",
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
         "/verified/provider-pack/package.json",
@@ -1733,10 +1857,35 @@ it.each([
     for (const key of allowed)
       expect(environment[key]).toBe(credentialEnvironment[key]);
     for (const key of denied) expect(environment[key]).toBeUndefined();
+    if (["cursor", "copilot", "pi"].includes(agent)) {
+      expect(JSON.parse(environment[ACPX_CREDENTIAL_BINDING_ENV]!)).toEqual({
+        schema: "paperclip.acpx_credential_binding.v1", agent, sessionId: "session-1", names: allowed,
+      });
+      const sidecar = createAcpxSidecarHostEnvironment(environment, agent, "session-1");
+      for (const key of allowed) expect(sidecar[key]).toBe(credentialEnvironment[key]);
+    } else expect(environment[ACPX_CREDENTIAL_BINDING_ENV]).toBeUndefined();
     expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
     expect(environment.DATABASE_URL).toBeUndefined();
   },
 );
+
+it("does not bind ambient candidate credentials from an inherited or caller-supplied marker", () => {
+  const forged = createAcpxCredentialBinding({ CURSOR_API_KEY: "ambient-secret" }, "cursor", "session-1")!;
+  vi.stubEnv("CURSOR_API_KEY", "ambient-secret");
+  vi.stubEnv(ACPX_CREDENTIAL_BINDING_ENV, forged);
+  try {
+    for (const explicitEnvironment of [undefined, { [ACPX_CREDENTIAL_BINDING_ENV]: forged }]) {
+      const environment = createCapabilityRunnerdProviderEnvironment({
+        provider: "acpx", options: { provider: "acpx", acpxAgent: "cursor", environment: explicitEnvironment },
+        identity: { runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1", normalizedSessionId: "session-1", turnId: "turn-1", itemId: "item-1" },
+        codexHome: "/isolated/home", runtimeContextPath: "/isolated/context.json", hasRuntimeContext: false,
+      });
+      expect(environment.CURSOR_API_KEY).toBeUndefined();
+      expect(JSON.parse(environment[ACPX_CREDENTIAL_BINDING_ENV]!)).toMatchObject({ names: [] });
+      expect(createAcpxSidecarHostEnvironment(environment, "cursor", "session-1").CURSOR_API_KEY).toBeUndefined();
+    }
+  } finally { vi.unstubAllEnvs(); }
+});
 
 it.each(["opencode", "acpx"] as const)(
   "advertises runner-managed planning through the %s provider boundary",
@@ -1864,6 +2013,35 @@ it("binds a durable semantic result to the active provider turn", () => {
       reportedWorkDisposition: "done",
     },
   });
+});
+
+it.each(["summary", "detail"])("preserves canonical reasoning %s deltas without publishing assistant text", (channel) => {
+  // Exact shape emitted by the Rust ACPX projector, with synthetic private text.
+  const payload = { provider: "acpx", itemId: "reason-1", kind: "reasoning", channel,
+    providerMethod: "runtime.event", text: "PRIVATE_REASONING_SENTINEL" };
+  const method = runnerdCanonicalNotificationMethod("item.delta", payload);
+  expect(method).toBe(channel === "detail" ? "item/reasoning/textDelta" : "item/reasoning/summaryTextDelta");
+  const params = rehydrateRunnerdDeltaNotification(payload, "provider-thread", "provider-turn");
+  expect(params).toMatchObject({ threadId: "provider-thread", turnId: "provider-turn", itemId: "reason-1" });
+  const evidence = redactCapabilityEvidenceData("provider_event", { method, params });
+  expect(evidence).toEqual({ event: "reasoning_delta" });
+  expect(JSON.stringify(evidence)).not.toContain("PRIVATE_REASONING_SENTINEL");
+});
+
+it("classifies each coalesced canonical delta without mixing reasoning into assistant output", () => {
+  const notifications = expandRunnerdCanonicalNotifications("item/agentMessage/delta", {
+    coalescedCount: 3,
+    events: [
+      { kind: "reasoning", channel: "summary", text: "PRIVATE_REASONING_SENTINEL" },
+      { kind: "agentMessage", channel: "progress", text: "Visible progress" },
+      { kind: "reasoning", channel: "detail", text: "PRIVATE_DETAIL_SENTINEL" },
+    ],
+  }, "item.delta");
+  expect(notifications.map((entry) => entry.method)).toEqual([
+    "item/reasoning/summaryTextDelta", "item/agentMessage/delta", "item/reasoning/textDelta",
+  ]);
+  expect(notifications.filter((entry) => entry.method === "item/agentMessage/delta").map((entry) => entry.params.text))
+    .toEqual(["Visible progress"]);
 });
 
 it("restores provider identity and streamed text from a canonical delta", () => {
@@ -2118,6 +2296,33 @@ it("routes canonical session goals back through the Codex notification facade", 
   expect(runnerdCanonicalNotificationMethod("session.goal.cleared", {})).toBe(
     "thread/goal/cleared",
   );
+});
+
+it("keeps canonical ACPX reasoning out of assistant deltas", () => {
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "reasoning", channel: "summary", text: "Private reasoning",
+  })).toBe("item/reasoning/summaryTextDelta");
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "reasoning", channel: "detail", text: "Private reasoning",
+  })).toBe("item/reasoning/textDelta");
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "agentMessage", text: "Visible answer",
+  })).toBe("item/agentMessage/delta");
+});
+
+it("preserves reasoning kinds and order inside coalesced canonical deltas", () => {
+  const events = [
+    { kind: "reasoning", channel: "summary", text: "Private reasoning", itemId: "thought-1" },
+    { kind: "agentMessage", text: "Visible answer", itemId: "answer-1" },
+    { kind: "reasoning", channel: "detail", text: "Private detail", itemId: "thought-2" },
+  ];
+  expect(expandRunnerdCanonicalNotifications("item/agentMessage/delta", {
+    coalescedCount: events.length, events,
+  }, "item.delta")).toEqual([
+    { method: "item/reasoning/summaryTextDelta", params: events[0] },
+    { method: "item/agentMessage/delta", params: events[1] },
+    { method: "item/reasoning/textDelta", params: events[2] },
+  ]);
 });
 
 it("continues consuming after the durable committed-event window rolls", () => {
@@ -3873,6 +4078,26 @@ it("bridges a runnerd-native question into the server request handler and resolv
       },
     });
     expect(methods).toContain("turn/completed");
+    // A terminal notification alone does not prove that the question reached
+    // durable storage or that its answer and provider suffix settled.
+    await bundle.transport.close();
+    const runnerState = JSON.parse(await readFile(
+      join(stateDirectory, "runner", "runner-state.json"), "utf8",
+    ));
+    expect(runnerState.lifecycle).toBe("suspended");
+    const controlState = JSON.parse(await readFile(
+      join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8",
+    )) as {
+      committedEvents: Array<{ eventType: string; envelope: { payload: { payload: { request?: { input: unknown } } } } }>;
+      commands: Array<{ type: string; status: string }>;
+    };
+    const created = controlState.committedEvents.filter(event => event.eventType === "runtime_request.created");
+    expect(created).toHaveLength(1);
+    const input = parsePaperclipQuestionSet(created[0]!.envelope.payload.payload.request!.input);
+    expect(input.questions[0]!.options![0]!.description).toBe("Deploy safely.");
+    expect(input.questions[1]!.options![0]).not.toHaveProperty("description");
+    expect(controlState.commands.filter(command => command.type === "request.resolve"))
+      .toEqual([expect.objectContaining({ status: "completed" })]);
   } finally {
     await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });
@@ -3938,7 +4163,9 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
   );
   const tracePath = join(traceDirectory, "trace.ndjson");
   const bundle = createCapabilityRunnerdCodexTransport({
-    runnerBinary: defaultCapabilityRunnerdBinary(),
+    // Qualification builds a debug daemon for this exact source. Its selected
+    // binary must win over any separately staged product/runtime artifact.
+    runnerBinary: process.env.PAPERCLIP_STOCK_PREFLIGHT_RUNNERD ?? defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(traceDirectory, "--structured-activity"),
     stateDirectory: join(traceDirectory, "state"),
@@ -4031,11 +4258,14 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
     decodedFrames.find((frame) => frame.method === "thread/start"),
   ).toMatchObject({
     params: {
-      baseInstructions: withCodexCollaborationRuntimeInstructions(
+      developerInstructions: withCodexCollaborationRuntimeInstructions(
         CODEX_SKILLLESS_BASE_INSTRUCTIONS,
       ),
     },
   });
+  expect(
+    (decodedFrames.find((frame) => frame.method === "thread/start")?.params as Record<string, unknown>),
+  ).not.toHaveProperty("baseInstructions");
   const stages = new Set(
     [...nativeEntries, ...rehydratedEntries]
       .filter((entry) => entry.kind === "interpretation")
@@ -6189,123 +6419,148 @@ it.each([
   },
 );
 
-it("probes an exact-authority resume and confirms its live provider identity", async () => {
-  const stateDirectory = await mkdtemp(
-    join(tmpdir(), "runnerd-exact-authority-resume-"),
-  );
-  const identity = {
-    runnerInstanceId: "runner-exact-resume",
-    environmentLeaseId: "lease-exact-resume",
-    runId: "run-exact-resume",
-    normalizedSessionId: "session-exact-resume",
-    turnId: "turn-exact-resume",
-    itemId: "item-exact-resume",
-  };
-  const options = {
-    runnerBinary: defaultCapabilityRunnerdBinary(),
-    codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory, "--durable-turn-ids"),
-    stateDirectory,
-    lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
-    prpIdentity: identity,
-  };
-  const first = createCapabilityRunnerdCodexTransport(options);
-  first.transport.setServerRequestHandler(async () => ({
-    success: true,
-    contentItems: [],
-  }));
-  let providerThread: { id: string; sessionId: string } | null = null;
-  try {
-    const opened = await first.transport.request("thread/start", {
-      cwd: tmpdir(),
-      dynamicTools: [],
-    });
-    const thread = opened.thread as Record<string, unknown>;
-    providerThread = {
-      id: String(thread.id),
-      sessionId: String(thread.sessionId),
+it.each([0, 193 * 1024 * 1024])(
+  "probes an exact-authority resume with %i extra journal bytes and confirms its live provider identity",
+  async (extraJournalBytes) => {
+    const stateDirectory = await mkdtemp(
+      join(tmpdir(), "runnerd-exact-authority-resume-"),
+    );
+    const identity = {
+      runnerInstanceId: "runner-exact-resume",
+      environmentLeaseId: "lease-exact-resume",
+      runId: "run-exact-resume",
+      normalizedSessionId: "session-exact-resume",
+      turnId: "turn-exact-resume",
+      itemId: "item-exact-resume",
     };
-  } finally {
-    await first.transport.close();
-  }
-  if (providerThread === null) {
-    throw new Error("exact-authority fixture did not return a provider thread");
-  }
+    const options = {
+      runnerBinary: defaultCapabilityRunnerdBinary(),
+      codexCommand: fakeCodex,
+      codexArgs: fakeCodexArgs(stateDirectory, "--durable-turn-ids"),
+      stateDirectory,
+      lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
+      prpIdentity: identity,
+    };
+    const first = createCapabilityRunnerdCodexTransport(options);
+    first.transport.setServerRequestHandler(async () => ({
+      success: true,
+      contentItems: [],
+    }));
+    let providerThread: { id: string; sessionId: string } | null = null;
+    try {
+      const opened = await first.transport.request("thread/start", {
+        cwd: tmpdir(),
+        dynamicTools: [],
+      });
+      const thread = opened.thread as Record<string, unknown>;
+      providerThread = {
+        id: String(thread.id),
+        sessionId: String(thread.sessionId),
+      };
+    } finally {
+      await first.transport.close();
+    }
+    if (providerThread === null) {
+      throw new Error(
+        "exact-authority fixture did not return a provider thread",
+      );
+    }
 
-  const statePath = join(
-    stateDirectory,
-    "control-plane",
-    "control-plane-state.json",
-  );
-  const beforeResume = JSON.parse(await readFile(statePath, "utf8")) as {
-    commands: Array<{ type: string }>;
-    committedEvents: Array<{ eventType: string }>;
-  };
-  expect(
-    beforeResume.commands.some((command) => command.type === "run.attach"),
-  ).toBe(false);
-  const priorResumeEvents = beforeResume.committedEvents.filter(
-    (event) => event.eventType === "session.resumed",
-  ).length;
-  const priorSnapshots = beforeResume.commands.filter(
-    (command) => command.type === "session.snapshot",
-  ).length;
-
-  const resumed = createCapabilityRunnerdCodexTransport({
-    ...options,
-    resumeProviderSession: {
-      driverSessionId: providerThread.id,
-      providerSessionId: providerThread.sessionId,
-    },
-  });
-  resumed.transport.setServerRequestHandler(async () => ({
-    success: true,
-    contentItems: [],
-  }));
-  try {
-    const read = await resumed.transport.request("thread/read", {});
-    expect(read.thread).toMatchObject(providerThread);
-    const afterResume = JSON.parse(await readFile(statePath, "utf8")) as {
-      commands: Array<{ commandId: string; type: string; status: string }>;
+    const statePath = join(
+      stateDirectory,
+      "control-plane",
+      "control-plane-state.json",
+    );
+    if (extraJournalBytes > 0) {
+      const padding = Buffer.alloc(1024 * 1024, 0x20);
+      const stateHandle = await open(statePath, "a");
+      try {
+        for (let remaining = extraJournalBytes; remaining > 0;) {
+          const bytesToWrite = Math.min(remaining, padding.length);
+          await stateHandle.write(padding, 0, bytesToWrite);
+          remaining -= bytesToWrite;
+        }
+      } finally {
+        await stateHandle.close();
+      }
+      expect((await stat(statePath)).size).toBeGreaterThan(
+        64 * 1024 * 1024,
+      );
+    }
+    const beforeResume = JSON.parse(await readFile(statePath, "utf8")) as {
+      commands: Array<{ type: string }>;
       committedEvents: Array<{ eventType: string }>;
     };
-    expect(afterResume.commands).toContainEqual(
-      expect.objectContaining({
-        commandId: expect.stringMatching(/^command_resume_probe_/),
-        type: "runner.drain",
-        status: "completed",
-      }),
-    );
-    expect(afterResume.commands).toContainEqual(
-      expect.objectContaining({
-        type: "session.snapshot",
-        status: "completed",
-      }),
-    );
     expect(
-      afterResume.commands.filter(
-        (command) => command.type === "session.snapshot",
-      ),
-    ).toHaveLength(priorSnapshots + 2);
-    // The authenticated snapshot above proves the live provider identity.
-    // Control-first dispatch may deliver that command before the independent
-    // session event is ingested. Still require exactly one durable event;
-    // don't mistake an immediate file read for an event-delivery barrier.
-    await vi.waitFor(async () => {
-      const delivered = JSON.parse(await readFile(statePath, "utf8")) as {
+      beforeResume.commands.some((command) => command.type === "run.attach"),
+    ).toBe(false);
+    const priorResumeEvents = beforeResume.committedEvents.filter(
+      (event) => event.eventType === "session.resumed",
+    ).length;
+    const priorSnapshots = beforeResume.commands.filter(
+      (command) => command.type === "session.snapshot",
+    ).length;
+
+    const resumed = createCapabilityRunnerdCodexTransport({
+      ...options,
+      resumeProviderSession: {
+        driverSessionId: providerThread.id,
+        providerSessionId: providerThread.sessionId,
+      },
+    });
+    resumed.transport.setServerRequestHandler(async () => ({
+      success: true,
+      contentItems: [],
+    }));
+    try {
+      const read = await resumed.transport.request("thread/read", {});
+      expect(read.thread).toMatchObject(providerThread);
+      const afterResume = JSON.parse(await readFile(statePath, "utf8")) as {
+        commands: Array<{ commandId: string; type: string; status: string }>;
         committedEvents: Array<{ eventType: string }>;
       };
+      expect(afterResume.commands).toContainEqual(
+        expect.objectContaining({
+          commandId: expect.stringMatching(/^command_resume_probe_/),
+          type: "runner.drain",
+          status: "completed",
+        }),
+      );
+      expect(afterResume.commands).toContainEqual(
+        expect.objectContaining({
+          type: "session.snapshot",
+          status: "completed",
+        }),
+      );
       expect(
-        delivered.committedEvents.filter(
-          (event) => event.eventType === "session.resumed",
+        afterResume.commands.filter(
+          (command) => command.type === "session.snapshot",
         ),
-      ).toHaveLength(priorResumeEvents + 1);
-    }, { timeout: 3_000, interval: 25 });
-  } finally {
-    await resumed.transport.close();
-    await rm(stateDirectory, { recursive: true, force: true });
-  }
-}, 30_000);
+      ).toHaveLength(priorSnapshots + 2);
+      // The authenticated snapshot above proves the live provider identity.
+      // Control-first dispatch may deliver that command before the independent
+      // session event is ingested. Still require exactly one durable event;
+      // don't mistake an immediate file read for an event-delivery barrier.
+      await vi.waitFor(
+        async () => {
+          const delivered = JSON.parse(await readFile(statePath, "utf8")) as {
+            committedEvents: Array<{ eventType: string }>;
+          };
+          expect(
+            delivered.committedEvents.filter(
+              (event) => event.eventType === "session.resumed",
+            ),
+          ).toHaveLength(priorResumeEvents + 1);
+        },
+        { timeout: 3_000, interval: 25 },
+      );
+    } finally {
+      await resumed.transport.close();
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
 
 it("still fails closed when a real close grace period cannot fit a durable suspension round trip", async () => {
   const stateDirectory = await mkdtemp(
@@ -7199,3 +7454,170 @@ it("resolves explicit skills to the remote provider home and rejects unassigned 
   }
   expect(() => resolveRunnerdCodexSkillInputs([skill], null, "/runner/codex-home")).toThrow("assigned runtime skill");
 });
+
+
+it("admits only exact live Pi turn controls", () => {
+  expect(parseAcpxTurnControlCapabilities(undefined, "pi")).toEqual({ steering: false, queuedFollowUp: false });
+  expect(parseAcpxTurnControlCapabilities({ steering: true, queuedFollowUp: true }, "pi")).toEqual({ steering: true, queuedFollowUp: true });
+  for (const value of [null, [], {}, { steering: 1, queuedFollowUp: false }, { steering: true, queuedFollowUp: "true" }, { steering: true, queuedFollowUp: true, arbitrary: true }]) {
+    expect(() => parseAcpxTurnControlCapabilities(value, "pi")).toThrow("malformed");
+  }
+  for (const agent of ["cursor", "copilot", "codex", "claude", undefined]) {
+    expect(() => parseAcpxTurnControlCapabilities({ steering: true, queuedFollowUp: false }, agent)).toThrow("cannot advertise");
+  }
+});
+
+async function withPreparedOpenCodeCleanup(input: {
+  run: () => Promise<void>;
+  closeSession: () => Promise<void>;
+  closeTransport: () => Promise<void>;
+  removeRoot: () => Promise<void>;
+  evidence: () => Pick<
+    ReturnType<ReturnType<typeof createCapabilityRunnerdCodexTransport>["evidence"]>,
+    "runnerPid" | "runnerExited" | "runnerExitCode" | "runnerSignal" | "diagnostics"
+  >;
+}): Promise<void> {
+  const failures: { stage: string; error: unknown }[] = [];
+  for (const [stage, operation] of [
+    ["run", input.run],
+    ["session.close", input.closeSession],
+    ["transport.close", input.closeTransport],
+    ["removeRoot", input.removeRoot],
+  ] as const) {
+    try {
+      await operation();
+    } catch (error) {
+      failures.push({ stage, error });
+    }
+  }
+  if (failures.length === 0) return;
+  const evidence = input.evidence();
+  // Never dump stderr, environment values, prompts, paths, or arbitrary
+  // diagnostic text. Keep only bounded process/settlement facts alongside
+  // the original errors, so a finally failure cannot hide the primary one.
+  const summary = {
+    failedStages: failures.map(({ stage }) => stage),
+    runnerStarted: evidence.runnerPid !== null,
+    runnerExited: evidence.runnerExited,
+    runnerExitCode: evidence.runnerExitCode,
+    runnerSignalled: evidence.runnerSignal !== null,
+    diagnosticCount: evidence.diagnostics.length,
+    suspensionRejected: evidence.diagnostics.includes(
+      "runner did not prove durable suspension before checkpoint",
+    ),
+  };
+  throw new AggregateError(
+    failures.map(({ error }) => error),
+    `Prepared OpenCode fixture failed: ${JSON.stringify(summary)}`,
+    { cause: failures[0]!.error },
+  );
+}
+
+it.each([true, false])("preserves prepared OpenCode cleanup errors (primary failure: %s)", async (failRun) => {
+  const primary = new Error("prepared input assertion failed");
+  const cleanup = new NativeSessionCloseUnrecoverableError();
+  const calls: string[] = [];
+  const evidence = {
+    runnerPid: 123,
+    runnerExited: true,
+    runnerExitCode: 1,
+    runnerSignal: null,
+    diagnostics: ["Bearer fixture-secret", "runner did not prove durable suspension before checkpoint"],
+  };
+  const failure = await withPreparedOpenCodeCleanup({
+    run: async () => { calls.push("run"); if (failRun) throw primary; },
+    closeSession: async () => { calls.push("session.close"); throw cleanup; },
+    closeTransport: async () => { calls.push("transport.close"); },
+    removeRoot: async () => { calls.push("removeRoot"); },
+    evidence: () => evidence,
+  }).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect((failure as AggregateError).errors).toEqual(failRun ? [primary, cleanup] : [cleanup]);
+  expect((failure as AggregateError).cause).toBe(failRun ? primary : cleanup);
+  expect(calls).toEqual(["run", "session.close", "transport.close", "removeRoot"]);
+  expect((failure as Error).message).toContain('"suspensionRejected":true');
+  expect((failure as Error).message).not.toContain("fixture-secret");
+});
+
+it("preserves prepared input through runnerd and the real OpenCode proxy boundary", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-prepared-opencode-"));
+  // GitHub-hosted Linux toolcache Node can be group-writable, unlike the AWS
+  // fleet. Qualify an owned copy with strict permissions, never chmod the host
+  // runtime or weaken the launch boundary. Keep macOS's native runtime path
+  // because its signing and dylib lookup can depend on that location.
+  const providerNode = process.platform === "linux" ? join(root, "node") : process.execPath;
+  if (process.platform === "linux") {
+    await cp(process.execPath, providerNode);
+    await chmod(providerNode, 0o500);
+  }
+  // The qualified launch boundary unlinks its executable after exec. Use a
+  // native wrapper, like the real OpenCode binary; a shebang script would need
+  // to reopen the now-unlinked path in its interpreter.
+  const executable = join(root, "fake-opencode");
+  const fixture = resolve("test/fixtures/fake-opencode-server.mjs");
+  execFileSync("cc", ["-x", "c", "-o", executable, "-"], {
+    input: `#include <unistd.h>\n#include <stdlib.h>\nint main(int argc, char **argv) { char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(providerNode)}; args[1] = ${JSON.stringify(fixture)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }`,
+  });
+  // CI may use umask 0002; qualified executables cannot be group-writable.
+  await chmod(executable, 0o755);
+  // Use the production bundler without depending on (or mutating) shared dist
+  // artifacts. The Vitest CI lane builds Rust but does not build TypeScript.
+  const proxy = join(root, "opencode-app-server-proxy.cjs");
+  const proxyBytes = execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import { bundleVerifiedProviderEntrypoints } from "./scripts/build-verified-provider-entrypoints.mjs";
+    const entries = await bundleVerifiedProviderEntrypoints({ write: false });
+    const proxy = entries.find(({ entrypoint }) => entrypoint.name === "opencode-app-server-proxy");
+    process.stdout.write(proxy.verifiedResult.outputFiles[0].contents);
+  `], { maxBuffer: 16 * 1024 * 1024 });
+  await writeFile(proxy, proxyBytes, { mode: 0o755 });
+  const digest = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
+  const runtime = join(root, "opencode");
+  const bundle = createCapabilityRunnerdCodexTransport({
+    provider: "opencode",
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    stateDirectory: join(root, "runner-state"),
+    opencodeRuntimeDirectory: runtime,
+    opencodeCommand: executable,
+    opencodeCommandSha256: digest(executable),
+    opencodeProxyPath: proxy,
+    opencodeProxySha256: digest(proxy),
+    providerNodeCommand: providerNode,
+    providerNodeCommandSha256: digest(providerNode),
+    environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+  });
+  const task = createCodexTaskEnvelope({
+    objective: "Preserve the prepared task.", contractRevision: "prepared-v1",
+    criteria: [{ id: "objective", requirement: "Keep this request unchanged." }],
+  });
+  const driver = new CodexAppServerDriver({
+    taskEnvelope: task,
+    conversationMode: "prepared",
+    model: "openrouter/deepseek/deepseek-v4-flash-0731",
+    transportFactory: () => bundle.transport,
+    workingDirectoryAuthority: "remote_runner",
+    environment: { PAPERCLIP_WORKSPACE_CWD: root },
+  });
+  let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
+  const prepared = JSON.stringify({
+    schema: "paperclip.native-model-envelope.v3",
+    task: { prompt: "Keep this request unchanged." },
+    completionContract: { revision: "prepared-v1", criteria: task.completionContract.criteria },
+  });
+  await withPreparedOpenCodeCleanup({
+    run: async () => {
+      session = await driver.openSession({ runId: "prepared-opencode", normalizedSessionId: "prepared-opencode", workingDirectory: root });
+      await session.startTurn({ message: { role: "user", text: prepared } });
+      for await (const event of session.events()) {
+        if (event.eventType === "turn.completed") break;
+      }
+      const sessionRoots = (await readdir(runtime, { withFileTypes: true })).filter((entry) => entry.isDirectory());
+      expect(sessionRoots).toHaveLength(1);
+      const requests = (await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-prompt-requests.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      expect(requests.map((request) => request.parts)).toEqual([[{ type: "text", text: prepared }]]);
+    },
+    closeSession: async () => { await session?.close(); },
+    closeTransport: () => bundle.transport.close(),
+    removeRoot: () => rm(root, { recursive: true, force: true }),
+    evidence: () => bundle.evidence(),
+  });
+}, 30_000);

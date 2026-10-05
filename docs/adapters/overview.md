@@ -137,3 +137,12 @@ Rough tiers, richest first:
 ## UI Parser Contract
 
 External adapters can ship a self-contained UI parser that tells the Paperclip web UI how to render their stdout. Without it, the UI uses a generic shell parser. See the [UI Parser Contract](/adapters/adapter-ui-parser) for details.
+
+### Cursor failure details
+
+The Cursor CLI adapter uses structured error output first, then the first
+nonempty diagnostic line. It skips the informational `cursor-retrieval: tracing
+to ...` file-location notice. If the CLI exits unsuccessfully with only that
+notice, the run shows the exit code. The original stdout and stderr remain in
+the local run result and log for troubleshooting. Environment probes use the
+same diagnostic selection. This does not change retry or success decisions.

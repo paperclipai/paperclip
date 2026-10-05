@@ -14,6 +14,7 @@ import {
   companyMemberships,
   companySkills,
   createDb,
+  environmentLeases,
   heartbeatRuns,
   heartbeatRunEvents,
   issueComments,
@@ -25,7 +26,11 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { issueService } from "../services/issues.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
+import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -186,6 +191,115 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     })));
     return { companyId, agentId, issueId, runId, wakeId, commentIds };
   }
+
+  it.each(["cancelled", "running"])("rejects a late Done from an interrupted %s task run at the write boundary", async status => {
+    const seeded = await seedQueue();
+    await db.update(heartbeatRuns).set({ status, resultJson: { executionCancellation: { state: "requested" } } })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    // Model a request that passed middleware before cancellation and reached
+    // the service after the run lost its authority. Recovery may have released
+    // checkout and changed the task to Blocked in the meantime.
+    await db.update(issues).set({ status: "blocked", executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    await expect(issueService(db).update(seeded.issueId, { status: "done",
+      actorAgentId: seeded.agentId, actorRunId: seeded.runId,
+    })).rejects.toMatchObject({ status: 403, details: { code: "agent_run_cancelled" } });
+    expect((await db.select().from(issues).where(eq(issues.id, seeded.issueId)))[0].status).toBe("blocked");
+    // A board disposition remains authoritative.
+    expect(await issueService(db).update(seeded.issueId, { status: "done", actorUserId: "queue-owner" }))
+      .toMatchObject({ status: "done" });
+  });
+
+  it("delivers a saved Grok interrupt exactly once after remote cleanup, including concurrent restart sweeps", async () => {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: "grok_local", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
+      .where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "cancelled", errorCode: "operator_interrupted",
+      finishedAt: new Date("2026-08-22T15:03:00.000Z"),
+      contextSnapshot: { issueId: seeded.issueId, paperclipWorkspace: { remoteExecution: { transport: "sandbox" } } },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ status: "blocked", executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    await db.insert(issueRecoveryActions).values({ companyId: seeded.companyId, sourceIssueId: seeded.issueId,
+      kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: seeded.runId,
+      status: "resolved", outcome: "blocked", nextAction: "Automatic recovery stopped.",
+      evidence: { runId: seeded.runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    });
+    const [lease] = await db.insert(environmentLeases).values({ companyId: seeded.companyId,
+      issueId: seeded.issueId, heartbeatRunId: seeded.runId, provider: "daytona", providerLeaseId: randomUUID(),
+      status: "active", leasePolicy: "ephemeral",
+    }).returning();
+    // Occupy the agent's slot on another task so this test never invokes a model.
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() },
+    });
+    const client = app(seeded.companyId);
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+      queueId: seeded.wakeId, revision: queue.body.revision, targetRunId: null,
+    }).expect(200);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0].status)
+      .toBe("deferred_issue_execution");
+    // Cleanup timestamps alone are not proof. A mismatched receipt is not proof either.
+    await db.update(environmentLeases).set({ status: "expired", releasedAt: new Date(), cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { ...remoteTerminationReceipt(lease, {
+        providerLeaseId: lease.providerLeaseId, state: "destroyed",
+      }), runId: randomUUID() } },
+    }).where(eq(environmentLeases.id, lease.id));
+    await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0].status)
+      .toBe("deferred_issue_execution");
+    await db.update(environmentLeases).set({ metadata: { remoteExecutionTermination: remoteTerminationReceipt(lease, {
+      providerLeaseId: lease.providerLeaseId, state: "destroyed",
+    }) } }).where(eq(environmentLeases.id, lease.id));
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await Promise.all([heartbeatService(db).resumeQueuedRuns(), heartbeatService(db).resumeQueuedRuns()]);
+    const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(delivered.status).toBe("coalesced");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivered.runId!));
+    expect(successor.contextSnapshot).toMatchObject({ wakeCommentIds: seeded.commentIds, previousRunId: seeded.runId,
+      forceFreshSession: true });
+    await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
+  });
+
+  it("allows only the exact task mutation that stopped its own run to commit", async () => {
+    const seeded = await seedQueue();
+    const stopId = randomUUID();
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "issue_reassigned",
+      resultJson: { reassignmentStopConfirmed: true, issueMutationStopId: stopId },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    const data = { status: "todo", actorAgentId: seeded.agentId, actorRunId: seeded.runId };
+    await expect(issueService(db).update(seeded.issueId, { ...data, actorRunStopId: randomUUID() }))
+      .rejects.toMatchObject({ status: 403, details: { code: "agent_run_cancelled" } });
+    expect(await issueService(db).update(seeded.issueId, { ...data, actorRunStopId: stopId }))
+      .toMatchObject({ status: "todo" });
+    await expect(issueService(db).update(seeded.issueId, { ...data, status: "done" }))
+      .rejects.toMatchObject({ status: 403, details: { code: "agent_run_cancelled" } });
+  });
+
+  it.each(["questions", "verdicts"] as const)("rejects admitted %s responses after Stop revokes the run", async kind => {
+    const seeded = await seedQueue();
+    const service = issueThreadInteractionService(db);
+    const issue = { id: seeded.issueId, companyId: seeded.companyId };
+    const interaction = await service.create(issue, kind === "questions" ? {
+      kind: "ask_user_questions", resolverPolicy: "board_or_agents", payload: { version: 1,
+        questions: [{ id: "scope", prompt: "Choose scope", selectionMode: "single", options: [{ id: "first", label: "First" }] }],
+      },
+    } : {
+      kind: "request_item_verdicts", resolverPolicy: "board_or_agents", payload: { version: 1,
+        prompt: "Review the work",
+        items: [{ id: "work", label: "Work" }],
+      },
+    }, { userId: "queue-owner" });
+    await db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    const actor = { agentId: seeded.agentId, runId: seeded.runId };
+    const responding = kind === "questions"
+      ? service.answerQuestions(issue, interaction.id, { answers: [{ questionId: "scope", optionIds: ["first"] }] }, actor)
+      : service.submitItemVerdicts(issue, interaction.id, { verdicts: [{ id: "work", verdict: "approve" }] }, actor);
+    await expect(responding).rejects.toMatchObject({ status: 403, details: { code: "agent_run_cancelled" } });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0].status)
+      .toBe("pending");
+  });
 
   it.each((["request_confirmation", "request_checkbox_confirmation", "ask_user_questions"] as const)
     .flatMap(kind => (["legacy", "native"] as const).map(runtime => ({ kind, runtime }))))(
@@ -1336,6 +1450,22 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     });
   });
 
+  it.each(["paperclip_runner", "codex_local"])("keeps Steer during native preparation even after agent settings change to %s", async adapterType => {
+    const seeded = await seedQueue();
+    const steeringCalls = steerNativeSessionMock.mock.calls.length;
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", runtimeModeResolvedAt: null,
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(agents).set({ adapterType }).where(eq(agents.id, seeded.agentId));
+    const client = app(seeded.companyId);
+    const initial = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(initial.body).toMatchObject({ protocol: "paperclip_runner_v1", steeringDisposition: "temporarily_unavailable" });
+    const edited = await request(client).patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+      .send({ queueId: seeded.wakeId, revision: initial.body.revision, body: "Updated direction" }).expect(200);
+    expect(edited.body).toMatchObject({ protocol: "paperclip_runner_v1", steeringDisposition: "temporarily_unavailable" });
+    expect(steerNativeSessionMock.mock.calls).toHaveLength(steeringCalls);
+  });
+
   it("serializes discard against queued-run claim", async () => {
     const seeded = await seedQueue();
     await db.delete(issueComments).where(eq(issueComments.id, seeded.commentIds[1]));
@@ -1464,6 +1594,65 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       turnId: "turn-1",
       duplicate: false,
     });
+  });
+
+  it("allows the runner to persist its acknowledgement while steering, preserving concurrent run updates", async () => {
+    const seeded = await seedQueue();
+    await seedDispatchIdentity(seeded);
+    const originalProfile = { adapterDispatch: { adapterType: "paperclip_runner" },
+      nativeExecutionInput: { provider: { kind: "codex", model: "gpt-5.6-sol", reasoningEffort: "medium" } } };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: originalProfile }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ assigneeAdapterOverrides: { model: "gpt-6-sol", reasoningEffort: "xhigh" } })
+      .where(eq(issues.id, seeded.issueId));
+    steerNativeSessionMock.mockImplementationOnce(async () => {
+      await db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout = '1000ms'`);
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, {
+          companyId: seeded.companyId, agentId: seeded.agentId, runId: seeded.runId,
+          eventType: "item.completed", payload: { kind: "steering_acknowledgement" },
+        });
+        await tx.update(heartbeatRuns).set({ resultJson: { concurrentProviderReceipt: "preserve" } })
+          .where(eq(heartbeatRuns.id, seeded.runId));
+      });
+      return { turnId: "turn-before-model-change" };
+    });
+    const initial = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`);
+    const steered = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision });
+    expect(steered.status, JSON.stringify(steered.body)).toBe(200);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run.status).toBe("running");
+    expect(run.runnerProfileJson).toEqual(originalProfile);
+    expect(steerNativeSessionMock).toHaveBeenCalledWith(expect.objectContaining({ runId: seeded.runId,
+      message: "First queued message", correlationId: seeded.commentIds[0] }));
+    expect(run.resultJson).toMatchObject({ concurrentProviderReceipt: "preserve", queuedSteeringAcknowledgements: {
+      [seeded.commentIds[0]]: { status: "acknowledged", turnId: "turn-before-model-change" },
+    } });
+    expect(steered.body.entries.map((entry: any) => entry.comment.id)).toEqual([seeded.commentIds[1]]);
+  });
+
+  it.each(["cancelled", "failed", "succeeded"] as const)("preserves queued input when the run stops during acknowledgement (%s)", async status => {
+    const seeded = await seedQueue();
+    await seedDispatchIdentity(seeded);
+    steerNativeSessionMock.mockImplementationOnce(async () => {
+      await db.update(heartbeatRuns).set({ status, finishedAt: new Date(), resultJson: { terminalReceipt: "preserve" } })
+        .where(eq(heartbeatRuns.id, seeded.runId));
+      return { turnId: "turn-that-stopped" };
+    });
+    const initial = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`);
+    const response = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision });
+    expect(response.status).toBe(409);
+    expect(response.body.details).toMatchObject({ code: "queued_comment_stale_target" });
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(wake.status).toBe("deferred_issue_execution");
+    expect((wake.payload as any)._paperclipWakeContext.wakeCommentIds).toEqual(seeded.commentIds);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run.resultJson).toEqual({ terminalReceipt: "preserve" });
+    const activity = await db.select().from(activityLog).where(eq(activityLog.action, "issue.queued_comment_steered"));
+    expect(activity).toHaveLength(0);
   });
 
   it("keeps the identity pending after a steering timeout, then reconciles it on a later acknowledgement", async () => {

@@ -25,12 +25,24 @@ function renderRunner(config: Record<string, unknown>): string {
 }
 
 describe("Paperclip Runner Codex configuration", () => {
+  it.each([
+    [undefined, "Full auto (approve all)"],
+    ["approve-paperclip", "Automatic Paperclip actions"],
+    ["approve-reads", "Allow Paperclip reads"],
+    ["deny-all", "Deny all"],
+  ])("displays Grok's default or saved permission mode %s", (acpxPermissionMode, label) => {
+    const html = renderRunner({ provider: "acpx", acpxAgent: "grok", acpxPermissionMode });
+    expect(html).toContain('<option value="grok" selected="">Grok Build</option>');
+    expect(html).toContain('aria-label="Permission mode"');
+    expect(html).toContain(label);
+  });
+
   it("exposes all qualified provider choices", () => {
     const html = renderRunner({ provider: "codex" });
 
     expect(html).toContain('<option value="codex" selected="">Codex</option>');
     expect(html).toContain("OpenCode 1.18.32");
-    expect(html).toContain("ACPX");
+    expect(html).toContain('<option value="acpx">ACP agents</option>');
     expect(html).not.toContain("Permission mode");
     expect(html).not.toContain("Ask when requested");
     expect(html).not.toContain("Ask for untrusted operations");
@@ -54,15 +66,19 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).not.toContain("Ask for untrusted operations");
   });
 
-  it("offers ACPX Claude without a redundant agent selector", () => {
+  it("offers qualified Claude and keeps candidate ACP agents visibly disabled", () => {
     const html = renderRunner({
       provider: "acpx",
       acpxAgent: "claude",
       acpxPermissionMode: "approve-reads",
     });
 
-    expect(html).toContain('<option value="acpx" selected="">ACPX Claude</option>');
-    expect(html).not.toContain("ACP agent");
+    expect(html).toContain('<option value="acpx" selected="">ACP agents</option>');
+    expect(html).toContain("ACP agent");
+    expect(html).toContain('<option value="claude" selected="">Claude</option>');
+    expect(html).toContain('<option value="cursor" disabled="">Cursor — qualification pending</option>');
+    expect(html).toContain('<option value="copilot" disabled="">GitHub Copilot — qualification pending</option>');
+    expect(html).toContain('<option value="pi" disabled="">Pi — qualification pending</option>');
     expect(html).not.toContain("Codex via ACPX");
     expect(html).not.toContain("ACPX Codex");
     expect(html).not.toContain("Pi via ACPX");

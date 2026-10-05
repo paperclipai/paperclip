@@ -7,6 +7,16 @@ export const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 export const HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS = 4_096;
 export const HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES = 64 * 1024;
 
+/** Operator diagnostics are untrusted provider data, not model handoff prose. */
+export function summarizeRunErrorForModel(error: string | null, terminalFailureCategory?: unknown): string | null {
+  if (terminalFailureCategory == null) return error;
+  const category = typeof terminalFailureCategory === "string"
+    && ["connection", "access", "limit", "service", "request", "unknown"].includes(terminalFailureCategory)
+    ? terminalFailureCategory
+    : "unknown";
+  return `ACP agent reported a terminal ${category} failure. Provider diagnostics are available in the run record.`;
+}
+
 function truncateSummaryText(
   value: unknown,
   maxLength = HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
@@ -190,9 +200,14 @@ export function isExternalChatPresentationContext(
   const wake = record(context.paperclipWake);
   const source =
     typeof context.source === "string" ? context.source.trim() : "";
-  // Tool approvals also resume ordinary board tasks. Only durable source-run
-  // authorization can classify those continuations as external chat.
-  if (source === "tool_action_review") return verifiedToolReviewChatOrigin;
+  // Approvals and Board comments also resume ordinary internal tasks. Only
+  // durable source-run or mirrored-comment proof authorizes an external reply.
+  if (
+    source === "tool_action_review" ||
+    source.startsWith("issue.comment") ||
+    source === "issue.update"
+  )
+    return verifiedToolReviewChatOrigin;
   return (
     source.startsWith("chat:") ||
     context.externalChatContinuation === true ||

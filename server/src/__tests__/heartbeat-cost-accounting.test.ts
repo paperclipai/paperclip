@@ -5,6 +5,27 @@ import {
 } from "../services/heartbeat.js";
 
 describe("heartbeat cost accounting", () => {
+  it.each([null, undefined, Number.NaN, Number.POSITIVE_INFINITY, -1])(
+    "keeps a paused run without a valid cost receipt unpriced (%s)",
+    (costUsd) => {
+      expect(resolveLedgerCostStatus({
+        costUsd,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+      })).toBe("unpriced");
+    },
+  );
+
+  it("preserves an explicitly reported zero-dollar receipt without token usage", () => {
+    expect(resolveLedgerCostStatus({
+      costUsd: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    })).toBe("reported");
+  });
+
   it("marks token-bearing CLI usage without a reported cost as unpriced", () => {
     expect(resolveLedgerCostStatus({
       costUsd: null,

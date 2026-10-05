@@ -59,7 +59,7 @@ export const PROVIDERS: ProviderCase[] = [
   },
   {
     provider: "github",
-    slug: "github",
+    slug: "github-code-review-bot",
     name: "GitHub",
     accountLabel: "paperclip-ai",
     botLabel: "Maya",
@@ -72,7 +72,7 @@ export const PROVIDERS: ProviderCase[] = [
     externalUrl: "https://github.com/paperclip-ai/paperclip/issues/123",
     setupHeading: /Create or connect a GitHub App/i,
     setupButton: "Connect and verify",
-    chatAndTool: true,
+    chatAndTool: false,
   },
   {
     provider: "microsoft-teams",
@@ -998,6 +998,7 @@ oauth_config:
       - reactions:read
       - reactions:write
       - users:read
+      - im:write
       - emoji:read
       - pins:read
       - pins:write

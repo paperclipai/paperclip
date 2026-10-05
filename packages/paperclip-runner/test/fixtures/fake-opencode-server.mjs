@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
@@ -108,9 +108,37 @@ function json(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
+// Each simulated turn reuses the same short event ids ("event-1",
+// "event-3", and so on). OpenCode's real event ids are unique, and the
+// driver relies on that to drop a duplicate delivery of the same event.
+// Scope every event id to the turn that produced it so a second turn's
+// events do not look like duplicates of the first turn's events.
+let promptTurnSeq = 0;
+// Set by a "late-straggler-source" turn to simulate a distinct provider
+// frame for that turn's message arriving only after a later turn's prompt
+// has already been accepted. Counts down by one on each subsequent prompt
+// request and flushes at the start of the request that brings it to zero.
+// A plain "late-straggler-source" message flushes on the very next prompt
+// (delay 1); "late-straggler-source-delay-N" flushes N prompts later, so a
+// test can place the stale frame's arrival after several more turns have
+// sealed.
+let lateStragglerRemaining = 0;
 function emit(value) {
-  const frame = `data: ${JSON.stringify(value)}\n\n`;
+  const scoped =
+    promptTurnSeq > 0 && typeof value.id === "string"
+      ? { ...value, id: `${value.id}#${promptTurnSeq}` }
+      : value;
+  const frame = `data: ${JSON.stringify(scoped)}\n\n`;
   for (const response of clients) response.write(frame);
+}
+
+function parsedPromptText(promptBody) {
+  const text = promptBody.parts?.[0]?.text ?? "";
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text };
+  }
 }
 
 async function mcpRequest(method, params) {
@@ -159,7 +187,7 @@ async function callFirstPaperclipTool() {
 }
 
 async function callTerminalTool(promptBody) {
-  const prompt = JSON.parse(promptBody.parts?.[0]?.text ?? "{}");
+  const prompt = parsedPromptText(promptBody);
   const blocked = String(prompt.message ?? "").includes("block-result");
   const result = {
     schema: "paperclip.run_result.v1",
@@ -169,9 +197,9 @@ async function callTerminalTool(promptBody) {
       : "Fake provider completed the task.",
     completionClaim: {
       contractRevision:
-        prompt.task?.completionContract?.revision ?? "codex-demo-v1",
+        prompt.completionContract?.revision ?? prompt.task?.completionContract?.revision ?? "codex-demo-v1",
       objectiveSatisfied: !blocked,
-      criteria: (prompt.task?.completionContract?.criteria ?? []).map(
+      criteria: (prompt.completionContract?.criteria ?? prompt.task?.completionContract?.criteria ?? []).map(
         (criterion) => ({
           criterionId: criterion.id,
           status: blocked ? "unknown" : "satisfied",
@@ -360,8 +388,9 @@ const server = createServer(async (request, response) => {
   ) {
     const chunks = [];
     request.on("data", (chunk) => chunks.push(chunk));
-    request.on("end", () => {
+    request.on("end", async () => {
       const promptPayload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      await appendFile(join(process.env.XDG_DATA_HOME, "fake-prompt-requests.ndjson"), JSON.stringify(promptPayload) + "\n");
       if (
         promptPayload.providerID !== "openrouter" ||
         promptPayload.modelID !== "deepseek/deepseek-v4-flash-0731" ||
@@ -371,10 +400,30 @@ const server = createServer(async (request, response) => {
           error: "OpenCode 1.18 prompt model fields must be top-level",
         });
       }
+      promptTurnSeq += 1;
       json(response, 204, null);
+      if (lateStragglerRemaining > 0) {
+        lateStragglerRemaining -= 1;
+        if (lateStragglerRemaining === 0) {
+          emit({
+            type: "message.part.updated",
+            id: "event-late-straggler-delivery",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-late-straggler",
+                messageID: "message-late-source",
+                type: "text",
+                text: "late straggler text must not reach the next turn",
+                time: { start: 9, end: 10 },
+              },
+            },
+          });
+        }
+      }
       setTimeout(async () => {
         await callFirstPaperclipTool();
-        const parsedPrompt = JSON.parse(promptPayload.parts?.[0]?.text ?? "{}");
+        const parsedPrompt = parsedPromptText(promptPayload);
         if (String(parsedPrompt.message ?? "").includes("native-question")) {
           pendingQuestion = nativeQuestion();
           emit({
@@ -418,6 +467,103 @@ const server = createServer(async (request, response) => {
               },
             },
           });
+          return;
+        }
+        if (String(parsedPrompt.message ?? "").includes("session-failed")) {
+          emit({
+            type: "session.error",
+            id: "event-session-failed",
+            properties: {
+              sessionID: session.id,
+              error: {
+                name: "ProviderError",
+                message: "The fake provider failed on purpose.",
+              },
+            },
+          });
+          return;
+        }
+        if (
+          String(parsedPrompt.message ?? "").includes(
+            "pending-request-then-turn-fails",
+          )
+        ) {
+          pendingQuestion = nativeQuestion();
+          emit({
+            type: "question.asked",
+            id: "event-question-pending-then-fail",
+            properties: pendingQuestion,
+          });
+          setTimeout(() => {
+            emit({
+              type: "session.error",
+              id: "event-session-failed-with-pending-request",
+              properties: {
+                sessionID: session.id,
+                error: {
+                  name: "ProviderError",
+                  message: "The fake provider failed with a request still pending.",
+                },
+              },
+            });
+          }, 10);
+          return;
+        }
+        if (
+          String(parsedPrompt.message ?? "").includes("late-straggler-source")
+        ) {
+          emit({
+            type: "message.updated",
+            id: "event-late-source-message",
+            properties: {
+              sessionID: session.id,
+              info: {
+                id: "message-late-source",
+                sessionID: session.id,
+                role: "assistant",
+              },
+            },
+          });
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-late-source-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-late-source",
+                messageID: "message-late-source",
+                type: "text",
+                text: "done",
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-late-source-usage",
+            properties: {
+              info: {
+                id: "message-late-source",
+                sessionID: session.id,
+                role: "assistant",
+                tokens: { input: 3, output: 2 },
+                cost: 0.001,
+              },
+            },
+          });
+          emit({
+            type: "session.idle",
+            id: "event-late-source-idle",
+            properties: { sessionID: session.id },
+          });
+          // Deliver the straggling frame for this message only once a later
+          // turn's own prompt has already been accepted. Defaults to the
+          // very next prompt; "-delay-N" postpones it by N prompts.
+          const delayMatch = String(parsedPrompt.message ?? "").match(
+            /late-straggler-source-delay-(\d+)/,
+          );
+          lateStragglerRemaining = delayMatch ? Number(delayMatch[1]) : 1;
           return;
         }
         const textBeforeFinish = String(parsedPrompt.message ?? "").includes(

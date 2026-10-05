@@ -24,7 +24,6 @@ export const backupRetentionPolicySchema = z.object({
 
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
-  keyboardShortcuts: z.boolean().default(false),
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
@@ -52,10 +51,13 @@ export const instanceExperimentalSettingsSchema = z.object({
   // configs continue to load during upgrades.
   enableApps: z.boolean().default(true),
   enableChatConnectors: z.boolean().default(false),
-  enableMcpAggregators: z.boolean().default(false),
+  // Compatibility only: old stored and managed values must still parse.
+  enableMcpAggregators: z.boolean().default(true),
+  enableMemoryConnectors: z.boolean().default(false),
   enablePipelines: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableAgentChat: z.boolean().default(false),
+  enableCombinedInboxTasks: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),
   enableClassicTaskInterface: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),

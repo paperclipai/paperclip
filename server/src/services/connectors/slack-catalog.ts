@@ -15,7 +15,10 @@ import type {
   ToolGatewayDescriptor,
   ToolGatewaySession,
 } from "../tool-gateway.js";
-import { resolveSlackTaskAuthority } from "./slack-authority.js";
+import {
+  resolveSlackTaskAuthority,
+  slackEndpointCandidates,
+} from "./slack-authority.js";
 export async function syncSlackBotTools(
   tx: Parameters<Parameters<Db["transaction"]>[0]>[0],
   endpoint: typeof chatEndpoints.$inferSelect,
@@ -169,7 +172,7 @@ export async function syncSlackBotTools(
     .onConflictDoNothing();
 }
 
-export async function slackToolsForSession(
+async function slackToolsForEndpoint(
   db: Db,
   session: Pick<
     ToolGatewaySession,
@@ -180,11 +183,13 @@ export async function slackToolsForSession(
     | "identityContextId"
     | "approvedSlackInvocationId"
   >,
+  endpointId: string,
 ): Promise<ToolGatewayDescriptor[]> {
   if (!session.agentId || !session.runId || !session.issueId) return [];
   let authority;
   try {
     authority = await resolveSlackTaskAuthority(db, {
+      endpointId,
       companyId: session.companyId,
       agentId: session.agentId,
       runId: session.runId,
@@ -238,4 +243,19 @@ export async function slackToolsForSession(
       upstreamToolName: entry.toolName,
       providerMetadata: { endpointId: authority.endpoint.id },
     }));
+}
+
+export async function slackToolsForSession(
+  db: Db,
+  session: Parameters<typeof slackToolsForEndpoint>[1],
+): Promise<ToolGatewayDescriptor[]> {
+  if (!session.agentId || !session.runId || !session.issueId) return [];
+  const tools: ToolGatewayDescriptor[] = [];
+  for (const endpoint of await slackEndpointCandidates(db, {
+    companyId: session.companyId,
+    agentId: session.agentId,
+  })) {
+    tools.push(...(await slackToolsForEndpoint(db, session, endpoint.id)));
+  }
+  return tools;
 }

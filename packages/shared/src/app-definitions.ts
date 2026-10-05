@@ -6,6 +6,8 @@ import type { ToolConnectionOwnership } from "./types/tool-access.js";
 export const CONNECTABLE_APP_SLUGS = new Set([
   "anthropic", "openai", "openrouter", "xai",
   "agentmail",
+  "browser-use-cloud",
+  "cognee",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "zapier",
   "arcade",
@@ -28,6 +30,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "google-people",
   "google-workspace-search",
   "github",
+  "github-code-review-bot",
   "discord",
   "microsoft-teams",
   "telegram",
@@ -138,13 +141,11 @@ export function getRecommendedConnectionMethod(
     || method.oauthStrategy === "paperclip_id_connector"
   );
 
-  // When a managed pilot advertises only read access, defaulting to a
-  // customer-owned write method would turn the available one-click path into
-  // an OAuth client setup form. Capability-specific callers pass only the
-  // selected group, so explicit write/draft choices keep their own fallback.
+  // Prefer the permissions needed for agent work, then the simplest sign-in.
+  // Explicit read-only selections pass their own capability group here.
   return recommendedCapability(managedMethods)
-    ?? managedMethods[0]
     ?? recommendedCapability(methods)
+    ?? managedMethods[0]
     ?? methods[0]
     ?? null;
 }
@@ -215,8 +216,16 @@ export function appAcceptsCustomerOAuthClient(app: AppDefinition | null | undefi
   return Boolean(app && getAvailableConnectionMethods(app).some(connectionMethodAcceptsCustomerOAuthClient));
 }
 
-export function credentialConfigPath(field: FieldDef): string {
+export function credentialConfigPath(field: FieldDef, method?: ConnectionMethodDef | null): string {
+  if (method?.transport === "local_stdio" && method.keyPlacement?.location === "env") return `env.${field.key}`;
   return `credentials.${field.key}`;
+}
+
+/** Older credential references used bare names; current references use paths. */
+export function connectionCredentialConfigPath(ref: { name: string }): string {
+  return /^(credentials|headers|oauth|remote)\./.test(ref.name)
+    ? ref.name
+    : `credentials.${ref.name}`;
 }
 
 export function resolveConnectionMethodServerUrl(
@@ -246,10 +255,12 @@ export function resolveConnectionMethodServerUrl(
 
 export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string | null): Record<string, unknown> {
   // Keep the parameters in the public contract: callers resolve defaults for a
-  // concrete app/method even though the initial policy is now uniform. This is
+  // concrete app/method even though the initial policy is uniform. This is
   // an open default, not an approval bypass: connection finalization remains a
   // configure-authorized, audited operation, and Ask first stays available as
   // an operator-selected policy for any action after the connection is made.
+  // The connect flow lands on the Permissions tab so that choice is the very
+  // next screen (PAP-659: agents get full permissions unless someone narrows them).
   void app;
   void methodKey;
   return {

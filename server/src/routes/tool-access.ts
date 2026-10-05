@@ -4,7 +4,7 @@ import { agents, companies, connectionGrants, issueThreadInteractions, toolConne
 import { and, eq, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
-  isRemoteMcpConnectorId,
+  isMemoryConnectorId,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   isAgentStatusAssignableToWork,
@@ -191,6 +191,29 @@ export function connectionIntentOAuthOutcomeHtml(input: {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Connection authorization</title></head><body><p>Returning to Paperclip…</p><script>const message=${message};const targetOrigin=${targetOrigin}||window.location.origin;if(window.opener&&window.opener!==window){window.opener.postMessage(message,targetOrigin);window.close();}else{window.location.replace(${fallback});}</script></body></html>`;
 }
 
+// Some providers' consent pages navigate to this callback and, if their own
+// page is still on screen ~2s later, replace it with a "you can close this
+// window" screen (Railway does exactly this). Exchanging the code and
+// discovering the tool catalog routinely takes longer than that, so the
+// provider's timer wins and the browser never lands back in Paperclip even
+// though the connection completed. For a cross-site browser navigation, commit
+// a Paperclip document immediately and repeat the same request from it; the
+// repeat is same-origin and does the slow work.
+export function isCrossSiteOAuthCallbackNavigation(req: Request): boolean {
+  return req.get("sec-fetch-site") === "cross-site"
+    && req.get("sec-fetch-mode") === "navigate";
+}
+
+export function oauthCallbackInterstitialHtml(continuePath: string): string {
+  const attribute = continuePath
+    .replaceAll("&", "&amp;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("<", "&lt;");
+  // A meta refresh alone, not a script as well: the OAuth code is single-use, so
+  // two racing follow-ups would let the loser render an expired-state error.
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url=${attribute}"><title>Finishing connection</title></head><body><p>Finishing your connection…</p></body></html>`;
+}
+
 function normalizeCloudConnectorEnrollmentReturnTo(returnTo?: string | null): string | null {
   if (!returnTo || returnTo.length > 2_048) return null;
   try {
@@ -370,7 +393,7 @@ export function toolAccessRoutes(
         : null;
       if (
         parsed.host.toLowerCase() === normalizedRoutedHost
-        && (parsed.protocol === "https:" || (parsed.protocol === "http:" && isLoopbackHost(parsed.hostname)))
+        && parsed.protocol === "https:"
       ) {
         return parsed.origin;
       }
@@ -815,7 +838,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         ? await options.paperclipCloudConnector.getCapabilities()
         : [];
     const vercelConnect = vercelConnectIntegrationStatus();
-    const { enableMcpAggregators } = await instanceSettingsService(db).getExperimental();
+    const { enableMemoryConnectors } = await instanceSettingsService(db).getExperimental();
     res.json({
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
       credentialSources: {
@@ -831,7 +854,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
             : "Vercel Connect setup is disabled on this Paperclip instance.",
         },
       },
-      apps: APP_STORE_DEFINITIONS.filter((app) => enableMcpAggregators || !isRemoteMcpConnectorId(app.slug)).map((app) =>
+      apps: APP_STORE_DEFINITIONS.filter((app) => (enableMemoryConnectors || !isMemoryConnectorId(app.slug))).map((app) =>
         appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
       ),
     });
@@ -1331,6 +1354,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
       await assertToolConnectionConfigureAccess(req, pendingConnection);
     }
     const acceptsHtml = req.get("accept")?.includes("text/html") === true;
+    if (acceptsHtml && isCrossSiteOAuthCallbackNavigation(req)) {
+      // State is only peeked above, so the same-origin repeat still owns it.
+      res.set("Cache-Control", "no-store");
+      res.set("Referrer-Policy", "no-referrer");
+      res.type("html").send(oauthCallbackInterstitialHtml(req.originalUrl));
+      return;
+    }
     let result: Awaited<ReturnType<typeof svc.completeOAuthCallback>>;
     try {
       result = await svc.completeOAuthCallback({
