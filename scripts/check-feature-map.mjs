@@ -72,7 +72,8 @@ export function checkFeatureMap(repoRoot = defaultRoot) {
     }
     // Also validate test paths in runnable code blocks or backticked references.
     // This deliberately checks filenames, not test titles or behavioral coverage.
-    const testRefs = [...raw.matchAll(/(?<![\w-])((?:\.github|ui|server|packages|tests|cli|scripts)\/[\w./-]+\.(?:test|spec)\.(?:[cm]?[jt]sx?))\b/g)]
+    const localReferences = raw.replace(/[a-z][a-z0-9+.-]*:\/\/[^\s)]+/gi, "");
+    const testRefs = [...localReferences.matchAll(/(?<![\w-])((?:\.github|ui|server|packages|tests|cli|scripts)\/[\w./-]+\.(?:test|spec)\.(?:[cm]?[jt]sx?))\b/g)]
       .map((match) => match[1]);
     for (const path of new Set(testRefs)) {
       if (!localFile(repoRoot, path)) errors.push(`${file}: missing test ${path}`);

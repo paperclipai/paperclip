@@ -81,7 +81,7 @@ test("deleted or renamed test references fail even inside runnable commands", (t
 
 test("broken documentation links fail, external URLs and local anchors are accepted", (t) => {
   const f = fixture(t);
-  f.write("feature-map/example.md", recipe + "\n[External](https://example.com) [Here](#gotchas) [Missing](../doc/missing.md#section)\n");
+  f.write("feature-map/example.md", recipe + "\n[External](https://example.com/tests/external.test.ts) [Here](#gotchas) [Missing](../doc/missing.md#section)\n");
   assert.deepEqual(f.check(), ["example.md: broken local link ../doc/missing.md#section"]);
 });
 
