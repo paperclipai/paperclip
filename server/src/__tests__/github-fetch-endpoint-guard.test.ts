@@ -23,6 +23,12 @@ const ENTERPRISE_HOST = "ghe.internal.test";
 const PRIVATE_ADDRESS = "10.0.0.5";
 const METADATA_ADDRESS = "169.254.169.254";
 
+/** Two public hostnames, so a redirect can cross an origin the way GitHub's do. */
+const API_HOST = "api.github.test";
+const ASSET_HOST = "objects.github.test";
+const PUBLIC_ADDRESS = "93.184.216.34";
+const SECOND_PUBLIC_ADDRESS = "93.184.216.35";
+
 const openServers: Server[] = [];
 const openSockets: Socket[] = [];
 
@@ -104,22 +110,164 @@ describe("ghFetch endpoint guard", () => {
     expect(network.dialled).toEqual([PRIVATE_ADDRESS]);
   });
 
-  it("hands a redirect back instead of following it", async () => {
+  it("refuses a redirect that points at the private network, without dialling it", async () => {
     const upstream = await startServer((_req, res) => {
       res.writeHead(302, { location: `http://${METADATA_ADDRESS}/latest/meta-data/` });
       res.end();
     });
     const network = routingSocketFactory({ [PRIVATE_ADDRESS]: upstream.port });
 
-    const response = await ghFetch(`http://${ENTERPRISE_HOST}/raw/acme/skills/main/SKILL.md`, undefined, {
+    await expect(ghFetch(`http://${ENTERPRISE_HOST}/raw/acme/skills/main/SKILL.md`, undefined, {
       privateEndpointAllowlist: new Set([`http://${ENTERPRISE_HOST}`]),
       lookup: async () => [{ address: PRIVATE_ADDRESS, family: 4 }],
+      socketFactory: network.factory,
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "remote_http_private_endpoint" },
+    });
+
+    expect(network.dialled).toEqual([PRIVATE_ADDRESS]);
+  });
+
+  it("refuses a redirect whose scheme is not http or https", async () => {
+    const upstream = await startServer((_req, res) => {
+      res.writeHead(302, { location: "file:///etc/passwd" });
+      res.end();
+    });
+    const network = routingSocketFactory({ [PUBLIC_ADDRESS]: upstream.port });
+
+    await expect(ghFetch(`http://${API_HOST}/repos/acme/skills`, undefined, {
+      lookup: async () => [{ address: PUBLIC_ADDRESS, family: 4 }],
+      socketFactory: network.factory,
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "GitHub source URL must use http or https",
+    });
+  });
+
+  it("follows a GitHub rename redirect and returns the destination body", async () => {
+    const renamed = await startServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("# Renamed repository\n");
+    });
+    const original = await startServer((_req, res) => {
+      res.writeHead(301, { location: `http://${ASSET_HOST}/repos/acme/skills-renamed` });
+      res.end();
+    });
+    const network = routingSocketFactory({
+      [PUBLIC_ADDRESS]: original.port,
+      [SECOND_PUBLIC_ADDRESS]: renamed.port,
+    });
+
+    const response = await ghFetch(`http://${API_HOST}/repos/acme/skills`, undefined, {
+      lookup: async (hostname: string) => [{
+        address: hostname === API_HOST ? PUBLIC_ADDRESS : SECOND_PUBLIC_ADDRESS,
+        family: 4,
+      }],
+      socketFactory: network.factory,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("# Renamed repository\n");
+    expect(network.dialled).toEqual([PUBLIC_ADDRESS, SECOND_PUBLIC_ADDRESS]);
+  });
+
+  it("drops the credential headers when a redirect leaves the origin that issued them", async () => {
+    const seen: Array<{ authorization?: string; accept?: string }> = [];
+    const asset = await startServer((req, res) => {
+      seen.push({ authorization: req.headers.authorization, accept: req.headers.accept });
+      res.writeHead(200);
+      res.end("asset");
+    });
+    const api = await startServer((req, res) => {
+      seen.push({ authorization: req.headers.authorization, accept: req.headers.accept });
+      res.writeHead(302, { location: `http://${ASSET_HOST}/download/skills.tar.gz` });
+      res.end();
+    });
+    const network = routingSocketFactory({
+      [PUBLIC_ADDRESS]: api.port,
+      [SECOND_PUBLIC_ADDRESS]: asset.port,
+    });
+
+    const response = await ghFetch(`http://${API_HOST}/repos/acme/skills/tarball`, {
+      headers: { authorization: "Bearer gh-token", accept: "application/vnd.github+json" },
+    }, {
+      lookup: async (hostname: string) => [{
+        address: hostname === API_HOST ? PUBLIC_ADDRESS : SECOND_PUBLIC_ADDRESS,
+        family: 4,
+      }],
+      socketFactory: network.factory,
+    });
+
+    expect(response.status).toBe(200);
+    expect(seen[0]?.authorization).toBe("Bearer gh-token");
+    expect(seen[1]?.authorization).toBeUndefined();
+    // Everything that is not a credential survives the hop.
+    expect(seen[1]?.accept).toBe("application/vnd.github+json");
+  });
+
+  it("keeps the credential headers on a redirect within the same origin", async () => {
+    const seen: Array<string | undefined> = [];
+    let hop = 0;
+    const upstream = await startServer((req, res) => {
+      seen.push(req.headers.authorization);
+      if (hop++ === 0) {
+        res.writeHead(301, { location: `http://${API_HOST}/repos/acme/skills-renamed` });
+        res.end();
+        return;
+      }
+      res.writeHead(200);
+      res.end("same origin");
+    });
+    const network = routingSocketFactory({ [PUBLIC_ADDRESS]: upstream.port });
+
+    const response = await ghFetch(`http://${API_HOST}/repos/acme/skills`, {
+      headers: { authorization: "Bearer gh-token" },
+    }, {
+      lookup: async () => [{ address: PUBLIC_ADDRESS, family: 4 }],
+      socketFactory: network.factory,
+    });
+
+    expect(response.status).toBe(200);
+    expect(seen).toEqual(["Bearer gh-token", "Bearer gh-token"]);
+  });
+
+  it("stops a redirect loop instead of following it forever", async () => {
+    let hops = 0;
+    const upstream = await startServer((_req, res) => {
+      hops += 1;
+      res.writeHead(302, { location: `http://${API_HOST}/repos/acme/skills?hop=${hops}` });
+      res.end();
+    });
+    const network = routingSocketFactory({ [PUBLIC_ADDRESS]: upstream.port });
+
+    await expect(ghFetch(`http://${API_HOST}/repos/acme/skills`, undefined, {
+      lookup: async () => [{ address: PUBLIC_ADDRESS, family: 4 }],
+      socketFactory: network.factory,
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "github_too_many_redirects" },
+    });
+
+    // The first request, then five hops, then it gives up.
+    expect(hops).toBe(6);
+  });
+
+  it("hands the redirect back unfollowed when the caller asks for manual redirects", async () => {
+    const upstream = await startServer((_req, res) => {
+      res.writeHead(302, { location: `http://${ASSET_HOST}/download/skills.tar.gz` });
+      res.end();
+    });
+    const network = routingSocketFactory({ [PUBLIC_ADDRESS]: upstream.port });
+
+    const response = await ghFetch(`http://${API_HOST}/repos/acme/skills`, { redirect: "manual" }, {
+      lookup: async () => [{ address: PUBLIC_ADDRESS, family: 4 }],
       socketFactory: network.factory,
     });
 
     expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe(`http://${METADATA_ADDRESS}/latest/meta-data/`);
-    expect(network.dialled).toEqual([PRIVATE_ADDRESS]);
+    expect(response.headers.get("location")).toBe(`http://${ASSET_HOST}/download/skills.tar.gz`);
+    expect(network.dialled).toEqual([PUBLIC_ADDRESS]);
   });
 
   it("refuses a source URL that is not http or https", async () => {
