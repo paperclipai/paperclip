@@ -272,17 +272,24 @@ describe("issue dependency wakeups in issue routes", () => {
       { id: dependent.id, assigneeAgentId: dependent.assigneeAgentId, blockerIssueIds: [blocker.id] },
     ]);
     const observedStatuses: string[] = [];
-    mockWakeup.mockImplementation(async (agentId: string) => {
-      if (agentId === dependent.assigneeAgentId) observedStatuses.push(dependent.status);
+    mockWakeup.mockImplementation(async (agentId: string, options: any) => {
+      if (agentId === dependent.assigneeAgentId) {
+        expect(options.reason).toBe("issue_blockers_resolved");
+        expect(options.payload).toMatchObject({
+          issueId: dependent.id, resolvedBlockerIssueId: blocker.id,
+        });
+        observedStatuses.push(dependent.status);
+      }
       return undefined;
     });
     try {
       const res = await request(await createApp()).patch(`/api/issues/${blocker.id}`).send({ status: "done" });
       expect(res.status).toBe(200);
       await vi.waitFor(() => expect(observedStatuses).toHaveLength(1));
-      // A queued recovery wake behind stale blocked is the reported defect.
-      expect(observedStatuses[0]).not.toBe("blocked");
-      expect(dependent.status).not.toBe("blocked");
+      // Closed/backlog states are not a restored execution path either.
+      expect(blocker.status).toBe("in_progress");
+      expect(["todo", "in_progress"]).toContain(observedStatuses[0]);
+      expect(["todo", "in_progress"]).toContain(dependent.status);
     } finally {
       mockWakeup.mockImplementation(async () => undefined);
     }
