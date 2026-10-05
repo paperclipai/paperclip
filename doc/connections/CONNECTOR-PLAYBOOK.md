@@ -212,7 +212,7 @@ The shortest valid implementation usually changes these files:
 
 ```text
 scripts/ingest-app-definitions.mjs                # human-authored definition source
-packages/shared/src/app-definitions/<slug>.json  # generated definition
+packages/shared/src/app-definitions/<slug>.json  # definition with app-owned instruction template
 packages/shared/src/app-definitions.generated.ts # generated registry
 ui/public/brands/apps/<slug>.svg                  # official, sanitized mark
 ui/public/brands/apps/manifest.json               # runtime branding paths
@@ -762,7 +762,13 @@ definitions and visible manifest entries to match exactly.
 
 ### Phase 5: Author the definition at the durable source
 
-The checked-in provider JSON files are generated. Do not edit one and stop.
+Transport/auth fields in the checked-in provider JSON files are generated. Do
+not edit those fields and stop. Optional `agentInstructions: { id, version, text }`
+templates are authored directly in each app's JSON definition, alongside its
+supporting `docsUrl`. Ingestion validates and preserves that field; edit or
+remove it there, and increment its version when changing the default. There is
+no central instruction-template registry. See
+[Connection instructions](./CONNECTION-INSTRUCTIONS.md) for the runtime contract.
 
 1. Add or update the provider in `scripts/ingest-app-definitions.mjs`.
 2. Update `packages/shared/src/self-serve-mcp-research.json` when it belongs to

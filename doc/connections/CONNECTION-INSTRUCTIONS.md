@@ -8,11 +8,14 @@ connections use exactly the same settings, authorization, and delivery path.
 ## Catalog and saved settings
 
 A connector can declare `agentInstructions: { id, version, text }` in its
-`AppDefinition`. Author reviewed defaults with supporting provider documentation
-in `doc/connections/agent-instruction-templates.json`, then run
-`node scripts/ingest-app-definitions.mjs --definitions-only`. Template text is
-limited to 2,000 characters. Remote MCP initialization prose is never adopted
-as trusted instructions automatically.
+`AppDefinition`. Author reviewed defaults directly in that app's
+`packages/shared/src/app-definitions/<slug>.json`, alongside its configuration
+and supporting provider `docsUrl`. This field is the source of truth; there is
+no separate template registry. Catalog ingestion validates and preserves it,
+including edits or removal, when regenerating the other definition fields. Run
+`node scripts/ingest-app-definitions.mjs --definitions-only` to verify. Template
+text is limited to 2,000 characters. Remote MCP initialization prose is never
+adopted as trusted instructions automatically.
 
 Every `ToolConnection` has nullable `agentInstructions`:
 

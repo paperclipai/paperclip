@@ -1759,19 +1759,19 @@ for (const app of apps) {
   }
 }
 
-// Optional connection capability: providers opt in through reviewed defaults.
-const instructionTemplates = JSON.parse(fs.readFileSync(
-  path.join(root, "doc/connections/agent-instruction-templates.json"), "utf8",
-)).templates;
-const instructionApps = new Set();
-for (const template of instructionTemplates) {
-  const app = apps.find((entry) => entry.slug === template.app);
-  if (!app || instructionApps.has(template.app) || !template.id || !Number.isInteger(template.version)
-    || template.version < 1 || !template.text?.trim() || template.text.length > 2000 || !template.evidence?.length) {
-    throw new Error(`${template.app}: invalid or duplicate agent instruction template`);
+// Reviewed instruction templates are authored in each app's definition. Keep
+// that optional capability intact when regenerating its transport/auth fields.
+for (const app of apps) {
+  const definitionPath = path.join(out, `${app.slug}.json`);
+  if (!fs.existsSync(definitionPath)) continue;
+  const { agentInstructions: template } = JSON.parse(fs.readFileSync(definitionPath, "utf8"));
+  if (template === undefined) continue;
+  if (!template || typeof template.id !== "string" || !template.id.trim() || template.id.length > 160
+    || !Number.isInteger(template.version) || template.version < 1
+    || typeof template.text !== "string" || !template.text.trim() || template.text.length > 2000) {
+    throw new Error(`${app.slug}: invalid agent instruction template`);
   }
-  instructionApps.add(template.app);
-  app.agentInstructions = { id: template.id, version: template.version, text: template.text.trim() };
+  app.agentInstructions = template;
 }
 
 const validateApp = (app) => {
