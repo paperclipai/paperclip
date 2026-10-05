@@ -2,13 +2,13 @@ export const listProjectsInputSchema = {
   type: "object",
   properties: {
     limit: { type: "integer", minimum: 1, maximum: 50, description: "Page size (default 50)." },
-    cursor: { type: "string", pattern: "^(0|[1-9][0-9]{0,14})$", description: "The nextCursor returned by the previous page." },
+    cursor: { type: "string", pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", description: "The nextCursor returned by the previous page." },
   },
   required: [],
   additionalProperties: false,
 } as const;
 
-export const listProjectsDescription = "List company project summaries (IDs, names, status, and up to 1,000 characters of description). Returns up to 50 projects and nextCursor; continue with cursor until it is null, even if a page is empty after permission filtering. Read a project's API resource for full details.";
+export const listProjectsDescription = "List company project summaries (IDs, names, status, and up to 1,000 characters of description). Returns up to 50 projects and nextCursor; continue with cursor until it is null. Read a project's API resource for full details.";
 
 /** Canonical project discovery definition. */
 export const listProjectsAction = {

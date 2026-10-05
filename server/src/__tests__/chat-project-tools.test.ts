@@ -1,3 +1,4 @@
+import { projectService } from "../services/projects.js";
 import { callProjectTool } from "../services/project-tools.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { randomUUID } from "node:crypto";
@@ -19,7 +20,7 @@ const support = await getEmbeddedPostgresTestSupport();
   afterAll(async () => { await server?.close(); if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET; else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret; });
   const call = (fixture: Awaited<ReturnType<typeof server.fixture>>, tool: string, args: Record<string, unknown>) => fixture.authority.execute({ tool, arguments: args, callId: randomUUID() });
 
-  it("bounds project reads and authorization checks while continuing past denied projects", async () => {
+  it("pages only visible projects and prefilters low-trust agent and run scopes", async () => {
     const f = await server.fixture({ disableWakeOnDemand: true });
     const ids = Array.from({ length: 53 }, (_, i) => `abcdefab-0000-4000-8000-${String(i).padStart(12, "0")}`);
     await server.db.insert(projects).values(ids.map((id, i) => ({
@@ -39,12 +40,33 @@ const support = await getEmbeddedPostgresTestSupport();
     // A permitted project beyond the first database batch must remain discoverable.
     const policy = { trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: { mode: "low_trust_review", companyId: f.companyId, projectIds: ids.slice(-2) } } };
     await server.db.update(agents).set({ permissions: policy }).where(eq(agents.id, f.agentId));
-    const restricted = await callProjectTool({ ...toolInput, arguments: {} });
-    expect(restricted.projects).toEqual([]);
-    expect(restricted.nextCursor).toBe("50");
-    const restrictedLast = await callProjectTool({ ...toolInput, arguments: { cursor: restricted.nextCursor } });
-    expect(restrictedLast.projects.map((p: { id: string }) => p.id)).toEqual(ids.slice(-2));
+    expect((await projectService(server.db).listSummaries(f.companyId, {
+      limit: 51, includeArchived: false, candidateIds: ids.slice(-2),
+    })).map(p => p.id)).toEqual(ids.slice(-2));
+    const restricted = await callProjectTool({ ...toolInput, arguments: { limit: 1 } });
+    expect(restricted.projects.map((p: { id: string }) => p.id)).toEqual([ids[51]]);
+    expect(restricted.nextCursor).toBe(ids[51]);
+    const restrictedLast = await callProjectTool({ ...toolInput, arguments: { limit: 1, cursor: restricted.nextCursor } });
+    expect(restrictedLast.projects.map((p: { id: string }) => p.id)).toEqual([ids[52]]);
     expect(restrictedLast.nextCursor).toBeNull();
+    // A run-only boundary also restricts the database candidates.
+    await server.db.update(agents).set({ permissions: {} }).where(eq(agents.id, f.agentId));
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    await server.db.update(heartbeatRuns).set({ contextSnapshot: { ...run.contextSnapshot, executionPolicy: policy } }).where(eq(heartbeatRuns.id, f.runId));
+    const runRestricted = await callProjectTool({ ...toolInput, arguments: {} });
+    expect(runRestricted.projects.map((p: { id: string }) => p.id)).toEqual(ids.slice(-2));
+    expect(runRestricted.nextCursor).toBeNull();
+    // Adding denied projects must not change either the visible page or cursor.
+    await server.db.insert(projects).values({ companyId: f.companyId, name: "Hidden" });
+    expect(await callProjectTool({ ...toolInput, arguments: {} })).toEqual(runRestricted);
+    // Project policy may contribute a root scope, so candidate narrowing must
+    // not suppress a project that the full authorization decision permits.
+    await server.db.update(projects).set({ executionWorkspacePolicy: {
+      authorizationPolicy: { trustBoundary: { mode: "low_trust_review", companyId: f.companyId, rootIssueId: f.issueId } },
+    } }).where(eq(projects.id, f.projectId));
+    const withProjectScope = await callProjectTool({ ...toolInput, arguments: {} });
+    expect(withProjectScope.projects.map((p: { id: string }) => p.id).sort()).toEqual([...ids.slice(-2), f.projectId].sort());
+    expect(withProjectScope.nextCursor).toBeNull();
   });
 
   it("allows a conversation reply to enter review without manufacturing a review interaction", async () => {
