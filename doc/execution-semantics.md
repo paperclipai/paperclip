@@ -452,6 +452,15 @@ Workspace incoherence feeds into the same non-terminal liveness and stranded ass
 
 For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`. If the run switched to a publishing/PR branch without updating the execution workspace record, finalization may auto-restore the recorded branch only when the worktree is clean, still registered, and the recorded branch points at the current `HEAD`; the repair is recorded as a workspace operation before the successful finalize row. If that safe repair cannot be proven, finalization records a failed workspace finalize and the run fails with bounded evidence for the expected and actual branch. A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when the finalizer performs this clean same-commit restoration.
 
+Sandbox Git restore uses the host branch and commit captured before staging.
+If that identity is unchanged, a rebased or amended sandbox history with shared
+ancestry replaces the starting tip instead of being merged with it. The ref
+update checks the expected old commit; a concurrent change retries through the
+normal history integration path. The directory merge still preserves host-only
+file changes under its existing rules. A changed host branch requires recovery.
+Unrelated sandbox history keeps the existing history-preserving graft only when
+the recorded host has not advanced; it must not replace concurrent host work.
+
 ### Workspace scan failures before provider startup
 
 Repository discovery distinguishes an ordinary folder from a failed Git read.

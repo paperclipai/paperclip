@@ -852,6 +852,8 @@ export async function createUnrelatedHistoryGraftCommit(input: {
 export async function integrateImportedGitHead(input: {
   localDir: string;
   importedHead: string;
+  /** The host Git identity captured before staging this run. */
+  baseline?: Pick<GitWorkspaceSnapshot, "headCommit" | "branchName">;
 }): Promise<void> {
   const isConcurrentRefUpdateError = (error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -867,6 +869,9 @@ export async function integrateImportedGitHead(input: {
       })).stdout.trim() || null,
     };
 
+    if (input.baseline && snapshot.branchName !== input.baseline.branchName) {
+      throw new Error("Workspace branch changed while remote work was running.");
+    }
     const currentHead = snapshot.headCommit;
     if (!currentHead || currentHead === input.importedHead) return;
 
@@ -885,11 +890,12 @@ export async function integrateImportedGitHead(input: {
     });
     const mergeBaseHead = mergeBase?.stdout.trim() ?? "";
 
-    if (mergeBaseHead === input.importedHead) {
-      return;
-    }
-
-    if (mergeBaseHead === currentHead) {
+    // A rebase/amend rewrites the sandbox tip without a concurrent host edit.
+    // Adopt that history when the host still matches the run's starting tip;
+    // merging the old and rewritten commits can reintroduce resolved conflicts.
+    // Keep the expected-old-value check: if the host advances during this write,
+    // retry against its new tip and use the normal concurrent-history path.
+    if (mergeBaseHead === currentHead || (mergeBaseHead && currentHead === input.baseline?.headCommit)) {
       try {
         await runLocalGit(input.localDir, ["update-ref", headRef, input.importedHead, currentHead], {
           timeout: 10_000,
@@ -902,7 +908,14 @@ export async function integrateImportedGitHead(input: {
       }
     }
 
+    if (mergeBaseHead === input.importedHead) {
+      return;
+    }
+
     if (noCommonAncestor) {
+      if (input.baseline && currentHead !== input.baseline.headCommit) {
+        throw new Error("Cannot restore unrelated remote history after the host advanced.");
+      }
       // No common ancestor — merging is impossible and failing here would
       // discard the imported work. Graft it onto the current head instead;
       // see createUnrelatedHistoryGraftCommit.

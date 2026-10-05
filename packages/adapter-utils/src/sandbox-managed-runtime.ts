@@ -1937,6 +1937,7 @@ export async function prepareSandboxManagedRuntime(input: {
                             await withWorkspaceRestoreStep("git_integration", () => integrateImportedGitHead({
                               localDir: input.workspaceLocalDir,
                               importedHead: gitHeadToIntegrate,
+                              baseline: gitSnapshot ?? undefined,
                             }));
                           }
                         : undefined,

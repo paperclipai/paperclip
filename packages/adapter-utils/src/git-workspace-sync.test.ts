@@ -653,7 +653,9 @@ describe("git workspace sync", () => {
     const savedEnv = new Map(identityEnvKeys.map((key) => [key, process.env[key]]));
     for (const key of identityEnvKeys) delete process.env[key];
     try {
-      await integrateImportedGitHead({ localDir: repo, importedHead });
+      await integrateImportedGitHead({
+        localDir: repo, importedHead, baseline: { headCommit: baseHead, branchName: "main" },
+      });
     } finally {
       for (const [key, value] of savedEnv) {
         if (value === undefined) delete process.env[key];
@@ -672,7 +674,108 @@ describe("git workspace sync", () => {
     expect(mergedTree).toContain("imported.txt");
   });
 
-  it("grafts an imported head onto the current head when histories share no ancestor", async () => {
+  describe("sandbox history rewrites", () => {
+    async function rewrittenHistory() {
+      const repo = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-rewrite-"));
+      cleanupDirs.push(repo);
+      await git(repo, ["init"]);
+      await git(repo, ["checkout", "-b", "host"]);
+      await git(repo, ["config", "user.name", "Paperclip Test"]);
+      await git(repo, ["config", "user.email", "test@paperclip.dev"]);
+      await writeFile(path.join(repo, "tracked.txt"), "base\n");
+      await git(repo, ["add", "."]);
+      await git(repo, ["commit", "-m", "base"]);
+      const ancestor = await git(repo, ["rev-parse", "HEAD"]);
+      await writeFile(path.join(repo, "tracked.txt"), "original change\n");
+      await git(repo, ["commit", "-am", "original change"]);
+      const baseline = { headCommit: await git(repo, ["rev-parse", "HEAD"]), branchName: "host" };
+      await git(repo, ["checkout", "-b", "sandbox"]);
+      await writeFile(path.join(repo, "tracked.txt"), "rewritten change\n");
+      await git(repo, ["commit", "-am", "rewritten change", "--amend"]);
+      const importedHead = await git(repo, ["rev-parse", "HEAD"]);
+      await git(repo, ["checkout", "host"]);
+      return { repo, ancestor, baseline, importedHead };
+    }
+
+    it("accepts rewritten history when the host still matches the starting snapshot", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      // The old integration path attempts this conflicting merge even though
+      // the host has not changed since the run started.
+      await expect(git(repo, ["merge-tree", "--write-tree", baseline.headCommit, importedHead]))
+        .rejects.toMatchObject({ code: 1 });
+      await writeFile(path.join(repo, "local.txt"), "local work\n");
+      await git(repo, ["add", "local.txt"]);
+      const indexBefore = await git(repo, ["write-tree"]);
+
+      await integrateImportedGitHead({ localDir: repo, importedHead, baseline });
+
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(importedHead);
+      expect(await git(repo, ["symbolic-ref", "--short", "HEAD"])).toBe("host");
+      expect(await git(repo, ["write-tree"])).toBe(indexBefore);
+      expect(await readFile(path.join(repo, "local.txt"), "utf8")).toBe("local work\n");
+    });
+
+    it("restores an intentional reset to an ancestor when the host has not changed", async () => {
+      const { repo, ancestor, baseline } = await rewrittenHistory();
+      await integrateImportedGitHead({ localDir: repo, importedHead: ancestor, baseline });
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(ancestor);
+    });
+
+    it("does not replace host commits made after the starting snapshot", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      await writeFile(path.join(repo, "local.txt"), "concurrent work\n");
+      await git(repo, ["add", "local.txt"]);
+      await git(repo, ["commit", "-m", "host advanced"]);
+      const hostHead = await git(repo, ["rev-parse", "HEAD"]);
+
+      await expect(integrateImportedGitHead({ localDir: repo, importedHead, baseline }))
+        .rejects.toThrow("Failed to merge concurrent remote git histories");
+
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(hostHead);
+      expect(await readFile(path.join(repo, "local.txt"), "utf8")).toBe("concurrent work\n");
+    });
+
+    it("does not replace a different host branch at the same starting commit", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      const tree = await git(repo, ["rev-parse", `${importedHead}^{tree}`]);
+      const fastForwardHead = await git(repo, ["commit-tree", tree, "-p", baseline.headCommit, "-m", "sandbox advance"]);
+      await git(repo, ["checkout", "-b", "other"]);
+      await expect(integrateImportedGitHead({ localDir: repo, importedHead: fastForwardHead, baseline }))
+        .rejects.toThrow("branch changed");
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(baseline.headCommit);
+      expect(await git(repo, ["rev-parse", "host"])).toBe(baseline.headCommit);
+    });
+
+    it("keeps the conservative merge behavior without a starting snapshot", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      await expect(integrateImportedGitHead({ localDir: repo, importedHead }))
+        .rejects.toThrow("Failed to merge concurrent remote git histories");
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(baseline.headCommit);
+    });
+
+    it("refuses unrelated rewritten history after a concurrent host commit", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      const tree = await git(repo, ["rev-parse", `${importedHead}^{tree}`]);
+      const unrelated = await git(repo, ["commit-tree", tree, "-m", "shallow rewrite"]);
+      await writeFile(path.join(repo, "local.txt"), "concurrent work\n");
+      await git(repo, ["add", "local.txt"]);
+      await git(repo, ["commit", "-m", "host advanced"]);
+      const hostHead = await git(repo, ["rev-parse", "HEAD"]);
+      await expect(integrateImportedGitHead({ localDir: repo, importedHead: unrelated, baseline }))
+        .rejects.toThrow("Cannot restore unrelated remote history after the host advanced");
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(hostHead);
+    });
+
+    it("accepts a rewrite of an unchanged detached host without attaching a branch", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      await git(repo, ["checkout", "--detach"]);
+      await integrateImportedGitHead({ localDir: repo, importedHead, baseline: { ...baseline, branchName: null } });
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(importedHead);
+      await expect(git(repo, ["symbolic-ref", "--quiet", "HEAD"])).rejects.toMatchObject({ code: 1 });
+    });
+  });
+
+  it.each([false, true])("grafts an unrelated imported head with an unchanged host (baseline supplied: %s)", async (withBaseline) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-graft-"));
     cleanupDirs.push(rootDir);
     const setupIdentity = ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev"];
@@ -695,7 +798,10 @@ describe("git workspace sync", () => {
     const importedTree = await git(repo, ["rev-parse", `${baseHead}^{tree}`]);
     const importedHead = await git(repo, [...setupIdentity, "commit-tree", importedTree, "-m", "sandbox rewrite"]);
 
-    await integrateImportedGitHead({ localDir: repo, importedHead });
+    await integrateImportedGitHead({
+      localDir: repo, importedHead,
+      baseline: withBaseline ? { headCommit: currentHead, branchName: "main" } : undefined,
+    });
 
     const parents = (await git(repo, ["rev-list", "--parents", "-1", "HEAD"])).split(" ");
     expect(parents.slice(1)).toEqual([currentHead]);
@@ -707,7 +813,7 @@ describe("git workspace sync", () => {
     expect(body).toContain("shares no ancestor");
   });
 
-  it("does not graft when merge-base fails for a reason other than missing ancestry", async () => {
+  it.each([false, true])("does not graft on a merge-base error other than missing ancestry (baseline supplied: %s)", async (withBaseline) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-no-graft-"));
     cleanupDirs.push(rootDir);
     const setupIdentity = ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev"];
@@ -727,7 +833,10 @@ describe("git workspace sync", () => {
     const expectedExit = await runLocalGit(repo, ["merge-tree", "--write-tree", currentHead, missingHead])
       .catch((error: { code: number }) => error.code);
     const error = await withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("git_integration", () =>
-      integrateImportedGitHead({ localDir: repo, importedHead: missingHead }))).catch((error: unknown) => error);
+      integrateImportedGitHead({
+        localDir: repo, importedHead: missingHead,
+        baseline: withBaseline ? { headCommit: currentHead, branchName: "main" } : undefined,
+      }))).catch((error: unknown) => error);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toMatch(/Failed to merge concurrent remote git histories/);
     expect(error).not.toHaveProperty("cause");
