@@ -35,7 +35,7 @@ function entryIds(text, label, errors) {
 export function checkFeatureMap(repoRoot = defaultRoot) {
   const errors = [];
   const mapRoot = resolve(repoRoot, "feature-map");
-  const read = (path) => readFileSync(resolve(repoRoot, path), "utf8");
+  const read = (path) => readFileSync(resolve(repoRoot, path), "utf8").replace(/\r\n?/g, "\n");
   const normalize = (path) => relative(repoRoot, path).split(sep).join("/");
   const isFile = (path) => existsSync(path) && statSync(path).isFile();
   const localFile = (base, path) => {

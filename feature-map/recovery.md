@@ -35,8 +35,10 @@ use the currently offered action. Follow any linked repair task and return owner
 ### `run-detail`
 
 Open the agent's run (`/agents/:agentId/runs/:runId`) from activity or the task's
-run link. Inspect failure/workspace recovery there, then return to the source
-task. This is a separate host for shared recovery controls.
+run link. The run page hosts workspace recovery controls only for a failed run
+with error code `workspace_validation_failed` and a linked source task that still
+has a live `workspace_validation` recovery action. Use the source task for other
+stopped-run recovery checks.
 
 ### `operator-retry`
 
@@ -91,11 +93,15 @@ history remains. A fixture pass does not qualify every live harness/provider.
 Automated: [run workspace recovery](../ui/src/components/RunWorkspaceRecoverySurface.test.tsx)
 tests this host; it is component coverage, not an end-to-end repair.
 
-Manual: open the exact failed run and compare its recovery diagnosis to the
-source task. Use an eligible action from the run surface, return to the task,
+Manual: prepare a failed run with error code `workspace_validation_failed`, a
+linked source task, and a live `workspace_validation` recovery action on that
+task. Open that exact run and compare its recovery diagnosis to the source task.
+Use an eligible action from the run surface, return to the task,
 and verify the same action state, persisted outcome, and restored execution.
-Repeat with an actor who lacks authority. Full run-detail navigation remains a
-manual gap.
+Repeat with an actor who lacks authority. Verify that the run-page controls are
+absent for other error codes or after the source action retires; continue other
+recovery checks on the source task. Full run-detail navigation remains a manual
+gap.
 
 ### `operator-retry`
 

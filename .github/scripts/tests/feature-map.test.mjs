@@ -64,6 +64,14 @@ test("accepts a documented partial area and excludes tests and stories from page
   assert.deepEqual(f.check(), []);
 });
 
+test("accepts CRLF line endings in the index and recipes", (t) => {
+  const f = fixture(t);
+  for (const path of ["feature-map/README.md", "feature-map/example.md"]) {
+    f.write(path, readFileSync(join(f.root, path), "utf8").replace(/\n/g, "\r\n"));
+  }
+  assert.deepEqual(f.check(), []);
+});
+
 test("new nested pages cannot hide under a previously covered directory", (t) => {
   const f = fixture(t);
   f.write("ui/src/pages/apps/new/NewPanel.tsx", "");
