@@ -24,8 +24,11 @@ export async function replaceIssueBlockersWithRestorationInTransaction(
   await acquireIssueLifecycleFenceInTransaction(tx, companyId);
   const before = await tx.select({ blockerIssueId: issueRelations.issueId }).from(issueRelations)
     .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.relatedIssueId, dependentIssueId), eq(issueRelations.type, "blocks")));
-  const issue = await issueService(db).update(dependentIssueId,
+  const receipt = await issueService(db).update(dependentIssueId,
     { companyGuard: companyId, blockedByIssueIds: blockerIssueIds }, tx, activityPublications, actions, { lifecycleFence: true });
+  // This entry returns a row, not a composed canonical change receipt. The
+  // replacement receipt alone omits the later restoration transition.
+  const issue = receipt ? (({ changes: _changes, ...row }) => row)(receipt) : receipt;
   const removedBlockerIssueIds = [...new Set(before.map(row => row.blockerIssueId))]
     .filter(id => !blockerIssueIds.includes(id)).sort();
   if (!issue || removedBlockerIssueIds.length === 0) return { issue, intentId: null };
@@ -155,7 +158,7 @@ async function restoreReadyIssueInTransaction(
     companyId, dependentIssueId, blockerIssueIds, blockedTransitionAt: dependent.blockedTransitionAt,
   })) return null;
   const restored = await issueService(db).update(dependentIssueId,
-    { status: "todo", companyGuard: companyId }, tx, activityPublications, actions);
+    { status: "todo", companyGuard: companyId }, tx, activityPublications, actions, { lifecycleFence: true });
   if (!restored || restored.status !== "todo") throw new Error("dependency_restore_not_persisted");
   const [intent] = await tx.insert(agentWakeupRequests).values({
     companyId, agentId: dependent.assigneeAgentId, source: "automation", triggerDetail: "system",

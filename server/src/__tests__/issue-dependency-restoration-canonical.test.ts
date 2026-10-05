@@ -87,6 +87,14 @@ function fixture(relationReplacement = false) {
           expect(new PgDialect().sqlToQuery(predicate).params).toEqual(["company-1", "dependent-1", "blocks"]);
           return relationIds.map(id => ({ blockerIssueId: id }));
         });
+      if (name === "project_workspaces") return query([{ id: "workspace-1", companyId: "company-1", projectId: "project-1" }], predicate => {
+        expect(new PgDialect().sqlToQuery(predicate).params).toEqual(["workspace-1"]);
+        return [{ id: "workspace-1", companyId: "company-1", projectId: "project-1" }];
+      });
+      if (name === "execution_workspaces" && "companyId" in projection) return query([], predicate => {
+        expect(new PgDialect().sqlToQuery(predicate).params).toEqual(["execution-1"]);
+        return [{ id: "execution-1", companyId: "company-1", projectId: "project-1" }];
+      });
       if (emptyReads.has(name)) return query([]);
       throw new Error(`Unmodeled canonical read: ${name}`);
     } }),
@@ -127,13 +135,41 @@ function fixture(relationReplacement = false) {
   return { tx, root, before, blockers, ancestors, missingIssueIds, pauseHolds, interactions, approvals, writes, events, postCommit,
     assess: () => issueTreeControlService(tx as any).getPauseHoldAssessment("company-1", "dependent-1"),
     setParent: (parentId: string | null) => { row = { ...row, parentId }; },
+    setRow: (patch: Record<string, unknown>) => { row = { ...row, ...patch }; },
     getRow: () => structuredClone(row),
     run: () => restoreDependencyReadyIssueInTransaction(tx as any, {
       companyId: "company-1", dependentIssueId: "dependent-1", resolvedBlockerIssueId: "blocker-1",
     }, postCommit as any) };
 }
 
+describe("restoration preparation reader regressions (CRE-1302, recording only)", () => {
+  it.each([
+    ["blocker-done", "project"], ["relation-removal", "project"],
+    ["blocker-done", "execution"], ["relation-removal", "execution"],
+  ])("keeps existing workspace validation on supplied tx for %s/%s", async (cause, workspace) => {
+    const f = fixture(cause === "relation-removal");
+    f.setRow({ projectId: "project-1", ...(workspace === "project" ? { projectWorkspaceId: "workspace-1" } : { executionWorkspaceId: "execution-1" }) });
+    if (cause === "blocker-done") await expect(f.run()).resolves.toBe("intent-1");
+    else await expect(replaceIssueBlockersWithRestorationInTransaction(f.tx as any,
+      { companyId: "company-1", dependentIssueId: "dependent-1", blockerIssueIds: [] }, f.postCommit as any))
+      .resolves.toMatchObject({ issue: { status: "todo" }, intentId: "intent-1" });
+    expect(f.events).toContain(`read:${workspace === "project" ? "project_workspaces" : "execution_workspaces"}`);
+    expect(f.getRow().status).toBe("todo");
+    expect(f.writes.filter(w => w.table === "agent_wakeup_requests")).toHaveLength(1);
+    expect(f.root.transaction).not.toHaveBeenCalled(); expect(f.tx.transaction).not.toHaveBeenCalled();
+  });
+});
+
 describe("dark relation removal writer (actual canonical recording, not SQL/rollback)", () => {
+  it.each(["restored", "vetoed", "unchanged"])("returns an explicit row-only result, never a partial receipt, for %s", async outcome => {
+    const f = fixture(true);
+    if (outcome === "vetoed") f.interactions.push({ status: "pending" });
+    const result = await replaceIssueBlockersWithRestorationInTransaction(f.tx as any,
+      { companyId: "company-1", dependentIssueId: "dependent-1", blockerIssueIds: outcome === "unchanged" ? ["blocker-1", "blocker-2"] : [] }, f.postCommit as any);
+    expect(result.issue).toMatchObject({ id: "dependent-1", status: outcome === "restored" ? "todo" : "blocked" });
+    expect(result.issue).not.toHaveProperty("changes");
+    expect(result.intentId).toBe(outcome === "restored" ? "intent-1" : null);
+  });
   it.each(["pending-interaction", "pending-approval", "revision-requested", "pause", "unresolved-retained", "unchanged"])
     ("does not restore under %s while preserving requested relation update", async gate => {
       const f = fixture(true);

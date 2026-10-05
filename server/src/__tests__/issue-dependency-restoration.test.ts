@@ -183,7 +183,7 @@ describe("dark dependency restoration coordinator (mock-only)", () => {
     const f = fixture();
     expect(await f.run()).toBe("intent-1");
     expect(service.update).toHaveBeenCalledWith("dependent-1", {
-      status: "todo", companyGuard: "company-1" }, f.tx, f.owner.activityPublications, f.owner.actions);
+      status: "todo", companyGuard: "company-1" }, f.tx, f.owner.activityPublications, f.owner.actions, { lifecycleFence: true });
     expect(service.update.mock.calls[0][3]).toBe(f.owner.activityPublications);
     expect(service.update.mock.calls[0][4]).toBe(f.owner.actions);
     expect(f.events.indexOf("canonical-update")).toBeLessThan(f.events.indexOf("intent"));
