@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { issueService } from "./issues.js";
+import { issueTreeControlService } from "./issue-tree-control.js";
 import { buildIssueBlockersResolvedWakeStateKey, findExistingIssueBlockersResolvedWakeForReadyState } from "./issue-dependency-wakeups.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -35,9 +36,13 @@ export async function restoreDependencyReadyIssueInTransaction(
   if (!dependent || dependent.companyId !== companyId || dependent.id !== dependentIssueId
     || dependent.status !== "blocked" || !dependent.assigneeAgentId) return null;
   // Conservative dark boundary: unmodeled holds and leases are not authority
-  // to resume. Ancestor holds and cross-writer locking still need integration.
+  // to resume. Cross-writer locking still needs integration.
   if (dependent.executionRunId || dependent.checkoutRunId || dependent.conversationAgentId
     || dependent.unblockDescriptor || dependent.executionState || dependent.executionPolicy) return null;
+  // Reuse the authoritative tree snapshot, on the supplied transaction rather
+  // than the root DB. This veto is NOT a concurrent hold-insertion/parent-edit
+  // fence: the common tree/graph writer discipline is still a wiring prerequisite.
+  if (await issueTreeControlService(tx as unknown as Db).getActivePauseHoldGate(companyId, dependentIssueId)) return null;
   const interactions = await tx.select({ status: issueThreadInteractions.status }).from(issueThreadInteractions)
     .where(and(eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, dependentIssueId)));
   if (interactions.some((row) => row.status === "pending")) return null;

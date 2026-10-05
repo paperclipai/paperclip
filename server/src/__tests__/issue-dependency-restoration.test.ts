@@ -21,7 +21,7 @@ function fixture() {
   const events: string[] = [];
   const intents: Record<string, unknown>[] = [];
   function query(rows: unknown[], resolveTarget?: (predicate: SQL) => unknown[]) {
-    const q = { where: (predicate: SQL) => { if (resolveTarget) rows = resolveTarget(predicate); return q; }, innerJoin: () => q, limit: () => q,
+    const q = { where: (predicate: SQL) => { if (resolveTarget) rows = resolveTarget(predicate); return q; }, innerJoin: () => q, limit: () => q, orderBy: () => q,
       for: (lock: string) => { events.push(`lock:${lock}`); return q; },
       then: (resolve: any, reject: any) => Promise.resolve(rows).then(resolve, reject) };
     return q;
@@ -37,6 +37,7 @@ function fixture() {
       });
       if (name === "issue_thread_interactions") return query(interactions);
       if (name === "issue_approvals") return query(approvals);
+      if (name === "issue_tree_holds") return query([]);
       if (name === "agent_wakeup_requests") return query(wakes);
       throw new Error(`Unknown read ${name}`);
     } }),

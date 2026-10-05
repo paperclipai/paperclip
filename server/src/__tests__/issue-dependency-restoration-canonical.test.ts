@@ -21,6 +21,8 @@ function fixture() {
     unblockDescriptor: null, executionState: null, executionPolicy: null };
   const before = structuredClone(row);
   const blockers = ["blocker-1", "blocker-2"].map((id) => ({ id, companyId: "company-1", status: "done" }));
+  const ancestors: Record<string, any>[] = [];
+  const pauseHolds: Record<string, any>[] = [];
   const writes: Array<{ table: string; values: Record<string, unknown> }> = [];
   const events: string[] = [];
   const root = { transaction: vi.fn(() => { throw new Error("root-transaction-not-owned"); }),
@@ -43,8 +45,12 @@ function fixture() {
         if (params.includes(row.id)) return [{ ...row }];
         const blocker = blockers.find((b) => params.includes(b.id));
         if (blocker) return [{ ...blocker }];
+        const ancestor = ancestors.find((a) => params.includes(a.id));
+        if (ancestor) return [{ ...ancestor }];
         throw new Error("Unmodeled canonical issue read target");
       });
+      // Synthetic projection only: the recorder does not execute SQL filters.
+      if (name === "issue_tree_holds") return query(pauseHolds);
       if (name === "issue_relations" && "assigneeAgentId" in projection) return query([{ ...row }]);
       if (name === "issue_relations" && "blockerStatus" in projection) return query(blockers.map((b) => ({
         issueId: row.id, blockerIssueId: b.id, blockerStatus: b.status, blockerExecutionWorkspaceId: null,
@@ -67,13 +73,34 @@ function fixture() {
     } }),
   };
   const postCommit = { db: root, activityPublications: [], actions: [] };
-  return { tx, root, before, blockers, writes, events, postCommit, getRow: () => structuredClone(row),
+  return { tx, root, before, blockers, ancestors, pauseHolds, writes, events, postCommit,
+    setParent: (parentId: string | null) => { row = { ...row, parentId }; },
+    getRow: () => structuredClone(row),
     run: () => restoreDependencyReadyIssueInTransaction(tx as any, {
       companyId: "company-1", dependentIssueId: "dependent-1", resolvedBlockerIssueId: "blocker-1",
     }, postCommit as any) };
 }
 
 describe("dark coordinator with actual canonical update (mock recording, not atomicity)", () => {
+  it.each(["dependent-1", "parent-1", "grandparent-1"])("actual tree gate vetoes active pause at %s before writes", async (rootIssueId) => {
+    const f = fixture(); f.setParent("parent-1");
+    f.ancestors.push({ id: "parent-1", parentId: "grandparent-1" }, { id: "grandparent-1", parentId: null });
+    f.pauseHolds.push({ id: "pause-1", rootIssueId, reason: "human pause", releasePolicy: { strategy: "manual" } });
+    const before = f.getRow(); const holdsBefore = structuredClone(f.pauseHolds);
+    expect(await f.run()).toBeNull();
+    expect(f.getRow()).toEqual(before); expect(f.writes).toEqual([]);
+    expect(f.pauseHolds).toEqual(holdsBefore);
+    expect(f.events).toContain("read:issue_tree_holds");
+    expect(f.root.transaction).not.toHaveBeenCalled(); expect(f.tx.transaction).not.toHaveBeenCalled();
+  });
+  it("does not confuse an unrelated active pause with a dependent ancestor", async () => {
+    const f = fixture(); f.setParent("parent-1");
+    f.ancestors.push({ id: "parent-1", parentId: null });
+    f.pauseHolds.push({ id: "unrelated-pause", rootIssueId: "other-tree", reason: "pause", releasePolicy: null });
+    expect(await f.run()).toBe("intent-1");
+    expect(f.events).toContain("read:issue_tree_holds");
+    expect(f.getRow().status).toBe("todo");
+  });
   it.each(["in_progress", "blocked", "cancelled"])("actual readiness vetoes unresolved second blocker %s before canonical writes", async (status) => {
     const f = fixture(); f.blockers[1].status = status;
     expect(await f.run()).toBeNull();
