@@ -1,8 +1,12 @@
 import path from "node:path";
-import { GIT_ARCHIVE_EXCLUDES } from "./git-workspace-sync.js";
+import {
+  directoryExcludeEntries,
+  WORKSPACE_HEAVY_DIR_EXCLUDES,
+} from "./exclude-patterns.js";
 import {
   type SshRemoteExecutionSpec,
   prepareWorkspaceForSshExecution,
+  removeRemoteDirectory,
   runSshCommand,
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
@@ -20,18 +24,12 @@ import type { RuntimeProgressSink } from "./runtime-progress.js";
 // regardless of its ignore resolution. A `git`-resolved project additionally
 // drops its own resolved ignored paths (see `referencedSourceIgnoreExcludeEntries`
 // and the per-project merge below); an `other` project keeps only this set.
-const REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES = [
-  "node_modules",
-  "vendor",
-  "dist",
-  "build",
-  "out",
-  "coverage",
-  ".next",
-  ".turbo",
-  ".cache",
-  ".git",
-].flatMap((entry) => [entry, `${entry}/*`, `*/${entry}`, `*/${entry}/*`]);
+// A referenced project is staged as a plain read-only tree with no git history,
+// so it drops `.git` on top of the shared workspace list.
+const REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES = mergeExcludes(
+  WORKSPACE_HEAVY_DIR_EXCLUDES,
+  directoryExcludeEntries([".git"]),
+);
 
 export interface RemoteManagedRuntimeAsset {
   key: string;
@@ -124,16 +122,31 @@ export async function prepareRemoteManagedRuntime(input: {
 }): Promise<PreparedRemoteManagedRuntime> {
   const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const syncWorkspace = input.syncWorkspace !== false;
-  const workspaceRemoteDir = syncWorkspace
-    ? path.posix.join(
-        baseWorkspaceRemoteDir,
-        ".paperclip-runtime",
-        "runs",
-        input.runId,
-        "workspace",
-      )
+  // The transported workspace of one run, the directory `collectRunDirectory`
+  // removes once the run's files are back on the host. Null when the workspace
+  // is not transported at all, because then nothing was created to collect.
+  const runRemoteDir = syncWorkspace
+    ? path.posix.join(baseWorkspaceRemoteDir, ".paperclip-runtime", "runs", input.runId)
+    : null;
+  const workspaceRemoteDir = runRemoteDir
+    ? path.posix.join(runRemoteDir, "workspace")
     : baseWorkspaceRemoteDir;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+
+  // Best effort, and deliberately so: the run's files are already restored by
+  // the time this runs, so a box that is unreachable, full or slow must not
+  // turn a finished run into a failed one. It leaves a directory behind for
+  // the next sweep instead.
+  const collectRunDirectory = async () => {
+    if (!runRemoteDir) return;
+    try {
+      await removeRemoteDirectory({ spec: input.spec, remoteDir: runRemoteDir });
+    } catch (error) {
+      console.warn(
+        `[paperclip] Failed to remove the transported workspace of run ${input.runId} at ${runRemoteDir}. ${String(error)}`,
+      );
+    }
+  };
 
   const preparedWorkspace = syncWorkspace
     ? await prepareWorkspaceForSshExecution({
@@ -145,11 +158,14 @@ export async function prepareRemoteManagedRuntime(input: {
         workspaceExclude: input.workspaceExclude,
       })
     : null;
+  // Exactly what the upload skipped, never a second list that guesses at it.
+  // `mergeDirectoryWithBaseline` deletes a local path when the baseline holds
+  // it and the restored tree does not, so a path recorded here but never
+  // uploaded would be deleted from the host for being absent from a box that
+  // was never sent it.
   const baselineSnapshot = preparedWorkspace
     ? await captureDirectorySnapshot(input.workspaceLocalDir, {
-        exclude: preparedWorkspace.gitBacked
-          ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"]
-          : [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
+        exclude: preparedWorkspace.transferExclude,
       })
     : null;
 
@@ -179,6 +195,9 @@ export async function prepareRemoteManagedRuntime(input: {
         onProgress: input.onProgress,
       });
     }
+    // The run never starts, so nothing will call `restoreWorkspace`: collect
+    // the directory here or it stays on the box for good.
+    await collectRunDirectory();
     throw error;
   }
 
@@ -236,22 +255,31 @@ export async function prepareRemoteManagedRuntime(input: {
     assetDirs,
     additionalSourceDirs,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
-      if (preparedWorkspace && baselineSnapshot) {
-        await restoreWorkspaceFromSshExecution({
-          spec: input.spec,
-          localDir: input.workspaceLocalDir,
-          remoteDir: workspaceRemoteDir,
-          baselineSnapshot,
-          restoreGitHistory: preparedWorkspace.gitBacked,
-          onProgress,
-        });
-      }
-      for (const asset of input.assets ?? []) {
-        if (!asset.restore) continue;
-        await asset.restore({
-          assetDir: path.posix.join(runtimeRootDir, asset.key),
-          readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
-        });
+      try {
+        if (preparedWorkspace && baselineSnapshot) {
+          await restoreWorkspaceFromSshExecution({
+            spec: input.spec,
+            localDir: input.workspaceLocalDir,
+            remoteDir: workspaceRemoteDir,
+            baselineSnapshot,
+            restoreGitHistory: preparedWorkspace.gitBacked,
+            onProgress,
+          });
+        }
+        for (const asset of input.assets ?? []) {
+          if (!asset.restore) continue;
+          await asset.restore({
+            assetDir: path.posix.join(runtimeRootDir, asset.key),
+            readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
+          });
+        }
+      } finally {
+        // Last, and whatever happened above. The run's own directory holds its
+        // workspace copy and its staged assets, both of them inside
+        // `runRemoteDir`, so nothing may read from there after this point. A
+        // restore that threw has nothing more to read either, and leaving the
+        // copy would mean a box that accumulates one workspace per failed run.
+        await collectRunDirectory();
       }
     },
   };

@@ -5,11 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const {
   prepareWorkspaceForSshExecution,
+  removeRemoteDirectory,
   restoreWorkspaceFromSshExecution,
   runSshCommand,
   syncDirectoryToSsh,
 } = vi.hoisted(() => ({
-  prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
+  prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false, transferExclude: [".paperclip-runtime"] })),
+  removeRemoteDirectory: vi.fn(async () => undefined),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   runSshCommand: vi.fn(async () => ({
     stdout: Buffer.from('{"token":"remote"}\n').toString("base64"),
@@ -20,6 +22,7 @@ const {
 
 vi.mock("./ssh.js", () => ({
   prepareWorkspaceForSshExecution,
+  removeRemoteDirectory,
   restoreWorkspaceFromSshExecution,
   runSshCommand,
   syncDirectoryToSsh,
@@ -38,6 +41,13 @@ describe("remote managed runtime", () => {
     await mkdir(path.join(root, "node_modules"));
     await writeFile(path.join(root, ".gitignore"), "node_modules/\n");
     await writeFile(path.join(root, "node_modules", "personal.bin"), Buffer.from([0, 255, 1]));
+    // What `prepareWorkspaceForSshExecution` really returns for this mode: an
+    // "all" workspace carries its ignored files, so the baseline must record
+    // them too or the restore would read them as deleted.
+    prepareWorkspaceForSshExecution.mockResolvedValueOnce({
+      gitBacked: false,
+      transferExclude: [".paperclip-runtime", "explicitly-excluded"],
+    });
     const prepared = await prepareRemoteManagedRuntime({
       spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app",
         privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true },
@@ -120,6 +130,111 @@ describe("remote managed runtime", () => {
       { maxBuffer: 1024 * 1024 },
     );
     expect(restoredAuth).toBe('{"token":"remote"}\n');
+    // Nothing was transported, so there is no per-run directory to collect and
+    // the box's own working directory must not be touched.
+    expect(removeRemoteDirectory).not.toHaveBeenCalled();
+  });
+
+  it("removes the run's transported workspace after the restore, and after the assets are read", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-collect-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const assetDir = path.join(rootDir, "asset");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(assetDir, { recursive: true });
+
+    const order: string[] = [];
+    restoreWorkspaceFromSshExecution.mockImplementationOnce(async () => {
+      order.push("workspace");
+      return undefined;
+    });
+    removeRemoteDirectory.mockImplementationOnce(async () => {
+      order.push("collect");
+      return undefined;
+    });
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app",
+        privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true },
+      runId: "run-collected", adapterKey: "test", workspaceLocalDir: workspaceDir,
+      assets: [{
+        key: "seed",
+        localDir: assetDir,
+        restore: async () => {
+          order.push("asset");
+        },
+      }],
+    });
+
+    expect(prepared.workspaceRemoteDir).toBe("/app/.paperclip-runtime/runs/run-collected/workspace");
+    expect(removeRemoteDirectory).not.toHaveBeenCalled();
+
+    await prepared.restoreWorkspace();
+
+    expect(removeRemoteDirectory).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: "/app/.paperclip-runtime/runs/run-collected",
+    }));
+    // The assets live inside the directory being removed, so they are read first.
+    expect(order).toEqual(["workspace", "asset", "collect"]);
+  });
+
+  it("removes the run's transported workspace when an asset fails to stage, and when the restore throws", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-collect-failure-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const assetDir = path.join(rootDir, "asset");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(assetDir, { recursive: true });
+    const spec = { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app",
+      privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true } as const;
+
+    // An asset that never stages: the run cannot start, so nothing will call
+    // `restoreWorkspace` and this is the only chance to collect.
+    syncDirectoryToSsh.mockImplementationOnce(async () => {
+      throw new Error("ssh transfer failed");
+    });
+    await expect(prepareRemoteManagedRuntime({
+      spec, runId: "run-asset-failed", adapterKey: "test", workspaceLocalDir: workspaceDir,
+      assets: [{ key: "seed", localDir: assetDir }],
+    })).rejects.toThrow("ssh transfer failed");
+    expect(removeRemoteDirectory).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: "/app/.paperclip-runtime/runs/run-asset-failed",
+    }));
+
+    // A restore that throws still leaves nothing on the box: a failed run that
+    // kept its copy is how a box accumulates one workspace per failure.
+    removeRemoteDirectory.mockClear();
+    restoreWorkspaceFromSshExecution.mockImplementationOnce(async () => {
+      throw new Error("restore failed");
+    });
+    const prepared = await prepareRemoteManagedRuntime({
+      spec, runId: "run-restore-failed", adapterKey: "test", workspaceLocalDir: workspaceDir,
+    });
+    await expect(prepared.restoreWorkspace()).rejects.toThrow("restore failed");
+    expect(removeRemoteDirectory).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: "/app/.paperclip-runtime/runs/run-restore-failed",
+    }));
+  });
+
+  // The run's files are already on the host by then. A box that is unreachable,
+  // full or slow must not turn a finished run into a failed one.
+  it("finishes the restore when the box cannot remove the run directory", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-collect-unreachable-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    removeRemoteDirectory.mockImplementationOnce(async () => {
+      throw new Error("host unreachable");
+    });
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app",
+        privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true },
+      runId: "run-unreachable", adapterKey: "test", workspaceLocalDir: workspaceDir,
+    });
+
+    await expect(prepared.restoreWorkspace()).resolves.toBeUndefined();
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
   });
 
   it("stages each additional project into its own isolated SSH dir, isolating one failure", async () => {

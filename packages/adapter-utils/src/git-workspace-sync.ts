@@ -391,7 +391,7 @@ export const REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
  * slash on every entry, not room for an oversized ignored-path list to land
  * in memory in the first place.
  */
-const REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER = REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES * 2;
+export const REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER = REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES * 2;
 
 /**
  * Thrown by {@link readReferencedSourceGitIgnoredPaths} when the parsed
@@ -463,6 +463,23 @@ export async function readReferencedSourceGitIgnoredPaths(
     { timeout: 60_000, maxBuffer: REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER },
   );
 
+  return { toplevel, ignoredPaths: parseGitIgnoredPathRecords(ignoredResult.stdout) };
+}
+
+/**
+ * Parse the NUL-delimited records of a `git ls-files --others --ignored
+ * --directory -z` run into a sorted path list, enforcing
+ * {@link REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT} and
+ * {@link REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES} as it reads.
+ *
+ * Every staging path that asks Git what a tree ignores parses the answer here,
+ * so one set of bounds covers the SSH transport, the sandbox transport and
+ * referenced project trees alike. Throws
+ * {@link ReferencedSourceIgnoreScanLimitExceededError} on a bound breach, so a
+ * caller can tell a bound from a plain Git read error and decide for itself
+ * whether to fail closed or carry on without a per-path list.
+ */
+export function parseGitIgnoredPathRecords(raw: string): string[] {
   // Read one NUL-delimited record at a time and enforce both bounds while the
   // ignored-entry list accumulates, instead of splitting and mapping the
   // whole response into a list first and only then checking its size. A
@@ -476,15 +493,14 @@ export async function readReferencedSourceGitIgnoredPaths(
   // padding to remove. A length check finds the one genuinely empty record
   // `-z` appends after the last NUL, without eating a real path's own
   // leading or trailing whitespace.
-  const rawIgnored = ignoredResult.stdout;
   const parsedIgnoredEntries: string[] = [];
   let totalIgnoredBytes = 0;
   let recordStart = 0;
-  while (recordStart < rawIgnored.length) {
-    const nulIndex = rawIgnored.indexOf("\0", recordStart);
-    const recordEnd = nulIndex === -1 ? rawIgnored.length : nulIndex;
-    const record = rawIgnored.slice(recordStart, recordEnd);
-    recordStart = nulIndex === -1 ? rawIgnored.length : nulIndex + 1;
+  while (recordStart < raw.length) {
+    const nulIndex = raw.indexOf("\0", recordStart);
+    const recordEnd = nulIndex === -1 ? raw.length : nulIndex;
+    const record = raw.slice(recordStart, recordEnd);
+    recordStart = nulIndex === -1 ? raw.length : nulIndex + 1;
 
     const entry = record.replace(/\/+$/, "");
     if (entry.length === 0) {
@@ -507,9 +523,7 @@ export async function readReferencedSourceGitIgnoredPaths(
 
   // The list is bounded by both checks above, so sorting and re-relativizing
   // it here never costs more than the accepted bounds allow.
-  const ignoredPaths = parsedIgnoredEntries.sort((left, right) => left.localeCompare(right));
-
-  return { toplevel, ignoredPaths };
+  return parsedIgnoredEntries.sort((left, right) => left.localeCompare(right));
 }
 
 // scp-like ssh remote (`user@host:path`). The syntax has no password slot, so

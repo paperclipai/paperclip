@@ -42,7 +42,11 @@ import {
   type RuntimeStatusPhase,
   type RuntimeStatusSink,
 } from "./runtime-progress.js";
-import { isRelativePathOrDescendant, shouldExcludePath } from "./exclude-patterns.js";
+import {
+  isRelativePathOrDescendant,
+  shouldExcludePath,
+  WORKSPACE_HEAVY_DIR_EXCLUDES,
+} from "./exclude-patterns.js";
 import {
   scheduleSyncOperations,
   SYNC_OPERATION_CONCURRENCY_LIMIT,
@@ -55,23 +59,6 @@ import {
 } from "./workspace-restore-diagnostics.js";
 
 const execFile = promisify(execFileCallback);
-const SANDBOX_WORKSPACE_HEAVY_DIR_NAMES = [
-  "node_modules",
-  "vendor",
-  "dist",
-  "build",
-  "out",
-  "coverage",
-  ".next",
-  ".turbo",
-  ".cache",
-] as const;
-const SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES = SANDBOX_WORKSPACE_HEAVY_DIR_NAMES.flatMap((entry) => [
-  entry,
-  `${entry}/*`,
-  `*/${entry}`,
-  `*/${entry}/*`,
-]);
 
 export interface SandboxRemoteExecutionSpec {
   transport: "sandbox";
@@ -1208,13 +1195,13 @@ export async function prepareSandboxManagedRuntime(input: {
   }
   const gitIgnoredExcludes = directoryIgnore?.kind === "git" ? directoryIgnore.ignoredPaths : undefined;
   const workspaceArchiveExclude = mergeExcludes(
-    input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
+    input.workspaceFileMode === "all" ? [] : WORKSPACE_HEAVY_DIR_EXCLUDES,
     input.workspaceFileMode === "all" ? [] : [...GIT_ARCHIVE_EXCLUDES],
     input.workspaceExclude,
     gitIgnoredExcludes,
   );
   const restoreExclude = mergeExcludes(
-    input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
+    input.workspaceFileMode === "all" ? [] : WORKSPACE_HEAVY_DIR_EXCLUDES,
     input.workspaceFileMode === "all" ? [] : [...GIT_ARCHIVE_EXCLUDES],
     [".paperclip-runtime"],
     input.preserveAbsentOnRestore,
@@ -1272,7 +1259,7 @@ export async function prepareSandboxManagedRuntime(input: {
   // resolved Git-ignored paths (or keeps this fixed set as-is for a non-Git
   // source) — see `resolveReferencedSourceIgnore` and the per-project merge
   // below.
-  const additionalSourceBaseExclude = mergeExcludes(SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES, [".git"]);
+  const additionalSourceBaseExclude = mergeExcludes(WORKSPACE_HEAVY_DIR_EXCLUDES, [".git"]);
 
   // Every delegated post-upload command (extract/wipe/remove-deleted/asset merge)
   // must run under the run-specific timeout (`spec.timeoutMs`), not the provider
@@ -1758,7 +1745,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 workspaceExclude: nestedExclude,
                 workspaceBaseline: await selectDirectorySnapshot(baselineSnapshot!, {
                   prefix,
-                  exclude: mergeExcludes(SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES, [...GIT_ARCHIVE_EXCLUDES], [".paperclip-runtime"], nestedExclude),
+                  exclude: mergeExcludes(WORKSPACE_HEAVY_DIR_EXCLUDES, [...GIT_ARCHIVE_EXCLUDES], [".paperclip-runtime"], nestedExclude),
                   ignoredPaths: repository.snapshot.ignoredPaths,
                 }),
                 onRuntimeProgress: input.onRuntimeProgress,

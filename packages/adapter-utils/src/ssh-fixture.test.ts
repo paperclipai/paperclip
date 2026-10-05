@@ -3,13 +3,14 @@ import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildSshSpawnTarget,
   buildSshEnvLabFixtureConfig,
   getSshEnvLabSupport,
   prepareWorkspaceForSshExecution,
   readSshEnvLabFixtureStatus,
+  removeRemoteDirectory,
   restoreWorkspaceFromSshExecution,
   runSshCommand,
   syncDirectoryFromSsh,
@@ -726,7 +727,12 @@ describe("ssh env-lab fixture", () => {
     const config = await buildSshEnvLabFixtureConfig(started);
     const input = { spec: { ...config, remoteCwd: started.workspaceDir }, localDir,
       remoteDir: started.workspaceDir, workspaceFileMode: "all" as const };
-    expect(await prepareWorkspaceForSshExecution(input)).toEqual({ gitBacked: false });
+    // `workspaceFileMode: "all"` ships the directory as it sits: the ignore
+    // file above says `node_modules/`, and this mode still carries it.
+    expect(await prepareWorkspaceForSshExecution(input)).toEqual({
+      gitBacked: false,
+      transferExclude: [".paperclip-runtime"],
+    });
     expect(await readFile(path.join(started.workspaceDir, "node_modules", "personal.bin"))).toEqual(binary);
     await rm(path.join(localDir, "removed.txt"));
     await prepareWorkspaceForSshExecution(input);
@@ -1065,5 +1071,203 @@ describe("ssh env-lab fixture", () => {
     const recentSubjects = await git(localRepo, ["log", "--pretty=%s", "-3"]);
     expect(recentSubjects).toContain("remote update a");
     expect(recentSubjects).toContain("remote update b");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  // A workspace whose ignore file says `node_modules/` means it: an ignored
+  // directory is build output, a cache or a credential store, and a host-built
+  // one is frequently unusable on the box anyway. Shipping it costs the whole
+  // transfer and buys nothing.
+  async function createIgnoringRepo(rootDir: string): Promise<string> {
+    const localRepo = path.join(rootDir, "local-workspace");
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, ".gitignore"), "node_modules/\nbuilt-cache/\n", "utf8");
+    await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
+    await git(localRepo, ["add", ".gitignore", "tracked.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+
+    // Ignored by the workspace's own rules.
+    await mkdir(path.join(localRepo, "node_modules", "left-pad"), { recursive: true });
+    await writeFile(path.join(localRepo, "node_modules", "left-pad", "index.js"), "mac binary\n", "utf8");
+    await mkdir(path.join(localRepo, "built-cache"), { recursive: true });
+    await writeFile(path.join(localRepo, "built-cache", "blob"), "cached\n", "utf8");
+    // Not ignored, but on the shared heavy-directory list every transport drops.
+    await mkdir(path.join(localRepo, "dist"), { recursive: true });
+    await writeFile(path.join(localRepo, "dist", "bundle.js"), "built\n", "utf8");
+    // Neither ignored nor heavy: this one has to arrive.
+    await writeFile(path.join(localRepo, "untracked.txt"), "from local\n", "utf8");
+    return localRepo;
+  }
+
+  async function remoteEntryKind(
+    config: Awaited<ReturnType<typeof buildSshEnvLabFixtureConfig>>,
+    remotePath: string,
+  ): Promise<string> {
+    const result = await runSshCommand(
+      config,
+      `if [ -e ${JSON.stringify(remotePath)} ]; then echo present; else echo absent; fi`,
+      { timeoutMs: 30_000, maxBuffer: 16 * 1024 },
+    );
+    return result.stdout.trim();
+  }
+
+  it("does not ship a git workspace's ignored paths or heavy directories", async () => {
+    const rootDir = await createFixtureRootDir();
+    const localRepo = await createIgnoringRepo(rootDir);
+
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH gitignore honouring");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+
+    const prepared = await prepareWorkspaceForSshExecution({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      localDir: localRepo,
+      remoteDir: started.workspaceDir,
+    });
+
+    expect(prepared.gitBacked).toBe(true);
+    expect(prepared.transferExclude).toContain("node_modules");
+    expect(prepared.transferExclude).toContain("built-cache");
+    expect(prepared.transferExclude).toContain("dist");
+
+    for (const skipped of ["node_modules", "built-cache", "dist"]) {
+      expect(await remoteEntryKind(config, path.posix.join(started.workspaceDir, skipped))).toBe("absent");
+    }
+    // The working tree itself still arrives, tracked and untracked alike.
+    expect(await remoteEntryKind(config, path.posix.join(started.workspaceDir, "tracked.txt"))).toBe("present");
+    expect(await remoteEntryKind(config, path.posix.join(started.workspaceDir, "untracked.txt"))).toBe("present");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  // The restore must not read "absent on the box" as "deleted". A path the
+  // upload never sent is absent for a reason that has nothing to do with the
+  // run, and deleting the host's copy of it would be data loss.
+  it("keeps the local ignored and heavy directories the upload skipped", async () => {
+    const rootDir = await createFixtureRootDir();
+    const localRepo = await createIgnoringRepo(rootDir);
+
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH ignored-path restore");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-ignored",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+
+    await runSshCommand(
+      config,
+      `printf "from the run\\n" > ${JSON.stringify(path.posix.join(prepared.workspaceRemoteDir, "produced.txt"))}`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(localRepo, "produced.txt"), "utf8")).resolves.toBe("from the run\n");
+    await expect(readFile(path.join(localRepo, "node_modules", "left-pad", "index.js"), "utf8")).resolves
+      .toBe("mac binary\n");
+    await expect(readFile(path.join(localRepo, "built-cache", "blob"), "utf8")).resolves.toBe("cached\n");
+    await expect(readFile(path.join(localRepo, "dist", "bundle.js"), "utf8")).resolves.toBe("built\n");
+    await expect(readFile(path.join(localRepo, "untracked.txt"), "utf8")).resolves.toBe("from local\n");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  // Nothing used to remove these. One per run, one workspace each, on a box
+  // with a disk.
+  it("removes a finished run's transported workspace from the box", async () => {
+    const rootDir = await createFixtureRootDir();
+    const localRepo = await createIgnoringRepo(rootDir);
+
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH run directory collection");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-collected",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+    const runDir = path.posix.join(started.workspaceDir, ".paperclip-runtime", "runs", "run-collected");
+    expect(await remoteEntryKind(config, path.posix.join(runDir, "workspace", "tracked.txt"))).toBe("present");
+
+    await prepared.restoreWorkspace();
+
+    expect(await remoteEntryKind(config, runDir)).toBe("absent");
+    // Only this run's directory, and only below `runs`: the anchor workspace
+    // and the runtime directory that holds it are still there for the next run.
+    expect(await remoteEntryKind(config, path.posix.join(started.workspaceDir, ".paperclip-runtime", "runs")))
+      .toBe("present");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  // An ignore set too large to pass as tar arguments must cost weight, never
+  // the transfer: `--exclude` entries travel on the command line, and enough of
+  // them would fail the sync with E2BIG instead of syncing it unfiltered.
+  it("falls back to the heavy-directory excludes when the ignored-path list will not fit on a command line", async () => {
+    const rootDir = await createFixtureRootDir();
+    const localRepo = path.join(rootDir, "local-workspace");
+    await mkdir(path.join(localRepo, "data"), { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    // `data/` holds a tracked file, so `--directory` cannot collapse it: every
+    // ignored sibling is reported as its own path.
+    await writeFile(path.join(localRepo, ".gitignore"), "data/*.tmp\n", "utf8");
+    await writeFile(path.join(localRepo, "data", "kept.txt"), "tracked\n", "utf8");
+    await git(localRepo, ["add", ".gitignore", "data/kept.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+    await mkdir(path.join(localRepo, "node_modules"), { recursive: true });
+    await writeFile(path.join(localRepo, "node_modules", "dep.js"), "dep\n", "utf8");
+    for (let index = 0; index < 700; index += 1) {
+      const name = `${String(index).padStart(4, "0")}${"x".repeat(200)}.tmp`;
+      await writeFile(path.join(localRepo, "data", name), "scratch\n", "utf8");
+    }
+
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH exclude budget");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    });
+    let prepared: Awaited<ReturnType<typeof prepareWorkspaceForSshExecution>>;
+    try {
+      prepared = await prepareWorkspaceForSshExecution({
+        spec: { ...config, remoteCwd: started.workspaceDir },
+        localDir: localRepo,
+        remoteDir: started.workspaceDir,
+      });
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(prepared.gitBacked).toBe(true);
+    expect(prepared.transferExclude).toContain("node_modules");
+    expect(prepared.transferExclude.some((entry) => entry.endsWith(".tmp"))).toBe(false);
+    // The budget is why the paths are missing, not a failed ignore scan: both
+    // produce the same list, and only one of them says so.
+    expect(warnings.join("\n")).toMatch(/ignored-path list is \d+ bytes of tar arguments, over the/);
+    // The transfer still happened, and the oversized ignore set rode along
+    // instead of failing it.
+    expect(await remoteEntryKind(config, path.posix.join(started.workspaceDir, "data", "kept.txt"))).toBe("present");
+    expect(await remoteEntryKind(config, path.posix.join(started.workspaceDir, "node_modules"))).toBe("absent");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("refuses to remove a remote path that is not a plain absolute directory", async () => {
+    const rootDir = await createFixtureRootDir();
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH remote removal guard");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+
+    for (const remoteDir of ["", "  ", "relative/path", "/", "/tmp/../etc"]) {
+      await expect(removeRemoteDirectory({ spec: config, remoteDir })).rejects.toThrow(/Refusing to remove/);
+    }
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 });

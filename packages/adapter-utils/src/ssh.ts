@@ -7,9 +7,15 @@ import path from "node:path";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
+  shouldExcludePath,
+  WORKSPACE_HEAVY_DIR_EXCLUDES,
+} from "./exclude-patterns.js";
+import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
+  parseGitIgnoredPathRecords,
   readSanitizedOriginRemoteUrl,
+  REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER,
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
@@ -149,6 +155,13 @@ interface LocalGitWorkspaceSnapshot {
   headCommit: string;
   branchName: string | null;
   deletedPaths: string[];
+  /**
+   * What the workspace's own ignore rules say never to ship, relative to the
+   * workspace directory. `null` when Git could not answer within the scan
+   * bounds: the caller then still drops {@link WORKSPACE_HEAVY_DIR_EXCLUDES},
+   * which is where the bytes are, and ships the rest.
+   */
+  ignoredPaths: string[] | null;
 }
 
 export function shellQuote(value: string) {
@@ -408,6 +421,16 @@ async function createSshAuthArgs(
   };
 }
 
+/**
+ * How many bytes of `--exclude` arguments a workspace transfer may carry.
+ * Deliberately far below the 1 MB a macOS `ARG_MAX` allows for arguments and
+ * environment together, because the same list also has to fit inside the one
+ * `sh -c` string the remote read sends. `git ls-files --directory` collapses a
+ * wholly ignored directory into one entry, so a real workspace spends tens of
+ * entries here, not thousands.
+ */
+const WORKSPACE_EXCLUDE_ARGUMENT_BUDGET_BYTES = 128 * 1024;
+
 function tarExcludeArgs(exclude: string[] | undefined): string[] {
   const combined = ["._*", ...(exclude ?? [])];
   return combined.flatMap((entry) => ["--exclude", entry]);
@@ -582,16 +605,23 @@ async function runSshScript(
   );
 }
 
+// `exclude` is the list the matching remote read was told to skip. Those paths
+// are absent from the incoming tree because they were never asked for, not
+// because the remote deleted them, so clearing them here would destroy local
+// files the transfer cannot put back. Only top-level names are compared:
+// `clearLocalDirectory` does not descend, and a directory it does remove is
+// replaced whole from the incoming tree.
 async function clearLocalDirectory(
   localDir: string,
   preserveEntries: string[] = [],
+  exclude: readonly string[] = [],
 ): Promise<void> {
   await fs.mkdir(localDir, { recursive: true });
   const preserve = new Set(preserveEntries);
   const entries = await fs.readdir(localDir);
   await Promise.all(
     entries
-      .filter((entry) => !preserve.has(entry))
+      .filter((entry) => !preserve.has(entry) && !shouldExcludePath(entry, exclude))
       .map((entry) => fs.rm(path.join(localDir, entry), { recursive: true, force: true })),
   );
 }
@@ -618,7 +648,12 @@ async function readLocalGitWorkspaceSnapshot(localDir: string): Promise<LocalGit
       return null;
     }
 
-    const [headCommitResult, branchResult, deletedResult] = await Promise.all([
+    // `--directory` collapses a wholly ignored directory into one entry, so a
+    // `node_modules` of 100,000 files costs one path. Paths come out relative
+    // to `localDir` (no `--full-name`), which is the shape both the tar
+    // `--exclude` list and the restore snapshot's exclude list need, and the
+    // same shape `--deleted` above already reports.
+    const [headCommitResult, branchResult, deletedResult, ignoredResult] = await Promise.all([
       runLocalGit(localDir, ["rev-parse", "HEAD"], {
         timeout: 10_000,
         maxBuffer: 16 * 1024,
@@ -631,6 +666,30 @@ async function readLocalGitWorkspaceSnapshot(localDir: string): Promise<LocalGit
         timeout: 10_000,
         maxBuffer: 256 * 1024,
       }),
+      // A workspace with an ignore set too large to read is a weight problem,
+      // never a correctness one: resolve it to `null` and let the caller ship
+      // the tree minus the heavy directories, rather than failing the run or
+      // falling back to the no-git path that clears the remote wholesale.
+      runLocalGit(localDir, [
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        "-z",
+      ], {
+        timeout: 60_000,
+        maxBuffer: REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER,
+      }).then(
+        (result) => {
+          try {
+            return parseGitIgnoredPathRecords(result.stdout);
+          } catch {
+            return null;
+          }
+        },
+        () => null,
+      ),
     ]);
 
     const branchName = branchResult.stdout.trim();
@@ -641,6 +700,7 @@ async function readLocalGitWorkspaceSnapshot(localDir: string): Promise<LocalGit
         .split("\0")
         .map((entry) => entry.trim())
         .filter(Boolean),
+      ignoredPaths: ignoredResult,
     };
   } catch {
     return null;
@@ -1053,6 +1113,27 @@ async function clearRemoteDirectory(input: {
   ].join("\n");
   await runSshScript(input.spec, script, {
     timeoutMs: 30_000,
+    maxBuffer: 256 * 1024,
+  });
+}
+
+/**
+ * Remove one remote directory and everything under it.
+ *
+ * Used to collect a finished run's transported workspace. The guard is not
+ * ceremony: this runs `rm -rf` on a box, and an empty or relative path would
+ * aim it at the login directory.
+ */
+export async function removeRemoteDirectory(input: {
+  spec: SshConnectionConfig;
+  remoteDir: string;
+}): Promise<void> {
+  const remoteDir = input.remoteDir.trim();
+  if (!path.posix.isAbsolute(remoteDir) || remoteDir === "/" || remoteDir.includes("..")) {
+    throw new Error(`Refusing to remove a remote path that is not a plain absolute directory: ${input.remoteDir}`);
+  }
+  await runSshScript(input.spec, `rm -rf -- ${shellQuote(remoteDir)}`, {
+    timeoutMs: 60_000,
     maxBuffer: 256 * 1024,
   });
 }
@@ -1542,7 +1623,7 @@ export async function syncDirectoryFromSsh(input: {
     });
     await progress?.finish();
 
-    await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
+    await clearLocalDirectory(input.localDir, input.preserveLocalEntries, input.exclude);
     await copyDirectoryContents(stagingDir, input.localDir);
   } catch (error) {
     await progress?.fail();
@@ -1553,6 +1634,65 @@ export async function syncDirectoryFromSsh(input: {
   }
 }
 
+/**
+ * The paths a workspace transfer skips, in either direction.
+ *
+ * `workspaceFileMode: "all"` is the explicit "ship the directory as it sits"
+ * mode: it carries no ignore rules and no heavy-directory list, only the
+ * caller's own `workspaceExclude`. Every other workspace drops
+ *
+ *   - the heavy directories ({@link WORKSPACE_HEAVY_DIR_EXCLUDES}), which the
+ *     install command rebuilds at the destination, and
+ *   - whatever the workspace's own ignore rules already declare unshippable,
+ *     read from Git by `readLocalGitWorkspaceSnapshot`.
+ *
+ * The same list governs the upload, the restore read and the baseline snapshot
+ * the restore merges against. That is the safety property, not an
+ * optimisation: `mergeDirectoryWithBaseline` only ever deletes a path its
+ * baseline recorded, so a path absent from the baseline because it was never
+ * uploaded can never be deleted locally for being absent from the remote. The
+ * three lists must therefore be one list, which is why this returns it and
+ * `prepareRemoteManagedRuntime` captures its baseline with exactly what came
+ * back.
+ *
+ * What the heavy-directory list costs, stated plainly: a workspace that tracks
+ * content under one of those names ships the committed version of it, because
+ * the Git import puts the tracked tree on the box and the overlay that carries
+ * the host's uncommitted edits skips those paths. The sandbox transport has
+ * always behaved this way; this brings the SSH transport into line with it
+ * rather than inventing a third rule.
+ */
+function workspaceTransferExclude(input: {
+  gitBacked: boolean;
+  gitSnapshot?: LocalGitWorkspaceSnapshot | null;
+  workspaceFileMode?: "all";
+  workspaceExclude?: string[];
+}): string[] {
+  const allMode = input.workspaceFileMode === "all";
+  const fixed = [
+    ".paperclip-runtime",
+    ...(input.gitBacked ? [".git"] : []),
+    ...(allMode ? input.workspaceExclude ?? [] : WORKSPACE_HEAVY_DIR_EXCLUDES),
+  ];
+  if (allMode) return [...new Set(fixed)];
+
+  // Every exclude entry travels as a tar argument, and the remote read puts
+  // them inside one `sh -c` string, so the list has a command-line budget as
+  // well as a count. Past the budget, keep the fixed list and drop the
+  // per-path one: a workspace with a six-figure ignore set is a weight problem,
+  // and failing its transfer with E2BIG would make it a broken one.
+  const ignored = input.gitSnapshot?.ignoredPaths ?? [];
+  const ignoredBytes = ignored.reduce((total, entry) => total + Buffer.byteLength(entry, "utf8") + 12, 0);
+  if (ignoredBytes > WORKSPACE_EXCLUDE_ARGUMENT_BUDGET_BYTES) {
+    console.warn(
+      `[paperclip] The workspace's ignored-path list is ${ignoredBytes} bytes of tar arguments, over the ` +
+        `${WORKSPACE_EXCLUDE_ARGUMENT_BUDGET_BYTES}-byte budget. Transferring it with the heavy-directory excludes only.`,
+    );
+    return [...new Set(fixed)];
+  }
+  return [...new Set([...fixed, ...ignored])];
+}
+
 export async function prepareWorkspaceForSshExecution(input: {
   spec: SshRemoteExecutionSpec;
   localDir: string;
@@ -1560,9 +1700,15 @@ export async function prepareWorkspaceForSshExecution(input: {
   onProgress?: RuntimeProgressSink;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
-}): Promise<{ gitBacked: boolean }> {
+}): Promise<{ gitBacked: boolean; transferExclude: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const gitSnapshot = input.workspaceFileMode === "all" ? null : await readLocalGitWorkspaceSnapshot(input.localDir);
+  const transferExclude = workspaceTransferExclude({
+    gitBacked: Boolean(gitSnapshot),
+    gitSnapshot,
+    workspaceFileMode: input.workspaceFileMode,
+    workspaceExclude: input.workspaceExclude,
+  });
 
   if (gitSnapshot) {
     await importGitWorkspaceToSsh({
@@ -1576,7 +1722,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       spec: input.spec,
       localDir: input.localDir,
       remoteDir,
-      exclude: [".git", ".paperclip-runtime"],
+      exclude: transferExclude,
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
@@ -1585,7 +1731,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       remoteDir,
       deletedPaths: gitSnapshot.deletedPaths,
     });
-    return { gitBacked: true };
+    return { gitBacked: true, transferExclude };
   }
 
   await clearRemoteDirectory({
@@ -1597,11 +1743,11 @@ export async function prepareWorkspaceForSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
+    exclude: transferExclude,
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
-  return { gitBacked: false };
+  return { gitBacked: false, transferExclude };
 }
 
 export async function restoreWorkspaceFromSshExecution(input: {
@@ -1663,7 +1809,16 @@ export async function restoreWorkspaceFromSshExecution(input: {
     }
     return;
   }
+  // No baseline: the whole-directory replacement path, used by the fixture
+  // tests and any caller that did not capture one. It cannot merge, so it
+  // reads the remote with the same excludes the upload used and
+  // `clearLocalDirectory` keeps those paths rather than deleting files the
+  // read was never asked to bring back.
   const gitSnapshot = await readLocalGitWorkspaceSnapshot(input.localDir);
+  const transferExclude = workspaceTransferExclude({
+    gitBacked: Boolean(gitSnapshot),
+    gitSnapshot,
+  });
 
   if (gitSnapshot) {
     await exportGitWorkspaceFromSsh({
@@ -1676,7 +1831,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
       spec: input.spec,
       remoteDir,
       localDir: input.localDir,
-      exclude: [".git", ".paperclip-runtime"],
+      exclude: transferExclude,
       preserveLocalEntries: [".git"],
       onProgress: input.onProgress,
       progressLabel: "workspace",
@@ -1688,7 +1843,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
     spec: input.spec,
     remoteDir,
     localDir: input.localDir,
-    exclude: [".paperclip-runtime"],
+    exclude: transferExclude,
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
