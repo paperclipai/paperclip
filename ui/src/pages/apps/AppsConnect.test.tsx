@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, useState, type ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
@@ -381,20 +381,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const honcho = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "honcho")!;
     experimentalMock.mockResolvedValue({ enableMemoryConnectors: true });
     listGalleryMock.mockResolvedValue({ apps: [honcho] });
-    function WorkspaceSetup() {
-      const [workspace, setWorkspace] = useState("");
-      return <ConnectionSetupFlow
-        serviceSlug="honcho"
-        connectionSettings={<label>Honcho workspace<input aria-label="Honcho workspace" value={workspace} onChange={event => setWorkspace(event.target.value)} /></label>}
-        additionalSettings={<p>Provider instructions</p>}
-        additionalSettingsValid={Boolean(workspace.trim())}
-      />;
-    }
-    await render(undefined, false, <WorkspaceSetup />);
+    await render(undefined, false, <ConnectionSetupFlow serviceSlug="honcho" />);
     const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
     const workspace = container.querySelector<HTMLInputElement>('input[aria-label="Honcho workspace"]')!;
     expect(workspace.compareDocumentPosition(key) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(container.textContent).toContain("Provider instructions");
+    expect(container.textContent).toContain(honcho.agentInstructions!.text);
+    expect(container.querySelector('[aria-label="Agent instructions"] [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
     await act(async () => setInputValue(key, "test-honcho-key"));
     expect(buttonByText("Connect")?.disabled).toBe(true);
     await act(async () => buttonByText("Connect")?.click());
@@ -404,19 +396,23 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => buttonByText("Connect")?.click());
     await flushReact();
     expect(connectAppMock).toHaveBeenCalledOnce();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      configValues: { workspaceId: "paperclip-acme" },
+      agentInstructions: expect.objectContaining({ enabled: true, text: honcho.agentInstructions!.text }),
+    }));
   });
 
   it.each([false, true])("shows optional instructions on the Notion OAuth screen only when supplied (%s)", async (provided) => {
-    listGalleryMock.mockResolvedValue({ apps: [NOTION] });
-    await render(undefined, false, <ConnectionSetupFlow
-      serviceSlug="notion"
-      additionalSettings={provided ? <label><input type="checkbox" defaultChecked />Tell agents to use Notion</label> : undefined}
-    />);
+    const template = { id: "notion.test", version: 1, text: "Look up published decisions in Notion before proposing changes." };
+    listGalleryMock.mockResolvedValue({ apps: [{ ...NOTION, agentInstructions: provided ? template : undefined }] });
+    await render(undefined, false, <ConnectionSetupFlow serviceSlug="notion" />);
     expect(buttonByText("Continue to Notion")).toBeDefined();
-    const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    const toggle = container.querySelector('[aria-label="Agent instructions"] [role="switch"]');
     expect(container.textContent?.includes("Tell agents to use Notion")).toBe(provided);
-    if (provided) expect(checkbox?.checked).toBe(true);
-    else expect(checkbox).toBeNull();
+    if (provided) {
+      expect(toggle?.getAttribute("aria-checked")).toBe("true");
+      expect(container.textContent).toContain(template.text);
+    } else expect(toggle).toBeNull();
     expect(connectAppMock).not.toHaveBeenCalled();
   });
 

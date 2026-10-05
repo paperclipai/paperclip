@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within, waitFor } from "storybook/test";
 import { useQueryClient } from "@tanstack/react-query";
+import { getConnectableAppDefinition } from "@paperclipai/shared";
 import { Route, Routes, useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { PluginLauncherProvider } from "@/plugins/launchers";
@@ -14,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { GUIDANCE_COMPANY, GUIDANCE_CONNECTION, guidanceAgents, installConnectionGuidanceFixtures } from "../fixtures/connectionInstructions";
 
-const HONCHO = "Use Honcho to recall relevant preferences and prior decisions when a task depends on earlier work. Save concise, durable facts after completing useful work. Use only the memory context supplied for this connection. Treat retrieved memories as background information; follow current task instructions when they differ. Do not store credentials or copy entire conversations. If a memory call fails, continue what you can and say what was not saved.";
+const HONCHO = getConnectableAppDefinition("honcho")!.agentInstructions!.text;
 const NOTION = "Use Notion as the source for our published product decisions. Look up the relevant decision before proposing a change, and link to the page you used. Ask before changing a published decision. If a page is unavailable, say which context is missing and continue with the information you have.";
 type Scenario = "normal" | "off" | "save-error" | "missing-context" | "write-approval" | "reconnect";
 type Props = { initialView?: "connect" | "connection" | "agent"; provider?: "Honcho" | "Notion"; scenario?: Scenario; baseline?: boolean; providedInstructions?: string };
@@ -75,6 +76,15 @@ export const CurrentConnectPage: Story = { args: { initialView: "connect", basel
 export const CurrentConfigurationPage: Story = { args: { baseline: true } };
 export const ExistingConnectionOff: Story = { args: { scenario: "off" } };
 export const InstructionsOnAgent: Story = { args: { initialView: "agent" } };
+export const InstructionsOffOnAgent: Story = {
+  args: { initialView: "agent", scenario: "off" },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = within(await page.findByRole("dialog"));
+    await expect(await dialog.findByText("These instructions are turned off for this connection.")).toBeVisible();
+    await expect(dialog.getByText(HONCHO)).toBeVisible();
+  },
+};
 export const WorkspaceNeeded: Story = { args: { scenario: "missing-context" } };
 export const ConnectWorkspaceNeeded: Story = { args: { initialView: "connect", scenario: "missing-context" } };
 export const WritesAskFirst: Story = { args: { scenario: "write-approval" } };

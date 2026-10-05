@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, toolApplications, toolCatalogEntries, toolConnections, toolPolicies, toolProfileBindings, toolActionRequests } from "@paperclipai/db";
 import { createToolGatewayService } from "../services/tool-gateway.js";
+import { toolDiscoveryScheduler } from "../services/tool-discovery-scheduler.js";
 import { toolAccessService, projectedConnectionToolArguments, projectedConnectionToolInputSchema } from "../services/tool-access.js";
 import { composeConnectionInstructions, prepareConnectionInstructionDelivery } from "../services/connection-instructions.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
@@ -112,6 +113,20 @@ async function createRemoteMcpToolFixture(db: ReturnType<typeof createDb>, compa
     const binding = { companyId: run.company.id, agentId: run.agent.id, runId: run.run.id };
     return { ...run, ...connection, gateway, service, binding, resolve: () => gateway.resolveConnectionInstructionsForRun(binding) };
   }
+
+  it("withholds guidance without blocking a turn when the discovery queue is saturated", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const listings = Array.from({ length: 34 }, () => toolDiscoveryScheduler.run(() => barrier));
+    try {
+      expect(await f.resolve()).toBeNull();
+    } finally {
+      release();
+      await Promise.all(listings);
+    }
+    expect((await f.resolve())?.text).toContain(paragraph);
+  });
 
   it("persists a non-memory paragraph and captures it in actual process input and both prompt composers", async () => {
     const f = await fixture();

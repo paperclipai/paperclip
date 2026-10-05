@@ -76,18 +76,19 @@ export function ConnectionInstructionsSettings({ connection, provider, template,
 
 export function AgentConnectionInstructions({ companyId, agentId }: { companyId: string; agentId: string }) {
   const query = useQuery({ queryKey: queryKeys.tools.effectiveProfilesForAgent(companyId, agentId), queryFn: () => toolsApi.getEffectiveProfilesForAgent(companyId, agentId) });
-  const sources = query.data?.installedConnections.filter((connection) => connection.agentInstructions?.enabled && connection.enabled && connection.status === "active") ?? [];
+  const sources = query.data?.installedConnections.filter((connection) => connection.agentInstructions && connection.enabled && connection.status === "active") ?? [];
   if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading connection instructions…</p>;
   if (query.isError) return <InlineBanner tone="danger" actions={<Button variant="ghost" onClick={() => void query.refetch()}>Retry</Button>}>Couldn’t load connection instructions.</InlineBanner>;
   if (!sources.length) return null;
   return <section className="mt-8 space-y-4" aria-label="From connections">
     <h3 className="text-sm font-medium">From connections</h3>
-    <p className="text-sm text-muted-foreground">These instructions are included when the connection is available for the task. Access can depend on the task’s responsible person and action permissions.</p>
+    <p className="text-sm text-muted-foreground">Enabled instructions are included when the connection is available for the task. Access can depend on the task’s responsible person and action permissions.</p>
     {sources.map((connection) => {
       const app = getConnectableAppDefinition(String(connection.config?.sourceTemplateKey ?? ""));
       const context = connectionInstructionContext(app, connection.config ?? {});
       return <div key={connection.id} className="space-y-3 rounded-lg border border-border p-4">
         <Link className="text-sm font-medium underline underline-offset-2" to={`/apps/${connection.id}/permissions`}>{connection.name}</Link>
+        {!connection.agentInstructions!.enabled && <InlineBanner tone="warning">These instructions are turned off for this connection.</InlineBanner>}
         {context === null ? <InlineBanner tone="warning">Complete this connection’s configuration before agents receive its instructions.</InlineBanner>
           : <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{connection.agentInstructions!.text}</p>}
       </div>;

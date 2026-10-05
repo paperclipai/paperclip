@@ -9034,7 +9034,16 @@ export function createToolGatewayService(
       const session = await captureSessionIdentity({
         ...binding, ...runContext, id: randomUUID(), token: "", createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000),
       });
-      const visible = new Set((await listToolsForContext(session, undefined, true)).flatMap((tool) => tool.connectionId ? [tool.connectionId] : []));
+      let tools: ToolGatewayDescriptor[];
+      try {
+        tools = await listToolsForContext(session, undefined, true);
+      } catch (error) {
+        // Saturation must not block an otherwise runnable turn. Withhold all
+        // guidance until authorization can be checked; never reuse stale text.
+        if (error instanceof ToolGatewayHttpError && error.reasonCode === "tool_discovery_busy") return null;
+        throw error;
+      }
+      const visible = new Set(tools.flatMap((tool) => tool.connectionId ? [tool.connectionId] : []));
       const sources: Parameters<typeof composeConnectionInstructions>[0] = [];
       for (const connection of candidates) {
         if (!visible.has(connection.id)) continue;

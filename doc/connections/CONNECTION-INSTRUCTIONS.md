@@ -46,6 +46,7 @@ Actions. It shows **Tell agents to use {provider}**, visible text, editing,
 **Reset to default** after changes, and an amber notice when off. Failed saves
 retain the draft. Agent Instructions includes a read-only **From connections**
 section with source links and an explanation of task-dependent availability.
+Disabled instructions remain inspectable there with an amber notice.
 
 ## Runtime delivery and compatibility
 
@@ -55,12 +56,15 @@ policy. At least one tool must be available (including tools requiring approval)
 The resolver uses persisted settings and the cached catalog; it does not contact
 providers. It does not gate delivery on a provider name, memory category, or the
 presence of a catalog template.
+If the discovery queue is saturated, the turn proceeds without connection
+instructions rather than reusing unverified guidance. A subsequent turn resolves
+them again using current access.
 
 Eligible blocks are sorted by connection ID. Each block identifies its
 connection, selected grant, optional template provenance, and declared public
 configuration. Secret/password fields are excluded. Missing required public
 configuration withholds standing instructions. The snapshot is `{ text, digest }`,
-where `digest` is SHA-256 of the complete UTF-8 text. Provider configuration and
+where `digest` is SHA-256 of the complete UTF-8 text. Declared public configuration and
 source changes therefore change the digest as well as text edits.
 
 The server replaces caller-supplied runtime instruction fields before executing.
