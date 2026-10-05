@@ -254,7 +254,8 @@ export function createPluginDevWatcher(
           },
           "plugin-dev-watcher: watcher error, stopping watch for this plugin",
         );
-        unwatchPlugin(pluginId);
+        // Stop this failed watcher without cancelling a pending replacement.
+        stopWatchingPlugin(pluginId);
       });
 
       watchers.set(pluginId, { watcher, packagePath: absPath });
@@ -281,8 +282,7 @@ export function createPluginDevWatcher(
     }
   }
 
-  function unwatchPlugin(pluginId: string): void {
-    pendingRegistrations.delete(pluginId);
+  function stopWatchingPlugin(pluginId: string): void {
     const pluginWatcher = watchers.get(pluginId);
     if (pluginWatcher) {
       void pluginWatcher.watcher.close();
@@ -293,6 +293,11 @@ export function createPluginDevWatcher(
       clearTimeout(timer);
       debounceTimers.delete(pluginId);
     }
+  }
+
+  function unwatchPlugin(pluginId: string): void {
+    pendingRegistrations.delete(pluginId);
+    stopWatchingPlugin(pluginId);
   }
 
   function close(): void {

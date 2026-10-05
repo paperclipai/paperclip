@@ -187,6 +187,8 @@ previous directory do not restart the worker. If the new directory is unavailabl
 or the plugin no longer has a local path, the old watcher stops.
 Only the latest pending path lookup can register a watcher. Manual registration,
 unwatching, and shutdown cancel earlier pending lookups.
+A watcher error stops the failed watcher while allowing a pending replacement
+path lookup to finish.
 
 What that means in practice:
 

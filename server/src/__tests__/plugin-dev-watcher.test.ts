@@ -318,4 +318,44 @@ describe("createPluginDevWatcher", () => {
     expect(chokidarMock.watch).toHaveBeenCalledTimes(1);
     devWatcher.close();
   });
+
+  it.each(["current", "replaced"])("keeps a pending replacement lookup when the %s watcher reports an error", async (state) => {
+    vi.useFakeTimers();
+    const firstDir = makeTempPluginDir();
+    const secondDir = makeTempPluginDir();
+    const replacementDir = makeTempPluginDir();
+    [firstDir, secondDir, replacementDir].forEach(writePluginPackage);
+    const first = installMockFsWatcher();
+    const lifecycle = createLifecycle();
+    const lookup = deferred<string | null>();
+    const devWatcher = createPluginDevWatcher(lifecycle as never, () => lookup.promise);
+    devWatcher.watch("plugin-1", firstDir);
+    let active = first;
+    if (state === "replaced") {
+      active = installMockFsWatcher();
+      devWatcher.watch("plugin-1", secondDir);
+    }
+    first.handlers.all?.("change", path.join(firstDir, "dist", "worker.js"));
+    lifecycle.emit("plugin.loaded", { pluginId: "plugin-1" });
+
+    first.handlers.error?.(new Error("previous directory removed"));
+
+    expect(first.fakeWatcher.close).toHaveBeenCalledTimes(1);
+    if (state === "replaced") expect(active.fakeWatcher.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(lifecycle.restartWorker).not.toHaveBeenCalled();
+    const replacement = installMockFsWatcher();
+    lookup.resolve(replacementDir);
+    await Promise.resolve();
+    expect(chokidarMock.watch).toHaveBeenCalledTimes(state === "current" ? 2 : 3);
+    expect(chokidarMock.watch.mock.lastCall?.[0]).toContain(path.join(replacementDir, "dist", "worker.js"));
+
+    first.handlers.error?.(new Error("late old watcher error"));
+    expect(replacement.fakeWatcher.close).not.toHaveBeenCalled();
+    replacement.handlers.all?.("change", path.join(replacementDir, "dist", "worker.js"));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(lifecycle.restartWorker).toHaveBeenCalledTimes(1);
+    expect(lifecycle.restartWorker).toHaveBeenCalledWith("plugin-1");
+    devWatcher.close();
+  });
 });
