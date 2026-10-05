@@ -9,10 +9,10 @@ import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow"
 function StreamingResponse({ running }: { running: boolean }) {
   const [lines, setLines] = useState(16);
   useEffect(() => {
-    if (!running) return;
-    const timer = window.setInterval(() => setLines((count) => Math.min(count + 1, 256)), 500);
-    return () => window.clearInterval(timer);
-  }, [running]);
+    if (!running || lines >= 256) return;
+    const timer = window.setTimeout(() => setLines(lines + 1), 500);
+    return () => window.clearTimeout(timer);
+  }, [running, lines]);
   return <TaskChatThreadView scroll={false} items={[
     { id: "request", kind: "message", author: "human", text: "Give me a detailed progress report as you work." },
     {
