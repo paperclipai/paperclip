@@ -38,6 +38,14 @@ export interface ConnectionInstructionsSnapshot {
   digest: string;
 }
 
+/** Older connections can retain catalog metadata only in transportConfig. */
+export function connectionInstructionsConfig(connection: {
+  config?: Record<string, unknown> | null;
+  transportConfig?: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  return { ...connection.transportConfig, ...connection.config };
+}
+
 /** Only public configuration fields declared by the connector enter prompts. */
 export function connectionInstructionContext(
   app: AppDefinition | null | undefined,

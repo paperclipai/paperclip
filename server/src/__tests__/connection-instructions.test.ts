@@ -249,5 +249,11 @@ describe("Honcho workspace configuration", () => {
     expect(configured?.text).toContain('"workspaceId":"team-workspace"');
     const changed = composeConnectionInstructions([{ ...source, connection: { ...source.connection, config: { ...connection.config, methodConfig: { workspaceId: "other" } } } }]);
     expect(changed?.digest).not.toBe(configured?.digest);
+    const legacy = { ...source, connection: { ...source.connection, config: {}, transportConfig: connection.config } };
+    expect(composeConnectionInstructions([legacy])).toEqual(configured);
+    expect(projectedConnectionToolArguments({ ...connection, config: {}, transportConfig: connection.config }, { workspace_id: "forged" }, "query", schema)).toEqual({ workspace_id: "team-workspace" });
+    expect(composeConnectionInstructions([{ ...legacy, connection: { ...legacy.connection, transportConfig: old.config } }])).toBeNull();
+    const methodChanged = { ...legacy, connection: { ...legacy.connection, config: { connectionMethodKey: "new-method" } } };
+    expect(composeConnectionInstructions([methodChanged])?.digest).not.toBe(configured?.digest);
   });
 });

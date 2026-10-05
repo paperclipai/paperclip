@@ -1,5 +1,5 @@
 import { ConnectionInstructionsEditor } from "./ConnectionInstructions";
-import { defaultConnectionAgentInstructions, type ConnectionAgentInstructions } from "@paperclipai/shared";
+import { connectionInstructionsConfig, defaultConnectionAgentInstructions, type ConnectionAgentInstructions } from "@paperclipai/shared";
 import { RemoteMcpProductionSetup } from "./remote-mcp/RemoteMcpProductionSetup";
 import { findAggregatorApp } from "@paperclipai/shared/aggregator-app-catalog";
 import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
@@ -1653,9 +1653,7 @@ function StandardConnectionSetupFlow({
       || !entry
       || hydratedResumeConnectionIdRef.current === savedConnection.id
     ) return;
-    const storedConfig = savedConnection.config && typeof savedConnection.config === "object"
-      ? savedConnection.config
-      : {};
+    const storedConfig = connectionInstructionsConfig(savedConnection);
     const storedSource = typeof storedConfig.sourceTemplateKey === "string"
       ? storedConfig.sourceTemplateKey
       : null;

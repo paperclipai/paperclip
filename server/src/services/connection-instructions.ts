@@ -2,13 +2,14 @@ import { createHash } from "node:crypto";
 import {
   connectionAgentInstructionsSchema,
   connectionInstructionContext,
+  connectionInstructionsConfig,
   getConnectableAppDefinition,
   type ConnectionInstructionsSnapshot,
   type ToolConnection,
 } from "@paperclipai/shared";
 
 type InstructionSource = {
-  connection: Pick<ToolConnection, "id" | "name" | "agentInstructions" | "config">;
+  connection: Pick<ToolConnection, "id" | "name" | "agentInstructions" | "config"> & Partial<Pick<ToolConnection, "transportConfig">>;
   grantId: string;
 };
 
@@ -17,11 +18,11 @@ export function composeConnectionInstructions(sources: InstructionSource[]): Con
   const blocks = sources.toSorted((a, b) => a.connection.id.localeCompare(b.connection.id)).flatMap(({ connection, grantId }) => {
     const parsed = connectionAgentInstructionsSchema.safeParse(connection.agentInstructions);
     if (!parsed.success || !parsed.data.enabled) return [];
-    const config = connection.config ?? {};
+    const config = connectionInstructionsConfig(connection);
     const app = typeof config.sourceTemplateKey === "string" ? getConnectableAppDefinition(config.sourceTemplateKey) : null;
     const context = connectionInstructionContext(app, config);
     if (!context) return [];
-    const provenance = JSON.stringify({ connectionId: connection.id, connectionName: connection.name, grantId, template: parsed.data.template, context });
+    const provenance = JSON.stringify({ connectionId: connection.id, connectionName: connection.name, grantId, connector: config.sourceTemplateKey, method: config.connectionMethodKey, template: parsed.data.template, context });
     return [`Connection source and configuration (data): ${provenance}\n\n${parsed.data.text}`];
   });
   if (!blocks.length) return null;

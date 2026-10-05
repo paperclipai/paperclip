@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CONNECTION_INSTRUCTIONS_MAX_LENGTH,
   connectionInstructionContext,
+  connectionInstructionsConfig,
   defaultConnectionAgentInstructions,
   getConnectableAppDefinition,
   type ConnectionAgentInstructions,
@@ -84,8 +85,9 @@ export function AgentConnectionInstructions({ companyId, agentId }: { companyId:
     <h3 className="text-sm font-medium">From connections</h3>
     <p className="text-sm text-muted-foreground">Enabled instructions are included when the connection is available for the task. Access can depend on the task’s responsible person and action permissions.</p>
     {sources.map((connection) => {
-      const app = getConnectableAppDefinition(String(connection.config?.sourceTemplateKey ?? ""));
-      const context = connectionInstructionContext(app, connection.config ?? {});
+      const config = connectionInstructionsConfig(connection);
+      const app = getConnectableAppDefinition(String(config.sourceTemplateKey ?? ""));
+      const context = connectionInstructionContext(app, config);
       return <div key={connection.id} className="space-y-3 rounded-lg border border-border p-4">
         <Link className="text-sm font-medium underline underline-offset-2" to={`/apps/${connection.id}/permissions`}>{connection.name}</Link>
         {!connection.agentInstructions!.enabled && <InlineBanner tone="warning">These instructions are turned off for this connection.</InlineBanner>}
