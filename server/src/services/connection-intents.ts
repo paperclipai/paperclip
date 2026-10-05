@@ -5,11 +5,12 @@ import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { aiBindingForAuthRecovery, isAiAuthenticationFailure } from "./ai-auth-failure.js";
-import { and, eq, desc, isNull, sql } from "drizzle-orm";
+import { and, eq, desc, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   companies,
+  connectionGrants,
   toolConnections,
   toolCatalogEntries,
   companyMemberships,
@@ -1038,10 +1039,49 @@ export function connectionIntentService(db: Db) {
       const effective = await txAccess.getEffectiveProfilesForAgent(loaded.issue.companyId, payload.requestingAgentId);
       if (!effective.allowedTools.some((tool) => tool.connectionId === selectedConnection.id)) throw conflict("This connection has no permitted tools. Review its action permissions before continuing.");
 
-      const runtimeConnection = await connectionIntentService(txDb).usableConnectionForAgent({
+      const runtimeConnectionForAgent = () => connectionIntentService(txDb).usableConnectionForAgent({
         companyId: loaded.issue.companyId, agentId: payload.requestingAgentId,
         responsibleUserId: userId, serviceSlug: payload.serviceSlug,
       });
+      let runtimeConnection = await runtimeConnectionForAgent();
+      if (runtimeConnection?.id !== selectedConnection.id && !dedicatedGrant) {
+        // A revoked dedicated identity still outranks every other identity for
+        // this agent, so unattended runs fail closed instead of falling back to
+        // a person. Approving this request with another identity is the
+        // explicit choice that ends that override.
+        const applications = await txAccess.listApplications(loaded.issue.companyId);
+        const applicationsById = new Map(applications.map((application) => [application.id, application] as const));
+        // Only connections the identity selection considers: installed for the
+        // whole company or for this agent. A revoked grant elsewhere cannot block
+        // this agent, so it stays untouched.
+        const serviceConnectionIds = (await txAccess.listConnections(loaded.issue.companyId))
+          .filter((connection) => sourceSlugForConnection(connection, applicationsById) === payload.serviceSlug)
+          .filter((connection) => (connection.installs ?? []).some((install) =>
+            (install.targetType === "company" && install.targetId === loaded.issue.companyId)
+            || (install.targetType === "agent" && install.targetId === payload.requestingAgentId)))
+          .map((connection) => connection.id);
+        const revokedOverrides = serviceConnectionIds.length === 0 ? [] : await tx.select().from(connectionGrants).where(and(
+          eq(connectionGrants.companyId, loaded.issue.companyId),
+          eq(connectionGrants.kind, "agent"),
+          eq(connectionGrants.subjectAgentId, payload.requestingAgentId),
+          eq(connectionGrants.status, "revoked"),
+          inArray(connectionGrants.connectionId, serviceConnectionIds),
+        ));
+        if (revokedOverrides.length > 0) {
+          if (!options.canManageOrganizationGrant) {
+            throw forbidden("This agent's dedicated identity for this service was revoked. Replacing it requires connection-management authority.");
+          }
+          await tx.delete(connectionGrants).where(inArray(connectionGrants.id, revokedOverrides.map((grant) => grant.id)));
+          for (const grant of revokedOverrides) {
+            await logActivity(txDb, {
+              companyId: loaded.issue.companyId, actorType: "user", actorId: userId,
+              action: "tool_connection.grant_removed", entityType: "connection_grant", entityId: grant.id,
+              details: { connectionId: grant.connectionId, kind: grant.kind, connectionIntentId: interactionId, replacedByConnectionId: selectedConnection.id },
+            });
+          }
+          runtimeConnection = await runtimeConnectionForAgent();
+        }
+      }
       if (runtimeConnection?.id !== selectedConnection.id) throw conflict("This identity is not the connection this agent can execute. Resolve conflicting identities before continuing.");
 
       return txInteractions.resolveConnectionIntent(
