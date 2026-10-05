@@ -27,15 +27,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // before starting the remote request so dispatch gates can release without
     // waiting for the endpoint to respond.
     ctx.onDispatch?.();
-    const res = await guardedHttpAdapterFetch(url, {
-      method,
-      headers: {
-        "content-type": "application/json",
-        ...headers,
+    const res = await guardedHttpAdapterFetch(
+      url,
+      {
+        method,
+        headers: {
+          "content-type": "application/json",
+          ...headers,
+        },
+        body: JSON.stringify(body),
+        ...(timer ? { signal: controller.signal } : {}),
       },
-      body: JSON.stringify(body),
-      ...(timer ? { signal: controller.signal } : {}),
-    });
+      // Let a configured timeoutMs govern how long the endpoint may take to answer; without it
+      // the transport's own default (300 s for IP literals) ends long synchronous runs early.
+      timeoutMs > 0 ? { responseTimeoutMs: timeoutMs } : {},
+    );
 
     if (!res.ok) {
       throw new Error(`HTTP invoke failed with status ${res.status}`);

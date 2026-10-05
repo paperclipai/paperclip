@@ -106,4 +106,26 @@ describe("http adapter execute", () => {
     expect(result.errorCode).toBe("timeout");
     expect(result.errorMessage).toContain("timed out after 1ms");
   });
+  it("passes a configured timeoutMs to the transport as the response deadline", async () => {
+    guardedFetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    await execute({
+      runId: "run-t",
+      agent: { id: "agent-1", companyId: "company-1" },
+      context: {},
+      config: { url: "http://100.64.0.10:7311/wake", timeoutMs: 2_400_000 },
+    } as never);
+    expect(guardedFetchMock).toHaveBeenCalledOnce();
+    expect(guardedFetchMock.mock.calls[0][2]).toEqual({ responseTimeoutMs: 2_400_000 });
+  });
+
+  it("leaves the transport default when no timeoutMs is configured", async () => {
+    guardedFetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    await execute({
+      runId: "run-u",
+      agent: { id: "agent-1", companyId: "company-1" },
+      context: {},
+      config: { url: "http://100.64.0.10:7311/wake" },
+    } as never);
+    expect(guardedFetchMock.mock.calls[0][2]).toEqual({});
+  });
 });
