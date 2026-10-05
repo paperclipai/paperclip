@@ -16,6 +16,8 @@ import {
 import { resolveAcpxQualification, type AcpxQualificationCandidate } from "./acpx-qualification.js";
 
 export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.32" as const;
+// Tested floor for the OpenCode v2 CLI line (npm `@opencode/cli`).
+export const QUALIFIED_OPENCODE_V2_RUNNER_VERSION = "2.0.18" as const;
 export const DEFAULT_OPENCODE_RUNNER_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 export const CLAUDE_MANAGED_BETA_VERSION = "managed-agents-2026-04-01" as const;
