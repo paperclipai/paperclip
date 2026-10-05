@@ -7,6 +7,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import { trackRecentAssignee, trackRecentAssigneeUser } from "../lib/recent-assignees";
+import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
+import { rememberComposerEffort } from "../lib/recent-composer-effort";
 import { NewIssueDialog } from "./NewIssueDialog";
 
 const dialogState = vi.hoisted(() => ({
@@ -403,6 +405,59 @@ describe("NewIssueDialog", () => {
     { id: "worker", name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
     { id: "ceo", name: "CEO", role: "ceo", status: "idle", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
   ];
+
+  it.each([
+    { remembered: "project-1", expected: "project-1" },
+    { remembered: "", expected: "Project" },
+    { remembered: "deleted", expected: "Project" },
+  ])("restores the last available project ($remembered)", async ({ remembered, expected }) => {
+    trackRecentProject(remembered, "company-1");
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-slot="new-issue-compact-control"]')?.textContent).toContain(expected));
+    await typeTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!, "Check project memory");
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
+    expect(mockIssuesApi.create.mock.calls[0][1].projectId).toBe(remembered === "project-1" ? "project-1" : undefined);
+    act(() => root.unmount());
+  });
+
+  it("keeps explicit launch context ahead of another company's project history", async () => {
+    trackRecentProject("project-1", "company-2");
+    trackRecentProject("deleted", "company-1");
+    dialogState.newIssueDefaults = { projectId: "project-1" };
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-slot="new-issue-compact-control"]')?.textContent).toContain("project-1"));
+    act(() => root.unmount());
+    dialogState.newIssueDefaults = {};
+    const next = renderDialog(container);
+    await flush();
+    expect(container.querySelector('[data-slot="new-issue-compact-control"]')?.textContent).toContain("Project");
+    act(() => next.root.unmount());
+  });
+
+  it("remembers a project selection even when the composer is dismissed without submitting", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+    act(() => container.querySelector<HTMLElement>('[data-slot="new-issue-compact-control"]')!.click());
+    expect(getLastProjectId("company-1")).toBe("project-1");
+    act(() => root.unmount());
+    const next = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-slot="new-issue-compact-control"]')?.textContent).toContain("project-1"));
+    act(() => next.root.unmount());
+  });
+
+  it("submits remembered effort with the agent's default model", async () => {
+    mockAgentsApi.list.mockResolvedValue(defaultAgents);
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "claude-opus-5", label: "Claude Opus 5" }]);
+    rememberComposerEffort("company-1", "high");
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-model-label"]')?.textContent).toBe("Claude Opus 5"));
+    await typeTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!, "Check effort memory");
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
+    expect(mockIssuesApi.create.mock.calls[0][1].assigneeAdapterOverrides).toEqual({ adapterConfig: { effort: "high" } });
+    act(() => root.unmount());
+  });
 
   it.each([
     { recent: "", expected: "CEO" },

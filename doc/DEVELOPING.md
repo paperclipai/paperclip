@@ -170,6 +170,12 @@ assignees and saved drafts keep their selection. Selecting an assignee never
 inserts a mention. Clicking the assignee opens its searchable list directly;
 model and effort have a separate trigger and appear only for agents whose
 harness supports those settings.
+Fresh tasks also keep the company's last project (including No project); launch
+context and saved drafts take precedence. New projects receive a random palette
+color and become the remembered project. The shared composer remembers the last
+effort within the company and applies it only when the selected model supports
+that level. Explicit task overrides and drafts take precedence. Default model
+labels show the configured or known adapter model, otherwise simply Default.
 Clicking or tapping outside either selector dismisses it and preserves the task
 draft and selections. Mobile sheets return focus to the trigger without reopening.
 Stories cover empty and prefilled drafts, remembered, human, and unassigned

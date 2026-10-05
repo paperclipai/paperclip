@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import {
-  composerCatalogProvider, composerEfforts, composerFastAvailable, mergeComposerRunSettings,
+  composerCatalogProvider, composerDefaultModel, composerEfforts, composerFastAvailable, mergeComposerRunSettings,
   readComposerRunSettings, supportsComposerModel,
 } from "./composer-run-settings";
 
@@ -10,6 +10,16 @@ const agent = (adapterType: Agent["adapterType"], provider?: string) => ({
 }) as Agent;
 
 describe("composer run settings", () => {
+  it("resolves known adapter defaults without guessing local CLI settings", () => {
+    expect(composerDefaultModel(agent("claude_local"))).toBe("claude-opus-5");
+    expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { env: { ANTHROPIC_MODEL: "claude-sonnet-5" } } })).toBe("claude-sonnet-5");
+    expect(composerDefaultModel({ ...agent("claude_local"), adapterConfig: { env: { CLAUDE_CODE_USE_BEDROCK: "1" } } })).toBe("");
+    expect(composerDefaultModel({ ...agent("codex_local"), adapterConfig: { model: " private-codex " } })).toBe("private-codex");
+    expect(composerDefaultModel(agent("codex_local"))).toBe("");
+    expect(composerDefaultModel(agent("paperclip_runner", "codex"))).toBe("gpt-5.6-sol");
+    expect(composerDefaultModel(agent("grok_local"))).toBe("grok-build");
+    expect(composerDefaultModel(undefined)).toBe("");
+  });
   it("shows only effort levels known for the selected harness and model", () => {
     expect(composerEfforts(agent("codex_local"), "gpt-6-astra", [])).toContain("ultra");
     expect(composerEfforts(agent("paperclip_runner", "codex"), "gpt-6-astra", [])).toContain("ultra");

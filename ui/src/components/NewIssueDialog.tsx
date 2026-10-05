@@ -23,7 +23,7 @@ import {
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { getRecentAssigneeIds, getRecentAssigneeSelectionIds, sortAgentsByRecency, trackRecentAssignee, trackRecentAssigneeUser } from "../lib/recent-assignees";
-import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
+import { getLastProjectId, getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { recordRecentTask } from "../lib/recent-tasks";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
 import { isIssueWorkMode, nextWorkMode } from "../lib/work-mode-meta";
@@ -310,6 +310,7 @@ export function NewIssueDialog() {
   const executionWorkspaceDefaultProjectId = useRef<string | null>(null);
   const initializationKeyRef = useRef<string | null>(null);
   const defaultAssigneePendingRef = useRef(false);
+  const defaultProjectPendingRef = useRef(false);
 
   const isSubIssueMode = Boolean(newIssueDefaults.parentId);
   const parentIssueLabel =
@@ -431,6 +432,7 @@ export function NewIssueDialog() {
       return { issue, companyId, failures };
     },
     onSuccess: ({ issue, companyId, failures }) => {
+      trackRecentProject(issue.projectId ?? "", companyId);
       if (issue.assigneeAgentId) trackRecentAssignee(issue.assigneeAgentId, companyId);
       if (issue.assigneeUserId) trackRecentAssigneeUser(issue.assigneeUserId, companyId);
       if (streamlinedUiEnabled) recordRecentTask(issue, currentUserId);
@@ -561,6 +563,7 @@ export function NewIssueDialog() {
     if (!newIssueOpen) {
       initializationKeyRef.current = null;
       defaultAssigneePendingRef.current = false;
+      defaultProjectPendingRef.current = false;
       return;
     }
     const initializationKey = `${effectiveCompanyId ?? ""}:${JSON.stringify(newIssueDefaults)}`;
@@ -570,6 +573,7 @@ export function NewIssueDialog() {
     executionWorkspaceDefaultProjectId.current = null;
 
     const draft = loadDraft();
+    defaultProjectPendingRef.current = newIssueDefaults.projectId === undefined && !newIssueDefaults.parentId;
     defaultAssigneePendingRef.current = !newIssueDefaults.assigneeAgentId && !newIssueDefaults.assigneeUserId;
     setComposerSettings(null);
     createIssue.reset();
@@ -628,6 +632,7 @@ export function NewIssueDialog() {
           : null;
     } else if (draft && (draft.title.trim() || draft.description.trim())) {
       defaultAssigneePendingRef.current = false;
+      defaultProjectPendingRef.current = false;
       const nextWorkMode = isIssueWorkMode(draft.workMode) ? draft.workMode : "standard";
       const restoredProjectId = newIssueDefaults.projectId ?? draft.projectId;
       const restoredProject = orderedProjects.find((project) => project.id === restoredProjectId);
@@ -935,6 +940,16 @@ export function NewIssueDialog() {
     const fallback = targets.find((agent) => agent.role === "ceo") ?? targets[0];
     setAssigneeValue(recent ?? (fallback ? assigneeValueFromSelection({ assigneeAgentId: fallback.id }) : ""));
   }, [newIssueOpen, effectiveCompanyId, agents, assigneeOptions, sessionFetched, membersFetched]);
+  useEffect(() => {
+    if (!newIssueOpen || !effectiveCompanyId || !defaultProjectPendingRef.current || !projects) return;
+    defaultProjectPendingRef.current = false;
+    const available = new Set(orderedProjects.filter((project) => !project.archivedAt).map((project) => project.id));
+    const last = getLastProjectId(effectiveCompanyId);
+    const remembered = last !== undefined
+      ? (available.has(last) ? last : "")
+      : (getRecentProjectIds().find((id) => available.has(id)) ?? "");
+    setProjectId(remembered);
+  }, [newIssueOpen, effectiveCompanyId, projects, orderedProjects]);
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
       orderedProjects.map((project) => ({
@@ -949,7 +964,8 @@ export function NewIssueDialog() {
 
   const handleProjectChange = useCallback(
     (nextProjectId: string) => {
-      if (nextProjectId) trackRecentProject(nextProjectId);
+      defaultProjectPendingRef.current = false;
+      trackRecentProject(nextProjectId, effectiveCompanyId ?? undefined);
       setProjectId(nextProjectId);
       const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
       executionWorkspaceDefaultProjectId.current = nextProjectId || null;
@@ -957,7 +973,7 @@ export function NewIssueDialog() {
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
       setSelectedExecutionWorkspaceId("");
     },
-    [orderedProjects],
+    [orderedProjects, effectiveCompanyId],
   );
 
   useEffect(() => {

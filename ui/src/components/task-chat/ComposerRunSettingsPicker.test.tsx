@@ -5,9 +5,10 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentsApi } from "@/api/agents";
 import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
+import { getLastComposerEffort, rememberComposerEffort } from "@/lib/recent-composer-effort";
 
 const agent = {
   id: "a1", companyId: "company-1", name: "Clippy",
@@ -46,6 +47,7 @@ function render(onAssigneeChange: (value: string) => void, onSettingsChange: () 
   </QueryClientProvider>));
 }
 
+beforeEach(() => localStorage.clear());
 afterEach(() => {
   vi.restoreAllMocks();
   flushSync(() => root?.unmount());
@@ -55,6 +57,46 @@ afterEach(() => {
 });
 
 describe("composer assignee picker", () => {
+  it.each([
+    { adapterType: "claude_local", config: {}, label: "Claude Opus 5" },
+    { adapterType: "codex_local", config: {}, label: "Default" },
+  ])("labels the $adapterType default honestly", ({ adapterType, config, label }) => {
+    const defaultAgent = { ...agent, adapterType, adapterConfig: config } as Agent;
+    render(vi.fn(), vi.fn(), false, { settings: null, agents: new Map([[agent.id, defaultAgent]]),
+      modelOptionsOverride: [{ id: "claude-opus-5", label: "Claude Opus 5" }] });
+    expect(container!.querySelector('[data-testid="task-chat-composer-model-label"]')?.textContent).toBe(label);
+  });
+
+  it.each([
+    { remembered: "high", settings: null, overrides: null, restored: "high" },
+    { remembered: "off", settings: null, overrides: null, restored: null },
+    { remembered: "high", settings: { model: null, effort: "low", fast: false }, overrides: null, restored: null },
+    { remembered: "high", settings: null, overrides: { adapterConfig: { modelReasoningEffort: "low" } }, restored: null },
+  ])("restores compatible history ($remembered) without replacing explicit settings", ({ remembered, settings, overrides, restored }) => {
+    rememberComposerEffort("company-1", remembered);
+    const onSettingsChange = vi.fn();
+    render(vi.fn(), onSettingsChange, false, { settings, overrides });
+    if (restored) expect(onSettingsChange).toHaveBeenCalledWith({ model: null, effort: restored, fast: false });
+    else expect(onSettingsChange).not.toHaveBeenCalled();
+  });
+
+  it("records effort changes and preserves effort when changing to a compatible model", async () => {
+    const onSettingsChange = vi.fn();
+    render(vi.fn(), onSettingsChange, false, { modelOptionsOverride: [{ id: "gpt-6-astra", label: "GPT-6 Astra" }] });
+    await click("Select model and effort");
+    const range = document.querySelector<HTMLInputElement>('input[aria-label="Effort"]')!;
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(range, "1");
+      range.dispatchEvent(new Event("change", { bubbles: true }));
+      range.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(getLastComposerEffort("company-1")).toBe("low");
+    await click("Choose exact model");
+    await click("GPT-6 Astra");
+    expect(onSettingsChange).toHaveBeenLastCalledWith({ model: "gpt-6-astra", effort: "high", fast: false });
+    await click("Reset to agent default");
+    expect(getLastComposerEffort("company-1")).toBeNull();
+  });
   it("lets the assignee and model use the available composer width", () => {
     render(vi.fn(), vi.fn());
     const trigger = container!.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]');
@@ -140,7 +182,7 @@ describe("composer assignee picker", () => {
     await click("Select assignee");
     await click("No assignee");
     expect(onAssigneeChange).toHaveBeenCalledWith("");
-    expect(onSettingsChange).toHaveBeenCalledWith({ model: null, effort: null, fast: false });
+    expect(onSettingsChange).toHaveBeenCalledWith(null);
     expect(document.querySelector('[role="listbox"]')).toBeNull();
   });
 

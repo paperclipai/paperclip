@@ -17,6 +17,8 @@ import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { trackRecentAssignee, trackRecentAssigneeUser } from "@/lib/recent-assignees";
+import { trackRecentProject } from "@/lib/recent-projects";
+import { rememberComposerEffort } from "@/lib/recent-composer-effort";
 import {
   storybookAgents,
   storybookAuthSession,
@@ -49,11 +51,15 @@ function NewTaskStory({
   worktrees = "ready",
   isolation = true,
   rememberedAssignee = "none",
+  rememberedProject = false,
+  rememberedEffort = false,
 }: {
   scenario?: "empty" | "prefilled" | "title" | "subtask" | "planning" | "error" | "saving" | "rich";
   worktrees?: "ready" | "reuse" | "empty" | "loading" | "error";
   isolation?: boolean;
   rememberedAssignee?: "none" | "agent" | "human";
+  rememberedProject?: boolean;
+  rememberedEffort?: boolean;
 }) {
   const client = useQueryClient();
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
@@ -120,8 +126,13 @@ function NewTaskStory({
     localStorage.removeItem("paperclip:issue-draft");
     localStorage.removeItem("paperclip:recent-assignees");
     localStorage.removeItem(`paperclip:recent-assignees:${COMPANY_ID}`);
+    localStorage.removeItem("paperclip:recent-projects");
+    localStorage.removeItem(`paperclip:recent-projects:${COMPANY_ID}`);
+    localStorage.removeItem(`paperclip:composer-effort:${COMPANY_ID}`);
     if (rememberedAssignee === "agent") trackRecentAssignee("agent-codex", COMPANY_ID);
     if (rememberedAssignee === "human") trackRecentAssigneeUser(storybookAuthSession.user.id, COMPANY_ID);
+    if (rememberedProject) trackRecentProject("project-board-ui", COMPANY_ID);
+    if (rememberedEffort) rememberComposerEffort(COMPANY_ID, "high");
     client.setQueryData(queryKeys.health, { hiddenSettings: [] });
     client.setQueryData(queryKeys.auth.session, storybookAuthSession);
     client.setQueryData(
@@ -172,7 +183,7 @@ function NewTaskStory({
               : {}),
           },
     );
-  }, [client, isolation, openNewIssue, rememberedAssignee, scenario, selectedCompanyId, setSelectedCompanyId, worktrees]);
+  }, [client, isolation, openNewIssue, rememberedAssignee, rememberedProject, rememberedEffort, scenario, selectedCompanyId, setSelectedCompanyId, worktrees]);
 
   return (
     <div className="min-h-screen bg-background p-8 text-foreground">
@@ -228,6 +239,20 @@ export const LastAssignee: Story = {
     await waitFor(() => expect(page.getByTestId("task-chat-composer-assignee-label")).toHaveTextContent("CodexCoder"));
     await expect(page.getByRole("textbox", { name: "editable markdown" })).toHaveTextContent("");
   },
+};
+export const ReturningPreferences: Story = {
+  args: { rememberedAssignee: "agent", rememberedProject: true, rememberedEffort: true },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(page.getByTestId("task-chat-composer-assignee-label")).toHaveTextContent("CodexCoder"));
+    await expect(page.getByTestId("task-chat-composer-context")).toHaveTextContent("Board UI");
+    await userEvent.click(page.getByRole("button", { name: "Select model and effort" }));
+    await waitFor(() => expect(page.getByTestId("selected-effort")).toHaveTextContent("High"));
+  },
+};
+export const MobileReturningPreferences: Story = {
+  ...ReturningPreferences,
+  globals: { viewport: { value: "mobile", isRotated: false } },
 };
 export const HumanAssignee: Story = {
   args: { rememberedAssignee: "human" },
