@@ -72,8 +72,12 @@ import {
 
 export { connectionAddress, connectionTransportLabel };
 
-export function AppDetail({ renderActions, onReconnect }: {
+export function AppDetail({ renderActions, renderAgentSettings, renderConnectionSettings, onReconnect }: {
   renderActions?: (connection: ToolConnection) => ReactNode;
+  /** Optional agent settings within Permissions, following the access controls. */
+  renderAgentSettings?: (connection: ToolConnection) => ReactNode;
+  /** Provider prerequisites shown before identity and agent access. */
+  renderConnectionSettings?: (connection: ToolConnection) => ReactNode;
   onReconnect?: (connection: ToolConnection) => void;
 } = {}) {
   const { connectionId = "", tab } = useParams<{ connectionId: string; tab?: string }>();
@@ -627,6 +631,7 @@ export function AppDetail({ renderActions, onReconnect }: {
           : <div className="space-y-10">
               {isAppAggregator(brandKey) && grantsQuery.data?.capabilities.canConfigure === true
                 ? <ConnectedAggregatorApps key={connection.id} connection={connection} /> : null}
+              {renderConnectionSettings?.(connection)}
               {connection.config?.sourceTemplateKey === "browser-use-cloud" && <BrowserUseSettingsPanel connection={connection} grants={grantsQuery.data} />}
               {connection.config?.sourceTemplateKey === "railway" && <RailwayAccessPanel connection={connection} grants={grantsQuery.data} />}
               {connection.config?.provider === "agentmail" && <EmailConnectionInboxes companyId={connection.companyId} connectionId={connection.id} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}
@@ -667,6 +672,7 @@ export function AppDetail({ renderActions, onReconnect }: {
               </p> : null}
               {connection.config?.sourceTemplateKey !== "composio" && isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey) && <p className="text-sm text-muted-foreground">Paperclip controls access to the tools listed here. App and action permissions inside these tools are managed in {baseAppName}.</p>}
               <PermissionsPanel
+                afterAgentAccess={renderAgentSettings?.(connection)}
                 actions={actionsContent}
                 connectionId={connectionId}
                 capabilities={grantsQuery.data?.capabilities}

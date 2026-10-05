@@ -503,6 +503,11 @@ export function readConnectionIntentOAuthOutcome(
 }
 
 export interface ConnectionSetupFlowProps {
+  /** Optional settings composed into the standard credential form above its footer. */
+  additionalSettings?: ReactNode;
+  /** Provider prerequisites shown before credentials in the standard setup flow. */
+  connectionSettings?: ReactNode;
+  additionalSettingsValid?: boolean;
   upstreamServiceName?: string;
   aiConnection?: import("@paperclipai/shared").AiConnectionBinding;
   /** Provider-specific authentication inside the existing access/setup shell. Undefined retains the standard credential form. */
@@ -562,6 +567,9 @@ export function ConnectionSetupFlow(props: ConnectionSetupFlowProps = {}) {
 }
 
 function StandardConnectionSetupFlow({
+  additionalSettings,
+  connectionSettings,
+  additionalSettingsValid = true,
   byoOnly = false,
   credentialSource = "paperclip_vault",
   host = "page",
@@ -1938,6 +1946,7 @@ function StandardConnectionSetupFlow({
   // same controls the deleted Access step owned, inline and never blocking.
   const renderConnectionDefaults = step === "key" ? (
     (extra?: ReactNode, forceOpen?: boolean) => (
+    <>
     <ConnectionAccessDefaults
       key="connection-defaults"
       extra={extra}
@@ -1977,6 +1986,8 @@ function StandardConnectionSetupFlow({
       preserveAgentAccess={Boolean(automaticOAuthEntry && (resumableOAuthConnection || reconnectConnection))}
       disabled={connectMutation.isPending || oauthStartMutation.isPending}
     />
+    {additionalSettings && <div className="mt-6">{additionalSettings}</div>}
+    </>
     )
   ) : null;
   // A provider can advertise registration and still refuse this deployment's
@@ -2249,7 +2260,7 @@ function StandardConnectionSetupFlow({
                   ? "Choose a reviewed app to connect through Vercel."
                   : "Pick the app you want your agents to use."
                 : stepLabels.length <= 1
-                  ? "Connect now — permissions and access are yours to change afterwards."
+                  ? undefined
                   : `Step ${stepIndex + 1} of ${stepLabels.length}`
             }
             step={step}
@@ -2267,6 +2278,8 @@ function StandardConnectionSetupFlow({
           />
         )
       )}
+
+      {step === "key" && connectionSettings && <div className="mx-auto mb-6 max-w-xl">{connectionSettings}</div>}
 
       {step === "gallery" && (
         <GalleryStep
@@ -2381,6 +2394,7 @@ function StandardConnectionSetupFlow({
         </div>
       ) : step === "key" && entry && credentialStep !== undefined ? credentialStep : step === "key" && entry ? (
         <KeyStep
+          settingsValid={additionalSettingsValid}
           entry={entry}
           error={connectMutation.isError ? (connectMutation.error instanceof Error ? connectMutation.error.message : "Please check your key and try again.") : null}
           values={credentials}
@@ -2574,7 +2588,7 @@ export function StepHeader({
 }: {
   title?: string;
   headingRef?: Ref<HTMLHeadingElement>;
-  subtitle: string;
+  subtitle?: string;
   step: Step;
   activeIndex: number;
   labels: string[];
@@ -2598,7 +2612,7 @@ export function StepHeader({
             <h1 ref={headingRef} tabIndex={headingRef ? -1 : undefined} className="text-2xl font-bold tracking-tight outline-none">
               {title ?? (appIdentity ? `Connect ${appIdentity.name}` : "Connect your own MCP server")}
             </h1>
-            <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
+            {subtitle && <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>}
             {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-2" /> : null}
           </div>
         </div>
@@ -3419,6 +3433,7 @@ function SegmentedOption({
 }
 
 function KeyStep({
+  settingsValid = true,
   entry,
   error,
   values,
@@ -3444,6 +3459,7 @@ function KeyStep({
   onBack,
   onConnect,
 }: {
+  settingsValid?: boolean;
   entry: AppDefinition;
   error?: string | null;
   values: Record<string, string>;
@@ -3674,7 +3690,7 @@ function KeyStep({
 
   if (isGoogleSheetsRobotMethod(entry, method)) {
     const parsed = parseGoogleSheetIds(googleSheetsLinks);
-    const canConnect = !unavailable && Boolean(robotEmail) && googleSheetsLinks.trim().length > 0;
+    const canConnect = settingsValid && !unavailable && Boolean(robotEmail) && googleSheetsLinks.trim().length > 0;
     return (
       <div className="mx-auto max-w-xl">
         <div className="space-y-6">
@@ -3840,9 +3856,9 @@ function KeyStep({
                 placeholder={field.type === "text" && field.secret === false ? field.placeholder : "••••••••••••••••"}
                 className="mt-2 h-11 font-mono"
               />
-              <p className="mt-2 text-xs text-muted-foreground">
-                {field.helperMd ?? "Create a key with read and write permissions for the resources your agents need. Paperclip cannot add permissions to an existing key."}
-              </p>
+              {field.helperMd && <p className="mt-2 text-xs text-muted-foreground">
+                {field.helperMd}
+              </p>}
               {field.helpUrl && (
                 <a
                   href={field.helpUrl}
@@ -3866,7 +3882,7 @@ function KeyStep({
         <Button variant="ghost" onClick={onBack} disabled={submitting}>
           Back
         </Button>
-        <Button onClick={onConnect} disabled={submitting || !hasMethodSelection || !allFilled || !oauthClientFilled || !vercelConnectorFilled || !configFilled || !configRequirementMet}>
+        <Button onClick={onConnect} disabled={submitting || !settingsValid || !hasMethodSelection || !allFilled || !oauthClientFilled || !vercelConnectorFilled || !configFilled || !configRequirementMet}>
           {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           {submitting
             ? "Checking…"

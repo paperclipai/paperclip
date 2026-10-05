@@ -122,6 +122,7 @@ read/write proof separately and never describe metadata discovery as live proof.
 - [Current access defaults](#current-default-access-policy)
 - [Golden-path agent tutorial](#golden-path-agent-tutorial)
 - [Connection UX and user journeys](#connection-ux-and-user-journeys)
+- [Optional agent instructions (proposed convention)](#optional-agent-instructions-proposed-convention)
 - [Chat and email connector UX](./CHAT-CONNECTOR-UX.md)
 - [Production validation evidence](#step-9-align-with-production-validation)
 - [AppDefinition field reference](#appdefinition-field-reference)
@@ -146,6 +147,59 @@ A complete connector proposal produces:
   discover catalog, allowed read call, correctly governed write call,
   denied/quarantined call when the method declares one, revoke, and audit
   evidence.
+
+## Optional agent instructions (proposed convention)
+
+Some connections need standing guidance: tools tell an agent what it *can* do,
+while a short paragraph explains when it should use them. Memory is the first
+design case. The [connection instructions and memory evaluation plan](../plans/2026-10-03-connection-instructions-and-memory-evals.md)
+and **Design explorations → Connections → Agent instructions** in Storybook
+define the proposed pattern. These are design specimens, not a shipped manifest
+field or runtime feature.
+
+When implementing this capability:
+
+- Show the section only when the connector explicitly provides a nonempty
+  instruction template. Use **Agent instructions** and the checkbox
+  **Tell agents to use {provider}**, with the exact paragraph visible. No template
+  means no instructions UI, including no blank editor.
+  Keep setup in the existing flow and its single footer; add no required test or
+  extra wizard step. Use the current shared access defaults/disclosure.
+- Use a reviewed, versioned provider-specific suggestion. Explain when to recall,
+  when to save, the allowed context, and what to do if a call fails. Prefer one
+  short paragraph over a full skill or a pasted tool catalog. Avoid unsupported
+  promises about hooks, automatic transcript capture, or private memory.
+- Default provided instructions on for every participating connector. Let users
+  edit, **Reset to default** after changes, or disable guidance while retaining
+  tools. Show a compact amber notice when off. Reconnect and catalog refresh
+  preserve explicit opt-outs and custom text. Omit suggestion attribution badges
+  and routine lifecycle/storage helper copy.
+- Edit in an optional **Agent instructions** section of the existing **Permissions**
+  page, between agent access and Actions. Use the actual connection page shell,
+  credential form, and footers in review stories; include a baseline story for
+  comparison rather than constructing parallel page chrome. Show recipients
+  from current assignments and a read-only, source-linked copy on the agent.
+  Keep action controls and tests in the existing **Permissions** screen.
+- Resolve runtime guidance with the same company, agent, task, responsible-user,
+  and grant checks used for tools. Compose a revisioned block alongside agent
+  instructions; never permanently edit AGENTS.md or shared harness home files.
+  Verify fresh and resumed turns, removal, revoked access, and unsupported adapters.
+- Keep required provider settings, such as Honcho workspace, expanded near the
+  top of setup and configuration, above instructions. Put validation beside the
+  field and block completion while required values are missing. Memory stays an
+  ordinary connection; do not add a default-memory chooser or agent preference.
+  Keep provider binding identifiers separate from editable prose. Agent IDs,
+  tags, and query filters alone are not access-control boundaries. Any promised
+  isolation needs server enforcement across all relevant tool paths.
+- Treat MCP initialization instructions as external provider content. Review
+  them as template source; do not silently inject arbitrary remote text or let
+  a provider update overwrite an operator's instructions. Guidance never grants
+  additional tool permissions.
+- Prove both delivery and behavior: deterministic assignment/resume checks, then
+  a bounded save → **fresh session** recall with synthetic data through the real
+  run gateway. Record exact model/template/catalog versions, tool receipts,
+  costs, ingestion timeout, and cleanup. Discovery and a model's “saved” reply
+  do not prove memory works. See the linked plan for the minimal matrix.
 
 ## Use This Document As The Checklist
 
