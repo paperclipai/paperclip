@@ -1,5 +1,5 @@
 #!/usr/bin/env -S node --import tsx
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -238,7 +238,18 @@ if (existingRunner) {
   process.exit(0);
 }
 
-const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+function resolvePnpmBin(): string {
+  if (process.platform !== "win32") return "pnpm";
+  const result = spawnSync("where.exe", ["pnpm"], { encoding: "utf8" });
+  if (result.status === 0 && result.stdout) {
+    // where.exe may return multiple lines; prefer the .exe over .cmd
+    const lines = result.stdout.trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const exe = lines.find((l) => l.toLowerCase().endsWith(".exe"));
+    return exe ?? lines[0] ?? "pnpm";
+  }
+  return "pnpm";
+}
+const pnpmBin = resolvePnpmBin();
 let previousSnapshot = collectWatchedSnapshot();
 let dirtyPaths = new Set<string>();
 let pendingMigrations: string[] = [];
@@ -378,7 +389,7 @@ async function runPnpm(args: string[], options: {
       stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
       env: options.env ?? process.env,
       cwd: options.cwd,
-      shell: process.platform === "win32",
+      shell: false,
     });
 
     const stdoutBuffer = createCapturedOutputBuffer();
@@ -714,7 +725,7 @@ async function startServerChild() {
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env, shell: process.platform === "win32" },
+    { stdio: "inherit", env },
   );
 
   childExitPromise = new Promise((resolve, reject) => {
