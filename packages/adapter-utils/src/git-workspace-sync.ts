@@ -467,6 +467,41 @@ export async function readReferencedSourceGitIgnoredPaths(
 }
 
 /**
+ * The Git-ignored paths of the anchor workspace, for a transfer to exclude
+ * them. Paths come out relative to `localDir`, and `--directory` collapses a
+ * wholly ignored directory into one entry, so a `node_modules` of 100,000
+ * files costs one path.
+ *
+ * Dispatched through {@link runExpensiveWorkspaceGit}, the same process-wide
+ * admission seam {@link readGitWorkspaceSnapshot} and the referenced-project
+ * scan already use. A full-tree walk of an ignored set is expensive and can
+ * run for up to a minute; a host that registers a bounded scheduler there has
+ * to govern this one too, or several concurrent transfers each start another
+ * unbounded walk and starve the server. No hardening environment: this is the
+ * anchor workspace, a checkout this process controls, exactly like the other
+ * anchor reads through this seam.
+ *
+ * Returns `null` for any failure — not a work tree, a Git error, a timeout, a
+ * saturated scheduler, malformed output, or an ignore set past the bounds
+ * {@link parseGitIgnoredPathRecords} enforces. A caller that cannot read the
+ * ignore set ships the tree minus its fixed excludes: heavier than it needs to
+ * be, which is a weight problem, and never a correctness one.
+ */
+export async function readAnchorWorkspaceGitIgnoredPaths(localDir: string): Promise<string[] | null> {
+  try {
+    const result = await runExpensiveWorkspaceGit(
+      localDir,
+      ["--no-optional-locks", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+      "adapter_sync.transfer_ignored_files",
+      { timeout: 60_000, maxBuffer: REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER },
+    );
+    return parseGitIgnoredPathRecords(result.stdout);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Parse the NUL-delimited records of a `git ls-files --others --ignored
  * --directory -z` run into a sorted path list, enforcing
  * {@link REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT} and

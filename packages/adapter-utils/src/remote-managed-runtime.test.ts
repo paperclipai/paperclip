@@ -178,7 +178,7 @@ describe("remote managed runtime", () => {
     expect(order).toEqual(["workspace", "asset", "collect"]);
   });
 
-  it("removes the run's transported workspace when an asset fails to stage, and when the restore throws", async () => {
+  it("removes the run's transported workspace when an asset fails to stage, and keeps it when the restore throws", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-collect-failure-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -201,8 +201,12 @@ describe("remote managed runtime", () => {
       remoteDir: "/app/.paperclip-runtime/runs/run-asset-failed",
     }));
 
-    // A restore that throws still leaves nothing on the box: a failed run that
-    // kept its copy is how a box accumulates one workspace per failure.
+    // A restore that throws keeps the directory. The failure may have come
+    // after the box was written to and before anything reached the host, and
+    // the copy on the box is then the only one: the git bundle carries
+    // committed history alone, and the staging copy is gone. The sweep
+    // collects a directory kept this way; deleting it here would be the
+    // difference between a retry and lost work.
     removeRemoteDirectory.mockClear();
     restoreWorkspaceFromSshExecution.mockImplementationOnce(async () => {
       throw new Error("restore failed");
@@ -211,9 +215,7 @@ describe("remote managed runtime", () => {
       spec, runId: "run-restore-failed", adapterKey: "test", workspaceLocalDir: workspaceDir,
     });
     await expect(prepared.restoreWorkspace()).rejects.toThrow("restore failed");
-    expect(removeRemoteDirectory).toHaveBeenCalledWith(expect.objectContaining({
-      remoteDir: "/app/.paperclip-runtime/runs/run-restore-failed",
-    }));
+    expect(removeRemoteDirectory).not.toHaveBeenCalled();
   });
 
   // The run's files are already on the host by then. A box that is unreachable,

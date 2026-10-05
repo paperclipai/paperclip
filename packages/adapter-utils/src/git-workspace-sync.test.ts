@@ -16,6 +16,7 @@ import {
   fetchGitBundleIntoLocalRef,
   integrateImportedGitHead,
   isMissingGitPrerequisiteError,
+  readAnchorWorkspaceGitIgnoredPaths,
   readGitWorkspaceSnapshot as readRawSnapshot,
   disposeGitWorkspaceSnapshot,
   type ExpensiveWorkspaceGitInput,
@@ -29,6 +30,7 @@ import {
   sanitizeGitRemoteUrl,
   setExpensiveWorkspaceGitExecutor,
   withShallowGitWorkspaceClone,
+  WORKSPACE_GIT_SCAN_SATURATED_CODE,
 } from "./git-workspace-sync.js";
 
 const execFile = promisify(execFileCallback);
@@ -85,6 +87,42 @@ describe("git workspace sync", () => {
       "adapter_sync.overlay_diff",
       "adapter_sync.untracked_files",
     ]);
+  });
+
+  // The transfer's own ignore scan is a full-tree walk like the four above, and
+  // it has to queue behind the same limit. Several concurrent transfers that
+  // each started an unbounded walk would starve the host.
+  it("delegates the transfer ignore scan to the registered scheduler", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-transfer-scan-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await writeFile(path.join(repo, ".gitignore"), "ignored-dir/\n", "utf8");
+    await git(repo, ["add", ".gitignore"]);
+    await git(repo, ["commit", "-qm", "ignore rules"]);
+    await mkdir(path.join(repo, "ignored-dir"), { recursive: true });
+    await writeFile(path.join(repo, "ignored-dir", "blob"), "ignored\n", "utf8");
+    const operations: string[] = [];
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      operations.push(input.operation);
+      return executeScan(input);
+    });
+
+    await expect(readAnchorWorkspaceGitIgnoredPaths(repo)).resolves.toEqual(["ignored-dir"]);
+    expect(operations).toEqual(["adapter_sync.transfer_ignored_files"]);
+  });
+
+  // A workspace whose ignore set cannot be read is heavier to ship than it
+  // needs to be. It is never a failed run, and never a transfer that quietly
+  // ships the tree unfiltered on the no-git path instead.
+  it("reports no ignored paths when the scheduler refuses the transfer scan", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-transfer-scan-refused-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    setExpensiveWorkspaceGitExecutor(async () => {
+      throw Object.assign(new Error("queue is full"), { code: WORKSPACE_GIT_SCAN_SATURATED_CODE });
+    });
+
+    await expect(readAnchorWorkspaceGitIgnoredPaths(repo)).resolves.toBeNull();
   });
 
   it("keeps every filename byte for a padded name in each of the four anchor lanes", async () => {

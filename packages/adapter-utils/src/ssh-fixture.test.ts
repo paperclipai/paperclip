@@ -1224,7 +1224,12 @@ describe("ssh env-lab fixture", () => {
     await git(localRepo, ["commit", "-m", "initial"]);
     await mkdir(path.join(localRepo, "node_modules"), { recursive: true });
     await writeFile(path.join(localRepo, "node_modules", "dep.js"), "dep\n", "utf8");
-    for (let index = 0; index < 700; index += 1) {
+    // 550 names of 213 bytes each. Counting the ignored paths alone, with a
+    // flat allowance per entry, this set measures under the budget; the
+    // command it actually produces is over it, because the quoting runs twice
+    // over every entry. That gap is the bug this count pins: the upload used
+    // to succeed and the restore to die with E2BIG.
+    for (let index = 0; index < 550; index += 1) {
       const name = `${String(index).padStart(4, "0")}${"x".repeat(200)}.tmp`;
       await writeFile(path.join(localRepo, "data", name), "scratch\n", "utf8");
     }
@@ -1252,12 +1257,146 @@ describe("ssh env-lab fixture", () => {
     expect(prepared.transferExclude).toContain("node_modules");
     expect(prepared.transferExclude.some((entry) => entry.endsWith(".tmp"))).toBe(false);
     // The budget is why the paths are missing, not a failed ignore scan: both
-    // produce the same list, and only one of them says so.
-    expect(warnings.join("\n")).toMatch(/ignored-path list is \d+ bytes of tar arguments, over the/);
+    // produce the same list, and only one of them says so. The warning quotes
+    // the measured command, which is the thing the limit applies to.
+    expect(warnings.join("\n")).toMatch(/makes a \d+-byte remote read command, over the/);
     // The transfer still happened, and the oversized ignore set rode along
     // instead of failing it.
     expect(await remoteEntryKind(config, path.posix.join(started.workspaceDir, "data", "kept.txt"))).toBe("present");
     expect(await remoteEntryKind(config, path.posix.join(started.workspaceDir, "node_modules"))).toBe("absent");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  // Git names a literal path. tar reads an `--exclude` value as a glob. An
+  // ignored `report[1].csv` passed through unescaped excludes `report1.csv`
+  // instead: tar omits a file the baseline still records, and the restore then
+  // deletes the host's copy of it for being absent from the box.
+  it("excludes an ignored path that holds a glob character, and no other file", async () => {
+    const rootDir = await createFixtureRootDir();
+    const localRepo = path.join(rootDir, "local-workspace");
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    // Escaped in `.gitignore` too, or Git would read the brackets as a
+    // character class and ignore `report1.csv` as well.
+    await writeFile(path.join(localRepo, ".gitignore"), "report\\[1\\].csv\n", "utf8");
+    await writeFile(path.join(localRepo, "report1.csv"), "the real report\n", "utf8");
+    await git(localRepo, ["add", ".gitignore", "report1.csv"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+    await writeFile(path.join(localRepo, "report[1].csv"), "scratch\n", "utf8");
+
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH glob-named ignore");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-glob",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+
+    // Only the ignored name is held back. Its lookalike is a tracked file and
+    // the run needs it.
+    expect(await remoteEntryKind(config, path.posix.join(prepared.workspaceRemoteDir, "report[1].csv")))
+      .toBe("absent");
+    expect(await remoteEntryKind(config, path.posix.join(prepared.workspaceRemoteDir, "report1.csv")))
+      .toBe("present");
+
+    await prepared.restoreWorkspace();
+
+    // The restore deletes a baseline path the box did not return. Neither of
+    // these is that: one came back, the other was never sent.
+    await expect(readFile(path.join(localRepo, "report1.csv"), "utf8")).resolves.toBe("the real report\n");
+    await expect(readFile(path.join(localRepo, "report[1].csv"), "utf8")).resolves.toBe("scratch\n");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  // An excluded path is rarely at the top level. Clearing the local tree by
+  // top-level name alone removes the parent of an excluded directory, and the
+  // incoming tree cannot put back what the remote read never carried.
+  it("keeps a nested excluded directory when a restore with no baseline clears the local tree", async () => {
+    const rootDir = await createFixtureRootDir();
+    const localRepo = path.join(rootDir, "local-workspace");
+    await mkdir(path.join(localRepo, "packages", "app"), { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "packages", "app", "index.js"), "source\n", "utf8");
+    await git(localRepo, ["add", "packages/app/index.js"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+    // Nested two levels down, under a parent that is not excluded itself.
+    await mkdir(path.join(localRepo, "packages", "app", "node_modules", "left-pad"), { recursive: true });
+    await writeFile(
+      path.join(localRepo, "packages", "app", "node_modules", "left-pad", "index.js"),
+      "mac binary\n",
+      "utf8",
+    );
+
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH nested exclude clear");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    await prepareWorkspaceForSshExecution({ spec, localDir: localRepo, remoteDir: started.workspaceDir });
+    await runSshCommand(
+      config,
+      `printf "from the run\\n" > ${JSON.stringify(path.posix.join(started.workspaceDir, "packages", "app", "index.js"))}`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await restoreWorkspaceFromSshExecution({ spec, localDir: localRepo, remoteDir: started.workspaceDir });
+
+    await expect(readFile(path.join(localRepo, "packages", "app", "index.js"), "utf8")).resolves
+      .toBe("from the run\n");
+    await expect(
+      readFile(path.join(localRepo, "packages", "app", "node_modules", "left-pad", "index.js"), "utf8"),
+    ).resolves.toBe("mac binary\n");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  // A restore that fails part-way may have left the only copy of the run's
+  // uncommitted edits on the box. Removing the directory then would turn a
+  // failure the host can retry into lost work.
+  it("keeps a run's transported workspace on the box when the restore fails", async () => {
+    const rootDir = await createFixtureRootDir();
+    const localRepo = await createIgnoringRepo(rootDir);
+
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH failed restore");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-failed-restore",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+    const runDir = path.posix.join(started.workspaceDir, ".paperclip-runtime", "runs", "run-failed-restore");
+
+    // An edit the host has never seen, and then a break that stops the restore
+    // before it can be read: the git history is the first thing read back.
+    await runSshCommand(
+      config,
+      `printf "never restored\\n" > ${JSON.stringify(path.posix.join(prepared.workspaceRemoteDir, "produced.txt"))} && ` +
+        `rm -rf ${JSON.stringify(path.posix.join(prepared.workspaceRemoteDir, ".git"))}`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    });
+    try {
+      await expect(prepared.restoreWorkspace()).rejects.toThrow();
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(await remoteEntryKind(config, path.posix.join(runDir, "workspace", "produced.txt"))).toBe("present");
+    expect(warnings.join("\n")).toContain(runDir);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("refuses to remove a remote path that is not a plain absolute directory", async () => {

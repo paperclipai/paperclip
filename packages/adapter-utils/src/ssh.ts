@@ -7,15 +7,16 @@ import path from "node:path";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
+  escapeTarExcludeLiteral,
   shouldExcludePath,
+  unescapeTarExcludeLiteral,
   WORKSPACE_HEAVY_DIR_EXCLUDES,
 } from "./exclude-patterns.js";
 import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
-  parseGitIgnoredPathRecords,
+  readAnchorWorkspaceGitIgnoredPaths,
   readSanitizedOriginRemoteUrl,
-  REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER,
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
@@ -422,18 +423,40 @@ async function createSshAuthArgs(
 }
 
 /**
- * How many bytes of `--exclude` arguments a workspace transfer may carry.
- * Deliberately far below the 1 MB a macOS `ARG_MAX` allows for arguments and
- * environment together, because the same list also has to fit inside the one
- * `sh -c` string the remote read sends. `git ls-files --directory` collapses a
- * wholly ignored directory into one entry, so a real workspace spends tens of
- * entries here, not thousands.
+ * How long the remote read's command may be, in bytes. The whole command
+ * travels as ONE argument to `ssh` (`sh -c '<script>'`), and Linux caps a
+ * single argument at 128 KiB (`MAX_ARG_STRLEN`, 32 pages) however much room
+ * `ARG_MAX` leaves for the argument list as a whole. Past that the upload
+ * still succeeds and the restore dies with `E2BIG`, which is why the budget is
+ * checked against the measured command and not against the exclude list alone:
+ * see `remoteTarReadArgument`. `git ls-files --directory` collapses a wholly
+ * ignored directory into one entry, so a real workspace spends tens of entries
+ * here, not thousands.
  */
 const WORKSPACE_EXCLUDE_ARGUMENT_BUDGET_BYTES = 128 * 1024;
 
-function tarExcludeArgs(exclude: string[] | undefined): string[] {
+function tarExcludeArgs(exclude: readonly string[] | undefined): string[] {
   const combined = ["._*", ...(exclude ?? [])];
   return combined.flatMap((entry) => ["--exclude", entry]);
+}
+
+/**
+ * The single `ssh` argument that reads a remote directory as a tar stream.
+ *
+ * One builder, used twice: `syncDirectoryFromSsh` sends it, and
+ * `workspaceTransferExclude` measures it against
+ * {@link WORKSPACE_EXCLUDE_ARGUMENT_BUDGET_BYTES} before it hands the exclude
+ * list out. Measuring anything else would be guessing — the quoting runs
+ * twice over every exclude entry (once per argument, once for the script), and
+ * the fixed `cd`, the remote path and tar's own flags all share the same
+ * 128 KiB.
+ */
+function remoteTarReadArgument(remoteDir: string, exclude: readonly string[] | undefined): string {
+  const script = [
+    `cd ${shellQuote(remoteDir)}`,
+    `tar ${[...tarExcludeArgs(exclude).map(shellQuote), "-cf", "-", "."].join(" ")}`,
+  ].join(" && ");
+  return `sh -c ${shellQuote(script)}`;
 }
 
 function tarSpawnEnv(): NodeJS.ProcessEnv {
@@ -446,9 +469,11 @@ function tarSpawnEnv(): NodeJS.ProcessEnv {
 
 // Converts a tar `--exclude` pattern into a regexp for the local-size estimate.
 // We only need approximate fidelity here (the estimate feeds a clamped percent),
-// so we support the literal names and `*`/`?` globs used in practice.
+// so we support the literal names and `*`/`?` globs used in practice. An entry
+// that `escapeTarExcludeLiteral` escaped is read back to the path it names
+// first, so the estimate counts the same file tar will skip.
 function tarPatternToRegExp(pattern: string): RegExp {
-  const escaped = pattern
+  const escaped = unescapeTarExcludeLiteral(pattern)
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
     .replace(/\*/g, "[^/]*")
     .replace(/\?/g, "[^/]");
@@ -608,9 +633,15 @@ async function runSshScript(
 // `exclude` is the list the matching remote read was told to skip. Those paths
 // are absent from the incoming tree because they were never asked for, not
 // because the remote deleted them, so clearing them here would destroy local
-// files the transfer cannot put back. Only top-level names are compared:
-// `clearLocalDirectory` does not descend, and a directory it does remove is
-// replaced whole from the incoming tree.
+// files the transfer cannot put back.
+//
+// An excluded path is rarely at the top level: `packages/app/node_modules` is
+// excluded while `packages` is not. Removing `packages` whole would therefore
+// delete an excluded directory nested inside it, and copying the incoming tree
+// back cannot restore what the remote read never carried. So this descends: a
+// directory that holds an excluded descendant is kept and cleared entry by
+// entry, a directory that holds none is removed whole, and `preserveEntries`
+// still names top-level entries only.
 async function clearLocalDirectory(
   localDir: string,
   preserveEntries: string[] = [],
@@ -618,12 +649,24 @@ async function clearLocalDirectory(
 ): Promise<void> {
   await fs.mkdir(localDir, { recursive: true });
   const preserve = new Set(preserveEntries);
-  const entries = await fs.readdir(localDir);
-  await Promise.all(
-    entries
-      .filter((entry) => !preserve.has(entry) && !shouldExcludePath(entry, exclude))
-      .map((entry) => fs.rm(path.join(localDir, entry), { recursive: true, force: true })),
-  );
+
+  // Returns whether anything under `dir` was kept, which is what tells the
+  // caller it may not remove `dir` itself.
+  const clear = async (dir: string, base: string): Promise<boolean> => {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const kept = await Promise.all(entries.map(async (entry) => {
+      const relative = base ? `${base}/${entry.name}` : entry.name;
+      if ((!base && preserve.has(entry.name)) || shouldExcludePath(relative, exclude)) return true;
+      // `isDirectory` is false for a symlink to a directory, so a link is
+      // removed as a link and never followed out of the tree.
+      if (entry.isDirectory() && await clear(path.join(dir, entry.name), relative)) return true;
+      await fs.rm(path.join(dir, entry.name), { recursive: true, force: true });
+      return false;
+    }));
+    return kept.some(Boolean);
+  };
+
+  await clear(localDir, "");
 }
 
 async function copyDirectoryContents(sourceDir: string, targetDir: string): Promise<void> {
@@ -666,30 +709,15 @@ async function readLocalGitWorkspaceSnapshot(localDir: string): Promise<LocalGit
         timeout: 10_000,
         maxBuffer: 256 * 1024,
       }),
-      // A workspace with an ignore set too large to read is a weight problem,
-      // never a correctness one: resolve it to `null` and let the caller ship
-      // the tree minus the heavy directories, rather than failing the run or
-      // falling back to the no-git path that clears the remote wholesale.
-      runLocalGit(localDir, [
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-        "--directory",
-        "-z",
-      ], {
-        timeout: 60_000,
-        maxBuffer: REFERENCED_SOURCE_IGNORE_MAX_RAW_BUFFER,
-      }).then(
-        (result) => {
-          try {
-            return parseGitIgnoredPathRecords(result.stdout);
-          } catch {
-            return null;
-          }
-        },
-        () => null,
-      ),
+      // A full-tree ignore walk is the one expensive read here, so it goes
+      // through the shared admission seam rather than straight to a
+      // subprocess: see `readAnchorWorkspaceGitIgnoredPaths`, which also
+      // explains why every failure resolves to `null`. A workspace whose
+      // ignore set cannot be read is a weight problem, never a correctness
+      // one — the caller ships the tree minus the heavy directories, rather
+      // than failing the run or falling back to the no-git path that clears
+      // the remote wholesale.
+      readAnchorWorkspaceGitIgnoredPaths(localDir),
     ]);
 
     const branchName = branchResult.stdout.trim();
@@ -1528,16 +1556,12 @@ export async function syncDirectoryFromSsh(input: {
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
-  const remoteTarScript = [
-    `cd ${shellQuote(input.remoteDir)}`,
-    `tar ${[...tarExcludeArgs(input.exclude).map(shellQuote), "-cf", "-", "."].join(" ")}`,
-  ].join(" && ");
   const sshArgs = [
     ...auth.args,
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteTarScript)}`,
+    remoteTarReadArgument(input.remoteDir, input.exclude),
   ];
 
   // The remote tar size isn't known locally, so probe the remote directory for
@@ -1667,6 +1691,8 @@ function workspaceTransferExclude(input: {
   gitSnapshot?: LocalGitWorkspaceSnapshot | null;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
+  /** The remote directory the restore will read, for the budget measurement. */
+  remoteDir: string;
 }): string[] {
   const allMode = input.workspaceFileMode === "all";
   const fixed = [
@@ -1676,21 +1702,31 @@ function workspaceTransferExclude(input: {
   ];
   if (allMode) return [...new Set(fixed)];
 
-  // Every exclude entry travels as a tar argument, and the remote read puts
-  // them inside one `sh -c` string, so the list has a command-line budget as
-  // well as a count. Past the budget, keep the fixed list and drop the
-  // per-path one: a workspace with a six-figure ignore set is a weight problem,
-  // and failing its transfer with E2BIG would make it a broken one.
-  const ignored = input.gitSnapshot?.ignoredPaths ?? [];
-  const ignoredBytes = ignored.reduce((total, entry) => total + Buffer.byteLength(entry, "utf8") + 12, 0);
-  if (ignoredBytes > WORKSPACE_EXCLUDE_ARGUMENT_BUDGET_BYTES) {
+  // Git reports a literal path; tar reads an `--exclude` value as a glob. An
+  // ignored `report[1].csv` passed through unescaped would exclude
+  // `report1.csv` instead — a file tar then omits, the baseline still records,
+  // and the restore deletes for being absent from the remote. Escaping leaves
+  // one list that names exactly the paths Git named: `shouldExcludePath` reads
+  // the escape back off, so the upload, the restore and the baseline all still
+  // agree about which path each entry is.
+  const ignored = (input.gitSnapshot?.ignoredPaths ?? []).map(escapeTarExcludeLiteral);
+  const candidate = [...new Set([...fixed, ...ignored])];
+
+  // The remote read puts the whole list inside one `sh -c` argument, so the
+  // list has a command-line budget as well as a count — and the thing to
+  // measure is that argument, quoting and fixed flags included, not the
+  // ignored paths on their own. Past the budget, keep the fixed list and drop
+  // the per-path one: a workspace with a six-figure ignore set is a weight
+  // problem, and failing its restore with E2BIG would make it a broken one.
+  const commandBytes = Buffer.byteLength(remoteTarReadArgument(input.remoteDir, candidate), "utf8");
+  if (commandBytes > WORKSPACE_EXCLUDE_ARGUMENT_BUDGET_BYTES) {
     console.warn(
-      `[paperclip] The workspace's ignored-path list is ${ignoredBytes} bytes of tar arguments, over the ` +
+      `[paperclip] The workspace's ignored-path list makes a ${commandBytes}-byte remote read command, over the ` +
         `${WORKSPACE_EXCLUDE_ARGUMENT_BUDGET_BYTES}-byte budget. Transferring it with the heavy-directory excludes only.`,
     );
     return [...new Set(fixed)];
   }
-  return [...new Set([...fixed, ...ignored])];
+  return candidate;
 }
 
 export async function prepareWorkspaceForSshExecution(input: {
@@ -1708,6 +1744,7 @@ export async function prepareWorkspaceForSshExecution(input: {
     gitSnapshot,
     workspaceFileMode: input.workspaceFileMode,
     workspaceExclude: input.workspaceExclude,
+    remoteDir,
   });
 
   if (gitSnapshot) {
@@ -1818,6 +1855,7 @@ export async function restoreWorkspaceFromSshExecution(input: {
   const transferExclude = workspaceTransferExclude({
     gitBacked: Boolean(gitSnapshot),
     gitSnapshot,
+    remoteDir,
   });
 
   if (gitSnapshot) {

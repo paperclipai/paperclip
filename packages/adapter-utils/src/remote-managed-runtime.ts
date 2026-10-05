@@ -273,14 +273,25 @@ export async function prepareRemoteManagedRuntime(input: {
             readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
           });
         }
-      } finally {
-        // Last, and whatever happened above. The run's own directory holds its
-        // workspace copy and its staged assets, both of them inside
-        // `runRemoteDir`, so nothing may read from there after this point. A
-        // restore that threw has nothing more to read either, and leaving the
-        // copy would mean a box that accumulates one workspace per failed run.
-        await collectRunDirectory();
+      } catch (error) {
+        // Keep the run's directory. A restore that failed part-way may have
+        // left the only copy of the agent's uncommitted edits on the box: the
+        // Git bundle carries committed history alone, and the local staging
+        // copy is already gone by the time a merge fails. Removing it here
+        // would turn a failure the host can retry or inspect into lost work,
+        // so the sweep collects a directory left behind this way instead.
+        if (runRemoteDir) {
+          console.warn(
+            `[paperclip] Restoring run ${input.runId} failed, so its transported workspace stays at ` +
+              `${runRemoteDir}: it may hold edits that never reached the host. ${String(error)}`,
+          );
+        }
+        throw error;
       }
+      // Both the run's files and its staged assets are back on the host, so
+      // nothing may read from `runRemoteDir` after this point, and leaving the
+      // copy would mean a box that accumulates one workspace per run.
+      await collectRunDirectory();
     },
   };
 }

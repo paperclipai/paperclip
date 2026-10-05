@@ -15,6 +15,7 @@ import {
   setExpensiveWorkspaceGitExecutor,
   WORKSPACE_GIT_SCAN_SATURATED_CODE,
 } from "./git-workspace-sync.js";
+import { shouldExcludePath, WORKSPACE_HEAVY_DIR_EXCLUDES } from "./exclude-patterns.js";
 
 import {
   assertSyncOperationsConfined,
@@ -3108,6 +3109,17 @@ describe("sandbox managed runtime", () => {
     expect(escapeTarExcludeLiteral("secret[1].txt")).toBe("secret\\[1].txt");
     expect(escapeTarExcludeLiteral("wildcard*name")).toBe("wildcard\\*name");
     expect(escapeTarExcludeLiteral("question?mark")).toBe("question\\?mark");
+
+    // An escaped entry still has to answer "is this path excluded" about the
+    // path it names, and only that path: the SSH transport asks that of the
+    // same list it hands to tar, when it decides which local files a restore
+    // may delete.
+    expect(shouldExcludePath("secret[1].txt", [escapeTarExcludeLiteral("secret[1].txt")])).toBe(true);
+    expect(shouldExcludePath("secret1.txt", [escapeTarExcludeLiteral("secret[1].txt")])).toBe(false);
+    expect(shouldExcludePath("dir[1]/nested.txt", [escapeTarExcludeLiteral("dir[1]")])).toBe(true);
+    // The fixed directory globs are patterns, not literals, and keep matching
+    // at any depth.
+    expect(shouldExcludePath("packages/app/node_modules", WORKSPACE_HEAVY_DIR_EXCLUDES)).toBe(true);
 
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ignore-glob-"));
     cleanupDirs.push(rootDir);

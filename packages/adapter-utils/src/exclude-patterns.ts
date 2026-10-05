@@ -34,6 +34,41 @@ export const WORKSPACE_HEAVY_DIR_NAMES = [
 /** {@link WORKSPACE_HEAVY_DIR_NAMES} as tar `--exclude` entries. */
 export const WORKSPACE_HEAVY_DIR_EXCLUDES = directoryExcludeEntries(WORKSPACE_HEAVY_DIR_NAMES);
 
+/**
+ * Escape tar `--exclude` glob metacharacters (`*`, `?`, `[`) in a literal
+ * path, so a path that happens to contain one of them is matched literally
+ * instead of as a pattern. Without this, a repository-controlled path
+ * containing e.g. `*` could exclude unrelated sibling files that happen to
+ * match the resulting glob. GNU tar and bsdtar both honor a backslash as an
+ * `fnmatch` escape character, so this is not command injection — every
+ * `--exclude` value travels as an argument-vector entry, never through a
+ * shell.
+ *
+ * Every literal path that becomes an exclude entry goes through this, whether
+ * it came from a referenced project's ignore set or the anchor workspace's.
+ * {@link excludePatternMatches} reads the escape back off, so one list of
+ * entries can both drive tar and answer "is this path excluded" about the path
+ * the entry names.
+ */
+export function escapeTarExcludeLiteral(entry: string): string {
+  return entry.replace(/\\/g, "\\\\").replace(/([*?[])/g, "\\$1");
+}
+
+/**
+ * Undo {@link escapeTarExcludeLiteral}: a backslash before a character means
+ * that character itself, which is tar's own reading of an `--exclude` pattern.
+ * The matchers below compare a relative path against an entry, so an escaped
+ * entry has to be read back to the path it names. Otherwise an ignored
+ * `report[1].csv` arrives here as `report\[1].csv`, matches nothing, and the
+ * path tar was told to omit is mistaken for a path the remote deleted.
+ *
+ * An entry with no backslash is returned unchanged, so the fixed
+ * heavy-directory globs pass through untouched.
+ */
+export function unescapeTarExcludeLiteral(pattern: string): string {
+  return pattern.includes("\\") ? pattern.replace(/\\(.)/g, "$1") : pattern;
+}
+
 export function isRelativePathOrDescendant(relative: string, candidate: string): boolean {
   return relative === candidate || relative.startsWith(`${candidate}/`);
 }
@@ -56,7 +91,11 @@ export function excludePatternMatches(relative: string, pattern: string): boolea
     const base = pattern.slice(0, -2);
     return relative.startsWith(`${base}/`);
   }
-  return isRelativePathOrDescendant(relative, pattern);
+  // Anything that is not one of the directory globs above is a literal path,
+  // possibly escaped by `escapeTarExcludeLiteral`. An escaped entry cannot
+  // reach the branches above: escaping puts a backslash in front of every `*`,
+  // so a literal path never opens with `*/` or closes with `/*`.
+  return isRelativePathOrDescendant(relative, unescapeTarExcludeLiteral(pattern));
 }
 
 export function shouldExcludePath(relative: string, exclude: readonly string[]): boolean {

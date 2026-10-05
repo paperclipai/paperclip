@@ -43,6 +43,7 @@ import {
   type RuntimeStatusSink,
 } from "./runtime-progress.js";
 import {
+  escapeTarExcludeLiteral,
   isRelativePathOrDescendant,
   shouldExcludePath,
   WORKSPACE_HEAVY_DIR_EXCLUDES,
@@ -207,19 +208,11 @@ export interface SandboxAdditionalSource {
   ignoreResolution: ReferencedSourceIgnoreResolution;
 }
 
-/**
- * Escape tar `--exclude` glob metacharacters (`*`, `?`, `[`) in a literal
- * path, so a Git-ignored path that happens to contain one of them is matched
- * literally instead of as a pattern. Without this, a repository-controlled
- * path containing e.g. `*` could exclude unrelated sibling files that
- * happen to match the resulting glob. GNU tar and bsdtar both honor a
- * backslash as a `fnmatch` escape character, so this is not command
- * injection — `createTarballFromDirectory` and the SSH tar equivalent both
- * pass `--exclude` values as argument-vector entries, never through a shell.
- */
-export function escapeTarExcludeLiteral(entry: string): string {
-  return entry.replace(/\\/g, "\\\\").replace(/([*?[])/g, "\\$1");
-}
+// Lives in `exclude-patterns.ts` now, beside the matcher that reads the escape
+// back off, because the SSH transport escapes the anchor workspace's ignored
+// paths with the same function. Re-exported here so this module stays the one
+// import site for the referenced-project staging code and its tests.
+export { escapeTarExcludeLiteral };
 
 /**
  * The tar `--exclude` entries a referenced project's resolved ignore set
