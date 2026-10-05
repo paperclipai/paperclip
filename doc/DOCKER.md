@@ -130,10 +130,16 @@ Paperclip server + PostgreSQL 17. The database is health-checked before the serv
 
 ```sh
 BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
+PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=$(openssl rand -hex 32) \
   docker compose -f docker/docker-compose.yml up --build
 ```
 
 PostgreSQL data persists in a named Docker volume (`pgdata`). Paperclip data persists in `paperclip-data`.
+
+Both Compose files pass `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` to the server.
+Set it to enable signed tool-action approvals, and keep it independent from
+`BETTER_AUTH_SECRET`. Leaving it unset preserves startup without approval-gated
+tool actions; those calls report `signing_secret_unconfigured`.
 
 ### Untrusted PR review
 
