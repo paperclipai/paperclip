@@ -17,6 +17,9 @@ const MAX_REDIRECTS = 5;
 /** Headers a hop to another origin must not carry. */
 const CREDENTIAL_HEADERS = ["authorization", "cookie", "proxy-authorization"];
 
+/** Headers that describe a body a method change has just discarded. */
+const BODY_HEADERS = ["content-length", "content-type", "content-encoding", "transfer-encoding"];
+
 export function isGitHubDotCom(hostname: string) {
   const h = hostname.toLowerCase();
   return h === "github.com" || h === "www.github.com";
@@ -166,21 +169,28 @@ function isRedirect(status: number): boolean {
 function redirectedRequest(init: RequestInit, status: number, from: URL, to: URL): RequestInit {
   const method = (init.method ?? "GET").toUpperCase();
   const next: RequestInit = { ...init };
+  const dropped: string[] = [];
 
   if (status === 303 || ((status === 301 || status === 302) && method === "POST")) {
     next.method = "GET";
     delete next.body;
+    // The headers that described the body it no longer has would otherwise
+    // announce a payload to the next host that this request will not send.
+    dropped.push(...BODY_HEADERS);
   }
 
+  // Same origin keeps its credentials: they were issued for this host.
   if (from.origin.toLowerCase() !== to.origin.toLowerCase()) {
-    next.headers = withoutCredentialHeaders(init.headers);
+    dropped.push(...CREDENTIAL_HEADERS);
   }
+
+  if (dropped.length > 0) next.headers = withoutHeaders(init.headers, dropped);
 
   return next;
 }
 
-function withoutCredentialHeaders(headers: HeadersInit | undefined): HeadersInit {
+function withoutHeaders(headers: HeadersInit | undefined, remove: readonly string[]): HeadersInit {
   const kept = new Headers(headers);
-  for (const name of CREDENTIAL_HEADERS) kept.delete(name);
+  for (const name of remove) kept.delete(name);
   return kept;
 }

@@ -232,6 +232,45 @@ describe("ghFetch endpoint guard", () => {
     expect(seen).toEqual(["Bearer gh-token", "Bearer gh-token"]);
   });
 
+  it("turns a 303 into a GET and leaves no header describing the body it dropped", async () => {
+    const seen: Array<{ method?: string; contentType?: string; contentLength?: string }> = [];
+    const target = await startServer((req, res) => {
+      seen.push({
+        method: req.method,
+        contentType: req.headers["content-type"],
+        contentLength: req.headers["content-length"],
+      });
+      res.writeHead(200);
+      res.end("after");
+    });
+    const start = await startServer((req, res) => {
+      seen.push({ method: req.method, contentType: req.headers["content-type"] });
+      res.writeHead(303, { location: `http://${API_HOST}/repos/acme/skills/result` });
+      res.end();
+    });
+    const network = routingSocketFactory({ [PUBLIC_ADDRESS]: start.port, [SECOND_PUBLIC_ADDRESS]: target.port });
+    let dialledFirst = false;
+
+    const response = await ghFetch(`http://${API_HOST}/repos/acme/skills`, {
+      method: "POST",
+      body: '{"ref":"main"}',
+      headers: { "content-type": "application/json" },
+    }, {
+      lookup: async () => {
+        const address = dialledFirst ? SECOND_PUBLIC_ADDRESS : PUBLIC_ADDRESS;
+        dialledFirst = true;
+        return [{ address, family: 4 }];
+      },
+      socketFactory: network.factory,
+    });
+
+    expect(response.status).toBe(200);
+    expect(seen[0]?.method).toBe("POST");
+    expect(seen[1]?.method).toBe("GET");
+    expect(seen[1]?.contentType).toBeUndefined();
+    expect(seen[1]?.contentLength).toBeUndefined();
+  });
+
   it("stops a redirect loop instead of following it forever", async () => {
     let hops = 0;
     const upstream = await startServer((_req, res) => {
