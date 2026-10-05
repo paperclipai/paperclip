@@ -9036,6 +9036,17 @@ export async function persistHeartbeatRunProcessMetadata(
       eventType: PROCESS_IDENTITY_RECORDED, stream: "system", level: "info",
       message: "Process identity recorded; prior stop evidence no longer applies.",
     });
+    
+    // F1 FIX: Backstop - if run is already terminal (cancelled, etc.), terminate the process immediately
+    // This prevents orphan processes when cancel happens during dispatch before spawn completes
+    if (run && isHeartbeatRunTerminalStatus(run.status)) {
+      await terminateHeartbeatRunProcess({
+        pid: meta.pid,
+        processGroupId: meta.processGroupId,
+        graceMs: 5000,
+      });
+    }
+    
     return run;
   });
 }
