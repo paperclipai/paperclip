@@ -812,6 +812,36 @@ accepted interaction cannot authorize spend, hiring, secrets, deployment,
 destructive data changes, cross-company work, or any mutation the watchdog scope
 otherwise forbids.
 
+### Watchdog configuration changes
+
+Each effective change to the watchdog agent or normalized instructions starts a
+new internal configuration revision. Re-enabling a disabled watchdog also starts
+a new revision. Saving the same active configuration preserves its review cache.
+The migration starts existing rows at revision zero and preserves their existing
+stop fingerprints and completed reviews.
+
+A new revision clears the observed and reviewed stop cache. Its stop fingerprint
+includes the revision, so old mutation scopes stay invalid even after an A-to-B-to-A
+configuration change. An old review completion cannot acknowledge the new revision.
+The scheduler reuses the existing watchdog issue and assigns an idle review to the
+new configured agent. It retains review history and the watchdog issue identity.
+A review awaiting a human response or approval keeps its current state and owner
+until that review path resolves. Its old disposition cannot acknowledge the new
+configuration.
+
+An old queued or running review retains its live-path protection. Configuration
+edits do not cancel that run. The new review waits for the live path to end. This
+also protects a native run that retains execution ownership while its status is
+running. The revision check, review issue changes, comments, and trigger claim share one
+transaction under the configuration row lock. Their reads use the same connection,
+and activity publication occurs after commit. This prevents an aborted revision
+claim from leaving a stale review issue or comment. Conditional database writes
+reject stale configuration snapshots, and
+mutation revalidation checks the current revision again after reading the subtree.
+An external wake already being dispatched can still carry the old revision; its
+scope does not gain authority under the new configuration. These checks do not
+replace the mutation routes' existing transaction and authorization guards.
+
 ### Completion and fingerprint updates
 
 The watchdog's reviewed fingerprint should update only after the watchdog issue reaches a valid disposition:
