@@ -13,29 +13,41 @@ const {
   runSshCommand,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
+  deliveredPrompts,
 } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async () => ({
-    exitCode: 0,
-    signal: null,
-    timedOut: false,
-    stdout: JSON.stringify({
-      type: "turn_end",
-      message: {
-        role: "assistant",
-        content: "done",
-        usage: {
-          input: 10,
-          output: 20,
-          cacheRead: 0,
-          cost: { total: 0.01 },
+  deliveredPrompts: new Array<{ systemPrompt: string; userPrompt: string }>(),
+  runChildProcess: vi.fn(async (...[, , args, options]: Parameters<typeof import("@paperclipai/adapter-utils/server-utils").runChildProcess>) => {
+    const systemPromptArgument = args[args.indexOf("--append-system-prompt") + 1];
+    const { readFile } = await import("node:fs/promises");
+    deliveredPrompts.push({
+      systemPrompt: options.stdin !== undefined
+        ? await readFile(systemPromptArgument, "utf8")
+        : systemPromptArgument,
+      userPrompt: options.stdin ?? args.at(-1) ?? "",
+    });
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          content: "done",
+          usage: {
+            input: 10,
+            output: 20,
+            cacheRead: 0,
+            cost: { total: 0.01 },
+          },
         },
-      },
-      toolResults: [],
-    }),
-    stderr: "",
-    pid: 123,
-    startedAt: new Date().toISOString(),
-  })),
+        toolResults: [],
+      }),
+      stderr: "",
+      pid: 123,
+      startedAt: new Date().toISOString(),
+    };
+  }),
   ensureCommandResolvable: vi.fn(async () => undefined),
   resolveCommandForLogs: vi.fn(async () => "ssh://fixture@127.0.0.1:2222/remote/workspace :: pi"),
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
@@ -108,6 +120,7 @@ describe("pi remote execution", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    deliveredPrompts.length = 0;
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -605,7 +618,6 @@ describe("pi remote execution", () => {
     cleanupDirs.push(rootDir);
     await mkdir(rootDir, { recursive: true });
     const fixture = createPromptContextFixture();
-    let deliveredPrompt = "";
 
     await execute({
       runId: "run-context-ownership",
@@ -622,8 +634,7 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     } as never);
 
-    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[]] | undefined;
-    deliveredPrompt = String(call?.[2].at(-1) ?? "");
+    const deliveredPrompt = deliveredPrompts.at(-1)!.userPrompt;
     expect(deliveredPrompt).toContain(fixture.paperclipTaskMarkdownAssignment);
     expect(deliveredPrompt.indexOf("Append the same ledger entry.")).toBeLessThan(
       deliveredPrompt.lastIndexOf("Append the same ledger entry."),
@@ -656,10 +667,7 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     } as never);
 
-    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[]] | undefined;
-    const args = call?.[2] ?? [];
-    const systemPrompt = args[args.indexOf("--append-system-prompt") + 1] ?? "";
-    const userPrompt = args.at(-1) ?? "";
+    const { systemPrompt, userPrompt } = deliveredPrompts.at(-1)!;
     expect(systemPrompt).toContain("You are agent agent-1 (Pi Builder).");
     expect(userPrompt).not.toContain("You are agent agent-1 (Pi Builder).");
   });
@@ -688,10 +696,7 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     } as never);
 
-    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[]] | undefined;
-    const args = call?.[2] ?? [];
-    const systemPrompt = args[args.indexOf("--append-system-prompt") + 1] ?? "";
-    const userPrompt = args.at(-1) ?? "";
+    const { systemPrompt, userPrompt } = deliveredPrompts.at(-1)!;
     expect(systemPrompt).toBe("CUSTOM POLICY run-custom-policy");
     expect(userPrompt).toBe("CUSTOM POLICY run-custom-policy");
   });
@@ -722,10 +727,7 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     } as never);
 
-    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[]] | undefined;
-    const args = call?.[2] ?? [];
-    const systemPrompt = args[args.indexOf("--append-system-prompt") + 1] ?? "";
-    const userPrompt = args.at(-1) ?? "";
+    const { systemPrompt, userPrompt } = deliveredPrompts.at(-1)!;
     expect(systemPrompt).toContain("You are agent agent-1 (Pi Builder).");
     expect(systemPrompt).toContain("Connection tools:");
     expect(systemPrompt).not.toContain("Execution contract:");
@@ -766,10 +768,7 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     } as never);
 
-    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[]] | undefined;
-    const args = call?.[2] ?? [];
-    const systemPrompt = args[args.indexOf("--append-system-prompt") + 1] ?? "";
-    const userPrompt = args.at(-1) ?? "";
+    const { systemPrompt, userPrompt } = deliveredPrompts.at(-1)!;
     expect(systemPrompt).toContain("Loaded instructions for this run.");
     expect(systemPrompt).toContain("You are agent agent-1 (Pi Builder).");
     expect(systemPrompt).toContain("Connection tools:");

@@ -618,9 +618,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const renderedSystemPromptExtension = renderTemplate(systemPromptExtension, templateData);
     const systemOwnsDefaultPolicy = !hasCustomPromptTemplate || Boolean(resolvedInstructionsFilePath && !instructionsReadFailed);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const useWindowsPromptTransport = process.platform === "win32" && !executionTargetIsRemote;
+    let systemPromptArgument = renderedSystemPromptExtension;
+    let promptDir: string | null = null;
 
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
+      if (useWindowsPromptTransport) {
+        notes.push("Sending the user prompt via stdin and system instructions via a temporary file to avoid Windows command-line limits.");
+      }
       if (!resolvedInstructionsFilePath) return notes;
       if (instructionsReadFailed) {
         notes.push(
@@ -643,7 +649,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("-p"); // Non-interactive mode: process prompt and exit
 
       // Use --append-system-prompt to extend Pi's default system prompt
-      args.push("--append-system-prompt", renderedSystemPromptExtension);
+      args.push("--append-system-prompt", systemPromptArgument);
 
       if (provider) args.push("--provider", provider);
       if (modelId) args.push("--model", modelId);
@@ -655,8 +661,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       if (extraArgs.length > 0) args.push(...extraArgs);
 
-      // Add the user prompt as the last argument
-      args.push(userPrompt);
+      if (!useWindowsPromptTransport) args.push(userPrompt);
 
       return args;
     };
@@ -740,6 +745,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
         env: executionTargetIsRemote ? env : runtimeEnv,
+        stdin: useWindowsPromptTransport ? userPrompt : undefined,
         timeoutSec,
         graceSec,
         onSpawn,
@@ -833,6 +839,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     try {
+      if (useWindowsPromptTransport) {
+        promptDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-prompt-"));
+        systemPromptArgument = path.join(promptDir, "system-prompt.txt");
+        await fs.writeFile(systemPromptArgument, renderedSystemPromptExtension, { encoding: "utf8", mode: 0o600 });
+      }
       const initial = await runAttempt(sessionPath);
       const initialFailed =
         !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || initial.parsed.errors.length > 0);
@@ -878,6 +889,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await Promise.all([
           paperclipBridge?.stop(),
           restoreRemoteWorkspace?.(),
+          promptDir ? fs.rm(promptDir, { recursive: true, force: true }) : Promise.resolve(),
           localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
         ]);
       }
