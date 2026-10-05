@@ -283,6 +283,14 @@ owns committed updates.
 
 ## Hot-Restart Deploys
 
+When server shutdown starts, run admission closes synchronously across the
+scheduler and HTTP services that share the server's database handle. Wake
+requests still enter the durable queue, but no new run is dispatched by that
+server. A claim that races the admission hold returns to queued state together
+with its wake request and issue lock. Operator task-drain controls cannot reopen
+this shutdown hold. The next server lifetime resumes eligible queued work.
+Runs already executing still follow the existing snapshot and drain policy.
+
 During a restart, the board's health, session, and access checks retry temporary
 network/gateway failures and non-JSON API responses every five seconds. A new
 page shows **Reconnecting to Paperclip** with a **Try again** action and waits
