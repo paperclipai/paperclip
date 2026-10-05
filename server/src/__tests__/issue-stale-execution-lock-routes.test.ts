@@ -19,6 +19,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { STALE_QUEUED_RUN_GRACE_MS } from "../services/issue-lock-staleness.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -566,5 +567,122 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       checkoutRunId: currentRunId,
       executionRunId: currentRunId,
     });
+  });
+
+  async function seedQueuedNeverStartedLock(
+    overrides: { createdAgoMs: number } = { createdAgoMs: STALE_QUEUED_RUN_GRACE_MS * 2 },
+  ) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const staleRunId = randomUUID();
+    const currentRunId = randomUUID();
+    const createdAt = new Date(Date.now() - overrides.createdAgoMs);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "QueuedLockOwner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: staleRunId,
+        companyId,
+        agentId,
+        status: "queued",
+        invocationSource: "timer",
+        startedAt: null,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: currentRunId,
+        companyId,
+        agentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date(),
+      },
+    ]);
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Locked by a queued run that never started",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: staleRunId,
+      executionRunId: staleRunId,
+      executionAgentNameKey: null,
+      executionLockedAt: new Date(),
+    });
+
+    return { companyId, agentId, issueId, staleRunId, currentRunId };
+  }
+
+  it("self-heals locks held by a queued run that never started and can no longer dispatch", async () => {
+    const { companyId, agentId, issueId, currentRunId } =
+      await seedQueuedNeverStartedLock();
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["in_progress"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "in_progress",
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("keeps 409 while the queued lock holder is still inside the grace window", async () => {
+    const { companyId, agentId, issueId, staleRunId } =
+      await seedQueuedNeverStartedLock({ createdAgoMs: 60_000 });
+    const actorRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: actorRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, actorRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["in_progress"] });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ executionRunId: staleRunId });
+
+    const row = await db
+      .select({ checkoutRunId: issues.checkoutRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row?.checkoutRunId).toBe(staleRunId);
   });
 });
