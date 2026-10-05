@@ -1,0 +1,344 @@
+{
+  "version": 1,
+  "areas": [
+    {
+      "id": "tasks-and-attention",
+      "title": "Tasks, conversations, and attention",
+      "status": "partial",
+      "features": [
+        "questions-and-approvals.md",
+        "steering.md",
+        "recovery.md"
+      ],
+      "gap": "Seed recipes cover interactions, queued follow-ups, and recovery. Creation, search, list filters, decision triage, documents, and complete conversation lifecycle still need recipes.",
+      "paths": [
+        "ui/src/pages/AgentChat.tsx",
+        "ui/src/pages/AgentChats.tsx",
+        "ui/src/pages/BoardChat.tsx",
+        "ui/src/pages/DecisionQueuePage.tsx",
+        "ui/src/pages/Inbox.tsx",
+        "ui/src/pages/IssueDetail.tsx",
+        "ui/src/pages/Issues.tsx",
+        "ui/src/pages/LegacyInbox.tsx",
+        "ui/src/pages/MyIssues.tsx",
+        "ui/src/pages/Search.tsx",
+        "ui/src/pages/WhatNeedsMe.tsx"
+      ]
+    },
+    {
+      "id": "agents",
+      "title": "Agents, organization, and runtime setup",
+      "status": "partial",
+      "features": [
+        "recovery.md"
+      ],
+      "gap": "Recovery includes the run-detail surface. Hiring, model/account selection, configuration, files, org changes, and run history remain unmapped.",
+      "paths": [
+        "ui/src/pages/AdapterManager.tsx",
+        "ui/src/pages/AgentDetail.production.tsx",
+        "ui/src/pages/AgentDetail.tsx",
+        "ui/src/pages/AgentToolsTab.tsx",
+        "ui/src/pages/Agents.production.tsx",
+        "ui/src/pages/Agents.tsx",
+        "ui/src/pages/NewAgent.tsx",
+        "ui/src/pages/Org.tsx",
+        "ui/src/pages/OrgChart.production.tsx",
+        "ui/src/pages/OrgChart.tsx"
+      ]
+    },
+    {
+      "id": "apps",
+      "title": "App catalog and connection setup",
+      "status": "partial",
+      "features": [
+        "connection-setup.md",
+        "questions-and-approvals.md"
+      ],
+      "gap": "Setup and app-tool review journeys are seeded. Complete provider/auth matrices, revocation, activity, advanced settings, and aggregator administration remain unmapped.",
+      "paths": [
+        "ui/src/pages/apps/AggregatorAppManager.tsx",
+        "ui/src/pages/apps/AggregatorConnectDialog.tsx",
+        "ui/src/pages/apps/AppDetail.tsx",
+        "ui/src/pages/apps/AppLogo.tsx",
+        "ui/src/pages/apps/AppNotConnected.tsx",
+        "ui/src/pages/apps/AppsConnect.tsx",
+        "ui/src/pages/apps/AppsReview.tsx",
+        "ui/src/pages/apps/ArcadeDiscoverySetup.tsx",
+        "ui/src/pages/apps/Browse.tsx",
+        "ui/src/pages/apps/CatalogSourceFilters.tsx",
+        "ui/src/pages/apps/ComposioAppManager.tsx",
+        "ui/src/pages/apps/ComposioAppSetup.tsx",
+        "ui/src/pages/apps/ConnectionProvenanceChip.tsx",
+        "ui/src/pages/apps/Connections.tsx",
+        "ui/src/pages/apps/ExecutorManagementSetup.tsx",
+        "ui/src/pages/apps/PaperclipCloudOAuthHandoff.tsx",
+        "ui/src/pages/apps/ReviewQueueCard.tsx",
+        "ui/src/pages/apps/UnverifiedServerBadge.tsx",
+        "ui/src/pages/apps/app-detail/ActionTestDialog.tsx",
+        "ui/src/pages/apps/app-detail/ActivityPanel.tsx",
+        "ui/src/pages/apps/app-detail/AdvancedPanel.tsx",
+        "ui/src/pages/apps/app-detail/AgentConnectionAccess.tsx",
+        "ui/src/pages/apps/app-detail/BrowserUseSettingsPanel.tsx",
+        "ui/src/pages/apps/app-detail/ConnectedAggregatorApps.tsx",
+        "ui/src/pages/apps/app-detail/IdentitiesSection.tsx",
+        "ui/src/pages/apps/app-detail/PermissionsPanel.tsx",
+        "ui/src/pages/apps/app-detail/RailwayAccessPanel.tsx",
+        "ui/src/pages/apps/app-detail/ReviewPanel.tsx",
+        "ui/src/pages/apps/app-detail/SetupPanel.tsx",
+        "ui/src/pages/apps/connection-owner.tsx"
+      ]
+    },
+    {
+      "id": "chat-channels",
+      "title": "Chat and email channel setup",
+      "status": "partial",
+      "features": [
+        "connection-setup.md",
+        "questions-and-approvals.md",
+        "steering.md"
+      ],
+      "gap": "Shared setup, identity, and interaction entry points are seeded. Each provider needs separate live messaging, attachment, control, and delivery recipes.",
+      "paths": [
+        "ui/src/pages/apps/chat/ChatCommunicationInstructions.tsx",
+        "ui/src/pages/apps/chat/ChatEndpointDetail.tsx",
+        "ui/src/pages/apps/chat/ChatEndpointSetup.tsx",
+        "ui/src/pages/apps/chat/ChatIdentityConfirm.tsx",
+        "ui/src/pages/apps/chat/EmailEndpointSetup.tsx",
+        "ui/src/pages/apps/chat/GitHubBotConfiguration.tsx",
+        "ui/src/pages/apps/chat/GitHubBotManagement.tsx",
+        "ui/src/pages/apps/chat/GitHubChatSetup.tsx",
+        "ui/src/pages/apps/chat/GitHubSetupPrompt.tsx",
+        "ui/src/pages/apps/chat/PhotonConnectStep.tsx",
+        "ui/src/pages/apps/chat/SetupPrompt.tsx",
+        "ui/src/pages/apps/chat/SlackAvatarStep.tsx",
+        "ui/src/pages/apps/chat/SlackIdentityStep.tsx",
+        "ui/src/pages/apps/chat/SlackSetupPrompt.tsx",
+        "ui/src/pages/apps/chat/SlackToolSettings.tsx"
+      ]
+    },
+    {
+      "id": "skills-and-teams",
+      "title": "Skills, Skill Studio, and teams",
+      "status": "partial",
+      "features": [
+        "questions-and-approvals.md"
+      ],
+      "gap": "Only the Skill Studio interaction surface is seeded. Authoring, imports, sources, tests, versions, policies, and team installation remain unmapped.",
+      "paths": [
+        "ui/src/pages/CompanySkills.production.tsx",
+        "ui/src/pages/CompanySkills.tsx",
+        "ui/src/pages/SkillSources.tsx",
+        "ui/src/pages/SkillStudio.tsx",
+        "ui/src/pages/TeamCatalog.tsx",
+        "ui/src/pages/agent-skills/AgentSkillReleasePicker.tsx",
+        "ui/src/pages/agent-skills/AgentSkillRow.tsx",
+        "ui/src/pages/agent-skills/AgentSkillsTab.tsx",
+        "ui/src/pages/skills/ImportSkillsFromProjectDialog.tsx",
+        "ui/src/pages/skills/SkillImportProgress.tsx",
+        "ui/src/pages/skills/SkillPackagePreview.tsx",
+        "ui/src/pages/skills/SkillSourceTree.tsx"
+      ]
+    },
+    {
+      "id": "projects-and-workspaces",
+      "title": "Projects and execution workspaces",
+      "status": "partial",
+      "features": [
+        "recovery.md"
+      ],
+      "gap": "Recovery recipes describe workspace repair controls. Project/repository setup, workspace provisioning, services, files, and normal lifecycle remain unmapped.",
+      "paths": [
+        "ui/src/pages/ExecutionWorkspaceDetail.tsx",
+        "ui/src/pages/ProjectDetail.tsx",
+        "ui/src/pages/ProjectWorkspaceDetail.tsx",
+        "ui/src/pages/Projects.tsx",
+        "ui/src/pages/Workspaces.tsx"
+      ]
+    },
+    {
+      "id": "formal-approvals",
+      "title": "Formal governance approvals",
+      "status": "partial",
+      "features": [
+        "questions-and-approvals.md"
+      ],
+      "gap": "Board list/detail decisions are mapped with service tests and manual recipes. Full browser coverage and every approval-type effect still need qualification.",
+      "paths": [
+        "ui/src/pages/ApprovalDetail.tsx",
+        "ui/src/pages/Approvals.tsx"
+      ]
+    },
+    {
+      "id": "auth-and-access",
+      "title": "Login, invitations, and access",
+      "status": "unmapped",
+      "features": [],
+      "gap": "No end-to-end login, bootstrap, invitation, membership, role, or session-expiry recipe yet.",
+      "paths": [
+        "ui/src/pages/Auth.tsx",
+        "ui/src/pages/BoardClaim.tsx",
+        "ui/src/pages/CliAuth.tsx",
+        "ui/src/pages/CompanyAccess.tsx",
+        "ui/src/pages/InstanceAccess.tsx",
+        "ui/src/pages/InviteLanding.tsx",
+        "ui/src/pages/JoinRequestQueue.tsx",
+        "ui/src/pages/UserProfile.tsx"
+      ]
+    },
+    {
+      "id": "company-and-instance",
+      "title": "Company and instance administration",
+      "status": "unmapped",
+      "features": [],
+      "gap": "Company creation/import/export, settings, experimental gates, profile, and environment administration need recipes.",
+      "paths": [
+        "ui/src/pages/Companies.tsx",
+        "ui/src/pages/CompanyEnvironments.tsx",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/src/pages/CompanyImport.tsx",
+        "ui/src/pages/CompanySettings.tsx",
+        "ui/src/pages/InstanceExperimentalSettings.tsx",
+        "ui/src/pages/InstanceGeneralSettings.tsx",
+        "ui/src/pages/ProfileSettings.tsx"
+      ]
+    },
+    {
+      "id": "goals-costs-and-activity",
+      "title": "Goals, dashboards, costs, and activity",
+      "status": "unmapped",
+      "features": [],
+      "gap": "Goal lifecycle, rollups, budget enforcement/settings, dashboards, timeline, and audit navigation need recipes.",
+      "paths": [
+        "ui/src/pages/Costs.production.tsx",
+        "ui/src/pages/Costs.tsx",
+        "ui/src/pages/Dashboard.tsx",
+        "ui/src/pages/DashboardLive.tsx",
+        "ui/src/pages/GoalDetail.tsx",
+        "ui/src/pages/Goals.tsx",
+        "ui/src/pages/Timeline.tsx",
+        "ui/src/pages/audit/AuditFeed.production.tsx",
+        "ui/src/pages/audit/AuditFeed.tsx",
+        "ui/src/pages/audit/AuditHub.tsx",
+        "ui/src/pages/audit/AuditRuns.tsx",
+        "ui/src/pages/audit/CompanyActivity.production.tsx",
+        "ui/src/pages/audit/CompanyActivity.tsx",
+        "ui/src/pages/audit/RoutineAuditActivity.tsx"
+      ]
+    },
+    {
+      "id": "artifacts",
+      "title": "Artifacts and work products",
+      "status": "unmapped",
+      "features": [],
+      "gap": "Upload, preview, versioned document review, download, and output handoff need recipes.",
+      "paths": [
+        "ui/src/pages/Artifacts.tsx"
+      ]
+    },
+    {
+      "id": "routines-and-pipelines",
+      "title": "Routines, pipelines, cases, and status cards",
+      "status": "unmapped",
+      "features": [],
+      "gap": "Schedules, webhooks, execution history, pipeline review, cases, and status-card refresh need recipes; experimental availability is separate.",
+      "paths": [
+        "ui/src/pages/CaseDetail.tsx",
+        "ui/src/pages/Cases.tsx",
+        "ui/src/pages/PipelineSettings.tsx",
+        "ui/src/pages/Pipelines.tsx",
+        "ui/src/pages/RoutineDetail.production.tsx",
+        "ui/src/pages/RoutineDetail.tsx",
+        "ui/src/pages/Routines.production.tsx",
+        "ui/src/pages/Routines.tsx",
+        "ui/src/pages/StatusCards/ArchivedStatusCardRow.tsx",
+        "ui/src/pages/StatusCards/CreateStatusCardDialog.tsx",
+        "ui/src/pages/StatusCards/StatusCardDetailDrawer.tsx",
+        "ui/src/pages/StatusCards/StatusCardSettingsForm.tsx",
+        "ui/src/pages/StatusCards/StatusCardTile.tsx",
+        "ui/src/pages/StatusCards/SummarizerAgentSelect.tsx",
+        "ui/src/pages/StatusCards/index.tsx"
+      ]
+    },
+    {
+      "id": "secrets",
+      "title": "Secrets and secret proposals",
+      "status": "unmapped",
+      "features": [],
+      "gap": "Company and user secret lifecycle, grants, proposals, vault import, and missing-secret recovery need recipes.",
+      "paths": [
+        "ui/src/pages/Secrets.tsx",
+        "ui/src/pages/secrets/ImportFromVaultDialog.tsx",
+        "ui/src/pages/secrets/MissingUserSecretsBanner.tsx",
+        "ui/src/pages/secrets/MyUserSecretsTab.tsx",
+        "ui/src/pages/secrets/ProposalsTab.tsx",
+        "ui/src/pages/secrets/SecretPathName.tsx",
+        "ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
+        "ui/src/pages/secrets/UserSecretDefinitionsTab.tsx",
+        "ui/src/pages/secrets/proposal-review.tsx",
+        "ui/src/pages/secrets/user-secret-presentation.tsx"
+      ]
+    },
+    {
+      "id": "plugins-and-tools",
+      "title": "Plugins, gateways, and tool profiles",
+      "status": "unmapped",
+      "features": [],
+      "gap": "Plugin installation/configuration, gateways, token lifecycle, profiles, and tool administration need recipes.",
+      "paths": [
+        "ui/src/pages/CompanySettingsPluginPage.tsx",
+        "ui/src/pages/PluginManager.tsx",
+        "ui/src/pages/PluginPage.tsx",
+        "ui/src/pages/PluginSettings.tsx",
+        "ui/src/pages/apps/gateways/ConnectClientDialog.tsx",
+        "ui/src/pages/apps/gateways/CopyableGatewayUrl.tsx",
+        "ui/src/pages/apps/gateways/EditGatewayDialog.tsx",
+        "ui/src/pages/apps/gateways/GatewayDetail.tsx",
+        "ui/src/pages/apps/gateways/GatewaysList.tsx",
+        "ui/src/pages/apps/gateways/NewGatewayDialog.tsx",
+        "ui/src/pages/apps/gateways/panels/AppsToolsPanel.tsx",
+        "ui/src/pages/apps/gateways/panels/GatewayActivityPanel.tsx",
+        "ui/src/pages/apps/gateways/panels/GatewayAdvancedPanel.tsx",
+        "ui/src/pages/apps/gateways/panels/OverviewPanel.tsx",
+        "ui/src/pages/apps/gateways/panels/TokensPanel.tsx",
+        "ui/src/pages/tools/AdvancedToolsRoute.tsx",
+        "ui/src/pages/tools/AuditTab.tsx",
+        "ui/src/pages/tools/GatewaysTab.tsx",
+        "ui/src/pages/tools/McpConfigHelpDialog.tsx",
+        "ui/src/pages/tools/PasteConfigTab.tsx",
+        "ui/src/pages/tools/ProfilesTab.tsx",
+        "ui/src/pages/tools/SmokeLabTab.tsx",
+        "ui/src/pages/tools/ToolsAccess.tsx",
+        "ui/src/pages/tools/connection-dialogs.tsx",
+        "ui/src/pages/tools/profiles/ProfileActionDialog.tsx",
+        "ui/src/pages/tools/profiles/ProfileDetail.tsx",
+        "ui/src/pages/tools/profiles/ProfileDetailRoute.tsx",
+        "ui/src/pages/tools/profiles/ProfileWizard.tsx",
+        "ui/src/pages/tools/profiles/ProfileWizardRoute.tsx",
+        "ui/src/pages/tools/profiles/ProfilesIndex.tsx",
+        "ui/src/pages/tools/profiles/ToolsAdminGate.tsx",
+        "ui/src/pages/tools/profiles/WizardToolsStep.tsx",
+        "ui/src/pages/tools/shared.tsx"
+      ]
+    },
+    {
+      "id": "labs-and-fallbacks",
+      "title": "Developer labs and fallback pages",
+      "status": "unmapped",
+      "features": [],
+      "gap": "Design/lab/performance surfaces and not-found states are tracked for inventory completeness; they are not production journey proof.",
+      "paths": [
+        "ui/src/pages/BootstrapSetupUxLab.tsx",
+        "ui/src/pages/CrossIssueCollaborationUxLab.tsx",
+        "ui/src/pages/DesignGuide.tsx",
+        "ui/src/pages/InviteUxLab.tsx",
+        "ui/src/pages/IssueChatLongThreadPerf.tsx",
+        "ui/src/pages/IssueChatUxLab.tsx",
+        "ui/src/pages/NotFound.tsx",
+        "ui/src/pages/ResponsibleUserDenialUxLab.tsx",
+        "ui/src/pages/RunTranscriptUxLab.tsx",
+        "ui/src/pages/SystemNoticeUxLab.tsx",
+        "ui/src/pages/TaskChatLab.tsx"
+      ]
+    }
+  ]
+}
