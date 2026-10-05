@@ -1051,8 +1051,14 @@ export function connectionIntentService(db: Db) {
         // explicit choice that ends that override.
         const applications = await txAccess.listApplications(loaded.issue.companyId);
         const applicationsById = new Map(applications.map((application) => [application.id, application] as const));
+        // Only connections the identity selection considers: installed for the
+        // whole company or for this agent. A revoked grant elsewhere cannot block
+        // this agent, so it stays untouched.
         const serviceConnectionIds = (await txAccess.listConnections(loaded.issue.companyId))
           .filter((connection) => sourceSlugForConnection(connection, applicationsById) === payload.serviceSlug)
+          .filter((connection) => (connection.installs ?? []).some((install) =>
+            (install.targetType === "company" && install.targetId === loaded.issue.companyId)
+            || (install.targetType === "agent" && install.targetId === payload.requestingAgentId)))
           .map((connection) => connection.id);
         const revokedOverrides = serviceConnectionIds.length === 0 ? [] : await tx.select().from(connectionGrants).where(and(
           eq(connectionGrants.companyId, loaded.issue.companyId),

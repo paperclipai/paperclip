@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   aiProviderDefaults,
+  browserUseSettings,
   agentWakeupRequests,
   issueComments,
   companies,
@@ -927,5 +928,70 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     })).resolves.toMatchObject({ status: "accepted", result: { outcome: "connected", connectionId: connection!.id } });
     expect(await db.select({ id: connectionGrants.id }).from(connectionGrants)
       .where(eq(connectionGrants.connectionId, connection!.id))).toEqual([{ id: personal!.id }]);
+  });
+
+  it("replaces a revoked dedicated GitHub identity on another connection and leaves unrelated revoked grants alone", async () => {
+    const [agent, otherAgent] = await db.insert(agents).values([
+      { companyId: claims.company_id, name: "GitHub worker (cross)", role: "engineer", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { companyId: claims.company_id, name: "Other GitHub worker", role: "engineer", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+    ]).returning();
+    const [issue] = await db.insert(issues).values({
+      companyId: claims.company_id, title: "Push another fix", status: "in_progress", priority: "medium",
+      assigneeAgentId: agent!.id,
+    }).returning();
+    const githubRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: githubRunId, companyId: claims.company_id, agentId: agent!.id, status: "running",
+      responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId: issue!.id },
+    });
+    const service = connectionIntentService(db);
+    const request = await service.request({ ...claims, sub: agent!.id, run_id: githubRunId }, "github");
+
+    const [application] = await db.insert(toolApplications).values({
+      companyId: claims.company_id, applicationKey: `github-${randomUUID()}`, name: "GitHub (cross)",
+      type: "mcp_http", status: "active", metadata: { sourceTemplateKey: "github" },
+    }).returning();
+    const githubConnection = (name: string) => ({
+      companyId: claims.company_id, applicationId: application!.id, name,
+      uid: `github/${randomUUID()}`, transport: "mcp_remote" as const, authKind: "api_key" as const, credentialPolicy: "per_user" as const,
+      status: "active" as const, enabled: true, healthStatus: "ok" as const,
+      config: { sourceTemplateKey: "github" }, transportConfig: { sourceTemplateKey: "github" },
+    });
+    // The revoked dedicated identity lives on a company-wide connection, the approved
+    // personal identity on another connection, and an unrelated revoked grant on a
+    // connection that only another agent can use.
+    const [orgConnection, personalConnection, otherAgentConnection] = await db.insert(toolConnections).values([
+      githubConnection("Org GitHub (cross)"),
+      githubConnection("Personal GitHub (cross)"),
+      githubConnection("Other agent GitHub"),
+    ]).returning();
+    await db.insert(toolConnectionInstalls).values([
+      { companyId: claims.company_id, connectionId: orgConnection!.id, targetType: "company", targetId: claims.company_id },
+      { companyId: claims.company_id, connectionId: personalConnection!.id, targetType: "agent", targetId: agent!.id },
+      { companyId: claims.company_id, connectionId: otherAgentConnection!.id, targetType: "agent", targetId: otherAgent!.id },
+    ]);
+    const [blocking, , unrelated] = await db.insert(connectionGrants).values([
+      { companyId: claims.company_id, connectionId: orgConnection!.id, kind: "agent", subjectAgentId: agent!.id, status: "revoked", isDefault: false },
+      { companyId: claims.company_id, connectionId: personalConnection!.id, kind: "user", subjectUserId: claims.responsible_user_id, status: "active", isDefault: false },
+      { companyId: claims.company_id, connectionId: otherAgentConnection!.id, kind: "agent", subjectAgentId: agent!.id, status: "revoked", isDefault: false },
+    ]).returning();
+    // A reference that makes the unrelated grant impossible to delete.
+    await db.insert(browserUseSettings).values({ grantId: unrelated!.id, companyId: claims.company_id });
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: claims.company_id, name: "GitHub (cross)", profileKey: `github-${randomUUID()}`, defaultAction: "allow", status: "active",
+    }).returning();
+    await db.insert(toolProfileBindings).values({
+      companyId: claims.company_id, profileId: profile!.id, targetType: "agent", targetId: agent!.id,
+    });
+    await db.insert(toolCatalogEntries).values({
+      companyId: claims.company_id, connectionId: personalConnection!.id, toolName: "get_pull_request", name: "get_pull_request",
+      versionHash: "fixture-v1", status: "active", entryKind: "tool",
+    });
+
+    await expect(service.complete(request.interactionId!, personalConnection!.id, claims.responsible_user_id, {
+      canManageOrganizationGrant: true,
+    })).resolves.toMatchObject({ status: "accepted", result: { outcome: "connected", connectionId: personalConnection!.id } });
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, blocking!.id))).toHaveLength(0);
+    expect(await db.select().from(connectionGrants).where(eq(connectionGrants.id, unrelated!.id))).toHaveLength(1);
   });
 });
