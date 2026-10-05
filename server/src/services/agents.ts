@@ -38,6 +38,7 @@ import {
   syncAgentAdapterEnvBindings,
 } from "./agent-secret-bindings.js";
 import { logActivity } from "./activity-log.js";
+import { recordAgentStatusEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
@@ -788,6 +789,16 @@ export function agentService(db: Db) {
 
     type AgentUpdateResult = Awaited<ReturnType<typeof getById>>;
     const applyUpdate = async (txDb: Db): Promise<AgentUpdateResult> => {
+      const current = data.status !== undefined
+        ? await txDb.select().from(agents).where(eq(agents.id, id)).for("update").then(rows => rows[0] ?? null)
+        : existing;
+      if (!current) return null;
+      if (current.status === "terminated" && data.status && data.status !== "terminated") {
+        throw conflict("Terminated agents cannot be resumed");
+      }
+      if (current.status === "pending_approval" && data.status && data.status !== "pending_approval" && data.status !== "terminated") {
+        throw conflict("Pending approval agents cannot be activated directly");
+      }
       const updated = await txDb
         .update(agents)
         .set({ ...normalizedPatch, updatedAt: new Date() })
@@ -795,6 +806,9 @@ export function agentService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
+      if (data.status !== undefined) {
+        await recordAgentStatusEvent(txDb, updated.companyId, id, current.status, updated.status);
+      }
 
       const priorAdapterConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
       const afterConfig = isPlainRecord(updated.adapterConfig) ? updated.adapterConfig : {};
@@ -938,6 +952,9 @@ export function agentService(db: Db) {
           }).onConflictDoNothing();
         }
         await syncAgentSecretBindings(created, txDb);
+        if (created.status !== "pending_approval" && created.status !== "terminated") {
+          await recordResourceCreationEvent(txDb, companyId, "agent", created.id);
+        }
         const normalizedCreated = await agentService(txDb).getById(created.id);
         if (!normalizedCreated) {
           throw notFound("Agent not found");
@@ -953,19 +970,12 @@ export function agentService(db: Db) {
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot pause terminated agent");
 
-      const updated = await db
-        .update(agents)
-        .set({
-          status: "paused",
-          pauseReason: reason,
-          pausedAt: new Date(),
-          errorReason: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return updated ? getById(updated.id) : null;
+      return updateAgent(id, {
+        status: "paused",
+        pauseReason: reason,
+        pausedAt: new Date(),
+        errorReason: null,
+      });
     },
 
     resume: async (id: string) => {
@@ -976,19 +986,12 @@ export function agentService(db: Db) {
         throw conflict("Pending approval agents cannot be resumed");
       }
 
-      const updated = await db
-        .update(agents)
-        .set({
-          status: "idle",
-          pauseReason: null,
-          pausedAt: null,
-          errorReason: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return updated ? getById(updated.id) : null;
+      return updateAgent(id, {
+        status: "idle",
+        pauseReason: null,
+        pausedAt: null,
+        errorReason: null,
+      });
     },
 
     clearError: async (id: string) => {
@@ -1025,23 +1028,19 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
 
-      await db
-        .update(agents)
-        .set({
+      return db.transaction(async tx => {
+        const txDb = tx as unknown as Db;
+        const updated = await agentService(txDb).update(id, {
           status: "terminated",
           pauseReason: null,
           pausedAt: null,
           errorReason: null,
           updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id));
-
-      await db
-        .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.agentId, id));
-
-      return getById(id);
+        });
+        if (!updated) return null;
+        await tx.update(agentApiKeys).set({ revokedAt: new Date() }).where(eq(agentApiKeys.agentId, id));
+        return updated;
+      });
     },
 
     remove: async (id: string) => {
@@ -1150,6 +1149,7 @@ export function agentService(db: Db) {
           });
         }
         await syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
+        await recordResourceCreationEvent(txDb, existing.companyId, "agent", updated.id);
         const agent = await agentService(txDb).getById(updated.id);
         if (!agent) {
           throw notFound("Agent not found");

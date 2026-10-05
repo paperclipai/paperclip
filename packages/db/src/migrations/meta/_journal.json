@@ -2066,6 +2066,13 @@
       "when": 1791028244412,
       "tag": "0296_stiff_thaddeus_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 297,
+      "version": "7",
+      "when": 1791233758328,
+      "tag": "0297_foamy_swordsman",
+      "breakpoints": true
     }
   ]
 }

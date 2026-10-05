@@ -452,6 +452,35 @@ Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVID
 
 Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
 
+## Resource lifecycle events
+
+`resource_lifecycle_events` records content-free lifecycle hooks in the same
+transaction as the resource change. Hired agents and new projects emit `create`.
+Pending hires emit creation only when `activatePendingApproval` succeeds.
+Rejected hires emit termination without creation. Agents created as terminated
+emit no creation event. Capture is generic and works on self-hosted and managed
+instances; recording an event does not authorize a provider operation.
+
+A partial unique `(company_id, resource_type, resource_id)` index deduplicates
+creation. Each actual agent pause, resume, or termination appends another event,
+including budget actions and generic status updates. The agent row stays locked
+until status and event commit, so concurrent repeat requests emit one hook.
+Termination commits API-key revocation in that same transaction.
+
+The numeric event ID orders transitions for a resource. Future plugin delivery
+must enforce company scope, preserve resource order, and track acknowledgments
+per plugin. A global high-water mark can skip transactions that have not yet
+committed; it is not a safe delivery cursor. The journal stores only identity,
+action, and timestamps, not repository snapshots, credentials, provider config,
+or resource health. Company deletion cascades to its events. Resource deletion
+retains events, so consumers must revalidate existence and eligibility and load
+current authorized repository data. A termination hook does not authorize
+removing persistent VM or project data.
+
+The migration creates an empty table. It does not scan or backfill existing
+installs. Plugin delivery, retention, retries, and provider integration are
+separate work. This change makes no provider calls and adds no plugin read API.
+
 ## Legacy controller ownership
 
 Legacy run claims atomically record `controller_boot_id`, a database-clock
