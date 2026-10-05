@@ -162,7 +162,7 @@ describe("dark supplied-tx pause participant (not SQL serialization)", () => {
     })).rejects.toThrow("fence-rejected");
     expect(f.events).toEqual([]); expect(f.writes).toEqual([]);
   });
-  it.each(["resume"])("rejects unsupported opt-in %s before transaction or reads", async mode => {
+  it.each(["unknown"])("rejects unsupported opt-in %s before transaction or reads", async mode => {
     const f = fixture(); const rootDb = { ...f.tx, transaction: vi.fn(async (cb: any) => cb(f.tx)) };
     await expect(tree.issueTreeControlService(rootDb as any).createHold("company-1", "root-1", {
       mode, actor: f.input.actor, lifecycleFence: true,

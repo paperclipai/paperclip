@@ -639,9 +639,9 @@ export function issueTreeControlService(db: Db) {
     return byIssueId;
   }
 
-  async function activePauseHoldsForIssueIds(companyId: string, issueIds: string[]) {
+  async function activePauseHoldsForIssueIds(companyId: string, issueIds: string[], executor: Db | LifecycleTransaction = db) {
     if (issueIds.length === 0) return [];
-    return db
+    return executor
       .select()
       .from(issueTreeHolds)
       .where(
@@ -823,14 +823,41 @@ export function issueTreeControlService(db: Db) {
   }> {
     if (input.lifecycleFence) {
       // The owning boundary must precede every domain read, not just INSERT.
-      // Resume has a separate multi-hold lifecycle; explicit policies remain unsupported.
-      if (!["pause", "cancel", "restore"].includes(input.mode) || input.releasePolicy != null) {
-        throw unprocessable("Fenced tree creation supports only pause/cancel/restore with the default manual release policy");
+      // Explicit policies remain unsupported on this dark boundary.
+      if (!["pause", "cancel", "restore", "resume"].includes(input.mode) || input.releasePolicy != null) {
+        throw unprocessable("Fenced tree creation supports only known modes with the default manual release policy");
       }
-      const captured = { companyId, rootIssueId, mode: input.mode as "pause" | "cancel" | "restore", reason: input.reason,
+      const captured = { companyId, rootIssueId, mode: input.mode, reason: input.reason,
         actor: { actorType: input.actor.actorType, actorId: input.actor.actorId,
           agentId: input.actor.agentId, userId: input.actor.userId, runId: input.actor.runId } };
-      return db.transaction((tx) => createIssueTreeNonResumeHoldInTransaction(tx, captured));
+      if (captured.mode === "resume") {
+        return db.transaction(async (tx) => {
+          await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+          const svc = issueTreeControlService(tx as unknown as Db);
+          const policy: IssueTreeHoldReleasePolicy = { strategy: "manual" };
+          const holdPreview = await svc.preview(companyId, rootIssueId, { mode: "resume", releasePolicy: policy });
+          const issueIds = [...new Set(holdPreview.issues.map(issue => issue.id))];
+          const pauseHolds = await activePauseHoldsForIssueIds(companyId, issueIds, tx);
+          const { hold, members } = await persistIssueTreeHold(tx, companyId, rootIssueId, captured, policy, holdPreview);
+          const resumeHold = toHold(hold, members);
+          const reason = captured.reason ?? "Subtree resume applied.";
+          const resumedPauseHoldIds = pauseHolds.map(pauseHold => pauseHold.id);
+          // Sequential canonical writes on the caller's transaction, never nested owning calls.
+          for (const pauseHold of pauseHolds) {
+            await svc.releaseHold(companyId, pauseHold.rootIssueId, pauseHold.id, {
+              reason, actor: captured.actor, metadata: { resumedByResumeHoldId: resumeHold.id,
+                resumeHoldMode: "tree_resume", resumedPauseHoldId: pauseHold.id },
+            });
+          }
+          const released = await svc.releaseHold(companyId, rootIssueId, resumeHold.id, {
+            reason, actor: captured.actor, metadata: { resumedPauseHoldIds, resumeMode: "subtree" },
+          });
+          return { hold: released, preview: holdPreview, resumedPauseHoldIds };
+        });
+      }
+      return db.transaction((tx) => createIssueTreeNonResumeHoldInTransaction(tx, {
+        ...captured, mode: captured.mode as "pause" | "cancel" | "restore",
+      }));
     }
     if (input.mode === "cancel") {
       const [conversation] = await db.select({ id: issues.id }).from(issues).where(and(
