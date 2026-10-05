@@ -661,7 +661,7 @@ function canAutoSkipPendingStage(input: {
 
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
   const patch: Record<string, unknown> = {};
-  const existingState = parseIssueExecutionState(input.issue.executionState);
+  let existingState = parseIssueExecutionState(input.issue.executionState);
   const currentAssignee = assigneePrincipal(input.issue);
   const actor = actorPrincipal(input.actor);
   const requestedAssigneePatchProvided =
@@ -982,6 +982,15 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       ? currentStage
       : nextPendingStage(input.policy, existingState);
   if (!pendingStage) return { patch };
+
+  if (
+    existingState?.status === CHANGES_REQUESTED_STATUS &&
+    currentAssignee &&
+    !principalsEqual(currentAssignee, existingState.returnAssignee) &&
+    !principalsEqual(currentAssignee, existingState.currentParticipant)
+  ) {
+    existingState = { ...existingState, returnAssignee: currentAssignee };
+  }
 
   const returnAssignee = existingState?.returnAssignee ?? currentAssignee;
   const skippedStageIds = [...(existingState?.completedStageIds ?? [])];

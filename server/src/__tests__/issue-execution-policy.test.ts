@@ -1871,7 +1871,101 @@ describe("review round circuit breaker", () => {
     expect(result.patch.status).toBe("in_review");
     expect(result.patch.executionState).toMatchObject({
       status: "pending",
+      returnAssignee: { type: "agent", agentId: coderAgentId },
       changesRequestedCount: 2,
+    });
+  });
+
+  it.each(["done", "in_review"] as const)(
+    "rebinds the return assignee to the rework executor when resubmitting with %s",
+    (requestedStatus) => {
+      const replacementAgentId = "44444444-4444-4444-8444-444444444444";
+      const resubmission = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: replacementAgentId,
+          assigneeUserId: null,
+          responsibleUserId: boardUserId,
+          executionPolicy: policy,
+          executionState: {
+            status: "changes_requested",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: "changes_requested",
+            changesRequestedCount: 1,
+          },
+        },
+        policy,
+        requestedStatus,
+        requestedAssigneePatch: {},
+        actor: { userId: boardUserId },
+        commentBody: "Reassigned the rework to a new executor",
+      });
+
+      expect(resubmission.patch.executionState).toMatchObject({
+        status: "pending",
+        returnAssignee: { type: "agent", agentId: replacementAgentId },
+      });
+
+      const nextReview = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: resubmission.patch.status,
+          assigneeAgentId: resubmission.patch.assigneeAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: resubmission.patch.executionState,
+        },
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Request one more change",
+      });
+
+      expect(nextReview.patch.assigneeAgentId).toBe(replacementAgentId);
+      expect(nextReview.patch.executionState).toMatchObject({
+        status: "changes_requested",
+        changesRequestedCount: 2,
+      });
+    },
+  );
+
+  it("keeps the return assignee when the rework assignee was the last participant", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      issue: {
+        status: "in_progress",
+        assigneeAgentId: qaAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: {
+          status: "changes_requested",
+          currentStageId: reviewStageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: qaAgentId },
+          returnAssignee: { type: "agent", agentId: coderAgentId },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: "changes_requested",
+          changesRequestedCount: 1,
+        },
+      },
+      policy,
+      requestedStatus: "done",
+      requestedAssigneePatch: {},
+      actor: { userId: boardUserId },
+      commentBody: "Reassigned rework to the last stage participant",
+    });
+
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: qaAgentId },
+      returnAssignee: { type: "agent", agentId: coderAgentId },
     });
   });
 
