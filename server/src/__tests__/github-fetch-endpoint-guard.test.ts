@@ -233,18 +233,25 @@ describe("ghFetch endpoint guard", () => {
   });
 
   it("turns a 303 into a GET and leaves no header describing the body it dropped", async () => {
-    const seen: Array<{ method?: string; contentType?: string; contentLength?: string }> = [];
+    // Every body header is set explicitly on the way in. The transport only adds a
+    // length to a request that has a body, so a follow-up GET would arrive without
+    // one whether the stripping worked or not: stating them here is what makes the
+    // assertions below bite instead of passing vacuously.
+    const body = '{"ref":"main"}';
+    const record = (req: IncomingMessage) => ({
+      method: req.method,
+      contentType: req.headers["content-type"],
+      contentLength: req.headers["content-length"],
+      contentEncoding: req.headers["content-encoding"],
+    });
+    const seen: Array<ReturnType<typeof record>> = [];
     const target = await startServer((req, res) => {
-      seen.push({
-        method: req.method,
-        contentType: req.headers["content-type"],
-        contentLength: req.headers["content-length"],
-      });
+      seen.push(record(req));
       res.writeHead(200);
       res.end("after");
     });
     const start = await startServer((req, res) => {
-      seen.push({ method: req.method, contentType: req.headers["content-type"] });
+      seen.push(record(req));
       res.writeHead(303, { location: `http://${API_HOST}/repos/acme/skills/result` });
       res.end();
     });
@@ -253,8 +260,12 @@ describe("ghFetch endpoint guard", () => {
 
     const response = await ghFetch(`http://${API_HOST}/repos/acme/skills`, {
       method: "POST",
-      body: '{"ref":"main"}',
-      headers: { "content-type": "application/json" },
+      body,
+      headers: {
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(body)),
+        "content-encoding": "identity",
+      },
     }, {
       lookup: async () => {
         const address = dialledFirst ? SECOND_PUBLIC_ADDRESS : PUBLIC_ADDRESS;
@@ -265,10 +276,16 @@ describe("ghFetch endpoint guard", () => {
     });
 
     expect(response.status).toBe(200);
+    // The first hop carries them, so their absence on the second is the stripping.
     expect(seen[0]?.method).toBe("POST");
+    expect(seen[0]?.contentType).toBe("application/json");
+    expect(seen[0]?.contentLength).toBe(String(Buffer.byteLength(body)));
+    expect(seen[0]?.contentEncoding).toBe("identity");
+
     expect(seen[1]?.method).toBe("GET");
     expect(seen[1]?.contentType).toBeUndefined();
     expect(seen[1]?.contentLength).toBeUndefined();
+    expect(seen[1]?.contentEncoding).toBeUndefined();
   });
 
   it("stops a redirect loop instead of following it forever", async () => {
