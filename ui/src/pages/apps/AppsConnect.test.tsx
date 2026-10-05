@@ -406,6 +406,20 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])("shows optional instructions on the Notion OAuth screen only when supplied (%s)", async (provided) => {
+    listGalleryMock.mockResolvedValue({ apps: [NOTION] });
+    await render(undefined, false, <ConnectionSetupFlow
+      serviceSlug="notion"
+      additionalSettings={provided ? <label><input type="checkbox" defaultChecked />Tell agents to use Notion</label> : undefined}
+    />);
+    expect(buttonByText("Continue to Notion")).toBeDefined();
+    const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(container.textContent?.includes("Tell agents to use Notion")).toBe(provided);
+    if (provided) expect(checkbox?.checked).toBe(true);
+    else expect(checkbox).toBeNull();
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
   it.each(["zapier", "arcade", "composio", "executor"])("inline aggregator %s collects the endpoint and completes only for the requester", async (provider) => {
     const onComplete = vi.fn();
     const popup = vi.spyOn(window, "open").mockReturnValue(null);

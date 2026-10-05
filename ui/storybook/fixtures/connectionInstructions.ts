@@ -48,8 +48,12 @@ export function installConnectionGuidanceFixtures(client: QueryClient, provider:
   }] };
   const gallery = { apps: [app], capabilities };
   const settings = { ...instanceExperimentalSettingsSchema.parse({}), enableMemoryConnectors: true };
+  const directory = { users: [{ principalId: "user-storybook", status: "active", user: {
+    id: "user-storybook", email: "board@paperclip.local", name: "Riley Board", image: null,
+  } }] };
   client.setQueryData(queryKeys.instance.experimentalSettings, settings);
   const responses = new Map<string, () => unknown>([
+    [`/api/companies/${company}/user-directory`, () => directory],
     [`/api/companies/${company}/agents`, () => guidanceAgents],
     [`/api/companies/${company}/tools/gallery`, () => gallery],
     [`/api/companies/${company}/tools/connections`, () => ({ connections: connected ? [connection] : [] })],
@@ -62,6 +66,7 @@ export function installConnectionGuidanceFixtures(client: QueryClient, provider:
     [`/api/companies/${company}/tools/policies`, () => ({ policies })],
   ]);
   const seeds: Array<[readonly unknown[], unknown]> = [
+    [queryKeys.access.companyUserDirectory(company), directory],
     [queryKeys.agents.list(company), guidanceAgents], [queryKeys.apps.gallery(company), gallery],
     [queryKeys.tools.connection(id), connection], [queryKeys.tools.catalog(id), { catalog }],
     [queryKeys.tools.connectionGrants(id), grants], [queryKeys.tools.connectionInstalls(id), { connectionId: id, installs }],
@@ -104,6 +109,9 @@ export function installConnectionGuidanceFixtures(client: QueryClient, provider:
       return Response.json({ connectionId: id, installs });
     }
     if (path.startsWith("/api/tools/oauth/")) return Response.json({ error: "Sign-in is not available in this design preview. No provider was contacted." }, { status: 422 });
+    if (path.startsWith(`/api/companies/${company}/tools/`) || path.startsWith("/api/tool-connections/") || path.startsWith("/api/tools/")) {
+      return Response.json({ error: "This connector operation is not included in this design preview." }, { status: 422 });
+    }
     return original(input, init);
   };
   window.fetch = fixture;
