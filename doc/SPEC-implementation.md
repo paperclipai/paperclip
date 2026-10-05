@@ -1502,6 +1502,13 @@ Required UX behaviors:
 - conflict toasts on atomic checkout failure
 - no silent background failures; every failed run visible in UI
 
+Regular task chats and Agent Chat keep unanswered questions as compact,
+reopenable entries at their original position in the feed. Dismissing a question
+or sending a newer message clears its form from the composer without resolving
+the saved question. Questions do not contribute to composer pending counts.
+Dismissal persists locally for the person and task across reloads; reopening
+restores the original form and draft. Approval and permission gates are unchanged.
+
 ## 15. Operational Requirements
 
 ## 15.1 Environment

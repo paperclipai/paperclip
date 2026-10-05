@@ -72,8 +72,10 @@ rejection and revision remain available. Live tool reviews keep their own approv
 
 Pending questions, confirmations, and other task-thread inputs appear in a separate
 card directly above the ordinary composer. The composer stays available for new
-messages while the card is open. Dismissing a card leaves a pending indicator that
-can reopen it; resolving or skipping the input removes that indicator.
+messages while the card is open. Questions use their compact history entry as the
+reminder; dismissing one clears the composer and stays effective after reload for
+that person and task. Other inputs keep a pending indicator that can reopen them;
+resolving or skipping the input removes that indicator.
 
 ## Enforcement (what "compliant" means for the extraction run)
 
@@ -123,4 +125,4 @@ tokenize motion. Principles — reasoning only; values live in `ui/src/index.css
   block collapses the duration/stagger tokens to zero, cascading to every scoped token,
   in addition to each animation's own component-level guard.
 
-Agent Chat keeps pending questions as compact “Unanswered question” entries at their original position in history. A newer user message dismisses the old question form without resolving it. Opening the history entry restores the original form and its draft; submitting later uses the same durable question response path. Actual permission reviews retain their permission checks.
+Agent Chat and regular task chats keep pending questions as compact “Unanswered question” entries at their original position in history. Dismissing the form or sending a newer user message clears it from the composer without resolving it. Questions never contribute to composer pending counts or navigation. Opening the history entry restores the original form and its draft; submitting later uses the same durable question response path. Actual permission reviews retain their permission checks.

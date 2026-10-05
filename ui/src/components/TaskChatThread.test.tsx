@@ -2873,11 +2873,11 @@ describe("TaskChatThread runtime transcript selection", () => {
   );
 });
 
-describe("Agent Chat unanswered question history", () => {
+describe.each([true, false])("Unanswered question history (conversationMode=%s)", conversationMode => {
   const old = questionInteraction("old", "Which color?", "2026-08-15T12:00:01Z");
   const newer = questionInteraction("new", "Which tone?", "2026-08-15T12:05:00Z");
   const movedOn = createLongThreadComments();
-  const props = { conversationMode: true, issueId: "issue-1", onAdd: async () => {}, onSubmitInteractionAnswers: vi.fn() };
+  const props = { conversationMode, issueId: "issue-1", currentUserId: "user-board", onAdd: async () => {}, onSubmitInteractionAnswers: vi.fn() };
   const takeover = () => container.querySelector('[data-testid="task-chat-composer-takeover"]');
   const pendingIndicator = () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-pending-input-indicator"]');
   const dismiss = async () => {
@@ -2989,12 +2989,42 @@ describe("Agent Chat unanswered question history", () => {
     expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).not.toBeNull();
   });
 
-  it("does not change ordinary task question behavior", async () => {
-    render(<TaskChatThread {...props} conversationMode={false} comments={movedOn} interactions={[old]} />);
-    expect(takeover()?.textContent).toContain("Which color?");
-    expect(container.querySelector('[data-testid="task-chat-unanswered-question"]')).toBeNull();
+  it.each(["Cancel", "dismiss"])("keeps a fresh question dismissed after remounting (%s)", async action => {
+    const show = () => render(<TaskChatThread {...props} comments={[]} interactions={[old]} />);
+    show();
+    await click("Yes");
+    if (action === "Cancel") await click("Cancel");
+    else await dismiss();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    show();
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Answer question: Which color?"]')!.click());
+    expect(takeover()?.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toContain("Yes");
+  });
+
+  it("shows a newly asked question after dismissing an older one", async () => {
+    render(<TaskChatThread {...props} comments={[]} interactions={[old]} />);
     await dismiss();
-    expect(pendingIndicator()?.textContent).toContain("1 pending input");
+    await act(async () => render(<TaskChatThread {...props} comments={[]} interactions={[old, newer]} />));
+    expect(takeover()?.textContent).toContain("Which tone?");
+    expect(takeover()?.textContent).not.toContain("Which color?");
+    expect(container.querySelectorAll('[data-testid="task-chat-unanswered-question"]')).toHaveLength(2);
+  });
+
+  it("scopes dismissal to the person and task", async () => {
+    const show = (userId: string, issueId: string) => render(<TaskChatThread {...props} currentUserId={userId} issueId={issueId} comments={[]} interactions={[old]} />);
+    show("user-board", "issue-1");
+    await dismiss();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    show("another-user", "issue-1");
+    expect(takeover()).not.toBeNull();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    show("user-board", "issue-2");
+    expect(takeover()).not.toBeNull();
   });
 });
 

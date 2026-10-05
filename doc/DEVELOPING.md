@@ -140,6 +140,12 @@ choices, item verdicts, suggested tasks, tool reviews, runtime questions, and ph
 the bottom navigation. The normal message composer remains usable below the
 pending card.
 
+Use **Chat & Comments → Task Chat Unanswered Questions → Test Drive** to
+try a regular task question: dismiss it, reload, reopen its compact feed entry,
+and submit the preserved draft. The composer has no question pending badge.
+The demo uses real thread/form components with fixture response callbacks.
+The Agent Chat stories share the same component fixture.
+
 Use **Composer → Model and effort picker** to review harness-specific model
 choices. Codex uses the curated adapter catalog unless the instance declares
 `PAPERCLIP_ADAPTER_MODELS`; general OpenAI API models are not Codex choices.

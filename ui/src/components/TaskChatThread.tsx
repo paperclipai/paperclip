@@ -105,6 +105,7 @@ import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMes
 import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
+import { useDismissedTaskQuestions } from "@/hooks/useDismissedTaskQuestions";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -2475,11 +2476,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     }
     return result;
   }, [interactions, pendingRuntimeRequest]);
-  // Agent Chat questions already have an answerable history card, including
+  // Questions already have an answerable history card, including
   // when the user dismisses a fresh form without sending another message.
   const pendingReminderInputs = useMemo(() => pendingComposerInputs.filter(input =>
-    !(conversationMode && input.kind === "durable" && input.interaction.kind === "ask_user_questions")),
-  [pendingComposerInputs, conversationMode]);
+    !(input.kind === "durable" && input.interaction.kind === "ask_user_questions")),
+  [pendingComposerInputs]);
+  const { dismissedQuestionIds, dismissQuestion } = useDismissedTaskQuestions(issueId, currentUserId);
   const latestUserComment = useMemo(() => comments
     .filter(comment => !comment.deletedAt && comment.authorUserId && !comment.authorAgentId && !comment.createdByRunId)
     .reduce<(typeof comments)[number] | null>((latest, comment) =>
@@ -2488,10 +2490,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // A later message leaves a question answerable in history, without reopening
   // its form on every render or reload. Explicit selection can still reopen it.
   const currentPendingInputs = useMemo(() => pendingComposerInputs.filter(input =>
-    !(conversationMode && input.kind === "durable"
-      && input.interaction.kind === "ask_user_questions" && latestUserComment
-      && toMs(input.interaction.createdAt) < toMs(latestUserComment.createdAt))),
-  [pendingComposerInputs, conversationMode, latestUserComment]);
+    !(input.kind === "durable" && input.interaction.kind === "ask_user_questions"
+      && (dismissedQuestionIds.has(input.interaction.id) || (latestUserComment
+        && toMs(input.interaction.createdAt) < toMs(latestUserComment.createdAt))))),
+  [pendingComposerInputs, dismissedQuestionIds, latestUserComment]);
   const currentPendingKeys = useMemo(() => new Set(currentPendingInputs.map(input => input.key)), [currentPendingInputs]);
   const [takeoverMode, setTakeoverMode] = useState<"open" | "normal">("open");
   const [selectedPendingKey, setSelectedPendingKey] = useState<string | null>(
@@ -2574,7 +2576,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       if (assigneeUsesPaperclipRunner) setRunnerSubmissionPending(true);
       try {
         await onAdd(...args);
-        if (conversationMode && selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
+        if (selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
+          dismissQuestion(selectedPendingInput.interaction.id);
           setSelectedPendingKey(null);
           setTakeoverMode("normal");
         }
@@ -2583,7 +2586,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         throw error;
       }
     },
-    [assigneeUsesPaperclipRunner, onAdd, conversationMode, selectedPendingInput],
+    [assigneeUsesPaperclipRunner, onAdd, selectedPendingInput, dismissQuestion],
   );
   const optimisticRunnerStartup =
     assigneeUsesPaperclipRunner &&
@@ -2670,7 +2673,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       <TaskChatInteractionCard
         item={item}
         onReviewRequest={reopenToolReview}
-        showUnansweredQuestion={conversationMode}
+        showUnansweredQuestion
         planDocument={planDocument}
         showPlanPreview={
           !threadOwnsPlanPreview(
@@ -2711,7 +2714,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       settledRunIds,
       tailRunId,
       reopenToolReview,
-      conversationMode,
     ],
   );
 
@@ -2770,7 +2772,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             Boolean(selectedPendingInput.interaction.payload.toolAction),
           pendingCount: Math.max(1, pendingReminderInputs.length),
           content: takeoverContent,
-          onDismiss: () => setTakeoverMode("normal"),
+          onDismiss: () => {
+            if (selectedPendingInput.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
+              dismissQuestion(selectedPendingInput.interaction.id);
+              setSelectedPendingKey(null);
+            }
+            setTakeoverMode("normal");
+          },
           onSkip: () => skipPendingInput(selectedPendingInput),
           onShowNext: showNextPendingInput,
           inlineSkip:
