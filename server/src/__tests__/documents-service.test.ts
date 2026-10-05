@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   companies,
   createDb,
@@ -85,6 +85,37 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
 
     return { issueId };
   }
+
+  it.each([
+    "issue_documents_company_issue_key_uq",
+    "issue_documents_document_uq",
+    "document_revisions_document_revision_uq",
+  ])("only translates document-key conflicts for %s", async (constraintName) => {
+    const { issueId } = await createIssueWithDocuments();
+    const failure = new Error("Failed query", {
+      cause: { code: "23505", constraint_name: constraintName },
+    });
+    const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(failure);
+    try {
+      const result = svc.upsertIssueDocument({
+        issueId,
+        key: "plan",
+        format: "markdown",
+        body: "Updated plan",
+      });
+      if (constraintName === "issue_documents_company_issue_key_uq") {
+        await expect(result).rejects.toMatchObject({
+          status: 409,
+          message: "Document key already exists on this issue",
+          details: { key: "plan" },
+        });
+      } else {
+        await expect(result).rejects.toBe(failure);
+      }
+    } finally {
+      transaction.mockRestore();
+    }
+  });
 
   it("filters continuation summaries from default document lists and issue payload summaries", async () => {
     const { issueId } = await createIssueWithDocuments();
