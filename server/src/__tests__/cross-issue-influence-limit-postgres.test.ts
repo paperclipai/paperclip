@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -14,6 +15,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+  CROSS_ISSUE_INFLUENCE_LIMIT,
   observeCrossIssueInfluence,
 } from "../services/cross-issue-influence-limit.js";
 
@@ -31,6 +33,8 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
 
   afterEach(async () => {
     await db.delete(activityLog);
+    // Before heartbeatRuns and agents: issues reference both (checkoutRunId, assigneeAgentId).
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -112,5 +116,268 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed")).toHaveLength(20);
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
+  });
+
+  // The ownership fallback for an unscoped run (#13078) is the one branch that reads a
+  // second table inside the locked transaction. Only real SQL proves that query; the
+  // fake-db unit test cannot tell a working `where` from a mistyped one.
+  it("resolves ownership for an unscoped run against the real issues table", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const runId = randomUUID();
+    const ownedIssueId = randomUUID();
+    const checkedOutIssueId = randomUUID();
+    const foreignIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    for (const [id, name] of [[agentId, "Unscoped Senior"], [otherAgentId, "Someone Else"]] as const) {
+      await db.insert(agents).values({
+        id,
+        companyId,
+        name,
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+    // An on-demand heartbeat: registered and running, but with no issue in its snapshot.
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: { source: "on_demand" },
+    });
+    await db.insert(issues).values([
+      { id: ownedIssueId, companyId, title: "Assigned to me", assigneeAgentId: agentId },
+      {
+        id: checkedOutIssueId,
+        companyId,
+        title: "Someone else's, but this run holds it",
+        assigneeAgentId: otherAgentId,
+        checkoutRunId: runId,
+      },
+      { id: foreignIssueId, companyId, title: "Not mine at all", assigneeAgentId: otherAgentId },
+    ]);
+
+    const base = {
+      companyId,
+      runId,
+      agentId,
+      kind: "update" as const,
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    };
+
+    // Assignment admits the write and charges it. The run's sole checkout is its
+    // declared subject, so it stands in for the absent `contextSnapshot.issueId`
+    // and is free.
+    await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: ownedIssueId }))
+      .resolves.toMatchObject({ count: 1, allowed: true });
+    await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: checkedOutIssueId }))
+      .resolves.toBeNull();
+    await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: foreignIssueId }))
+      .rejects.toMatchObject({
+        status: 403,
+        details: { code: "cross_issue_influence_run_context_required" },
+      });
+    // A target that does not exist resolves to no row, which must refuse rather than
+    // read absent ownership as permission.
+    await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: randomUUID() }))
+      .rejects.toMatchObject({ status: 403 });
+
+    // Exactly one of the four reached the counter: the assignment-only write.
+    const recorded = await db
+      .select({ action: activityLog.action, entityId: activityLog.entityId })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(recorded).toEqual([
+      { action: "issue.cross_issue_influence_observed", entityId: ownedIssueId },
+    ]);
+  });
+
+  // Third review finding: the sole-checkout tally runs inside the transaction that
+  // holds the run row lock, so an unindexed scan there would slow every write it gates.
+  // Asserting the index exists is what stops it being dropped later by a schema edit
+  // that looks unrelated — the cost would reappear silently, as latency rather than a
+  // failing test.
+  it("has an index backing the held-checkout tally", async () => {
+    const [index] = await db.execute(sql`
+      SELECT indexdef FROM pg_indexes
+      WHERE tablename = 'issues' AND indexname = 'issues_company_checkout_run_idx'
+    `) as unknown as Array<{ indexdef: string }>;
+
+    expect(index, "migration 0294 did not create issues_company_checkout_run_idx")
+      .toBeDefined();
+    // Leading column must be `company_id`, matching the guard's own `where`, or the
+    // index exists without serving the query it was added for.
+    expect(index.indexdef).toContain("company_id");
+    expect(index.indexdef).toContain("checkout_run_id");
+  });
+
+  // Second review finding: the sole-checkout exemption has to be *sole*. Checkout writes
+  // one issue row at a time and never releases the run's other checkouts, so a run can
+  // hold many. If each one counted as "the subject issue", a run could check out 21
+  // issues and fan out uncounted — the same hole as before, reached a different way.
+  // Real SQL, because the whole fix is a COUNT over `issues.checkout_run_id`.
+  it("charges checkout writes once the run holds more than one checkout", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const firstIssueId = randomUUID();
+    const secondIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Multi Checkout",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: { source: "on_demand" },
+    });
+    // One checkout only: this run's unambiguous subject issue.
+    await db.insert(issues).values({
+      id: firstIssueId,
+      companyId,
+      title: "Checked out first",
+      checkoutRunId: runId,
+    });
+
+    const base = {
+      companyId,
+      runId,
+      agentId,
+      kind: "comment" as const,
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    };
+
+    await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: firstIssueId }))
+      .resolves.toBeNull();
+
+    // The run claims a second issue. Neither is now provably "the" subject, so both are
+    // charged — including the one that was free a moment ago.
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId,
+      title: "Checked out second",
+      checkoutRunId: runId,
+    });
+
+    await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: secondIssueId }))
+      .resolves.toMatchObject({ count: 1, allowed: true });
+    await expect(observeCrossIssueInfluence(db, { ...base, targetIssueId: firstIssueId }))
+      .resolves.toMatchObject({ count: 2, allowed: true });
+
+    const recorded = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(recorded).toHaveLength(2);
+    for (const row of recorded) {
+      expect(row.action).toBe("issue.cross_issue_influence_observed");
+      expect((row.details as { unscopedOwnership: string }).unscopedOwnership)
+        .toBe("shared_checkout");
+    }
+  });
+
+  // Greptile's P1 on PR #14911: assignment admitted the write *and* skipped the
+  // counter, so one run could reach every issue its agent holds without ever meeting
+  // the cap. Ownership is not a bound — an agent can hold any number of issues — so
+  // the reach has to be charged. Real SQL, because the bound IS the counter query.
+  it("charges an unscoped run once per assigned issue and refuses past the cap", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    // One more issue than the cap allows, every one of them assigned to this agent.
+    const assignedIssueIds = Array.from({ length: CROSS_ISSUE_INFLUENCE_LIMIT + 1 }, () =>
+      randomUUID());
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Unscoped Fan-Out",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: { source: "on_demand" },
+    });
+    await db.insert(issues).values(assignedIssueIds.map((id, index) => ({
+      id,
+      companyId,
+      title: `Assigned ${index + 1}`,
+      assigneeAgentId: agentId,
+    })));
+
+    const base = {
+      companyId,
+      runId,
+      agentId,
+      kind: "comment" as const,
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    };
+
+    // Writes are serialized, because each one must see the count the last one left.
+    const decisions: Array<{ allowed: boolean; count: number } | null> = [];
+    for (const targetIssueId of assignedIssueIds) {
+      decisions.push(await observeCrossIssueInfluence(db, { ...base, targetIssueId }));
+    }
+
+    // N assigned issues, charged N times: 1, 2, ... 20, then the 21st refused.
+    expect(decisions.map((decision) => decision?.count))
+      .toEqual(assignedIssueIds.map((_id, index) => index + 1));
+    expect(decisions.slice(0, CROSS_ISSUE_INFLUENCE_LIMIT).every((d) => d?.allowed)).toBe(true);
+    expect(decisions.at(-1)).toMatchObject({
+      allowed: false,
+      mode: "enforce",
+      count: CROSS_ISSUE_INFLUENCE_LIMIT + 1,
+    });
+
+    const recorded = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed"))
+      .toHaveLength(CROSS_ISSUE_INFLUENCE_LIMIT);
+    expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected"))
+      .toHaveLength(1);
   });
 });

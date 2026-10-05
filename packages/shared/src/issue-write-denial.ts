@@ -75,6 +75,28 @@ export interface IssueWriteDenialContext {
   count?: number | null;
   /** ISO timestamp at which log-only rollout becomes enforcement. */
   enforceAt?: string | null;
+  /**
+   * Whether the raw `X-Paperclip-Run-Id` request header reached the server.
+   *
+   * Presence only — the run id itself is never echoed into an agent-visible body.
+   * Leave unset when the request is not in hand; the copy then hedges instead of
+   * asserting a cause it cannot observe.
+   */
+  runHeaderPresent?: boolean | null;
+
+  /**
+   * Did the run id the caller sent resolve to a usable heartbeat run?
+   *
+   * Splits the "header arrived" case, because its two failures need opposite advice.
+   * `true` means a run was found and it simply has no issue scope and does not own the
+   * target — an ownership problem, so the ownership path is the way out. `false` means
+   * the id was malformed or matched no run of this agent: the server never established
+   * a run, so it has established nothing about who owns the target, and pointing at
+   * ownership sends the caller to audit a permission that was never checked.
+   *
+   * Leave unset alongside `runHeaderPresent` when the request is not in hand.
+   */
+  runResolved?: boolean | null;
 }
 
 export function isIssueWriteDenialCode(
@@ -244,23 +266,82 @@ export function describeIssueWriteDenial(
       };
     }
 
-    case "cross_issue_influence_run_context_required":
+    case "cross_issue_influence_run_context_required": {
+      // Three distinct failures share this code, and the caller can only act on the
+      // one it is actually in. `runHeaderPresent` is the server's own observation of
+      // the raw request header — presence only, never the value, since this body is
+      // agent-visible and the value is a run id.
+      //
+      // Leaving it unset keeps the #13078 hedge, which is the honest copy when the
+      // request is not in hand (the UI renders these from a persisted code).
+      //
+      // Do not offer the header alone on any branch. An on-demand run has an empty
+      // `contextSnapshot`, which no caller can populate, so "send the header and retry"
+      // was unreachable advice in the most common case and cost agents retry loops plus
+      // a wrong conclusion about their own permissions (#13078). Worse, a probe agent
+      // that had *already* sent the header read advice it had satisfied, concluded the
+      // server was broken, invented a root cause and burned its heartbeat (#12118).
+      const OPEN_CHANNELS =
+        `Issue documents and new issues are not gated by this, so they stay available ` +
+        `meanwhile.`;
+      const OWNERSHIP_PATH =
+        `Act from a heartbeat bound to a task, or on an issue assigned to you or checked ` +
+        `out by this run.`;
+
+      const headerArrived = context.runHeaderPresent === true;
+      const headerMissing = context.runHeaderPresent === false;
+      // Only meaningful once the header arrived. `false` means the id resolved to no
+      // run, so nothing is known about ownership and the copy must not imply otherwise.
+      const runUnresolved = headerArrived && context.runResolved === false;
+
+      const description =
+        `Every agent comment and task update is attributed to a heartbeat run so the ` +
+        `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
+        (runUnresolved
+          ? `The \`X-Paperclip-Run-Id\` header did reach the server on this request, but its ` +
+            `value matched no live run of yours, so there was no run to attribute the write ` +
+            `to. Nothing was checked about ${issue} itself.`
+          : headerArrived
+            ? `The \`X-Paperclip-Run-Id\` header did reach the server on this request, and it ` +
+              `resolved to a run with no issue scope, and ${issue} is not one this run ` +
+              `owns, so the write could not be contained.`
+            : headerMissing
+              ? `No \`X-Paperclip-Run-Id\` header reached the server at all, so there was no ` +
+                `run to attribute the write to and it could not be contained.`
+              : `Either this request carried no valid run, or its run has no issue scope and ` +
+                `${issue} is not one it owns, so the write could not be contained.`);
+
+      const sanctionedPath = runUnresolved
+        ? // Do not offer the ownership path here: the run never resolved, so ownership was
+          // never reached and sending the caller to audit it wastes the retry.
+          `The \`X-Paperclip-Run-Id\` header arrived, so re-sending the same value cannot ` +
+          `help — it resolved to no run of yours. Send your *current* run id ` +
+          `(\`$PAPERCLIP_RUN_ID\`, a UUID) rather than a stale or copied one, and check that ` +
+          `the sandbox-bridge header allowlist forwards \`x-paperclip-run-id\` unmodified. ` +
+          `${OPEN_CHANNELS}`
+        : headerArrived
+        ? // Never tell this caller to send the header: the server saw it arrive.
+          `The \`X-Paperclip-Run-Id\` header already arrived and resolved, so re-sending it ` +
+          `cannot help. ${OWNERSHIP_PATH} ${OPEN_CHANNELS}`
+        : headerMissing
+          ? `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
+            `and retry. The server received no such header, so if your client did send one, ` +
+            `the sandbox-bridge header allowlist stripped it in transit. ${OPEN_CHANNELS}`
+          : `If the request had no run id, send the \`X-Paperclip-Run-Id\` header with your ` +
+            `current run (\`$PAPERCLIP_RUN_ID\`) and retry. If you already did, the run is ` +
+            `unscoped — resending it cannot help. ${OWNERSHIP_PATH} ${OPEN_CHANNELS}`;
+
       return {
         code,
         status: 403,
         tone: "boundary",
         boundary: "Heartbeat run context",
         title: "Cross-issue writes need a run to attribute them to",
-        description:
-          `Every agent comment and task update is attributed to a heartbeat run so the ` +
-          `cross-issue cap can be counted and the audit trail can name who acted for whom. ` +
-          `This request arrived without a valid run, so it could not be contained.`,
-        whoCanAct: `${actor}, once the request carries its own run id.`,
-        sanctionedPath:
-          `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
-          `and retry.`,
-
+        description,
+        whoCanAct: `${actor}, from a run that carries an issue scope or owns ${issue}.`,
+        sanctionedPath,
       };
+    }
 
     case "issue_write_attribution_spoof_rejected":
       return {
