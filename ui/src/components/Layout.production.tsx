@@ -32,6 +32,7 @@ import { NewAgentDialog } from "./NewAgentDialog";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
+import { useKeyboardInset } from "../hooks/useKeyboardInset";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
@@ -178,6 +179,11 @@ export function Layout() {
   const scrollMemory = useRef(new NavigationScrollMemory());
   const activeScrollKey = useRef<string>(location.key);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
+  // iOS reports the software keyboard only through visualViewport, so measure
+  // it and lift the docked composer by hand.
+  const keyboardInset = useKeyboardInset(isMobile);
+  const keyboardOpen = keyboardInset > 0;
+  const keyboardOpenRef = useRef(keyboardOpen);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
@@ -523,7 +529,15 @@ export function Layout() {
     };
   }, [isMobile, sidebarOpen, setSidebarOpen]);
 
+  useEffect(() => {
+    keyboardOpenRef.current = keyboardOpen;
+  }, [keyboardOpen]);
+
   const updateMobileNavVisibility = useCallback((currentTop: number) => {
+    // iOS scrolls the page while it animates the keyboard in and out. Toggling
+    // the nav there would slide the composer offset by a nav height in the
+    // middle of that animation.
+    if (keyboardOpenRef.current) return;
     const delta = currentTop - lastMainScrollTop.current;
 
     if (currentTop <= 24) {
@@ -735,9 +749,18 @@ export function Layout() {
                 style={
                   isMobile
                     ? ({
-                      "--tc-composer-bottom": mobileNavVisible
+                      "--tc-composer-bottom": keyboardOpen
+                        ? "calc(var(--sz-keyboard-inset) + var(--spacing) * 2)"
+                        : mobileNavVisible
                           ? "var(--tc-composer-visible-nav-offset)"
                           : "var(--sz-calc-8)",
+                      // Let the last message scroll clear of the docked composer.
+                      ...(keyboardOpen
+                        ? {
+                            paddingBottom:
+                              "calc(var(--sz-keyboard-inset) + var(--sz-calc-14))",
+                          }
+                        : null),
                       } as CSSProperties)
                     : undefined
                 }
@@ -770,7 +793,9 @@ export function Layout() {
             </div>
           </div>
         </div>
-        {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
+        {/* The nav is fixed to the layout viewport, so with the keyboard open it
+            would sit behind it. Hide it and give the row to the composer. */}
+        {isMobile && <MobileBottomNav visible={mobileNavVisible && !keyboardOpen} />}
         <CommandPalette />
         <NewIssueDialog />
         <NewProjectDialog />

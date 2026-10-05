@@ -146,7 +146,7 @@ export function OutputFeedbackButtons({
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
             placeholder="Add a short note"
-            className="min-h-20 resize-y bg-background"
+            className="min-h-20 resize-none bg-background sm:resize-y"
             disabled={disabled || isSaving}
           />
           <div className="mt-3 flex items-center justify-end gap-2">

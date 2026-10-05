@@ -104,7 +104,7 @@ export function DocumentAnnotationPopover(props: DocumentAnnotationPopoverProps)
             }}
             placeholder="Write a comment…"
             disabled={props.newCommentDisabled || createThread.isPending}
-            className="resize-y text-sm"
+            className="resize-none text-sm sm:resize-y"
           />
           <div className="mt-2 flex justify-end gap-2">
             <Button type="button" size="sm" variant="ghost" onClick={props.onClose}>Cancel</Button>

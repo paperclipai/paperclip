@@ -822,7 +822,7 @@ function RuntimeRequestCard({
                   placeholder={field.placeholder ?? undefined}
                   disabled={!onDecision || submitting}
                   rows={2}
-                  className="resize-y border-0 bg-muted/35 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+                  className="resize-none border-0 bg-muted/35 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 sm:resize-y"
                   onChange={(event) =>
                     setValues((current) => ({
                       ...current,

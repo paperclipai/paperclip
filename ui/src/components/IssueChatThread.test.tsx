@@ -3600,7 +3600,9 @@ describe("IssueChatThread", () => {
     ) as HTMLDivElement | null;
     expect(dock).not.toBeNull();
     expect(dock?.className).toContain("sticky");
-    expect(dock?.className).toContain("bottom-(--sz-calc-8)");
+    // The token defaults to --sz-calc-8 at :root; the mobile Layout re-points it
+    // at the nav offset, and at the keyboard inset while the keyboard is open.
+    expect(dock?.className).toContain("bottom-(--tc-composer-bottom)");
     expect(dock?.className).toContain("z-20");
 
     const composer = container.querySelector(

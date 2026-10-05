@@ -69,7 +69,7 @@ import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import { TaskChatRichInput } from "./TaskChatRichInput";
 
 const TAKEOVER_TEXTAREA_CLASS =
-  "min-h-16 resize-y border-0 bg-muted/35 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0";
+  "min-h-16 resize-none border-0 bg-muted/35 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 sm:resize-y";
 
 type SharedInteractionProps = Omit<
   ComponentProps<typeof IssueThreadInteractionCard>,

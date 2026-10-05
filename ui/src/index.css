@@ -370,11 +370,16 @@
      INSIDE the scroll viewport (it scrolls away with the messages), so the
      only chrome outside the thread is the top bar plus page padding ≈ 8rem —
      this is what keeps the composer pinned near the viewport bottom. */
-  --tc-thread-max-h: calc(100dvh - 8rem);
+  --tc-thread-max-h: calc(100dvh - 8rem - var(--sz-keyboard-inset));
 
   /* Redesigned chat-shell column cap (phase 2c): one token caps the page
      wrapper, thread body, and pinned composer so they widen in lockstep. */
   --tc-shell-max-w: 60rem;
+
+  /* Height of the strip at the bottom of the layout viewport that the iOS
+     software keyboard covers; 0 when no keyboard is up. Written by
+     useKeyboardInset(). iOS never reports this through vh/dvh. */
+  --sz-keyboard-inset: 0px;
   --sz-66px: 66px;
 
   /* Active-turn status island and its checklist overlay. */
@@ -3321,4 +3326,12 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 }
 @media (max-height: 420px) {
   .agent-setup-popover { overflow-y: auto; }
+}
+
+/* The composer's bottom offset normally rides the 200ms mobile-nav slide.
+   While the iOS keyboard is animating, that transition lags behind Safari's
+   own animation and the dock visibly drifts over the keyboard. Snap instead.
+   --sz-keyboard-inset and .keyboard-open are set by useKeyboardInset(). */
+html.keyboard-open [data-testid="task-chat-composer-dock"] {
+  transition: none;
 }

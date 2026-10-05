@@ -281,7 +281,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
             }}
             placeholder="Write a comment…"
             disabled={props.newCommentDisabled}
-            className="resize-y rounded-none text-sm"
+            className="resize-none rounded-none text-sm sm:resize-y"
           />
           <div className="mt-2 flex items-center justify-end gap-2">
             <Button
@@ -384,7 +384,7 @@ export function ThreadCard(props: {
                 }
               }}
               placeholder="Reply…"
-              className="resize-y rounded-none text-sm"
+              className="resize-none rounded-none text-sm sm:resize-y"
               disabled={props.pendingReply}
             />
             <div className="flex items-center justify-end gap-2">
