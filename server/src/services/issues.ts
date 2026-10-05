@@ -11278,7 +11278,7 @@ export function issueService(db: Db) {
           receiptExisting.status !== "done" &&
           updated.status === "done"
         ) {
-          if (dbOrTx !== db && !postCommitActivityPublications) {
+          if (!ownsTransaction && !postCommitActivityPublications) {
             throw new Error(
               "Human completion in an external transaction requires a post-commit activity queue",
             );
