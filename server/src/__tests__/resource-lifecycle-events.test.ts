@@ -67,6 +67,25 @@ describePostgres("Resource lifecycle events", () => {
     expect(await events()).toEqual([expect.objectContaining({ action: "terminate", resourceId: agent.id })]);
   });
 
+  it("rolls back hire rejection if termination cannot record its hook, allowing a retry", async () => {
+    const agent = await createAgent("pending_approval");
+    const service = approvalService(db);
+    const approval = await service.create(companyId, { type: "hire_agent", status: "pending", payload: { agentId: agent.id } });
+    await db.execute(sql`ALTER TABLE resource_lifecycle_events ADD CONSTRAINT fixture_reject_hook CHECK (false) NOT VALID`);
+    try {
+      await expect(service.reject(approval.id, "fixture-board")).rejects.toThrow();
+      expect(await service.getById(approval.id)).toMatchObject({ status: "pending" });
+      expect(await agentService(db).getById(agent.id)).toMatchObject({ status: "pending_approval" });
+      expect(await events()).toEqual([]);
+    } finally {
+      await db.execute(sql`ALTER TABLE resource_lifecycle_events DROP CONSTRAINT fixture_reject_hook`);
+    }
+    expect(await service.reject(approval.id, "fixture-board")).toMatchObject({ applied: true, approval: { status: "rejected" } });
+    expect(await agentService(db).getById(agent.id)).toMatchObject({ status: "terminated" });
+    expect(await service.reject(approval.id, "fixture-board")).toMatchObject({ applied: false });
+    expect(await events()).toEqual([expect.objectContaining({ action: "terminate", resourceId: agent.id })]);
+  });
+
   it("records projects with zero or multiple repository workspaces without storing repository data", async () => {
     const empty = await projectService(db).create(companyId, { name: "Empty project" });
     const project = await projectService(db).createWithRepositories(companyId, { name: "Repository project" }, [

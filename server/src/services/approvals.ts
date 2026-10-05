@@ -10,7 +10,6 @@ import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
 export function approvalService(db: Db) {
-  const agentsSvc = agentService(db);
   const instanceSettings = instanceSettingsService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
@@ -223,22 +222,26 @@ export function approvalService(db: Db) {
     },
 
     reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
-      const { approval: updated, applied } = await resolveApproval(
-        id,
-        "rejected",
-        decidedByUserId,
-        decisionNote,
-      );
+      return db.transaction(async tx => {
+        const txDb = tx as unknown as Db;
+        const { approval: updated, applied } = await resolveApproval(
+          id,
+          "rejected",
+          decidedByUserId,
+          decisionNote,
+          txDb,
+        );
 
-      if (applied && updated.type === "hire_agent") {
-        const payload = updated.payload as Record<string, unknown>;
-        const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
-        if (payloadAgentId) {
-          await agentsSvc.terminate(payloadAgentId);
+        if (applied && updated.type === "hire_agent") {
+          const payload = updated.payload as Record<string, unknown>;
+          const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
+          if (payloadAgentId) {
+            await agentService(txDb).terminate(payloadAgentId);
+          }
         }
-      }
 
-      return { approval: updated, applied };
+        return { approval: updated, applied };
+      });
     },
 
     requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {

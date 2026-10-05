@@ -466,6 +466,8 @@ creation. Each actual agent pause, resume, or termination appends another event,
 including budget actions and generic status updates. The agent row stays locked
 until status and event commit, so concurrent repeat requests emit one hook.
 Termination commits API-key revocation in that same transaction.
+Hire approval and rejection commit with agent activation or termination, so a
+failed event write leaves the decision pending and retryable.
 
 The numeric event ID orders transitions for a resource. Future plugin delivery
 must enforce company scope, preserve resource order, and track acknowledgments
