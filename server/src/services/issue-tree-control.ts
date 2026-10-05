@@ -1191,8 +1191,21 @@ export function issueTreeControlService(db: Db) {
       releasePolicy?: IssueTreeHoldReleasePolicy | null;
       metadata?: Record<string, unknown> | null;
       actor: ActorInput;
+      // Dark internal owning boundary; no production caller opts in.
+      lifecycleFence?: boolean;
     },
   ) {
+    if (input.lifecycleFence) {
+      // Preserve ordinary explicit metadata/policy on its unchanged path.
+      // The dark participant intentionally supports only reason + actor.
+      if (input.releasePolicy != null || input.metadata != null) {
+        throw unprocessable("Fenced tree release currently supports only the existing policy and no metadata");
+      }
+      const captured = { companyId, rootIssueId, holdId, reason: input.reason,
+        actor: { actorType: input.actor.actorType, actorId: input.actor.actorId,
+          agentId: input.actor.agentId, userId: input.actor.userId, runId: input.actor.runId } };
+      return db.transaction((tx) => releaseIssueTreeHoldInTransaction(tx, captured));
+    }
     const existing = await db
       .select()
       .from(issueTreeHolds)
