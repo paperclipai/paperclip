@@ -12196,6 +12196,8 @@ export function issueService(db: Db) {
         clientRequestId?: string;
         /** Server-only: authenticated Paperclip messages also belong in the Slack thread. */
         mirrorToSlack?: boolean;
+        /** Caller-owned transactions publish these only after a successful commit. */
+        postCommitActivityPublications?: ActivityPublication[];
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
@@ -12808,23 +12810,27 @@ export function issueService(db: Db) {
           { agentId: actor.agentId, userId: actor.userId },
         );
         for (const interaction of expiredInteractions) {
-          await logActivity(dbOrTx, {
-            companyId: issue.companyId,
-            actorType: "user",
-            actorId: actor.userId,
-            agentId: actor.agentId ?? null,
-            runId: createdByRunId,
-            action: "issue.thread_interaction_expired",
-            entityType: "issue",
-            entityId: issueId,
-            details: {
-              interactionId: interaction.id,
-              interactionKind: interaction.kind,
-              interactionStatus: interaction.status,
-              source: "issue.comment.service",
-              result: interaction.result ?? null,
+          await logActivity(
+            dbOrTx,
+            {
+              companyId: issue.companyId,
+              actorType: "user",
+              actorId: actor.userId,
+              agentId: actor.agentId ?? null,
+              runId: createdByRunId,
+              action: "issue.thread_interaction_expired",
+              entityType: "issue",
+              entityId: issueId,
+              details: {
+                interactionId: interaction.id,
+                interactionKind: interaction.kind,
+                interactionStatus: interaction.status,
+                source: "issue.comment.service",
+                result: interaction.result ?? null,
+              },
             },
-          });
+            options?.postCommitActivityPublications,
+          );
         }
       }
 

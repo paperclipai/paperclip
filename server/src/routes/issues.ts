@@ -13702,14 +13702,9 @@ export function issueRoutes(
       });
       const decision =
         transition.decision && decisionId ? transition.decision : null;
-      let transactionalComment: Awaited<ReturnType<typeof svc.addComment>> | null =
-        null;
       const commentWithAdapterOverrides = Boolean(
         commentBody && updateFields.assigneeAdapterOverrides !== undefined,
       );
-      const transactionalCommentSourceTrust = commentAttachmentIds?.length || commentWithAdapterOverrides
-        ? await sourceTrustForActorWrite(existing, actor)
-        : undefined;
       const shouldUseTransactionalIssueUpdate =
         Boolean(commentAttachmentIds?.length) ||
         commentWithAdapterOverrides ||
@@ -13717,6 +13712,24 @@ export function issueRoutes(
         shouldRelayStop ||
         persistReviewActivityTransactionally ||
         reviewPolicySensitiveMutationRequested;
+      let transactionalComment: Awaited<ReturnType<typeof svc.addComment>> | null =
+        null;
+      const transactionalCommentSourceTrust =
+        commentBody &&
+        shouldUseTransactionalIssueUpdate &&
+        actor.actorType === "agent"
+          ? await sourceTrustForActorWrite(
+              {
+                ...existing,
+                projectId:
+                  updateFields.projectId === undefined
+                    ? existing.projectId
+                    : (updateFields.projectId as string | null),
+                executionPolicy: nextExecutionPolicy,
+              },
+              actor,
+            )
+          : undefined;
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
@@ -13727,9 +13740,10 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
-            if (commentAttachmentIds?.length || commentWithAdapterOverrides) {
-              // Adapter settings, reassignment, comment and upload binding commit together.
-              // A failed comment or invalid receipt rolls back the issue update.
+            if (commentBody) {
+              // Reassignment, stage decisions, and ordinary comment persistence
+              // commit together. A comment or decision failure rolls back the
+              // complete workflow transition, including the issue receipt.
               transactionalComment = await svc.addComment(
                 id,
                 commentBody,
@@ -13741,11 +13755,17 @@ export function issueRoutes(
                   onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
                 },
                 {
-                  attachmentIds: commentAttachmentIds,
-                  clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
+                  ...(commentAttachmentIds?.length
+                    ? { attachmentIds: commentAttachmentIds }
+                    : {}),
+                  clientRequestId:
+                    actor.actorType === "user"
+                      ? commentClientRequestId
+                      : undefined,
                   mirrorToSlack: actor.actorType === "user",
                   authorizationReason: issueMutationAuthorizationReason,
                   sourceTrust: transactionalCommentSourceTrust,
+                  postCommitActivityPublications,
                 },
                 tx,
               );

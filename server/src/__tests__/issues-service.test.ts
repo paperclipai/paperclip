@@ -36,6 +36,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import type { ActivityPublication } from "../services/activity-log.js";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
@@ -7318,6 +7319,95 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     );
 
     expect(comment.body).toBe("transaction-safe comment");
+  });
+
+  it("deduplicates identical user comments by clientRequestId", async () => {
+    const clientRequestId = randomUUID();
+    const first = await svc.addComment(
+      issueId,
+      "one durable user comment",
+      { userId: "local-board" },
+      { clientRequestId },
+    );
+    const second = await svc.addComment(
+      issueId,
+      "one durable user comment",
+      { userId: "local-board" },
+      { clientRequestId },
+    );
+
+    expect(second.id).toBe(first.id);
+    const duplicates = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.clientRequestId, clientRequestId));
+    expect(duplicates).toHaveLength(1);
+  });
+
+  it("defers interaction-expiry activity for a caller-owned comment transaction", async () => {
+    const interactionId = randomUUID();
+    const clientRequestId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        supersedeOnUserComment: true,
+        questions: [{
+          id: "scope",
+          prompt: "Pick one",
+          selectionMode: "single",
+          options: [{ id: "a", label: "A" }],
+        }],
+      } as never,
+    });
+    const postCommitActivityPublications: ActivityPublication[] = [];
+
+    await expect(
+      db.transaction(async (tx) => {
+        await svc.addComment(
+          issueId,
+          "rollback this review comment",
+          { userId: "local-board" },
+          { clientRequestId, postCommitActivityPublications },
+          tx,
+        );
+        throw new Error("synthetic decision failure after comment persistence");
+      }),
+    ).rejects.toThrow("synthetic decision failure after comment persistence");
+
+    // The live event is queued, not published from inside the transaction. The
+    // caller discards this queue because the transaction failed.
+    expect(postCommitActivityPublications).toHaveLength(1);
+
+    const interaction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction).toMatchObject({ status: "pending", resolvedAt: null });
+
+    const comments = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.clientRequestId, clientRequestId));
+    expect(comments).toHaveLength(0);
+
+    const expiryActivities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.thread_interaction_expired"));
+    expect(
+      expiryActivities.some(
+        (row) =>
+          (row.details as { interactionId?: string } | null)?.interactionId ===
+          interactionId,
+      ),
+    ).toBe(false);
   });
 
   it("nulls out a non-UUID x-paperclip-run-id instead of 500-ing", async () => {
