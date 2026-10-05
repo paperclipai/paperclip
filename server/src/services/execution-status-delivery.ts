@@ -1,5 +1,6 @@
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { canonicalUuidFromText } from "./canonical-uuid.js";
 import { publishLiveEvent } from "./live-events.js";
 import { logger } from "../middleware/logger.js";
 
@@ -24,16 +25,16 @@ export async function deliverExecutionStatuses(
     })
     .from(heartbeatRuns)
     // Match terminalization's native-first association, but expose only an
-    // existing same-company canonical task ID. Compare text so malformed
-    // context values cannot cause a UUID cast error or escape onto the wire.
+    // existing same-company canonical task ID. Guard legacy text before casting
+    // so malformed values are harmless and the UUID primary key stays usable.
     .leftJoin(
       issues,
       and(
         eq(issues.companyId, heartbeatRuns.companyId),
-        sql`${issues.id}::text = coalesce(
-        ${heartbeatRuns.nativeIssueId}::text,
-        case when jsonb_typeof(${heartbeatRuns.contextSnapshot} -> 'issueId') = 'string'
-          then ${heartbeatRuns.contextSnapshot} ->> 'issueId' end
+        sql`${issues.id} = coalesce(
+        ${heartbeatRuns.nativeIssueId},
+        ${canonicalUuidFromText(sql`case when jsonb_typeof(${heartbeatRuns.contextSnapshot} -> 'issueId') = 'string'
+          then ${heartbeatRuns.contextSnapshot} ->> 'issueId' end`)}
       )`,
       ),
     )
