@@ -14,6 +14,7 @@ import type {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, IssueDocument } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getLastProjectId } from "../lib/recent-projects";
 import { IssueProperties } from "./IssueProperties";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -1785,6 +1786,27 @@ describe("IssueProperties", () => {
     expect(projectTile?.querySelector("svg")?.classList).toContain("lucide-rocket");
 
     act(() => root.unmount());
+  });
+
+  it("remembers task property project selections and No project in the current company", async () => {
+    localStorage.clear();
+    mockProjectsApi.list.mockResolvedValue([createProject({ name: "Remembered Project" })]);
+    const root = renderProperties(container, {
+      issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true,
+    });
+    await flush();
+    await act(() => findRowTrigger(container, "Project")!.click());
+    const option = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Remembered Project")!;
+    expect(option).toBeDefined();
+    act(() => option.click());
+    expect(getLastProjectId("company-1")).toBe("project-1");
+    await act(() => findRowTrigger(container, "Project")!.click());
+    const none = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "No project")!;
+    act(() => none.click());
+    expect(getLastProjectId("company-1")).toBe("");
+    expect(getLastProjectId("company-2")).toBeUndefined();
+    act(() => root.unmount());
+    localStorage.clear();
   });
 
   it("shows a green service link above the workspace row for a live non-main workspace", async () => {

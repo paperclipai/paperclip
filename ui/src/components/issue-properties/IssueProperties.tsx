@@ -1995,7 +1995,7 @@ export function IssueProperties({
               onClick={() => {
                 if (option.kind === "project") {
                   const defaultMode = defaultExecutionWorkspaceModeForProject(option.project);
-                  trackRecentProject(option.project.id);
+                  trackRecentProject(option.project.id, companyId ?? undefined);
                   onUpdate({
                     projectId: option.project.id,
                     projectWorkspaceId: defaultProjectWorkspaceIdForProject(option.project),
@@ -2006,6 +2006,7 @@ export function IssueProperties({
                       : null,
                   });
                 } else {
+                  trackRecentProject("", companyId ?? undefined);
                   onUpdate({
                     projectId: null,
                     projectWorkspaceId: null,
