@@ -23,6 +23,27 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import type { IssuePostCommitAction } from "./issues.js";
+import { acquireIssueLifecycleFenceInTransaction } from "./issue-lifecycle-fence.js";
+
+type LifecycleTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+// Dark, narrow supplied-tx participant. No production caller uses this entry.
+// Other hold/parent/gate writers do NOT yet share the fence; this alone cannot
+// authorize restoration wiring or claim serialization. Caller owns commit.
+export async function releaseIssueTreeHoldInTransaction(
+  tx: LifecycleTransaction,
+  input: { companyId: string; rootIssueId: string; holdId: string; reason?: string | null; actor: ActorInput },
+) {
+  // Project only the supported scalar contract before the first suspension.
+  // Do not spread caller extras or carry a mutable actor through the fence.
+  const { companyId, rootIssueId, holdId, reason } = input;
+  const actor = { actorType: input.actor.actorType, actorId: input.actor.actorId,
+    agentId: input.actor.agentId, userId: input.actor.userId, runId: input.actor.runId };
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  return issueTreeControlService(tx as unknown as Db).releaseHold(
+    companyId, rootIssueId, holdId, { reason, actor },
+  );
+}
 
 type IssueRow = typeof issues.$inferSelect;
 type HoldRow = typeof issueTreeHolds.$inferSelect;
