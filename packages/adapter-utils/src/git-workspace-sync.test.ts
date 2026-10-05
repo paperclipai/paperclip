@@ -773,6 +773,59 @@ describe("git workspace sync", () => {
       expect(await git(repo, ["rev-parse", "HEAD"])).toBe(importedHead);
       await expect(git(repo, ["symbolic-ref", "--quiet", "HEAD"])).rejects.toMatchObject({ code: 1 });
     });
+
+    it.each([false, true])("rejects a checkout during integration (initially detached: %s)", async (detached) => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      if (detached) await git(repo, ["checkout", "--detach"]);
+      const realGit = (await execFile("sh", ["-c", "command -v git"])).stdout.trim();
+      const bin = path.join(repo, "test-bin");
+      await mkdir(bin);
+      const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+      // Switch branches after the initial identity read, at the merge-base
+      // subprocess boundary. Both refs still point to the expected old OID.
+      await writeFile(path.join(bin, "git"), `#!/bin/sh
+if [ "$3" = merge-base ]; then
+  ${quote(realGit)} -C "$2" checkout -B other ${baseline.headCommit} >/dev/null 2>&1 || exit 1
+fi
+exec ${quote(realGit)} "$@"
+`, { mode: 0o755 });
+      const priorPath = process.env.PATH;
+      process.env.PATH = `${bin}${path.delimiter}${priorPath ?? ""}`;
+      try {
+        await expect(integrateImportedGitHead({
+          localDir: repo, importedHead, baseline: { ...baseline, branchName: detached ? null : "host" },
+        })).rejects.toThrow("branch changed");
+      } finally {
+        if (priorPath === undefined) delete process.env.PATH;
+        else process.env.PATH = priorPath;
+      }
+      expect(await git(repo, ["symbolic-ref", "--short", "HEAD"])).toBe("other");
+      expect(await git(repo, ["rev-parse", "host"])).toBe(baseline.headCommit);
+      expect(await git(repo, ["rev-parse", "other"])).toBe(baseline.headCommit);
+      expect(await stat(path.join(repo, ".git", "HEAD.lock")).catch(() => null)).toBeNull();
+    });
+
+    it.each([false, true])("holds the HEAD lock through commit (initially detached: %s)", async (detached) => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      await git(repo, ["branch", "other"]);
+      if (detached) await git(repo, ["checkout", "--detach"]);
+      await writeFile(path.join(repo, ".git", "hooks", "reference-transaction"), `#!/bin/sh
+if [ "$1" = prepared ]; then
+  if git symbolic-ref HEAD refs/heads/other 2>/dev/null; then exit 1; fi
+  printf blocked > checkout-attempt.txt
+fi
+exit 0
+`, { mode: 0o755 });
+      await integrateImportedGitHead({
+        localDir: repo, importedHead, baseline: { ...baseline, branchName: detached ? null : "host" },
+      });
+      expect(await readFile(path.join(repo, "checkout-attempt.txt"), "utf8")).toBe("blocked");
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(importedHead);
+      expect(await git(repo, ["rev-parse", "other"])).toBe(baseline.headCommit);
+      if (detached) await expect(git(repo, ["symbolic-ref", "--quiet", "HEAD"])).rejects.toMatchObject({ code: 1 });
+      else expect(await git(repo, ["symbolic-ref", "--short", "HEAD"])).toBe("host");
+      expect(await stat(path.join(repo, ".git", "HEAD.lock")).catch(() => null)).toBeNull();
+    });
   });
 
   it.each([false, true])("grafts an unrelated imported head with an unchanged host (baseline supplied: %s)", async (withBaseline) => {

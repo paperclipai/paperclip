@@ -456,12 +456,18 @@ Sandbox Git restore uses the host branch and commit captured before staging.
 If that identity is unchanged, a rebased or amended sandbox history with shared
 ancestry replaces the starting tip instead of being merged with it. The ref
 update checks the expected old commit; a concurrent change retries through the
-normal history integration path. The directory merge still preserves host-only
+normal history integration path. Git holds the HEAD and applicable branch locks
+while restore verifies the attached/detached branch identity and commits the ref
+transaction. A checkout during integration cannot redirect that write.
+The directory merge still preserves host-only
 file changes under its existing rules. A changed host branch requires recovery.
 An intentional reset to an ancestor exports a full Git bundle so restore keeps
 the actual sandbox tip; an empty delta is reserved for an unchanged tip.
 Unrelated sandbox history keeps the existing history-preserving graft only when
 the recorded host has not advanced; it must not replace concurrent host work.
+Warm sandbox reuse must match the current host Git tip and branch as well as the
+file snapshot and saved stamp, including managed nested repositories. A history
+or branch mismatch restages the host before the next run begins.
 
 ### Workspace scan failures before provider startup
 

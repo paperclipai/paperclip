@@ -855,6 +855,63 @@ export async function createUnrelatedHistoryGraftCommit(input: {
   return graftCommit.stdout.trim();
 }
 
+async function updateLocalGitHead(input: {
+  localDir: string;
+  newHead: string;
+  oldHead: string;
+  branchName: string | null;
+}): Promise<void> {
+  // Prepare the ref transaction before checking the symbolic HEAD identity.
+  // Git holds HEAD.lock (and the branch lock when attached) until commit/abort,
+  // so a checkout cannot redirect the write after this check. --no-deref also
+  // prevents a detached write from following a newly attached branch.
+  await new Promise<void>((resolve, reject) => {
+    let identityError: unknown;
+    let prepared = false;
+    let output = "";
+    const child = execFile("git", ["-C", input.localDir, "update-ref", "--stdin"], {
+      timeout: 15_000,
+      maxBuffer: 64 * 1024,
+    }, (error, stdout, stderr) => {
+      if (identityError) reject(identityError);
+      else if (error) reject(Object.assign(error, { stdout, stderr }));
+      else if (!stdout.includes("commit: ok\n")) reject(new Error("Git HEAD transaction did not commit."));
+      else resolve();
+    });
+    // Early Git errors close stdin; the process callback reports the error.
+    child.stdin!.on("error", () => {});
+    child.stdout!.on("data", (chunk: string | Buffer) => {
+      output += chunk.toString();
+      if (prepared || !output.includes("prepare: ok\n")) return;
+      prepared = true;
+      void (async () => {
+        try {
+          const branchName = (await runLocalGit(input.localDir, ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+            timeout: 10_000,
+          }).catch((error) => {
+            if (error.code === 1) return { stdout: "" };
+            throw error;
+          })).stdout.trim() || null;
+          if (branchName !== input.branchName) {
+            throw new Error("Workspace branch changed while remote work was running.");
+          }
+          child.stdin!.end("commit\n");
+        } catch (error) {
+          identityError = error;
+          child.stdin!.end("abort\n");
+        }
+      })();
+    });
+    child.stdin!.write([
+      "start",
+      ...(input.branchName === null ? ["option no-deref"] : []),
+      `update HEAD ${input.newHead} ${input.oldHead}`,
+      "prepare",
+      "",
+    ].join("\n"));
+  });
+}
+
 export async function integrateImportedGitHead(input: {
   localDir: string;
   importedHead: string;
@@ -881,7 +938,6 @@ export async function integrateImportedGitHead(input: {
     const currentHead = snapshot.headCommit;
     if (!currentHead || currentHead === input.importedHead) return;
 
-    const headRef = snapshot.branchName ? `refs/heads/${snapshot.branchName}` : "HEAD";
     // `git merge-base` exits 1 when the commits share no ancestor — the only
     // outcome that authorizes the graft fallback below. Every other failure
     // (timeout, missing object, repository error) must keep failing the
@@ -903,9 +959,8 @@ export async function integrateImportedGitHead(input: {
     // retry against its new tip and use the normal concurrent-history path.
     if (mergeBaseHead === currentHead || (mergeBaseHead && currentHead === input.baseline?.headCommit)) {
       try {
-        await runLocalGit(input.localDir, ["update-ref", headRef, input.importedHead, currentHead], {
-          timeout: 10_000,
-          maxBuffer: 16 * 1024,
+        await updateLocalGitHead({
+          localDir: input.localDir, newHead: input.importedHead, oldHead: currentHead, branchName: snapshot.branchName,
         });
         return;
       } catch (error) {
@@ -932,9 +987,8 @@ export async function integrateImportedGitHead(input: {
         syncLabel: "Paperclip remote git sync",
       });
       try {
-        await runLocalGit(input.localDir, ["update-ref", headRef, graftCommit, currentHead], {
-          timeout: 10_000,
-          maxBuffer: 16 * 1024,
+        await updateLocalGitHead({
+          localDir: input.localDir, newHead: graftCommit, oldHead: currentHead, branchName: snapshot.branchName,
         });
         return;
       } catch (error) {
@@ -979,9 +1033,8 @@ export async function integrateImportedGitHead(input: {
       },
     );
     try {
-      await runLocalGit(input.localDir, ["update-ref", headRef, mergeCommit.stdout.trim(), currentHead], {
-        timeout: 10_000,
-        maxBuffer: 16 * 1024,
+      await updateLocalGitHead({
+        localDir: input.localDir, newHead: mergeCommit.stdout.trim(), oldHead: currentHead, branchName: snapshot.branchName,
       });
       return;
     } catch (error) {
