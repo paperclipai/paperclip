@@ -1317,6 +1317,16 @@ heartbeats. Other runtime skills remain controlled by
 `paperclipSkillSync.desiredSkills`. The native `paperclip_runner` does not use
 this legacy default because its protocol supplies the control-plane contract.
 
+Hermes can re-point a skill link after a managed CLI update or rollback when
+both sources belong to payloads registered in the same owned CLI install
+store. The adapter checks the store marker, install manifest, and package and
+skill paths before it replaces the link. Retained payloads remain on disk.
+Real skill directories and unverified links remain unchanged, including
+broken links from another installation. If such a conflict stops a run,
+inspect the target path in the error. Move a user skill to another name, or
+remove the conflicting symlink after confirming that Paperclip should manage
+that name, then retry the run.
+
 Validate the catalog without writing the manifest:
 
 ```sh

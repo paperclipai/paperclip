@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import type {
@@ -32,6 +34,148 @@ function resolveHermesHome(config: Record<string, unknown>): string {
       : {};
   const configuredHome = asString(env.HOME);
   return configuredHome ? path.resolve(configuredHome) : os.homedir();
+}
+
+interface ManagedSkillSource {
+  cliRoot: string;
+  payload: string;
+  suffix: string;
+  identity: string;
+}
+
+function managedSkillSource(source: string, runtimeName: string, skillKey: string): ManagedSkillSource | null {
+  const skill = path.resolve(source);
+  const skills = path.dirname(skill);
+  const pkg = path.dirname(skills);
+  const scope = path.dirname(pkg);
+  const modules = path.dirname(scope);
+  const packaged = path.basename(scope) === "@paperclipai" && path.basename(modules) === "node_modules";
+  const payload = packaged ? path.dirname(modules) : pkg;
+  const sourceRoot = path.dirname(payload);
+  const installs = path.dirname(sourceRoot);
+  const cliRoot = path.dirname(installs);
+  if (
+    path.basename(skill) !== runtimeName || path.basename(skills) !== "skills"
+    || !["npm", "git"].includes(path.basename(sourceRoot))
+    || path.basename(installs) !== "installs" || path.basename(cliRoot) !== "cli"
+    || (!packaged && (path.basename(sourceRoot) !== "git" || skillKey !== `paperclipai/paperclip/${runtimeName}`))
+  ) return null;
+  // The repository's root runtime skills are shipped in @paperclipai/server.
+  const identity = path.join("@paperclipai", packaged ? path.basename(pkg) : "server", "skills", runtimeName);
+  return { cliRoot, payload, suffix: path.relative(payload, skill), identity };
+}
+
+async function readOwnedInstallFile(file: string): Promise<string | null> {
+  const before = await fs.lstat(file);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) return null;
+  const handle = await fs.open(
+    file,
+    constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW),
+  );
+  try {
+    const stat = await handle.stat();
+    const after = await fs.lstat(file);
+    if (
+      !stat.isFile() || stat.nlink !== 1
+      || (typeof process.getuid === "function" && stat.uid !== process.getuid())
+      || !after.isFile() || after.isSymbolicLink() || after.nlink !== 1
+      || (typeof process.getuid === "function" && after.uid !== process.getuid())
+      || before.dev !== stat.dev || before.ino !== stat.ino
+      || after.dev !== stat.dev || after.ino !== stat.ino
+    ) return null;
+    return await handle.readFile("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+// A retained manifest entry still proves ownership after its payload is removed.
+// Resolve the existing prefix so a symlink in that prefix cannot escape the store.
+async function canonicalPath(candidate: string): Promise<string> {
+  let prefix = path.resolve(candidate);
+  const missing: string[] = [];
+  while (true) {
+    try {
+      return path.join(await fs.realpath(prefix), ...missing);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || path.dirname(prefix) === prefix) throw error;
+      const existing = await fs.lstat(prefix).catch((statError: NodeJS.ErrnoException) => {
+        if (statError.code !== "ENOENT") throw statError;
+        return null;
+      });
+      if (existing?.isSymbolicLink()) throw error;
+      missing.unshift(path.basename(prefix));
+      prefix = path.dirname(prefix);
+    }
+  }
+}
+
+async function isRetainedManagedSkill(source: string, previous: string, runtimeName: string, skillKey: string): Promise<boolean> {
+  const next = managedSkillSource(source, runtimeName, skillKey);
+  const old = managedSkillSource(previous, runtimeName, skillKey);
+  if (!next || !old || next.identity !== old.identity) return false;
+  try {
+    const cliRoot = await fs.realpath(next.cliRoot);
+    if (await fs.realpath(old.cliRoot) !== cliRoot) return false;
+    for (const directory of [next.cliRoot, path.join(next.cliRoot, "installs")]) {
+      const stat = await fs.lstat(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink()
+        || (typeof process.getuid === "function" && stat.uid !== process.getuid())) return false;
+    }
+    if (await readOwnedInstallFile(path.join(cliRoot, ".managed-install")) !== "paperclipai managed install store v1\n") return false;
+    const raw = await readOwnedInstallFile(path.join(cliRoot, "install.json"));
+    if (!raw) return false;
+    const manifest = JSON.parse(raw) as Record<string, unknown>;
+    if (!manifest || manifest.schemaVersion !== 1 || !Array.isArray(manifest.previous)) return false;
+    const registered = new Set<string>();
+    for (const value of [manifest, ...manifest.previous]) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const record = value as Record<string, unknown>;
+      if (typeof record.payloadPath !== "string" || !path.isAbsolute(record.payloadPath)) return false;
+      const payload = await canonicalPath(record.payloadPath);
+      const parts = path.relative(cliRoot, payload).split(path.sep);
+      if (parts.length !== 3 || parts[0] !== "installs" || !["npm", "git"].includes(parts[1] ?? "")
+        || record.source !== parts[1] || !/^[A-Za-z0-9._-]+$/.test(parts[2] ?? "")) return false;
+      registered.add(payload);
+    }
+    for (const entry of [next, old]) {
+      const payloadStat = await fs.lstat(entry.payload).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return null;
+      });
+      if (payloadStat && (!payloadStat.isDirectory() || payloadStat.isSymbolicLink())) return false;
+      const payload = await canonicalPath(entry.payload);
+      if (!registered.has(payload)) return false;
+      const skill = entry === next ? source : previous;
+      if (await canonicalPath(skill) !== path.join(payload, entry.suffix)) return false;
+    }
+    return (await fs.stat(source)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function ensureHermesSkillLink(source: string, target: string, runtimeName: string, skillKey: string): Promise<void> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (existing?.isSymbolicLink()) {
+    const linked = await fs.readlink(target);
+    const previous = path.resolve(path.dirname(target), linked);
+    if (previous !== path.resolve(source)) {
+      if (!await isRetainedManagedSkill(source, previous, runtimeName, skillKey)) return;
+      const temporary = `${target}.tmp-${randomUUID()}`;
+      try {
+        await fs.symlink(path.resolve(source), temporary);
+        const current = await fs.lstat(target);
+        if (!current.isSymbolicLink() || current.dev !== existing.dev || current.ino !== existing.ino
+          || await fs.readlink(target) !== linked) return;
+        await fs.rename(temporary, target);
+      } finally {
+        await fs.unlink(temporary).catch(() => {});
+      }
+      return;
+    }
+  }
+  await ensurePaperclipSkillSymlink(source, target);
 }
 
 interface SkillFrontmatter {
@@ -232,7 +376,7 @@ export async function reconcileHermesPaperclipSkills(
   for (const entry of availableEntries) {
     if (!desiredSet.has(entry.key) || isPaperclipSkillSourceMissing(entry)) continue;
     const target = path.join(skillsHome, entry.runtimeName);
-    await ensurePaperclipSkillSymlink(entry.source, target);
+    await ensureHermesSkillLink(entry.source, target, entry.runtimeName, entry.key);
     const linkedSource = await fs.readlink(target).catch(() => null);
     const resolvedSource = linkedSource
       ? path.resolve(path.dirname(target), linkedSource)
