@@ -1457,6 +1457,14 @@ Environment overrides:
   stale-backup warning threshold
 - `PAPERCLIP_DB_BACKUP_ALERT_FILE=/path/to/failure-marker` lets external cron
   wrappers surface the last failed backup in `/api/health`
+- `PAPERCLIP_MAX_CONCURRENT_RUNS=<count>` caps how many heartbeat runs a single
+  company may have running at once, across all agents. `0`, unset, empty, or
+  non-numeric means no fleet cap, which is the default. Values are clamped to
+  `1..50`. When the fleet is at the cap the scheduler leaves queued runs queued
+  and retries on a later tick; it never cancels them. Per-agent
+  `heartbeat.maxConcurrentRuns` still applies and is unchanged. Use this on hosts
+  with limited CPU: the fleet cap bounds the number of concurrent agent
+  processes, which bounds scheduler and database write contention.
 - `PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS=<days>` sets how long the
   terminal-workspace reaper waits after an issue tree becomes terminal before it
   archives the execution workspace and deletes the worktree. A person can reopen

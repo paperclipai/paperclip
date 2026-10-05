@@ -88,6 +88,18 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
   return fn();
 }
 
+async function isPostgresDeadlock(error: unknown): Promise<boolean> {
+  // Drizzle wraps the driver error in a DrizzleQueryError, so the
+  // deadlock marker sits on the cause chain rather than on the error
+  // itself. A deadlocked statement never executes, so retrying is safe.
+  let current = error;
+  for (let depth = 0; current instanceof Error && depth < 4; depth += 1) {
+    if (current.message.includes("deadlock detected")) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createDb>) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
@@ -116,13 +128,15 @@ async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createD
       const isLateCommentRace =
         error instanceof Error &&
         error.message.includes("issue_comments_issue_id_issues_id_fk");
-      if (!isLateCommentRace || attempt === 9) {
+      if ((!isLateCommentRace && !(await isPostgresDeadlock(error))) || attempt === 9) {
         throw error;
       }
 
       // Heartbeat completion can write issue-thread comments shortly after the
       // run leaves queued/running. Retry the dependent deletes once those land.
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // A parallel suite can hold a row lock for the whole duration of one of
+      // its tests, so the wait grows with the attempt rather than staying flat.
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
     }
   }
 }
