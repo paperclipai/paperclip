@@ -890,7 +890,7 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledWith("do the plan", undefined, undefined, undefined, expect.any(String));
   });
 
-  it("cycles Auto, Plan, and Ask modes with Cmd+Period while focused", () => {
+  it("cycles Auto, Plan, Ask, and Read-only modes with Cmd+Period while focused", () => {
     const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
     render(
       <TaskChatComposer
@@ -925,6 +925,10 @@ describe("TaskChatComposer", () => {
     cycleMode();
     expect(chip.getAttribute("data-pending-work-mode")).toBe("ask");
     expect(chip.textContent).toContain("Ask");
+
+    cycleMode();
+    expect(chip.getAttribute("data-pending-work-mode")).toBe("read_only");
+    expect(chip.textContent).toContain("Read-only");
 
     cycleMode();
     expect(container.querySelector('[data-testid="task-chat-composer-mode"]')).toBeNull();

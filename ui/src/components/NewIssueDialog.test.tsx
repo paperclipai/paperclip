@@ -1164,6 +1164,17 @@ describe("NewIssueDialog", () => {
         metaKey: true,
       }));
     });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("read_only");
+    expect(modeChip()?.textContent).toContain("Read-only mode");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
+        key: ".",
+        metaKey: true,
+      }));
+    });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
 
     act(() => root.unmount());
@@ -1649,6 +1660,7 @@ describe("NewIssueDialog", () => {
       expect(workModeOption("standard")?.textContent).toContain("Auto mode");
       expect(workModeOption("ask")?.textContent).toContain("Ask mode");
       expect(workModeOption("planning")?.textContent).toContain("Plan mode");
+      expect(workModeOption("read_only")?.textContent).toContain("Read-only mode");
 
       expect(statusOptionIconClass("Todo", "Executable - assignee will be woken")).toContain("text-amber-600");
       expect(statusOptionIconClass("In Progress")).toContain("text-blue-600");

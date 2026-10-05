@@ -27,6 +27,7 @@ import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
+import { readOnlyRunGuard } from "./services/read-only-run-guard.js";
 import {
   privateHostnameGuard,
   resolvePrivateHostnameAllowSet,
@@ -88,6 +89,7 @@ import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { statusDigestRoutes } from "./routes/status-digest.js";
 import { attentionRoutes } from "./routes/attention.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { decisionRoutes } from "./routes/decisions.js";
@@ -642,6 +644,9 @@ export async function createApp(
   const agentAvatars = agentAvatarRoutes();
   api.use(agentAvatars.router);
   api.use(boardMutationGuard());
+  // Read-only run class: one gate in front of every mutating /api route, so a
+  // read-only run cannot write to the board it was dispatched to inspect.
+  api.use(readOnlyRunGuard(db));
   api.use(
     "/health",
     healthRoutes(db, {
@@ -790,6 +795,7 @@ export async function createApp(
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
+  api.use(statusDigestRoutes(db));
   api.use(attentionRoutes(db));
   api.use(decisionTrainingRoutes(db));
   api.use(decisionRoutes(db, opts.decisionServiceOptions));

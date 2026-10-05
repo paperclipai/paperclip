@@ -3,7 +3,7 @@ import { emailConnectionService } from "./email-connections.js";
 import { agentService } from "./agents.js";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
-import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, issueWriteDenialResponse } from "@paperclipai/shared";
 import { aiBindingForAuthRecovery, isAiAuthenticationFailure } from "./ai-auth-failure.js";
 import { and, eq, desc, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -184,6 +184,8 @@ export function connectionIntentService(db: Db) {
         id: issues.id,
         companyId: issues.companyId,
         status: issues.status,
+        workMode: issues.workMode,
+        identifier: issues.identifier,
         assigneeAgentId: issues.assigneeAgentId,
       }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).then((rows) => rows[0] ?? null),
       db.select({ id: agents.id, companyId: agents.companyId, name: agents.name })
@@ -642,6 +644,20 @@ export function connectionIntentService(db: Db) {
     options: { purpose?: "ai" | "channel"; selectionInteractionId?: string; targetService?: string } = {},
   ): Promise<ConnectionRequestResult> {
     const context = await loadRunContext(claims);
+    // All agent-facing REST and MCP requests enter here, including purpose=ai.
+    // Controller auth recovery uses a separate failed-run-validated entry point;
+    // read-only constrains agent actions, not server-owned lifecycle repair.
+    if (context.issue.workMode === "read_only") {
+      const { body } = issueWriteDenialResponse("issue_write_read_only_run", {
+        issueIdentifier: context.issue.identifier,
+      });
+      throw forbidden(body.error, {
+        ...body.details,
+        runId: context.run.id,
+        issueId: context.issue.id,
+        workMode: context.issue.workMode,
+      });
+    }
     return requestWithContext(context, serviceSlug, options);
   }
 
