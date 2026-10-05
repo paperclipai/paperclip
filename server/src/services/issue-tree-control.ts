@@ -36,6 +36,10 @@ export type ActiveIssueTreePauseHoldGate = {
   reason: string | null;
   releasePolicy: IssueTreeHoldReleasePolicy | null;
 };
+export type IssueTreePauseHoldAssessment =
+  | { state: "clear" }
+  | { state: "held"; gate: ActiveIssueTreePauseHoldGate }
+  | { state: "indeterminate"; reason: "cycle" | "missing_or_cross_company_issue" | "depth_exhausted" };
 type ActorInput = {
   actorType: "user" | "agent" | "system";
   actorId: string;
@@ -565,10 +569,11 @@ export function issueTreeControlService(db: Db) {
       .orderBy(asc(issueTreeHolds.createdAt), asc(issueTreeHolds.id));
   }
 
-  async function getActivePauseHoldGate(
+  async function assessPauseHoldGate(
     companyId: string,
     issueId: string,
-  ): Promise<ActiveIssueTreePauseHoldGate | null> {
+    requireCompleteAncestry: boolean,
+  ): Promise<IssueTreePauseHoldAssessment> {
     const activePauseHolds = await db
       .select({
         id: issueTreeHolds.id,
@@ -585,21 +590,21 @@ export function issueTreeControlService(db: Db) {
         ),
       )
       .orderBy(asc(issueTreeHolds.createdAt), asc(issueTreeHolds.id));
-    if (activePauseHolds.length === 0) return null;
+    // Legacy callers keep their fast path. Strict restoration must traverse
+    // even when the hold snapshot is empty: absence is not ancestry validity.
+    if (!requireCompleteAncestry && activePauseHolds.length === 0) return { state: "clear" };
 
     const holdByRootIssueId = new Map(activePauseHolds.map((hold) => [hold.rootIssueId, hold]));
     let currentIssueId: string | null = issueId;
     const visited = new Set<string>();
 
-    while (
-      currentIssueId
-      && !visited.has(currentIssueId)
-      && visited.size < MAX_PAUSE_HOLD_ANCESTOR_DEPTH
-    ) {
+    while (currentIssueId) {
+      if (visited.has(currentIssueId)) return { state: "indeterminate", reason: "cycle" };
+      if (visited.size >= MAX_PAUSE_HOLD_ANCESTOR_DEPTH) return { state: "indeterminate", reason: "depth_exhausted" };
       visited.add(currentIssueId);
       const hold = holdByRootIssueId.get(currentIssueId);
       if (hold) {
-        return {
+        return { state: "held", gate: {
           holdId: hold.id,
           rootIssueId: hold.rootIssueId,
           issueId,
@@ -607,18 +612,32 @@ export function issueTreeControlService(db: Db) {
           mode: "pause",
           reason: hold.reason,
           releasePolicy: (hold.releasePolicy as IssueTreeHoldReleasePolicy | null) ?? null,
-        };
+        } };
       }
 
-      const parent: { parentId: string | null } | null = await db
-        .select({ parentId: issues.parentId })
+      const parent: { id: string; companyId: string; parentId: string | null } | null = await db
+        .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId })
         .from(issues)
         .where(and(eq(issues.id, currentIssueId), eq(issues.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
-      currentIssueId = parent?.parentId ?? null;
+      if (!parent || (requireCompleteAncestry && (parent.id !== currentIssueId || parent.companyId !== companyId))) {
+        return { state: "indeterminate", reason: "missing_or_cross_company_issue" };
+      }
+      currentIssueId = parent.parentId;
     }
 
-    return null;
+    return { state: "clear" };
+  }
+
+  async function getActivePauseHoldGate(companyId: string, issueId: string): Promise<ActiveIssueTreePauseHoldGate | null> {
+    const assessment = await assessPauseHoldGate(companyId, issueId, false);
+    return assessment.state === "held" ? assessment.gate : null;
+  }
+
+  // Snapshot only, NOT a concurrent parent/hold writer fence. Dark restoration
+  // requires explicit clear; existing production callers retain the legacy gate.
+  async function getPauseHoldAssessment(companyId: string, issueId: string): Promise<IssueTreePauseHoldAssessment> {
+    return assessPauseHoldGate(companyId, issueId, true);
   }
 
   async function preview(
@@ -1209,6 +1228,7 @@ export function issueTreeControlService(db: Db) {
     getHold,
     listHolds,
     getActivePauseHoldGate,
+    getPauseHoldAssessment,
     releaseHold,
     cancelUnclaimedWakeupsForTree,
   };

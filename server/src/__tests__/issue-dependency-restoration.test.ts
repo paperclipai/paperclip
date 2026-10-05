@@ -11,7 +11,7 @@ vi.mock("../services/issues.js", () => ({ issueService: () => service }));
 // this verifies orchestration, not their SQL or authorization behavior.
 function fixture() {
   const row = { id: "dependent-1", companyId: "company-1", assigneeAgentId: "agent-1",
-    status: "blocked", statusVersion: 2, blockedTransitionAt: new Date("2026-10-05T00:00:00Z"),
+    status: "blocked", parentId: null, statusVersion: 2, blockedTransitionAt: new Date("2026-10-05T00:00:00Z"),
     executionRunId: null, checkoutRunId: null, conversationAgentId: null,
     unblockDescriptor: null, executionState: null, executionPolicy: null };
   const interactions: unknown[] = [];

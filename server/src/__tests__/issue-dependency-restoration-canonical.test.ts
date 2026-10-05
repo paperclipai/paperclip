@@ -3,6 +3,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { describe, expect, it, vi } from "vitest";
 import { restoreDependencyReadyIssueInTransaction } from "../services/issue-dependency-restoration.js";
 import { buildIssueBlockersResolvedWakeStateKey } from "../services/issue-dependency-wakeups.js";
+import { issueTreeControlService } from "../services/issue-tree-control.js";
 
 vi.mock("../services/instance-settings.ts", () => ({
   instanceSettingsService: () => ({ getExperimental: async () => ({ enableIsolatedWorkspaces: false }) }),
@@ -22,6 +23,7 @@ function fixture() {
   const before = structuredClone(row);
   const blockers = ["blocker-1", "blocker-2"].map((id) => ({ id, companyId: "company-1", status: "done" }));
   const ancestors: Record<string, any>[] = [];
+  const missingIssueIds = new Set<string>();
   const pauseHolds: Record<string, any>[] = [];
   const writes: Array<{ table: string; values: Record<string, unknown> }> = [];
   const events: string[] = [];
@@ -46,7 +48,8 @@ function fixture() {
         const blocker = blockers.find((b) => params.includes(b.id));
         if (blocker) return [{ ...blocker }];
         const ancestor = ancestors.find((a) => params.includes(a.id));
-        if (ancestor) return [{ ...ancestor }];
+        if (ancestor) return [{ companyId: "company-1", ...ancestor }];
+        if (params.some((p) => missingIssueIds.has(String(p)))) return [];
         throw new Error("Unmodeled canonical issue read target");
       });
       // Synthetic projection only: the recorder does not execute SQL filters.
@@ -73,7 +76,8 @@ function fixture() {
     } }),
   };
   const postCommit = { db: root, activityPublications: [], actions: [] };
-  return { tx, root, before, blockers, ancestors, pauseHolds, writes, events, postCommit,
+  return { tx, root, before, blockers, ancestors, missingIssueIds, pauseHolds, writes, events, postCommit,
+    assess: () => issueTreeControlService(tx as any).getPauseHoldAssessment("company-1", "dependent-1"),
     setParent: (parentId: string | null) => { row = { ...row, parentId }; },
     getRow: () => structuredClone(row),
     run: () => restoreDependencyReadyIssueInTransaction(tx as any, {
@@ -82,6 +86,45 @@ function fixture() {
 }
 
 describe("dark coordinator with actual canonical update (mock recording, not atomicity)", () => {
+  it.each([false, true])("missing ancestor is indeterminate with unrelated hold=%s", async (withHold) => {
+    const f = fixture(); f.setParent("missing-parent"); f.missingIssueIds.add("missing-parent");
+    if (withHold) f.pauseHolds.push({ id: "other-hold", rootIssueId: "other-tree" });
+    expect(await f.assess()).toEqual({ state: "indeterminate", reason: "missing_or_cross_company_issue" });
+    const before = f.getRow();
+    expect(await f.run()).toBeNull(); expect(f.getRow()).toEqual(before); expect(f.writes).toEqual([]);
+  });
+  it("cross-company projected ancestor is indeterminate, not clear", async () => {
+    const f = fixture(); f.setParent("parent-1");
+    f.ancestors.push({ id: "parent-1", companyId: "other-company", parentId: null });
+    expect(await f.assess()).toEqual({ state: "indeterminate", reason: "missing_or_cross_company_issue" });
+    const before = f.getRow();
+    expect(await f.run()).toBeNull(); expect(f.getRow()).toEqual(before); expect(f.writes).toEqual([]);
+  });
+  it.each([99, 100])("deep pause depth %s cannot be treated as a clear tree", async (depth) => {
+    const f = fixture(); f.setParent("ancestor-1");
+    for (let i = 1; i <= depth; i++) f.ancestors.push({ id: `ancestor-${i}`, parentId: i === depth ? null : `ancestor-${i + 1}` });
+    f.pauseHolds.push({ id: "deep-hold", rootIssueId: `ancestor-${depth}`, reason: "pause", releasePolicy: null });
+    const assessment = await f.assess();
+    if (depth === 99) expect(assessment).toMatchObject({ state: "held", gate: { holdId: "deep-hold" } });
+    else expect(assessment).toEqual({ state: "indeterminate", reason: "depth_exhausted" });
+    const before = f.getRow();
+    expect(await f.run()).toBeNull(); expect(f.getRow()).toEqual(before); expect(f.writes).toEqual([]);
+  });
+  it("accepts a fully traversed root at the last allowed depth", async () => {
+    const f = fixture(); f.setParent("ancestor-1");
+    for (let i = 1; i <= 99; i++) f.ancestors.push({ id: `ancestor-${i}`, parentId: i === 99 ? null : `ancestor-${i + 1}` });
+    expect(await f.assess()).toEqual({ state: "clear" });
+    expect(await f.run()).toBe("intent-1"); expect(f.getRow().status).toBe("todo");
+  });
+  it("fails closed on cyclic ancestry even with no active pause rows", async () => {
+    const f = fixture(); f.setParent("dependent-1");
+    const before = f.getRow();
+    expect(await f.assess()).toEqual({ state: "indeterminate", reason: "cycle" });
+    expect(await f.run()).toBeNull();
+    expect(f.getRow()).toEqual(before); expect(f.writes).toEqual([]);
+    expect(f.events).not.toContain("read:issue_relations");
+    expect(f.events).not.toContain("read:issue_thread_interactions");
+  });
   it.each(["dependent-1", "parent-1", "grandparent-1"])("actual tree gate vetoes active pause at %s before writes", async (rootIssueId) => {
     const f = fixture(); f.setParent("parent-1");
     f.ancestors.push({ id: "parent-1", parentId: "grandparent-1" }, { id: "grandparent-1", parentId: null });

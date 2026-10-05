@@ -42,7 +42,8 @@ export async function restoreDependencyReadyIssueInTransaction(
   // Reuse the authoritative tree snapshot, on the supplied transaction rather
   // than the root DB. This veto is NOT a concurrent hold-insertion/parent-edit
   // fence: the common tree/graph writer discipline is still a wiring prerequisite.
-  if (await issueTreeControlService(tx as unknown as Db).getActivePauseHoldGate(companyId, dependentIssueId)) return null;
+  const treeAssessment = await issueTreeControlService(tx as unknown as Db).getPauseHoldAssessment(companyId, dependentIssueId);
+  if (treeAssessment.state !== "clear") return null;
   const interactions = await tx.select({ status: issueThreadInteractions.status }).from(issueThreadInteractions)
     .where(and(eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, dependentIssueId)));
   if (interactions.some((row) => row.status === "pending")) return null;
