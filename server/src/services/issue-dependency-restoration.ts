@@ -6,6 +6,35 @@ import { acquireIssueLifecycleFenceInTransaction } from "./issue-lifecycle-fence
 import { buildIssueBlockersResolvedWakeStateKey, findExistingIssueBlockersResolvedWakeForReadyState } from "./issue-dependency-wakeups.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type RestorationOwner = Parameters<typeof restoreDependencyReadyIssueInTransaction>[2];
+type CanonicalPatch = Parameters<ReturnType<typeof issueService>["update"]>[1];
+
+// Dark common writer checkpoint. Production callers MUST NOT migrate until all
+// graph/tree/gate/native participants enter the same fence before reads/locks.
+// Caller owns tx and flushes queues after commit; this never dispatches a wake.
+export async function updateIssueWithDependencyRestorationInTransaction(
+  tx: Transaction,
+  input: { issueId: string; patch: CanonicalPatch & { companyGuard: string } },
+  owner: RestorationOwner,
+) {
+  const { issueId, patch } = input;
+  const { db, activityPublications, actions } = owner;
+  if (db === (tx as unknown as Db)) throw new Error("dependency_restore_requires_distinct_root_db");
+  // Invoke canonical snapshot synchronously before its first fence await. Do
+  // not pre-await here: caller data must not retarget preparation while waiting.
+  const issue = await issueService(db).update(issueId, patch, tx,
+    activityPublications, actions, { lifecycleFence: true });
+  const intentIds: string[] = [];
+  if (!issue || issue.status !== "done") return { issue, intentIds };
+  const candidates = await issueService(tx as unknown as Db).listWakeableBlockedDependents(issue.id);
+  for (const candidate of [...candidates].sort((a, b) => a.id.localeCompare(b.id))) {
+    const intentId = await restoreDependencyReadyIssueInTransaction(tx, {
+      companyId: issue.companyId, dependentIssueId: candidate.id, resolvedBlockerIssueId: issue.id,
+    }, { db, activityPublications, actions });
+    if (intentId) intentIds.push(intentId);
+  }
+  return { issue, intentIds };
+}
 
 // Dark implementation checkpoint: no production emitter calls this function.
 // Caller owns the transaction; no detached restore or external wake is allowed.
