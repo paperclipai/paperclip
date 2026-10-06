@@ -1084,6 +1084,13 @@ async function main() {
     return;
   }
 
+  if (executions.some(execution => execution.task.flow === "provider_connection")) {
+    const { runConnectionCampaign } = await import("./connection-launch.js");
+    await runConnectionCampaign({ executions, catalog: runnerMatrix, configFile: options.connectionConfig, repositoryRoot });
+    return;
+  }
+  if (options.connectionConfig) throw new Error("--connection-config is only supported by the provider-connections suite");
+
   // Keep admission before local-env loading and credential checks. Pending
   // profiles remain discoverable, but cannot reach a provider.
   assertRunnerE2EPrerequisites(executions);

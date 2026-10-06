@@ -39,6 +39,7 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
   decide_approval: "governance", comment_on_approval: "governance",
   get_workspace_runtime: "workspace", control_workspace_service: "workspace",
   schedule_wake: "continuation", generic_api_request: "test_infrastructure",
+  submit_complaint: "feedback", submit_suggestion: "feedback",
 });
 
 export const CAPABILITY_DISCOVERY_NAMESPACES = Object.freeze([
@@ -48,6 +49,7 @@ export const CAPABILITY_DISCOVERY_NAMESPACES = Object.freeze([
   { name: "governance", description: "Read, request, discuss, and decide approvals." },
   { name: "workspace", description: "Inspect and control active-task workspace services." },
   { name: "continuation", description: "Schedule a bounded continuation wake." },
+  { name: "feedback", description: "Submit internal complaints and improvement suggestions." },
 ]);
 
 export const CAPABILITY_DISCOVERY_GATEWAY_DEFINITIONS = Object.freeze([{

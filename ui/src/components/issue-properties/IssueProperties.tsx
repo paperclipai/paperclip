@@ -1,3 +1,6 @@
+import { IssuePullRequestLinks } from "../IssuePullRequestLinks";
+import { useIssueWorkProducts } from "../../hooks/useIssueWorkProducts";
+import { getIssuePullRequests, pullRequestHref, pullRequestIdentity } from "../../lib/issue-pull-requests";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -295,11 +298,12 @@ export function IssueProperties({
     queryFn: () => issuesApi.listAttachments(issue.id),
     enabled: taskChatShellEnabled,
   });
-  const { data: paneTabWorkProducts } = useQuery({
-    queryKey: queryKeys.issues.workProducts(issue.id),
-    queryFn: () => issuesApi.listWorkProducts(issue.id),
-    enabled: taskChatShellEnabled,
-  });
+  const { data: paneTabWorkProducts, isError: workProductsError, refetch: refetchWorkProducts } = useIssueWorkProducts(issue.id);
+  const pullRequests = useMemo(() => getIssuePullRequests(paneTabWorkProducts), [paneTabWorkProducts]);
+  const remainingExternalObjects = useMemo(() => {
+    const identities = new Set(pullRequests.map((product) => pullRequestIdentity(pullRequestHref(product))).filter(Boolean));
+    return externalObjects?.filter((entry) => !identities.has(pullRequestIdentity(entry.pill.url)));
+  }, [externalObjects, pullRequests]);
   const { data: paneTabDocuments } = useIssueDocuments(taskChatShellEnabled ? issue.id : null);
   // Proxy `artifact-review-*` documents surface only through their Work
   // product row, so they must not summon the Plan or Documents surfaces.
@@ -2582,8 +2586,20 @@ export function IssueProperties({
           </PropertyRow>
         ) : null}
 
+        {pullRequests.length > 0 || workProductsError ? (
+          <PropertyRow label="Pull requests" wrap>
+            <div className="flex min-w-0 flex-col gap-2">
+              <IssuePullRequestLinks products={pullRequests} externalObjects={externalObjects?.map((entry) => entry.pill)} />
+              {workProductsError ? (
+                <span className="text-xs text-muted-foreground">
+                  Couldn’t load pull requests. <button type="button" className="text-primary hover:underline" onClick={() => void refetchWorkProducts()}>Retry</button>
+                </span>
+              ) : null}
+            </div>
+          </PropertyRow>
+        ) : null}
         <ExternalObjectRows
-          externalObjects={externalObjects}
+          externalObjects={remainingExternalObjects}
           externalObjectsLoading={externalObjectsLoading}
           externalObjectsError={externalObjectsError}
           onRetryExternalObjects={onRetryExternalObjects}

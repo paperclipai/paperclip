@@ -937,6 +937,9 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.comments("issue-1"),
     });
+    for (const ref of ["PAP-759", "issue-1"]) {
+      expect(invalidations).toContainEqual({ queryKey: queryKeys.issues.workProductPullRequestRefresh(ref) });
+    }
     expect(cache.get(JSON.stringify(queryKeys.issues.activeRun("PAP-759")))).toBeNull();
     expect(cache.get(JSON.stringify(queryKeys.issues.liveRuns("PAP-759")))).toEqual([]);
     expect(cache.get(JSON.stringify(queryKeys.issues.detail("PAP-759")))).toMatchObject({
@@ -977,6 +980,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       )).toBe(true);
       for (const ref of ["PAP-759", "issue-1"]) {
         expect(invalidations).not.toContainEqual({ queryKey: queryKeys.issues.comments(ref) });
+        expect(invalidations).not.toContainEqual({ queryKey: queryKeys.issues.workProductPullRequestRefresh(ref) });
       }
     },
   );

@@ -13,7 +13,8 @@ import {
 } from "./everyday-delivery.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
-import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
+import { submitTaskReply } from "./user-actions.js";
+import { createTaskFromPromptThroughUi } from "./plan-task-ui.js";
 import { waitForTaskChatRendered } from "./continuation-screenshot.js";
 import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interruption.js";
 import { setupAggregatorFixture } from "./aggregator-fixture.js";
@@ -667,25 +668,15 @@ export async function runEverydayFlow(input: Input) {
       if (state.connections.length)
         throw new Error("New-connection story requires an unconnected company");
     }
-    await createTaskThroughUi({
+    const created = await createTaskFromPromptThroughUi({
       page,
+      companyId: fixtures.company.id,
       issuePrefix: prefix,
       agentName: fixtures.agent.name,
-      title: execution.task.buildTitle(nonce),
       prompt: ev.prompt,
-      workMode: "standard",
       projectName: project?.name,
     });
-    parent = await pollUntil({
-      label: "browser-created story task",
-      deadlineAt: Date.now() + 30_000,
-      load: () =>
-        api.get<StoryIssue[]>(`/api/companies/${fixtures.company.id}/issues`),
-      accept: (rows) =>
-        rows.some((i) => i.title === execution.task.buildTitle(nonce)),
-    }).then((rows) =>
-      rows.find((i) => i.title === execution.task.buildTitle(nonce))!,
-    );
+    parent = await api.get<StoryIssue>(`/api/issues/${created.id}`);
     input.observe(parent!, []);
     note("task-submitted", { issueId: parent!.id });
     await openParent();

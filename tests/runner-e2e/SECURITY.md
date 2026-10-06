@@ -1,5 +1,19 @@
 # Runner E2E security for a public repository
 
+## Attended connection authentication
+
+See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
+`provider-connections` suite, local/staging target ownership, dedicated browser
+profiles, credential handoffs, private evidence, and cleanup contract.
+
+Provider-connection results may retain closed diagnostic codes and terminal run
+status before managed-instance teardown. Only error records and failed tool
+receipts are inspected; raw error messages, child stderr, model output and
+reasoning are not retained. Unknown causes and unavailable logs stay explicit.
+The optional installed-Gemini filesystem smoke uses synthetic credentials and
+loopback model responses, makes no real provider calls, and removes its
+disposable home/workspace.
+
 The explicit [public MCP suite](PUBLIC-MCP.md) also creates a disposable browser
 account and OAuth grant. Signup and token exchange use Node fetch, credentials
 stay outside model context, and dynamic cookie/code/token values join the

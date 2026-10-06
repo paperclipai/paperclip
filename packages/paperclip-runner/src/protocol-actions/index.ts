@@ -1,4 +1,5 @@
 import { setTaskTitleAction } from "./set-task-title.js";
+import { submitComplaintAction, submitSuggestionAction } from "./submit-agent-commentary.js";
 import { readAgentInstructionsAction } from "./read-agent-instructions.js";
 import { updateAgentInstructionsAction } from "./update-agent-instructions.js";
 import { getAgentInstructionHistoryAction } from "./get-agent-instruction-history.js";
@@ -56,6 +57,8 @@ import { deepFreezeProtocolAction } from "./freeze.js";
 
 export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
   setTaskTitleAction,
+  submitComplaintAction,
+  submitSuggestionAction,
   readAgentInstructionsAction,
   updateAgentInstructionsAction,
   getAgentInstructionHistoryAction,

@@ -465,6 +465,123 @@ function renderProperties(container: HTMLDivElement, props: ComponentProps<typeo
 describe("IssueProperties", () => {
   let container: HTMLDivElement;
 
+  it("surfaces saved PR review links even when external objects are unavailable", async () => {
+    mockIssuesApi.listWorkProducts.mockResolvedValue([{
+      id: "pr-1", type: "pull_request", provider: "github", title: "Update runtime probe",
+      url: null, metadata: { url: "https://github.com/example/private-repo/pull/42" },
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    }]);
+    const root = renderProperties(container, {
+      issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true,
+      externalObjectsError: true,
+    });
+    await waitForAssertion(() => {
+      const link = container.querySelector('a[href="https://github.com/example/private-repo/pull/42"]');
+      expect(link?.textContent).toBe("example/private-repo#42");
+      expect(container.textContent).toContain("Review requested");
+    });
+    act(() => root.unmount());
+  });
+
+  it("refreshes PR state when opening Properties over an already loaded task", async () => {
+    const saved = {
+      id: "pr-1", type: "pull_request", provider: "github", title: "Update runtime probe",
+      url: "https://github.com/example/private-repo/pull/42", metadata: {},
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    };
+    mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => [
+      options?.refreshPullRequests ? { ...saved, metadata: { state: "merged" } } : saved,
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.issues.workProducts("issue-1"), [{ ...saved, metadata: { state: "merged" } }]);
+    const root = createRoot(container);
+    act(() => root.render(<QueryClientProvider client={queryClient}>
+      <IssueProperties issue={createIssue()} childIssues={[]} onUpdate={vi.fn()} inline />
+    </QueryClientProvider>));
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith("issue-1", expect.objectContaining({ refreshPullRequests: true }));
+      expect(container.textContent).toContain("merged");
+      expect(container.textContent).not.toContain("Review requested");
+    });
+    act(() => root.unmount());
+  });
+
+  it("refreshes PRs on first panel open when the thread uses an identifier cache key", async () => {
+    const saved = {
+      id: "pr-1", type: "pull_request", title: "Update runtime probe",
+      url: "https://github.com/example/private-repo/pull/42", metadata: {},
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    };
+    mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => [
+      options?.refreshPullRequests ? { ...saved, metadata: { state: "merged" } } : saved,
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.issues.workProducts("PAP-1"), [{ ...saved, metadata: { state: "merged" } }]);
+    const root = createRoot(container);
+    act(() => root.render(<QueryClientProvider client={queryClient}>
+      <IssueProperties issue={createIssue()} childIssues={[]} onUpdate={vi.fn()} inline />
+    </QueryClientProvider>));
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("merged");
+      expect(container.textContent).not.toContain("Review requested");
+    });
+    act(() => root.unmount());
+  });
+
+  it("shows saved PRs while the first provider refresh is stalled", async () => {
+    const saved = {
+      id: "pr-1", type: "pull_request", title: "Update runtime probe",
+      url: "https://github.com/example/private-repo/pull/42", metadata: {},
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    };
+    let finishRefresh!: (products: unknown[]) => void;
+    const refresh = new Promise<unknown[]>((resolve) => { finishRefresh = resolve; });
+    mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => options?.refreshPullRequests ? refresh : [saved]);
+    const root = renderProperties(container, { issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith("issue-1", expect.objectContaining({ refreshPullRequests: true }));
+      expect(container.querySelector(`a[href="${saved.url}"]`)).not.toBeNull();
+      expect(container.textContent).toContain("Review requested");
+    });
+    finishRefresh([{ ...saved, metadata: { state: "merged" } }]);
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("merged");
+      expect(container.textContent).not.toContain("Review requested");
+    });
+    act(() => root.unmount());
+  });
+
+  it.each([
+    { statusLabel: "Open", statusCategory: "open", liveness: "stale", statusIconKey: "git-pull-request", review: true },
+    { statusLabel: "Merged", statusCategory: "succeeded", liveness: "fresh", statusIconKey: "git-merge", review: false },
+    { statusLabel: "Not found", statusCategory: "archived", liveness: "stale", statusIconKey: null, review: true },
+  ] as const)("combines a saved PR with its $statusLabel provider status and freshness", async (provider) => {
+    const canonical = "https://github.com/example/private-repo/pull/42";
+    const savedUrl = `${canonical}?diff=split#discussion_r123`;
+    mockIssuesApi.listWorkProducts.mockResolvedValue([{
+      id: "pr-1", type: "pull_request", title: "Update runtime probe", url: savedUrl,
+      metadata: {}, status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    }]);
+    const root = renderProperties(container, {
+      issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true,
+      externalObjects: [{
+        pill: { providerKey: "github", objectType: "pull_request", url: canonical, ...provider },
+        mentionCount: 1, sourceLabels: ["Comment"],
+        group: { object: null, mentions: [], mentionCount: 1, sourceLabels: ["Comment"] },
+      }],
+    });
+    await waitForAssertion(() => {
+      const links = container.querySelectorAll('a[href*="/pull/42"]');
+      expect(links).toHaveLength(1);
+      expect(links[0].getAttribute("href")).toBe(savedUrl);
+      const row = links[0].closest("li")!;
+      expect(row.textContent).toContain(provider.statusLabel);
+      expect(row.querySelector("[data-external-liveness]")?.getAttribute("data-external-liveness")).toBe(provider.liveness);
+      expect(row.textContent?.includes("Review requested")).toBe(provider.review);
+    });
+    act(() => root.unmount());
+  });
+
   beforeEach(() => {
     mockSidebarState.isMobile = false;
     container = document.createElement("div");

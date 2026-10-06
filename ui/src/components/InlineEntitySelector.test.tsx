@@ -352,6 +352,67 @@ describe("InlineEntitySelector", () => {
     });
   });
 
+  it("keeps the no-selection action first when requested", async () => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value="project-1"
+          options={[
+            { id: "project-1", label: "Project One" },
+            { id: "project-2", label: "Project Two" },
+          ]}
+          recentOptionIds={["project-2"]}
+          placeholder="Project"
+          noneLabel="No project"
+          noneAtTop
+          searchPlaceholder="Search projects..."
+          emptyMessage="No projects found."
+          onChange={onChange}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement;
+    await act(() => trigger.click());
+
+    const options = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("[data-mobile-entity-picker-list] > button"),
+    );
+    expect(options.map((option) => option.textContent)).toEqual([
+      "No project",
+      "Project One",
+      "Project Two",
+    ]);
+
+    const searchInput = document.querySelector<HTMLInputElement>('input[placeholder="Search projects..."]');
+    const nativeInputValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(() => {
+      nativeInputValue?.call(searchInput, "Two");
+      searchInput?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const filteredOptions = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("[data-mobile-entity-picker-list] > button"),
+    );
+    expect(filteredOptions.map((option) => option.textContent)).toEqual([
+      "No project",
+      "Project Two",
+    ]);
+
+    await act(() => {
+      searchInput?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    expect(onChange).toHaveBeenCalledWith("project-2");
+
+    act(() => root.unmount());
+  });
+
   it("does not open the popover when disabled", async () => {
     const root = createRoot(container);
     const onChange = vi.fn();

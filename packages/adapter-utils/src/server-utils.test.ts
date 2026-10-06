@@ -21,6 +21,7 @@ import {
   isPaperclipExternalChatTurn,
   materializePaperclipSkillCopy,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
+  PAPERCLIP_FEEDBACK_SKILL_KEYS,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
   resolveLegacyPaperclipDesiredSkillNames,
@@ -151,6 +152,17 @@ describe("legacy adapter skill selection", () => {
     expect(resolvePaperclipDesiredSkillNames({}, [operationalEntry])).toEqual(
       [],
     );
+  });
+
+  it("makes feedback available to existing legacy agents without opting native agents into API skills", () => {
+    const inventory = [operationalEntry, ...PAPERCLIP_FEEDBACK_SKILL_KEYS.map((key) => ({ key }))];
+    for (const config of [{}, { paperclipSkillSync: { desiredSkills: [] } }]) {
+      expect(resolveLegacyPaperclipDesiredSkillNames(config, inventory)).toEqual([
+        PAPERCLIP_OPERATIONAL_SKILL_KEY, ...PAPERCLIP_FEEDBACK_SKILL_KEYS,
+      ]);
+      expect(resolvePaperclipDesiredSkillNames(config, inventory)).toEqual([]);
+    }
+    expect(resolveLegacyPaperclipDesiredSkillNames({}, inventory.slice(1))).toEqual([]);
   });
 });
 

@@ -4,12 +4,14 @@ import { issueRecoveryActionService } from "../services/issue-recovery-actions.j
 import { localAiLoginService } from "../services/local-ai-login.js";
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
@@ -17,6 +19,7 @@ import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "../services
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
+import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
 import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import express from "express";
 import request from "supertest";
@@ -72,6 +75,44 @@ describe("managed AI connections", () => {
       const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
       expect(grant.credentialSecretRefs).toEqual([]);
     } finally { await Promise.all([first.cleanup(), second.cleanup()]); }
+  });
+  it("never restores retained Grok transcripts into same-user runtime homes", async () => {
+    const account = await service.save(companyId, "alice", {
+      provider: "xai", method: "api_key", ownership: "personal",
+      name: "Grok history isolation", agentIds: [], allAgents: true,
+    }, "fixture-grok-key");
+    const taskKey = `grok-history-${randomUUID()}`;
+    const runInput = { ...input, taskKey, adapterType: "grok_local", responsibleUserId: "alice", config: {},
+      binding: { provider: "xai", method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const };
+    const first = await prepareManagedAiRuntime(db, runInput);
+    const scope = createHash("sha256").update(JSON.stringify([
+      companyId, agentId, taskKey, first.sessionIdentity,
+    ])).digest("hex");
+    await first.cleanup();
+    // Seed a valid archive from the earlier implementation. Runtime preparation
+    // must not decrypt it onto the host, even for its authorized agent/task.
+    const retained = await localEncryptedProvider.createVersion({ value: JSON.stringify({
+      scope, entries: [{ name: "history.json", bytes: Buffer.from("previous-task-private-transcript").toString("base64") }],
+    }) });
+    await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: "grok_local", taskKey,
+      sessionParamsJson: { sessionId: "history", paperclipGrokHistory: { scope, material: retained.material } } });
+    const resumed = await prepareManagedAiRuntime(db, runInput);
+    const peer = await prepareManagedAiRuntime(db, { ...runInput, agentId: randomUUID() });
+    try {
+      expect(resumed.home).not.toBe(first.home);
+      expect(peer.home).not.toBe(resumed.home);
+      const transcript = path.join(String(resumed.config.env.GROK_HOME), "sessions", "history.json");
+      // A separate same-UID process can bypass 0700. It must find no restored
+      // transcript because none was materialized, not because of permissions.
+      const crossAgentRead = spawnSync(process.execPath, ["-e", `
+        const fs = require("node:fs");
+        try { process.stdout.write(fs.readFileSync(process.argv[1], "utf8")); }
+        catch (error) { process.stdout.write(error.code); }
+      `, transcript], { encoding: "utf8" });
+      expect(crossAgentRead.status).toBe(0);
+      expect(crossAgentRead.stdout).toBe("ENOENT");
+      await expect(access(transcript)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await Promise.all([resumed.cleanup(), peer.cleanup()]); }
   });
   it("authenticates local Gemini probes and runs with the saved key in an isolated home", async () => {
     const root = await mkdtemp(path.join(home, "gemini-auth-"));
@@ -338,6 +379,73 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(heartbeatRuns).values({ companyId, agentId: id, status: "succeeded", responsibleUserId: "alice", contextSnapshot: { issueId }, createdAt: new Date(Date.now() + 1000) });
     expect(await intents.requestForRunAuthFailure(runId)).toBeNull();
   });
+
+  it("repairs a teammate's missing onboarding key with their own inline AI connection", async () => {
+    const userId = `new-teammate-${randomUUID()}`;
+    const id = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const vault = secretService(db);
+    const definition = await vault.createUserSecretDefinition(companyId, {
+      key: `ANTHROPIC_API_KEY.${randomUUID()}`, name: "ANTHROPIC_API_KEY for onboarding",
+    }, { userId: "alice" });
+    const ownerSecret = await vault.createCurrentUserSecretValue(companyId, "alice", {
+      definitionId: definition.id, value: "fixture-original-owner-key",
+    }, { userId: "alice" });
+    const adapterConfig = { env: { ANTHROPIC_API_KEY: {
+      type: "user_secret_ref", key: definition.key, version: "latest", required: true,
+    } } };
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const [agent] = await db.insert(agents).values({ id, companyId, name: "Chief of Staff", adapterType: "claude_local", adapterConfig }).returning();
+    await vault.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: id }, adapterConfig.env);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Chat with Chief of Staff", status: "blocked", assigneeAgentId: id, responsibleUserId: userId });
+    const failure = await resolveExecutionRunAdapterConfig({
+      companyId, agentId: id, adapterType: "claude_local", issueId,
+      responsibleUserId: userId, executionRunConfig: adapterConfig, projectEnv: null, secretsSvc: vault,
+    }).catch(error => error);
+    expect(failure).toMatchObject({ code: "configuration_incomplete", resultJson: {
+      configurationIncomplete: { reason: "secret_binding_missing", missingBindings: [
+        expect.objectContaining({ bindingType: "user_secret_ref", envKey: "ANTHROPIC_API_KEY", errorCode: "user_secret_missing", responsibleUserId: userId }),
+      ] },
+    } });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed",
+      errorCode: failure.code, resultJson: failure.resultJson, responsibleUserId: userId, contextSnapshot: { issueId } });
+    await issueRecoveryActionService(db).upsertSourceScoped({ companyId, sourceIssueId: issueId,
+      kind: "configuration_validation", cause: "configuration_incomplete", fingerprint: `missing-key:${issueId}`,
+      nextAction: "Connect your AI account", ownerType: "board", evidence: { latestRunId: runId } });
+    const intents = connectionIntentService(db);
+    const card = await intents.requestForRunAuthFailure(runId);
+    expect(card).toMatchObject({ service: "anthropic", state: "needs_user_action" });
+    expect((await intents.setupOptions(card!.interactionId!))).toMatchObject({
+      aiConnectionRequiresAdoption: true, aiConnection: { provider: "anthropic", mode: "responsible_user" },
+      interaction: { addresseeUserId: userId, sourceRunId: runId },
+    });
+    expect((await intents.requestForRunAuthFailure(runId))?.interactionId).toBe(card!.interactionId);
+    expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toBeUndefined();
+
+    const account = await create(userId, "Teammate's Claude");
+    const setup = await intents.setupOptions(card!.interactionId!);
+    await intents.complete(card!.interactionId!, account.connectionId, userId, {
+      validatedAdoption: { agentUpdatedAt: agent.updatedAt, binding: setup.aiConnection! },
+    });
+    const wakeup = vi.fn(async (_agentId, opts) => {
+      await db.insert(agentWakeupRequests).values({ companyId, agentId: id, source: "automation", status: "queued", idempotencyKey: opts.idempotencyKey });
+      return null;
+    });
+    const delivery = connectionIntentDeliveryService(db, { wakeup } as never);
+    await delivery.deliver(card!.interactionId!);
+    await delivery.deliver(card!.interactionId!);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("in_progress");
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup).toHaveBeenCalledWith(id, expect.objectContaining({ contextSnapshot: expect.objectContaining({ forceFreshSession: true }) }));
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, issueId)).toBeNull();
+    expect((await db.select().from(companySecrets).where(eq(companySecrets.id, ownerSecret.id)))[0]).toMatchObject({ ownerUserId: "alice", latestVersion: 1, status: "active" });
+    const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: id, responsibleUserId: userId, adapterType: "claude_local", binding: setup.aiConnection!, config: adapterConfig });
+    try {
+      expect(runtime.config.env).toMatchObject({ ANTHROPIC_API_KEY: "fixture-Teammate's Claude" });
+      expect(runtime.attribution.grantId).toBe(account.grantId);
+    } finally { await runtime.cleanup(); }
+  }, 30000);
   it.each([
     ["anthropic", "claude_local", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
     ["openai", "codex_local", "CODEX_HOME", "OPENAI_API_KEY"],
@@ -982,6 +1090,13 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(agents).values({ id, companyId, name: "Runner adoption", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } });
     const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Runner adoption account", apiKey: "fixture-adoption-key", agentIds: inline ? [] : [id], allAgents: false }, "fixture-adoption-key");
     await service.setDefault(companyId, "alice", account.grantId);
+    const tryDeliver = vi.fn(async (interactionId: string) => {
+      // Dispatch observes committed adoption, never a partially saved choice.
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0].status).toBe("accepted");
+      expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toMatchObject({ mode: "responsible_user" });
+    });
+    const deliveryModule = await import("../services/connection-intent-delivery.js");
+    const delivery = vi.spyOn(deliveryModule, "connectionIntentDeliveryService").mockReturnValue({ tryDeliver } as never);
     let interactionId: string | undefined;
     if (inline) {
       const issueId = randomUUID();
@@ -1012,6 +1127,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       resolveTarget.mockResolvedValueOnce(null);
       const unavailable = await adopt();
       expect(unavailable.status, JSON.stringify(unavailable.body)).toBe(422);
+      expect(tryDeliver).not.toHaveBeenCalled();
       expect(probe).not.toHaveBeenCalled();
       expect(providerRequest).not.toHaveBeenCalled();
       expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toBeUndefined();
@@ -1028,6 +1144,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         try {
           const failed = await adopt();
           expect(failed.status).toBe(500);
+          expect(tryDeliver).not.toHaveBeenCalled();
           await assertUnchanged();
         } finally {
           await db.execute(sql.raw("DROP TRIGGER reject_atomic_adoption ON issue_thread_interactions"));
@@ -1043,6 +1160,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         expect(saved.body.status).toBe("accepted");
         expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, account.connectionId))).toHaveLength(1);
         expect((await adopt()).status).toBe(200);
+        expect(tryDeliver).toHaveBeenCalledTimes(2);
+        expect(tryDeliver).toHaveBeenCalledWith(interactionId);
       }
       expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ companyId, environment: expect.objectContaining({ id: environment.id }) }));
       expect(probe).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target, config: expect.objectContaining({ provider: "codex", model: "gpt-5.6-sol", managedAiConnection: expect.any(Object) }) }));
@@ -1053,7 +1172,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(release).toHaveBeenCalledTimes(inline ? 3 : 2);
       expect(JSON.stringify(saved.body)).not.toContain("fixture-adoption-key");
     } finally {
-      providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
+      delivery.mockRestore(); providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
       await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
     }
   });
@@ -1101,8 +1220,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
 
 
 describe("AI connection recovery delivery", () => {
-  it.each(["restored", "newer failure", "different blocker", "revoked again", "closed task"])(
-    "continues only the repaired source failure: %s", async (scenario) => {
+  it.each(["ai_connection_unavailable", "secret_binding_missing"].flatMap(reason =>
+    ["restored", "newer failure", "different blocker", "revoked again", "closed task"].map(scenario => [reason, scenario]),
+  ))(
+    "continues only the repaired %s source failure: %s", async (reason, scenario) => {
       const userId = `recovery-${randomUUID()}`;
       const recoveringAgentId = randomUUID();
       const issueId = randomUUID();
@@ -1115,7 +1236,9 @@ describe("AI connection recovery delivery", () => {
       const pending = await intents.request({ sub: recoveringAgentId, company_id: companyId, run_id: failedRunId, responsible_user_id: userId }, "anthropic", { purpose: "ai" });
       const account = await create(userId, `Recovered ${scenario}`);
       expect((await intents.setupOptions(pending.interactionId!)).existingConnections.map(connection => connection.id)).toEqual([account.connectionId]);
-      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "configuration_incomplete", resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable" } } }).where(eq(heartbeatRuns.id, failedRunId));
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "configuration_incomplete", resultJson: { configurationIncomplete: { reason,
+        ...(reason === "secret_binding_missing" ? { missingBindings: [{ bindingType: "user_secret_ref", envKey: "ANTHROPIC_API_KEY", configPath: "env.ANTHROPIC_API_KEY", errorCode: "user_secret_missing" }] } : {}),
+      } } }).where(eq(heartbeatRuns.id, failedRunId));
       await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
       await issueRecoveryActionService(db).upsertSourceScoped({ companyId, sourceIssueId: issueId, kind: "configuration_validation", cause: "configuration_incomplete", fingerprint: `ai:${issueId}`, nextAction: "Reconnect", ownerType: "board", evidence: { latestRunId: failedRunId } });
       await intents.complete(pending.interactionId!, account.connectionId, userId);

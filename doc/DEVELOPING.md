@@ -1402,7 +1402,9 @@ Skill-capable legacy local adapters always select the bundled
 runtime inventory. This applies to existing agents without a stored skill
 preference and to explicit empty optional-skill selections. The operational
 skill supplies the control-plane workflow that those adapters need for
-heartbeats. Other runtime skills remain controlled by
+heartbeats. The `complain` and `suggestion-box` runtime skills are also selected
+automatically alongside it; see [Agent commentary](agent-commentary.md).
+Other runtime skills remain controlled by
 `paperclipSkillSync.desiredSkills`. The native `paperclip_runner` does not use
 this legacy default because its protocol supplies the control-plane contract.
 

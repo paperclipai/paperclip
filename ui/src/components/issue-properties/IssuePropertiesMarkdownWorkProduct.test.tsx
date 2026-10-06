@@ -13,7 +13,7 @@ import { RichWorkProductCard } from "@/components/task-chat/RichWorkProductCard"
 
 const mockIssuesApi = vi.hoisted(() => ({
   listAttachments: vi.fn(async (): Promise<unknown[]> => []),
-  listWorkProducts: vi.fn(async (): Promise<unknown[]> => []),
+  listWorkProducts: vi.fn(async (_issueId: string, _options?: { refreshPullRequests?: boolean }): Promise<unknown[]> => []),
   ensureWorkProductReviewDocument: vi.fn(async (): Promise<unknown> => ({})),
 }));
 vi.mock("@/api/issues", () => ({ issuesApi: mockIssuesApi }));
@@ -221,6 +221,23 @@ describe("markdown work product review row", () => {
     expect(raw?.getAttribute("href")).toBe(`/api/attachments/${ATTACHMENT_ID}/content`);
     expect(raw?.getAttribute("target")).toBe("_blank");
     expect(download?.getAttribute("href")).toBe(`/api/attachments/${ATTACHMENT_ID}/content?download=1`);
+  });
+
+  it("shows saved artifacts while the first PR refresh is stalled", async () => {
+    const saved = makeMarkdownWorkProduct({
+      type: "pull_request", provider: "github", title: "Saved PR during refresh",
+      url: "https://github.com/example/repo/pull/42", metadata: {},
+    });
+    let finishRefresh!: (products: unknown[]) => void;
+    const refresh = new Promise<unknown[]>((resolve) => { finishRefresh = resolve; });
+    mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => options?.refreshPullRequests ? refresh : [saved]);
+    await renderTab({}, saved.title);
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith(issue.id, expect.objectContaining({ refreshPullRequests: true }));
+      expect(container.querySelector(`a[href="${saved.url}"]`)).not.toBeNull();
+    });
+    finishRefresh([{ ...saved, metadata: { state: "merged" } }]);
+    await waitForAssertion(() => expect(container.textContent?.toLowerCase()).toContain("merged"));
   });
 
   it("expands into the existing document surface without a server call when the document exists", async () => {

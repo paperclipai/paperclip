@@ -171,7 +171,9 @@ describe("sandbox callback bridge", () => {
       client: createFileSystemSandboxCallbackBridgeQueueClient(),
       queueDir,
       authorizeRequest: async (request) =>
-        ["/api/agents/me", "/runtime-tools/github/credentials"].includes(request.path) ? null : `Route not allowed: ${request.method} ${request.path}`,
+        ["/api/agents/me", "/runtime-tools/github/credentials"].includes(request.path) ? null
+          : request.path.endsWith("/agent-commentary") ? authorizeSandboxCallbackBridgeRequestWithRoutes(request)
+          : `Route not allowed: ${request.method} ${request.path}`,
       handleRequest: async (request) => {
         seenRequests.push({
           method: request.method,
@@ -283,6 +285,15 @@ describe("sandbox callback bridge", () => {
       headers: { "x-paperclip-github-capability": "test-run-scoped-capability" },
     });
     expect(seenRequests[1]?.headers.authorization).toBeUndefined();
+
+    const feedbackBody = JSON.stringify({ kind: "complaint", body: "😭".repeat(5000), idempotencyKey: "bridge-feedback" });
+    const feedbackResponse = await fetch(`${bridge.baseUrl}/api/companies/company-1/agent-commentary`, {
+      method: "POST", headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" }, body: feedbackBody,
+    });
+    expect(feedbackResponse.status).toBe(200);
+    await feedbackResponse.arrayBuffer();
+    expect(seenRequests[2]).toMatchObject({ method: "POST", path: "/api/companies/company-1/agent-commentary", body: feedbackBody });
+    expect(seenRequests[2]?.headers.authorization).toBeUndefined();
 
   });
 
@@ -1379,6 +1390,7 @@ describe("sandbox callback bridge", () => {
 
   it("permits the documented heartbeat surface and denies unrelated routes", () => {
     const allowed: Array<{ method: string; path: string }> = [
+      { method: "POST", path: "/api/companies/co-1/agent-commentary" },
       { method: "POST", path: "/runtime-tools/github/credentials" },
       { method: "GET", path: "/api/agents/me" },
       { method: "GET", path: "/api/agents/me/inbox-lite" },
@@ -1458,6 +1470,8 @@ describe("sandbox callback bridge", () => {
     }
 
     const denied: Array<{ method: string; path: string }> = [
+      { method: "GET", path: "/api/companies/co-1/agent-commentary" },
+      { method: "POST", path: "/api/companies/co-1/agent-commentary/other" },
       { method: "POST", path: "/api/companies/co-1/email/inboxes" },
       { method: "POST", path: "/api/companies/co-1/email/connections" },
       { method: "POST", path: "/api/companies/co-1/email/inspect" },

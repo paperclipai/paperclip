@@ -750,3 +750,30 @@ do not substitute an `ask_user_questions` permission checklist or ask the human
 to edit settings manually. Yield while waiting. Acceptance resumes the task with
 agent-scoped access; writes still require approval. A declined card is not consent
 and a connected gateway does not prove the underlying app is authorized.
+
+## Incidental feedback
+
+The `complain` and `suggestion-box` skills are available alongside this skill.
+Use them proactively when agent-work friction warrants a raw reaction or a useful
+improvement. This is not a mandatory report. Their shared helper is
+`scripts/submit-agent-commentary.mjs`, relative to this skill directory. Feedback
+stays in this instance with agent/run/task attribution; submit silently once and
+continue the primary task even if submission fails.
+
+**External review handoffs.**
+
+For a PR, put its link in the work product's top-level `url` field. If a human
+must review or merge it before you can continue, name that action in a durable
+human-only interaction with an appropriate continuation policy and leave the
+task `in_review`. A `needs_board_review` work-product flag and a periodic monitor
+do not create an interaction card. Keep any merge check bounded, record its
+purpose in the monitor's `notes`, and verify the actual provider state when you
+resume; a confirmation response is not proof of a merge. Update the existing PR
+work product when the PR merges or closes instead of registering a duplicate.
+
+The same rule applies to external release approval gates: link the exact run,
+create a human-only confirmation asking whether the user approved it in the
+provider, and keep the agent assigned with `continuationPolicy: "wake_assignee"`
+so the answer resumes verification. A handoff comment asking the user to comment
+back or reassign the task is not a confirmation card. The card records the user's
+answer; verify the provider's gate and publish result before continuing.

@@ -10,6 +10,11 @@ homes. Managed default/shared accounts are additional choices in that same
 selector. Selecting “Sign in to another account” survives background refreshes;
 Claude authorization paste keeps upstream's immediate Connecting feedback.
 
+New-agent Connect offers three persistent tiles: the provider's subscription,
+the provider's API key, and Advanced. All three stay visible while the selected
+mode's form is shown below. Advanced opens the existing compatible-connection
+picker and provider setup. Execution environment selection lives in Configure.
+
 Storybook's simulated controllers and page annotations do not run in the app.
 
 ## Compatibility and selection
@@ -232,6 +237,17 @@ repairs the connection. Unsupported providers and failures that could not create
 a card retain their existing recovery path. Tool permission errors and provider quota failures do not
 request model authentication.
 
+Pre-dispatch `configuration_incomplete` failures also show this card when every
+missing binding is a personal `user_secret_ref` for the same compatible AI
+provider. This includes a teammate who has no value for an onboarding
+`ANTHROPIC_API_KEY` definition. The card asks that person to connect their own
+account. It does not use another teammate's secret. Mixed gaps, company secrets,
+and unrelated tool credentials keep the existing operator recovery path.
+After explicit, validated adoption, the durable delivery reopens only the
+blocked task whose latest failure and active configuration recovery still match
+the card. A newer failure, reassignment, manual hold, or restricted external chat
+does not resume through an old card.
+
 An attributed managed credential is marked as needing reauthorization only if
 its stored generation still matches the failed run. Late failures cannot
 invalidate a refreshed or reconnected credential. Repair preserves the selected
@@ -379,8 +395,8 @@ onboarding, and agent setup share `LocalProviderLoginInstructions` and
 `useLocalAiLogin`. Claude and Codex start a local provider process behind the
 browser sign-in card. Claude accepts the authorization code in that card; Codex
 displays its device code there. The user does not run a shell command. Each
-local runner requires Python 3 for its pseudo-terminal and the corresponding
-provider CLI on the Paperclip host. Each
+local runner requires Python 3 for its pseudo-terminal (included in the Docker
+image) and the corresponding provider CLI on the Paperclip host. Each
 attempt retains a private credential home. The home is never seeded with the
 operator's existing login: copying a rotating refresh token would
 allow managed runs to invalidate credentials still used by legacy agents or the
@@ -511,15 +527,24 @@ fingerprint. These checks do not relax current connection authorization.
 
 ## Advanced provider routing (2026-10-02)
 
-The connection API and catalog support OpenRouter, Amazon Bedrock, Google Gemini,
-Responses API, Messages API, Chat Completions API, and local endpoints.
-The catalog tags these entries `model-provider`. Responses-compatible gateways
-such as Emissary use the Responses API definition.
+Use the regular rows on **Connectors** to add OpenRouter, Amazon Bedrock,
+Google Gemini, a Responses API, Messages API, Chat Completions API, or local
+endpoint connection. Each row has its own Connect action and saved accounts.
+The catalog tags these entries `model-provider`; no category UI is shown.
+Responses-compatible gateways such as Emissary use the Responses API row.
+The native subscription/API-key onboarding remains the default. Provider choices
+show the existing local brand artwork and reuse the existing access step. Custom
+URLs, protocol, AWS region, and credential fields appear only after choosing the
+corresponding connector. New connections default to everyone in the organization
+and all agents when the actor has permission; the existing Advanced disclosure
+contains the controls to narrow access, without a separate Access step. New-agent setup also offers the connection picker in its persistent
+**Advanced / Custom Gateway** tile.
 
-Provider routing belongs to the connection; the model belongs to the agent.
-The API exposes compatible saved connections and optional model identifiers.
-The advanced setup UI and review stories ship in the follow-up UI change.
-Native subscription and API-key setup keep their existing controls.
+At **Agents → [agent] → Harness / Runtime**, **Connection** is a dropdown of
+compatible saved connections, including explicit personal accounts. The existing
+model picker uses that connection’s optional model IDs and accepts manual IDs.
+Changing connections preserves the model for explicit review. URLs and
+credentials belong to the connection; the model belongs to the agent.
 
 | Harness | Implemented managed routes |
 | --- | --- |
@@ -541,9 +566,10 @@ catalog discovery for custom gateways are not part of this implementation.
 
 OpenRouter connections without an explicit model list automatically load its public
 [model catalog](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
-ordered with `sort=most-popular`. The company-scoped model discovery API preserves
-the provider's ordering and adapts model IDs to the selected harness. Explicit
-connection model lists take precedence. Catalog discovery sends no credentials.
+ordered with `sort=most-popular`. New-agent setup and agent settings share this
+discovery path, preserve the provider's ordering, and adapt model IDs to the selected
+harness. Explicit connection model lists take precedence. Catalog discovery sends
+no credentials; a failed request offers refresh and manual model entry.
 
 `config.ai.routing` stores only kind, protocol, URL, auth method, region, and
 optional model IDs/labels. The vault stores provider API keys, including Bedrock API keys.
@@ -572,6 +598,15 @@ configuration; it is not proof that the model can respond. HTTPS is required for
 remote URLs; loopback endpoints may use HTTP. Localhost refers to the agent’s
 execution environment, including when it is a sandbox. URLs cannot contain user
 credentials, query parameters, or fragments.
+
+Managed Grok uses a disposable runtime home. Paperclip does not retain or restore
+Grok transcript files into host temporary directories: private file modes do not
+isolate agents running as the same OS user. Archives from earlier development
+builds are ignored. Provider session metadata still saves normally. If the selected
+session has no history in its current execution environment, Grok starts a fresh
+session with the Paperclip task handoff rather than attempting remote subscription
+recovery. Transcript continuation requires an isolated provider history solution
+and is not qualified by this change.
 
 Runtime projection clears alternate provider credentials and routing overrides,
 uses disposable homes, and never falls back to host authentication. Codex probes
@@ -605,9 +640,10 @@ through PostgreSQL JSONB and verifies that credential rotation retains identity
 and agent access.
 General AWS access keys are not accepted or forwarded to Claude; use a Bedrock
 API key. Support for AWS roles requires a credential broker before it can ship.
-A subsequent OpenCode tool-use check reached OpenRouter but was denied terminal
-access; its follow-up ended with `process_lost`. Treat OpenCode tool-use acceptance
-as unresolved rather than inferring it from a completed task status.
+The initial OpenCode tool-use check was denied terminal access. The native driver
+now includes the assigned workspace and its canonical path in the allowed
+directories while preserving the configured tool policy. Subsequent local
+qualification verified tool use and follow-up on the affected OpenCode route.
 Live Bedrock verification subsequently passed with a short-lived Bedrock API key,
 region `us-east-1`, and `us.anthropic.claude-sonnet-4-6`. The saved connection
 passed **Run test**. Claude legacy and Claude New Runner each ran a terminal
@@ -615,6 +651,16 @@ calculation, completed the task, and ran a context-dependent follow-up. Actual
 tool output was verified for all four successful runs. Private gateways still
 have deterministic mapping and validation coverage but need live verification
 in the target deployment. Short-lived Bedrock keys must be rotated before expiry.
+
+The repeatable provider connection campaign is documented in
+[`tests/runner-e2e/PROVIDER-CONNECTIONS.md`](../../tests/runner-e2e/PROVIDER-CONNECTIONS.md).
+It preserves actual tool outputs, downloaded artifacts, completion and follow-up
+receipts, source provenance, cleanup, and provider failures. The retained local
+qualification has 43 passing API/gateway cells out of 46; staging and all
+subscription combinations remain unqualified. Gemini CLI 0.58.0 has an upstream
+ACP new-file error conversion defect. The provider-free filesystem probe exposes
+that defect without modifying the installed CLI. Provider overloads and one
+follow-up timeout also remain live qualification limits.
 
 ### Gateway completion compatibility
 

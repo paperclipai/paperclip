@@ -20,6 +20,7 @@ import { activityApi } from "@/api/activity";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
+import { useIssueWorkProducts } from "@/hooks/useIssueWorkProducts";
 import {
   documentDisplayTitle,
   selectAgentArtifactAttachments,
@@ -380,10 +381,7 @@ export function IssuePropertiesArtifactsTab({
     isPending: productsPending,
     isError: productsError,
     refetch: refetchProducts,
-  } = useQuery({
-    queryKey: queryKeys.issues.workProducts(issue.id),
-    queryFn: () => issuesApi.listWorkProducts(issue.id),
-  });
+  } = useIssueWorkProducts(issue.id);
   const {
     data: documents,
     isPending: documentsPending,

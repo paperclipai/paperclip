@@ -510,8 +510,12 @@ export async function execute(
   if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
 
   // ── Resolve working directory ──────────────────────────────────────────
+  const workspace = ctx.context?.paperclipWorkspace;
+  const workspaceCwd = workspace && typeof workspace === "object"
+    ? cfgString((workspace as Record<string, unknown>).cwd)
+    : undefined;
   const cwd =
-    cfgString(config.cwd) || cfgString(ctx.config?.workspaceDir) || ".";
+    cfgString(config.cwd) || workspaceCwd || cfgString(ctx.config?.workspaceDir) || ".";
   try {
     await ensureAbsoluteDirectory(cwd);
   } catch {

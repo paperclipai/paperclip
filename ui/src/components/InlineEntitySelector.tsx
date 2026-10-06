@@ -16,6 +16,8 @@ interface InlineEntitySelectorProps {
   options: InlineEntityOption[];
   placeholder: string;
   noneLabel: string;
+  /** Keep the no-selection action before the selected and recent choices. */
+  noneAtTop?: boolean;
   /** Keep the no-selection action after the project choices. */
   noneAtEnd?: boolean;
   searchPlaceholder: string;
@@ -72,6 +74,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       options,
       placeholder,
       noneLabel,
+      noneAtTop = false,
       noneAtEnd = false,
       searchPlaceholder,
       emptyMessage,
@@ -106,17 +109,19 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
     const allOptions = useMemo<InlineEntityOption[]>(() => {
       const baseOptions = [{ id: "", label: noneLabel, searchText: noneLabel }, ...options];
       const ordered = orderItemsBySelectedAndRecent(baseOptions, value, recentOptionIds);
+      if (noneAtTop) return [baseOptions[0]!, ...ordered.filter((option) => option.id)];
       return noneAtEnd ? [...ordered.filter((option) => option.id), baseOptions[0]!] : ordered;
-    }, [noneAtEnd, noneLabel, options, recentOptionIds, value]);
+    }, [noneAtEnd, noneAtTop, noneLabel, options, recentOptionIds, value]);
 
     const filteredOptions = useMemo(() => {
       const term = query.trim().toLowerCase();
       if (!term) return allOptions;
       return allOptions.filter((option) => {
+        if (noneAtTop && !option.id) return true;
         const haystack = `${option.label} ${option.searchText ?? ""}`.toLowerCase();
         return haystack.includes(term);
       });
-    }, [allOptions, query]);
+    }, [allOptions, noneAtTop, query]);
 
     const currentOption = options.find((option) => option.id === value) ?? null;
 
@@ -128,9 +133,14 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
 
     useEffect(() => {
       if (!open) return;
+      const firstSearchResultIndex = noneAtTop && query.trim()
+        ? filteredOptions.findIndex((option) => option.id)
+        : -1;
       const selectedIndex = filteredOptions.findIndex((option) => option.id === value);
-      setHighlightedIndexValue(selectedIndex >= 0 ? selectedIndex : 0);
-    }, [filteredOptions, open, setHighlightedIndexValue, value]);
+      setHighlightedIndexValue(
+        firstSearchResultIndex >= 0 ? firstSearchResultIndex : selectedIndex >= 0 ? selectedIndex : 0,
+      );
+    }, [filteredOptions, noneAtTop, open, query, setHighlightedIndexValue, value]);
 
     const commitSelection = (index: number, moveNext: boolean) => {
       const option = filteredOptions[index] ?? filteredOptions[0];

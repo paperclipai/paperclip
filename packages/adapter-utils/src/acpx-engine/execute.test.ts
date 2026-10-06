@@ -52,6 +52,7 @@ import {
 
 
 const tempRoots: string[] = [];
+let defaultGeminiTestHome: string | undefined;
 
 async function makeTempRoot() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-skills-"));
@@ -60,6 +61,7 @@ async function makeTempRoot() {
 }
 
 afterEach(async () => {
+  defaultGeminiTestHome = undefined;
   // A remote run stages a process-session bridge whose detached event writer can
   // still be flushing a trailing event file into `.../process-sessions/<id>/events`
   // when the run's own best-effort `client.remove(sessionDir)` (which production
@@ -179,6 +181,13 @@ async function runExecutor(
     startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
   } = {},
 ) {
+  // Skill reconciliation must never inspect or modify the developer's real
+  // Gemini home. Keep one private home across this test's resumed turns.
+  const configuredEnv = config.env as Record<string, unknown> | undefined;
+  if (config.agent === "gemini" && !(typeof configuredEnv?.HOME === "string" && configuredEnv.HOME.trim())) {
+    defaultGeminiTestHome ??= await makeTempRoot();
+    config = { ...config, env: { ...configuredEnv, HOME: defaultGeminiTestHome } };
+  }
   const runtimeOptions: Record<string, unknown>[] = [];
   const configOptions: Array<{ key: string; value: string }> = [];
   const sessionInputs: Record<string, unknown>[] = [];
@@ -619,7 +628,7 @@ describe("shared ACPX engine runtime behavior", () => {
     });
   });
 
-  it("keeps Claude startup model handling and Gemini session config handling unchanged", async () => {
+  it("sets Claude and Gemini models at startup without unsupported picker calls", async () => {
     const claude = await runExecutor({ agent: "claude", model: "claude-opus-4-7" });
     expect((claude.meta[0]?.env as Record<string, string>).ANTHROPIC_MODEL).toBe(
       "claude-opus-4-7",
@@ -630,9 +639,10 @@ describe("shared ACPX engine runtime behavior", () => {
       agent: "gemini",
       model: "gemini-2.5-pro",
       thinkingEffort: "high",
+      env: { GEMINI_MODEL: "stale-model" },
     });
+    expect((gemini.meta[0]?.env as Record<string, string>).GEMINI_MODEL).toBe("gemini-2.5-pro");
     expect(gemini.configOptions).toEqual([
-      { key: "model", value: "gemini-2.5-pro" },
       { key: "effort", value: "high" },
     ]);
   });
@@ -1598,6 +1608,29 @@ describe("shared ACPX engine runtime behavior", () => {
     });
 
     expect(await pathExists(path.join(codexHome, "skills", operational.runtimeName, "SKILL.md"))).toBe(true);
+  });
+
+  it.each(["codex", "gemini"])("refreshes the %s skill root when a connection home changes between turns", async (agent) => {
+    const root = await makeTempRoot();
+    const operational = {
+      ...await createSkill(path.join(root, "skills"), "paperclip"),
+      key: "paperclipai/paperclip/paperclip",
+    };
+    const homes = [path.join(root, "first-home"), path.join(root, "next-home")];
+    for (const home of homes) {
+      const { meta } = await runExecutor({
+        agent,
+        stateDir: path.join(root, "state"),
+        env: agent === "codex" ? { CODEX_HOME: home } : { HOME: home },
+        paperclipRuntimeSkills: [operational],
+        paperclipSkillSync: { desiredSkills: [] },
+      });
+      const skillsHome = agent === "codex" ? path.join(home, "skills") : path.join(home, ".gemini", "skills");
+      expect(String(meta[0]?.prompt ?? "")).toContain(`Skill root for this run: ${skillsHome}`);
+      expect(String(meta[0]?.prompt ?? "")).toContain("Resolve referenced scripts and files relative to that skill");
+      if (home === homes[1]) expect(String(meta[0]?.prompt ?? "")).not.toContain(homes[0]!);
+      await fs.rm(home, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(process.platform === "win32")("removes legacy ACPX Codex skill symlinks when a skill is no longer desired", async () => {
@@ -2886,6 +2919,21 @@ describe("findAncestorBin", () => {
 });
 
 describe("gemini ACP flag selection", () => {
+  it("uses the canonical local Gemini workspace for ACP filesystem requests", async () => {
+    const root = await makeTempRoot();
+    const workspace = path.join(root, "workspace");
+    const alias = path.join(root, "workspace-alias");
+    await fs.mkdir(workspace);
+    await fs.symlink(workspace, alias, process.platform === "win32" ? "junction" : "dir");
+    const { runtimeOptions, sessionInputs } = await runExecutor({
+      agent: "gemini", agentCommand: "node ./fake-acp.js", cwd: alias,
+      stateDir: path.join(root, "state"),
+    });
+    const canonical = await fs.realpath(workspace);
+    expect(runtimeOptions[0]!.cwd).toBe(canonical);
+    expect(sessionInputs[0]!.cwd).toBe(canonical);
+  });
+
   it("parses semantic version parts from gemini --version output", () => {
     expect(parseGeminiVersionParts("0.30.0")).toEqual([0, 30, 0]);
     expect(parseGeminiVersionParts("gemini-cli v1.2.3\n")).toEqual([1, 2, 3]);
@@ -3540,6 +3588,16 @@ describe("ACPX engine remote sandbox staging seam (PR 1: workspace + cwd)", () =
     expect(runtimeOptions[0]?.cwd).toBe(remoteCwd);
     expect(sessionInputs[0]?.cwd).toBe(remoteCwd);
     expect(sessionInputs[0]?.cwd).not.toBe(localCwd);
+  });
+
+  it("preserves Gemini's in-sandbox workspace without host canonicalization", async () => {
+    const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    const { sessionInputs, runtimeOptions } = await runExecutor(
+      { agent: "gemini", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget },
+    );
+    expect(runtimeOptions[0]?.cwd).toBe(remoteCwd);
+    expect(sessionInputs[0]?.cwd).toBe(remoteCwd);
   });
 
   it("test_remote_warm_handle_reused_after_cwd_change", async () => {

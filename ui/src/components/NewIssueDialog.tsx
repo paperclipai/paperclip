@@ -1349,7 +1349,7 @@ export function NewIssueDialog() {
                       triggerDataSlot="new-issue-compact-control"
                       contentStyle={entityPickerViewportStyle}
                       noneLabel="No project"
-                      noneAtEnd
+                      noneAtTop
                       searchPlaceholder="Search projects..."
                       emptyMessage="No projects found."
                       onChange={handleProjectChange}

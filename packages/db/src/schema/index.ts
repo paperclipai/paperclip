@@ -226,5 +226,7 @@ export * from "./public_mcp.js";
 export * from "./ai_connection_routing.js";
 export { toolConnectionAppSnapshots } from "./tool_connection_app_snapshots.js";
 export { toolConnectionAppSyncs } from "./tool_connection_app_syncs.js";
+export { agentCommentary } from "./agent_commentary.js";
+
 
 export { agentIdentityKeys } from "./agent_identity_keys.js";

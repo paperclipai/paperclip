@@ -199,13 +199,14 @@ vi.mock("./InlineEntitySelector", async () => {
         placeholder?: string;
         className?: string;
         triggerDataSlot?: string;
+        noneAtTop?: boolean;
         options?: { id: string; label: string }[];
         onChange?: (id: string) => void;
         renderTriggerValue?: (option: { id: string; label: string } | null) => ReactNode;
       }
-    >(function InlineEntitySelectorMock({ value, placeholder, className, triggerDataSlot, renderTriggerValue, options = [], onChange }, ref) {
+    >(function InlineEntitySelectorMock({ value, placeholder, className, triggerDataSlot, noneAtTop, renderTriggerValue, options = [], onChange }, ref) {
       return (
-        <button ref={ref} type="button" className={className} data-slot={triggerDataSlot} onClick={() => onChange?.(options[options.findIndex((option) => option.id === value) + 1]?.id ?? "")}>
+        <button ref={ref} type="button" className={className} data-slot={triggerDataSlot} data-none-at-top={noneAtTop || undefined} onClick={() => onChange?.(options[options.findIndex((option) => option.id === value) + 1]?.id ?? "")}>
           {(renderTriggerValue?.(value ? { id: value, label: value } : null) ?? value) || placeholder}
         </button>
       );
@@ -451,6 +452,23 @@ describe("NewIssueDialog", () => {
     const next = renderDialog(container);
     await waitForAssertion(() => expect(container.querySelector('[data-slot="new-issue-compact-control"]')?.textContent).toContain("project-1"));
     act(() => next.root.unmount());
+  });
+
+  it("shows No project first and lets a selected project be cleared", async () => {
+    dialogState.newIssueDefaults = { projectId: "project-1" };
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-slot="new-issue-compact-control"]')?.textContent).toContain("project-1"));
+
+    const projectPicker = container.querySelector<HTMLButtonElement>('[data-slot="new-issue-compact-control"]')!;
+    expect(projectPicker.dataset.noneAtTop).toBe("true");
+    act(() => projectPicker.click());
+
+    await typeTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!, "Create without a project");
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
+    expect(mockIssuesApi.create.mock.calls[0][1].projectId).toBeUndefined();
+    expect(getLastProjectId("company-1")).toBe("");
+    act(() => root.unmount());
   });
 
   it("submits remembered effort with the agent's default model", async () => {

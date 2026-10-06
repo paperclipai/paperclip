@@ -4229,6 +4229,11 @@ export function resolvePaperclipDesiredSkillNames(
 export const PAPERCLIP_OPERATIONAL_SKILL_KEY =
   "paperclipai/paperclip/paperclip";
 
+export const PAPERCLIP_FEEDBACK_SKILL_KEYS = [
+  "paperclipai/paperclip/complain",
+  "paperclipai/paperclip/suggestion-box",
+] as const;
+
 /**
  * Native Paperclip Runner sessions receive the control-plane contract through
  * PRP, so carrying the legacy operational skill into their stored preference
@@ -4289,12 +4294,11 @@ export function resolveLegacyPaperclipDesiredSkillNames(
   );
   if (!operationalEntry) return desiredSkills;
 
-  return [
-    operationalEntry.key,
-    ...desiredSkills.filter(
-      (key) => key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
-    ),
-  ];
+  const feedbackEntries = PAPERCLIP_FEEDBACK_SKILL_KEYS.flatMap((key) => {
+    const entry = availableEntries.find((candidate) => candidate.key.trim().toLowerCase() === key);
+    return entry ? [entry.key] : [];
+  });
+  return Array.from(new Set([operationalEntry.key, ...feedbackEntries, ...desiredSkills]));
 }
 
 export function writePaperclipSkillSyncPreference(

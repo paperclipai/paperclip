@@ -19,6 +19,7 @@ const apiPrefixes: Record<string, string> = {
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",
+  "agent-commentary.ts": "/api",
   "agent-avatars.ts": "/api",
   "announcements.ts": "/api",
   "ai-connections.ts": "/api",
@@ -237,6 +238,27 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents strict run-attributed feedback without a read endpoint", () => {
+    const { spec } = loadSpecRoutes();
+    const path = spec.paths["/api/companies/{companyId}/agent-commentary"];
+    expect(Object.keys(path)).toEqual(["post"]);
+    const operation = path.post;
+    expect(operation.security).toEqual([{ AgentBearerAuth: [] }]);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true });
+    expect(operation.description).toContain("X-Paperclip-Run-Id");
+    const body = operation.requestBody.content["application/json"].schema;
+    expect(body.additionalProperties).toBe(false);
+    expect(Object.keys(body.properties).sort()).toEqual(["body", "idempotencyKey", "kind"]);
+    expect(body.properties.body.maxLength).toBe(524288);
+    for (const code of ["200", "201"]) {
+      const result = operation.responses[code].content["application/json"].schema;
+      expect(result.additionalProperties).toBe(false);
+      expect(Object.keys(result.properties).sort()).toEqual(["createdAt", "id", "kind", "replayed"]);
+    }
+    expect(operation.responses["409"]).toBeDefined();
+    expect(operation.responses["503"]).toBeDefined();
+  });
+
   it("documents board-only pool management with revision-checked deletion", () => {
     const { spec } = loadSpecRoutes();
     const pools = spec.paths["/api/companies/{companyId}/ai-connection-pools"];

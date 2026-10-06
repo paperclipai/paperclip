@@ -3073,6 +3073,15 @@ export function accessRoutes(
       input.allowedJoinTypes === "agent"
         ? null
         : input.humanRole ?? "operator";
+    if (effectiveHumanRole) {
+      // An invitation must not delegate the membership powers its creator lacks.
+      const roleGrants = grantsForHumanRole(effectiveHumanRole);
+      for (const permissionKey of ["joins:approve", "users:manage_permissions"] as const) {
+        if (roleGrants.some((grant) => grant.permissionKey === permissionKey)) {
+          await assertCompanyPermission(input.req, input.companyId, permissionKey);
+        }
+      }
+    }
     const insertValues = {
       companyId: input.companyId,
       inviteType: "company_join" as const,

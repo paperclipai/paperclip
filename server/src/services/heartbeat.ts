@@ -7112,7 +7112,11 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
     return true;
   }
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
-  if (wakeReason === "issue_children_completed" && input.contextSnapshot?.onboardingCompletion === true) return true;
+  if (wakeReason === "issue_children_completed" && (
+    input.contextSnapshot?.onboardingCompletion === true ||
+    (input.contextSnapshot?.statusDecisionSource === "native_status_decision" &&
+      readNonEmptyString(input.contextSnapshot?.nativeChildCompletionDecisionId))
+  )) return true;
   return Boolean(
     wakeReason && RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP.has(wakeReason),
   );

@@ -2006,6 +2006,23 @@
       "keyPermissions": "Project/database/environment/storage changes and Edge Function deployment. Project selection and optional read-only configuration remain authoritative. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
     },
     {
+      "app": "superagent",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "List, read, triage and permanently delete findings; start billable repository, application, agent and package red-team reports; run Contributor Trust scans and dependency update runs; score web pages, email, messages, files, skills, MCP repositories and packages; manage Applications, Agents, endpoint clients, groups, runtime guardrail rules and alerts; manage OpenTelemetry destinations; return structured agent reports.",
+      "evidence": [
+        "https://www.superagent.sh/docs/mcp",
+        "https://www.superagent.sh/docs/reference/settings",
+        "https://www.superagent.sh/.well-known/oauth-protected-resource"
+      ],
+      "reviewedAt": "2026-10-06",
+      "liveProof": "not-run",
+      "keyPermissions": "Superagent organization keys are not scoped: a key reaches everything in its organization, including permanently deleting findings and starting billable report and triage work. Create a separate key for Paperclip so it can be revoked independently, and set billable and destructive actions to Ask first before agents run unattended."
+    },
+    {
       "app": "supermemory",
       "method": "mcp-oauth",
       "auth": "oauth",

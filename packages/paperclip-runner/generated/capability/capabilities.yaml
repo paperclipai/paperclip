@@ -290,6 +290,15 @@
       "expectedMockState": "operation_result"
     },
     {
+      "id": "skill:skills/paperclip/SKILL.md:754",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/SKILL.md#L754:incidental-feedback",
+      "heading": "Incidental feedback",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "scoped_discovery",
+      "expectedMockState": "operation_result"
+    },
+    {
       "id": "skill:skills/paperclip/references/api-reference.md:1",
       "kind": "skill_heading",
       "sourceAnchor": "skills/paperclip/references/api-reference.md#L1:paperclip-api-reference",

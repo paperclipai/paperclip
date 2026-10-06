@@ -113,7 +113,8 @@ describe("Capability semantic catalog and authorization", () => {
   it("publishes a stable narrow catalog without credentials or control-plane-owned tools", () => {
     const names = CAPABILITY_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(42);
+    expect(names).toHaveLength(44);
+    expect(names).toEqual(expect.arrayContaining(["submit_complaint", "submit_suggestion"]));
     expect(names).toContain("get_task_context");
     expect(names).toContain("finish_task");
     expect(names).not.toContain("checkout_task");
@@ -162,6 +163,20 @@ describe("Capability semantic catalog and authorization", () => {
     expect(found.operations.map((tool) => tool.name)).toEqual(["list_agents", "get_agent"]);
     expect(found.operations.every((tool) => tool.annotations.semanticContract === "paperclip.semantic-tool.v1")).toBe(true);
     expect(JSON.stringify(found)).not.toContain("list_approvals");
+  });
+
+  it("supports unnamespaced discovery and finds both feedback tools", async () => {
+    const claims = ["discovery:agents:read"];
+    const adapter = await running(claims);
+    const dispatcher = new CapabilitySemanticDispatcher(adapter, {
+      scenario: { id: "feedback-discovery", claims }, explicitClaims: claims,
+    });
+    const agents = dispatcher.discoverTools(OPEN.identity.runId, "find company agents");
+    expect(agents.operations.map((tool) => tool.name)).toEqual(expect.arrayContaining(["list_agents", "get_agent"]));
+    for (const options of [{}, { namespace: "feedback" }]) {
+      const feedback = dispatcher.discoverTools(OPEN.identity.runId, "feedback", options);
+      expect(feedback.operations.map((tool) => tool.name)).toEqual(["submit_complaint", "submit_suggestion"]);
+    }
   });
 
   it("does not disclose optional tools that current authority cannot invoke", async () => {
