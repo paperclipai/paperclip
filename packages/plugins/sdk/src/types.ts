@@ -546,6 +546,14 @@ export interface PluginLocalFoldersClient {
  * @see PLUGIN_SPEC.md §16 — Event System
  */
 export interface PluginEventsClient {
+  /** Read durable resource hooks. Requires events.subscribe and a company scope.
+   * Only the earliest unacknowledged event for each resource is returned.
+   * Page using afterId; reset it each polling sweep to retry failures and late commits.
+   * Events repeat until acknowledged; use a company-scoped provider idempotency key.
+   */
+  listLifecycle(companyId: string, limit?: number, afterId?: string): Promise<ResourceLifecycleEvent[]>;
+  /** Acknowledge only after the provider operation succeeds. */
+  acknowledgeLifecycle(companyId: string, eventId: string): Promise<void>;
   /**
    * Subscribe to a core Paperclip domain event or a plugin-namespaced event.
    *
@@ -582,6 +590,16 @@ export interface PluginEventsClient {
    */
   emit(name: string, companyId: string, payload: unknown): Promise<void>;
 }
+
+export type ResourceLifecycleEvent = {
+  id: string;
+  companyId: string;
+  resourceId: string;
+  createdAt: string;
+} & (
+  | { resourceType: "agent"; action: "create" | "pause" | "resume" | "terminate" }
+  | { resourceType: "project"; action: "create" | "update" }
+);
 
 /**
  * `ctx.jobs` — register handlers for scheduled jobs declared in the manifest.

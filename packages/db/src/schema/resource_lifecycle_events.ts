@@ -13,6 +13,7 @@ export const resourceLifecycleEvents = pgTable("resource_lifecycle_events", {
 }, (table) => ({
   resourceIdx: uniqueIndex("resource_lifecycle_events_creation_idx").on(table.companyId, table.resourceType, table.resourceId).where(sql`${table.action} = 'create'`),
   companyIdx: index("resource_lifecycle_events_company_idx").on(table.companyId, table.id),
+  resourceOrderIdx: index("resource_lifecycle_events_resource_order_idx").on(table.companyId, table.resourceType, table.resourceId, table.id),
   resourceTypeCheck: check("resource_lifecycle_events_resource_type_check", sql`${table.resourceType} IN ('agent', 'project')`),
   actionCheck: check("resource_lifecycle_events_action_check", sql`${table.action} = 'create' OR (${table.resourceType} = 'project' AND ${table.action} IN ('update', 'archive')) OR (${table.resourceType} = 'agent' AND ${table.action} IN ('pause', 'resume', 'terminate'))`),
 }));

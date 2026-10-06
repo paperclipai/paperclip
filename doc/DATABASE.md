@@ -515,7 +515,7 @@ Termination commits API-key revocation in that same transaction.
 Hire approval and rejection commit with agent activation or termination, so a
 failed event write leaves the decision pending and retryable.
 
-The numeric event ID orders transitions for a resource. Future plugin delivery
+The numeric event ID orders transitions for a resource. Plugin delivery
 must enforce company scope, preserve resource order, and track acknowledgments
 per plugin. A global high-water mark can skip transactions that have not yet
 committed; it is not a safe delivery cursor. The journal stores only identity,
@@ -523,11 +523,26 @@ action, and timestamps, not repository snapshots, credentials, provider config,
 or resource health. Company deletion cascades to its events. Resource deletion
 retains events, so consumers must revalidate existence and eligibility and load
 current authorized repository data. A termination hook does not authorize
-removing persistent VM or project data.
+provider cleanup without the plugin's own authorization and retention policy.
 
-The migration creates an empty table. It does not scan or backfill existing
-installs. Plugin delivery, retention, retries, and provider integration are
-separate work. This change makes no provider calls and adds no plugin read API.
+The migrations create empty journal and acknowledgment tables. They do not scan or backfill existing
+installs. Plugins use `ctx.events.listLifecycle(companyId, limit?, afterId?)` and
+`ctx.events.acknowledgeLifecycle(companyId, eventId)` with `events.subscribe`.
+The host requires a matching company invocation (or configured-company proactive
+access) and a ready plugin enabled for that company.
+`plugin_lifecycle_acknowledgments` stores progress independently
+for each plugin and event; plugin and event deletion cascade acknowledgments.
+Reads return only the earliest unacknowledged event for each resource, up to 100
+resources. Acknowledging a later event is rejected. Reads never consume work, so
+crashes, retries, and restarts cannot lose a hook; concurrent reads can repeat an
+event. There is no global cursor or backfill scan. Consumers must serialize their
+processing and make provider operations idempotent before acknowledging success.
+Retention and provider integration remain separate work.
+
+Lifecycle polls can page past failed resources using the last returned event id as
+`afterId`. Reset `afterId` at the start of every polling sweep: it is a page
+cursor, never a persisted high-water mark. This retries failures and includes
+transactions that commit later with lower ids.
 
 ## Legacy controller ownership
 

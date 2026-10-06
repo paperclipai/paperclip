@@ -201,6 +201,7 @@ export { pluginLogs } from "./plugin_logs.js";
 export { runIdentityContexts } from "./run_identity_contexts.js";
 export { connectionIntentDeliveries } from "./connection_intent_deliveries.js";
 export { resourceLifecycleEvents } from "./resource_lifecycle_events.js";
+export { pluginLifecycleAcknowledgments } from "./plugin_lifecycle_acknowledgments.js";
 
 export { toolActionDeliveries } from "./tool_action_deliveries.js";
 export { chatTeamsFileTransfers } from "./chat_teams_file_transfers.js";

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { agentApiKeys, agents, budgetPolicies, companies, costEvents, createDb, projects, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { agentApiKeys, agents, budgetPolicies, companies, costEvents, createDb, pluginCompanySettings, pluginLifecycleAcknowledgments, plugins, projects, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.js";
@@ -8,6 +9,9 @@ import { approvalService } from "../services/approvals.js";
 import { budgetService } from "../services/budgets.js";
 import { projectService } from "../services/projects.js";
 import { recordResourceCreationEvent } from "../services/resource-lifecycle-events.js";
+import { pluginLifecycleInbox } from "../services/plugin-lifecycle-inbox.js";
+import { buildHostServices } from "../services/plugin-host-services.js";
+import { createPluginEventBus } from "../services/plugin-event-bus.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -34,6 +38,10 @@ describePostgres("Resource lifecycle events", () => {
   const events = () => db.select().from(resourceLifecycleEvents).where(eq(resourceLifecycleEvents.companyId, companyId));
   const createAgent = (status: "idle" | "pending_approval" | "terminated" = "idle", database: Db = db) =>
     agentService(database).create(companyId, { name: "Lifecycle agent", adapterType: "process", adapterConfig: {}, status });
+  const createPlugin = async () => {
+    const [plugin] = await db.insert(plugins).values({ pluginKey: randomUUID(), packageName: "lifecycle-fixture", version: "1.0.0", status: "ready", manifestJson: {} as never }).returning();
+    return plugin;
+  };
 
   it("records direct and approval-free hires once, including concurrent duplicate submissions", async () => {
     const agent = await createAgent();
@@ -291,4 +299,88 @@ describePostgres("Resource lifecycle events", () => {
     }
   });
 
+  it("retries until acknowledgment, preserves resource order, and isolates progress per plugin", async () => {
+    const first = await createPlugin();
+    const second = await createPlugin();
+    const agent = await createAgent();
+    await agentService(db).pause(agent.id);
+    await agentService(db).resume(agent.id);
+    const journal = (await events()).sort((a, b) => a.id - b.id);
+    const inbox = pluginLifecycleInbox(db, first.id);
+    const [event] = await inbox.list(companyId);
+    expect(event).toMatchObject({ id: String(journal[0].id), resourceId: agent.id, action: "create" });
+    expect(await pluginLifecycleInbox(db, first.id).list(companyId)).toEqual([event]);
+    await expect(inbox.acknowledge(companyId, String(journal[1].id))).rejects.toMatchObject({ status: 409 });
+    await Promise.all([inbox.acknowledge(companyId, event.id), inbox.acknowledge(companyId, event.id)]);
+    expect(await inbox.list(companyId)).toEqual([expect.objectContaining({ action: "pause" })]);
+    expect(await pluginLifecycleInbox(db, second.id).list(companyId)).toEqual([event]);
+    await inbox.acknowledge(companyId, String(journal[1].id));
+    await inbox.acknowledge(companyId, String(journal[2].id));
+    expect(await inbox.list(companyId)).toEqual([]);
+    await db.delete(plugins).where(eq(plugins.id, first.id));
+    expect(await db.select().from(pluginLifecycleAcknowledgments).where(eq(pluginLifecycleAcknowledgments.pluginId, first.id))).toEqual([]);
+  });
+
+  it("pages past 100 failing resources without skipping their later events", async () => {
+    const plugin = await createPlugin();
+    const inbox = pluginLifecycleInbox(db, plugin.id);
+    await db.insert(resourceLifecycleEvents).values(Array.from({ length: 101 }, () => ({
+      companyId, resourceType: "agent" as const, resourceId: randomUUID(), action: "create" as const,
+    })));
+    const first = await inbox.list(companyId, 100);
+    await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "agent", resourceId: first[0].resourceId, action: "pause" });
+    const next = await inbox.list(companyId, 100, first.at(-1)!.id);
+    expect(next).toHaveLength(1);
+    expect(next[0].resourceId).not.toBe(first[0].resourceId);
+    await inbox.acknowledge(companyId, next[0].id);
+    expect(await inbox.list(companyId, 100, first.at(-1)!.id)).toEqual([]);
+    expect(await inbox.list(companyId, 100)).toEqual(first);
+    await expect(inbox.list(companyId, 100, "invalid")).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("never skips a lower event id that commits after a higher id is acknowledged", async () => {
+    const plugin = await createPlugin();
+    const inbox = pluginLifecycleInbox(db, plugin.id);
+    await db.transaction(async tx => {
+      const low = await agentService(tx as unknown as Db).create(companyId, { name: "Delayed commit" });
+      const high = await createAgent();
+      const [visible] = await inbox.list(companyId);
+      expect(visible.resourceId).toBe(high.id);
+      await inbox.acknowledge(companyId, visible.id);
+      expect(await inbox.list(companyId)).toEqual([]);
+      expect(low.id).not.toBe(high.id);
+    });
+    expect(await inbox.list(companyId)).toEqual([expect.objectContaining({ action: "create" })]);
+  });
+
+  it("enforces capability, invocation company, plugin availability, and company boundaries through host RPC", async () => {
+    const plugin = await createPlugin();
+    await createAgent();
+    const services = buildHostServices(db, plugin.id, plugin.pluginKey, createPluginEventBus());
+    const handlers = createHostClientHandlers({ pluginId: plugin.id, capabilities: ["events.subscribe"], services });
+    const scope = { invocationScope: { companyId } };
+    try {
+      await expect(handlers["events.listLifecycle"]({ companyId })).rejects.toThrow("company context");
+      const other = randomUUID();
+      await expect(handlers["events.listLifecycle"]({ companyId: other }, scope)).rejects.toThrow("requested company");
+      const denied = createHostClientHandlers({ pluginId: plugin.id, capabilities: [], services });
+      await expect(denied["events.listLifecycle"]({ companyId }, scope)).rejects.toThrow("events.subscribe");
+      await expect(denied["events.acknowledgeLifecycle"]({ companyId, eventId: "1" }, scope)).rejects.toThrow("events.subscribe");
+      const [event] = await handlers["events.listLifecycle"]({ companyId }, scope);
+      await expect(handlers["events.acknowledgeLifecycle"]({ companyId: other, eventId: event.id }, scope)).rejects.toThrow("requested company");
+      await expect(pluginLifecycleInbox(db, plugin.id).acknowledge(other, event.id)).rejects.toMatchObject({ status: 404 });
+      await db.insert(pluginCompanySettings).values({ pluginId: plugin.id, companyId, enabled: false });
+      await expect(handlers["events.listLifecycle"]({ companyId }, scope)).rejects.toMatchObject({ status: 403 });
+      await expect(handlers["events.acknowledgeLifecycle"]({ companyId, eventId: event.id }, scope)).rejects.toMatchObject({ status: 403 });
+      await db.update(pluginCompanySettings).set({ enabled: true }).where(eq(pluginCompanySettings.pluginId, plugin.id));
+      await expect(handlers["events.listLifecycle"]({ companyId, limit: 0 }, scope)).rejects.toMatchObject({ status: 400 });
+      await expect(handlers["events.acknowledgeLifecycle"]({ companyId, eventId: "1e2" }, scope)).rejects.toMatchObject({ status: 400 });
+      await handlers["events.acknowledgeLifecycle"]({ companyId, eventId: event.id }, scope);
+      expect(await handlers["events.listLifecycle"]({ companyId }, scope)).toEqual([]);
+      await db.update(plugins).set({ status: "disabled" }).where(eq(plugins.id, plugin.id));
+      await expect(handlers["events.listLifecycle"]({ companyId }, scope)).rejects.toMatchObject({ status: 403 });
+    } finally {
+      services.dispose();
+    }
+  });
 });

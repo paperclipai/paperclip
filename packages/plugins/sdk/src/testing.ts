@@ -30,6 +30,7 @@ import type {
   PluginJobContext,
   PluginLauncherRegistration,
   PluginEvent,
+  ResourceLifecycleEvent,
   ScopeKey,
   ToolResult,
   ToolRunContext,
@@ -108,6 +109,7 @@ export interface TestHarness {
   /** Seed host entities for `ctx.companies/projects/issues/agents/goals/access/authorization` reads. */
   seed(input: {
     companies?: Company[];
+    lifecycleEvents?: ResourceLifecycleEvent[];
     projects?: Project[];
     issues?: Issue[];
     issueComments?: IssueComment[];
@@ -495,6 +497,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const entities = new Map<string, PluginEntityRecord>();
   const entityExternalIndex = new Map<string, string>();
   const companies = new Map<string, Company>();
+  const lifecycleEvents = new Map<string, ResourceLifecycleEvent>();
+  const lifecycleAcknowledgments = new Set<string>();
   const projects = new Map<string, Project>();
   const routines = new Map<string, Routine>();
   const routineRuns = new Map<string, RoutineRun>();
@@ -862,6 +866,32 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     events: {
+      async listLifecycle(companyId, limit = 50, afterId) {
+        requireCapability(manifest, capabilitySet, "events.subscribe");
+        requireCompanyId(companyId);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("limit must be an integer from 1 to 100");
+        if (afterId !== undefined && (typeof afterId !== "string" || !/^[1-9]\d*$/.test(afterId) || !Number.isSafeInteger(Number(afterId)))) throw new Error("Invalid lifecycle page id");
+        const pending = [...lifecycleEvents.values()].filter(event => event.companyId === companyId && !lifecycleAcknowledgments.has(event.id))
+          .sort((a, b) => Number(a.id) - Number(b.id));
+        const resources = new Set<string>();
+        return pending.filter(event => {
+          const key = `${event.resourceType}:${event.resourceId}`;
+          if (resources.has(key)) return false;
+          resources.add(key);
+          return true;
+        }).filter(event => afterId === undefined || Number(event.id) > Number(afterId)).slice(0, limit);
+      },
+      async acknowledgeLifecycle(companyId, eventId) {
+        requireCapability(manifest, capabilitySet, "events.subscribe");
+        requireCompanyId(companyId);
+        const event = lifecycleEvents.get(eventId);
+        if (!event || event.companyId !== companyId) throw new Error("Lifecycle event not found");
+        const earlier = [...lifecycleEvents.values()].some(other => other.companyId === companyId
+          && other.resourceType === event.resourceType && other.resourceId === event.resourceId
+          && Number(other.id) < Number(event.id) && !lifecycleAcknowledgments.has(other.id));
+        if (earlier) throw new Error("Acknowledge earlier lifecycle events for this resource first");
+        lifecycleAcknowledgments.add(eventId);
+      },
       on(name: PluginEventType | `plugin.${string}`, filterOrFn: EventFilter | ((event: PluginEvent) => Promise<void>), maybeFn?: (event: PluginEvent) => Promise<void>): () => void {
         requireCapability(manifest, capabilitySet, "events.subscribe");
         let registration: EventRegistration;
@@ -2539,6 +2569,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const harness: TestHarness = {
     ctx,
     seed(input) {
+      for (const row of input.lifecycleEvents ?? []) lifecycleEvents.set(row.id, row);
       for (const row of input.companies ?? []) companies.set(row.id, row);
       for (const row of input.projects ?? []) projects.set(row.id, row);
       for (const row of input.issues ?? []) {
