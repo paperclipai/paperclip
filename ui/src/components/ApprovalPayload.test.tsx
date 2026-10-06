@@ -65,6 +65,28 @@ describe("ApprovalPayloadRenderer", () => {
     });
   });
 
+  it("states that approving records the decision and does not perform the action", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ThemeProvider>
+          <ApprovalPayloadRenderer
+            type="request_board_approval"
+            payload={{ title: "Retire the duplicate agent" }}
+          />
+        </ThemeProvider>,
+      );
+    });
+
+    expect(container.textContent).toContain("Approving records this decision.");
+    expect(container.textContent).toContain("does not perform the action itself.");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders markdown in board approval prose fields", () => {
     const root = createRoot(container);
 

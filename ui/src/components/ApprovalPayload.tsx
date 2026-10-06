@@ -185,6 +185,9 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
 
   return (
     <div className="mt-4 space-y-3.5 text-sm">
+      <p className="text-xs leading-5 text-muted-foreground">
+        Approving records this decision. It does not perform the action itself.
+      </p>
       {title && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Title</p>
