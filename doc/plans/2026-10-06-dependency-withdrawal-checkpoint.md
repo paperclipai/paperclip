@@ -1,5 +1,11 @@
 # Dark root-first withdrawal checkpoint
 
+## Already-active tool preflight
+
+Dark withdrawal now checks same-company executing/executed linked actions after the locked pending card and before linked revocation/secret persistence. The existing post-revocation check is deliberately retained: the preflight snapshot alone does not prevent a concurrent claim. Ordinary non-opt-in ordering remains linked revocation -> active check. No new production opt-in, source-run lock, authority, native cancellation or restoration wiring.
+
+Recording RED: focused already-active tool assertion fails with an eager cancelled tool patch (1 FAIL/23 skipped, 4.75s). New controls verify preflight read rejection with no writes, rendered company/card/executing/executed predicate, later active outcome still vetoed after eager revocation, and ordinary active-tool parity. Initial combined supplied/owned run had 35 PASS/1 stale event-order assertion; updated to require the added preflight. Expanded run selected three actual files (one mistyped fourth filename was not selected): 55 PASS/7.11s. Programmatic inventory selected 31 actual participant files; 758 PASS/37.91s, exit 0. After strengthening the exact preflight predicate assertion, final withdrawal/owned/canonical-terminal/publication replay: four actual files, 122 PASS/8.20s, exit 0. These are actual canonical recording tests, not SQL filtering, transaction exclusion, concurrency or rollback. A later active outcome leaves eager mock revocation, not rollback evidence. Typecheck/build/full gates, DB/server/listener/adapter and production activation are not performed. Original missing durable dependency intent remains unimplemented.
+
 ## Locked-card prewrite checkpoint
 
 The dark supplied path now re-reads the same-company interaction FOR UPDATE after the existing actor/run guard and before linked tool/secret persistence. The initial lookup is only discovery. Missing or non-pending locked rows fail before linked writes; the locked row supplies canonical persistence inputs. Ordinary omitted/false behavior remains unchanged. Order is company fence -> issue -> existing actor/run guard -> interaction -> linked persistence. This is not common serialization: unfenced writers and native source-run composition still need a lock-order audit before wiring.

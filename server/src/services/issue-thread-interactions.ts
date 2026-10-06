@@ -4994,6 +4994,20 @@ export function issueThreadInteractionService(
           throw interactionNotFoundError();
         }
         if (current.status !== "pending") throw interactionTerminalError(current);
+        if (suppliedTx && current.kind === "request_confirmation") {
+          // Deny a known executing/executed action before any linked writes.
+          // Retain the post-revocation check below for a concurrent claim;
+          // this snapshot does not replace canonical revocation/CAS or rollback.
+          const active = await tx.select({ id: toolActionRequests.id })
+            .from(toolActionRequests).where(and(
+              eq(toolActionRequests.companyId, current.companyId),
+              eq(toolActionRequests.interactionId, current.id),
+              inArray(toolActionRequests.status, ["executing", "executed"]),
+            )).then(rows => rows[0] ?? null);
+          if (active) throw conflict(
+            "The linked tool action is already executing and can no longer be withdrawn",
+          );
+        }
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],

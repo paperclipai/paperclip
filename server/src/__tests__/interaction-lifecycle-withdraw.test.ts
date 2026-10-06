@@ -5,7 +5,7 @@ import * as service from "../services/issue-thread-interactions.js";
 vi.mock("../services/instance-settings.js", () => ({ instanceSettingsService: () => ({}) }));
 vi.mock("../telemetry.js", () => ({ getTelemetryClient: () => null }));
 vi.mock("../services/chat-interaction-publications.js", () => ({ enqueueTerminalIssueInteractionChatPublications: async () => {} }));
-function fixture(config: { status?: string; missingIssue?: boolean; missingCard?: boolean; cardStatus?: string; activeTool?: boolean; noResult?: boolean; writeError?: Error; lockedStatus?: string; missingLockedCard?: boolean; lockError?: Error } = {}) {
+function fixture(config: { status?: string; missingIssue?: boolean; missingCard?: boolean; cardStatus?: string; activeTool?: boolean; activeAfterRevocation?: boolean; activeReadError?: Error; noResult?: boolean; writeError?: Error; lockedStatus?: string; missingLockedCard?: boolean; lockError?: Error } = {}) {
   const events: string[] = []; const queries: any[] = []; const patches: any[] = []; const dialect = new PgDialect();
   let release!: () => void; let reject!: (e: Error) => void;
   const barrier = new Promise<void>((resolve, fail) => { release = resolve; reject = fail; });
@@ -17,7 +17,9 @@ function fixture(config: { status?: string; missingIssue?: boolean; missingCard?
       queries.push(dialect.sqlToQuery(q));
       if (table === issues) return { for: async (mode: string) => { expect(mode).toBe("update"); events.push("issue-lock"); return config.missingIssue ? [] : [{ id: "issue-1", companyId: "company-1", status: config.status ?? "blocked" }]; } };
       if (table === issueThreadInteractions) { events.push("card-read"); return Object.assign(Promise.resolve(config.missingCard ? [] : [row]), { for: async (mode: string) => { expect(mode).toBe("update"); events.push("card-lock"); if (config.lockError) throw config.lockError; return config.missingLockedCard ? [] : [{ ...row, status: config.lockedStatus ?? row.status }]; } }); }
-      expect(table).toBe(toolActionRequests); events.push("active-tool-read"); return Promise.resolve(config.activeTool ? [{ id: "tool-1" }] : []);
+      expect(table).toBe(toolActionRequests); events.push("active-tool-read");
+      if (config.activeReadError) throw config.activeReadError;
+      return Promise.resolve(config.activeTool || (config.activeAfterRevocation && events.includes("tool-write")) ? [{ id: "tool-1" }] : []);
     } }) }),
     update: (table: any) => ({ set: (patch: any) => ({ where: (q: any) => {
       queries.push(dialect.sqlToQuery(q)); patches.push(patch);
@@ -54,7 +56,7 @@ describe("dark supplied root-first canonical withdrawal recording", () => {
     finally { f.release(); }
     const result = await pending;
     expect(result).toMatchObject({ id: "interaction-1", status: "cancelled", resolvedByUserId: "user-1" });
-    expect(f.events).toEqual(["fence", "issue-lock", "card-read", "card-read", "card-lock", "tool-write", "active-tool-read", "card-write"]);
+    expect(f.events).toEqual(["fence", "issue-lock", "card-read", "card-read", "card-lock", "active-tool-read", "tool-write", "active-tool-read", "card-write"]);
     expect(f.queries[0].params).toEqual(["issue-1", "company-1"]);
     expect(f.queries[1].params).toEqual(["interaction-1", "company-1", "issue-1"]);
     expect(f.queries.at(-1).params).toEqual(["interaction-1", "pending", "company-1", "issue-1"]);
@@ -79,9 +81,31 @@ describe("dark supplied root-first canonical withdrawal recording", () => {
   it("retains pending-only guard", async () => {
     const f = fixture({ cardStatus: "cancelled" }); f.release(); await expect(invoke(f)).rejects.toMatchObject({ status: 409 }); expect(f.patches).toEqual([]);
   });
-  it("vetoes active linked tool after eager revocation recording; not rollback", async () => {
-    const f = fixture({ activeTool: true }); f.release(); await expect(invoke(f)).rejects.toMatchObject({ status: 409 }); expect(f.events).not.toContain("card-write");
-    expect(f.events).toContain("tool-write");
+  it("vetoes an already active linked tool before dark linked writes", async () => {
+    const f = fixture({ activeTool: true }); f.release();
+    await expect(invoke(f)).rejects.toMatchObject({ status: 409 });
+    expect(f.events).toContain("card-lock");
+    expect(f.events).toContain("active-tool-read");
+    expect(f.queries.at(-1).params).toEqual(["company-1", "interaction-1", "executing", "executed"]);
+    expect(f.patches).toEqual([]);
+  });
+  it("propagates active-tool preflight failure before linked writes", async () => {
+    const error = new Error("active-read-denied"); const f = fixture({ activeReadError: error }); f.release();
+    await expect(invoke(f)).rejects.toBe(error); expect(f.patches).toEqual([]);
+  });
+  it("retains post-revocation active-tool veto; eager recording is not rollback", async () => {
+    const f = fixture({ activeAfterRevocation: true }); f.release();
+    await expect(invoke(f)).rejects.toMatchObject({ status: 409 });
+    expect(f.events.filter(event => event === "active-tool-read")).toHaveLength(2);
+    expect(f.events).toContain("tool-write"); expect(f.events).not.toContain("card-write");
+  });
+  it("preserves ordinary active-tool veto after canonical revocation", async () => {
+    const f = fixture({ activeTool: true });
+    const root = { ...f.tx, transaction: async (cb: any) => cb(f.tx) };
+    await expect(service.issueThreadInteractionService(root as any).withdrawInteraction(
+      { id: "issue-1", companyId: "company-1" }, "interaction-1", {}, { userId: "user-1" },
+    )).rejects.toMatchObject({ status: 409 });
+    expect(f.events).toEqual(["card-read", "tool-write", "active-tool-read"]);
   });
   it("propagates lost conditional-write result", async () => {
     const f = fixture({ noResult: true }); f.release(); await expect(invoke(f)).rejects.toMatchObject({ status: 409 }); expect(f.events).toContain("tool-write");
