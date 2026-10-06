@@ -6,6 +6,26 @@ import { parse } from "dotenv";
 import { environmentLeases, environments, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import { readEnvironmentCreationCleanupError, type PluginEnvironmentCreationCleanup,
+  type PluginEnvironmentLease, type PluginEnvironmentTerminationReceipt } from "@paperclipai/plugin-sdk";
+
+export async function acquireDaytonaLeaseWithCleanup(input: {
+  companyId: string; environmentId: string; runId: string;
+  acquire: () => Promise<PluginEnvironmentLease>;
+  destroy: (cleanup: PluginEnvironmentCreationCleanup) => Promise<PluginEnvironmentTerminationReceipt | void>;
+}) {
+  try {
+    return await input.acquire();
+  } catch (error) {
+    const cleanup = readEnvironmentCreationCleanupError(error);
+    if (cleanup && cleanup.companyId === input.companyId && cleanup.environmentId === input.environmentId
+        && (!cleanup.runId || cleanup.runId === input.runId)) {
+      const receipt = await input.destroy(cleanup);
+      assert.equal(receipt?.state, "destroyed", "Failed Daytona acquisition must be cleaned up");
+    }
+    throw error;
+  }
+}
 
 export async function acquireCommentaryDaytonaTarget(db: Db, fixture: {
   companyId: string; agentId: string; issueId: string; runId: string;
@@ -27,9 +47,13 @@ export async function acquireCommentaryDaytonaTarget(db: Db, fixture: {
   const base = { driverKey: "daytona", companyId: fixture.companyId, environmentId, issueId: fixture.issueId, config };
   await db.insert(environments).values({ id: environmentId, name: `feedback-smoke-${environmentId}`, driver: "sandbox", config: { provider: "daytona", image } });
   console.error(`Acquiring disposable ${mode} Daytona sandbox.`);
-  const lease = await hooks.onEnvironmentAcquireLease!({ ...base, runId: fixture.runId, agentId: fixture.agentId,
-    adapterType: mode === "legacy" ? "codex_local" : "paperclip_runner",
-    requestedExpiresAt: new Date(Date.now() + 20 * 60_000).toISOString() });
+  const lease = await acquireDaytonaLeaseWithCleanup({ ...fixture, environmentId,
+    acquire: () => hooks.onEnvironmentAcquireLease!({ ...base, runId: fixture.runId, agentId: fixture.agentId,
+      adapterType: mode === "legacy" ? "codex_local" : "paperclip_runner",
+      requestedExpiresAt: new Date(Date.now() + 20 * 60_000).toISOString() }),
+    destroy: cleanup => hooks.onEnvironmentDestroyLease!({ ...base, providerLeaseId: cleanup.providerLeaseId,
+      leaseMetadata: { failedCreateCleanup: cleanup } }),
+  });
   assert.ok(lease.providerLeaseId);
   console.error(`Acquired disposable ${mode} Daytona sandbox.`);
   const cleanup = async () => {
