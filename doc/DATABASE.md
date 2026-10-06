@@ -527,7 +527,7 @@ retains events, so consumers must revalidate existence and eligibility and load
 current authorized repository data. A termination hook does not authorize
 provider cleanup without the plugin's own authorization and retention policy.
 
-Migration `0301_whole_venom.sql` seeds a one-time current-state baseline before
+Migration `0303_modern_mathemanic.sql` seeds a one-time current-state baseline before
 plugin delivery is available. It records creation for existing hired agents and
 all projects, including archived projects. Pending hires stay behind approval.
 Paused and terminated agents receive missing final status intents. A partial

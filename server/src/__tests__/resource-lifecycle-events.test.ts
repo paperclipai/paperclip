@@ -301,7 +301,7 @@ describePostgres("Resource lifecycle events", () => {
   });
 
   const backfillBaseline = () => db.transaction(async tx => {
-    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0301_whole_venom.sql", import.meta.url), "utf8");
+    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0303_modern_mathemanic.sql", import.meta.url), "utf8");
     const lock = migration.split("--> statement-breakpoint")[0];
     const baseline = migration.slice(migration.indexOf("-- Seed a one-time current-state baseline"));
     for (const statement of [lock, ...baseline.split("--> statement-breakpoint")]) {
@@ -356,7 +356,7 @@ describePostgres("Resource lifecycle events", () => {
     await db.execute(sql`DROP TABLE plugin_lifecycle_acknowledgments`);
     await db.execute(sql`DROP INDEX resource_lifecycle_events_resource_order_idx`);
     const applyDeliveryMigration = () => db.transaction(async tx => {
-      const migration = readFileSync(new URL("../../../packages/db/src/migrations/0301_whole_venom.sql", import.meta.url), "utf8");
+      const migration = readFileSync(new URL("../../../packages/db/src/migrations/0303_modern_mathemanic.sql", import.meta.url), "utf8");
       for (const statement of migration.split("--> statement-breakpoint")) {
         if (statement.trim()) await tx.execute(sql.raw(statement));
       }
