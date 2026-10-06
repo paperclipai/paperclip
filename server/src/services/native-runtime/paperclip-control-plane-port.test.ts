@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asc, eq, sql } from "drizzle-orm";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { readCompletedAssistantMessageCandidate, resolveHeartbeatRunResponse, selectHeartbeatRunFinalAgentMessage } from "../heartbeat-run-summary.js";
 import {
@@ -296,6 +296,47 @@ describe("PaperclipControlPlanePort conformance", () => {
       await db.delete(companies);
       await db.delete(authUsers);
       await temporary.cleanup();
+    }
+  });
+
+  it("redacts identity private material before persisting native events and checkpoints", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const privateKeyPem = generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const keyBody = privateKeyPem.split("\n")[1];
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const observed: PrpEvent[] = [];
+    const port = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `identity-${identity.runId}`,
+    }, { privateKeyPem, onCommittedEvent: async event => { observed.push(event); } });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    await port.appendEvent({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, eventType: "tool.execution.started", schemaVersion: 1,
+      priority: 0, emittedAt: new Date().toISOString(), payload: {
+        schema: "paperclip.tool.execution.v1", executionId: "identity-output", transport: "builtin",
+        operation: "execute", name: "diagnostic", target: null, namespace: null, readOnly: true,
+        status: "running", durationMs: null, exitCode: null, progress: null,
+        output: privateKeyPem, outputBytes: Buffer.byteLength(privateKeyPem), outputTruncated: false,
+        outputDigest: `sha256:${"a".repeat(64)}`,
+      },
+    });
+    await port.checkpointSession({ backendKind: "mock", sessionId: identity.sessionId, identity,
+      semanticResult: { ...CONTROL_PLANE_CONFORMANCE_RESULT, summary: privateKeyPem },
+    });
+    const persistedEvents = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    for (const value of [persistedEvents, observed, run.runnerProfileJson]) {
+      expect(JSON.stringify(value)).not.toContain(keyBody);
+      expect(JSON.stringify(value)).toContain("***REDACTED***");
     }
   });
 

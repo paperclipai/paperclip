@@ -151,6 +151,7 @@ export interface NativeExecutionInputV1 {
     runId: string;
     issueId: string;
     agentId: string;
+    agentKeyId?: string;
     executionWorkspaceId: string;
   };
   task: {
@@ -344,7 +345,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   }
 
   const binding = record(input.binding, "input.binding");
-  exactKeys(binding, ["companyId", "runId", "issueId", "agentId", "executionWorkspaceId"], "input.binding");
+  exactKeys(binding, ["companyId", "runId", "issueId", "agentId", "agentKeyId", "executionWorkspaceId"], "input.binding");
   const task = record(input.task, "input.task");
   exactKeys(task, ["identifier", "title", "description", "prompt", "workMode"], "input.task");
   const workspace = record(input.workspace, "input.workspace");
@@ -709,6 +710,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       runId: text(binding.runId, "input.binding.runId"),
       issueId: text(binding.issueId, "input.binding.issueId"),
       agentId: text(binding.agentId, "input.binding.agentId"),
+      ...(binding.agentKeyId === undefined ? {} : { agentKeyId: text(binding.agentKeyId, "input.binding.agentKeyId") }),
       executionWorkspaceId: text(binding.executionWorkspaceId, "input.binding.executionWorkspaceId"),
     },
     task: {

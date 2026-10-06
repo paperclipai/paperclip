@@ -58,6 +58,8 @@ import {
 } from "./built-in-agent-metadata.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 
+import { agentIdentityService } from "./agent-identity.js";
+
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -945,6 +947,7 @@ export function agentService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0]);
+        await agentIdentityService(txDb).ensureAgentIdentity(companyId, created.id);
         // New standard agents receive the standard direct grants at activation.
         // Low-trust and bundled agents keep their explicit, narrower grants.
         if (created.status !== "pending_approval" && !permissionsImplyLowTrust(normalizedPermissions) &&

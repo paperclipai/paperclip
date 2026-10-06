@@ -1,3 +1,4 @@
+import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { and, asc, eq, gt, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -71,6 +72,7 @@ function assertTerminal(value: unknown): asserts value is PrpTerminalState {
 /** Production implementation of the runner package's deliberately narrow persistence port. */
 export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #db: Db;
+  readonly #identityRedactor: ReturnType<typeof createAgentIdentityRedactor>;
   readonly #binding: PaperclipControlPlaneBinding;
   #sessionId: string | null = null;
   readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
@@ -80,11 +82,14 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     db: Db,
     binding: PaperclipControlPlaneBinding,
     options: {
+      /** Runtime-only secret; never part of the persisted binding. */
+      privateKeyPem?: string;
       onCommittedEvent?: (event: PrpEvent) => Promise<void>;
       onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
     } = {},
   ) {
     this.#db = db;
+    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem);
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#onDuplicateEvent = options.onDuplicateEvent;
@@ -151,6 +156,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async checkpointSession(snapshot: PersistedNativeSession): Promise<void> {
+    snapshot = this.#identityRedactor.redact(snapshot);
     const identity = snapshot.identity;
     if (
       identity.companyId !== this.#binding.companyId
@@ -183,7 +189,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
     const validated = validatePrpEvent(value);
     if (!validated.ok) throw new Error(`native_event_schema_invalid:${validated.issues[0]?.message ?? "unknown"}`);
-    const event = validated.event;
+    const event = this.#identityRedactor.redact(validated.event);
     if (event.runId !== this.#binding.runId || (this.#sessionId && event.normalizedSessionId !== this.#sessionId)) {
       throw new Error("native_event_binding_mismatch");
     }
@@ -264,6 +270,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async completeRun(value: NativeRunResult | CompleteControlPlaneRunInput): Promise<void> {
+    value = this.#identityRedactor.redact(value);
     if (!isCompleteInput(value)) throw new Error("native_structured_result_required");
     // Capture compatibility diagnostics before canonical validation removes
     // legacy/non-actionable attention payloads. They are operator evidence,

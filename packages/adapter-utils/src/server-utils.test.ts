@@ -31,6 +31,8 @@ import {
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
+  sanitizeInheritedPaperclipEnv,
+  isForbiddenConfigEnvKey,
   signalRunningProcess,
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
@@ -39,6 +41,13 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+it("reserves identity credentials even for mixed-case inherited or configured keys", () => {
+  const keys = ["PAPERCLIP_AGENT_KEY_ID", "Paperclip_Agent_Public_Key", "paperclip_agent_private_key"];
+  const inherited = Object.fromEntries(keys.map(key => [key, "host-override"]));
+  expect(sanitizeInheritedPaperclipEnv({ ...inherited, PATH: "/usr/bin" })).toEqual({ PATH: "/usr/bin" });
+  for (const key of keys) expect(isForbiddenConfigEnvKey(key)).toBe(true);
+});
 
 describe("runtime connection tool delivery", () => {
   const access = {

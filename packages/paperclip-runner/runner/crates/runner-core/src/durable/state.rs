@@ -1842,7 +1842,30 @@ pub(crate) fn redact_text(input: &str) -> String {
     redacted
 }
 
+pub(crate) fn redact_agent_identity_text(input: &str) -> String {
+    let Ok(key) = std::env::var("PAPERCLIP_AGENT_PRIVATE_KEY") else {
+        return input.to_owned();
+    };
+    if key.is_empty() {
+        return input.to_owned();
+    }
+    let escaped = serde_json::to_string(&key).unwrap_or_default();
+    let mut result = input.replace(&key, "[REDACTED]");
+    if escaped.len() > 2 {
+        result = result.replace(&escaped[1..escaped.len() - 1], "[REDACTED]");
+    }
+    for line in key
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with("-----"))
+    {
+        result = result.replace(line, "[REDACTED]");
+    }
+    result
+}
+
 pub(crate) fn redact_sensitive_text_values(input: &str) -> String {
+    let identity_redacted = redact_agent_identity_text(input);
+    let input = identity_redacted.as_str();
     let normalized = input.to_ascii_lowercase();
     let bytes = normalized.as_bytes();
     let mut ranges: Vec<(usize, usize)> = Vec::new();

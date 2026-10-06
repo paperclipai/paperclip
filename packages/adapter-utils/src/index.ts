@@ -1,5 +1,6 @@
 export type {
   AdapterAgent,
+  AgentRuntimeIdentity,
   AdapterRuntime,
   UsageSummary,
   AdapterBillingType,

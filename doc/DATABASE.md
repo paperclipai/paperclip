@@ -570,3 +570,12 @@ reservation cannot silently disappear. Failed cleanup or an ambiguous storage
 write requires operator reconciliation before an unattached reservation is
 removed. The table stores no response bodies. See `doc/runner-api-tools.md` for
 limits and the operator override.
+
+## Agent identity keys and backups
+
+`agent_identity_keys` stores one encrypted Ed25519 identity per agent. Its migration
+creates schema only: existing agents provision on their next managed run. Public
+reads and server startup do not provision them. Normal backups preserve identity
+rows and need the matching secrets master key for recovery. Both development seed
+modes omit identity rows, including with live-work preservation, so copied agents
+get fresh identities. See [Agent cryptographic identity](AGENT-IDENTITY.md).

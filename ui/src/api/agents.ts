@@ -1,3 +1,4 @@
+import type { AgentPublicIdentity } from "@paperclipai/shared";
 import type {
   Agent,
   ConnectionIntentInteraction,
@@ -109,6 +110,8 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 }
 
 export const agentsApi = {
+  getIdentity: (id: string, companyId?: string) =>
+    api.get<AgentPublicIdentity | null>(agentPath(id, companyId, "/identity")),
   adoptAiConnection: (agentId: string, interactionId: string, connectionId: string, companyId: string) =>
     api.post<ConnectionIntentInteraction>(withCompanyScope(`/agents/${agentId}/connection-intents/${interactionId}/adopt`, companyId), { connectionId }),
 

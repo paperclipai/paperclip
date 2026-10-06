@@ -2143,6 +2143,13 @@
       "when": 1791311441769,
       "tag": "0307_cool_naoko",
       "breakpoints": true
+    },
+    {
+      "idx": 308,
+      "version": "7",
+      "when": 1791312251106,
+      "tag": "0308_whole_steel_serpent",
+      "breakpoints": true
     }
   ]
 }

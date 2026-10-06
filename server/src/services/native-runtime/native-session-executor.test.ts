@@ -6271,6 +6271,23 @@ describe("native warm session supervision", () => {
       return { base, next, run };
     }
 
+    it("replaces an older warm process before the first turn with cryptographic identity", async () => {
+      const { base } = fixture("identity-key-upgrade");
+      const next = { ...base, binding: { ...base.binding, runId: "identity-key-next" } };
+      const close = vi.fn(async () => undefined);
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        options.onSession?.({ close }); return result;
+      }).mockImplementationOnce(async options => {
+        expect(close).toHaveBeenCalledWith({ reason: "warm native session configuration changed" });
+        expect(options.existingSession).toBeUndefined();
+        return result;
+      });
+      await executePaperclipNativeSession({ db: leaseDb(base), execution: base, runnerInstanceId: "runner" });
+      await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: "runner",
+        runnerEnvironment: { PAPERCLIP_AGENT_KEY_ID: "sha256:identity-key" } });
+      expect(state.execute).toHaveBeenCalledTimes(2);
+    });
+
     it("awaits prior idle ownership retirement before launching the accepted-plan session", async () => {
       const { base, next, run } = fixture("identity-handoff");
       let finishClose!: () => void;

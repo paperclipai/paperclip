@@ -1008,7 +1008,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Create child issues from the approved plan only");
   }, 20_000);
 
-  it("preserves accepted-plan continuation resume state when the wake issue owns the in-flight claim", async () => {
+  it("preserves accepted-plan instructions but replaces a pre-identity session when the wake issue owns the in-flight claim", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -1138,7 +1138,8 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       runtime: { sessionId: string | null; sessionParams: Record<string, unknown> | null };
       context: Record<string, unknown>;
     };
-    expect(adapterInput.runtime.sessionId).toBe("accepted-plan-retry-session");
+    // The old process predates identity injection and must be replaced.
+    expect(adapterInput.runtime.sessionId).toBeNull();
     expect(adapterInput.context.acceptedPlanWakeRouting).toBeUndefined();
     expect(adapterInput.context.paperclipTaskMarkdown).toContain(
       "Implement the accepted plan on this issue when the work is small and cohesive.",

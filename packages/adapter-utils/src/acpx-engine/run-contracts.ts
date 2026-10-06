@@ -439,6 +439,7 @@ export interface PaperclipClaudeSettingsIdentity {
  * or a resumable session and forces a fresh launch.
  */
 export interface SessionFingerprintIdentity {
+  readonly agentIdentityKeyId?: string;
   readonly acpxAgent: string;
   readonly agentCommand: string;
   readonly cwd: string;

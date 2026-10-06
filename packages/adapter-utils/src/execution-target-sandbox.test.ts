@@ -1,3 +1,5 @@
+import { generateKeyPairSync, randomBytes, verify } from "node:crypto";
+import { buildAgentIdentityEnv } from "./server-utils.js";
 import { createServer } from "node:http";
 import http2 from "node:http2";
 import net from "node:net";
@@ -307,6 +309,29 @@ describe("sandbox adapter execution targets", () => {
   ): string {
     return events.filter((event) => event.stream === stream).map((event) => event.chunk).join("");
   }
+
+  it("delivers cryptographic identity through a remote sandbox process transport", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "identity-remote-process-"));
+    cleanupDirs.push(rootDir);
+    const keys = generateKeyPairSync("ed25519");
+    const identity = {
+      keyId: "sha256:remote-identity",
+      publicKeyPem: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      privateKeyPem: keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote", transport: "sandbox", providerKey: "local-test", remoteCwd: rootDir,
+      timeoutMs: 30_000, runner: createLocalSandboxRunner(),
+    };
+    const challenge = randomBytes(32);
+    const result = await runAdapterExecutionTargetProcess("identity-remote", target, process.execPath,
+      ["-e", `const {sign}=require('node:crypto');process.stdout.write(sign(null,Buffer.from(process.argv[1],'hex'),process.env.PAPERCLIP_AGENT_PRIVATE_KEY).toString('base64'));`, challenge.toString("hex")], {
+        cwd: rootDir, env: buildAgentIdentityEnv(identity), timeoutSec: 5, graceSec: 1, onLog: async () => {},
+      });
+    expect(result.exitCode).toBe(0);
+    expect(verify(null, challenge, keys.publicKey, Buffer.from(result.stdout, "base64"))).toBe(true);
+    expect((await readRuntimeTextFiles(rootDir)).join("\n")).not.toContain(identity.privateKeyPem.split("\n")[1]);
+  });
 
   it("executes through the provider-neutral runner without a remote spec", async () => {
     const runner = {

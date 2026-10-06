@@ -118,6 +118,9 @@ impl AcpxSidecarTransport {
             }
         };
         let mut keys = vec![
+            "PAPERCLIP_AGENT_KEY_ID",
+            "PAPERCLIP_AGENT_PUBLIC_KEY",
+            "PAPERCLIP_AGENT_PRIVATE_KEY",
             "LANGUAGE",
             "SSL_CERT_FILE",
             "SSL_CERT_DIR",

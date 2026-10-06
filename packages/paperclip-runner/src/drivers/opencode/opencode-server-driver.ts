@@ -2130,7 +2130,11 @@ async function startRuntime(input: {
   const assignedMcp = nativeMcpLaunchBinding(
     input.options.environment ?? process.env,
   );
+  const identityKey = input.options.environment?.PAPERCLIP_AGENT_PRIVATE_KEY;
+  const identityValues = identityKey ? [identityKey, JSON.stringify(identityKey).slice(1, -1),
+    ...identityKey.split(/\r?\n/).filter(line => line && !line.startsWith("-----"))] : [];
   const sensitiveValues = [
+    ...identityValues,
     password,
     authHeader,
     bridge.secret,
@@ -2736,6 +2740,7 @@ function sanitizedEnvironment(
   overrides: Record<string, string>,
 ): NodeJS.ProcessEnv {
   const allowed = [
+    "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
     "PATH",
     "LANG",
     "LC_ALL",

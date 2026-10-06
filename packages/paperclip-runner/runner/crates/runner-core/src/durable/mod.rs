@@ -16,8 +16,9 @@ pub use runner::{
     TerminalDeliveryReconciliation,
 };
 pub(crate) use state::{
-    create_private_temporary_file, open_private_regular_file, redact_sensitive_text_values,
-    redact_text, sanitize_value, validate_semantic_tool_input, verify_private_directory,
+    create_private_temporary_file, open_private_regular_file, redact_agent_identity_text,
+    redact_sensitive_text_values, redact_text, sanitize_value, validate_semantic_tool_input,
+    verify_private_directory,
 };
 pub use state::{
     Command, CommandDisposition, DurableState, DurableStateStore, EventPriority,

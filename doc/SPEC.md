@@ -85,6 +85,15 @@ The Board sets Company-level budgets. The CEO can set budgets for Agents below t
 
 Every employee is an agent. Agents are the workforce.
 
+### Cryptographic identity
+
+Agents have persistent Ed25519 identities, encrypted in their home instance.
+New agents receive keys during creation; existing agents receive them lazily on
+their next managed run. Agents can read their keys from the managed process
+environment, and authorized readers can view or copy the public key from the
+agent page. This does not grant external authorization or change bearer-token
+access. See [the implementation contract](AGENT-IDENTITY.md).
+
 ### Agent Identity (Adapter-Level)
 
 Concepts like SOUL.md (identity/mission) and HEARTBEAT.md (loop definition) are **not part of the Paperclip protocol**. They are adapter-specific configurations. For example, an OpenClaw adapter might use SOUL.md and HEARTBEAT.md files. A Claude Code adapter might use CLAUDE.md. A bare Python script might use command-line args.

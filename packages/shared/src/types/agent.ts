@@ -415,3 +415,11 @@ export interface AgentInstructionCandidate {
   createdAt: string;
   updatedAt: string;
 }
+
+/** Public cryptographic identity; private material is runtime-only. */
+export interface AgentPublicIdentity {
+  algorithm: "Ed25519";
+  keyId: string;
+  publicKeyPem: string;
+  createdAt: string;
+}

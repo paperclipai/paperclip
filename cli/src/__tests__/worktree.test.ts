@@ -511,7 +511,8 @@ describe("worktree helpers", () => {
     expect(minimal.excludedTables).toContain("agent_task_sessions");
     expect(minimal.nullifyColumns.issues).toEqual(["checkout_run_id", "execution_run_id"]);
 
-    expect(full.excludedTables).toEqual([]);
+    expect(full.excludedTables).toEqual(["agent_identity_keys"]);
+    expect(minimal.excludedTables).toContain("agent_identity_keys");
     expect(full.nullifyColumns).toEqual({});
   });
 
@@ -2045,8 +2046,8 @@ describe("worktree helpers", () => {
     }
   });
 
-  it("uses streaming backup selection for full seeds and transformed backup selection for minimal seeds", () => {
-    expect(resolveWorktreeSeedBackupEngine(resolveWorktreeSeedPlan("full"))).toBe("auto");
+  it("uses transformed backups for both seed modes to omit agent identities", () => {
+    expect(resolveWorktreeSeedBackupEngine(resolveWorktreeSeedPlan("full"))).toBe("javascript");
     expect(resolveWorktreeSeedBackupEngine(resolveWorktreeSeedPlan("minimal"))).toBe("javascript");
   });
 
