@@ -189,11 +189,7 @@ impl RunnerTransportEndpoint {
                     "runner_ingress_bind_conflict: listener path is required",
                 )
             })?;
-            if authority != "0.0.0.0:43127" {
-                return Err(DurableRunnerError::invalid(
-                    "runner_ingress_bind_conflict: listener must bind 0.0.0.0:43127",
-                ));
-            }
+            validate_listener_authority(authority)?;
             let path = format!("/{path}");
             validate_listener_path(&path)?;
             if path != format!("/api/runner/v1/connect/{run_id}") {
@@ -203,7 +199,7 @@ impl RunnerTransportEndpoint {
             }
             let listener = TcpListener::bind(authority).map_err(|error| {
                 DurableRunnerError::invalid(format!(
-                    "runner_ingress_bind_conflict: failed to bind fixed listener: {error}"
+                    "runner_ingress_bind_conflict: failed to bind listener: {error}"
                 ))
             })?;
             listener.set_nonblocking(true).map_err(|error| {
@@ -223,15 +219,21 @@ impl RunnerTransportEndpoint {
     /// `EADDRINUSE`, which would terminate an otherwise healthy warm runner.
     pub(crate) fn rotate(&mut self, input: &str, run_id: &str) -> Result<(), DurableRunnerError> {
         if let Some(remainder) = input.strip_prefix("listen://") {
-            if let Self::Listen { path, .. } = self {
+            if let Self::Listen { listener, path } = self {
                 let (authority, next_path) = remainder.split_once('/').ok_or_else(|| {
                     DurableRunnerError::invalid(
                         "runner_ingress_bind_conflict: listener path is required",
                     )
                 })?;
-                if authority != "0.0.0.0:43127" {
+                let address = validate_listener_authority(authority)?;
+                if listener.local_addr().map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "runner listener address unavailable: {error}"
+                    ))
+                })? != address
+                {
                     return Err(DurableRunnerError::invalid(
-                        "runner_ingress_bind_conflict: listener must bind 0.0.0.0:43127",
+                        "runner_ingress_bind_conflict: warm attachment cannot change listener address",
                     ));
                 }
                 let next_path = format!("/{next_path}");
@@ -380,6 +382,20 @@ impl RunnerTransportEndpoint {
             }
         }
     }
+}
+
+fn validate_listener_authority(authority: &str) -> Result<SocketAddr, DurableRunnerError> {
+    let address: SocketAddr = authority.parse().map_err(|_| {
+        DurableRunnerError::invalid(
+            "runner listener address must be 0.0.0.0 with a port in 1..=65535",
+        )
+    })?;
+    if !address.is_ipv4() || !address.ip().is_unspecified() || address.port() == 0 {
+        return Err(DurableRunnerError::invalid(
+            "runner listener address must be 0.0.0.0 with a port in 1..=65535",
+        ));
+    }
+    Ok(address)
 }
 
 fn validate_listener_path(path: &str) -> Result<(), DurableRunnerError> {
@@ -2048,6 +2064,53 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("deadline elapsed"));
+    }
+
+    #[test]
+    fn listener_accepts_distinct_ports_and_retains_port_on_warm_attachment() {
+        // Reserve distinct available ports before transferring them to Runner.
+        let reservations = [
+            TcpListener::bind("0.0.0.0:0").unwrap(),
+            TcpListener::bind("0.0.0.0:0").unwrap(),
+        ];
+        let ports = reservations.map(|listener| listener.local_addr().unwrap().port());
+        let mut endpoints = ports.map(|port| {
+            RunnerTransportEndpoint::new(
+                &format!("listen://0.0.0.0:{port}/api/runner/v1/connect/run_1"),
+                "run_1",
+            )
+            .unwrap()
+        });
+        endpoints[0]
+            .rotate(
+                &format!("listen://0.0.0.0:{}/api/runner/v1/connect/run_2", ports[0]),
+                "run_2",
+            )
+            .unwrap();
+        assert!(endpoints[0]
+            .rotate(
+                &format!("listen://0.0.0.0:{}/api/runner/v1/connect/run_3", ports[1]),
+                "run_3"
+            )
+            .is_err());
+        if let RunnerTransportEndpoint::Listen { listener, path } = &endpoints[0] {
+            assert_eq!(listener.local_addr().unwrap().port(), ports[0]);
+            assert_eq!(path, "/api/runner/v1/connect/run_2");
+        } else {
+            panic!("expected listener");
+        }
+        for authority in [
+            "0.0.0.0:0",
+            "0.0.0.0:65536",
+            "127.0.0.1:43000",
+            "[::]:43000",
+            "example.test:43000",
+        ] {
+            assert!(
+                validate_listener_authority(authority).is_err(),
+                "{authority}"
+            );
+        }
     }
 
     #[test]
