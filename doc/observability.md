@@ -462,7 +462,10 @@ hash do not grant this classification. A current worker's task is blocked for a
 configuration change. A pending review instead keeps its original decision and
 status version, releases execution, and creates no automatic recovery action.
 After repairing the configuration, explicitly retry the reviewer to resolve the
-same pending review. Superseded or completed reviews retain their authority.
+same pending review. The Board's exact failed-run Retry accepts this classified
+native failure only while its saved review is still current and pending; caller
+payloads cannot select a different review. Dispatch checks that assignment again.
+Superseded or completed reviews retain their authority.
 
 An unconfirmed adapter Stop timeout has an event-local `adapter_stop` context:
 the run UUID, built-in adapter type, native/legacy runtime mode, configured

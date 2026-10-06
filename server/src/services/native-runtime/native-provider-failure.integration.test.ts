@@ -21,7 +21,8 @@ import { collectRunFailureDiagnostics } from "../run-failure-diagnostics.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { readPersistedNativeModelRejection } from "./native-provider-failure-evidence.js";
 import { heartbeatService } from "../heartbeat.js";
-import { claimNativeReviewExecutionLock, getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { claimQueuedNativeReviewRun } from "./native-review-dispatch.js";
 import { commitNativeStatusDecision, NativeStatusRaceError } from "./status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "./status-arbiter.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -230,12 +231,21 @@ describe("native completed failure diagnostics", () => {
 
           // The operator repairs configuration and explicitly retries the
           // assigned reviewer. No review rebinding or status reset is needed.
-          await db.update(agents).set({ adapterConfig: { provider: "codex", model: "repaired-model" } }).where(eq(agents.id, agentId));
-          const retryRunId = randomUUID();
-          await db.insert(heartbeatRuns).values({ id: retryRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: issueId,
-            contextSnapshot: { issueId, wakeReason: "native_completion_review", ...reviewContext },
+          await db.update(agents).set({ adapterConfig: { provider: "codex", model: "repaired-model" }, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
+          // Occupy the execution slot to exercise real wake admission without
+          // starting a provider. The normal atomic review claim follows below.
+          const occupiedRunId = randomUUID();
+          await db.insert(heartbeatRuns).values({ id: occupiedRunId, companyId, agentId, status: "running", startedAt: new Date() });
+          const retryRun = await heartbeatService(db, { runtimeEnv: {} }).wakeup(agentId, {
+            failedRunId: runId, source: "on_demand", triggerDetail: "manual", reason: "retry_failed_run",
+            requestedByActorType: "user", requestedByActorId: "review-repair-operator",
+            payload: { issueId }, contextSnapshot: { ...reviewContext },
           });
-          expect(await claimNativeReviewExecutionLock(db, { companyId, issueId, agentId, runId: retryRunId, contextSnapshot: reviewContext, agentNameKey: "reviewer", claimedAt: new Date() })).toBe(true);
+          expect(retryRun).toMatchObject({ status: "queued", retryOfRunId: runId, contextSnapshot: { issueId, ...reviewContext } });
+          const retryRunId = retryRun!.id;
+          await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, occupiedRunId));
+          expect(await claimQueuedNativeReviewRun(db, { run: retryRun!, agentNameKey: "reviewer", claimedAt: new Date(), claimValues: { nativeIssueId: issueId, runtimeMode: "native" } }))
+            .toMatchObject({ id: retryRunId, status: "running" });
           expect(await getNativeReviewAssignment(db, { companyId, issueId, agentId, contextSnapshot: reviewContext, actingRunId: retryRunId, issueExecutionRunId: retryRunId })).not.toBeNull();
           await issueThreadInteractionService(db).acceptInteraction(
             { id: issueId, companyId, projectId: null, goalId: null, status: "in_review" },
