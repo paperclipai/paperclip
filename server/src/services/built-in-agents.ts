@@ -17,6 +17,7 @@ import { agentInstructionRevisionService } from "./agent-instruction-revisions.j
 import type { AuthorizationActor } from "./authorization.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import { agentService } from "./agents.js";
+import { permissionsImplyLowTrust } from "./agent-permissions.js";
 import { approvalService } from "./approvals.js";
 import {
   readBuiltInAgentMarker,
@@ -845,14 +846,18 @@ export function builtInAgentService(db: Db) {
       .select()
       .from(agents)
       .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
-    const rootCeoRows = rows.filter((agent) =>
+    const rootRows = rows.filter((agent) =>
       !readBuiltInAgentMarker(agent.metadata) &&
       !agent.reportsTo &&
-      agent.role.trim().toLowerCase() === "ceo" &&
       agent.status !== "pending_approval"
     );
-    if (rootCeoRows.length !== 1) return 0;
-    return ensureAgentDefaultGrants(companyId, rootCeoRows[0]!.id, ROOT_AGENT_DEFAULT_CHANGE_GRANTS);
+    const rootCeoRows = rootRows.filter((agent) => agent.role.trim().toLowerCase() === "ceo");
+    // The setup flow can label the sole company root as general. Preserve an
+    // explicit single CEO selection, and use the unique root when none exists.
+    const selectedRoot = rootCeoRows.length === 1 ? rootCeoRows[0]
+      : rootCeoRows.length === 0 && rootRows.length === 1 ? rootRows[0] : undefined;
+    if (!selectedRoot || permissionsImplyLowTrust(selectedRoot.permissions)) return 0;
+    return ensureAgentDefaultGrants(companyId, selectedRoot.id, ROOT_AGENT_DEFAULT_CHANGE_GRANTS);
   }
 
   async function ensureCompanyDefaultAgentGrants(companyId: string) {
