@@ -21,18 +21,46 @@ const KEYBOARD_INSET_VAR = "--sz-keyboard-inset";
 // roughly 50px. Only treat a large inset as a keyboard.
 const MIN_KEYBOARD_INSET = 120;
 
-function readKeyboardInset(): number {
+// A few px of rounding slack, so a valid reading is never rejected for being
+// a fraction of a pixel taller than the layout viewport.
+const VIEWPORT_GEOMETRY_SLACK = 2;
+
+/**
+ * Returns the keyboard inset in px, or null when the visual viewport reports
+ * geometry that cannot be trusted. Mobile browsers briefly publish unusable
+ * values while they resize or rotate - a zero height, a negative offset - and
+ * subtracting those gives an inset the size of the whole window, which throws
+ * the composer off-screen. Callers keep their last valid inset on null, the
+ * same way NewIssueDialog handles readVisualViewportLayout.
+ */
+function readKeyboardInset(): number | null {
   if (typeof window === "undefined") return 0;
   const viewport = window.visualViewport;
   if (!viewport) return 0;
+  const { height, offsetTop, scale } = viewport;
+  const windowHeight = window.innerHeight;
+  if (
+    !Number.isFinite(height)
+    || height <= 0
+    || !Number.isFinite(offsetTop)
+    || offsetTop < 0
+    || !Number.isFinite(scale)
+    || scale <= 0
+    || !Number.isFinite(windowHeight)
+    || windowHeight <= 0
+    // The visible area cannot be taller than the layout viewport it sits in.
+    || height + offsetTop > windowHeight + VIEWPORT_GEOMETRY_SLACK
+  ) {
+    return null;
+  }
   // Pinch-zoom shrinks the visual viewport too. That is not a keyboard.
-  if (Math.abs(viewport.scale - 1) > 0.01) return 0;
-  const inset = window.innerHeight - (viewport.height + viewport.offsetTop);
+  if (Math.abs(scale - 1) > 0.01) return 0;
+  const inset = windowHeight - (height + offsetTop);
   return inset >= MIN_KEYBOARD_INSET ? Math.round(inset) : 0;
 }
 
 export function useKeyboardInset(enabled: boolean): number {
-  const [inset, setInset] = useState(() => (enabled ? readKeyboardInset() : 0));
+  const [inset, setInset] = useState(() => (enabled ? readKeyboardInset() ?? 0 : 0));
 
   useEffect(() => {
     if (!enabled) {
@@ -45,7 +73,12 @@ export function useKeyboardInset(enabled: boolean): number {
     let frame = 0;
     const sync = () => {
       cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => setInset(readKeyboardInset()));
+      frame = requestAnimationFrame(() => {
+        const next = readKeyboardInset();
+        // Hold the last valid inset through a transient bad reading.
+        if (next === null) return;
+        setInset(next);
+      });
     };
 
     sync();

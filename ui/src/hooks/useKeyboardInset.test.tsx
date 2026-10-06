@@ -123,6 +123,34 @@ describe("useKeyboardInset", () => {
     expect(document.documentElement.classList.contains("keyboard-open")).toBe(false);
   });
 
+  it("holds the last inset through a transient invalid reading", async () => {
+    await render();
+    await resizeViewport(460);
+    expect(result).toBe(340);
+    // Safari briefly reports a zero height mid-resize. Taken at face value the
+    // inset becomes the whole window and the composer jumps off-screen.
+    await resizeViewport(0);
+    expect(result).toBe(340);
+    expect(document.documentElement.style.getPropertyValue("--sz-keyboard-inset")).toBe("340px");
+    await resizeViewport(460);
+    expect(result).toBe(340);
+  });
+
+  it("rejects a visible area taller than the layout viewport", async () => {
+    await render();
+    await resizeViewport(460);
+    // Mid-rotation the visual viewport can lead window.innerHeight.
+    await resizeViewport(1200);
+    expect(result).toBe(340);
+  });
+
+  it("rejects a negative offsetTop", async () => {
+    await render();
+    await resizeViewport(460);
+    await resizeViewport(460, -100);
+    expect(result).toBe(340);
+  });
+
   it("stays inert on desktop", async () => {
     await render(false);
     await resizeViewport(460);

@@ -1533,4 +1533,38 @@ describe("Layout mobile keyboard handling", () => {
       root.unmount();
     });
   });
+
+  it("reads the right direction on the first scroll after the keyboard closes", async () => {
+    const root = await renderMobileLayout();
+
+    async function scrollTo(top: number) {
+      Object.defineProperty(window, "scrollY", { configurable: true, value: top });
+      await act(async () => {
+        window.dispatchEvent(new Event("scroll"));
+      });
+      await flushFrame();
+    }
+
+    await openKeyboard(460);
+    // The page moves a long way down while the keyboard is up. The nav is
+    // frozen here, but the position still has to be recorded.
+    await scrollTo(500);
+    expect(mobileBottomNavState.visible).toBe(false);
+
+    await openKeyboard(800);
+
+    // First scroll after the keyboard closes, and it goes up. Measured against
+    // a stale 0 this reads as a 500px scroll down and hides the nav.
+    await scrollTo(490);
+    expect(mobileBottomNavState.visible).toBe(true);
+
+    // A real downward scroll still hides it.
+    await scrollTo(600);
+    expect(mobileBottomNavState.visible).toBe(false);
+
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 0 });
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

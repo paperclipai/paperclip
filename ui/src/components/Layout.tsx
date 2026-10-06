@@ -529,7 +529,13 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     // iOS scrolls the page while it animates the keyboard in and out. Toggling
     // the nav there would slide the composer offset by a nav height in the
     // middle of that animation.
-    if (keyboardOpenRef.current) return;
+    // Keep recording the position while the nav is frozen. Without it the
+    // first scroll after the keyboard closes measures its delta against a
+    // stale position and reads the direction backwards.
+    if (keyboardOpenRef.current) {
+      lastMainScrollTop.current = currentTop;
+      return;
+    }
     const delta = currentTop - lastMainScrollTop.current;
 
     if (currentTop <= 24) {
