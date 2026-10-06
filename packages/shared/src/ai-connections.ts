@@ -187,6 +187,7 @@ export const createAiConnectionSchema = z
     ownership: z.enum(["personal", "shared"]),
     apiKey: z.string().trim().min(1).max(32768).optional(),
     loginSessionId: z.string().max(128).optional(),
+    baseUrl: z.string().trim().url().optional(),
     connectionId: z.string().uuid().optional(),
     agentIds: z.array(z.string().uuid()).max(1000).default([]),
     allAgents: z.boolean().default(false),

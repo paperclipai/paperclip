@@ -5,6 +5,7 @@ import { aiConnectionsApi } from "@/api/ai-connections";
 import { aiProviderForAdapter } from "./ai-connections/AiConnectionField";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import { storeProviderApiKey } from "../lib/provider-credential";
+import { applyBaseUrlToEnv, baseUrlEnvKeyFor, baseUrlPlaceholderFor, validateBaseUrl } from "../lib/provider-base-url";
 import { SavedProviderKeySelect, useSavedProviderKeys } from "./onboarding/SavedProviderKeySelect";
 import { randomAgentAppearance, resolveAgentAppearance, agentAppearanceSchema } from "@paperclipai/shared";
 import { OnboardingCharacter } from "./onboarding/OnboardingCharacter";
@@ -140,6 +141,7 @@ import {
   Check,
   Loader2,
   ChevronDown,
+  Sparkles,
 } from "lucide-react";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
@@ -619,6 +621,7 @@ function OnboardingWizardInner({
    * whether the row has been *answered* on this visit.
    */
   const [sourcePicked, setSourcePicked] = useState(false);
+  const [isOmniroute, setIsOmniroute] = useState((saved?.isOmniroute as boolean) ?? false);
   const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   // Native drafts may carry provider-specific configuration that is invalid
@@ -684,6 +687,8 @@ function OnboardingWizardInner({
    * `localStorage`, and a provider key does not belong there.
    */
   const [apiKey, setApiKey] = useState("");
+  // Optional gateway endpoint (e.g. OmniRoute) for API-key mode. Not a secret.
+  const [baseUrl, setBaseUrl] = useState((saved?.baseUrl as string) ?? "");
   // The owner's stored Claude subscription login, read right before the hire
   // (see handleGiveHeartbeat). Onboarding applies it with no extra control,
   // so nothing else reads this state yet.
@@ -904,6 +909,7 @@ function OnboardingWizardInner({
     const state = {
       step, companyName,
       agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
+      isOmniroute, baseUrl,
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
@@ -913,6 +919,7 @@ function OnboardingWizardInner({
   }, [
     effectiveOnboardingOpen, step, companyName,
     agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
+    isOmniroute, baseUrl,
     credentialMode, credentialModeChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
@@ -1540,7 +1547,7 @@ function OnboardingWizardInner({
     setAdapterEnvResult(null);
     adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
-  }, [step, adapterType, model, command, args, url, credentialMode, apiKey, selectedSavedKey, selectedApiKey?.id, savedSubscription?.id]);
+  }, [step, adapterType, model, command, args, url, credentialMode, apiKey, baseUrl, selectedSavedKey, selectedApiKey?.id, savedSubscription?.id]);
 
   /**
    * Leaving the step puts the row back to a question.
@@ -1795,10 +1802,18 @@ function OnboardingWizardInner({
   async function storeApiKeyUserSecret(companyId: string): Promise<boolean> {
     const key = apiKey.trim();
     const envKey = apiKeyEnvKeyFor(adapterType);
+    if (baseUrl) {
+      const error = validateBaseUrl(baseUrl);
+      if (error) {
+        setError(error);
+        return false;
+      }
+    }
     if (apiKeySecretRef.current?.key === key && apiKeySecretRef.current.companyId === companyId && apiKeySecretRef.current.envKey === envKey) return true;
     try {
       if (managedProvider) {
-        await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true });
+        const connectionName = isOmniroute ? "My OmniRoute API (Custom)" : `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API${baseUrl ? " (Custom)" : ""}`;
+        await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: connectionName, ownership: "personal", apiKey: key, agentIds: [], allAgents: true, baseUrl: baseUrl || undefined });
         apiKeySecretRef.current = { key, companyId, envKey, aiConnection: { provider: managedProvider, method: "api_key", mode: "responsible_user" } };
         return true;
       }
@@ -1874,6 +1889,14 @@ function OnboardingWizardInner({
           : {};
       env[apiKeyEnvKeyFor(adapterType)] = selectedApiKey?.binding ?? apiKeySecretRef.current?.binding;
       config.env = env;
+    }
+    // Gateway endpoint (e.g. OmniRoute). Independent of how the key is bound —
+    // a managed AI connection injects the key, but the endpoint still has to be
+    // in the config for the CLI to talk to the gateway rather than the vendor.
+    if (credentialMode === "api") {
+      const env = isEnvRecord(config.env) ? config.env : {};
+      const withBaseUrl = applyBaseUrlToEnv(env, adapterType, baseUrl);
+      if (withBaseUrl !== env) config.env = withBaseUrl;
     }
     if (credentialMode === "subscription" && savedSubscription?.binding) {
       config.env = { ...((config.env as object) ?? {}), CODEX_HOME: savedSubscription.binding };
@@ -2672,16 +2695,22 @@ function OnboardingWizardInner({
                         question, and answering it is what opens the card. */}
                     <ModelSourceTiles
                       label="Model source"
-                      sources={recommendedAdapters.map((opt) => ({
-                        id: opt.type,
-                        label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
-                        icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
-                      }))}
+                      sources={[
+                        ...recommendedAdapters.map((opt) => ({
+                          id: opt.type,
+                          label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
+                          icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
+                        })),
+                        {
+                          id: "omniroute",
+                          label: "OmniRoute",
+                          icon: <ModelSourceMark type="omniroute" Fallback={Sparkles} />,
+                        }
+                      ]}
                       mode={credentialMode}
                       selectedId={
-                        sourcePicked &&
-                        recommendedAdapters.some((opt) => opt.type === adapterType)
-                          ? adapterType
+                        sourcePicked
+                          ? (isOmniroute ? "omniroute" : (recommendedAdapters.some((opt) => opt.type === adapterType) ? adapterType : null))
                           : null
                       }
                       collapsed={connectCollapsed}
@@ -2690,9 +2719,19 @@ function OnboardingWizardInner({
                         if (connectPhase !== "idle") return;
                         autoConnectStartedRef.current = false;
                         setSourcePicked(true);
-                        setAdapterType(id);
-                        if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                        else if (id !== "codex_local") setModel("");
+                        if (id === "omniroute") {
+                          setIsOmniroute(true);
+                          setAdapterType("claude_local");
+                          setBaseUrl("http://localhost:20128");
+                          setModel("");
+                          setCredentialMode("api_key");
+                        } else {
+                          setIsOmniroute(false);
+                          setAdapterType(id);
+                          setBaseUrl("");
+                          if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                          else if (id !== "codex_local" && id !== "claude_local") setModel("");
+                        }
                         setConnectPhase("collapsing");
                       }}
                     />
@@ -2793,6 +2832,20 @@ function OnboardingWizardInner({
                           }}
                           onSubmit={() => handleConnectStepPrimary()}
                         />}
+                        {baseUrlEnvKeyFor(adapterType) && (
+                          <>
+                            <OnboardingCardField
+                              label="Base URL (optional)"
+                              placeholder={`Base URL (optional), e.g. ${baseUrlPlaceholderFor(adapterType)}`}
+                              value={baseUrl}
+                              onChange={setBaseUrl}
+                              onSubmit={() => handleConnectStepPrimary()}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              Using a gateway such as OmniRoute? Enter its endpoint here and its key above. Leave empty for the official API.
+                            </p>
+                          </>
+                        )}
                       </OnboardingLoginCard>
                     ) : connectStepNeedsLogin &&
                       createdCompanyId &&
