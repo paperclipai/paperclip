@@ -226,6 +226,25 @@ export function deriveMonitorState(issue: MonitorIssueLike, now: MonitorDate = n
   };
 }
 
+export type WaitingSurfaceCheckNowAction =
+  | "promote-scheduled-retry"
+  | "check-monitor";
+
+/**
+ * The waiting surface renders for a monitor and for a monitor-less scheduled
+ * retry alike, so its "Check now" button has two destinations: a retry has no
+ * monitor to check and has to be promoted instead.
+ */
+export function waitingSurfaceCheckNowAction(
+  issue: MonitorIssueLike | null | undefined,
+  now: MonitorDate = new Date(),
+): WaitingSurfaceCheckNowAction {
+  if (!issue) return "check-monitor";
+  return deriveMonitorState(issue, now).source === "scheduled-retry"
+    ? "promote-scheduled-retry"
+    : "check-monitor";
+}
+
 function countdownCadence(nextCheckAt: MonitorDate): number {
   const deltaMs = toTimestamp(nextCheckAt) - Date.now();
   return deltaMs > -DUE_NOW_GRACE_MS && deltaMs < DUE_NOW_GRACE_MS ? SECOND_MS : 30 * SECOND_MS;
