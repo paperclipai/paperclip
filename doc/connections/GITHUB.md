@@ -58,6 +58,12 @@ agents cannot choose or spoof this field. The owner must still be an active
 non-viewer company member at each use. A standing delegation is needed only
 when a run genuinely has no responsible user.
 
+A run with a `company_default` identity has no personal GitHub principal, even
+when its identity record retains an administrative fallback person. It can use
+a grant that the owner explicitly delegated to its agent. Heartbeat selection,
+Git credential resolution, and MCP calls all apply this rule and recheck the
+delegation at each use. Revoking the delegation blocks later use.
+
 ## Credential lifecycle
 
 The production, staging, and development GitHub Apps deliberately disable

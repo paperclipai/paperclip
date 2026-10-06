@@ -21,6 +21,7 @@ import {
   issues,
   principalPermissionGrants,
   projects,
+  runIdentityContexts,
   toolAccessAuditEvents,
   toolActionRequests,
   toolApplications,
@@ -57,6 +58,7 @@ import {
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
 import { resolveConnectionGrantSecret } from "../services/connection-credentials.js";
 import { secretService } from "../services/secrets.js";
+import { initializeRunIdentity } from "../services/run-identity.js";
 import * as cogneeBridge from "../services/cognee-connection.js";
 import { createKvDemoHttpServer, type KvDemoHttpServer } from "../../../packages/kv-demo-mcp-server/src/http.js";
 import {
@@ -2745,6 +2747,55 @@ rl.on("line", (line) => {
     } finally {
       await fake.close();
     }
+  });
+
+  it("rechecks explicit GitHub delegation for a captured company-default identity", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await createActiveMember(db, company.id, "alice");
+    await initializeRunIdentity(db, { companyId: company.id, runId: run.id,
+      responsibleUserId: "alice", cause: "instruction" });
+    await db.update(runIdentityContexts).set({ cause: "company_default" })
+      .where(eq(runIdentityContexts.runId, run.id));
+    const { connection } = await createRemoteMcpTool(db, company.id, {
+      url: "https://8.8.8.8/mcp", toolName: "whoami", riskLevel: "read",
+      connectionConfig: { sourceTemplateKey: "github" },
+    });
+    await db.insert(toolConnectionInstalls).values({ companyId: company.id,
+      connectionId: connection.id, targetType: "agent", targetId: agent.id });
+    const [grant] = await db.insert(connectionGrants).values({
+      companyId: company.id, connectionId: connection.id, kind: "user",
+      subjectUserId: "alice", status: "active", credentialSecretRefs: [],
+      providerTenant: { github: { userId: "alice", login: "alice",
+        installationCount: 1, repositoryCount: 1, repositorySelection: "selected",
+        installationIds: ["1"], installationOwnerLogins: ["alice"] } },
+    }).returning();
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const remoteHttpRequest = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      return Response.json({ jsonrpc: "2.0", id: body.id,
+        result: { content: [{ type: "text", text: "delegated" }] } });
+    });
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest });
+    const session = await gateway.createSession({ companyId: company.id,
+      agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((entry) => entry.connectionId === connection.id)!;
+    const execute = () => gateway.executeTool({ sessionToken: session.token,
+      tool: tool.name, parameters: { key: "test", value: "synthetic" } });
+    await expect(execute()).rejects.toMatchObject({ reasonCode: "github_identity_unavailable" });
+    expect(remoteHttpRequest).not.toHaveBeenCalled();
+
+    const [delegation] = await db.insert(connectionGrantDelegations).values({
+      companyId: company.id, grantId: grant!.id, agentId: agent.id, createdByUserId: "alice",
+    }).returning();
+    await expect(execute()).resolves.toMatchObject({ status: "completed" });
+    expect(remoteHttpRequest).toHaveBeenCalledTimes(1);
+    await db.delete(connectionGrantDelegations)
+      .where(eq(connectionGrantDelegations.id, delegation!.id));
+    await expect(execute()).rejects.toMatchObject({ reasonCode: "github_identity_unavailable" });
+    expect(remoteHttpRequest).toHaveBeenCalledTimes(1);
   });
 
   it("keeps managed credentials authoritative even when legacy override flags are set", async () => {

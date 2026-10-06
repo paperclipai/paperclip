@@ -145,7 +145,7 @@ export async function resolveGitHubOperationCredentials(
       {
         agentId: input.agentId,
         heartbeatRunId: input.runId,
-        allowStandingDelegation: false,
+        allowStandingDelegation: context?.cause === "company_default",
         responsibleUserId:
           context?.cause === "company_default"
             ? null

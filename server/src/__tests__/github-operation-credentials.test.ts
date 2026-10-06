@@ -12,6 +12,7 @@ import {
   companies,
   companyMemberships,
   companySecrets,
+  connectionGrantDelegations,
   connectionGrants,
   createDb,
   heartbeatRuns,
@@ -604,6 +605,32 @@ const support = await getEmbeddedPostgresTestSupport();
       expect((await resolveGitHubOperationCredentials(db, input)).env).toEqual(
         {},
       );
+    });
+    it("uses only explicit agent delegation for a company-default run and rechecks revocation", async () => {
+      const input = await seed();
+      await grant(input, "A");
+      const personal = await grant(input, "B");
+      await db.update(runIdentityContexts).set({ cause: "company_default" })
+        .where(eq(runIdentityContexts.runId, input.runId));
+      expect((await resolveGitHubOperationCredentials(db, input)).env).toEqual({});
+
+      const otherAgentId = randomUUID();
+      await db.insert(agents).values({ id: otherAgentId, companyId: input.companyId,
+        name: "Other agent", role: "engineer", adapterType: "process" });
+      await db.insert(connectionGrantDelegations).values({ companyId: input.companyId,
+        grantId: personal.id, agentId: otherAgentId, createdByUserId: "B" });
+      expect((await resolveGitHubOperationCredentials(db, input)).env).toEqual({});
+
+      const [delegation] = await db.insert(connectionGrantDelegations).values({
+        companyId: input.companyId, grantId: personal.id, agentId: input.agentId,
+        createdByUserId: "B",
+      }).returning();
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "available", login: "B", grantId: personal.id,
+        env: { GH_TOKEN: "test-token-B" },
+      });
+      await db.delete(connectionGrantDelegations).where(eq(connectionGrantDelegations.id, delegation!.id));
+      expect((await resolveGitHubOperationCredentials(db, input)).env).toEqual({});
     });
     it.each([false, true])(
       "withholds sponsor and dedicated credentials from every low-trust policy source (dedicated=%s)",

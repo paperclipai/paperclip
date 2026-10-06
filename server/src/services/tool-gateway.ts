@@ -328,6 +328,8 @@ export interface ToolGatewaySession {
   responsibleUserId?: string | null;
   /** Captured by the controller for this request, never accepted from tool arguments. */
   identityContextId?: string | null;
+  /** Derived from the captured identity cause, never from tool arguments. */
+  allowStandingDelegation?: boolean;
   /** Set only after verifying the signed approved action. */
   approvedSlackInvocationId?: string;
   /** Set only after the signed review is verified. */
@@ -2015,6 +2017,7 @@ export function createToolGatewayService(
     return {
       ...session,
       identityContextId: captured.context?.id,
+      allowStandingDelegation: captured.context?.cause === "company_default",
       responsibleUserId:
         captured.context?.cause === "company_default"
           ? null
@@ -2810,7 +2813,7 @@ export function createToolGatewayService(
           {
             agentId: session.agentId,
             responsibleUserId: session.responsibleUserId,
-            allowStandingDelegation: false,
+            allowStandingDelegation: session.allowStandingDelegation === true,
           },
         );
         if (!selected.grant)
@@ -2869,7 +2872,7 @@ export function createToolGatewayService(
               {
                 agentId: session.agentId,
                 responsibleUserId: session.responsibleUserId,
-                allowStandingDelegation: false,
+                allowStandingDelegation: session.allowStandingDelegation === true,
                 excludeGrantId: original.id,
               },
             );
@@ -4444,7 +4447,7 @@ export function createToolGatewayService(
         : await resolveManagedGitHubIdentitySelection(db, session.companyId, {
             agentId: session.agentId,
             responsibleUserId: session.responsibleUserId,
-            allowStandingDelegation: false,
+            allowStandingDelegation: session.allowStandingDelegation === true,
           });
       if (!selected.grant || selected.grant.connectionId !== connection.id) {
         throw new ToolGatewayHttpError(
@@ -7814,6 +7817,7 @@ export function createToolGatewayService(
         "identity_context_unavailable",
       );
     session.identityContextId = origin.id;
+    session.allowStandingDelegation = origin.cause === "company_default";
     session.responsibleUserId =
       origin.cause === "company_default" ? null : origin.responsibleUserId;
   }
@@ -9924,6 +9928,7 @@ export function createToolGatewayService(
               "identity_context_unavailable",
             );
           session.identityContextId = origin.id;
+          session.allowStandingDelegation = origin.cause === "company_default";
           session.responsibleUserId =
             origin.cause === "company_default"
               ? null
