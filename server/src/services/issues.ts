@@ -11205,6 +11205,7 @@ export function issueService(db: Db) {
             const {
               nativeQuestionCancellationIdentity,
               requestNativeQuestionRunCancellation,
+              requestNativeQuestionRunCancellationInTransaction,
             } = await import("./native-runtime/native-question-bridge.js");
             for (const interaction of expiredInteractions) {
               if (interaction.kind === "ask_user_questions") {
@@ -11216,7 +11217,10 @@ export function issueService(db: Db) {
                       "Terminal native question updates in an external transaction require a post-commit action queue",
                     );
                   }
-                  const runId = await requestNativeQuestionRunCancellation(
+                  const requestCancellation = options.lifecycleFence
+                    ? requestNativeQuestionRunCancellationInTransaction
+                    : requestNativeQuestionRunCancellation;
+                  const runId = await requestCancellation(
                     tx,
                     nativeQuestion,
                     { kind: "issue_terminal", issueStatus: updated.status },

@@ -19,6 +19,7 @@ import { unprocessable } from "../../errors.js";
 import { logActivity } from "../activity-log.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { questionResponseDeliveryService } from "../question-response-delivery.js";
+import { acquireIssueLifecycleFenceInTransaction } from "../issue-lifecycle-fence.js";
 import type { NativeRunStoreBinding } from "./native-run-coordinator-store.js";
 
 import { parseQuestionInteractionAnswers, parseSavedQuestionInteractionAnswers } from "../question-interaction-answers.js";
@@ -367,6 +368,35 @@ export async function requestNativeQuestionRunCancellation(
     eq(heartbeatRuns.runtimeMode, "native"),
     inArray(heartbeatRuns.status, ["queued", "running"]),
   )).returning({ id: heartbeatRuns.id }).then((rows) => rows[0]?.id ?? null);
+}
+
+/**
+ * Dark supplied-tx participant. The root must take this company fence before
+ * any earlier domain locks; reentry is not a general late-lock protocol.
+ * Only capture fields consumed by the canonical authorization/marker helper.
+ */
+export async function requestNativeQuestionRunCancellationInTransaction(
+  tx: DbTransaction,
+  interaction: NativeQuestionAuthorizationIdentity,
+  cause: NativeQuestionCancellationCause,
+): Promise<string | null> {
+  const payload = record(interaction.payload);
+  const identity: NativeQuestionAuthorizationIdentity = {
+    companyId: interaction.companyId,
+    issueId: interaction.issueId,
+    sourceRunId: interaction.sourceRunId,
+    idempotencyKey: interaction.idempotencyKey,
+    payload: payload ? {
+      questionSet: Boolean(payload.questionSet),
+      runtimeRequestId: payload.runtimeRequestId,
+    } : null,
+  };
+  const capturedCause: NativeQuestionCancellationCause = cause.kind === "issue_terminal"
+    ? { kind: cause.kind, issueStatus: cause.issueStatus }
+    : { kind: cause.kind, interactionId: cause.interactionId };
+  if (!identity.companyId) throw unprocessable("Lifecycle native cancellation requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, identity.companyId);
+  return requestNativeQuestionRunCancellation(tx, identity, capturedCause);
 }
 
 /** Capture the minimum bound identity needed to cancel after the issue transaction commits. */

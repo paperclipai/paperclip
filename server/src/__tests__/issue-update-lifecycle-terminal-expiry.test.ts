@@ -4,6 +4,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 import { publishActivity } from "../services/activity-log.js";
+import { requestNativeQuestionRunCancellationInTransaction } from "../services/native-runtime/native-question-bridge.js";
 const sink = vi.hoisted(() => ({ live: [] as any[] }));
 vi.mock("../services/live-events.js", () => ({ publishLiveEvent: (event: any) => sink.live.push(event) }));
 vi.mock("../services/instance-settings.js", () => ({ instanceSettingsService: () => ({ getExperimental: async () => ({ enableIsolatedWorkspaces: false }), getGeneral: async () => ({ censorUsernameInLogs: false }) }) }));
@@ -70,6 +71,38 @@ function nativeFixture() {
   return f;
 }
 describe("dark canonical terminal expiry supplied integration", () => {
+  it("fences the native marker participant before its own authoritative read", async () => {
+    const f = nativeFixture();
+    await expect(requestNativeQuestionRunCancellationInTransaction(f.tx, f.card, { kind: "issue_terminal", issueStatus: "done" })).resolves.toBe("run-1");
+    expect(f.events).toEqual(["fence", "read:heartbeat_runs", "write:heartbeat_runs"]);
+    expect(sink.live).toEqual([]);
+  });
+  it("captures native identity and cause before a suspended participant fence", async () => {
+    const f = nativeFixture(); let release!: () => void; let entered!: () => void;
+    const barrier = new Promise<void>(r => { release = r; }); const signal = new Promise<void>(r => { entered = r; });
+    const cause: any = { kind: "issue_terminal", issueStatus: "done" };
+    f.tx.execute = async () => { f.events.push("fence"); entered(); await barrier; };
+    const operation = requestNativeQuestionRunCancellationInTransaction(f.tx, f.card, cause);
+    try {
+      expect(await Promise.race([signal.then(() => "fence"), operation.then(() => "settled", () => "rejected")])).toBe("fence");
+      expect(f.events).toEqual(["fence"]);
+      Object.assign(f.card, { companyId: "other-company", issueId: "other-issue", sourceRunId: "other-run", idempotencyKey: "bad" });
+      f.card.payload.runtimeRequestId = "mutated"; f.card.payload.questionSet = null; cause.issueStatus = "cancelled";
+    } finally { release(); }
+    expect(await operation).toBe("run-1");
+    expect(f.native.predicates[0].params).toEqual(["run-1", "company-1", "issue-1", "native"]);
+    expect(JSON.parse(f.native.marker.params[1])).toMatchObject({ issueId: "issue-1", kind: "issue_terminal", issueStatus: "done" });
+  });
+  it("propagates participant fence rejection before reads or marker writes", async () => {
+    const f = nativeFixture(); const error = new Error("native-fence-denied"); f.tx.execute = async () => { throw error; };
+    await expect(requestNativeQuestionRunCancellationInTransaction(f.tx, f.card, { kind: "issue_terminal", issueStatus: "done" })).rejects.toBe(error);
+    expect(f.events).toEqual([]); expect(f.native.marker).toBeNull();
+  });
+  it("denies missing native company before acquiring the participant fence", async () => {
+    const f = nativeFixture(); f.card.companyId = "";
+    await expect(requestNativeQuestionRunCancellationInTransaction(f.tx, f.card, { kind: "issue_terminal", issueStatus: "done" })).rejects.toMatchObject({ status: 422 });
+    expect(f.events).toEqual([]);
+  });
   it.each([undefined, null, {}, "queue"])("rejects missing or malformed native action queue before effects: %s", async queue => {
     const f = nativeFixture();
     await expect(issueService(f.root).update("issue-1", { status: "done", companyGuard: "company-1" }, f.tx, f.publications, queue as any, { lifecycleFence: true })).rejects.toMatchObject({ status: 422 });
@@ -89,6 +122,7 @@ describe("dark canonical terminal expiry supplied integration", () => {
     expect(f.native.marker.params[0]).toBe("nativeQuestionCancellation");
     expect(JSON.parse(f.native.marker.params[1])).toMatchObject({ version: 1, issueId: "issue-1", kind: "issue_terminal", issueStatus: status });
     expect(f.events.indexOf("write:heartbeat_runs")).toBeGreaterThan(f.events.indexOf("write:issue_thread_interactions"));
+    expect(f.events.filter(e => e === "fence")).toHaveLength(3);
     expect(f.card.status).toBe("expired"); expect(f.publications).toHaveLength(1); expect(sink.live).toEqual([]);
   });
   it.each(["succeeded", "cancelled"])("does not queue cancellation for synthetic non-live native run %s", async status => {
