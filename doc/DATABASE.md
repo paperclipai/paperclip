@@ -421,6 +421,8 @@ plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
 `paperclipai db:backup` / `pnpm db:backup` commands and backup retention
 configuration.
 
+Backup engines publish each gzip through an atomic rename only after compression finishes. In-progress partial files are excluded from health and retention. Pruning ignores candidates removed by another run, and a later pruning error preserves the newly completed dump.
+
 Backup health checks validate the newest gzip stream and report `database_backup_invalid` for an empty, truncated, or corrupt dump. Validation streams the contents without loading the dump into memory and caches the result while file metadata stays unchanged. Weekly and monthly retention only use valid compressed dumps as bucket representatives. Uncompressed leftovers and invalid dumps stay within the retention horizon for recovery; they cannot replace a valid backup.
 
 Database backups do not include non-database instance files such as local-disk

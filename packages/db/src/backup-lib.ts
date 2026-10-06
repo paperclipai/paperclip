@@ -2,7 +2,8 @@ import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
-import { open as openFile } from "node:fs/promises";
+import { open as openFile, rename as renameFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
@@ -136,8 +137,12 @@ async function pruneOldBackups(backupDir: string, retention: BackupRetentionPoli
     if (!name.startsWith(`${filenamePrefix}-`)) continue;
     if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
-    const stat = statSync(fullPath);
-    if (stat.isFile()) entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
+    try {
+      const stat = statSync(fullPath);
+      if (stat.isFile()) entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
 
   // Sort newest first so the first entry per week/month bucket is the one we keep
@@ -186,11 +191,17 @@ async function pruneOldBackups(backupDir: string, retention: BackupRetentionPoli
     toDelete.push(entry.fullPath);
   }
 
+  let deletedCount = 0;
   for (const filePath of toDelete) {
-    unlinkSync(filePath);
+    try {
+      unlinkSync(filePath);
+      deletedCount += 1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
 
-  return toDelete.length;
+  return deletedCount;
 }
 
 function formatBackupSize(sizeBytes: number): string {
@@ -551,6 +562,8 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   mkdirSync(opts.backupDir, { recursive: true });
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
+  const partialBackupFile = `${backupFile}.${randomUUID()}.partial`;
+  let backupPublished = false;
   const writer = createBufferedTextFileWriter(sqlFile);
 
   try {
@@ -560,9 +573,11 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         await closeSql();
         await runPgDumpBackup({
           connectionString: opts.connectionString,
-          backupFile,
+          backupFile: partialBackupFile,
           connectTimeout,
         });
+        await renameFile(partialBackupFile, backupFile);
+        backupPublished = true;
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
         const prunedCount = await pruneOldBackups(opts.backupDir, retention, filenamePrefix);
@@ -572,10 +587,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           prunedCount,
         };
       } catch (error) {
-        if (existsSync(backupFile)) {
-          try { unlinkSync(backupFile); } catch { /* ignore */ }
+        if (existsSync(partialBackupFile)) {
+          try { unlinkSync(partialBackupFile); } catch { /* ignore */ }
         }
-        if (backupEngine === "pg_dump") {
+        if (backupPublished || backupEngine === "pg_dump") {
           throw error;
         }
         effectiveBackupEngine = "javascript";
@@ -1030,8 +1045,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     // Compress the SQL file with gzip
     const sqlReadStream = createReadStream(sqlFile);
-    const gzWriteStream = createWriteStream(backupFile);
+    const gzWriteStream = createWriteStream(partialBackupFile);
     await pipeline(sqlReadStream, createGzip(), gzWriteStream);
+    await renameFile(partialBackupFile, backupFile);
+    backupPublished = true;
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;
@@ -1044,8 +1061,8 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     };
   } catch (error) {
     await writer.abort();
-    if (existsSync(backupFile)) {
-      try { unlinkSync(backupFile); } catch { /* ignore */ }
+    if (existsSync(partialBackupFile)) {
+      try { unlinkSync(partialBackupFile); } catch { /* ignore */ }
     }
     if (existsSync(sqlFile)) {
       try { unlinkSync(sqlFile); } catch { /* ignore */ }

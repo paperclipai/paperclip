@@ -8,7 +8,11 @@ const integrityCache = new Map<string, { signature: string; result: Promise<bool
 
 /** Check gzip completion and checksum without loading a database dump into memory. */
 export async function isCompressedDatabaseBackupValid(filePath: string): Promise<boolean> {
-  const stat = statSync(filePath);
+  let stat;
+  try { stat = statSync(filePath); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
   if (!stat.isFile() || stat.size < 20) return false;
   const signature = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
   const cached = integrityCache.get(filePath);

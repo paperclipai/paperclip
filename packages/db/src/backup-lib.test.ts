@@ -2,9 +2,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import postgres from "postgres";
 import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import * as backupIntegrity from "./backup-integrity.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -119,6 +120,58 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     },
     30_000,
   );
+
+  it("publishes a gzip only after it is complete", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-backup-atomic-");
+    const publications: boolean[] = [];
+    const watcher = fs.watch(backupDir, (_event, name) => {
+      if (!name?.toString().endsWith(".sql.gz")) return;
+      try {
+        publications.push(gunzipSync(fs.readFileSync(path.join(backupDir, name.toString()))).length > 0);
+      } catch { publications.push(false); }
+    });
+    try {
+      const result = await runDatabaseBackup({ connectionString, backupDir, backupEngine: "javascript", retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 } });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(publications.length).toBeGreaterThan(0);
+      expect(publications.every(Boolean)).toBe(true);
+      expect(fs.existsSync(result.backupFile)).toBe(true);
+      expect(fs.readdirSync(backupDir).some((name) => name.endsWith(".partial"))).toBe(false);
+    } finally { watcher.close(); }
+  }, 30_000);
+
+  it("keeps a completed dump when later pruning fails", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-backup-prune-error-");
+    const oldFile = path.join(backupDir, "paperclip-old.sql.gz");
+    fs.writeFileSync(oldFile, gzipSync("-- prior dump"));
+    fs.utimesSync(oldFile, new Date(Date.now() - 10 * 86400000), new Date(Date.now() - 10 * 86400000));
+    const integrity = vi.spyOn(backupIntegrity, "isCompressedDatabaseBackupValid").mockRejectedValue(new Error("prune check failed"));
+    try {
+      await expect(runDatabaseBackup({ connectionString, backupDir, backupEngine: "javascript", retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 } })).rejects.toThrow("prune check failed");
+      const completed = fs.readdirSync(backupDir).filter((name) => name.endsWith(".sql.gz") && name !== "paperclip-old.sql.gz");
+      expect(completed).toHaveLength(1);
+      expect(gunzipSync(fs.readFileSync(path.join(backupDir, completed[0]!))).length).toBeGreaterThan(0);
+    } finally { integrity.mockRestore(); }
+  }, 30_000);
+
+  it("tolerates a candidate removed by a concurrent pruning operation", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-backup-prune-race-");
+    const oldFile = path.join(backupDir, "paperclip-old.sql.gz");
+    fs.writeFileSync(oldFile, gzipSync("-- prior dump"));
+    fs.utimesSync(oldFile, new Date(Date.now() - 10 * 86400000), new Date(Date.now() - 10 * 86400000));
+    const original = backupIntegrity.isCompressedDatabaseBackupValid;
+    const integrity = vi.spyOn(backupIntegrity, "isCompressedDatabaseBackupValid").mockImplementation(async (file) => {
+      if (file === oldFile && fs.existsSync(file)) fs.unlinkSync(file);
+      return original(file);
+    });
+    try {
+      const result = await runDatabaseBackup({ connectionString, backupDir, backupEngine: "javascript", retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 } });
+      expect(fs.existsSync(result.backupFile)).toBe(true);
+    } finally { integrity.mockRestore(); }
+  }, 30_000);
 
   it(
     "backs up and restores large table payloads without materializing one giant string",
