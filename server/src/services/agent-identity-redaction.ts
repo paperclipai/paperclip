@@ -10,7 +10,7 @@ export function createAgentIdentityRedactor(privateKeyPem?: string) {
     ...privateKeyPem.split(/\r?\n/).filter(line => line && !line.startsWith("-----")),
   ])].sort((a, b) => b.length - a.length) : [];
   const pending = new Map<string, string>();
-  return {
+  const redactor = {
     values,
     redact<T>(value: T): T { return redactRegisteredSecretValues(value, values); },
     // Hold only a suffix that could begin a secret. Separate buffers prevent
@@ -33,5 +33,22 @@ export function createAgentIdentityRedactor(privateKeyPem?: string) {
       pending.delete(stream);
       return held ? REDACTED_EVENT_VALUE : "";
     },
+    /** Delta payloads can repeat output under text and provider-specific fields. */
+    delta<T>(stream: string, value: T): T {
+      const visit = (entry: unknown, path: string, field: string): unknown => {
+        if (typeof entry === "string") {
+          return /^(text|delta|output|patch)$/.test(field)
+            ? redactor.chunk(`${stream}:${path}`, entry)
+            : redactor.redact(entry);
+        }
+        if (Array.isArray(entry)) return entry.map((child, index) => visit(child, `${path}.${index}`, field));
+        if (entry && typeof entry === "object") return Object.fromEntries(
+          Object.entries(entry).map(([key, child]) => [key, visit(child, `${path}.${key}`, key)]),
+        );
+        return entry;
+      };
+      return visit(value, "", "") as T;
+    },
   };
+  return redactor;
 }

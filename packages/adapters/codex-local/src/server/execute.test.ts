@@ -117,7 +117,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     );
   }
 
-  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; onProviderStopped?: () => Promise<void> }) {
+  async function runTeardown(input: { sandboxAuth: string; hostAuth: string; onProviderStopped?: () => Promise<void>; withIdentity?: boolean }) {
     const rootDir = await mkdtemp(
       path.join(os.tmpdir(), "paperclip-codex-copyback-e2e-"),
     );
@@ -136,8 +136,14 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     process.env.CODEX_HOME = sharedHostHome;
     sandboxAuthFixture.bytes = Buffer.from(input.sandboxAuth, "utf8");
 
+    const commandArgs: string[] = [];
     const executionResult = await execute({
       runId: "run-copyback-e2e",
+      ...(input.withIdentity ? {
+        authToken: "assigned-run-token",
+        agentIdentity: { keyId: "sha256:test", publicKeyPem: "public", privateKeyPem: "private" },
+      } : {}),
+      onMeta: async meta => { commandArgs.push(...(meta.commandArgs ?? [])); },
       onProviderStopped: input.onProviderStopped,
       agent: {
         id: "agent-1",
@@ -152,7 +158,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
         engine: "cli",
         // External CODEX_HOME (outside the managed company tree) so no managed
         // seeding rewrites auth.json before teardown; equals the shared host home.
-        env: { CODEX_HOME: sharedHostHome },
+        env: { CODEX_HOME: sharedHostHome, ...(input.withIdentity ? { MY_SERVICE_TOKEN: "assigned-tool-token" } : {}) },
       },
       context: {
         paperclipWorkspace: {
@@ -176,11 +182,22 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
     });
 
     return {
+      commandArgs,
       finalHostAuth: await readFile(hostAuthPath, "utf8"),
       finalHostMode: (await lstat(hostAuthPath)).mode & 0o777,
       executionResult,
     };
   }
+
+  it("keeps assigned API and tool credentials in the identity-enabled CLI shell", async () => {
+    const { commandArgs } = await runTeardown({ sandboxAuth: "{}", hostAuth: "{}", withIdentity: true });
+    const policy = commandArgs.find(arg => arg.startsWith("shell_environment_policy.include_only="));
+    expect(JSON.parse(policy!.slice(policy!.indexOf("=") + 1))).toEqual(expect.arrayContaining([
+      "PAPERCLIP_API_KEY", "MY_SERVICE_TOKEN", "PAPERCLIP_AGENT_PRIVATE_KEY",
+    ]));
+    expect(commandArgs.join(" ")).not.toContain("assigned-run-token");
+    expect(commandArgs.join(" ")).not.toContain("assigned-tool-token");
+  });
 
   it("collects stopped-provider instruction edits before a throwing remote restore", async () => {
     const order: string[] = [];

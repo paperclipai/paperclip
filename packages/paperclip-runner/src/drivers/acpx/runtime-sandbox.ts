@@ -458,7 +458,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
           `include_only = ${JSON.stringify([...new Set([
             "PATH", "HOME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
             "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
-            ...Object.keys(input.environment).filter(key => !/key|secret|token/i.test(key)),
+            ...Object.keys(input.environment),
           ])])}`,
         ] : []),
         "",

@@ -332,11 +332,33 @@ describe("PaperclipControlPlanePort conformance", () => {
     await port.checkpointSession({ backendKind: "mock", sessionId: identity.sessionId, identity,
       semanticResult: { ...CONTROL_PLANE_CONFORMANCE_RESULT, summary: privateKeyPem },
     });
+    let sourceSeq = 2;
+    for (const [itemId, chunks] of [
+      ["halves", [keyBody.slice(0, 31), keyBody.slice(31)]],
+      ["bytes", [...keyBody]],
+    ] as const) {
+      for (const chunk of chunks) {
+        const event: PrpEvent = {
+          schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq: sourceSeq++,
+          sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+          normalizedSessionId: identity.sessionId, turnId: "identity-turn", itemId,
+          eventType: "item.delta", schemaVersion: 1, priority: 1, emittedAt: new Date().toISOString(),
+          payload: { kind: "commandExecution", text: chunk, update: { delta: chunk } },
+        };
+        await port.appendEvent(event);
+        expect((await port.appendEvent(event)).disposition).toBe("duplicate");
+      }
+    }
     const persistedEvents = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
     for (const value of [persistedEvents, observed, run.runnerProfileJson]) {
       expect(JSON.stringify(value)).not.toContain(keyBody);
       expect(JSON.stringify(value)).toContain("***REDACTED***");
+    }
+    for (const itemId of ["halves", "bytes"]) {
+      const deltas = observed.filter(event => event.itemId === itemId).map(event => event.payload);
+      expect(deltas.map(delta => delta.text).join("")).toBe("***REDACTED***");
+      expect(deltas.map(delta => (delta.update as { delta: string }).delta).join("")).toBe("***REDACTED***");
     }
   });
 

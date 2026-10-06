@@ -2051,7 +2051,7 @@ async function buildRuntime(input: {
       ...(input.ctx.agentIdentity ? { identityEnvironmentKeys: [...new Set([
         "PATH", "HOME", "LANG", "TMPDIR", "CODEX_HOME",
         "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
-        ...Object.keys(env).filter(key => !/key|secret|token/i.test(key)),
+        ...Object.keys(env),
       ])] } : {}),
       requestedModel,
       requestedThinkingEffort,

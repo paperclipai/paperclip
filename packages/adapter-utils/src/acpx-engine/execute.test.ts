@@ -172,6 +172,7 @@ async function runExecutor(
     runtime?: Record<string, unknown>;
     executionTransport?: Record<string, unknown>;
     authToken?: string;
+    agentIdentity?: AdapterExecutionContext["agentIdentity"];
     executionTarget?: Record<string, unknown>;
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
@@ -210,6 +211,7 @@ async function runExecutor(
       context: options.context ?? {},
       executionTransport: options.executionTransport,
       authToken: options.authToken,
+      agentIdentity: options.agentIdentity,
       executionTarget: options.executionTarget,
       runtimeMcp: options.runtimeMcp,
       startupTraceContext: options.startupTraceContext,
@@ -546,6 +548,19 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(meta[0]?.commandNotes).toContain(
       "Requested ACPX model: gpt-5.6-sol (set via CODEX_CONFIG at startup).",
     );
+  });
+
+  it("keeps assigned API and tool credentials in the identity-enabled Codex shell environment", async () => {
+    const { meta } = await runExecutor({ agent: "codex", env: { MY_SERVICE_TOKEN: "assigned-tool-token" } }, {
+      authToken: "assigned-run-token",
+      agentIdentity: { keyId: "sha256:test", publicKeyPem: "public", privateKeyPem: "private" },
+    });
+    const config = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG));
+    expect(config.shell_environment_policy.include_only).toEqual(expect.arrayContaining([
+      "PAPERCLIP_API_KEY", "MY_SERVICE_TOKEN", "PAPERCLIP_AGENT_PRIVATE_KEY",
+    ]));
+    expect(JSON.stringify(config)).not.toContain("assigned-run-token");
+    expect(JSON.stringify(config)).not.toContain("assigned-tool-token");
   });
 
   it("forwards arbitrary Codex model IDs verbatim without picker-dependent session config", async () => {

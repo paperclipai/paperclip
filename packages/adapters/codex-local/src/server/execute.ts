@@ -1230,8 +1230,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const args = execArgs.args;
       if (ctx.agentIdentity) {
         const identityNames = ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"];
-        const shellKeys = [...new Set([...Object.keys(process.env), ...Object.keys(env)])]
-          .filter(key => identityNames.includes(key) || !/key|secret|token/i.test(key));
+        const shellKeys = [...new Set([
+          ...Object.keys(process.env).filter(key => !/key|secret|token/i.test(key)),
+          ...Object.keys(env), ...identityNames,
+        ])];
         args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
           "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
       }

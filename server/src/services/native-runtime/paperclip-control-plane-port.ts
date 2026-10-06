@@ -73,6 +73,7 @@ function assertTerminal(value: unknown): asserts value is PrpTerminalState {
 export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #db: Db;
   readonly #identityRedactor: ReturnType<typeof createAgentIdentityRedactor>;
+  readonly #redactedDeltas = new Map<string, { event: PrpEvent; originalSha: string }>();
   readonly #binding: PaperclipControlPlaneBinding;
   #sessionId: string | null = null;
   readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
@@ -189,7 +190,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
     const validated = validatePrpEvent(value);
     if (!validated.ok) throw new Error(`native_event_schema_invalid:${validated.issues[0]?.message ?? "unknown"}`);
-    const event = this.#identityRedactor.redact(validated.event);
+    let event = this.#identityRedactor.redact(validated.event);
     if (event.runId !== this.#binding.runId || (this.#sessionId && event.normalizedSessionId !== this.#sessionId)) {
       throw new Error("native_event_binding_mismatch");
     }
@@ -198,6 +199,22 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       : this.#binding.sourceInstanceId;
     if (event.sourceInstanceId !== expectedSourceInstanceId) {
       throw new Error("native_event_source_binding_mismatch");
+    }
+    if (event.eventType === "item.delta") {
+      const key = `${event.sourceInstanceId}:${event.sourceEventId}`;
+      const cached = this.#redactedDeltas.get(key);
+      const originalSha = nativeSha256(validated.event);
+      if (cached) {
+        if (cached.originalSha !== originalSha) throw new Error("native_event_source_payload_conflict");
+        event = cached.event;
+      } else {
+        event = { ...event, payload: this.#identityRedactor.delta(
+          `${event.sourceInstanceId}:${event.turnId}:${event.itemId}`,
+          validated.event.payload,
+        ) };
+        // Retries must use the same redacted payload without consuming a delta twice.
+        this.#redactedDeltas.set(key, { event, originalSha });
+      }
     }
     const persisted = await appendHeartbeatRunEvent(this.#db, {
       companyId: this.#binding.companyId,

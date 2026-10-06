@@ -312,6 +312,8 @@ pub enum CommandDisposition {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DurableState {
+    #[serde(skip)]
+    identity_output: IdentityOutputBuffer,
     pub schema: String,
     pub runner_instance_id: String,
     pub environment_lease_id: String,
@@ -352,6 +354,7 @@ pub struct DurableState {
 impl DurableState {
     pub(crate) fn new(config: &DurableRunnerConfig) -> Self {
         Self {
+            identity_output: IdentityOutputBuffer::default(),
             schema: STATE_SCHEMA.to_owned(),
             runner_instance_id: config.runner_instance_id.clone(),
             environment_lease_id: config.environment_lease_id.clone(),
@@ -527,6 +530,15 @@ impl DurableState {
         }
         validate_semantic_tool_input_digest(event_type.as_str(), &payload)?;
 
+        // Clone until enqueue succeeds: rejected writes must not consume output.
+        // Pending secret fragments are memory-only and never enter durable state.
+        let mut identity_output = self.identity_output.clone();
+        let payload = if event_type == "item.delta" {
+            identity_output.redact(&format!("{}:{}", self.turn_id, self.item_id), &payload)
+        } else {
+            payload
+        };
+
         let sanitized_payload = preserve_bounded_display_content(
             event_type.as_str(),
             &payload,
@@ -634,6 +646,7 @@ impl DurableState {
             );
         }
         self.peak_outbox_bytes = self.peak_outbox_bytes.max(projected);
+        self.identity_output = identity_output;
         Ok(source_seq)
     }
 
@@ -1626,6 +1639,85 @@ fn durable_semantics_changed_by_sanitization(original: &Value, sanitized: &Value
     }
 }
 
+#[derive(Clone, Default, PartialEq)]
+struct IdentityOutputBuffer(BTreeMap<String, String>);
+
+impl std::fmt::Debug for IdentityOutputBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("IdentityOutputBuffer { [REDACTED] }")
+    }
+}
+
+impl IdentityOutputBuffer {
+    fn redact(&mut self, stream: &str, payload: &Value) -> Value {
+        let Ok(key) = std::env::var("PAPERCLIP_AGENT_PRIVATE_KEY") else {
+            return payload.clone();
+        };
+        if key.is_empty() {
+            return payload.clone();
+        }
+        self.redact_with_key(stream, payload, &key)
+    }
+
+    fn redact_with_key(&mut self, stream: &str, payload: &Value, key: &str) -> Value {
+        let mut values = vec![key.to_owned(), key.trim().to_owned()];
+        values.extend(
+            key.lines()
+                .filter(|line| !line.is_empty() && !line.starts_with("-----"))
+                .map(str::to_owned),
+        );
+        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        self.visit(stream, "", payload, &values)
+    }
+
+    fn visit(&mut self, path: &str, field: &str, value: &Value, secrets: &[String]) -> Value {
+        match value {
+            Value::Object(object) => Value::Object(
+                object
+                    .iter()
+                    .map(|(key, child)| {
+                        (
+                            key.clone(),
+                            self.visit(&format!("{path}.{key}"), key, child, secrets),
+                        )
+                    })
+                    .collect(),
+            ),
+            Value::Array(array) => Value::Array(
+                array
+                    .iter()
+                    .enumerate()
+                    .map(|(index, child)| {
+                        self.visit(&format!("{path}.{index}"), field, child, secrets)
+                    })
+                    .collect(),
+            ),
+            Value::String(chunk) if matches!(field, "text" | "delta" | "output" | "patch") => {
+                let mut text = self.0.remove(path).unwrap_or_default();
+                text.push_str(chunk);
+                for secret in secrets {
+                    text = text.replace(secret, "[REDACTED]");
+                }
+                let mut held = 0;
+                for secret in secrets {
+                    for size in (held + 1..secret.len().min(text.len() + 1)).rev() {
+                        if secret.is_char_boundary(size) && text.ends_with(&secret[..size]) {
+                            held = size;
+                            break;
+                        }
+                    }
+                }
+                if held > 0 {
+                    let tail = text.split_off(text.len() - held);
+                    self.0.insert(path.to_owned(), tail);
+                }
+                Value::String(text)
+            }
+            other => other.clone(),
+        }
+    }
+}
+
 pub(crate) fn sanitize_value(value: &Value) -> Value {
     match value {
         Value::Object(object) => Value::Object(
@@ -2383,6 +2475,38 @@ fn current_timestamp() -> Result<String, DurableRunnerError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn identity_delta_redaction_buffers_every_split_and_never_serializes_pending_material() {
+        use super::*;
+        let key = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIExamplePrivateMaterial\n-----END PRIVATE KEY-----\n";
+        let body = key.lines().nth(1).unwrap();
+        for split in 1..body.len() {
+            let mut buffer = IdentityOutputBuffer::default();
+            let first = buffer.redact_with_key(
+                "item-1",
+                &json!({"text": &body[..split], "update": {"delta": &body[..split]}}),
+                key,
+            );
+            let other =
+                buffer.redact_with_key("item-2", &json!({"text": "ordinary output\n"}), key);
+            assert_eq!(other["text"], "ordinary output\n");
+            let second = buffer.redact_with_key(
+                "item-1",
+                &json!({"text": &body[split..], "update": {"delta": &body[split..]}}),
+                key,
+            );
+            assert_eq!(first["text"], "");
+            assert_eq!(second["text"], "[REDACTED]");
+            assert_eq!(second["update"]["delta"], "[REDACTED]");
+        }
+        let mut state = DurableState::new(&config(PathBuf::from("/unused")));
+        state
+            .identity_output
+            .redact_with_key("item", &json!({"text": &body[..20]}), key);
+        assert!(!serde_json::to_string(&state).unwrap().contains(&body[..20]));
+        assert!(!format!("{state:?}").contains(&body[..20]));
+    }
+
     use std::time::Duration;
 
     use super::*;

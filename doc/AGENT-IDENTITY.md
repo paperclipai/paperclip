@@ -43,6 +43,9 @@ compatibility includes the public key ID, so an older warm process is replaced
 before its next turn. Private values are excluded from invocation metadata and
 execution configuration; output and failure diagnostics redact known private
 material. The run-log redactor handles split stdout/stderr chunks independently.
+Native output deltas also buffer potential key fragments before persistence.
+Raw provider trace contents are suppressed for identity-enabled runs; trace
+routing, timing, and interpretation metadata remain available.
 
 Managed remote providers, including Cursor Cloud, receive the same private key
 as managed local processes. Selecting a runtime therefore trusts its host with
