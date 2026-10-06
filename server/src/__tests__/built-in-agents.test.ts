@@ -1330,6 +1330,24 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(explicit.agent?.runtimeConfig.aiConnection).toBeUndefined();
   });
 
+  it("repairs an approved legacy Summarizer at startup while retaining pending approvals", async () => {
+    const companyId = await seedCompany();
+    const service = builtInAgentService(db);
+    const provisioned = await service.provision(companyId, "summarizer");
+    await approvalService(db).approve(provisioned.approval!.id, "responsible-user");
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: false } } }).where(eq(agents.id, provisioned.state.agentId!));
+    const pendingCompany = await seedCompany();
+    const pending = await service.provision(pendingCompany, "summarizer");
+    await db.update(agents).set({ runtimeConfig: {} }).where(eq(agents.id, pending.state.agentId!));
+    await reconcileBuiltInAgentsOnStartup(db);
+    const repaired = await service.get(companyId, "summarizer");
+    expect(repaired.agent?.runtimeConfig.aiConnection).toMatchObject({ mode: "responsible_user", provider: "anthropic" });
+    expect(repaired.agent?.runtimeConfig.heartbeat).toEqual({ enabled: false });
+    const unchangedPending = await service.get(pendingCompany, "summarizer");
+    expect(unchangedPending.agent?.status).toBe("pending_approval");
+    expect(unchangedPending.agent?.runtimeConfig.aiConnection).toBeUndefined();
+  });
+
   it("materializes the Summarizer bundle paused on Claude Haiku with a disabled routine", async () => {
     const companyId = await seedCompany();
     const root = await agentService(db).create(companyId, {

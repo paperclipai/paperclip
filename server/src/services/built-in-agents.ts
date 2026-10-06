@@ -1991,7 +1991,7 @@ export function builtInAgentService(db: Db) {
     await ensureCompany(companyId);
     const existing = await findSingleAgent(companyId, definition);
     if (!existing) return state(definition, null);
-    const patch = {
+    const patch: Partial<typeof agents.$inferInsert> = {
       name: definition.displayName,
       role: definition.defaultRole,
       title: definition.defaultTitle ?? null,
@@ -1999,6 +1999,13 @@ export function builtInAgentService(db: Db) {
       capabilities: definition.shortPurpose,
       metadata: builtInMetadata(definition, existing.metadata),
     };
+    if (existing.status !== "pending_approval" && existing.runtimeConfig?.aiConnection === undefined) {
+      const runtimeConfig = await runtimeConfigForBuiltIn(definition, {
+        adapterType: existing.adapterType,
+        adapterConfig: existing.adapterConfig,
+      }, existing.reportsTo, existing.runtimeConfig);
+      if (runtimeConfig.aiConnection !== undefined) patch.runtimeConfig = runtimeConfig;
+    }
     const updated = await agentSvc.update(existing.id, patch, {
       allowBuiltInAgentMetadata: true,
       recordRevision: { source: "built-in-agent:reconcile-defaults" },
