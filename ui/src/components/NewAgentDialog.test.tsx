@@ -150,6 +150,7 @@ it.each([true, false, undefined])("gates the Cloud native runner on explicit ena
         "gemini_local",
         "grok_local",
         "kimi_local",
+        "kimchi_local",
         "pi_local",
         "hermes_local",
         "paperclip_runner",

@@ -75,6 +75,30 @@ describe("isSandboxProviderSupportedForAdapter", () => {
       }),
     ]);
   });
+
+  it("treats kimchi_local as a remote-managed local adapter", () => {
+    expect(adapterSupportsRemoteManagedEnvironments("kimchi_local")).toBe(true);
+    expect(supportedEnvironmentDriversForAdapter("kimchi_local")).toEqual(["local", "ssh", "sandbox"]);
+    expect(
+      isSandboxProviderSupportedForAdapter("kimchi_local", "fake-plugin", ["fake-plugin"]),
+    ).toBe(true);
+  });
+
+  it("includes kimchi_local sandbox support in environment capabilities", () => {
+    const capabilities = getEnvironmentCapabilities(["kimchi_local"], {
+      sandboxProviders: {
+        "fake-plugin": { displayName: "Fake Plugin" },
+      },
+    });
+
+    expect(capabilities.adapters).toEqual([
+      expect.objectContaining({
+        adapterType: "kimchi_local",
+        drivers: expect.objectContaining({ sandbox: "supported", ssh: "supported" }),
+        sandboxProviders: expect.objectContaining({ "fake-plugin": "supported" }),
+      }),
+    ]);
+  });
 });
 
 describe("getEnvironmentCapabilities reusable leases default", () => {

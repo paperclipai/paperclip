@@ -9,6 +9,7 @@ import type { ComponentType } from "react";
 import {
   Bot,
   Code,
+  Flame,
   Gem,
   Moon,
   MousePointer2,
@@ -100,6 +101,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Kimi Code",
     description: "Kimi Code CLI harness",
     icon: Moon,
+  },
+  kimchi_local: {
+    label: "Kimchi",
+    description: "Kimchi CLI harness",
+    icon: Flame,
   },
   hermes_gateway: {
     label: "Hermes Gateway",

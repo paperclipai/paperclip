@@ -96,6 +96,17 @@ import {
   models as kimiModels,
 } from "@paperclipai/adapter-kimi-local";
 import {
+  execute as kimchiExecute,
+  listKimchiSkills,
+  syncKimchiSkills,
+  testEnvironment as kimchiTestEnvironment,
+  sessionCodec as kimchiSessionCodec,
+} from "@paperclipai/adapter-kimchi-local/server";
+import {
+  agentConfigurationDoc as kimchiAgentConfigurationDoc,
+  models as kimchiModels,
+} from "@paperclipai/adapter-kimchi-local";
+import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
 } from "@paperclipai/hermes-paperclip-adapter";
@@ -798,6 +809,36 @@ const kimiLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: kimiAgentConfigurationDoc,
 };
 
+const kimchiLocalAdapter: ServerAdapterModule = {
+  type: "kimchi_local",
+  runtimeToolDelivery: "environment",
+  execute: kimchiExecute,
+  testEnvironment: kimchiTestEnvironment,
+  acp: {
+    agentId: "kimchi",
+    skillsMode: "ephemeral",
+    prerequisites: {
+      nodeRange: ">=20.0.0",
+    },
+  },
+  listSkills: listKimchiSkills,
+  syncSkills: syncKimchiSkills,
+  sessionCodec: kimchiSessionCodec,
+  models: kimchiModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  getRuntimeCommandSpec: (config) => ({
+    // Kimchi is a binary install (curl | bash from GitHub releases), not an
+    // npm package, so there is no self-install command.
+    command: readConfiguredCommand(config, "kimchi"),
+    detectCommand: readConfiguredCommand(config, "kimchi"),
+    installCommand: null,
+  }),
+  agentConfigurationDoc: kimchiAgentConfigurationDoc,
+};
+
 const hermesGatewayAdapter: ServerAdapterModule = {
   ...createHermesGatewayServerAdapter(),
   runtimeToolDelivery: "invocation_context",
@@ -885,6 +926,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     grokLocalAdapter,
     kimiLocalAdapter,
+    kimchiLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,
     openclawGatewayAdapter,
