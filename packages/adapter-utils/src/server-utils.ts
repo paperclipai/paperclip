@@ -166,9 +166,16 @@ export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
 // Windowed tail for the display fallback: scanning the whole 4 MiB capture on
-// every chunk is quadratic on the server event loop. The terminal result is
-// always at the end of the stream, so a bounded tail is sufficient evidence.
+// every chunk is quadratic on the server event loop, so the per-chunk fallback
+// scans only a bounded tail. A large result record can exceed that tail, which
+// would cut off the record head the parser needs, so an over-window capture
+// additionally gets a throttled full scan (at most one per tail-sized growth
+// quantum, or when the current chunk carries a fresh result marker).
 const TERMINAL_RESULT_FALLBACK_TAIL_CHARS = 64 * 1024;
+// Matches a fresh `{"type": "result", ...}` record head inside the current raw
+// chunk (plus a small cross-chunk overlap), so the completing chunk of a large
+// result triggers a full fallback scan even below the growth quantum.
+const TERMINAL_RESULT_MARKER_RE = /"type"\s*:\s*"result"/;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const SENSITIVE_ENV_KEY =
@@ -4840,6 +4847,16 @@ export async function runChildProcess(
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
         let terminalResultSeen = false;
+        // Throttle for the over-window full fallback scan below: capture size
+        // at the last full scan, checks since that scan, a small cross-chunk
+        // overlap buffer for result-marker detection when a record head
+        // straddles two chunks, and per-stream capture/trailing-line lengths
+        // so the chunk that completes an over-window line triggers a scan.
+        let lastFallbackFullScanBytes = -1;
+        let fallbackChecksSinceFullScan = 0;
+        let prevFallbackChunkTail = "";
+        const prevFallbackCaptureLen = { stdout: 0, stderr: 0 };
+        const prevFallbackTrailingLen = { stdout: 0, stderr: 0 };
         let terminalCleanupStarted = false;
         let terminalCleanupSignal: NodeJS.Signals | null = null;
         let terminalCleanupForceKilled = false;
@@ -4894,8 +4911,13 @@ export async function runChildProcess(
                 // Raw retention can clip a large record that literal redaction
                 // shrinks below the display cap. Only fall back to redacted capture,
                 // windowed to a bounded tail so per-chunk work stays constant.
+                // A tail-only window cannot recognize a result record larger than
+                // the window, so over-window captures additionally get a throttled
+                // full scan that preserves record-head evidence.
                 if (!terminalResultSeen && displayFallbackSafe() && (stdout || stderr) &&
                   (stdout !== output.stdout || stderr !== output.stderr)) {
+                  const overWindow = stdout.length > TERMINAL_RESULT_FALLBACK_TAIL_CHARS ||
+                    stderr.length > TERMINAL_RESULT_FALLBACK_TAIL_CHARS;
                   const stdoutTail = stdout.length > TERMINAL_RESULT_FALLBACK_TAIL_CHARS
                     ? stdout.slice(-TERMINAL_RESULT_FALLBACK_TAIL_CHARS)
                     : stdout;
@@ -4906,6 +4928,50 @@ export async function runChildProcess(
                     stdout: stdoutTail,
                     stderr: stderrTail,
                   });
+                  if (!terminalResultSeen && overWindow) {
+                    const captureBytes = stdout.length + stderr.length;
+                    const markerHit = stream !== undefined && text
+                      ? TERMINAL_RESULT_MARKER_RE.test(prevFallbackChunkTail + text)
+                      : false;
+                    // A record longer than the tail window is invisible to the
+                    // tail scan above, and its completing chunk usually carries
+                    // no fresh marker and adds less than a growth quantum. Fire
+                    // when this chunk completes an over-window line instead.
+                    let completedLongLine = false;
+                    if (stream === "stdout" || stream === "stderr") {
+                      const cap = stream === "stderr" ? stderr : stdout;
+                      const prevLen = prevFallbackCaptureLen[stream];
+                      const prevTrailing = prevFallbackTrailingLen[stream];
+                      if (text.includes("\n")) {
+                        const lastNl = cap.lastIndexOf("\n");
+                        const lineStart = Math.max(0, prevLen - prevTrailing);
+                        if (lastNl - lineStart > TERMINAL_RESULT_FALLBACK_TAIL_CHARS) {
+                          completedLongLine = true;
+                        }
+                        prevFallbackTrailingLen[stream] = lastNl === -1 ? cap.length : cap.length - lastNl - 1;
+                      } else {
+                        prevFallbackTrailingLen[stream] = prevTrailing + Math.max(0, cap.length - prevLen);
+                      }
+                      prevFallbackCaptureLen[stream] = cap.length;
+                    }
+                    fallbackChecksSinceFullScan += 1;
+                    // The count backstop covers the remaining shapes (for
+                    // example a placeholder longer than the secret it replaces,
+                    // which can push the redacted line over the window while the
+                    // raw line stays under it), bounding detection delay to a
+                    // few further chunks instead of the run timeout.
+                    if (markerHit ||
+                      captureBytes - lastFallbackFullScanBytes >= TERMINAL_RESULT_FALLBACK_TAIL_CHARS ||
+                      fallbackChecksSinceFullScan >= 16 ||
+                      completedLongLine) {
+                      lastFallbackFullScanBytes = captureBytes;
+                      fallbackChecksSinceFullScan = 0;
+                      terminalResultSeen = terminalCleanup.hasTerminalResult({ stdout, stderr });
+                    }
+                  }
+                }
+                if (stream !== undefined && text) {
+                  prevFallbackChunkTail = (prevFallbackChunkTail + text).slice(-64);
                 }
               };
               // append inspects before trimming and preserves recognized match

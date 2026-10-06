@@ -938,6 +938,48 @@ describe("runChildProcess", () => {
     30000,
   );
 
+  it(
+    "detects a redacted result larger than the fallback tail without waiting for timeout",
+    async () => {
+      // A result record that stays above the 64 KiB fallback tail after secret
+      // redaction: the tail-only window cuts the record head, so only a full
+      // fallback scan can recognize completion and arm cleanup before timeout.
+      const secret = "S".repeat(64);
+      const repeats = 5000;
+      // Join with a separator so the redactor emits one placeholder per
+      // occurrence; an unseparated repeat would collapse into a single range
+      // and stay below the tail window.
+      const script =
+        `const s=process.env.DATABASE_URL;` +
+        `const line=JSON.stringify({type:"result",result:Array(${repeats}).fill(s).join("|")})+"\\n";` +
+        `process.stdout.write(line);setInterval(()=>{},1000);`;
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", script],
+        {
+          cwd: process.cwd(),
+          env: { DATABASE_URL: secret },
+          timeoutSec: 15,
+          graceSec: 1,
+          onLog: async () => {},
+          terminalResultCleanup: {
+            graceMs: 50,
+            hasTerminalResult: (output) => {
+              try { return JSON.parse(output.stdout).type === "result"; } catch { return false; }
+            },
+          },
+        },
+      );
+      expect(result.stdout.length).toBeGreaterThan(64 * 1024);
+      expect(result.timedOut).toBe(false);
+      expect(result.terminalResultCleanup?.terminalResultSeen).toBe(true);
+      expect(result.stdout).toContain("***REDACTED***");
+      expect(result.stdout).not.toContain(secret);
+    },
+    30000,
+  );
+
   it.each(["stdout", "stderr"] as const)(
     "detects a short terminal line held by the %s redactor without waiting for EOF",
     async (stream) => {
