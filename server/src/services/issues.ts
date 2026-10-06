@@ -102,7 +102,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
-import { isForeignKeyViolation } from "../db-errors.js";
+import { isForeignKeyViolation, isUniqueViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -7476,13 +7476,99 @@ export function issueService(db: Db) {
     return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
   }
 
+  // `issues_open_routine_execution_uq` is a partial unique index on
+  // (company_id, origin_kind, origin_id, origin_fingerprint) whose predicate
+  // includes `execution_run_id is not null`. A routine_execution issue
+  // therefore ENTERS the index the moment the execution lock is stamped on it,
+  // so taking the lock collides whenever an open, non-hidden sibling from the
+  // same routine and fingerprint already holds one. The collision does not
+  // depend on the run id VALUE — any execution_run_id collides — so a second
+  // agent in a second run hits it identically.
+  const ROUTINE_EXECUTION_LOCK_CONSTRAINT = "issues_open_routine_execution_uq";
+  // Mirrors the index predicate's status list; used only to name the holder.
+  const ROUTINE_EXECUTION_LOCK_OPEN_STATUSES = [
+    "backlog",
+    "todo",
+    "in_progress",
+    "in_review",
+    "blocked",
+  ];
+
+  async function findRoutineExecutionLockHolder(issueId: string) {
+    const subject = await db
+      .select({
+        companyId: issues.companyId,
+        originId: issues.originId,
+        originFingerprint: issues.originFingerprint,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    if (!subject?.originId) return null;
+
+    return db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, subject.companyId),
+          eq(issues.originKind, "routine_execution"),
+          eq(issues.originId, subject.originId),
+          eq(issues.originFingerprint, subject.originFingerprint),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+          inArray(issues.status, ROUTINE_EXECUTION_LOCK_OPEN_STATUSES),
+          ne(issues.id, issueId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * Runs a lock-stamping mutation and translates a collision against
+   * `issues_open_routine_execution_uq` into a structured 409.
+   *
+   * Without this the Postgres unique violation propagates as an unhandled
+   * DrizzleQueryError to a bare `{"error":"Internal server error"}` 500, which
+   * is indistinguishable from a crash — so a monitor retries it hourly forever
+   * even though the collision is mechanical and will not clear until the
+   * sibling issue closes or is hidden. `retryable: false` is the signal that
+   * re-attempting the same mutation cannot succeed; `blockingIssue` names the
+   * sibling whose closure is the actual unblock action.
+   */
+  async function withRoutineExecutionLockStamp<T>(
+    issueId: string,
+    actorRunId: string | null | undefined,
+    stamp: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await stamp();
+    } catch (error) {
+      if (!isUniqueViolation(error, ROUTINE_EXECUTION_LOCK_CONSTRAINT))
+        throw error;
+      const holder = await findRoutineExecutionLockHolder(issueId);
+      throw conflict("Routine execution lock already held by a sibling issue", {
+        reason: "routine_execution_lock_conflict",
+        retryable: false,
+        issueId,
+        actorRunId: actorRunId ?? null,
+        blockingIssue: holder,
+      });
+    }
+  }
+
   async function adoptStaleCheckoutRun(input: {
     issueId: string;
     actorAgentId: string;
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
-    return db.transaction(async (tx) => {
+    const stamp = () => db.transaction(async (tx) => {
       const lockedIssue = await tx
         .select({
           id: issues.id,
@@ -7577,6 +7663,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       return { adopted: null, latest };
     });
+    return withRoutineExecutionLockStamp(input.issueId, input.actorRunId, stamp);
   }
 
   async function adoptUnownedCheckoutRun(input: {
@@ -7584,7 +7671,7 @@ export function issueService(db: Db) {
     actorAgentId: string;
     actorRunId: string;
   }) {
-    return db.transaction(async (tx) => {
+    const stamp = () => db.transaction(async (tx) => {
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
       );
@@ -7628,6 +7715,7 @@ export function issueService(db: Db) {
 
       return adopted;
     });
+    return withRoutineExecutionLockStamp(input.issueId, input.actorRunId, stamp);
   }
 
   async function clearExecutionRunIfTerminal(
@@ -11470,7 +11558,7 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      const updated = await db
+      const updated = await withRoutineExecutionLockStamp(id, checkoutRunId, () => db
         .update(issues)
         .set({
           assigneeAgentId: agentId,
@@ -11490,7 +11578,7 @@ export function issueService(db: Db) {
           ),
         )
         .returning()
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null));
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
@@ -11519,7 +11607,7 @@ export function issueService(db: Db) {
           current.executionRunId === checkoutRunId) &&
         checkoutRunId
       ) {
-        const adopted = await db
+        const adopted = await withRoutineExecutionLockStamp(id, checkoutRunId, () => db
           .update(issues)
           .set({
             checkoutRunId,
@@ -11539,7 +11627,7 @@ export function issueService(db: Db) {
             ),
           )
           .returning()
-          .then((rows) => rows[0] ?? null);
+          .then((rows) => rows[0] ?? null));
         if (adopted) return adopted;
       }
 
@@ -11594,14 +11682,15 @@ export function issueService(db: Db) {
           if (current.status !== "in_progress") {
             adoptionSet.startedAt = now;
           }
-          const adopted = await db
+          const staleExecutionRunId = current.executionRunId;
+          const adopted = await withRoutineExecutionLockStamp(id, checkoutRunId, () => db
             .update(issues)
             .set(adoptionSet)
             .where(
               and(
                 eq(issues.id, id),
                 inArray(issues.status, expectedStatuses),
-                eq(issues.executionRunId, current.executionRunId),
+                eq(issues.executionRunId, staleExecutionRunId),
                 or(
                   isNull(issues.assigneeAgentId),
                   eq(issues.assigneeAgentId, agentId),
@@ -11609,7 +11698,7 @@ export function issueService(db: Db) {
               ),
             )
             .returning()
-            .then((rows) => rows[0] ?? null);
+            .then((rows) => rows[0] ?? null));
           if (adopted) {
             const [enriched] = await withIssueLabels(db, [adopted]);
             return enriched;
