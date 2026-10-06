@@ -42,6 +42,7 @@ import { captureLocalProcess, capturedProcessExited, killCapturedLocalProcess } 
 import type { DuplexLossReason } from "../duplex-observability.js";
 import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../bridge-transport-contract.js";
 import {
+  classifyAuthRequiredFailure,
   classifyToolDefinitionFailure,
   formatTerminalSessionFailure,
   sanitizeTerminalSessionFailure,
@@ -1576,6 +1577,21 @@ function buildSessionParams(input: {
     ...(prepared.workspaceRepoRef ? { repoRef: prepared.workspaceRepoRef } : {}),
     ...(prepared.remoteExecutionIdentity ? { remoteExecution: prepared.remoteExecutionIdentity } : {}),
   };
+}
+
+const ACPX_CLAUDE_INCLUDE_USER_SETTINGS = "ACPX_CLAUDE_INCLUDE_USER_SETTINGS";
+
+// acpx >= 0.12 sends `settingSources: ["project", "local"]` on a Claude
+// `session/new` unless ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1. That drops
+// `~/.claude/settings.json`, and with it any `env` block that holds the
+// operator's Claude credentials or gateway route (ANTHROPIC_AUTH_TOKEN,
+// ANTHROPIC_BASE_URL). The CLI then reports "Not logged in" on every fresh
+// session, while `session/load` (which sends no settingSources) still works
+// (#14093). Paperclip relies on the user tier being loaded — see
+// `writePaperclipClaudeSettings` — so opt back in. An explicit operator value
+// is kept.
+export function includeClaudeUserSettingSource(env: NodeJS.ProcessEnv = process.env): void {
+  if (env[ACPX_CLAUDE_INCLUDE_USER_SETTINGS] === undefined) env[ACPX_CLAUDE_INCLUDE_USER_SETTINGS] = "1";
 }
 
 interface PaperclipClaudeSettingsResult {
@@ -4361,6 +4377,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // A warm handle reuses the running ACP runtime; a miss constructs one. The
         // root span records this as `cold_start`.
         coldStart = !cached?.runtime;
+        // acpx reads this from its own process env when it sends a Claude
+        // `session/new`, so set it before any session exists, warm handle or
+        // not. acpx ignores it for every other agent.
+        includeClaudeUserSettingSource();
         if (cached?.runtime) {
           runtime = cached.runtime;
         } else {
@@ -4849,6 +4869,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // classifier. Redact before bounding so partial secrets cannot leak.
           onTerminalSessionFailure: (failure: AcpxTerminalSessionFailure) => {
             terminalFailureClassification = classifyToolDefinitionFailure(failure)
+              ?? classifyAuthRequiredFailure(failure)
               ?? deps.classifyTerminalSessionFailure?.(failure, new Date(now())) ?? null;
             terminalSessionFailure = sanitizeTerminalSessionFailure(
               failure, prepared.env, ctx.authToken, parseObject(ctx.config.env),

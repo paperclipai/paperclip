@@ -29,6 +29,23 @@ export function classifyToolDefinitionFailure(
   }
   return null;
 }
+
+/** An `access` failure whose provider text is a login prompt means the agent
+ * CLI found no credentials (for Claude: "Not logged in · Please run /login").
+ * A retry with the same launch inputs cannot fix that, so report it as the
+ * login problem it is instead of a generic turn failure (#14093).
+ */
+export function classifyAuthRequiredFailure(
+  failure: AcpxTerminalSessionFailure,
+): Pick<AdapterExecutionResult, "errorCode" | "errorFamily"> | null {
+  if (failure.category !== "access") return null;
+  const text = `${failure.title ?? ""}\n${failure.details ?? ""}`;
+  if (/not logged in|please run \/login|authentication required|session expired/i.test(text)) {
+    return { errorCode: "acpx_auth_required", errorFamily: "configuration" };
+  }
+  return null;
+}
+
 // Leave room under the server's 64 KiB run-log chunk limit even when every
 // retained character needs JSON escaping. The transcript stores the text once.
 const FIELD_LIMITS = { title: 4096, details: 24576 } as const;

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
@@ -8,6 +9,11 @@ function writeMessage(message) {
 }
 
 let supportsTypedSessionFailure = false;
+// Claude Code reads its credentials (often an `env` block with
+// ANTHROPIC_AUTH_TOKEN) from user settings. With
+// PAPERCLIP_ACPX_REQUIRE_USER_SETTINGS=1 this fixture behaves like the CLI
+// when `session/new` excludes the "user" setting source (#14093).
+const settingSourcesBySession = new Map();
 
 async function handleRequest(request) {
   if (request.method === "initialize") {
@@ -30,8 +36,46 @@ async function handleRequest(request) {
       agentInfo: { name: "paperclip-acp-echo-agent", version: "1.0.0" },
     };
   }
-  if (request.method === "session/new") return { sessionId: randomUUID() };
+  if (request.method === "session/new") {
+    const sessionId = randomUUID();
+    settingSourcesBySession.set(sessionId, request.params?._meta?.claudeCode?.options?.settingSources);
+    return { sessionId };
+  }
   if (request.method === "session/prompt") {
+    const settingSources = settingSourcesBySession.get(request.params.sessionId);
+    if (
+      process.env.PAPERCLIP_ACPX_REQUIRE_USER_SETTINGS === "1" &&
+      Array.isArray(settingSources) &&
+      !settingSources.includes("user")
+    ) {
+      const sessionFailure = {
+        id: `${request.params.sessionId}:auth`,
+        revision: 1,
+        category: "access",
+        severity: "error",
+        title: "Not logged in \u00b7 Please run /login",
+        actions: [],
+      };
+      return {
+        stopReason: "end_turn",
+        _meta: { jetbrains: { air: { version: 1, sessionFailure } } },
+      };
+    }
+    const command = process.env.PAPERCLIP_ACPX_RUN_COMMAND;
+    if (command) {
+      const toolCallId = randomUUID();
+      const update = (body) =>
+        writeMessage({
+          jsonrpc: "2.0",
+          method: "session/update",
+          params: { sessionId: request.params.sessionId, update: body },
+        });
+      update({ sessionUpdate: "tool_call", toolCallId, title: command, kind: "execute", status: "in_progress", rawInput: { command } });
+      const stdout = execFileSync("/bin/sh", ["-c", command], { encoding: "utf8" }).trim();
+      update({ sessionUpdate: "tool_call_update", toolCallId, status: "completed", rawOutput: stdout });
+      update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: stdout } });
+      return { stopReason: "end_turn" };
+    }
     const typedFailure = process.env.PAPERCLIP_ACPX_TYPED_FAILURE_FILE
       ? JSON.parse(await readFile(process.env.PAPERCLIP_ACPX_TYPED_FAILURE_FILE, "utf8"))
       : {};

@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { classifyToolDefinitionFailure, formatTerminalSessionFailure, sanitizeTerminalSessionFailure } from "./terminal-session-failure.js";
+import {
+  classifyAuthRequiredFailure,
+  classifyToolDefinitionFailure,
+  formatTerminalSessionFailure,
+  sanitizeTerminalSessionFailure,
+} from "./terminal-session-failure.js";
 
 describe("terminal session failure diagnostics", () => {
+  it.each([
+    "Not logged in \u00b7 Please run /login",
+    "Session expired. Please run /login to sign in again.",
+  ])("classifies a login prompt as acpx_auth_required: %s", (title) => {
+    expect(classifyAuthRequiredFailure({ category: "access", title })).toEqual({
+      errorCode: "acpx_auth_required", errorFamily: "configuration",
+    });
+  });
+  it("leaves other access failures and other categories alone", () => {
+    expect(classifyAuthRequiredFailure({ category: "access", title: "403 forbidden: organization disabled" })).toBeNull();
+    expect(classifyAuthRequiredFailure({ category: "service", title: "Not logged in" })).toBeNull();
+  });
   it.each([
     "API Error: 400 tools.17.custom.name: String should have at most 128 characters",
     "tools[0].input_schema: invalid schema",
