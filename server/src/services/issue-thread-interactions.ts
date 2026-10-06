@@ -5142,7 +5142,9 @@ export function issueThreadInteractionService(
       lifecycleOptions: { lifecycleFence?: boolean } = {},
     ) => {
       if (lifecycleOptions.lifecycleFence) {
-        if (suppliedTx || Object.keys(mutationOptions).length) {
+        if (suppliedTx || Object.keys(mutationOptions).length
+          || mutationOptions.beforeResolveInTransaction != null
+          || mutationOptions.afterResolveInTransaction != null) {
           throw unprocessable("Owned lifecycle answers do not support supplied transactions or arbitrary hooks");
         }
         return answerQuestionsWithLifecycleFence(db, issue, interactionId, input, actor);

@@ -50,6 +50,50 @@ describe("dark supplied canonical question answer recording", () => {
     )).rejects.toMatchObject({ status: 422 });
     expect(transaction).not.toHaveBeenCalled(); expect(f.events).toEqual([]);
   });
+  it.each([
+    ["beforeResolveInTransaction", "inherited"], ["beforeResolveInTransaction", "non-enumerable"], ["beforeResolveInTransaction", "class"],
+    ["afterResolveInTransaction", "inherited"], ["afterResolveInTransaction", "non-enumerable"], ["afterResolveInTransaction", "class"],
+  ] as const)("denies effective canonical owned hook %s via %s before effects", async (hook, representation) => {
+      const f = fixture(); f.release(); const hookCall = vi.fn();
+      class BeforeOptions { async beforeResolveInTransaction() { hookCall(); } }
+      class AfterOptions { async afterResolveInTransaction() { hookCall(); } }
+      const options = representation === "inherited" ? Object.create({ [hook]: hookCall })
+        : representation === "non-enumerable" ? Object.defineProperty({}, hook, { value: hookCall })
+        : hook === "beforeResolveInTransaction" ? new BeforeOptions() : new AfterOptions();
+      const transaction = vi.fn(async (callback: any) => { f.events.push("owned-tx"); return callback(f.tx); });
+      await expect(service.issueThreadInteractionService({ transaction } as any).answerQuestions(
+        { id: "issue-1", companyId: "company-1" }, "card-1",
+        { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }] },
+        { userId: "user-1" }, options, undefined, { lifecycleFence: true },
+      )).rejects.toMatchObject({ status: 422 });
+      expect(transaction).not.toHaveBeenCalled(); expect(hookCall).not.toHaveBeenCalled();
+      expect(f.events).toEqual([]); expect(f.card.status).toBe("pending"); expect(f.deliveries).toEqual([]);
+  });
+  it.each(["beforeResolveInTransaction", "afterResolveInTransaction"] as const)("propagates effective hook getter error for %s before effects", async hook => {
+    const f = fixture(); const error = new Error("hook-read-failure"); const transaction = vi.fn();
+    const options = Object.create(Object.defineProperty({}, hook, { get() { throw error; } }));
+    await expect(service.issueThreadInteractionService({ transaction } as any).answerQuestions(
+      { id: "issue-1", companyId: "company-1" }, "card-1", { answers: [] }, {}, options, undefined, { lifecycleFence: true },
+    )).rejects.toBe(error);
+    expect(transaction).not.toHaveBeenCalled(); expect(f.events).toEqual([]);
+    expect(f.card.status).toBe("pending"); expect(f.deliveries).toEqual([]);
+  });
+  it.each([undefined, false])("preserves canonical ordinary inherited hooks opt-in=%s", async lifecycleFence => {
+    const f = fixture(); f.release(); const before = vi.fn(); const after = vi.fn();
+    const root: any = { ...f.tx,
+      transaction: async (callback: any) => callback(f.tx),
+      update: () => ({ set: () => ({ where: async () => {} }) }),
+    };
+    await service.issueThreadInteractionService(root).answerQuestions(
+      { id: "issue-1", companyId: "company-1" }, "card-1",
+      { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }] }, { userId: "user-1" },
+      Object.create({ beforeResolveInTransaction: before, afterResolveInTransaction: after }), undefined,
+      lifecycleFence === undefined ? undefined : { lifecycleFence },
+    );
+    expect(before).toHaveBeenCalledTimes(1); expect(after).toHaveBeenCalledTimes(1);
+    expect(f.card.status).toBe("answered"); expect(f.deliveries).toHaveLength(1);
+    expect(f.events).not.toContain("lifecycle-fence");
+  });
   it("denies canonical owned opt-in on an explicit supplied tx before effects", async () => {
     const f = fixture(); const transaction = vi.fn();
     await expect(service.issueThreadInteractionService({ transaction } as any).answerQuestions(
