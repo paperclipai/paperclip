@@ -121,6 +121,27 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     30_000,
   );
 
+  it("expires abandoned partials while preserving recent files and live writers", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("paperclip-backup-partial-expiry-");
+    const oldDead = path.join(backupDir, "paperclip-old.sql.gz.13579.fixture.partial");
+    const oldLive = path.join(backupDir, "paperclip-old.sql.gz.24680.fixture.partial");
+    const recentDead = path.join(backupDir, "paperclip-recent.sql.gz.13579.fixture.partial");
+    for (const file of [oldDead, oldLive, recentDead]) fs.writeFileSync(file, "partial gzip");
+    for (const file of [oldDead, oldLive]) fs.utimesSync(file, new Date(Date.now() - 10 * 86400000), new Date(Date.now() - 10 * 86400000));
+    const processProbe = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      expect(signal).toBe(0);
+      if (pid === 13579) throw Object.assign(new Error("writer exited"), { code: "ESRCH" });
+      return true;
+    });
+    try {
+      await runDatabaseBackup({ connectionString, backupDir, backupEngine: "javascript", retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 } });
+      expect(fs.existsSync(oldDead)).toBe(false);
+      expect(fs.existsSync(oldLive)).toBe(true);
+      expect(fs.existsSync(recentDead)).toBe(true);
+    } finally { processProbe.mockRestore(); }
+  }, 30_000);
+
   it("publishes a gzip only after it is complete", async () => {
     const connectionString = await createTempDatabase();
     const backupDir = createTempDir("paperclip-backup-atomic-");

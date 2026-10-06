@@ -132,14 +132,27 @@ async function pruneOldBackups(backupDir: string, retention: BackupRetentionPoli
 
   type BackupEntry = { name: string; fullPath: string; mtimeMs: number };
   const entries: BackupEntry[] = [];
+  const abandonedPartials: string[] = [];
 
   for (const name of readdirSync(backupDir)) {
     if (!name.startsWith(`${filenamePrefix}-`)) continue;
-    if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
+    const partial = /\.sql\.gz\.(\d+)\.[a-z0-9-]+\.partial$/.exec(name);
+    if (!partial && !name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
     try {
       const stat = statSync(fullPath);
-      if (stat.isFile()) entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
+      if (!stat.isFile()) continue;
+      if (partial) {
+        // Keep recent partials and any file whose writer could still be alive.
+        // A reused or inaccessible PID is conservative evidence to retain it.
+        if (stat.mtimeMs < dailyCutoff) {
+          try { process.kill(Number(partial[1]), 0); } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ESRCH") abandonedPartials.push(fullPath);
+          }
+        }
+        continue;
+      }
+      entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -150,7 +163,7 @@ async function pruneOldBackups(backupDir: string, retention: BackupRetentionPoli
 
   const keepWeekBuckets = new Set<string>();
   const keepMonthBuckets = new Set<string>();
-  const toDelete: string[] = [];
+  const toDelete: string[] = abandonedPartials;
 
   for (const entry of entries) {
     // Daily tier — keep everything within dailyDays
@@ -562,7 +575,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   mkdirSync(opts.backupDir, { recursive: true });
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
-  const partialBackupFile = `${backupFile}.${randomUUID()}.partial`;
+  const partialBackupFile = `${backupFile}.${process.pid}.${randomUUID()}.partial`;
   let backupPublished = false;
   const writer = createBufferedTextFileWriter(sqlFile);
 
