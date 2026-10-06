@@ -2052,6 +2052,9 @@ fn validate_semantic_tool_input_digest(
 }
 
 pub(crate) fn redact_text(input: &str) -> String {
+    // Cutting a secret first leaves an unmatchable plaintext fragment.
+    let redacted = redact_sensitive_text_values(input);
+    let input = redacted.as_str();
     let (bounded, truncated) = if input.len() > 4096 {
         let boundary = input
             .char_indices()
@@ -2063,7 +2066,7 @@ pub(crate) fn redact_text(input: &str) -> String {
     } else {
         (input, false)
     };
-    let mut redacted = redact_sensitive_text_values(bounded);
+    let mut redacted = bounded.to_owned();
     if truncated {
         redacted.push_str("…[truncated]");
     }
@@ -4261,6 +4264,42 @@ mod tests {
             redact_text("Missing bearer [REDACTED]"),
             "Missing bearer [REDACTED]"
         );
+    }
+
+    #[test]
+    fn identity_redaction_precedes_multibyte_truncation() {
+        let prefix = "MC4CAQAwBQYDK2VwBCIEIA";
+        let body = format!("{prefix}{}", "A".repeat(64 - prefix.len()));
+        let key = format!("-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n");
+        // Give only this subprocess the key; do not race other tests' environment.
+        if std::env::var_os("PAPERCLIP_IDENTITY_TRUNCATION_TEST").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "durable::state::tests::identity_redaction_precedes_multibyte_truncation",
+                    "--nocapture",
+                ])
+                .env("PAPERCLIP_IDENTITY_TRUNCATION_TEST", "1")
+                .env("PAPERCLIP_AGENT_PRIVATE_KEY", &key)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        for material in [&body, &key] {
+            let input = format!("{}{material}", "é".repeat(2025));
+            let output = redact_text(&input);
+            assert!(!output.contains(prefix));
+            assert!(output.contains("[REDACTED]"));
+            assert!(output.len() <= 4096);
+            let persisted = sanitize_value(&json!({"text": input}));
+            assert!(!persisted.to_string().contains(prefix));
+        }
     }
 
     #[test]

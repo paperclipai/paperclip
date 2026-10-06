@@ -172,6 +172,28 @@ describe("agent cryptographic identity", () => {
     }
   }, 60_000);
 
+  it("persists ordinary stdout and stderr endings after settling the identity buffer", async () => {
+    const agent = await oldAgent();
+    await db.update(agents).set({ adapterType: "process", adapterConfig: {
+      command: process.execPath, cwd: directory,
+      args: ["-e", "process.stdout.write('safe-'); process.stderr.write('safeM');"],
+    } }).where(eq(agents.id, agent.id));
+    const heartbeat = heartbeatService(db);
+    try {
+      const run = await heartbeat.invoke(agent.id, "on_demand", {}, "manual");
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      const finished = await heartbeat.getRun(run!.id);
+      expect(finished?.status).toBe("succeeded");
+      expect(finished?.stdoutExcerpt).toMatch(/safe-$/);
+      expect(finished?.stderrExcerpt).toMatch(/safeM$/);
+      const lines = (await heartbeat.readLog(run!.id)).content.trim().split("\n").map(line => JSON.parse(line));
+      expect(lines.filter(line => line.stream === "stdout").map(line => line.chunk).join("")).toContain("safe-");
+      expect(lines.filter(line => line.stream === "stderr").map(line => line.chunk).join("")).toContain("safeM");
+    } finally {
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    }
+  }, 60_000);
+
   it("disaster recovery retains identity; both development seed modes omit it and mint fresh keys", async () => {
     const agent = await oldAgent();
     const original = await agentIdentityService(db).ensureAgentIdentity(companyId, agent.id);

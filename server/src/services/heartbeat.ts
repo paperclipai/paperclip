@@ -23446,9 +23446,9 @@ export function heartbeatService(
 
         const currentUserRedactionOptions =
           await getCurrentUserRedactionOptions();
-        const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+        const appendIdentityRedactedLog = async (stream: "stdout" | "stderr", chunk: string) => {
           const sanitizedChunk = compactRunLogChunk(
-            redactCurrentUserText(identityRedactor.chunk(stream, chunk), currentUserRedactionOptions),
+            redactCurrentUserText(chunk, currentUserRedactionOptions),
           );
           if (stream === "stdout")
             stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
@@ -23521,6 +23521,8 @@ export function heartbeatService(
             },
           });
         };
+        const onLog = (stream: "stdout" | "stderr", chunk: string) =>
+          appendIdentityRedactedLog(stream, identityRedactor.chunk(stream, chunk));
         if (runScopedMentionedSkillKeys.length > 0) {
           await onLog(
             "stdout",
@@ -25170,7 +25172,7 @@ export function heartbeatService(
           adapterResult = identityRedactor.redact(adapterResult);
           for (const stream of ["stdout", "stderr"] as const) {
             const tail = identityRedactor.finish(stream);
-            if (tail) await onLog(stream, tail);
+            if (tail) await appendIdentityRedactedLog(stream, tail);
           }
           if (instructionSave) adapterResult.resultJson = { ...adapterResult.resultJson, instructionSave };
           adapterResult = applyWorkspaceRestoreFailure(adapterResult);
