@@ -6,11 +6,16 @@
       "title": "Tasks, conversations, and attention",
       "status": "partial",
       "features": [
+        "tasks.md",
+        "task-coordination.md",
+        "inbox-search.md",
+        "agent-chat.md",
         "questions-and-approvals.md",
         "steering.md",
-        "recovery.md"
+        "recovery.md",
+        "documents-artifacts.md"
       ],
-      "gap": "Seed recipes cover interactions, queued follow-ups, and recovery. Creation, search, list filters, decision triage, documents, and complete conversation lifecycle still need recipes.",
+      "gap": "Recipes cover the main task/conversation/attention workflows. Full shell, permission, attachment, long-thread, and concurrency permutations remain to be enumerated.",
       "paths": [
         "ui/src/pages/AgentChat.tsx",
         "ui/src/pages/AgentChats.tsx",
@@ -30,9 +35,14 @@
       "title": "Agents, organization, and runtime setup",
       "status": "partial",
       "features": [
-        "recovery.md"
+        "agents.md",
+        "runs-adapters.md",
+        "skills.md",
+        "app-permissions.md",
+        "recovery.md",
+        "execution-environments.md"
       ],
-      "gap": "Recovery includes the run-detail surface. Hiring, model/account selection, configuration, files, org changes, and run history remain unmapped.",
+      "gap": "Per-harness/model/account capabilities, every instruction-file error, and complete built-in-agent lifecycle variants remain separate qualification matrices.",
       "paths": [
         "ui/src/pages/AdapterManager.tsx",
         "ui/src/pages/AgentDetail.production.tsx",
@@ -52,9 +62,10 @@
       "status": "partial",
       "features": [
         "connection-setup.md",
+        "app-permissions.md",
         "questions-and-approvals.md"
       ],
-      "gap": "Setup and app-tool review journeys are seeded. Complete provider/auth matrices, revocation, activity, advanced settings, and aggregator administration remain unmapped.",
+      "gap": "Provider-specific authentication/revocation, credential-only accounts, and aggregator administrative variants still need their own detailed matrices.",
       "paths": [
         "ui/src/pages/apps/AggregatorAppManager.tsx",
         "ui/src/pages/apps/AggregatorConnectDialog.tsx",
@@ -93,11 +104,12 @@
       "title": "Chat and email channel setup",
       "status": "partial",
       "features": [
+        "chat-channels.md",
         "connection-setup.md",
         "questions-and-approvals.md",
         "steering.md"
       ],
-      "gap": "Shared setup, identity, and interaction entry points are seeded. Each provider needs separate live messaging, attachment, control, and delivery recipes.",
+      "gap": "Shared recipes name provider checks; each provider transport/thread/identity/file-size/type combination needs separate live evidence and deeper instructions.",
       "paths": [
         "ui/src/pages/apps/chat/ChatCommunicationInstructions.tsx",
         "ui/src/pages/apps/chat/ChatEndpointDetail.tsx",
@@ -121,9 +133,11 @@
       "title": "Skills, Skill Studio, and teams",
       "status": "partial",
       "features": [
+        "skills.md",
+        "teams.md",
         "questions-and-approvals.md"
       ],
-      "gap": "Only the Skill Studio interaction surface is seeded. Authoring, imports, sources, tests, versions, policies, and team installation remain unmapped.",
+      "gap": "Main library/Studio/source/policy and CLI team-install paths are mapped. Full source-provider conflicts, harness sync, and remote package variants remain; catalog UI is not a current top-level route.",
       "paths": [
         "ui/src/pages/CompanySkills.production.tsx",
         "ui/src/pages/CompanySkills.tsx",
@@ -144,9 +158,14 @@
       "title": "Projects and execution workspaces",
       "status": "partial",
       "features": [
+        "projects.md",
+        "workspaces.md",
+        "goals.md",
+        "execution-environments.md",
+        "budgets-costs.md",
         "recovery.md"
       ],
-      "gap": "Recovery recipes describe workspace repair controls. Project/repository setup, workspace provisioning, services, files, and normal lifecycle remain unmapped.",
+      "gap": "Provider-specific provisioning, multi-repository/submodule edge cases, Git reconciliation variants, and all service exposure combinations require deeper recipes.",
       "paths": [
         "ui/src/pages/ExecutionWorkspaceDetail.tsx",
         "ui/src/pages/ProjectDetail.tsx",
@@ -160,9 +179,11 @@
       "title": "Formal governance approvals",
       "status": "partial",
       "features": [
-        "questions-and-approvals.md"
+        "questions-and-approvals.md",
+        "task-coordination.md",
+        "agents.md"
       ],
-      "gap": "Board list/detail decisions are mapped with service tests and manual recipes. Full browser coverage and every approval-type effect still need qualification.",
+      "gap": "Formal board decisions and signoff have recipes; every approval payload/type and actor/host error permutation is not enumerated.",
       "paths": [
         "ui/src/pages/ApprovalDetail.tsx",
         "ui/src/pages/Approvals.tsx"
@@ -171,9 +192,14 @@
     {
       "id": "auth-and-access",
       "title": "Login, invitations, and access",
-      "status": "unmapped",
-      "features": [],
-      "gap": "No end-to-end login, bootstrap, invitation, membership, role, or session-expiry recipe yet.",
+      "status": "partial",
+      "features": [
+        "onboarding.md",
+        "access.md",
+        "navigation-preferences.md",
+        "cli-operations.md"
+      ],
+      "gap": "Deployment modes and core login/invite/member/token paths are mapped; exhaustive identity-provider, expiry, role, and resource-policy combinations remain.",
       "paths": [
         "ui/src/pages/Auth.tsx",
         "ui/src/pages/BoardClaim.tsx",
@@ -188,9 +214,15 @@
     {
       "id": "company-and-instance",
       "title": "Company and instance administration",
-      "status": "unmapped",
-      "features": [],
-      "gap": "Company creation/import/export, settings, experimental gates, profile, and environment administration need recipes.",
+      "status": "partial",
+      "features": [
+        "companies.md",
+        "onboarding.md",
+        "instance-operations.md",
+        "execution-environments.md",
+        "navigation-preferences.md"
+      ],
+      "gap": "Core administration/import/export/operator workflows are mapped; cloud/self-hosted differences, migration/restore compatibility, and platform-specific service variants need deeper recipes.",
       "paths": [
         "ui/src/pages/Companies.tsx",
         "ui/src/pages/CompanyEnvironments.tsx",
@@ -205,9 +237,15 @@
     {
       "id": "goals-costs-and-activity",
       "title": "Goals, dashboards, costs, and activity",
-      "status": "unmapped",
-      "features": [],
-      "gap": "Goal lifecycle, rollups, budget enforcement/settings, dashboards, timeline, and audit navigation need recipes.",
+      "status": "partial",
+      "features": [
+        "goals.md",
+        "budgets-costs.md",
+        "activity.md",
+        "runs-adapters.md",
+        "routines.md"
+      ],
+      "gap": "Core goal/report/budget/audit journeys are mapped. Every aggregation/filter combination, cost source, and overlapping budget window still needs dedicated cases.",
       "paths": [
         "ui/src/pages/Costs.production.tsx",
         "ui/src/pages/Costs.tsx",
@@ -228,9 +266,11 @@
     {
       "id": "artifacts",
       "title": "Artifacts and work products",
-      "status": "unmapped",
-      "features": [],
-      "gap": "Upload, preview, versioned document review, download, and output handoff need recipes.",
+      "status": "partial",
+      "features": [
+        "documents-artifacts.md"
+      ],
+      "gap": "Document/attachment/library/work-product journeys are mapped; every media preview type, storage backend, annotation conflict, and runtime-resource lifecycle variant remains separate.",
       "paths": [
         "ui/src/pages/Artifacts.tsx"
       ]
@@ -238,9 +278,14 @@
     {
       "id": "routines-and-pipelines",
       "title": "Routines, pipelines, cases, and status cards",
-      "status": "unmapped",
-      "features": [],
-      "gap": "Schedules, webhooks, execution history, pipeline review, cases, and status-card refresh need recipes; experimental availability is separate.",
+      "status": "partial",
+      "features": [
+        "routines.md",
+        "pipelines.md",
+        "cases.md",
+        "status-cards.md"
+      ],
+      "gap": "All four capabilities have recipes. Trigger/provider/timezone combinations, custom case schemas, stage automation types, and summarizer quality need deeper cases.",
       "paths": [
         "ui/src/pages/CaseDetail.tsx",
         "ui/src/pages/Cases.tsx",
@@ -262,9 +307,13 @@
     {
       "id": "secrets",
       "title": "Secrets and secret proposals",
-      "status": "unmapped",
-      "features": [],
-      "gap": "Company and user secret lifecycle, grants, proposals, vault import, and missing-secret recovery need recipes.",
+      "status": "partial",
+      "features": [
+        "secrets.md",
+        "access.md",
+        "app-permissions.md"
+      ],
+      "gap": "Company/user/proposal/vault and runtime-binding paths are mapped; every secret provider, rotation scenario, and delivery context needs separate validation.",
       "paths": [
         "ui/src/pages/Secrets.tsx",
         "ui/src/pages/secrets/ImportFromVaultDialog.tsx",
@@ -281,9 +330,14 @@
     {
       "id": "plugins-and-tools",
       "title": "Plugins, gateways, and tool profiles",
-      "status": "unmapped",
-      "features": [],
-      "gap": "Plugin installation/configuration, gateways, token lifecycle, profiles, and tool administration need recipes.",
+      "status": "partial",
+      "features": [
+        "plugins.md",
+        "gateways-profiles.md",
+        "app-permissions.md",
+        "execution-environments.md"
+      ],
+      "gap": "Host plugin/gateway/profile lifecycles are mapped. Third-party plugin behaviors and every client transport/provider combination are outside host-wide coverage.",
       "paths": [
         "ui/src/pages/CompanySettingsPluginPage.tsx",
         "ui/src/pages/PluginManager.tsx",
@@ -323,9 +377,12 @@
     {
       "id": "labs-and-fallbacks",
       "title": "Developer labs and fallback pages",
-      "status": "unmapped",
-      "features": [],
-      "gap": "Design/lab/performance surfaces and not-found states are tracked for inventory completeness; they are not production journey proof.",
+      "status": "partial",
+      "features": [
+        "developer-labs.md",
+        "navigation-preferences.md"
+      ],
+      "gap": "Developer and fallback surfaces are identified. Each synthetic fixture and performance budget is not a production journey and needs its own measurement.",
       "paths": [
         "ui/src/pages/BootstrapSetupUxLab.tsx",
         "ui/src/pages/CrossIssueCollaborationUxLab.tsx",

@@ -7,18 +7,90 @@ Product behavior is still governed by [the implementation spec](../doc/SPEC-impl
 
 ## Features
 
-| Feature | Use it to verify |
-| --- | --- |
-| [Questions and approvals](./questions-and-approvals.md) | Answering questions, reviewing plans, board approvals, and app-tool reviews across task, chat, and decision surfaces. |
-| [Steering and queued messages](./steering.md) | Follow-ups during execution, queue edits, steering, interruption, and pause/resume. |
-| [Connection setup](./connection-setup.md) | Catalog, link, task-request, and chat-channel setup; account access; interrupted setup and reconnection. |
-| [Recovery](./recovery.md) | Understanding why work stopped, restoring a valid path, and recognizing when retry is unsafe or unavailable. |
+The map is organized by user capability, not by source file. It covers **35 feature
+families** across the product, CLI, and operator workflows, checked against source
+on 2026-10-05. Experimental and developer-only surfaces are labeled explicitly.
+Each recipe includes sub-features, current entry points, automated evidence,
+manual verification steps, and gotchas.
 
-These four recipes are the **seed scope**, checked against source on 2026-10-05.
-They are verification instructions, not a claim that every journey passed a live
-test. A referenced component test proves that component; a scripted provider
-proves the integration with that fixture. Neither proves a real provider login
-or a model's behavior. Record executed results separately from this map.
+### Getting started and access
+
+| Feature | What it covers |
+| --- | --- |
+| [Onboarding and first work](./onboarding.md) | Instance setup, company wizard, first agent and task. |
+| [Login, invitations, and access](./access.md) | Sessions, bootstrap, membership, roles, and CLI authorization. |
+| [Companies and portability](./companies.md) | Company switching/settings, archival, package import/export. |
+
+### Tasks and conversations
+
+| Feature | What it covers |
+| --- | --- |
+| [Task creation and lifecycle](./tasks.md) | Creation, assignment, lists, properties, comments, and completion. |
+| [Delegation, dependencies, and signoff](./task-coordination.md) | Child work, prerequisites, reviewers, and task-tree controls. |
+| [Inbox, decisions, and search](./inbox-search.md) | Personal triage, decision queues, unread/blocked views, and search. |
+| [Agent conversations and project handoff](./agent-chat.md) | Persistent conversations, discovery, handoff, and gated board chat. |
+| [Questions and approvals](./questions-and-approvals.md) | Question/plan responses, formal approvals, and app-tool review. |
+| [Steering and queued messages](./steering.md) | Follow-ups, queue edits, interruption, and pause/resume. |
+| [Documents, attachments, and work products](./documents-artifacts.md) | Versioned documents, annotations, files, outputs, and artifact library. |
+
+### Agents and reusable capabilities
+
+| Feature | What it covers |
+| --- | --- |
+| [Hiring, configuration, and organization](./agents.md) | Agent identity, instructions, reporting lines, lifecycle, and built-ins. |
+| [Runs, harnesses, and model accounts](./runs-adapters.md) | Adapter/model setup, account validation, transcripts, and run history. |
+| [Skills and Skill Studio](./skills.md) | Discovery, sources, authoring, revisions, tests, and agent policies. |
+| [Team packages and installation](./teams.md) | Catalog preview/install via CLI/API; catalog UI availability called out. |
+
+### Projects and execution
+
+| Feature | What it covers |
+| --- | --- |
+| [Projects and repositories](./projects.md) | Project lifecycle, task context, repository configuration, and defaults. |
+| [Goals and work alignment](./goals.md) | Goal hierarchy, ownership, status, and project/task context. |
+| [Workspaces, services, and files](./workspaces.md) | Provisioning, task bindings, services/logs, Git/files, and closure. |
+| [Execution environments](./execution-environments.md) | Local, SSH, sandbox providers, target probes, and custom images. |
+| [Recovery](./recovery.md) | Stopped work, workspace repair, bounded continuation, and reconnect. |
+
+### Apps, channels, and extensions
+
+| Feature | What it covers |
+| --- | --- |
+| [Connection setup](./connection-setup.md) | Catalog, MCP links, task requests, authentication, and setup resumption. |
+| [App access and action permissions](./app-permissions.md) | Agent grants, off/ask/allowed actions, discovery, tests, and revocation. |
+| [External chat and email](./chat-channels.md) | Provider-specific identity, threads, files, delivery, and endpoint upkeep. |
+| [Tool gateways and access profiles](./gateways-profiles.md) | Tool exposure, client configuration, tokens, profiles, and activity. |
+| [Secrets and proposals](./secrets.md) | Company/user credentials, grants, proposals, and vault import. |
+| [Plugins](./plugins.md) | Installation/configuration, contributed pages/tools, and lifecycle. |
+
+### Automation and structured work
+
+| Feature | What it covers |
+| --- | --- |
+| [Routines, schedules, and triggers](./routines.md) | Definitions, variables, scheduled/webhook/manual runs, and history. |
+| [Pipelines, review queues, and learnings](./pipelines.md) | Experimental stages, automation, items, review, and learning records. |
+| [Cases](./cases.md) | Experimental structured fields, relationships, revisions, and task links. |
+| [Status cards](./status-cards.md) | Experimental summaries, watched work, refresh history, and settings. |
+
+### Oversight and operation
+
+| Feature | What it covers |
+| --- | --- |
+| [Costs and budgets](./budgets-costs.md) | Spend reports, scoped limits, incidents, hard stops, and resumption. |
+| [Dashboards and audit trails](./activity.md) | Company health, live work, activity, runs, routines, and timeline. |
+| [Navigation, profile, and announcements](./navigation-preferences.md) | Sidebar state, favorites/recents, personal identity, and dismissals. |
+| [Instance operations](./instance-operations.md) | Installation, updates, service health, configuration, and backups. |
+| [CLI/API and local worktrees](./cli-operations.md) | Explicit context, resource commands, outputs, runs, and isolated instances. |
+
+### Contributor surfaces
+
+| Feature | What it covers |
+| --- | --- |
+| [Developer previews and diagnostic labs](./developer-labs.md) | Design examples, interaction fixtures, performance checks; not production acceptance. |
+
+These are verification instructions, not a claim that every journey passed a live
+test. A component test proves its component; a scripted provider proves that
+fixture integration. Record executed results separately from the map.
 
 ## Before driving a journey
 
@@ -61,25 +133,26 @@ Keep product regressions visible; do not change the recipe to bless a failure.
 For Paperclip-assigned work, attach evidence through the
 [artifact workflow](../doc/AGENT-ARTIFACTS.md).
 
-## Not yet mapped
+## Inventory and remaining depth
 
 [The UI coverage inventory](./coverage.json) accounts for every non-test TSX
 module under `ui/src/pages`, including supporting panels, legacy variants, and
-labs. Entries are grouped by product area, with exact paths, linked recipes,
-and a remaining gap. **Partial** means only the linked journeys are mapped.
-**Unmapped** means there is no recipe yet. Neither is a runtime health verdict.
+labs. Every product area now links to concrete recipes. **Partial** means the
+area still has the named variant or workflow gaps; **unmapped** is reserved for
+an area with no recipe. These statuses describe documentation, not runtime health.
 
-The main backlog is onboarding and login; company, agent, project, and goal
-management; task creation/search/list views; documents and artifacts; skills
-and teams; budgets and activity; routines and pipelines; workspace management;
-secrets, plugins, gateways, profiles, and instance administration. Chat setup
-is seeded, but provider-by-provider messaging and attachment behavior is not.
+The page inventory is a drift alarm, not the feature taxonomy. The map also
+includes entry points hosted inside other modules (pipeline Review Queue and
+Learnings, task documents, onboarding), CLI-only operations, and operator work.
+The team recipe explicitly distinguishes the current CLI/API path from catalog
+UI components without a current top-level route. Refer to [route registration](../ui/src/App.tsx)
+and the [CLI registry](../cli/src/index.ts) when changing reachability.
 
-The page inventory is deliberately conservative: it includes helpers and unused
-legacy modules rather than inferring reachability. It does **not** enumerate
-every route, button, component, CLI command, API endpoint, provider, or harness
-capability. CLI setup/administration and complete harness capability matrices
-remain unmapped. New entry points inside an existing file still require review.
+Remaining depth includes complete provider/auth/attachment matrices, every
+harness/model/environment capability combination, third-party plugin features,
+and every role/error/mobile/legacy-shell permutation. The recipes name relevant
+gaps instead of equating source presence with a working user journey. Add new
+capabilities to this index even when they do not add a page file.
 
 ## Keeping the map current
 
