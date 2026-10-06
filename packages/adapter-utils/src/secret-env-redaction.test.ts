@@ -59,6 +59,42 @@ describe("collectKnownSecretEnvValues", () => {
     expect(out).not.toContain("xai-test-key-abcdefghijklmnop");
     expect(out).not.toContain("bedrock-bearer-token-abcdefgh");
   });
+
+  // The server's credential-bearing managed-connection keys
+  // (server/src/services/ai-connection-runtime.ts: the session-identity
+  // masking list plus AI_AUTH_ENV_KEYS) must stay covered here. Additions on
+  // the server side fail loudly here instead of leaking into run logs.
+  it("covers every managed-connection credential name", () => {
+    for (const name of [
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "OPENAI_API_KEY",
+      "CODEX_API_KEY",
+      "OPENROUTER_API_KEY",
+      "XAI_API_KEY",
+      "GROK_API_KEY",
+      "OPENCODE_AUTH_JSON",
+      "OPENCODE_CONFIG_CONTENT",
+      "PAPERCLIP_AI_PROVIDER_KEY",
+    ]) {
+      expect(KNOWN_SECRET_ENV_VAR_NAMES).toContain(name);
+    }
+    const values = collectKnownSecretEnvValues({
+      PAPERCLIP_AI_PROVIDER_KEY: "managed-gateway-key-abcdefghij",
+      GROK_API_KEY: "grok-test-key-abcdefghijklmnop",
+      OPENCODE_AUTH_JSON: '{"type":"authorized_user","refresh_token":"fixture-refresh-token"}',
+      OPENCODE_CONFIG_CONTENT: '{"model":"example","apiKey":"fixture-config-key"}',
+    });
+    expect(values).toContain("managed-gateway-key-abcdefghij");
+    expect(values).toContain("grok-test-key-abcdefghijklmnop");
+    const out = redactKnownSecretEnvValues(
+      "PAPERCLIP_AI_PROVIDER_KEY=managed-gateway-key-abcdefghij\nGROK_API_KEY=grok-test-key-abcdefghijklmnop",
+      values,
+    );
+    expect(out).not.toContain("managed-gateway-key-abcdefghij");
+    expect(out).not.toContain("grok-test-key-abcdefghijklmnop");
+  });
 });
 
 describe("redactKnownSecretEnvValues", () => {
