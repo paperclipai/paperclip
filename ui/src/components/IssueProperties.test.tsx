@@ -528,6 +528,29 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("shows saved PRs while the first provider refresh is stalled", async () => {
+    const saved = {
+      id: "pr-1", type: "pull_request", title: "Update runtime probe",
+      url: "https://github.com/example/private-repo/pull/42", metadata: {},
+      status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    };
+    let finishRefresh!: (products: unknown[]) => void;
+    const refresh = new Promise<unknown[]>((resolve) => { finishRefresh = resolve; });
+    mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => options?.refreshPullRequests ? refresh : [saved]);
+    const root = renderProperties(container, { issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith("issue-1", { refreshPullRequests: true });
+      expect(container.querySelector(`a[href="${saved.url}"]`)).not.toBeNull();
+      expect(container.textContent).toContain("Review requested");
+    });
+    finishRefresh([{ ...saved, metadata: { state: "merged" } }]);
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("merged");
+      expect(container.textContent).not.toContain("Review requested");
+    });
+    act(() => root.unmount());
+  });
+
   it.each([
     { statusLabel: "Open", statusCategory: "open", liveness: "stale", statusIconKey: "git-pull-request", review: true },
     { statusLabel: "Merged", statusCategory: "succeeded", liveness: "fresh", statusIconKey: "git-merge", review: false },

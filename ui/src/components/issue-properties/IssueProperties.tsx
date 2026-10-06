@@ -1,4 +1,5 @@
 import { IssuePullRequestLinks } from "../IssuePullRequestLinks";
+import { useIssueWorkProducts } from "../../hooks/useIssueWorkProducts";
 import { getIssuePullRequests, pullRequestHref, pullRequestIdentity } from "../../lib/issue-pull-requests";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { AgentIdentity } from "@/components/AgentIdentity";
@@ -297,14 +298,7 @@ export function IssueProperties({
     queryFn: () => issuesApi.listAttachments(issue.id),
     enabled: taskChatShellEnabled,
   });
-  const { data: paneTabWorkProducts, isError: workProductsError, refetch: refetchWorkProducts } = useQuery({
-    queryKey: queryKeys.issues.workProducts(issue.id),
-    queryFn: () => issuesApi.listWorkProducts(issue.id, {
-      // The thread may cache by identifier while this panel uses the UUID.
-      // Refresh on first open as well as subsequent panel visits.
-      refreshPullRequests: true,
-    }),
-  });
+  const { data: paneTabWorkProducts, isError: workProductsError, refetch: refetchWorkProducts } = useIssueWorkProducts(issue.id);
   const pullRequests = useMemo(() => getIssuePullRequests(paneTabWorkProducts), [paneTabWorkProducts]);
   const remainingExternalObjects = useMemo(() => {
     const identities = new Set(pullRequests.map((product) => pullRequestIdentity(pullRequestHref(product))).filter(Boolean));
