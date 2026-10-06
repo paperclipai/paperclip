@@ -52,6 +52,33 @@ for (const runtimePath of runtimePaths) {
       }
     });
 
+    it("captures a queued record before a caller changes the shared object", async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-save-snapshot-"));
+      const runtime = await import(pathToFileURL(runtimePath).href);
+      const store = runtime.createFileSessionStore({ stateDir: root });
+      const rename = nativeFs.rename.bind(nativeFs);
+      let release!: () => void;
+      let reached!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const firstRename = new Promise<void>((resolve) => { reached = resolve; });
+      const renameSpy = vi.spyOn(nativeFs, "rename").mockImplementationOnce(async (from, to) => {
+        reached(); await gate; await rename(from, to);
+      }).mockImplementation(rename);
+      try {
+        const first = store.save(record(root, 1));
+        await firstRename;
+        const shared = record(root, 2);
+        const second = store.save(shared);
+        shared.lastSeq = 99;
+        release();
+        await Promise.all([first, second]);
+        expect((await store.load("shared-record"))?.lastSeq).toBe(2);
+      } finally {
+        release(); renameSpy.mockRestore();
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
     it("continues the queue after a failed write and removes its temporary file", async () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "acpx-save-recovery-"));
       const runtime = await import(pathToFileURL(runtimePath).href);
