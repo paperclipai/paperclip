@@ -18,6 +18,7 @@ import {
 } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { inspect } from "node:util";
 import { join } from "node:path";
 import {
   heartbeatRuns,
@@ -39,7 +40,7 @@ import {
   type NativeExecutionInput,
   type PrpEvent,
 } from "@paperclipai/paperclip-runner";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
 import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
@@ -7609,6 +7610,34 @@ describe("native session bounded recovery", () => {
       phase: "retryable_failure",
       nextAttemptAt: expect.any(Date),
     });
+  });
+
+  it.each(["full", "truncated"])("redacts %s identity from native failure writes, logs, and rethrown errors", async (mode) => {
+    const privateKeyPem = generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const keyBody = privateKeyPem.split("\n")[1];
+    const failure = new Error(`native provider failed: ${mode === "full" ? privateKeyPem : privateKeyPem.slice(0, 64)}`);
+    void failure.stack; // Also cover stacks materialized before the catch boundary.
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const logs: string[] = [];
+    state.execute.mockReset().mockRejectedValueOnce(failure);
+    state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+    const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
+      update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
+    } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    try {
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, {}, updates), execution, runnerInstanceId: "runner",
+        runnerEnvironment: { PAPERCLIP_AGENT_PRIVATE_KEY: privateKeyPem },
+        onLog: async (_stream, text) => { logs.push(text); },
+      })).rejects.toBe(failure);
+      expect(updates.some(entry => entry.table === nativeRunFinalizations && entry.values.failureDetail)).toBe(true);
+      for (const output of [inspect(updates.map(entry => entry.values), { depth: null }), logs.join(""), failure.message, failure.stack!]) {
+        expect(output).not.toContain(keyBody.slice(0, 24));
+        expect(output).toContain("***REDACTED***");
+      }
+    } finally {
+      service.mockRestore();
+    }
   });
 
   it("persists actionable operator recovery without an automatic cleanup wake", async () => {

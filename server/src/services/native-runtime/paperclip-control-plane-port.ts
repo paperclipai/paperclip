@@ -204,7 +204,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (event.sourceInstanceId !== expectedSourceInstanceId) {
       throw new Error("native_event_source_binding_mismatch");
     }
-    if (event.eventType === "item.delta" && this.#identityRedactor.values.length > 0) {
+    const terminalItem = /^item\.(completed|failed|cancelled)$/.test(event.eventType);
+    const terminalTurn = /^(turn|session)\.(completed|failed|cancelled|interrupted|closed)$/.test(event.eventType);
+    if ((event.eventType === "item.delta" || terminalItem || terminalTurn) && this.#identityRedactor.values.length > 0) {
       const key = `${event.sourceInstanceId}:${event.sourceEventId}`;
       const cached = this.#redactedDeltas.get(key);
       const originalSha = nativeSha256(validated.event);
@@ -212,10 +214,14 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         if (cached.originalSha !== originalSha) throw new Error("native_event_source_payload_conflict");
         event = cached.event;
       } else {
-        event = { ...event, payload: this.#identityRedactor.delta(
-          `${event.sourceInstanceId}:${event.turnId}:${event.itemId}`,
-          validated.event.payload,
-        ) };
+        const stream = `${event.sourceInstanceId}:${event.turnId}:${event.itemId}`;
+        event = { ...event, payload: event.eventType === "item.delta"
+          ? this.#identityRedactor.delta(stream, validated.event.payload, event.itemId)
+          : this.#identityRedactor.settleDeltas(
+            terminalTurn ? (event.eventType.startsWith("session.") ? `${event.sourceInstanceId}:` : `${event.sourceInstanceId}:${event.turnId}:`) : stream,
+            event.payload, terminalTurn,
+          ),
+        };
         // Retries must use the same redacted payload without consuming a delta twice.
         const bytes = Buffer.byteLength(JSON.stringify(event));
         this.#redactedDeltas.set(key, { event, originalSha, bytes });

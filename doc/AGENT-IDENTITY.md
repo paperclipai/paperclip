@@ -94,3 +94,5 @@ Ordinary disaster-recovery backups include encrypted identities. Recovery needs
 both the database and the matching wrapping key; back up the key separately.
 Do not use a disaster-recovery backup as a development clone when agents should
 have distinct identities.
+
+Native failure records and reports redact the assigned key before truncating diagnostics. Streaming output buffers settle at item or turn completion: short structural prefixes (such as a trailing dash) are preserved, longer interrupted key fragments become redaction markers, and pending buffers are cleared. Terminal events carry these settled `outputTails`; transcript projection displays them as deltas without changing the source event receipt.

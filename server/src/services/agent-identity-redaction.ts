@@ -10,6 +10,9 @@ export function createAgentIdentityRedactor(privateKeyPem?: string) {
     ...privateKeyPem.split(/\r?\n/).filter(line => line && !line.startsWith("-----")),
   ])].sort((a, b) => b.length - a.length) : [];
   const pending = new Map<string, string>();
+  const deltaStreams = new Map<string, {
+    scope: string; itemId?: string; payload: Record<string, unknown>; paths: string[];
+  }>();
   const redactor = {
     values,
     redact<T>(value: T): T { return redactRegisteredSecretValues(value, values); },
@@ -32,18 +35,24 @@ export function createAgentIdentityRedactor(privateKeyPem?: string) {
     finish(stream: string): string {
       const held = pending.get(stream);
       pending.delete(stream);
-      return held ? REDACTED_EVENT_VALUE : "";
+      // Ed25519 PEM/PKCS#8 values begin with fixed structural bytes. Preserve
+      // ordinary endings such as a dash; longer interrupted fragments stay hidden.
+      return held ? (held.length < 8 ? held : REDACTED_EVENT_VALUE) : "";
     },
     /** Delta payloads can repeat output under text and provider-specific fields. */
-    delta<T>(stream: string, value: T): T {
+    delta<T>(stream: string, value: T, itemId?: string): T {
+      const scope = stream;
+      const paths: string[] = [];
       const payload = value as Record<string, unknown>;
       // Durable transports can share one envelope item ID across provider items.
       stream = JSON.stringify([stream, payload.itemId, payload.providerItemId, payload.channel, payload.stream]);
       const visit = (entry: unknown, path: string, field: string): unknown => {
         if (typeof entry === "string") {
-          return /^(text|delta|output|patch)$/.test(field)
-            ? redactor.chunk(`${stream}:${path}`, entry)
-            : redactor.redact(entry);
+          if (!/^(text|delta|output|patch)$/.test(field)) return redactor.redact(entry);
+          const key = `${stream}:${path}`;
+          const output = redactor.chunk(key, entry);
+          if (pending.has(key)) paths.push(key);
+          return output;
         }
         if (Array.isArray(entry)) return entry.map((child, index) => visit(child, `${path}.${index}`, field));
         if (entry && typeof entry === "object") return Object.fromEntries(
@@ -51,7 +60,35 @@ export function createAgentIdentityRedactor(privateKeyPem?: string) {
         );
         return entry;
       };
-      return visit(value, "", "") as T;
+      const result = visit(value, "", "") as T;
+      for (const previous of deltaStreams.get(stream)?.paths ?? []) {
+        if (pending.has(previous) && !paths.includes(previous)) paths.push(previous);
+      }
+      if (paths.length) deltaStreams.set(stream, { scope, itemId, paths,
+        payload: Object.fromEntries(["itemId", "providerItemId", "kind", "channel", "stream"]
+          .filter(key => typeof payload[key] === "string").map(key => [key, redactor.redact(payload[key])])),
+      });
+      else deltaStreams.delete(stream);
+      return result;
+    },
+    /** Settle output in the terminal event, preserving its source receipt identity. */
+    settleDeltas(scope: string, payload: Record<string, unknown>, wholeTurn: boolean) {
+      const tails: Array<{ itemId?: string; payload: Record<string, unknown> }> = [];
+      for (const [stream, descriptor] of deltaStreams) {
+        if (wholeTurn ? !descriptor.scope.startsWith(scope) : descriptor.scope !== scope) continue;
+        if (!wholeTurn && payload.itemId && descriptor.payload.itemId && payload.itemId !== descriptor.payload.itemId) continue;
+        const primary = descriptor.paths.find(path => path === `${stream}:.text`) ?? descriptor.paths[0];
+        let text = "";
+        for (const path of descriptor.paths) {
+          const tail = redactor.finish(path);
+          if (path === primary) text = tail;
+        }
+        deltaStreams.delete(stream);
+        if (text) tails.push({ itemId: descriptor.itemId, payload: { ...descriptor.payload, text } });
+      }
+      return tails.length ? { ...payload, outputTails: [
+        ...(Array.isArray(payload.outputTails) ? payload.outputTails : []), ...tails,
+      ] } : payload;
     },
   };
   return redactor;

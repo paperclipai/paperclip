@@ -534,7 +534,29 @@ impl DurableState {
         // Pending secret fragments are memory-only and never enter durable state.
         let mut identity_output = self.identity_output.clone();
         let payload = if event_type == "item.delta" {
-            identity_output.redact(&format!("{}:{}", self.turn_id, self.item_id), &payload)
+            identity_output.redact(
+                &format!("{}:{}", self.turn_id, self.item_id),
+                &payload,
+                &self.item_id,
+            )
+        } else if matches!(
+            event_type.as_str(),
+            "item.completed" | "item.failed" | "item.cancelled"
+        ) {
+            identity_output.settle(
+                &format!("{}:{}", self.turn_id, self.item_id),
+                &payload,
+                false,
+            )
+        } else if matches!(
+            event_type.as_str(),
+            "turn.completed"
+                | "turn.failed"
+                | "turn.cancelled"
+                | "turn.interrupted"
+                | "session.closed"
+        ) {
+            identity_output.settle(&format!("{}:", self.turn_id), &payload, true)
         } else {
             payload
         };
@@ -1640,7 +1662,18 @@ fn durable_semantics_changed_by_sanitization(original: &Value, sanitized: &Value
 }
 
 #[derive(Clone, Default, PartialEq)]
-struct IdentityOutputBuffer(BTreeMap<String, String>);
+struct IdentityOutputBuffer {
+    pending: BTreeMap<String, String>,
+    streams: BTreeMap<String, IdentityOutputStream>,
+}
+
+#[derive(Clone, PartialEq)]
+struct IdentityOutputStream {
+    scope: String,
+    item_id: Option<Value>,
+    payload: Value,
+    paths: Vec<String>,
+}
 
 impl std::fmt::Debug for IdentityOutputBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1649,25 +1682,34 @@ impl std::fmt::Debug for IdentityOutputBuffer {
 }
 
 impl IdentityOutputBuffer {
-    fn redact(&mut self, stream: &str, payload: &Value) -> Value {
+    fn redact(&mut self, stream: &str, payload: &Value, item_id: &str) -> Value {
         let Ok(key) = std::env::var("PAPERCLIP_AGENT_PRIVATE_KEY") else {
             return payload.clone();
         };
         if key.is_empty() {
             return payload.clone();
         }
-        self.redact_with_key(stream, payload, &key)
+        let result = self.redact_with_key(stream, payload, &key);
+        if let Some(descriptor) = self.streams.get_mut(&Self::stream_key(stream, payload)) {
+            descriptor.item_id = Some(json!(item_id));
+        }
+        result
     }
 
-    fn redact_with_key(&mut self, stream: &str, payload: &Value, key: &str) -> Value {
-        let stream = json!([
+    fn stream_key(stream: &str, payload: &Value) -> String {
+        json!([
             stream,
             payload.get("itemId"),
             payload.get("providerItemId"),
             payload.get("channel"),
             payload.get("stream")
         ])
-        .to_string();
+        .to_string()
+    }
+
+    fn redact_with_key(&mut self, stream: &str, payload: &Value, key: &str) -> Value {
+        let scope = stream.to_owned();
+        let stream = Self::stream_key(stream, payload);
         let mut values = vec![key.to_owned(), key.trim().to_owned()];
         values.extend(
             key.lines()
@@ -1675,7 +1717,93 @@ impl IdentityOutputBuffer {
                 .map(str::to_owned),
         );
         values.sort_by_key(|value| std::cmp::Reverse(value.len()));
-        self.visit(&stream, "", payload, &values)
+        let result = self.visit(&stream, "", payload, &values);
+        let prefix = format!("{stream}.");
+        let paths: Vec<String> = self
+            .pending
+            .keys()
+            .filter(|path| path.starts_with(&prefix))
+            .cloned()
+            .collect();
+        if paths.is_empty() {
+            self.streams.remove(&stream);
+        } else {
+            let metadata = ["itemId", "providerItemId", "kind", "channel", "stream"]
+                .iter()
+                .filter_map(|key| {
+                    payload
+                        .get(*key)
+                        .filter(|value| value.is_string())
+                        .map(|value| ((*key).to_owned(), sanitize_value(value)))
+                })
+                .collect();
+            self.streams.insert(
+                stream,
+                IdentityOutputStream {
+                    scope,
+                    item_id: None,
+                    payload: Value::Object(metadata),
+                    paths,
+                },
+            );
+        }
+        result
+    }
+
+    fn settle(&mut self, scope: &str, payload: &Value, whole_turn: bool) -> Value {
+        let streams: Vec<String> = self
+            .streams
+            .iter()
+            .filter(|(_, descriptor)| {
+                (if whole_turn {
+                    descriptor.scope.starts_with(scope)
+                } else {
+                    descriptor.scope == scope
+                }) && (whole_turn
+                    || payload.get("itemId").is_none()
+                    || descriptor.payload.get("itemId").is_none()
+                    || payload.get("itemId") == descriptor.payload.get("itemId"))
+            })
+            .map(|(stream, _)| stream.clone())
+            .collect();
+        let mut tails = Vec::new();
+        for stream in streams {
+            let descriptor = self.streams.remove(&stream).unwrap();
+            let primary = descriptor
+                .paths
+                .iter()
+                .find(|path| **path == format!("{stream}.text"))
+                .or_else(|| descriptor.paths.first())
+                .cloned();
+            let mut text = String::new();
+            for path in descriptor.paths {
+                if let Some(held) = self.pending.remove(&path) {
+                    if Some(&path) == primary.as_ref() {
+                        text = if held.len() < 8 {
+                            held
+                        } else {
+                            "[REDACTED]".to_owned()
+                        };
+                    }
+                }
+            }
+            if !text.is_empty() {
+                let mut tail_payload = descriptor.payload;
+                tail_payload["text"] = json!(text);
+                tails.push(json!({"itemId": descriptor.item_id, "payload": tail_payload}));
+            }
+        }
+        let mut result = payload.clone();
+        if !tails.is_empty() {
+            let mut existing = result
+                .get("outputTails")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            existing.extend(tails);
+            result["outputTails"] = json!(existing);
+        }
+        result
     }
 
     fn visit(&mut self, path: &str, field: &str, value: &Value, secrets: &[String]) -> Value {
@@ -1701,7 +1829,7 @@ impl IdentityOutputBuffer {
                     .collect(),
             ),
             Value::String(chunk) if matches!(field, "text" | "delta" | "output" | "patch") => {
-                let mut text = self.0.remove(path).unwrap_or_default();
+                let mut text = self.pending.remove(path).unwrap_or_default();
                 text.push_str(chunk);
                 for secret in secrets {
                     text = text.replace(secret, "[REDACTED]");
@@ -1717,7 +1845,7 @@ impl IdentityOutputBuffer {
                 }
                 if held > 0 {
                     let tail = text.split_off(text.len() - held);
-                    self.0.insert(path.to_owned(), tail);
+                    self.pending.insert(path.to_owned(), tail);
                 }
                 Value::String(text)
             }
@@ -2516,6 +2644,29 @@ mod tests {
             .redact_with_key("item", &json!({"text": &body[..20]}), key);
         assert!(!serde_json::to_string(&state).unwrap().contains(&body[..20]));
         assert!(!format!("{state:?}").contains(&body[..20]));
+    }
+
+    #[test]
+    fn identity_output_settles_item_and_turn_tails_without_retaining_fragments() {
+        let key = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEITestSecretMaterialForAnAgentIdentity\n-----END PRIVATE KEY-----\n";
+        let mut output = IdentityOutputBuffer::default();
+        assert_eq!(
+            output.redact_with_key(
+                "turn:item",
+                &json!({"itemId": "one", "kind": "reasoning", "text": "Thinking-"}),
+                key
+            )["text"],
+            "Thinking"
+        );
+        let settled = output.settle("turn:item", &json!({"itemId": "one"}), false);
+        assert_eq!(settled["outputTails"][0]["payload"]["text"], "-");
+        assert!(output.pending.is_empty());
+        assert!(output.streams.is_empty());
+        output.redact_with_key("turn:other", &json!({"text": &key[..42]}), key);
+        let settled = output.settle("turn:", &json!({"status": "completed"}), true);
+        assert_eq!(settled["outputTails"][0]["payload"]["text"], "[REDACTED]");
+        assert!(output.pending.is_empty());
+        assert!(output.streams.is_empty());
     }
 
     use std::time::Duration;

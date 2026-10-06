@@ -353,6 +353,23 @@ describe("PaperclipControlPlanePort conformance", () => {
         });
       }
     }
+    await port.appendEvent({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq: sourceSeq++,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, turnId: "tail-turn", itemId: "reasoning-item",
+      eventType: "item.delta", schemaVersion: 1, priority: 1, emittedAt: new Date().toISOString(),
+      payload: { kind: "reasoning", text: "Thinking-" },
+    });
+    const terminal: PrpEvent = {
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq: sourceSeq++,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, turnId: "tail-turn",
+      eventType: "turn.completed", schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(),
+      payload: { status: "completed" },
+    };
+    await port.appendEvent(terminal);
+    expect((await port.appendEvent(terminal)).disposition).toBe("duplicate");
+    expect(observed.at(-1)?.payload.outputTails).toEqual([{ itemId: "reasoning-item", payload: { kind: "reasoning", text: "-" } }]);
     const persistedEvents = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
     for (const value of [persistedEvents, observed, run.runnerProfileJson]) {

@@ -207,6 +207,17 @@ describe("identity output redaction", () => {
       expect(redactor.redact({ output: text }).output).not.toContain(pem.split("\n")[1]);
     }
   });
+  it("settles ordinary endings and interrupted keys on item and turn completion", () => {
+    const redactor = createAgentIdentityRedactor(pem);
+    expect(redactor.delta("run:turn:item", { kind: "reasoning", text: "Thinking-" }, "item").text).toBe("Thinking");
+    const completed = redactor.settleDeltas("run:turn:item", {}, false);
+    expect(completed).toMatchObject({ outputTails: [{ itemId: "item", payload: { kind: "reasoning", text: "-" } }] });
+    expect(redactor.settleDeltas("run:turn:", {}, true)).toEqual({});
+    redactor.delta("run:turn:other", { text: pem.slice(0, 42) }, "other");
+    expect(redactor.settleDeltas("run:turn:", {}, true)).toMatchObject({ outputTails: [{ payload: { text: "***REDACTED***" } }] });
+    expect(redactor.delta("run:turn:other", { text: "hello" }).text).toBe("hello");
+  });
+
   it("redacts every split boundary and interleaved streams, including interrupted prefixes", () => {
     for (let split = 1; split < pem.length; split++) {
       const redactor = createAgentIdentityRedactor(pem);

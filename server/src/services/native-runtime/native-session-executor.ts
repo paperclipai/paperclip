@@ -7446,6 +7446,10 @@ export async function executePaperclipNativeSession(input: {
 async function executePaperclipNativeSessionWithinScope(
   input: Parameters<typeof executePaperclipNativeSession>[0],
 ): Promise<AdapterExecutionResult> {
+  const identityRedactor = createAgentIdentityRedactor(input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY);
+  const redactIdentityText = (text: string) => redactSensitiveText(
+    identityRedactor.chunk("diagnostic", text) + identityRedactor.finish("diagnostic"),
+  );
   if (
     input.execution.provider.kind !== "codex" &&
     input.execution.provider.kind !== "opencode" &&
@@ -8424,7 +8428,7 @@ async function executePaperclipNativeSessionWithinScope(
             requireSessionCloseBeforeReturn: runnerdBackend !== null || input.instructionWorkingCopy !== undefined,
             onSessionClosed: input.instructionWorkingCopy?.collectStopped,
             onCheckpoint: async (snapshot) => {
-              snapshot = createAgentIdentityRedactor(input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY).redact(snapshot);
+              snapshot = identityRedactor.redact(snapshot);
               if (warmSessionId !== null && warmConfigDigest !== null) {
                 await persistWarmNativeCheckpoint(
                   input.execution,
@@ -8441,7 +8445,7 @@ async function executePaperclipNativeSessionWithinScope(
               }
             },
             onPostCompletionEnrichmentFailure: async ({ stage, error }) => {
-              const detail = redactSensitiveText(
+              const detail = redactIdentityText(
                 error instanceof Error ? error.message : String(error),
               ).slice(-4_096);
               await input.onLog?.(
@@ -8452,7 +8456,7 @@ async function executePaperclipNativeSessionWithinScope(
             onSessionQuarantined: async (reason) => {
               await input.onLog?.(
                 "stderr",
-                `[paperclip-runner] warm native session quarantined: ${redactSensitiveText(reason).slice(-1_000)}\n`,
+                `[paperclip-runner] warm native session quarantined: ${redactIdentityText(reason).slice(-1_000)}\n`,
               );
             },
             onContinuityBreak: async (continuity) => {
@@ -8649,6 +8653,16 @@ async function executePaperclipNativeSessionWithinScope(
     clearSteeringDeliveries(input.execution.binding.runId);
     clearNativeRuntimeRequestResolutions(input.execution.binding.runId);
   } catch (error) {
+    // Preserve typed failure semantics while removing credentials before any
+    // persistence, reporting, logging, or rethrow at this boundary.
+    if (error instanceof Error) {
+      const originalMessage = error.message;
+      error.message = redactIdentityText(originalMessage);
+      if (error.stack) error.stack = redactIdentityText(originalMessage
+        ? error.stack.split(originalMessage).join(error.message) : error.stack);
+    } else {
+      error = identityRedactor.redact(error);
+    }
     if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
       await leaseRenewal.stop().catch(() => undefined);
       liveQuestions.close();
@@ -8687,7 +8701,7 @@ async function executePaperclipNativeSessionWithinScope(
         );
 
       const failedAtMs = Date.now();
-      const executionFailureMessage = redactSensitiveText(
+      const executionFailureMessage = redactIdentityText(
         error instanceof Error ? error.message : String(error),
       ).slice(-4_096);
       if (!taskSettleScope) {
@@ -8798,11 +8812,10 @@ async function executePaperclipNativeSessionWithinScope(
       const { exhausted } = recoveryProjection;
       const integrityFailure =
         sourceFailureCode === "native_event_replay_conflict";
-      const message =
-        error instanceof Error
-          ? error.message.slice(0, 2_000)
-          : String(error).slice(0, 2_000);
-      const sanitizedStderrTail = redactSensitiveText(message).slice(-4_096);
+      const message = redactIdentityText(
+        error instanceof Error ? error.message : String(error),
+      ).slice(0, 2_000);
+      const sanitizedStderrTail = redactIdentityText(message).slice(-4_096);
       // Set inside the transaction only when the write below genuinely
       // transitions the run into "failed". Read after the transaction
       // commits, so a rolled-back write never reports a false failure.
@@ -8833,7 +8846,7 @@ async function executePaperclipNativeSessionWithinScope(
             recoveryState:
               phase === "retryable_failure" ? "resuming_session" : "blocked",
             failureCode,
-            failureDetail: {
+            failureDetail: identityRedactor.redact({
               message,
               originalFailureCode:
                 error instanceof NativeProviderTerminalFailure
@@ -8870,7 +8883,7 @@ async function executePaperclipNativeSessionWithinScope(
                                   "bootstrap_retry"
                                 ? "Retry provider bootstrap on this same run; durable evidence proves no provider session or provider event was created."
                                 : "Resume this same run from its exact persisted native provider checkpoint after the retry delay.",
-            },
+            }),
             nextAttemptAt,
             recoveryHistory: sql`(
               select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)

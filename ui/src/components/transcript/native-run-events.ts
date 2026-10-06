@@ -612,6 +612,24 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       if (seenSourceEventIds.has(sourceEventId)) return false;
       seenSourceEventIds.add(sourceEventId);
       return true;
+    }).flatMap((event) => {
+      const envelope = record(event.payload?.prpEvent);
+      const payload = record(envelope?.payload);
+      if (!envelope || envelope.eventType !== event.eventType
+        || !/^(item|turn|session)\.(completed|failed|cancelled|interrupted|closed)$/.test(event.eventType)
+        || !Array.isArray(payload?.outputTails)) return [event];
+      // Redaction can hold a possible key prefix until the item/turn ends.
+      // Project its settled tail as display-only deltas before the terminal.
+      const tails = payload.outputTails.flatMap((value, index): HeartbeatRunEvent[] => {
+        const tail = record(value);
+        const tailPayload = record(tail?.payload);
+        if (!tailPayload || typeof tailPayload.text !== "string") return [];
+        return [{ ...event, eventType: "item.delta", payload: { prpEvent: {
+          ...envelope, eventType: "item.delta", itemId: tail?.itemId,
+          sourceEventId: `${envelope.sourceEventId}:output-tail:${index}`, payload: tailPayload,
+        } } }];
+      });
+      return [...tails, event];
     });
   const hasAcceptedResult = orderedEvents.some(
     (event) => event.eventType === "run.result.accepted",
