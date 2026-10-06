@@ -1,0 +1,15 @@
+# Dark non-hire approval acceptance checkpoint
+
+This is SOURCE/MOCK-only participant migration, not approval authority, common serialization, production restoration wiring or acceptance of the blocked-run objective.
+
+Canonical `approvalService.approve` now accepts dark `lifecycleFence` opt-in with an explicit company. Owned transaction startup precedes domain reads. It delegates to `approveApprovalInTransaction`, which captures routing/user/note scalars synchronously, awaits the company lifecycle fence and reuses actual canonical resolution on the supplied transaction. Initial/latest reads and pending/revision_requested UPDATE are company-scoped. Duplicate approved results retain `applied: false`; synthetic empty updates reconcile via the scoped latest read. Missing company fails before startup/effects.
+
+Dark hire_agent approvals are deliberately refused before writes, including duplicate approved rows, because activation/create/budget/notification effects do not yet participate. The shared existing resolution guard's error text still says rejection; its restriction applies to both dark decisions. Ordinary omitted/false approval defaults, ID-only resolution and hire branches are unchanged. The production route still calls approve with three arguments, without opt-in.
+
+Recording verification uses the actual service and PgDialect SQL builder, mocks unrelated agent/budget/settings services, and never starts a DB/server/listener/adapter. New acceptance fixture: 37 cases, owned/supplied results, missing/foreign/terminal/hire vetoes, fence wait/error, scalar capture, deferred transaction startup, write-error identity and ordinary defaults. Initial focused contract: 1 expected FAIL, missing tx/fence (2.72s). First implementation + existing service: 7 PASS (2.94s). Expanded acceptance/rejection/comments/service: 92 PASS (4.55s). Temporary missing-await mutant: 2 FAIL / 35 skipped (2.07s), restored before final verification. Final 25 explicitly enumerated participant suites: 588 PASS (29.13s), exit 0.
+
+Separate original writer-boundary + human-gates characterization: 19 PASS / 1 original known RED (5.42s), exit 1; ordinary blocker writer still lacks durable dependency wake intent. Historical route RED was not replayed: Supertest/listener is outside this no-server scope. Typecheck/build/full gates were not run.
+
+Synthetic predicates/rows prove query shape and propagation, not SQL filtering, authenticated authorization, CAS race, isolation, concurrency, commit or rollback. This participant does not decide any live approval or restore an issue. Pending human_only offline-PostgreSQL scope remains unchanged. No production opt-in, merge, deploy, activation, queue_hygiene/frontier/job/policy/permission mutation. PR conflict requires a separate rebase with new exact-head validation; current mock results cannot be inherited by that rebase.
+
+Remaining: hire effects/interactions and other lifecycle participants, native ledger/statusVersion/effect publication/legacy intents, common restoration wiring, queue admission/revalidation/orphan expiry and separately approved live 15-minute measurement.

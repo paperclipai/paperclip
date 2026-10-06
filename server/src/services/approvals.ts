@@ -187,6 +187,17 @@ export async function rejectApprovalInTransaction(tx: Transaction, input: {
   return persistApprovalResolution(tx, approvalId, "rejected", decidedByUserId, decisionNote, companyId);
 }
 
+// Dark non-hire acceptance participant: decision persistence only. No hire
+// effects, authenticated authority, dependent restoration or production opt-in.
+export async function approveApprovalInTransaction(tx: Transaction, input: {
+  companyId: string; approvalId: string; decidedByUserId: string; decisionNote?: string | null;
+}) {
+  const { companyId, approvalId, decidedByUserId, decisionNote } = input;
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval acceptance requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  return persistApprovalResolution(tx, approvalId, "approved", decidedByUserId, decisionNote, companyId);
+}
+
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
@@ -281,7 +292,16 @@ export function approvalService(db: Db) {
       return persistApprovalCancellation(db, id, reason);
     },
 
-    approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
+    approve: async (id: string, decidedByUserId: string, decisionNote?: string | null,
+      options?: { lifecycleFence?: boolean; companyId?: string },
+    ) => {
+      if (options?.lifecycleFence) {
+        const companyId = options.companyId;
+        if (!companyId) throw unprocessable("Lifecycle-fenced approval acceptance requires companyId");
+        return db.transaction((tx) => approveApprovalInTransaction(tx, {
+          companyId, approvalId: id, decidedByUserId, decisionNote,
+        }));
+      }
       const { approval: updated, applied } = await resolveApproval(
         id,
         "approved",
