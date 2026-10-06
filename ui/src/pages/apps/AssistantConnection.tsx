@@ -26,7 +26,7 @@ function AssistantIcon({ assistant }: { assistant: Assistant }) {
   return <Icon className="size-4" aria-hidden="true" />;
 }
 
-function useConnections(poll = false) {
+export function useAssistantConnections(poll = false) {
   const { selectedCompanyId } = useCompany();
   const query = useQuery({
     queryKey: connectionsKey, queryFn: publicMcpApi.connections, retry: false,
@@ -37,7 +37,7 @@ function useConnections(poll = false) {
 
 /** Inbound assistant access belongs beside the existing outbound connectors. */
 export function AssistantConnectionCard({ onNavigate }: { onNavigate: (href: string) => void }) {
-  const connections = useConnections();
+  const connections = useAssistantConnections();
   const active = connections.rows.filter(row => !row.revokedAt);
   const action = !connections.isSuccess ? "Open" : active.length ? "Manage" : "Set up";
   return <div role="listitem" data-app-slug="assistant-connection" data-connected={connections.isSuccess ? String(active.length > 0) : undefined} className="overflow-hidden rounded-xl border border-border">
@@ -91,7 +91,7 @@ export function AssistantConnection({ initialAssistant = "codex" }: { initialAss
   const client = useQueryClient();
   const [assistant, setAssistant] = useState<Assistant>(initialAssistant);
   const setup = useQuery({ queryKey: ["mcp-setup"], queryFn: publicMcpApi.setup, retry: false, refetchOnWindowFocus: "always", refetchOnMount: "always" });
-  const connections = useConnections(setup.data?.enabled === true);
+  const connections = useAssistantConnections(setup.data?.enabled === true);
   const revoke = useMutation({ mutationFn: publicMcpApi.revoke, onSuccess: () => client.invalidateQueries({ queryKey: connectionsKey }) });
   useEffect(() => {
     setBreadcrumbs([{ label: "Connectors", href: "/apps" }, { label: "Assistant Connection (MCP)" }]);

@@ -9,7 +9,7 @@ import {
   isRetiredComposioConnection,
   RETIRED_COMPOSIO_MESSAGE,
 } from "@paperclipai/shared";
-import { AssistantConnectionCard } from "./AssistantConnection";
+import { AssistantConnectionCard, useAssistantConnections } from "./AssistantConnection";
 import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -330,6 +330,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const { selectedCompanyId } = useCompany();
+  const assistantConnections = useAssistantConnections();
   const { userId: viewingUserId, settled: identitySettled } = useAccountIdentity();
   const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
   const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
@@ -819,7 +820,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     }
     setAggregatorToConnect(app);
   }
-  const showAssistantConnection = (source === "paperclip" || source === "all") &&
+  const showAssistantConnection = (source === "paperclip" || source === "all" ||
+    (source === "installed" && (!assistantConnections.isSuccess || assistantConnections.rows.some(row => !row.revokedAt)))) &&
     (!trimmed || "assistant connection (mcp) paperclip codex claude opencode".includes(trimmed));
   const showCustomConnector =
     (source === "paperclip" || source === "all") && (!trimmed || "connect your own tool custom mcp server".includes(trimmed));

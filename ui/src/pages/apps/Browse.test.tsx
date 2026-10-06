@@ -39,7 +39,8 @@ const poolListMock = vi.hoisted(() => vi.fn());
 const poolRemoveMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/ai-connection-pools", () => ({ aiConnectionPoolsApi: { list: poolListMock, remove: poolRemoveMock } }));
 
-vi.mock("@/api/publicMcp", () => ({ publicMcpApi: { connections: async () => [] } }));
+const assistantConnectionsMock = vi.hoisted(() => vi.fn());
+vi.mock("@/api/publicMcp", () => ({ publicMcpApi: { connections: assistantConnectionsMock } }));
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
@@ -181,6 +182,7 @@ describe("Connectors landing page", () => {
 
   beforeEach(() => {
     accountIdentity.userId = "board-user"; accountIdentity.settled = true;
+    assistantConnectionsMock.mockReset().mockResolvedValue([]);
     syncComposioAppsMock.mockReset().mockImplementation((...args) => listComposioAppsMock(...args));
     listComposioAppsMock.mockReset().mockResolvedValue({ apps: [] });
     refreshComposioAppsMock.mockReset().mockResolvedValue({ apps: [] });
@@ -270,6 +272,58 @@ describe("Connectors landing page", () => {
     await search("assistant");
     expect(assistantButton()).not.toBeNull();
     expect(container.textContent).not.toContain("No connectors match");
+  });
+
+  const assistantGrant = { id: "grant", companyId: "company-1", companyName: "Paperclip", clientName: "Claude", scopes: ["paperclip:read"], createdAt: "2026-10-06T00:00:00Z", revokedAt: null };
+
+  it("shows active assistant grants in Installed and removes them after revocation", async () => {
+    assistantConnectionsMock.mockResolvedValue([assistantGrant]);
+    const client = await renderBrowse(false);
+    await clickButton("Installed", container);
+    const manage = container.querySelector<HTMLButtonElement>('[aria-label="Manage Assistant Connection (MCP)"]');
+    expect(manage).not.toBeNull();
+    expect(container.querySelector('[data-app-slug="assistant-connection"]')?.textContent).toContain("Claude");
+    await act(() => manage!.click());
+    expect(navigateMock).toHaveBeenCalledWith("/apps/assistant-connection");
+    assistantConnectionsMock.mockResolvedValue([{ ...assistantGrant, revokedAt: "2026-10-06T01:00:00Z" }]);
+    await act(async () => { await client.invalidateQueries({ queryKey: ["mcp-connections"] }); });
+    await flushReact();
+    expect(container.querySelector('[data-app-slug="assistant-connection"]')).toBeNull();
+  });
+
+  it.each([
+    ["empty", []],
+    ["revoked", [{ ...assistantGrant, revokedAt: "2026-10-06T01:00:00Z" }]],
+    ["another organization", [{ ...assistantGrant, companyId: "other-company" }]],
+  ])("does not show %s assistant grants as installed", async (_label, grants) => {
+    assistantConnectionsMock.mockResolvedValue(grants);
+    await renderBrowse(false);
+    await clickButton("Installed", container);
+    expect(container.querySelector('[data-app-slug="assistant-connection"]')).toBeNull();
+  });
+
+  it("keeps pending assistant status visible in Installed until it can determine access", async () => {
+    let resolve!: (rows: typeof assistantGrant[]) => void;
+    assistantConnectionsMock.mockReturnValue(new Promise<typeof assistantGrant[]>(done => { resolve = done; }));
+    await renderBrowse(false);
+    await clickButton("Installed", container);
+    expect(container.textContent).toContain("Checking your connection status");
+    expect(container.textContent).not.toContain("No connectors match");
+    await act(() => resolve([assistantGrant]));
+    await flushReact();
+    expect(container.querySelector('[aria-label="Manage Assistant Connection (MCP)"]')).not.toBeNull();
+  });
+
+  it("shows a retryable assistant status failure in Installed instead of an empty result", async () => {
+    assistantConnectionsMock.mockRejectedValue(new Error("offline"));
+    await renderBrowse(false);
+    await clickButton("Installed", container);
+    expect(container.textContent).toContain("Couldn’t load your connection status");
+    expect(container.textContent).not.toContain("No connectors match");
+    assistantConnectionsMock.mockResolvedValue([assistantGrant]);
+    await clickButton("Try again", container);
+    await flushReact();
+    expect(container.querySelector('[aria-label="Manage Assistant Connection (MCP)"]')).not.toBeNull();
   });
 
   function indexedApp(name: string, providers: ("composio" | "arcade" | "executor")[] = ["composio"]): AggregatorAppCatalogEntry {
