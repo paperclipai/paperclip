@@ -79,6 +79,7 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
   return {
     isolated,
     command: attempt?.command,
+    browserCommand: attempt?.browserCommand,
     status,
     preparing: active && !status && !error,
     error,
