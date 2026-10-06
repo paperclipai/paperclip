@@ -40,6 +40,8 @@ interface InlineEntitySelectorProps {
   contentStyle?: CSSProperties;
   /** Heading for the large mobile selector modal. Defaults to the placeholder. */
   mobileTitle?: string;
+  /** Own the scroll lock when this picker portals outside a parent dialog. */
+  modal?: boolean;
 }
 
 const EMPTY_RECENT_OPTION_IDS: string[] = [];
@@ -86,6 +88,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       triggerDataSlot,
       contentStyle,
       mobileTitle,
+      modal = false,
     },
     ref,
   ) {
@@ -144,9 +147,9 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
 
     return (
       <Popover
-        // Mobile sheets portal outside their parent dialog. Give the sheet its
-        // own scroll lock so the parent does not cancel touch drags in its list.
-        modal={mobileSelectorModal}
+        // Portalled mobile sheets and modal callers need their own scroll lock
+        // so a parent dialog does not cancel wheel or touch events in the list.
+        modal={mobileSelectorModal || modal}
         open={open}
         onOpenChange={(next) => {
           if (disabled) return;

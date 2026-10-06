@@ -5,6 +5,7 @@ import { aiRuntimeConnectionBindingSchema, type Agent, type IssueAssigneeAdapter
 import { agentsApi, type AdapterModel } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
+import { useMobileEntityPickerViewportStyle } from "@/hooks/useMobileEntityPickerViewportStyle";
 import { getLastComposerEffort, rememberComposerEffort } from "@/lib/recent-composer-effort";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import { Dialog, DialogClose, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -98,6 +99,7 @@ export function ComposerRunSettingsPicker({
     return () => query.removeEventListener("change", update);
   }, []);
   const mobile = mobileProp ?? narrow;
+  const mobileViewportStyle = useMobileEntityPickerViewportStyle();
   const agentId = assigneeValue.startsWith("agent:") ? assigneeValue.slice(6) : "";
   const agent = agents.get(agentId);
   const modelSupported = supportsComposerModel(agent);
@@ -235,20 +237,20 @@ export function ComposerRunSettingsPicker({
           className="composer-run-effort-range mt-3 w-full" style={{ "--fill": `${effortIndex / choices.length * 100}%` } as CSSProperties} />
       </div> : null}
     </> : agent ? <div className="mt-3 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground" data-testid="model-unavailable">{unavailableModelReason(agent)}</div> : null}
-  </div> : view === "agents" ? <div className="p-2">
+  </div> : view === "agents" ? <div className="composer-run-settings-list-view p-2">
     <div className="flex items-center gap-2 px-1 py-1.5"><span className="min-w-0 flex-1 text-xs font-semibold">Choose assignee</span>{closeButton}</div>
     <div className="relative mt-2"><Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground" aria-hidden /><input autoFocus type="search" aria-label="Search assignees" placeholder="Search assignees…" value={assigneeSearch} onChange={(event) => { setAssigneeSearch(event.target.value); setHighlightedAssignee(0); }} onKeyDown={(event) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setHighlightedAssignee((current) => filteredAgents.length ? (current + (event.key === "ArrowDown" ? 1 : -1) + filteredAgents.length) % filteredAgents.length : 0); }
       if (event.key === "Enter" && filteredAgents.length) { event.preventDefault(); chooseAssignee(filteredAgents[Math.min(highlightedAssignee, filteredAgents.length - 1)]!.id); }
     }} className="h-9 w-full rounded-md border border-border bg-background pl-8 pr-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" /></div>
-    <div className="mt-2 max-h-60 overflow-y-auto" role="listbox" aria-label="Assignees">{filteredAgents.map((item, index) => {
+    <div className="mt-2 min-h-0 max-h-60 overflow-y-auto overscroll-contain touch-pan-y" role="listbox" aria-label="Assignees">{filteredAgents.map((item, index) => {
       const optionAgent = agents.get(item.id.startsWith("agent:") ? item.id.slice(6) : "");
       return <button key={item.id} type="button" role="option" aria-selected={item.id === assigneeValue} onMouseEnter={() => setHighlightedAssignee(index)} onClick={() => chooseAssignee(item.id)} className={cn("flex w-full items-center gap-2 rounded-md px-2 py-2 text-left focus-visible:outline-none", highlightedAssignee === index ? "bg-accent" : "hover:bg-accent")}>{renderAssigneeIdentity?.(item.id, item.label, "option")}<span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{item.label}</span>{optionAgent ? <span className="block truncate text-xs text-muted-foreground">{optionAgent.role}</span> : null}</span>{optionAgent ? <span className="truncate text-xs text-muted-foreground">{harnessLabel(optionAgent)}</span> : null}{item.id === assigneeValue ? <Check className="composer-run-settings-accent size-4" /> : null}</button>;
     })}{!filteredAgents.length ? <p className="px-2 py-2 text-xs text-muted-foreground">No matches.</p> : null}</div>
-  </div> : <div className="p-2">
+  </div> : <div className="composer-run-settings-list-view p-2">
     <div className="flex items-center gap-2 px-1 py-1.5"><button type="button" aria-label="Back to selection" onClick={() => setView("settings")} className="grid size-7 place-items-center rounded-md hover:bg-accent"><ArrowLeft className="size-4" /></button><span className="min-w-0 flex-1"><span className="block text-xs font-semibold">Choose model</span><span className="block truncate text-xs text-muted-foreground">{harnessLabel(agent)}</span></span>{closeButton}</div>
     <div className="relative mt-2"><Search className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground" aria-hidden /><input autoFocus type="search" aria-label="Search or paste a model ID" placeholder="Search or paste a model ID" value={modelSearch} onChange={(event) => setModelSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && manualValid && !exactMatch) chooseModel(query); }} className="h-9 w-full rounded-md border border-border bg-background pl-8 pr-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring" /></div>
-    <div className="mt-2 max-h-60 overflow-y-auto" role="listbox" aria-label="Models">
+    <div className="mt-2 min-h-0 max-h-60 overflow-y-auto overscroll-contain touch-pan-y" role="listbox" aria-label="Models">
       {!query ? <button type="button" role="option" aria-selected={selected.model === null} onClick={() => chooseModel(null)} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left hover:bg-accent"><span className="min-w-0 flex-1"><span className="block text-sm font-medium">Use agent default</span><span className="block truncate text-xs text-muted-foreground">{models.find((item) => item.id === configuredModel)?.label || configuredModel || "Default"}</span></span>{selected.model === null ? <Check className="composer-run-settings-accent size-4" /> : null}</button> : null}
       {filteredModels.map((item) => <button type="button" role="option" aria-selected={selected.model === item.id} key={item.id} onClick={() => chooseModel(item.id)} className="flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"><span className="min-w-0 flex-1"><span className="block truncate font-medium">{item.label}</span><span className="block truncate font-mono text-xs text-muted-foreground">{item.id}</span></span>{item.detail || item.id === configuredModel ? <span className="shrink-0 text-xs text-muted-foreground">{item.detail ?? "Agent default"}</span> : null}{selected.model === item.id ? <Check className="composer-run-settings-accent size-4 shrink-0" /> : null}</button>)}
       {catalogPending ? <p className="px-2.5 py-2 text-xs text-muted-foreground">Loading models…</p> : null}
@@ -259,6 +261,7 @@ export function ComposerRunSettingsPicker({
   </div>;
 
   const onOpenChange = (next: boolean) => { setOpen(next); if (!next) { setView("settings"); setModelSearch(""); setAssigneeSearch(""); } };
-  return mobile ? <Dialog open={open} onOpenChange={onOpenChange}>{triggers}<DialogContent aria-describedby={undefined} showCloseButton={false} className="composer-mobile-dialog top-(--pct-50) -translate-y-(--pct-50) gap-0 overflow-y-auto p-0" data-testid="composer-mobile-dialog"><DialogTitle className="sr-only">{view === "agents" ? "Select assignee" : "Select model and effort"}</DialogTitle><AnimatedBody>{body}</AnimatedBody></DialogContent></Dialog>
-    : <Popover open={open} onOpenChange={onOpenChange}><PopoverAnchor asChild>{triggers}</PopoverAnchor><PopoverContent side="top" align="end" sideOffset={8} className="w-80 max-w-full p-0 shadow-sm" data-testid="composer-model-popover"><AnimatedBody>{body}</AnimatedBody></PopoverContent></Popover>;
+  // The desktop portal needs its own scroll lock inside the new-task dialog.
+  return mobile ? <Dialog open={open} onOpenChange={onOpenChange}>{triggers}<DialogContent aria-describedby={undefined} showCloseButton={false} style={mobileViewportStyle} className="composer-mobile-dialog gap-0 overflow-hidden p-0" data-testid="composer-mobile-dialog"><DialogTitle className="sr-only">{view === "agents" ? "Select assignee" : "Select model and effort"}</DialogTitle><AnimatedBody>{body}</AnimatedBody></DialogContent></Dialog>
+    : <Popover modal open={open} onOpenChange={onOpenChange}><PopoverAnchor asChild>{triggers}</PopoverAnchor><PopoverContent side="top" align="end" sideOffset={8} className="w-80 max-w-full p-0 shadow-sm" data-testid="composer-model-popover"><AnimatedBody>{body}</AnimatedBody></PopoverContent></Popover>;
 }

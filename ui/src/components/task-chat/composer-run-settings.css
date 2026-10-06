@@ -29,7 +29,44 @@
 .composer-run-effort-range:focus-visible { outline: calc(var(--spacing) * 0.5) solid var(--ring); outline-offset: calc(var(--spacing) * 0.5); }
 .composer-run-settings-accent { color: var(--tc-mode-ask); }
 .composer-run-settings-height { overflow: hidden; transition: height var(--motion-duration-base) var(--motion-ease-out); }
-.composer-mobile-dialog { width: calc(100vw - var(--spacing) * 4); max-width: calc(var(--spacing) * 96); max-height: calc(100dvh - var(--spacing) * 8); }
+.composer-mobile-dialog {
+  top: max(calc(var(--spacing) * 4), env(safe-area-inset-top));
+  width: calc(100vw - var(--spacing) * 4);
+  max-width: calc(var(--spacing) * 96);
+  max-height: calc(
+    var(--mobile-entity-picker-visual-viewport-height)
+    - max(calc(var(--spacing) * 4), env(safe-area-inset-top))
+    - max(calc(var(--spacing) * 4), env(safe-area-inset-bottom))
+  );
+  animation: none;
+}
+
+/* Let the live viewport constrain the list; a measured animation height would
+   keep it clipped when the software keyboard opens or the picker view changes. */
+.composer-mobile-dialog .composer-run-settings-height {
+  display: flex;
+  height: auto !important;
+  min-height: 0;
+  max-height: inherit;
+}
+
+.composer-mobile-dialog .composer-run-settings-height > div {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+}
+
+.composer-mobile-dialog .composer-run-settings-list-view {
+  display: flex;
+  min-height: 0;
+  width: 100%;
+  flex-direction: column;
+}
+
+.composer-mobile-dialog .composer-run-settings-list-view > :not([role="listbox"]) {
+  flex-shrink: 0;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .composer-run-settings-height { transition: none; }
