@@ -292,11 +292,11 @@ function connectorAction(
     };
   }
   if (chatHref) return { label: "Connect", href: chatHref };
-  // PAP-659 C4: the card's verb comes from the same four-state resolver the
-  // connect screen uses, so "Connect" never turns out to mean "paste a key".
+  // AI accounts share the Connect action across subscription and key methods.
+  // Tool connectors retain their capability-specific setup verbs.
   if (row.entry) {
     return {
-      label: connectionSetupVerbForApp(row.entry),
+      label: row.entry.methods?.some(method => method.purpose === "ai") ? "Connect" : connectionSetupVerbForApp(row.entry),
       href: connectHrefFor(row.entry),
     };
   }
@@ -601,7 +601,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       const applicationSlug = appApplicationSourceSlug(application);
       const savedAppConnections =
         connectionsByApplicationId.get(application.id) ?? [];
-      const appConnections = savedAppConnections.filter(
+      if (applicationSlug === "gateway" && savedAppConnections.length === 0) continue;
+      let appConnections = savedAppConnections.filter(
         (connection) => !GOOGLE_CONNECTOR_SLUGS.has(appConnectionSourceSlug(connection) ?? ""),
       );
       // Hide source-only Google rows, but keep independently identified connectors.
@@ -610,6 +611,19 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         savedAppConnections.length > 0 &&
         appConnections.length === 0
       ) continue;
+      // One legacy gateway application may contain several API formats. Group
+      // each saved AI account by its actual routing, not the old application slug.
+      const ungroupedCount = appConnections.length;
+      appConnections = appConnections.filter((connection) => {
+        if (connection.connectionPurpose !== "ai") return true;
+        const slug = appConnectionSourceSlug(connection);
+        const row = slug ? rowsBySlug.get(slug) : undefined;
+        if (!row) return true;
+        if (!row.applications.some((item) => item.id === application.id)) row.applications.push(application);
+        row.connections.push(connection);
+        return false;
+      });
+      if (ungroupedCount > 0 && appConnections.length === 0) continue;
       const configuredConnectionSlug = appConnections
         .map(
           (connection) =>

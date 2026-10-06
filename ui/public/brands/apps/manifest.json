@@ -129,6 +129,12 @@
       "localAsset": "/brands/apps/embat.svg"
     },
     {
+      "slug": "enterpret",
+      "provider": "Enterpret",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/enterpret.png"
+    },
+    {
       "slug": "executor",
       "provider": "Executor",
       "catalogVisible": true,

@@ -495,6 +495,21 @@
       ]
     },
     {
+      "id": "skill:skills/paperclip/SKILL.md:incidental-feedback:754",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/SKILL.md:754",
+      "title": "Incidental feedback",
+      "expectedSemantics": "Skill guidance headed “Incidental feedback”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/SKILL.md:754"
+      ]
+    },
+    {
       "id": "skill:skills/paperclip/references/api-reference.md:paperclip-api-reference:1",
       "sourceKind": "skill_heading",
       "sourceAnchor": "skills/paperclip/references/api-reference.md:1",

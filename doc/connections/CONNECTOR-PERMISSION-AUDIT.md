@@ -1,6 +1,6 @@
 # Tool connection permission audit — 2026-09-30
 
-This review covers 117 tool methods (84 OAuth methods). The machine-readable
+This review covers 119 tool methods (85 OAuth methods). The machine-readable
 [source of reviewed defaults](./tool-method-permission-reviews.json) lists each
 method's exact requested scopes, supported actions, restrictions, sources and
 verification limits. AI runtime authentication and chat/channel setup are

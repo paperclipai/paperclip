@@ -28,6 +28,37 @@ describe("HTTP logger redaction", () => {
     expect(chunks.join("")).not.toMatch(/code-canary|pkce-canary|refresh-canary|redirect-canary|state-canary/);
   });
 
+  it.each([[400, "/api/companies/company/agent-commentary"], [503, "/API/COMPANIES/company/AGENT-COMMENTARY"], [503, "http://localhost/api/companies/company/agent-commentary"]] as const)("keeps rejected commentary content out of %i diagnostics for %s", async (status, url) => {
+    const canary = "private-agent-commentary-canary";
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.use(express.json());
+    app.post("/api/companies/:companyId/agent-commentary", (_req, res) => {
+      if (status === 503) (res as any).err = new Error(`Driver echoed ${canary}`);
+      res.status(status).end();
+    });
+    const server = createServer(app);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing test listener");
+      await new Promise<void>((resolve, reject) => {
+        const client = httpRequest({ hostname: "127.0.0.1", port: address.port, method: "POST", path: url, headers: { "content-type": "application/json" } }, res => {
+          expect(res.statusCode).toBe(status);
+          res.resume(); res.on("end", resolve);
+        });
+        client.on("error", reject);
+        client.end(JSON.stringify({ body: canary, unexpected: canary }));
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+    const output = chunks.join("");
+    expect(output).not.toContain(canary);
+    expect(JSON.parse(output.trim()).reqBody).toBe("[REDACTED]");
+  });
   it.each([
     { method: "POST", path: "/api/routine-triggers/public/private-url-canary/fire" },
     { method: "PUT", path: "/api/routine-triggers/public/private-url-canary/fire" },

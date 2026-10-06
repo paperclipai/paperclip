@@ -132,6 +132,37 @@ function toServerPath(file) {
   return path.relative(serverRoot, file).split(path.sep).join("/");
 }
 
+// For a multi-line `it.each([...])("name", fn)` call, Vitest 5's `vitest
+// list --includeTaskLocation` and `vitest run <file>:<line>` disagree about
+// which line registers the test: `list` reports (and only matches) the line
+// of the wrapped "name" argument, while `run` only matches the line above
+// it, where Prettier's formatting puts that call's opening `(`. Separately,
+// on this file `list` also occasionally invents an entry whose "location"
+// sits on an ordinary body statement that merely ends in `)(` or starts a
+// line with a quote, with no `it`/`test` call anywhere nearby — a bogus
+// artifact of the same collector, not a real test. Both only showed up on
+// server/src/__tests__/chat-channels.integration.test.ts, a 70,000+ line
+// fixture; smaller files have not reproduced either issue.
+//
+// chatSuiteRunLine classifies a `list`-reported line against the actual
+// source and returns the line `vitest run` accepts, or null if the line
+// does not belong to any real `it`/`test` call (a bogus entry to drop).
+const callAnywherePattern = /(?:^|[^\w$])(?:it|test)(?:\.(?:each|skip|only))?\(/;
+const inlineCallPattern = /\)\(\s*["'`]/;
+
+function chatSuiteRunLine(sourceLines, line) {
+  const text = (sourceLines[line - 1] ?? "").trim();
+  if (callAnywherePattern.test(text) || text.endsWith(")(") || inlineCallPattern.test(text)) {
+    return line;
+  }
+  const previous = (sourceLines[line - 2] ?? "").trim();
+  const isNameArgument = text.startsWith('"') || text.startsWith("'") || text.startsWith("`");
+  if (isNameArgument && previous.endsWith(")(")) {
+    return line - 1;
+  }
+  return null;
+}
+
 function isRouteOrAuthzTest(file) {
   if (routeTestPattern.test(file)) {
     return true;
@@ -324,6 +355,8 @@ function runVitest(args, label, testShard = null) {
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
   if (testShard) {
+    const file = path.resolve(repoRoot, chatSuite);
+    const sourceLines = readFileSync(file, "utf8").split("\n");
     const collect = (filters, name) => {
       const output = path.join(testRoot, `${name}.json`);
       const result = spawnSync("pnpm", ["exec", "vitest", "list", ...sourceOnlyVitestArgs,
@@ -333,14 +366,28 @@ function runVitest(args, label, testShard = null) {
       if (result.error || result.status !== 0) fail(`Vitest collection failed: ${result.error?.message ?? result.status}`);
       return JSON.parse(readFileSync(output, "utf8"));
     };
-    const collected = collect(args, "all");
-    const file = path.resolve(repoRoot, chatSuite);
+    const allCollected = collect(args, "all");
+    const collected = [];
+    const bogusCollected = [];
+    for (const test of allCollected) {
+      (chatSuiteRunLine(sourceLines, test.location.line) === null ? bogusCollected : collected).push(test);
+    }
+    if (bogusCollected.length > 0) {
+      console.warn(
+        `[test:run] dropping ${bogusCollected.length} bogus Vitest collection entr${bogusCollected.length === 1 ? "y" : "ies"} with no matching it()/test() call: ${bogusCollected.map((test) => `${test.location.line}:${JSON.stringify(test.name)}`).join(", ")}`,
+      );
+    }
     const selected = partitionTestLines(collected, testShard.count, file)[testShard.index];
-    const filters = selected.lines.map((line) => `${chatSuite}:${line}`);
-    args = [...args.filter((arg) => arg !== chatSuite), ...filters];
-    assertSelectedTests(selected.tests, collect(args, "selected"), file);
+    // Validate shard membership with the same `list`-reported lines that
+    // produced `selected`, then switch to the `run`-compatible lines only for
+    // the filters handed to the real `vitest run` below (see
+    // chatSuiteRunLine).
+    const validationFilters = selected.lines.map((line) => `${chatSuite}:${line}`);
+    const validationArgs = [...args.filter((arg) => arg !== chatSuite), ...validationFilters];
+    assertSelectedTests(selected.tests, collect(validationArgs, "selected"), file);
     console.log(`[test:run] chat shard ${testShard.index + 1}/${testShard.count}: ${selected.tests.length}/${collected.length} tests, ${selected.lines.length} source lines; exact filter coverage verified`);
-    args.push("--allowOnly=false");
+    const runFilters = selected.lines.map((line) => `${chatSuite}:${chatSuiteRunLine(sourceLines, line)}`);
+    args = [...args.filter((arg) => arg !== chatSuite), ...runFilters, "--allowOnly=false"];
   }
   const result = spawnSync("pnpm", ["exec", "vitest", "run", ...sourceOnlyVitestArgs, ...args], {
     cwd: repoRoot,

@@ -9,8 +9,9 @@ import { useOptionalCompany } from "@/context/CompanyContext";
  *
  * Mirrors the other client-side role gates (`ToolsAdminGate`, the run
  * ledger): local implicit boards and instance admins always pass; otherwise
- * the active company membership must be owner or admin, the roles that carry
- * the `users:invite` grant. Resolves to false while the snapshot is unknown.
+ * the active company membership must be owner, admin, or operator, the roles
+ * that carry the default `users:invite` grant. Legacy members normalize to
+ * operator. Resolves to false while the snapshot is unknown.
  * The server stays authoritative; this only decides whether to offer a
  * shortcut that would otherwise end in a permission error.
  */
@@ -24,7 +25,10 @@ export function canInviteCompanyMembers(
   const membership = boardAccess.memberships?.find(
     (item) => item.companyId === companyId && item.status === "active",
   );
-  return membership?.membershipRole === "owner" || membership?.membershipRole === "admin";
+  return membership?.membershipRole === "owner" ||
+    membership?.membershipRole === "admin" ||
+    membership?.membershipRole === "operator" ||
+    membership?.membershipRole === "member";
 }
 
 /**

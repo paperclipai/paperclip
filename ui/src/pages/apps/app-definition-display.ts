@@ -1,5 +1,5 @@
+import { aiConnectionCatalogSlug, aiConnectionMetadataSchema, type AppDefinition, type ToolApplication, type ToolConnection } from "@paperclipai/shared";
 import { aiConnectionRouterSlug, aiConnectionRouterPluginKey } from "@paperclipai/shared";
-import type { AppDefinition, ToolApplication, ToolConnection } from "@paperclipai/shared";
 
 export type AppGalleryDisplayEntry = AppDefinition & {
   key?: string;
@@ -50,6 +50,10 @@ export function appApplicationSourceSlug(application: ToolApplication | null | u
 
 export function appConnectionSourceSlug(connection: ToolConnection | null | undefined): string | null {
   if (!connection) return null;
+  if (connection.connectionPurpose === "ai") {
+    const metadata = aiConnectionMetadataSchema.safeParse(connection.config?.ai);
+    if (metadata.success) return aiConnectionCatalogSlug(metadata.data.provider, metadata.data.routing);
+  }
   const router = aiConnectionRouterPluginKey(connection);
   if (router) return aiConnectionRouterSlug(router);
   const source = connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey;

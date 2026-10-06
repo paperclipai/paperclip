@@ -162,17 +162,14 @@ describe("external object routes", () => {
   // first import transforms a large module graph. Under the loaded serial shard
   // (maxWorkers=1) that cold cost crossed the 5s testTimeout of the first test.
   // The hook has a 30s budget, so it absorbs the transform cost and every later
-  // createApp() call hits the cached modules.
+  // createApp() call hits the cached modules. Install mocks before warming the
+  // graph and reset their state between tests instead of reloading the modules.
   beforeAll(async () => {
+    registerRouteMocks();
     await createApp(boardActor());
   });
 
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/external-objects.js");
-    registerRouteMocks();
     vi.resetAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });

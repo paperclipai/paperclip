@@ -16,6 +16,7 @@ import type {
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
+import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 
 const transcriptState = vi.hoisted(() => ({
@@ -1008,6 +1009,22 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).toContain("The run failed");
     expect(container.textContent).not.toContain("before returning an answer");
     expect(container.textContent).not.toContain("Workspace restore failed");
+  });
+
+  it("directs a missing personal AI credential to its card without offering a premature retry", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked"
+      onRetryFailedRun={vi.fn()} interactions={[{
+        ...pendingConnectionIntentInteraction, sourceRunId: "missing-ai-run",
+        payload: { ...pendingConnectionIntentInteraction.payload, purpose: "ai" },
+      }]} linkedRuns={[{
+        runId: "missing-ai-run", runtimeMode: "legacy", status: "failed", errorCode: "configuration_incomplete",
+        agentId: "agent-1", agentName: "Chief of Staff", adapterType: "claude_local",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: null, finishedAt: "2026-08-25T18:00:02.000Z",
+      }]} />);
+    expect(container.textContent).toContain("AI connection needed");
+    expect(container.textContent).toContain("Use the connection card below to continue.");
+    expect(container.textContent).not.toContain("The selected AI account is unavailable");
+    expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
   });
 
   it("projects the saved Plan inline at its native write_document boundary", () => {

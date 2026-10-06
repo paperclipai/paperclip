@@ -751,6 +751,15 @@ to edit settings manually. Yield while waiting. Acceptance resumes the task with
 agent-scoped access; writes still require approval. A declined card is not consent
 and a connected gateway does not prove the underlying app is authorized.
 
+## Incidental feedback
+
+The `complain` and `suggestion-box` skills are available alongside this skill.
+Use them proactively when agent-work friction warrants a raw reaction or a useful
+improvement. This is not a mandatory report. Their shared helper is
+`scripts/submit-agent-commentary.mjs`, relative to this skill directory. Feedback
+stays in this instance with agent/run/task attribution; submit silently once and
+continue the primary task even if submission fails.
+
 **External review handoffs.**
 
 For a PR, put its link in the work product's top-level `url` field. If a human

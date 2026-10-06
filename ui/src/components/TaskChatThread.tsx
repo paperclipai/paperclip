@@ -1722,7 +1722,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           ? workspaceRestoreMarkerDetail({ result: meta?.resultJson, savedPlan, hasResponse: sourceHasPresentationComment || Boolean(acceptedSummary) })
           : aiRequest
           ? aiRequest.status === "pending"
-            ? "The selected AI account is unavailable. Fix it in the connection card."
+            ? "Use the connection card below to continue."
             : "This run stopped because its AI account was unavailable."
           : source.status === "cancelled"
             ? code === "execution_reconciliation_required"
@@ -1742,15 +1742,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             id,
             kind: "marker",
             variant: "interrupted",
-            label: restoreFailed ? "Workspace restore failed" : source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+            label: restoreFailed ? "Workspace restore failed" : aiRequest?.status === "pending" ? "AI connection needed" : source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
             runId: source.status === "cancelled" ? undefined : source.id,
+            ...(aiRequest?.status === "pending" ? { retryable: false } : {}),
             ...(restoreFailed ? {
               retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive",
               collapsible: true,
               runHref: meta?.agentId ? `/agents/${encodeURIComponent(agentMap?.get(meta.agentId)?.urlKey ?? meta.agentId)}/runs/${encodeURIComponent(source.id)}` : undefined,
               planHref: savedPlan ? "#document-plan" : undefined,
             } : {}),
-            tone: source.status === "cancelled" ? "neutral" : "error",
+            tone: source.status === "cancelled" || aiRequest?.status === "pending" ? "neutral" : "error",
             detail,
           },
         });

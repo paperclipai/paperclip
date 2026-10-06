@@ -44,6 +44,21 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("keeps a pending child result non-terminal without adding another continuation", () => {
+    expect(arbitrate({ hasPendingChildCompletion: true })).toMatchObject({
+      statusAction: "in_progress", toStatus: "in_progress", reasonCode: "native_child_completion_pending",
+      effects: [{ kind: "release_checkout" }],
+    });
+    expect(arbitrate({ hasPendingChildCompletion: false }).toStatus).toBe("done");
+    for (const priorIssueStatus of ["done", "cancelled"] as const) {
+      expect(arbitrate({ priorIssueStatus, hasPendingChildCompletion: true }).toStatus).toBe(priorIssueStatus);
+    }
+    expect(arbitrate({ hasPendingChildCompletion: true, hasUnresolvedIssueBlockers: true }).toStatus).toBe("blocked");
+    expect(arbitrate({ hasPendingChildCompletion: true, governanceGate: { kind: "approval", id: "approval" } }).toStatus)
+      .toBe("in_review");
+    expect(arbitrate({ hasPendingChildCompletion: true, workspaceFinalizeStatus: "failed" }).statusAction).toBe("preserve");
+  });
+
   it("schedules a capacity retry while preserving partial work and review authority", () => {
     for (const nativeReviewOutcome of [undefined, "pending"] as const) {
       const decision = arbitrate({ terminalState: "failed", providerOverloaded: true, nativeReviewOutcome });
@@ -547,7 +562,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v9",
+        policyVersion: "phase6-v10",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

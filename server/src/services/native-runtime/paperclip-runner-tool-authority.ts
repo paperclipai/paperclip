@@ -6,6 +6,8 @@ import { authorizeInstructionCommit } from "../agent-instruction-authorization.j
 import { executeAgentInstructionTool } from "./agent-instruction-tools.js";
 import { createReadStream } from "node:fs";
 import { publicChatTaskUrl } from "../chat-task-url.js";
+import { agentCommentaryToolInputSchema } from "@paperclipai/shared";
+import { submitAgentCommentary } from "../agent-commentary.js";
 import type { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
 import { authorizationService } from "../authorization.js";
@@ -94,6 +96,7 @@ import {
 } from "./chat-attachment-read.js";
 
 const IMPLEMENTED_OPERATIONS = new Set([
+  "submit_complaint", "submit_suggestion",
   "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions",
   "search_api", "call_api", "hire_agent",
   "get_task_context", "get_task_history", "search_tasks", "report_progress", "set_task_title",
@@ -400,6 +403,14 @@ export class PaperclipRunnerToolAuthority {
       throw new Error("paperclip_runner_tool_mode_denied");
     }
     switch (call.tool) {
+      case "submit_complaint":
+      case "submit_suggestion": {
+        const parsed = agentCommentaryToolInputSchema.safeParse(call.arguments);
+        if (!parsed.success) throw badRequest("Feedback accepts only a nonempty body of at most 524288 characters and a retry key of at most 240 characters");
+        return submitAgentCommentary(this.db, this.binding, {
+          ...parsed.data, kind: call.tool === "submit_complaint" ? "complaint" : "suggestion",
+        }, (tx) => this.#lockAuthorizedMutationContext(tx));
+      }
       case "read_agent_instructions":
       case "get_agent_instruction_history":
         return executeAgentInstructionTool({ db: this.db, binding: {

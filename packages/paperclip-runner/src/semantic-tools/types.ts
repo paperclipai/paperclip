@@ -56,6 +56,8 @@ export type CapabilitySemanticOperationId =
   | "decide_approval"
   | "comment_on_approval"
   | "schedule_wake"
+  | "submit_complaint"
+  | "submit_suggestion"
   | "generic_api_request";
 
 export interface CapabilityJsonSchema {

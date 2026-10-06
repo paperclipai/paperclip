@@ -1,7 +1,7 @@
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 import { NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 
-export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v9";
+export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v10";
 
 export type NativeAuthoritativeIssueStatus =
   | "backlog"
@@ -105,6 +105,8 @@ export function arbitrateNativeStatus(input: {
    * checkout is intentionally gated until the dependency resolves.
    */
   hasUnresolvedIssueBlockers?: boolean;
+  /** A newer native child result still has an undelivered parent wake. */
+  hasPendingChildCompletion?: boolean;
   /** A governance interaction created by this run was accepted before the run settled. */
   governanceResolvedForRun?: boolean;
   externalChatResponseWaitAuthorization?:
@@ -363,6 +365,17 @@ export function arbitrateNativeStatus(input: {
     input.assessment.attentionRequests.length === 0 &&
     !input.assessment.hasBlockingRemainingWork;
   const complete = evidenceComplete || policyClaimComplete;
+  if (complete && input.hasPendingChildCompletion) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: "native_child_completion_pending",
+      unblockDescriptor: null,
+      // The durable outbox/deferred wake already owns exactly one continuation.
+      effects: [{ kind: "release_checkout" }],
+    };
+  }
   if (complete) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,

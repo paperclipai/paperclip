@@ -515,7 +515,9 @@ Termination commits API-key revocation in that same transaction.
 Hire approval and rejection commit with agent activation or termination, so a
 failed event write leaves the decision pending and retryable.
 
-The numeric event ID orders transitions for a resource. Future plugin delivery
+Creation is delivered first for each resource, including a backfilled creation
+whose ID is newer than earlier captured transitions. The remaining events follow
+numeric ID order. Plugin delivery
 must enforce company scope, preserve resource order, and track acknowledgments
 per plugin. A global high-water mark can skip transactions that have not yet
 committed; it is not a safe delivery cursor. The journal stores only identity,
@@ -523,11 +525,38 @@ action, and timestamps, not repository snapshots, credentials, provider config,
 or resource health. Company deletion cascades to its events. Resource deletion
 retains events, so consumers must revalidate existence and eligibility and load
 current authorized repository data. A termination hook does not authorize
-removing persistent VM or project data.
+provider cleanup without the plugin's own authorization and retention policy.
 
-The migration creates an empty table. It does not scan or backfill existing
-installs. Plugin delivery, retention, retries, and provider integration are
-separate work. This change makes no provider calls and adds no plugin read API.
+Migration `0309_loving_the_hood.sql` seeds a one-time current-state baseline before
+plugin delivery is available. It records creation for existing hired agents and
+all projects, including archived projects. Pending hires stay behind approval.
+Paused and terminated agents receive missing final status intents. A partial
+journal ending at pause receives resume when the current agent is running.
+Archived projects receive missing archive intents. A partial journal ending at
+archive receives update when the current project is active.
+Existing records remain intact, and rerunning the baseline does not duplicate it.
+The migration also repairs the journal ID generator in older JavaScript restores
+that lost identity metadata, starting above existing IDs. New JavaScript backups
+preserve identity generation, sequence options, and sequence progress.
+Resource writes wait for the migration transaction to commit. These records
+represent current desired state, not reconstructed historical transitions.
+There is no later or runtime journal backfill. Plugins use `ctx.events.listLifecycle(companyId, limit?, afterId?)` and
+`ctx.events.acknowledgeLifecycle(companyId, eventId)` with `events.subscribe`.
+The host requires a matching company invocation (or configured-company proactive
+access) and a ready plugin enabled for that company.
+`plugin_lifecycle_acknowledgments` stores progress independently
+for each plugin and event; plugin and event deletion cascade acknowledgments.
+Reads return creation first, then the earliest unacknowledged transition for each resource, up to 100
+resources. Acknowledging a later event is rejected. Reads never consume work, so
+crashes, retries, and restarts cannot lose a hook; concurrent reads can repeat an
+event. There is no global cursor or runtime backfill scan. Consumers must serialize their
+processing and make provider operations idempotent before acknowledging success.
+Retention and provider integration remain separate work.
+
+Lifecycle polls can page past failed resources using the last returned event id as
+`afterId`. Reset `afterId` at the start of every polling sweep: it is a page
+cursor, never a persisted high-water mark. This retries failures and includes
+transactions that commit later with lower ids.
 
 ## Legacy controller ownership
 
@@ -570,6 +599,15 @@ reservation cannot silently disappear. Failed cleanup or an ambiguous storage
 write requires operator reconciliation before an unattached reservation is
 removed. The table stores no response bodies. See `doc/runner-api-tools.md` for
 limits and the operator override.
+
+## Internal agent commentary
+
+`agent_commentary` stores company-scoped, attributed complaints and suggestions
+as free-form text in the instance database. Legacy agents use the default
+`complain` and `suggestion-box` runtime skills; native runs use dedicated tools
+in standard, ask, and planning modes. Submission never changes task disposition
+or routes feedback externally. See [Agent commentary](agent-commentary.md) for
+authentication, replay, document-sized limits, inspection, and deletion semantics.
 
 ## Agent identity keys and backups
 

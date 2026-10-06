@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentsApi } from "@/api/agents";
 import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
 import { getLastComposerEffort, rememberComposerEffort } from "@/lib/recent-composer-effort";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 const agent = {
   id: "a1", companyId: "company-1", name: "Clippy",
@@ -34,17 +35,18 @@ async function click(label: string) {
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
-function render(onAssigneeChange: (value: string) => void, onSettingsChange: () => void, useCatalog = false, props: Partial<ComponentProps<typeof ComposerRunSettingsPicker>> = {}) {
+function render(onAssigneeChange: (value: string) => void, onSettingsChange: () => void, useCatalog = false, props: Partial<ComponentProps<typeof ComposerRunSettingsPicker>> = {}, insideDialog = false) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  flushSync(() => root!.render(<QueryClientProvider client={queryClient}>
+  const picker = <QueryClientProvider client={queryClient}>
     <ComposerRunSettingsPicker companyId="company-1" assigneeValue="agent:a1" currentAssigneeValue="agent:a1"
       options={options} agents={agents} settings={{ model: "gpt-6-sol", effort: "high", fast: true }}
       onAssigneeChange={onAssigneeChange} onSettingsChange={onSettingsChange}
       modelOptionsOverride={useCatalog ? undefined : []} {...props} />
-  </QueryClientProvider>));
+  </QueryClientProvider>;
+  flushSync(() => root!.render(insideDialog ? <Dialog defaultOpen><DialogContent aria-describedby={undefined}><DialogTitle>New task</DialogTitle>{picker}</DialogContent></Dialog> : picker));
 }
 
 beforeEach(() => localStorage.clear());
@@ -57,6 +59,45 @@ afterEach(() => {
 });
 
 describe("composer assignee picker", () => {
+  it.each([
+    { mobile: false, view: "settings" as const },
+    { mobile: false, view: "models" as const },
+    { mobile: false, view: "agents" as const },
+    { mobile: true, view: "settings" as const },
+    { mobile: true, view: "models" as const },
+    { mobile: true, view: "agents" as const },
+  ])("allows wheel and touch scrolling in a nested $view picker (mobile: $mobile)", async ({ mobile, view }) => {
+    render(vi.fn(), vi.fn(), false, { mobile, initialOpen: true, initialView: view }, true);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const list = document.querySelector<HTMLElement>(view === "settings"
+      ? '[data-testid="composer-run-settings-view"]'
+      : `[role="listbox"][aria-label="${view === "models" ? "Models" : "Assignees"}"]`)!;
+    expect(list).not.toBeNull();
+    list.style.overflowY = "auto";
+    Object.defineProperties(list, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    const option = list.querySelector("button")!;
+    const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 100 });
+    option.dispatchEvent(wheel);
+    expect(wheel.defaultPrevented).toBe(false);
+    const touch = (type: string, y: number) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperties(event, {
+        touches: { value: [{ clientX: 100, clientY: y }] },
+        changedTouches: { value: [{ clientX: 100, clientY: y }] },
+      });
+      option.dispatchEvent(event);
+      return event;
+    };
+    touch("touchstart", 150);
+    expect(touch("touchmove", 100).defaultPrevented).toBe(false);
+    const outsideWheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 100 });
+    document.body.dispatchEvent(outsideWheel);
+    expect(outsideWheel.defaultPrevented).toBe(true);
+  });
+
   it.each([
     { adapterType: "claude_local", config: {}, label: "Default" },
     { adapterType: "claude_local", config: { model: "claude-opus-5" }, label: "Claude Opus 5" },

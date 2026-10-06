@@ -1343,12 +1343,13 @@ export function NewIssueDialog() {
                       recentOptionIds={recentProjectIds}
                       placeholder="Project"
                       mobileTitle="Select project"
+                      modal
                       className="h-8 min-w-0 flex-1 gap-1.5 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-0 sm:max-w-64 sm:flex-none"
                       disabled={createIssue.isPending}
                       triggerDataSlot="new-issue-compact-control"
                       contentStyle={entityPickerViewportStyle}
                       noneLabel="No project"
-                      noneAtEnd
+                      noneAtTop
                       searchPlaceholder="Search projects..."
                       emptyMessage="No projects found."
                       onChange={handleProjectChange}

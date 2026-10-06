@@ -1137,3 +1137,45 @@ describe("AI connection router RPC", () => {
     } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
   });
 });
+
+describe("Durable lifecycle inbox RPC", () => {
+  it("sends company-scoped reads and acknowledgments through the worker SDK", async () => {
+    const input = new PassThrough(), output = new PassThrough();
+    const reader = createInterface({ input: output });
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const event = { id: "7", companyId: "company-a", resourceType: "agent", resourceId: "agent-a", action: "pause", createdAt: new Date(0).toISOString() };
+    const plugin = definePlugin({ async setup(ctx) {
+      ctx.data.register("drain", async ({ companyId }) => {
+        const events = await ctx.events.listLifecycle(companyId!, 10, "6");
+        await ctx.events.acknowledgeLifecycle(companyId!, events[0].id);
+        return events;
+      });
+    } });
+    const worker = startWorkerRpcHost({ plugin, stdin: input, stdout: output });
+    let sequence = 0;
+    const pending = new Map<string, (value: JsonRpcResponse) => void>();
+    reader.on("line", line => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+      } else if (isJsonRpcRequest(message)) {
+        calls.push({ method: message.method, params: message.params });
+        input.write(serializeMessage(createSuccessResponse(message.id, message.method === "events.listLifecycle" ? [event] : null)));
+      }
+    });
+    const call = (method: string, params: unknown) => new Promise<JsonRpcResponse>(resolve => {
+      const id = String(++sequence);
+      pending.set(id, resolve);
+      input.write(serializeMessage(createRequest(method, params, id)));
+    });
+    try {
+      await call("initialize", { manifest: { id: "fixture.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe"], entrypoints: {} }, config: {}, databaseNamespace: null });
+      expect((await call("getData", { key: "drain", companyId: "company-a", params: {} }) as { result: unknown }).result).toEqual([event]);
+      expect(calls).toEqual([
+        { method: "events.listLifecycle", params: { companyId: "company-a", limit: 10, afterId: "6" } },
+        { method: "events.acknowledgeLifecycle", params: { companyId: "company-a", eventId: "7" } },
+      ]);
+    } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
+  });
+});
