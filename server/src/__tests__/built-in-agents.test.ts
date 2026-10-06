@@ -612,6 +612,27 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(await permissionKeysForAgent(root.id)).not.toContain("skills:create");
   });
 
+  it.each([
+    { roles: ["ceo", "general"] as const, selected: 0 },
+    { roles: ["ceo", "ceo"] as const, selected: null },
+  ])("selects only the unambiguous CEO when root roles are $roles", async ({ roles, selected }) => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const roots = [];
+    for (const role of roles) {
+      const root = await agentService(db).create(companyId, { name: role, role, status: "idle", reportsTo: null, adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+      roots.push(root);
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, root.id));
+    }
+    await reconcileBuiltInAgentsOnStartup(db);
+    for (const [index, root] of roots.entries()) {
+      const grants = await permissionKeysForAgent(root.id);
+      for (const key of ["agents:configure", "skills:create"]) {
+        if (index === selected) expect(grants).toContain(key);
+        else expect(grants).not.toContain(key);
+      }
+    }
+  });
+
   it("reconciles an enabled Reflection Coach bundle with skill sync and a disabled routine", async () => {
     const companyId = await seedCompany({ requireApproval: false });
     const root = await agentService(db).create(companyId, {
