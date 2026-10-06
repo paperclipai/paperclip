@@ -1008,7 +1008,7 @@ describe("Agents", () => {
   it.each([
     ["streamlined", Agents],
     ["production", ProductionAgents],
-  ] as const)("omits star and leave/join actions from %s agent index rows", async (_mode, AgentList) => {
+  ] as const)("omits star and leave/join actions from %s agent index list and org views", async (_mode, AgentList) => {
     root = createRoot(container);
     await act(async () => {
       root!.render(
@@ -1022,22 +1022,31 @@ describe("Agents", () => {
     await flushReact();
     await flushReact();
 
-    // List view (default).
+    // Explicitly select the list view and assert the row renders there.
+    const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
+    expect(listToggle).not.toBeNull();
+    await act(async () => {
+      listToggle!.click();
+    });
+    await flushReact();
+    const listRow = findAgentRow(container, "Alpha");
+    expect(listRow).not.toBeNull();
     expect(container.querySelector('[aria-label="Leave Alpha"]')).toBeNull();
     expect(container.querySelector('[aria-label="Join Alpha"]')).toBeNull();
     expect(container.querySelector('[aria-label="Star Alpha"]')).toBeNull();
 
-    // Org chart view.
+    // Explicitly select the org view and assert no membership actions there.
     const orgToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Org chart view"]');
-    if (orgToggle) {
-      await act(async () => {
-        orgToggle.click();
-      });
-      await flushReact();
-      expect(container.querySelector('[aria-label="Leave Alpha"]')).toBeNull();
-      expect(container.querySelector('[aria-label="Join Alpha"]')).toBeNull();
-      expect(container.querySelector('[aria-label="Star Alpha"]')).toBeNull();
-    }
+    expect(orgToggle).not.toBeNull();
+    await act(async () => {
+      orgToggle!.click();
+    });
+    await flushReact();
+    await flushReact();
+    expect(container.textContent).toContain("Alpha");
+    expect(container.querySelector('[aria-label="Leave Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Join Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Star Alpha"]')).toBeNull();
   });
 
   it("does not dim left-membership agent names on mobile", async () => {
