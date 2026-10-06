@@ -44,6 +44,13 @@ before its next turn. Private values are excluded from invocation metadata and
 execution configuration; output and failure diagnostics redact known private
 material. The run-log redactor handles split stdout/stderr chunks independently.
 
+Managed remote providers, including Cursor Cloud, receive the same private key
+as managed local processes. Selecting a runtime therefore trusts its host with
+the agent's persistent identity: the agent and its host can retain the key and
+sign outside Paperclip. Encryption at rest protects database storage, not an
+executing runtime. Move an agent only between runtime hosts trusted with that
+identity.
+
 Independently hosted HTTP and gateway agents, including Runner's API-hosted Claude Managed and AWS AgentCore providers, do not receive private keys in v1.
 Their new agent records still get stored identities; their existing records stay
 unprovisioned until a supported managed run.
