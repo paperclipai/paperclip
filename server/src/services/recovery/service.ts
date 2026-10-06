@@ -491,6 +491,7 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
+  "native_provider_model_rejected",
   "provider_tool_definition_invalid",
   "adapter_engine_unavailable",
   "agent_not_invokable",
@@ -626,7 +627,7 @@ export function classifyAdapterFailureForRecovery(
 ): AdapterFailureRecoveryClassification {
   // An engine prerequisite cannot be repaired by asking the same unavailable
   // engine to retry. Use the existing configuration-blocker path.
-  if (latestRun.errorCode === "adapter_engine_unavailable" || latestRun.errorCode === "provider_tool_definition_invalid") {
+  if (latestRun.errorCode === "adapter_engine_unavailable" || latestRun.errorCode === "provider_tool_definition_invalid" || latestRun.errorCode === "native_provider_model_rejected") {
     return { kind: "configuration_incomplete" };
   }
   if (

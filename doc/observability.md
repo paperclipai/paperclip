@@ -443,6 +443,24 @@ values become `unknown`. A signal such as `SIGKILL` does not establish who sent
 it or prove an out-of-memory kill. These fields do not change error grouping
 or run outcomes, and do not include process output or adapter result payloads.
 
+For a native Codex turn that ends with a structured HTTP 400 model/ChatGPT
+compatibility rejection, the run records `native_provider_model_rejected`
+and a fixed message that asks the user to select a supported model or connection.
+This requires a committed runner terminal for the selected model and the exact
+failed turn. Agent text, tool output, unrelated turns, and unknown provider
+errors do not create this classification. The provider diagnostic contains only
+`provider=codex`, `category=model_auth_incompatible`, `status=400`, and
+`authMode=chatgpt`. It excludes the model name and provider response. This does
+not change credentials, select a fallback model, replay a turn, or alter native
+result finalization and cleanup. The existing configuration-blocker recovery
+path requires a configuration change instead of automatically retrying the same
+model and connection. Native finalization also derives this evidence from the
+committed event and the run's pinned provider configuration before it can queue
+a failed-result retry. This survives a controller restart before the adapter
+diagnostic is saved. Invalid bindings, missing evidence, or a mismatched event
+hash do not grant this classification. Reviewer recovery uses the same typed
+configuration blocker.
+
 An unconfirmed adapter Stop timeout has an event-local `adapter_stop` context:
 the run UUID, built-in adapter type, native/legacy runtime mode, configured
 wait duration, and whether abort was requested. Invalid identities become

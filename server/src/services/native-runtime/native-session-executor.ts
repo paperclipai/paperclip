@@ -9,6 +9,7 @@ import {
   REMOTE_CODEX_SUPPORTED_RANGE,
 } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
+import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
 import { bindManagedNativeCredentialTurn, completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
@@ -7805,6 +7806,7 @@ async function executePaperclipNativeSessionWithinScope(
   let turnStartedAtMs: number | null = null;
   let firstAgentEventRecorded = false;
   let providerUsageLimitObserved = false;
+  const providerFailureObservation = createNativeProviderFailureObservation(input.execution.provider);
   let turnCompletedAtMs: number | null = null;
   let runnerSessionStartupScope: NativeRunSpanScope | null = null;
   let agentTurnScope: NativeRunSpanScope | null = null;
@@ -7861,6 +7863,7 @@ async function executePaperclipNativeSessionWithinScope(
         await liveQuestions.observe(event);
         await projectSessionGoalEvent(event);
         providerUsageLimitObserved ||= nativeProviderUsageLimitFromEvent(event);
+        providerFailureObservation.observe(event);
         const eventAtMs = Date.parse(event.emittedAt);
         const milestoneAtMs = Number.isFinite(eventAtMs)
           ? eventAtMs
@@ -8064,6 +8067,7 @@ async function executePaperclipNativeSessionWithinScope(
         await liveQuestions.observe(event);
         await projectSessionGoalEvent(event);
         providerUsageLimitObserved ||= nativeProviderUsageLimitFromEvent(event);
+        providerFailureObservation.observe(event);
         const questionFallback = await materializeRuntimeQuestionFallback({
           db: input.db,
           binding: input.execution.binding,
@@ -9203,6 +9207,7 @@ async function executePaperclipNativeSessionWithinScope(
     );
     if (collectInstructions && !collectedByOwner) await instructionCopy!.collectStopped();
   }
+  const providerFailure = providerFailureObservation.forTerminal(native.turnId, native.terminal);
   const adapterResult: AdapterExecutionResult = {
     exitCode: native.terminal.runTerminalState === "succeeded" ? 0 : 1,
     signal: null,
@@ -9210,10 +9215,12 @@ async function executePaperclipNativeSessionWithinScope(
     errorMessage:
       native.terminal.runTerminalState === "succeeded"
         ? null
-        : `Native session ${native.terminal.runTerminalState}`,
+        : providerFailure?.errorMessage ?? `Native session ${native.terminal.runTerminalState}`,
+    ...(providerFailure ? { errorCode: providerFailure.errorCode } : {}),
     resultJson: {
       nativeResult: native.result as unknown as Record<string, unknown>,
       nativeTerminal: native.terminal as unknown as Record<string, unknown>,
+      ...(providerFailure ? { nativeProviderFailure: providerFailure.diagnostic } : {}),
       ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
       planSynchronizations,
     },

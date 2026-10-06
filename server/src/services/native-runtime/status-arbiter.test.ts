@@ -44,6 +44,19 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it.each(["in_progress", "in_review"] as const)("blocks a proven model rejection without a retry even for a reviewer (%s)", (priorIssueStatus) => {
+    const decision = arbitrate({ priorIssueStatus, terminalState: "failed", providerModelRejected: true, nativeReviewOutcome: "pending" });
+    expect(decision).toMatchObject({ statusAction: "blocked", toStatus: "blocked", reasonCode: "native_provider_model_rejected", unblockDescriptor: { owner: "board" } });
+    expect(decision.effects).toEqual([{ kind: "bind_blocker", owner: "board", action: expect.any(String) }]);
+    expect(arbitrate({ terminalState: "failed", providerModelRejected: false }).effects).toContainEqual(expect.objectContaining({ kind: "schedule_retry" }));
+    expect(arbitrate({ terminalState: "succeeded", providerModelRejected: true }).reasonCode).not.toBe("native_provider_model_rejected");
+    expect(arbitrate({ terminalState: "failed", providerModelRejected: true, workspaceFinalizeStatus: "failed" }).reasonCode).toBe("finalization_failed_claim_preserved");
+    expect(arbitrate({ terminalState: "failed", providerModelRejected: true, priorIssueStatus: "done" }).toStatus).toBe("done");
+    for (const nativeReviewOutcome of ["stale", "resolved"] as const) {
+      expect(arbitrate({ terminalState: "failed", providerModelRejected: true, priorIssueStatus, nativeReviewOutcome }))
+        .toMatchObject({ statusAction: "preserve", toStatus: priorIssueStatus, reasonCode: "native_review_action_finished" });
+    }
+  });
   it("a reviewer finishes its decision without completing rejected or still-reviewed work", () => {
     for (const priorIssueStatus of ["in_progress", "in_review"] as const) {
       const decision = arbitrate({ priorIssueStatus, nativeReviewOutcome: "resolved" });
@@ -511,7 +524,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v7",
+        policyVersion: "phase6-v8",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",
