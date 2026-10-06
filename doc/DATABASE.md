@@ -527,7 +527,7 @@ retains events, so consumers must revalidate existence and eligibility and load
 current authorized repository data. A termination hook does not authorize
 provider cleanup without the plugin's own authorization and retention policy.
 
-Migration `0308_harsh_jetstream.sql` seeds a one-time current-state baseline before
+Migration `0309_loving_the_hood.sql` seeds a one-time current-state baseline before
 plugin delivery is available. It records creation for existing hired agents and
 all projects, including archived projects. Pending hires stay behind approval.
 Paused and terminated agents receive missing final status intents. A partial
