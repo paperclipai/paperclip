@@ -83,6 +83,43 @@ export async function unlinkIssueApprovalInTransaction(tx: Transaction, input: {
   return persistApprovalUnlink(tx, issueId, approvalId, companyId);
 }
 
+async function persistManyApprovalLinks(
+  writer: LinkWriter, approvalId: string, issueIds: string[], actor?: LinkActor, companyId?: string,
+) {
+  if (issueIds.length === 0) return;
+  const approval = await writer.select().from(approvals)
+    .where(and(eq(approvals.id, approvalId), companyId === undefined ? undefined : eq(approvals.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!approval) throw notFound("Approval not found");
+  const uniqueIssueIds = Array.from(new Set(issueIds));
+  const rows = await writer.select({ id: issues.id, companyId: issues.companyId }).from(issues)
+    .where(and(inArray(issues.id, uniqueIssueIds), companyId === undefined ? undefined : eq(issues.companyId, companyId)));
+  if (rows.length !== uniqueIssueIds.length) throw notFound("One or more issues not found");
+  for (const row of rows) {
+    if (row.companyId !== approval.companyId || (companyId !== undefined && row.companyId !== companyId)) {
+      throw unprocessable("Issue and approval must belong to the same company");
+    }
+  }
+  await writer.insert(issueApprovals).values(uniqueIssueIds.map((issueId) => ({
+    companyId: approval.companyId, issueId, approvalId,
+    linkedByAgentId: actor?.agentId ?? null, linkedByUserId: actor?.userId ?? null,
+  }))).onConflictDoNothing();
+}
+
+// Dark supplied-tx bulk participant. Linking does not decide approvals or restore
+// issues; callers must adopt the protocol before any earlier domain read/lock.
+export async function linkManyIssuesApprovalInTransaction(tx: Transaction, input: {
+  companyId: string; approvalId: string; issueIds: string[]; actor?: LinkActor;
+}) {
+  const companyId = input.companyId;
+  const approvalId = input.approvalId;
+  const issueIds = [...input.issueIds];
+  const actor = { agentId: input.actor?.agentId ?? null, userId: input.actor?.userId ?? null };
+  if (!companyId) throw unprocessable("Lifecycle-fenced bulk approval link requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  return persistManyApprovalLinks(tx, approvalId, issueIds, actor, companyId);
+}
+
 export function issueApprovalService(db: Db) {
   async function getIssue(issueId: string) {
     return db
@@ -187,43 +224,18 @@ export function issueApprovalService(db: Db) {
       return persistApprovalUnlink(db, issueId, approvalId);
     },
 
-    linkManyForApproval: async (approvalId: string, issueIds: string[], actor?: LinkActor) => {
-      if (issueIds.length === 0) return;
-
-      const approval = await getApproval(approvalId);
-      if (!approval) throw notFound("Approval not found");
-
-      const uniqueIssueIds = Array.from(new Set(issueIds));
-      const rows = await db
-        .select({
-          id: issues.id,
-          companyId: issues.companyId,
-        })
-        .from(issues)
-        .where(inArray(issues.id, uniqueIssueIds));
-
-      if (rows.length !== uniqueIssueIds.length) {
-        throw notFound("One or more issues not found");
+    linkManyForApproval: async (approvalId: string, issueIds: string[], actor?: LinkActor,
+      options?: { lifecycleFence?: boolean; companyId?: string }) => {
+      if (options?.lifecycleFence) {
+        const companyId = options.companyId;
+        if (!companyId) throw unprocessable("Lifecycle-fenced bulk approval link requires companyId");
+        const capturedIssueIds = [...issueIds];
+        const capturedActor = { agentId: actor?.agentId ?? null, userId: actor?.userId ?? null };
+        return db.transaction((tx) => linkManyIssuesApprovalInTransaction(tx, {
+          companyId, approvalId, issueIds: capturedIssueIds, actor: capturedActor,
+        }));
       }
-
-      for (const row of rows) {
-        if (row.companyId !== approval.companyId) {
-          throw unprocessable("Issue and approval must belong to the same company");
-        }
-      }
-
-      await db
-        .insert(issueApprovals)
-        .values(
-          uniqueIssueIds.map((issueId) => ({
-            companyId: approval.companyId,
-            issueId,
-            approvalId,
-            linkedByAgentId: actor?.agentId ?? null,
-            linkedByUserId: actor?.userId ?? null,
-          })),
-        )
-        .onConflictDoNothing();
+      return persistManyApprovalLinks(db, approvalId, issueIds, actor);
     },
   };
 }
