@@ -5569,7 +5569,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ]);
   });
 
-  it("initializes stateful Streamable HTTP servers and remembers that future calls need a session", async () => {
+  it.each(["connect", "refresh"] as const)("initializes stateful Streamable HTTP servers and remembers the session requirement after %s", async (operation) => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
     const requests: Array<{ method: string; sessionId: string | null }> = [];
@@ -5630,19 +5630,26 @@ describeEmbeddedPostgres("tool access service", () => {
       });
     });
 
-    const result = await service.connectGalleryApp(
-      company.id,
-      {
-        link: "https://stateful.example/mcp",
-        name: "Stateful MCP",
-      },
-      { actorType: "user", actorId: "board" },
-    );
+    const result = operation === "connect"
+      ? await service.connectGalleryApp(
+          company.id,
+          { link: "https://stateful.example/mcp", name: "Stateful MCP" },
+          { actorType: "user", actorId: "board" },
+        )
+      : await service.refreshCatalog((await service.createConnection(company.id, {
+          name: "Stateful MCP",
+          transport: "mcp_remote",
+          config: { url: "https://stateful.example/mcp" },
+          enabled: true,
+          status: "active",
+        })).id);
 
     expect(result.connection.config).toMatchObject({
       mcpSessionRequired: true,
     });
-    expect(result.actions.readOnly).toEqual([
+    expect(result.connection.transportConfig).toMatchObject({ mcpSessionRequired: true });
+    const catalog = "actions" in result ? result.actions.readOnly : result.catalog;
+    expect(catalog).toEqual([
       expect.objectContaining({ toolName: "list_state", riskLevel: "read" }),
     ]);
     expect(requests[0]).toEqual({ method: "tools/list", sessionId: null });
@@ -5653,6 +5660,40 @@ describeEmbeddedPostgres("tool access service", () => {
       requests.filter(({ method }) => method === "notifications/initialized")
         .length,
     ).toBe(requests.filter(({ method }) => method === "initialize").length);
+  });
+
+  it.each([false, true])("preserves configuration saved during catalog discovery (enableAllByDefault=%s)", async (enableAllByDefault) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const connection = await service.createConnection(company.id, {
+      name: "Catalog configuration fixture",
+      transport: "mcp_remote",
+      config: { url: "https://fixture.example/mcp", quarantineNewEntries: true },
+      enabled: true,
+      status: "active",
+    });
+    const oauth = { expiresAt: new Date(Date.now() + 3_600_000).toISOString(), tokenType: "Bearer" };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      // Model configuration persisted while remote discovery is in flight.
+      await db.update(toolConnections).set({
+        config: { ...connection.config, oauth, timeoutMs: 25_000 },
+        transportConfig: { ...connection.transportConfig, oauth, timeoutMs: 35_000 },
+      }).where(eq(toolConnections.id, connection.id));
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: { tools: [{ name: "read_state", annotations: { readOnlyHint: true } }] },
+      });
+    });
+
+    const result = await service.refreshCatalog(connection.id, undefined, { enableAllByDefault });
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    for (const row of [result.connection, stored]) {
+      expect(row.config).toMatchObject({ oauth, timeoutMs: 25_000, quarantineNewEntries: !enableAllByDefault });
+      expect(row.transportConfig).toMatchObject({ oauth, timeoutMs: 35_000, quarantineNewEntries: !enableAllByDefault });
+    }
+    expect(result.discoveredCount).toBe(1);
+    expect(result.catalog[0].status).toBe(enableAllByDefault ? "active" : "quarantined");
   });
 
   it("serves persisted MCP actions until the cache expires and then refreshes them", async () => {

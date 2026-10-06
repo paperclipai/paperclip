@@ -7837,21 +7837,21 @@ export function toolAccessService(
       }
     }
 
-    const normalizedConfig = isRailwayEndpoint(connection.config.url)
-      ? { ...connection.config, quarantineNewEntries: true }
+    // Discovery can persist OAuth or MCP session metadata. Update only the
+    // catalog policy so the earlier snapshot cannot overwrite those changes.
+    const quarantineOverride = isRailwayEndpoint(connection.config.url)
+      ? true
       : refreshOptions.enableAllByDefault
-      ? { ...connection.config, quarantineNewEntries: false }
-      : connection.config;
-    const normalizedTransportConfig = isRailwayEndpoint(connection.config.url)
-      ? { ...connection.transportConfig, quarantineNewEntries: true }
-      : refreshOptions.enableAllByDefault
-      ? { ...connection.transportConfig, quarantineNewEntries: false }
-      : connection.transportConfig;
+        ? false
+        : undefined;
+    const configPatch = JSON.stringify({ quarantineNewEntries: quarantineOverride });
     const [updatedConnection] = await db
       .update(toolConnections)
       .set({
-        config: normalizedConfig,
-        transportConfig: normalizedTransportConfig,
+        ...(quarantineOverride === undefined ? {} : {
+          config: sql`${toolConnections.config} || ${configPatch}::jsonb`,
+          transportConfig: sql`${toolConnections.transportConfig} || ${configPatch}::jsonb`,
+        }),
         healthStatus: "ok",
         healthMessage: isAgentMailConnection(connection)
           ? "AgentMail API key is connected."
