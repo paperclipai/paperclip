@@ -38,7 +38,7 @@ Manual: Create a uniquely named task with an agent and project. Open its resulti
 
 ### `task-list`
 
-Automated: [task list](../ui/src/pages/Issues.test.tsx) covers UI behavior; list variants still need a running-browser check.
+Automated: [task-list helpers](../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, deduplication, and presentation constants. The suite does not render the page or exercise filtering, grouping, opening a task, and returning; those interactions still need a running-browser check.
 
 Manual: Filter by status and assignee, change grouping/sort, open a task, and return. Verify the correct records and selected view survive navigation and reload. Include an empty result and a failed request.
 

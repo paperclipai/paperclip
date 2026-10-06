@@ -31,7 +31,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Seed
 
 ### `inbox`
 
-Automated: [archive routes](../server/src/__tests__/inbox-archive-routes.test.ts) cover server mutations; [task list](../ui/src/pages/Issues.test.tsx) is component evidence for the combined host.
+Automated: [archive routes](../server/src/__tests__/inbox-archive-routes.test.ts) cover server mutations. [Task-list helpers](../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, and presentation constants; they do not render the combined Inbox/Tasks page. Reading, archiving, and navigating that page remain manual checks.
 
 Manual: Read an unread task, return to Unread, archive a handled item, and reload. Verify personal triage state changes while task status stays correct. Switch users and companies to check isolation.
 

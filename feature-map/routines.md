@@ -28,7 +28,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `routine-editor`
 
-Automated: [routine detail](../ui/src/pages/RoutineDetail.test.tsx) and [routine service](../server/src/__tests__/routines-service.test.ts) cover their layers.
+Automated: [routine detail helper](../ui/src/pages/RoutineDetail.test.tsx) tests project-selector options, not the rendered editor. [Routine service](../server/src/__tests__/routines-service.test.ts) covers server contracts. Saving and running through the editor remain manual checks.
 
 Manual: Save an agent, request, project, and a required variable. Reload and inspect the saved definition. Run now with a distinguishable input, follow the resulting task, and verify its output and history entry. Check a missing required input.
 
