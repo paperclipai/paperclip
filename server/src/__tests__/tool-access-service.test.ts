@@ -16540,7 +16540,6 @@ describeEmbeddedPostgres("tool access service", () => {
             galleryKey: "github",
             connectionMethodKey: "mcp-key",
             name: "GitHub rollback",
-            connectionMethodKey: "mcp-key",
             credentialValues: { "credentials.authorization": "github-secret" },
           },
           { actorType: "user", actorId: "board" },
@@ -16659,7 +16658,6 @@ describeEmbeddedPostgres("tool access service", () => {
             galleryKey: "github",
             connectionMethodKey: "mcp-key",
             name: "GitHub reconnect",
-            connectionMethodKey: "mcp-key",
             credentialValues: { "credentials.authorization": "old-secret" },
           },
           { actorType: "user", actorId: "board" },
@@ -16863,7 +16861,6 @@ describeEmbeddedPostgres("tool access service", () => {
             galleryKey: "github",
             connectionMethodKey: "mcp-key",
             name: "Personal GitHub reconnect",
-            connectionMethodKey: "mcp-key",
             grantKind: "user",
             credentialValues: {
               "credentials.authorization": "old-personal-secret",
@@ -16952,7 +16949,6 @@ describeEmbeddedPostgres("tool access service", () => {
             galleryKey: "github",
             connectionMethodKey: "mcp-key",
             name: "Personal GitHub reconnect",
-            connectionMethodKey: "mcp-key",
             // No grantKind is sent on reconnect: the retained connection owns that
             // decision and must reactivate this same grant rather than insert a new
             // one or fall back to an organization credential.
