@@ -143,6 +143,50 @@ export async function createApprovalInTransaction(tx: Transaction, input: {
   return created;
 }
 
+async function persistApprovalResolution(
+  writer: Pick<Db, "select" | "update">, id: string,
+  targetStatus: "approved" | "rejected", decidedByUserId: string,
+  decisionNote: string | null | undefined, companyId?: string,
+) {
+  const getExisting = async () => {
+    const row = await writer.select().from(approvals)
+      .where(and(eq(approvals.id, id), companyId === undefined ? undefined : eq(approvals.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!row || (companyId !== undefined && row.companyId !== companyId)) throw notFound("Approval not found");
+    if (companyId !== undefined && row.type === "hire_agent") {
+      throw unprocessable("Lifecycle-fenced rejection does not support hire effects");
+    }
+    return row;
+  };
+  const existing = await getExisting();
+  if (!["pending", "revision_requested"].includes(existing.status)) {
+    if (existing.status === targetStatus) return { approval: existing, applied: false };
+    throw unprocessable(`Only pending or revision requested approvals can be ${targetStatus}`);
+  }
+  const now = new Date();
+  const updated = await writer.update(approvals).set({
+    status: targetStatus, decidedByUserId, decisionNote: decisionNote ?? null,
+    decidedAt: now, updatedAt: now,
+  }).where(and(eq(approvals.id, id), inArray(approvals.status, ["pending", "revision_requested"]),
+    companyId === undefined ? undefined : eq(approvals.companyId, companyId),
+  )).returning().then((rows) => rows[0] ?? null);
+  if (updated) return { approval: updated, applied: true };
+  const latest = await getExisting();
+  if (latest.status === targetStatus) return { approval: latest, applied: false };
+  throw unprocessable(`Only pending or revision requested approvals can be ${targetStatus}`);
+}
+
+// Dark non-hire participant. No authenticated decision authority, hire effects,
+// dependent restoration or production opt-in. Caller must fence before prior locks.
+export async function rejectApprovalInTransaction(tx: Transaction, input: {
+  companyId: string; approvalId: string; decidedByUserId: string; decisionNote?: string | null;
+}) {
+  const { companyId, approvalId, decidedByUserId, decisionNote } = input;
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval rejection requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  return persistApprovalResolution(tx, approvalId, "rejected", decidedByUserId, decisionNote, companyId);
+}
+
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
@@ -166,58 +210,11 @@ export function approvalService(db: Db) {
     await builtInAgentService(db).ensure(companyId, sourceBuiltInAgentKey);
   }
 
-  async function getExistingApproval(id: string) {
-    const existing = await db
-      .select()
-      .from(approvals)
-      .where(eq(approvals.id, id))
-      .then((rows) => rows[0] ?? null);
-    if (!existing) throw notFound("Approval not found");
-    return existing;
-  }
-
   async function resolveApproval(
-    id: string,
-    targetStatus: "approved" | "rejected",
-    decidedByUserId: string,
+    id: string, targetStatus: "approved" | "rejected", decidedByUserId: string,
     decisionNote: string | null | undefined,
   ): Promise<ResolutionResult> {
-    const existing = await getExistingApproval(id);
-    if (!canResolveStatuses.has(existing.status)) {
-      if (existing.status === targetStatus) {
-        return { approval: existing, applied: false };
-      }
-      throw unprocessable(
-        `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
-      );
-    }
-
-    const now = new Date();
-    const updated = await db
-      .update(approvals)
-      .set({
-        status: targetStatus,
-        decidedByUserId,
-        decisionNote: decisionNote ?? null,
-        decidedAt: now,
-        updatedAt: now,
-      })
-      .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-
-    if (updated) {
-      return { approval: updated, applied: true };
-    }
-
-    const latest = await getExistingApproval(id);
-    if (latest.status === targetStatus) {
-      return { approval: latest, applied: false };
-    }
-
-    throw unprocessable(
-      `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
-    );
+    return persistApprovalResolution(db, id, targetStatus, decidedByUserId, decisionNote);
   }
 
   return {
@@ -343,7 +340,16 @@ export function approvalService(db: Db) {
       return { approval: updated, applied };
     },
 
-    reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
+    reject: async (id: string, decidedByUserId: string, decisionNote?: string | null,
+      options?: { lifecycleFence?: boolean; companyId?: string },
+    ) => {
+      if (options?.lifecycleFence) {
+        const companyId = options.companyId;
+        if (!companyId) throw unprocessable("Lifecycle-fenced approval rejection requires companyId");
+        return db.transaction((tx) => rejectApprovalInTransaction(tx, {
+          companyId, approvalId: id, decidedByUserId, decisionNote,
+        }));
+      }
       const { approval: updated, applied } = await resolveApproval(
         id,
         "rejected",
