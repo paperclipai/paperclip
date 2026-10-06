@@ -246,6 +246,20 @@ export async function withdrawInteractionInTransaction(
   );
 }
 
+/** Dark supplied question-answer participant. Root caller owns commit, delivery
+ * dispatch, touch and telemetry. No arbitrary hooks or production opt-in. */
+export async function answerQuestionsInTransaction(
+  tx: LifecycleTransaction,
+  issue: { id: string; companyId: string },
+  interactionId: string,
+  input: RespondIssueThreadInteraction,
+  actor: InteractionActor,
+) {
+  return issueThreadInteractionService(tx as unknown as Db).answerQuestions(
+    issue, interactionId, input, actor, {}, tx,
+  );
+}
+
 type InteractionActor = {
   identityContextId?: string | null;
   agentId?: string | null;
@@ -5084,12 +5098,34 @@ export function issueThreadInteractionService(
       input: RespondIssueThreadInteraction,
       actor: InteractionActor,
       mutationOptions: InteractionResolutionMutationOptions = {},
+      suppliedTx?: LifecycleTransaction,
     ) => {
+      if (suppliedTx) {
+        if (!issue.companyId || Object.keys(mutationOptions).length) {
+          throw unprocessable("Lifecycle answers require companyId and do not support arbitrary hooks");
+        }
+        issue = { id: issue.id, companyId: issue.companyId };
+        input = { answers: structuredClone(input.answers), summaryMarkdown: input.summaryMarkdown };
+        actor = {
+          identityContextId: actor.identityContextId, agentId: actor.agentId,
+          runId: actor.runId, userId: actor.userId, systemId: actor.systemId,
+          resolverPolicyRestriction: structuredClone(actor.resolverPolicyRestriction),
+        };
+        await acquireIssueLifecycleFenceInTransaction(suppliedTx, issue.companyId);
+        const [authoritativeIssue] = await suppliedTx.select().from(issues).where(and(
+          eq(issues.id, issue.id), eq(issues.companyId, issue.companyId),
+        )).for("update");
+        if (!authoritativeIssue) throw notFound("Issue not found");
+        assertIssueOpenForInteractionResolution(authoritativeIssue);
+        await assertInteractionRunWriteAllowed(suppliedTx as unknown as Db, issue, actor);
+      }
       assertIssueOpenForInteractionResolution(issue);
-      const current = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.id, interactionId))
+      const currentQuery = (suppliedTx ?? db).select().from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.id, interactionId),
+        suppliedTx ? eq(issueThreadInteractions.companyId, issue.companyId) : undefined,
+        suppliedTx ? eq(issueThreadInteractions.issueId, issue.id) : undefined,
+      ));
+      const current = await (suppliedTx ? currentQuery.for("update") : currentQuery)
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw interactionNotFoundError();
@@ -5127,8 +5163,8 @@ export function issueThreadInteractionService(
         }
       }
 
-      const updated = await db.transaction(async (tx) => {
-        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+      const persistAnswer = async (tx: Db) => {
+        if (!suppliedTx) await assertInteractionRunWriteAllowed(tx, issue, actor);
         await mutationOptions.beforeResolveInTransaction?.(tx);
         const resolvedAt = new Date();
         const [row] = await tx
@@ -5150,6 +5186,8 @@ export function issueThreadInteractionService(
             and(
               eq(issueThreadInteractions.id, interactionId),
               eq(issueThreadInteractions.status, "pending"),
+              suppliedTx ? eq(issueThreadInteractions.companyId, issue.companyId) : undefined,
+              suppliedTx ? eq(issueThreadInteractions.issueId, issue.id) : undefined,
             ),
           )
           .returning();
@@ -5170,11 +5208,14 @@ export function issueThreadInteractionService(
           answered,
         );
         return row;
-      });
+      };
+      const updated = suppliedTx
+        ? await persistAnswer(suppliedTx as unknown as Db)
+        : await db.transaction(tx => persistAnswer(tx as unknown as Db));
 
-      await touchIssue(db, issue.id);
+      if (!suppliedTx) await touchIssue(db, issue.id);
       const answered = hydrateInteraction(updated);
-      await emitInteractionResolvedTelemetry(db, answered);
+      if (!suppliedTx) await emitInteractionResolvedTelemetry(db, answered);
       return answered;
     },
 
