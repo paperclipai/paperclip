@@ -1,7 +1,12 @@
 import express from "express";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { actorMiddleware } from "../middleware/auth.js";
+import { errorHandler } from "../middleware/error-handler.js";
 
 const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockIssueService = vi.hoisted(() => ({
@@ -19,22 +24,72 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("node:child_process", () => ({ spawn: mockSpawn }));
 
-vi.mock("../routes/authz.js", () => ({
-  getActorInfo: () => ({ actorId: "user-1", agentId: null, runId: null }),
-  assertCompanyAccess: () => {},
-}));
-
-async function createApp(deploymentMode: "local_trusted" | "authenticated" = "local_trusted") {
+async function createApp(
+  deploymentMode: "local_trusted" | "authenticated" = "local_trusted",
+  authDb?: Db,
+) {
   const { boardChatRoutes } = await import("../routes/board-chat.js");
   const app = express();
   app.use(express.json());
+  if (authDb) {
+    app.use(actorMiddleware(authDb, { deploymentMode, resolveSession: async () => null }));
+  } else {
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "local-board",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+      };
+      next();
+    });
+  }
   app.use("/api", boardChatRoutes({} as any, { deploymentMode }));
+  app.use(errorHandler);
   return app;
 }
 
 describe("POST /api/board/chat/stream feature flag guard (PAP-137)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("rejects a valid run-scoped agent JWT before settings, issue writes, or host process spawn", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "board-chat-isolation-test-secret");
+    mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+    const agentId = randomUUID();
+    const companyId = randomUUID();
+    const runId = randomUUID();
+    const authDb = {
+      select: () => ({
+        from: (table: unknown) => ({
+          where: async () => table === agents
+            ? [{ id: agentId, companyId, status: "idle" }]
+            : table === heartbeatRuns
+              ? [{ id: runId, companyId, agentId, status: "running", resultJson: {}, contextSnapshot: {} }]
+              : [],
+        }),
+      }),
+    } as unknown as Db;
+
+    try {
+      const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, null);
+      expect(token).not.toBeNull();
+      const app = await createApp("local_trusted", authDb);
+      const res = await request(app)
+        .post("/api/board/chat/stream")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ companyId, message: "hello" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Board access required");
+      expect(mockGetExperimental).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+      expect(mockIssueService.create).not.toHaveBeenCalled();
+      expect(mockSpawn).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("returns 403 FEATURE_DISABLED when enableConferenceRoomChat is off", async () => {

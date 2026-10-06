@@ -39,6 +39,8 @@ export const KUBERNETES_PROVIDER_KEY = "kubernetes" as const;
 export interface ExecutionPolicy {
   executionMode?: "kubernetes" | "any";
   managedSandboxOnly?: boolean;
+  /** A local master key is held by a service UID; agent code must run elsewhere. */
+  requireIsolatedAgentRuntime?: boolean;
 }
 
 /**
@@ -108,6 +110,18 @@ export function evaluateExecutionAllowlist(
         `Instance execution policy requires the Kubernetes sandbox provider ` +
         `(executionMode=kubernetes), but the resolved environment uses the ${target}. ` +
         `Untrusted execution on a non-Kubernetes environment is refused.`,
+      deniedDriver: candidate.driver,
+      deniedProvider: provider,
+    };
+  }
+
+  // Arbitrary sandbox plugins may expose host paths or a Docker socket. The
+  // first-party Kubernetes provider uses a non-root pod with only emptyDir
+  // workspace mounts and no service account token.
+  if (policy?.requireIsolatedAgentRuntime && !isKubernetesSandboxEnvironment(candidate)) {
+    return {
+      allowed: false,
+      reason: "Isolated local secrets require the Kubernetes sandbox provider; local, SSH and other sandbox execution is refused.",
       deniedDriver: candidate.driver,
       deniedProvider: provider,
     };

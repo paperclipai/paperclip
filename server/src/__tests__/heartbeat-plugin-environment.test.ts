@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
   createDb,
   environments,
+  environmentLeases,
   executionWorkspaces,
   issues,
   plugins,
@@ -20,7 +23,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { environmentService } from "../services/environments.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
+import { buildJobManifest } from "../../../packages/plugins/sandbox-providers/kubernetes/src/pod-spec-builder.js";
+import { buildSandboxCrManifest } from "../../../packages/plugins/sandbox-providers/kubernetes/src/sandbox-cr-builder.js";
 
 const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
   exitCode: 0,
@@ -31,6 +37,11 @@ const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
   provider: "test",
   model: "test-model",
 })));
+
+const bundledKubernetesPath = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../packages/plugins/sandbox-providers/kubernetes",
+);
 
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: () => ({
@@ -242,6 +253,179 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     }, { timeout: 5_000 });
     expect(adapterExecute).toHaveBeenCalledTimes(1);
   }, 15_000);
+
+  it("enforces master-key isolation through heartbeat dispatch and the Kubernetes pod builders", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-isolated-dispatch-"));
+    tempRoots.push(root);
+    const pluginId = randomUUID();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      getWorker: vi.fn((id: string) => id === pluginId ? { supportedMethods: ["environmentAcquireLease", "environmentReleaseLease"] } : null),
+      call: vi.fn(async (_id: string, method: string, payload: Record<string, unknown>) => {
+        if (method === "environmentAcquireLease") {
+          return { providerLeaseId: `isolated-${randomUUID()}`, metadata: { remoteCwd: "/workspace" } };
+        }
+        if (method === "environmentRealizeWorkspace") return { cwd: "/workspace", metadata: {} };
+        if (method === "environmentExecute") {
+          const commandText = Array.isArray(payload.args) ? payload.args.join(" ") : "";
+          const stdout = commandText.includes("PAPERCLIP_GIT_CONTEXT_V1")
+            ? "\0PAPERCLIP_GIT_CONTEXT_V1\0\0PAPERCLIP_GIT_CONTEXT_END\0"
+            : commandText.includes("$PATH")
+              ? "\0/usr/bin:/bin\0"
+              : commandText.includes("expected_sha=")
+                ? '{"uploaded":true}\n'
+            : "";
+          return { exitCode: 0, signal: null, timedOut: false, stdout, stderr: "" };
+        }
+        if (method === "environmentReleaseLease") return undefined;
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
+
+    async function seedCandidate(input: {
+      driver: "local" | "ssh" | "sandbox";
+      provider?: string;
+      acpx?: boolean;
+    }) {
+      const companyId = randomUUID();
+      const projectId = randomUUID();
+      const environmentId = input.driver === "local"
+        ? (await environmentService(db).ensureLocalEnvironment()).id
+        : randomUUID();
+      const agentId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId, name: "Isolated dispatch fixture",
+        issuePrefix: `K${companyId.replace(/-/g, "").slice(0, 7).toUpperCase()}`,
+        status: "active", defaultResponsibleUserId: "responsible-user",
+      });
+      await db.insert(projects).values({ id: projectId, companyId, name: "Dispatch fixture", status: "active" });
+      await db.insert(projectWorkspaces).values({
+        id: randomUUID(), companyId, projectId, name: "Primary", cwd: root, isPrimary: true,
+      });
+      if (input.driver !== "local") {
+        await db.insert(environments).values({
+          id: environmentId, companyId, name: `Candidate ${environmentId}`,
+          driver: input.driver, status: "active",
+          config: input.driver === "sandbox" ? { provider: input.provider } : {},
+        });
+      }
+      await db.insert(agents).values({
+        id: agentId, companyId, name: "Candidate agent", role: "engineer",
+        status: "idle", adapterType: "codex_local",
+        adapterConfig: input.acpx ? { provider: "acpx", acpxAgent: "claude" } : {},
+        runtimeConfig: {}, defaultEnvironmentId: environmentId, permissions: {},
+      });
+      return { companyId, projectId, environmentId, agentId };
+    }
+
+    async function runCandidate(agentId: string, projectId: string) {
+      const run = await heartbeat.wakeup(agentId, {
+        source: "on_demand", triggerDetail: "manual", contextSnapshot: { projectId },
+      });
+      expect(run).not.toBeNull();
+      await vi.waitFor(async () => {
+        const latest = await heartbeat.getRun(run!.id);
+        expect(latest?.status).toMatch(/^(failed|succeeded)$/);
+      }, { timeout: 10_000 });
+      return (await heartbeat.getRun(run!.id))!;
+    }
+
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    try {
+      for (const candidate of [
+        { driver: "local" as const },
+        { driver: "local" as const, acpx: true },
+        { driver: "ssh" as const },
+        { driver: "sandbox" as const, provider: "other" },
+      ]) {
+        const fixture = await seedCandidate(candidate);
+        const run = await runCandidate(fixture.agentId, fixture.projectId);
+        expect(run.status).toBe("failed");
+        expect(run.error).toMatch(/Kubernetes sandbox provider/);
+      }
+      expect(workerManager.call).not.toHaveBeenCalled();
+      expect(adapterExecute).not.toHaveBeenCalled();
+
+      await db.insert(plugins).values({
+        id: pluginId, pluginKey: "paperclip.kubernetes-sandbox-provider",
+        packageName: "@paperclipai/plugin-kubernetes", packagePath: bundledKubernetesPath,
+        version: "0.1.0", apiVersion: 1,
+        categories: ["automation"], status: "ready", installOrder: 1,
+        manifestJson: {
+          id: "paperclip.kubernetes-sandbox-provider", apiVersion: 1, version: "0.1.0",
+          displayName: "Kubernetes", description: "First-party sandbox provider",
+          author: "Paperclip", categories: ["automation"],
+          capabilities: ["environment.drivers.register"],
+          entrypoints: { worker: "dist/worker.js" },
+          environmentDrivers: [{ driverKey: "kubernetes", kind: "sandbox_provider", displayName: "Kubernetes", configSchema: { type: "object" } }],
+        },
+      } as any);
+      const admitted = await seedCandidate({ driver: "sandbox", provider: "kubernetes" });
+      const admittedRun = await runCandidate(admitted.agentId, admitted.projectId);
+      expect(admittedRun.status).toBe("succeeded");
+      expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.objectContaining({
+        driverKey: "kubernetes", companyId: admitted.companyId,
+        environmentId: admitted.environmentId, runId: admittedRun.id,
+      }), undefined);
+      expect(adapterExecute).toHaveBeenCalledTimes(1);
+
+      for (const manifest of [
+        buildJobManifest({ namespace: "paperclip-test", jobName: "agent-test", adapterType: "codex_local",
+          image: "agent:test", envSecretName: "run-env", serviceAccountName: "tenant-sa",
+          labels: {}, resources: {}, activeDeadlineSec: 60, ttlSecondsAfterFinished: 60 }),
+        buildSandboxCrManifest({ namespace: "paperclip-test", sandboxName: "agent-test", adapterType: "codex_local",
+          image: "agent:test", envSecretName: "run-env", serviceAccountName: "tenant-sa",
+          labels: {}, resources: {} }),
+      ]) {
+        const spec = manifest.kind === "Job"
+          ? (manifest.spec as any).template.spec
+          : (manifest.spec as any).podTemplate.spec;
+        expect(spec.automountServiceAccountToken).toBe(false);
+        expect(spec.securityContext.runAsNonRoot).toBe(true);
+        expect(spec.containers[0].securityContext.readOnlyRootFilesystem).toBe(true);
+        expect(spec.volumes.every((volume: { emptyDir?: unknown }) => volume.emptyDir !== undefined)).toBe(true);
+        expect(JSON.stringify(spec)).not.toMatch(/hostPath|docker\.sock|master\.key/);
+      }
+
+      await vi.waitFor(async () => {
+        const leases = await db.select({ status: environmentLeases.status })
+          .from(environmentLeases)
+          .where(eq(environmentLeases.heartbeatRunId, admittedRun.id));
+        expect(leases).toHaveLength(1);
+        expect(leases[0]?.status).not.toBe("active");
+      }, { timeout: 5_000 });
+      vi.mocked(workerManager.call).mockClear();
+
+      await db.update(plugins).set({ packagePath: root }).where(eq(plugins.id, pluginId));
+      const localSpoof = await seedCandidate({ driver: "sandbox", provider: "kubernetes" });
+      const localSpoofRun = await runCandidate(localSpoof.agentId, localSpoof.projectId);
+      expect(localSpoofRun.status).toBe("failed");
+      expect(localSpoofRun.error).toMatch(/bundled Kubernetes sandbox provider/);
+
+      await db.update(plugins).set({
+        packagePath: null, packageName: "@paperclipai/plugin-kubernetes",
+      }).where(eq(plugins.id, pluginId));
+      const npmSpoof = await seedCandidate({ driver: "sandbox", provider: "kubernetes" });
+      const npmSpoofRun = await runCandidate(npmSpoof.agentId, npmSpoof.projectId);
+      expect(npmSpoofRun.status).toBe("failed");
+      expect(npmSpoofRun.error).toMatch(/bundled Kubernetes sandbox provider/);
+      expect(await db.select().from(environmentLeases)
+        .where(eq(environmentLeases.heartbeatRunId, npmSpoofRun.id))).toHaveLength(0);
+
+      await db.update(plugins).set({ packagePath: null, packageName: "@other/spoofed-kubernetes" })
+        .where(eq(plugins.id, pluginId));
+      const spoofed = await seedCandidate({ driver: "sandbox", provider: "kubernetes" });
+      const spoofedRun = await runCandidate(spoofed.agentId, spoofed.projectId);
+      expect(spoofedRun.status).toBe("failed");
+      expect(spoofedRun.error).toMatch(/bundled Kubernetes sandbox provider/);
+      expect(adapterExecute).toHaveBeenCalledTimes(1);
+      expect(workerManager.call).not.toHaveBeenCalled();
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      vi.unstubAllEnvs();
+    }
+  }, 60_000);
 
   it("inherits the instance default environment across companies while preserving explicit agent overrides", async () => {
     const sharedEnvironmentId = randomUUID();

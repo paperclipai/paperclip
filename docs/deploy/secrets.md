@@ -183,6 +183,120 @@ Back up the key file together with database backups. A database backup without
 the key cannot decrypt local secrets, and a key backup without the database
 metadata is not enough to restore named secret versions.
 
+### Isolating the local master key from agent processes
+
+The default local setup runs the server and local agents as the same OS user.
+File mode `0600` does not protect the master key from that user. For a shared
+host, run the server as a dedicated service UID, keep the key in a directory
+owned by that non-root UID (or root), and dispatch agents only to the first-party
+Kubernetes sandbox provider. The agent pod gets an isolated filesystem and no
+host Docker socket. A normal local run, local ACPX run, or SSH target is
+refused in this mode. The server still mints run-scoped agent API JWTs for
+sandbox runs; the JWT signing secret is independent of the local encryption key.
+Use `authenticated` deployment mode for this boundary. Startup refuses
+`local_trusted` while isolation is enabled because a request without credentials
+would otherwise receive implicit instance-admin authority, including through a
+proxy that lets an agent reach the loopback API.
+
+Set the following in the **server's** config after the host boundary is ready:
+
+```json
+{
+  "secrets": {
+    "provider": "local_encrypted",
+    "localEncrypted": {
+      "keyFilePath": "/srv/paperclip-private/secrets/master.key",
+      "requireIsolatedAgentRuntime": true,
+      "hostAgentUid": 1001
+    }
+  }
+}
+```
+
+`hostAgentUid` is the unprivileged host identity used for agents and must differ
+from the server UID. Environment overrides are
+`PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME` and
+`PAPERCLIP_SECRETS_HOST_AGENT_UID`. Inline
+`PAPERCLIP_SECRETS_MASTER_KEY` is refused. Startup refuses a missing, linked,
+group-readable, or agent-owned key and a writable/untrusted ancestor directory.
+The CLI and provider will not generate a replacement key in isolation mode.
+The Kubernetes agent pod must exclude the server's key/instance directories,
+host Docker socket, host namespace entry points, and server database credentials
+from the agent filesystem and environment. An agent UID with Docker daemon
+access is root-equivalent and cannot be treated as isolated, even with `0600`.
+In isolation mode, the Kubernetes provider must resolve to the exact bundled
+directory. An npm install with the expected package name or plugin key is not
+trusted without artifact verification and is refused before its worker starts;
+a local path override outside the bundled directory is also refused.
+The same pre-import rule applies to every plugin identity: only built-in release
+bundles and digest-verified distribution bundles may load. Other npm packages
+and local plugin paths are refused before a build, executable manifest import,
+or worker start, even if their package name differs from their manifest ID.
+Host workspace provision, cleanup, teardown, and runtime service commands are
+refused in this mode because they would execute as the key-owning service UID.
+Agent-triggered local-stdio MCP connections are also refused, including their
+tool and context endpoints, because their subprocess would inherit that UID.
+Use remote MCP connections for agents that need tools in this mode.
+
+#### Inventory and cutover (operator only)
+
+First run the synthetic migration/rollback probe from a source checkout. It
+requires Docker, a cached or pullable `node:24-bookworm-slim` image, and the
+Postgres `pg_dump`/`psql` tools:
+
+```sh
+PAPERCLIP_RUN_MASTER_KEY_ISOLATION_E2E=1 pnpm -C server exec vitest run src/__tests__/local-master-key-isolation.e2e.test.ts --config vitest.config.ts
+```
+
+The probe uses a disposable database and generated key. It backs up both,
+restores the database into a new database, and reports pass/fail only. For a
+live cutover, record a metadata-only
+inventory of **all** `local_encrypted` versions, including old, disabled, and
+user-scoped versions. Do not select `material`, `value_sha256`, or plaintext:
+
+```sql
+SELECT s.company_id, s.scope, s.status, v.status AS version_status,
+       v.material->>'scheme' AS scheme, count(*) AS versions
+FROM company_secrets AS s
+JOIN company_secret_versions AS v ON v.secret_id = s.id
+WHERE s.provider = 'local_encrypted'
+GROUP BY s.company_id, s.scope, s.status, v.status, v.material->>'scheme'
+ORDER BY s.company_id, s.scope, s.status, v.status, scheme;
+```
+
+Take a Paperclip database backup (`paperclipai db:backup`) and an offline,
+service-operator-only backup of the existing key as a matched pair. Record the
+backup identifiers and restore procedure outside agent-readable paths. Stop
+the server and all agent/worktree runtimes. A privileged operator moves the
+**same key bytes** into the service-owned private directory, sets the owner
+to the service UID and mode `0600`, and removes the old agent-readable copy.
+Do not generate a replacement key: every inventoried local version needs the
+original key unless it is separately re-encrypted. Start the server as the
+service UID with the isolation config, then compare the inventory counts and
+resolve a synthetic control secret server-side before and after a restart.
+Log only pass/fail and metadata; never log the resolved value.
+
+Before admitting agents, run negative probes as the **agent UID**: opening the
+key path, opening any prior worktree key copy, and decrypting a copied synthetic
+`company_secret_versions.material` must fail. Check that the agent UID cannot
+use `/var/run/docker.sock`, another Docker endpoint, `sudo`, or a user namespace
+to gain the service/root identity. Repeat the probes inside each configured
+sandbox and remote execution environment. Existing seeded worktrees and backups
+must be inventoried separately: a protected source refuses future worktree DB
+seeds because they would need another copy of the key. Create new worktrees with
+`paperclipai worktree init --no-seed` and synthetic secrets. Retire old worktree
+instances and their key copies only after confirming they contain no work to
+preserve.
+
+Rollback: stop agents and the server, restore the matched database backup with
+the approved Postgres restore procedure and restore the original key into the
+service-owned private path, then restart with the same
+isolation policy and repeat the server/agent probes. If the new deployment
+cannot run sandbox agents, leave agent dispatch stopped while fixing the
+sandbox; do not restore the old same-UID key placement. A live cutover and
+rotation of credentials that might already have been exposed require operator
+and secret-owner approval.
+
 ## Configuration
 
 ### CLI Setup

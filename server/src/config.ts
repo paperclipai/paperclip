@@ -81,6 +81,8 @@ export interface Config {
   secretsProvider: SecretProvider;
   secretsStrictMode: boolean;
   secretsMasterKeyFilePath: string;
+  secretsRequireIsolatedAgentRuntime: boolean;
+  secretsHostAgentUid: number | null;
   storageProvider: StorageProvider;
   storageLocalDiskBaseDir: string;
   storageS3Bucket: string;
@@ -172,6 +174,15 @@ export function loadConfig(): Config {
     strictModeFromEnv !== undefined
       ? strictModeFromEnv === "true"
       : (fileSecrets?.strictMode ?? deploymentMode === "authenticated");
+  const isolatedRuntimeFromEnv = process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME;
+  const secretsRequireIsolatedAgentRuntime = isolatedRuntimeFromEnv !== undefined
+    ? isolatedRuntimeFromEnv === "true"
+    : (fileSecrets?.localEncrypted.requireIsolatedAgentRuntime ?? false);
+  const hostAgentUidRaw = process.env.PAPERCLIP_SECRETS_HOST_AGENT_UID;
+  const hostAgentUid = hostAgentUidRaw === undefined
+    ? fileSecrets?.localEncrypted.hostAgentUid
+    : Number(hostAgentUidRaw);
+  const secretsHostAgentUid = hostAgentUid === undefined ? null : hostAgentUid;
   const deploymentExposureFromEnvRaw = process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE;
   const deploymentExposureFromEnv =
     deploymentExposureFromEnvRaw &&
@@ -341,6 +352,8 @@ export function loadConfig(): Config {
     uiDevMiddleware: process.env.PAPERCLIP_UI_DEV_MIDDLEWARE === "true",
     secretsProvider,
     secretsStrictMode,
+    secretsRequireIsolatedAgentRuntime,
+    secretsHostAgentUid,
     secretsMasterKeyFilePath:
       resolveHomeAwarePath(
         process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE ??
