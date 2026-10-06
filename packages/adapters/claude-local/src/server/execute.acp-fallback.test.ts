@@ -1,3 +1,6 @@
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -58,6 +61,12 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
     resolveAdapterExecutionTargetCommandForLogs,
     runAdapterExecutionTargetProcess,
   };
+});
+
+const { wakeEnv } = vi.hoisted(() => ({ wakeEnv: {} as Record<string, string> }));
+vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>("@paperclipai/adapter-utils/server-utils");
+  return { ...actual, buildPaperclipEnv: (...args: Parameters<typeof actual.buildPaperclipEnv>) => ({ ...actual.buildPaperclipEnv(...args), ...wakeEnv }) };
 });
 
 import { execute } from "./execute.js";
@@ -128,5 +137,39 @@ describe("claude_local ACP startup fallback", () => {
     await expect(execute(ctx as never)).rejects.toThrow('Unexpected "<<"');
 
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("large wake prompts", () => {
+  it.each([false, true])("keeps the file instruction on resume and fresh fallback (retry=%s)", async (retry) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-claude-wake-"));
+    const payload = JSON.stringify({ history: "private-history".repeat(50000) });
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    try {
+      vi.clearAllMocks();
+      Object.assign(wakeEnv, { PAPERCLIP_WAKE_PAYLOAD_JSON: payload, PAPERCLIP_RUN_SCRATCH_DIR: dir });
+      const ctx = buildContext({ engine: "cli", cwd: dir });
+      Object.assign(ctx.runtime, { sessionId, sessionParams: { sessionId, cwd: dir } });
+      if (retry) runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+        exitCode: 1, signal: null, timedOut: false,
+        stdout: JSON.stringify({ type: "result", is_error: true, result: "No conversation found with session ID: " + sessionId }),
+        stderr: "", pid: 123, startedAt: new Date().toISOString(),
+      });
+      await execute(ctx as never);
+      const calls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<[string, unknown, string, string[], { stdin: string; env: Record<string, string> }]>;
+      expect(calls).toHaveLength(retry ? 2 : 1);
+      expect(calls[0]![3]).toContain("--resume");
+      if (retry) expect(calls[1]![3]).not.toContain("--resume");
+      for (const call of calls) {
+        expect(call[4].stdin).toContain("Read that file before you act");
+        expect(call[4].stdin).toContain("PAPERCLIP_WAKE_PAYLOAD_PATH");
+        expect(call[4].stdin).not.toContain("private-history");
+        expect(await fs.readFile(call[4].env.PAPERCLIP_WAKE_PAYLOAD_PATH!, "utf8")).toBe(payload);
+      }
+    } finally {
+      for (const key of Object.keys(wakeEnv)) delete wakeEnv[key];
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });

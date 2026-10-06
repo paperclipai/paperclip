@@ -81,6 +81,12 @@ import {
   type TerminalResultCleanupOptions,
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import {
+  formatPaperclipWakePayloadDiagnostic,
+  materializePaperclipWakePayloadEnv,
+  paperclipWakePayloadRemoteInstallCommand,
+  retargetPaperclipWakePayloadEnv,
+} from "./wake-payload-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import {
   runWithRuntimeParent,
@@ -859,9 +865,39 @@ export async function runAdapterExecutionTargetProcess(
   args: string[],
   options: AdapterExecutionTargetProcessOptions,
 ): Promise<RunProcessResult> {
+  const wakeDelivery = await materializePaperclipWakePayloadEnv(options.env, {
+    runId,
+    scratchDir: options.env.PAPERCLIP_RUN_SCRATCH_DIR ?? null,
+    transport: target?.kind === "remote" ? "remote" : "local",
+  });
+  if (wakeDelivery.rewritten) {
+    await options.onLog("stdout", formatPaperclipWakePayloadDiagnostic(wakeDelivery));
+  }
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
-    const env = sanitizeRemoteExecutionEnv(options.env);
+    // Retarget only this attempt: retries still need the host pointer and source.
+    const targetEnv = { ...options.env };
+    if (targetEnv.PAPERCLIP_WAKE_PAYLOAD_LOCAL_PATH) {
+      await retargetPaperclipWakePayloadEnv({
+        env: targetEnv,
+        runId,
+        publish: async (remotePath, body) => {
+          const published = await runner.execute({
+            command: "sh",
+            args: ["-c", paperclipWakePayloadRemoteInstallCommand(remotePath)],
+            cwd: target.remoteCwd,
+            stdin: body,
+            timeoutMs: 60_000,
+          });
+          if ((published.exitCode ?? 1) !== 0 || published.timedOut) {
+            throw new Error(
+              `Failed to publish the wake payload file (${Buffer.byteLength(body)} bytes) into the sandbox (exit ${published.exitCode ?? "null"}).`,
+            );
+          }
+        },
+      });
+    }
+    const env = sanitizeRemoteExecutionEnv(targetEnv);
     await options.onRuntimeProgress?.({
       phase: "adapter_startup",
       message: "Starting adapter in environment",

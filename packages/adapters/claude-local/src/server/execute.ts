@@ -53,6 +53,11 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  formatPaperclipWakePayloadDiagnostic,
+  materializePaperclipWakePayloadEnv,
+  paperclipWakePayloadFileNote,
+} from "@paperclipai/adapter-utils/wake-payload-env";
 import { buildSkillLibraryManifestMarkdown } from "@paperclipai/adapter-utils/skill-library-manifest";
 import {
   parseLocalProcessFilesystemScope,
@@ -306,6 +311,21 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
+  }
+
+  const scratchRecord = parseObject(context.paperclipScratch);
+  const scratchDir =
+    env.PAPERCLIP_RUN_SCRATCH_DIR ??
+    (scratchRecord.type === "heartbeat_run" && typeof scratchRecord.dir === "string"
+      ? scratchRecord.dir
+      : null);
+  const wakeDelivery = await materializePaperclipWakePayloadEnv(env, {
+    runId,
+    scratchDir,
+    transport: executionTargetIsRemote ? "remote" : "local",
+  });
+  if (wakeDelivery.delivery === "file") {
+    await onLog("stdout", formatPaperclipWakePayloadDiagnostic(wakeDelivery));
   }
 
   const runtimeEnv = Object.fromEntries(
@@ -912,6 +932,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const prompt = joinPromptSections([
+      paperclipWakePayloadFileNote(env),
       renderedBootstrapPrompt,
       selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
       wakePrompt,
