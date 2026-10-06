@@ -1,5 +1,11 @@
 # Dark root-first withdrawal checkpoint
 
+## Locked-card prewrite checkpoint
+
+The dark supplied path now re-reads the same-company interaction FOR UPDATE after the existing actor/run guard and before linked tool/secret persistence. The initial lookup is only discovery. Missing or non-pending locked rows fail before linked writes; the locked row supplies canonical persistence inputs. Ordinary omitted/false behavior remains unchanged. Order is company fence -> issue -> existing actor/run guard -> interaction -> linked persistence. This is not common serialization: unfenced writers and native source-run composition still need a lock-order audit before wiring.
+
+Actual canonical recording RED: focused revalidates locked pending, 1 expected FAIL/17 skipped, resolved instead of 409, 4.49s. After source fix supplied/owned withdrawal 30 PASS/5.80s. Seven new controls cover changed terminal state, disappearance, lock rejection and positive lock order/scoped predicates. Final same runner across 31 targeted participant files: 755 PASS/37.47s/exit 0. Separate writer-boundary/human-gates: 19 PASS/1 original missing-intent RED/6.62s, Vitest exit 1 (a later shell diff check exited 0; not a test PASS). No DB/server/listener/adapter/typecheck/build/full gates. Recording for(update) and rendered predicates are not executed SQL exclusion, authority, concurrency, commit or rollback. Owned linked-secret publication regressions pass but actor-run/native composition remains unproven. No production opt-in or acceptance claim.
+
 The supplied-tx withdrawInteractionInTransaction entry is dark and has no production caller. It delegates to the actual canonical withdrawal implementation without creating a nested transaction. It is not authorization, a provider stop or restoration wiring.
 
 The caller must own the transaction from its root and acquire the company lifecycle fence before any earlier domain reads or row locks. This entry awaits that fence before authoritative same-company issue FOR UPDATE, then reads the scoped interaction, preserves the pending guard, runs the existing actor-run guard and canonical tool/secret/card persistence. Board calls also acquire the issue lock before linked writes. Do not invoke it only from an existing afterResolve hook under old locks.

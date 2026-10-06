@@ -5,7 +5,7 @@ import * as service from "../services/issue-thread-interactions.js";
 vi.mock("../services/instance-settings.js", () => ({ instanceSettingsService: () => ({}) }));
 vi.mock("../telemetry.js", () => ({ getTelemetryClient: () => null }));
 vi.mock("../services/chat-interaction-publications.js", () => ({ enqueueTerminalIssueInteractionChatPublications: async () => {} }));
-function fixture(config: { status?: string; missingIssue?: boolean; missingCard?: boolean; cardStatus?: string; activeTool?: boolean; noResult?: boolean; writeError?: Error } = {}) {
+function fixture(config: { status?: string; missingIssue?: boolean; missingCard?: boolean; cardStatus?: string; activeTool?: boolean; noResult?: boolean; writeError?: Error; lockedStatus?: string; missingLockedCard?: boolean; lockError?: Error } = {}) {
   const events: string[] = []; const queries: any[] = []; const patches: any[] = []; const dialect = new PgDialect();
   let release!: () => void; let reject!: (e: Error) => void;
   const barrier = new Promise<void>((resolve, fail) => { release = resolve; reject = fail; });
@@ -16,7 +16,7 @@ function fixture(config: { status?: string; missingIssue?: boolean; missingCard?
     select: () => ({ from: (table: any) => ({ where: (q: any) => {
       queries.push(dialect.sqlToQuery(q));
       if (table === issues) return { for: async (mode: string) => { expect(mode).toBe("update"); events.push("issue-lock"); return config.missingIssue ? [] : [{ id: "issue-1", companyId: "company-1", status: config.status ?? "blocked" }]; } };
-      if (table === issueThreadInteractions) { events.push("card-read"); return Promise.resolve(config.missingCard ? [] : [row]); }
+      if (table === issueThreadInteractions) { events.push("card-read"); return Object.assign(Promise.resolve(config.missingCard ? [] : [row]), { for: async (mode: string) => { expect(mode).toBe("update"); events.push("card-lock"); if (config.lockError) throw config.lockError; return config.missingLockedCard ? [] : [{ ...row, status: config.lockedStatus ?? row.status }]; } }); }
       expect(table).toBe(toolActionRequests); events.push("active-tool-read"); return Promise.resolve(config.activeTool ? [{ id: "tool-1" }] : []);
     } }) }),
     update: (table: any) => ({ set: (patch: any) => ({ where: (q: any) => {
@@ -30,13 +30,31 @@ function fixture(config: { status?: string; missingIssue?: boolean; missingCard?
 const invoke = (f: ReturnType<typeof fixture>, issue = { id: "issue-1", companyId: "company-1" }, actor = { userId: "user-1" }, input = { reason: "Offline withdrawal" }, queue: any = []) =>
   (service as any).withdrawInteractionInTransaction(f.tx, issue, "interaction-1", input, actor, { postCommitPublications: queue });
 describe("dark supplied root-first canonical withdrawal recording", () => {
+  it("revalidates locked pending card before linked revocation", async () => {
+    const f = fixture({ lockedStatus: "answered" }); f.release();
+    await expect(invoke(f)).rejects.toMatchObject({ status: 409 });
+    expect(f.events).toContain("card-lock"); expect(f.patches).toEqual([]);
+    expect(f.queries.at(-1).params).toEqual(["interaction-1", "company-1", "issue-1"]);
+  });
+  it.each(["cancelled", "expired", "accepted", "rejected"])("denies locked terminal %s before linked writes", async lockedStatus => {
+    const f = fixture({ lockedStatus }); f.release();
+    await expect(invoke(f)).rejects.toMatchObject({ status: 409 }); expect(f.patches).toEqual([]);
+  });
+  it("denies disappearance at locked reread before linked writes", async () => {
+    const f = fixture({ missingLockedCard: true }); f.release();
+    await expect(invoke(f)).rejects.toMatchObject({ status: 404 }); expect(f.patches).toEqual([]);
+  });
+  it("propagates card-lock failure before linked writes", async () => {
+    const error = new Error("card-lock-denied"); const f = fixture({ lockError: error }); f.release();
+    await expect(invoke(f)).rejects.toBe(error); expect(f.patches).toEqual([]);
+  });
   it("fences before authoritative issue lock, card read and canonical withdrawal", async () => {
     const f = fixture(); const pending = Promise.resolve().then(() => invoke(f)); void pending.catch(() => {});
     try { await Promise.resolve(); expect(f.events).toEqual(["fence"]); expect(f.queries).toEqual([]); }
     finally { f.release(); }
     const result = await pending;
     expect(result).toMatchObject({ id: "interaction-1", status: "cancelled", resolvedByUserId: "user-1" });
-    expect(f.events).toEqual(["fence", "issue-lock", "card-read", "tool-write", "active-tool-read", "card-write"]);
+    expect(f.events).toEqual(["fence", "issue-lock", "card-read", "card-read", "card-lock", "tool-write", "active-tool-read", "card-write"]);
     expect(f.queries[0].params).toEqual(["issue-1", "company-1"]);
     expect(f.queries[1].params).toEqual(["interaction-1", "company-1", "issue-1"]);
     expect(f.queries.at(-1).params).toEqual(["interaction-1", "pending", "company-1", "issue-1"]);

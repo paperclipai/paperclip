@@ -4951,7 +4951,7 @@ export function issueThreadInteractionService(
       }
       assertIssueOpenForInteractionResolution(issue);
       const data = withdrawIssueThreadInteractionSchema.parse(input);
-      const current = await (suppliedTx ?? db)
+      const initialCurrent = await (suppliedTx ?? db)
         .select()
         .from(issueThreadInteractions)
         .where(and(
@@ -4961,13 +4961,13 @@ export function issueThreadInteractionService(
         ))
         .then((rows) => rows[0] ?? null);
       if (
-        !current ||
-        current.companyId !== issue.companyId ||
-        current.issueId !== issue.id
+        !initialCurrent ||
+        initialCurrent.companyId !== issue.companyId ||
+        initialCurrent.issueId !== issue.id
       ) {
         throw interactionNotFoundError();
       }
-      if (current.status !== "pending") throw interactionTerminalError(current);
+      if (initialCurrent.status !== "pending") throw interactionTerminalError(initialCurrent);
 
       const reason = data.reason?.trim() || null;
       const now = new Date();
@@ -4981,6 +4981,19 @@ export function issueThreadInteractionService(
       // request must not outlive a withdrawn card.
       const persistWithdrawal = async (tx: LifecycleTransaction) => {
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        // Preserve issue -> actor/run -> interaction order. Revalidate the locked
+        // card before linked revocation; an earlier lookup is not currentness.
+        const current = suppliedTx
+          ? await tx.select().from(issueThreadInteractions).where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+          )).for("update").then(rows => rows[0] ?? null)
+          : initialCurrent;
+        if (!current || current.companyId !== issue.companyId || current.issueId !== issue.id) {
+          throw interactionNotFoundError();
+        }
+        if (current.status !== "pending") throw interactionTerminalError(current);
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],

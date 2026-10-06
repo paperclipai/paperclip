@@ -19,7 +19,7 @@ function fixture(config: { lost?: boolean; status?: string } = {}) {
       queries.push(new PgDialect().sqlToQuery(q)); const name = getTableName(table);
       if (name === "issues") return { for: async () => [{ id: "issue-1", companyId: "company-1", status: config.status ?? "blocked" }] };
       if (name === "tool_action_requests") return Promise.resolve([]);
-      expect(name).toBe("issue_thread_interactions"); return Promise.resolve([row]);
+      expect(name).toBe("issue_thread_interactions"); return Object.assign(Promise.resolve([row]), { for: async (mode: string) => { expect(mode).toBe("update"); return [row]; } });
     } }) }),
     update: (table: any) => ({ set: (patch: any) => ({ where: (q: any) => {
       const name = getTableName(table); patches.push({ name, patch }); queries.push(new PgDialect().sqlToQuery(q));
