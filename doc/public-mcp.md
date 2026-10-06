@@ -171,6 +171,14 @@ self-reported; verify the receiving domain before approving an unexpected reques
 The hosted organization chooser also identifies the original client and callback
 origin before its tenant handoff.
 
+Remote client-metadata resolution consumes a database-backed admission receipt
+before fetching: at most 60 attempts per instance and six per source per rolling
+minute, shared by browser and device authorization across server replicas.
+Receipts store only a source hash and expiry, and failed lookups or mismatched
+redirects still consume the quota. Invalid resources and scopes are rejected
+without fetching. The network request runs after the admission transaction
+commits, so slow clients cannot hold its database lock.
+
 Client ID Metadata Documents (CIMD) and dynamic registration both support public
 clients. CIMD uses an HTTPS client ID URL with an exact matching `client_id`,
 required registered redirects, a 32 KiB response limit, a bounded cache, and

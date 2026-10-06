@@ -1,10 +1,10 @@
 import { instanceSettingsService } from "../instance-settings.js";
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, gt, inArray, isNull, lt, notExists, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lt, lte, notExists, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Request } from "express";
 import {
-  type Db, activityLog, companies, companyLogos, mcpOauthClients, mcpOauthGrants, mcpOauthRequests, mcpOauthTokens, mcpOauthDeviceRequests,
+  type Db, activityLog, companies, companyLogos, mcpOauthClients, mcpOauthGrants, mcpOauthRequests, mcpOauthTokens, mcpOauthDeviceRequests, mcpOauthMetadataAdmissions,
 } from "@paperclipai/db";
 import { PUBLIC_MCP_PATH, PUBLIC_MCP_SCOPES, type McpConnectionRequest } from "@paperclipai/shared";
 import { boardAuthService } from "../board-auth.js";
@@ -100,11 +100,29 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     };
   }
 
-  async function resolveClient(id: string) {
+  async function admitMetadataFetch(source: string) {
+    const sourceHash = hashMcpSecret(config.resource + ":" + source);
+    // Commit admission before any remote work. Failed metadata/redirect checks
+    // must not roll this back; a unique client URL must not reset the quota.
+    await db.transaction(async tx => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(736721044)`);
+      await tx.delete(mcpOauthMetadataAdmissions).where(lte(mcpOauthMetadataAdmissions.expiresAt, sql`clock_timestamp()`));
+      const [counts] = await tx.select({ total: sql<number>`count(*)::int`,
+        source: sql<number>`(count(*) FILTER (WHERE ${mcpOauthMetadataAdmissions.sourceHash} = ${sourceHash}))::int`,
+      }).from(mcpOauthMetadataAdmissions);
+      if (!counts || counts.total >= 60 || counts.source >= 6) {
+        throw new McpOAuthError("temporarily_unavailable", "Client metadata verification capacity reached. Retry later.", 429);
+      }
+      await tx.insert(mcpOauthMetadataAdmissions).values({ sourceHash, expiresAt: sql`clock_timestamp() + interval '1 minute'` });
+    });
+  }
+
+  async function resolveClient(id: string, source: string) {
     if (!id.startsWith("https://")) {
       const [client] = await db.select().from(mcpOauthClients).where(eq(mcpOauthClients.id, id));
       return client ? { ...client, native: false } : undefined;
     }
+    await admitMetadataFetch(source);
     let metadata;
     try { metadata = await resolveMetadata(id); }
     catch { throw new McpOAuthError("invalid_client_metadata", "Could not verify the client's public metadata."); }
@@ -207,10 +225,10 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       await assertEnabled();
       const p = z.object({ client_id: z.string().min(1).max(2048), resource: z.literal(config.resource), scope: z.string().max(200).default("paperclip:read"), company_id: z.uuid().optional() }).safeParse(input);
       if (!p.success) throw new McpOAuthError("invalid_request", "Supply a registered client and the exact Paperclip resource.");
-      const client = await resolveClient(p.data.client_id);
-      if (!client?.grantTypes.includes(DEVICE_GRANT)) throw new McpOAuthError("unauthorized_client", "Register a device authorization client.");
       const scopes = [...new Set(p.data.scope.split(/\s+/).filter(Boolean))];
       if (!scopes.includes("paperclip:read") || scopes.some(s => !(PUBLIC_MCP_SCOPES as readonly string[]).includes(s))) throw new McpOAuthError("invalid_scope", "Unsupported Paperclip scope.");
+      const client = await resolveClient(p.data.client_id, source);
+      if (!client?.grantTypes.includes(DEVICE_GRANT)) throw new McpOAuthError("unauthorized_client", "Register a device authorization client.");
       const deviceCode = secret("pcmcp_device_");
       const alphabet = "BCDFGHJKLMNPQRSTVWXYZ23456789";
       const chars = Array.from(randomBytes(8), byte => alphabet[byte % alphabet.length]).join("");
@@ -270,14 +288,14 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       const parsed = authorizeSchema.safeParse(input);
       if (!parsed.success) throw new McpOAuthError("invalid_request", "A registered client, exact redirect URI, resource, and S256 PKCE challenge are required.");
       const p = parsed.data;
-      const client = await resolveClient(p.client_id);
-      if (!client || !client.grantTypes.includes("authorization_code") || !mcpRedirectMatches(client.redirectUris, p.redirect_uri, client.native)) {
-        throw new McpOAuthError("invalid_request", "Unknown client or redirect URI.");
-      }
       if (p.resource !== config.resource) throw new McpOAuthError("invalid_target", "Resource does not match this Paperclip MCP endpoint.");
       const scopes = [...new Set(p.scope.split(/\s+/).filter(Boolean))];
       if (!scopes.includes("paperclip:read") || scopes.some((s) => !(PUBLIC_MCP_SCOPES as readonly string[]).includes(s))) {
         throw new McpOAuthError("invalid_scope", "Unsupported Paperclip scope.");
+      }
+      const client = await resolveClient(p.client_id, source);
+      if (!client || !client.grantTypes.includes("authorization_code") || !mcpRedirectMatches(client.redirectUris, p.redirect_uri, client.native)) {
+        throw new McpOAuthError("invalid_request", "Unknown client or redirect URI.");
       }
       const id = secret("pcmcp_request_");
       await db.transaction(async (tx) => {

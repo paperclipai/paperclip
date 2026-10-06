@@ -2122,6 +2122,13 @@
       "when": 1791298446043,
       "tag": "0304_curvy_shadow_king",
       "breakpoints": true
+    },
+    {
+      "idx": 305,
+      "version": "7",
+      "when": 1791300719193,
+      "tag": "0305_chubby_vin_gonzales",
+      "breakpoints": true
     }
   ]
 }

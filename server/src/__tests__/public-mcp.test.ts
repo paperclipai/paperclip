@@ -2,8 +2,8 @@ import { createHmac, createHash, randomBytes, randomUUID } from "node:crypto";
 import express, { type Request } from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, mcpEventAdmissions, mcpEventDeliveries, mcpEventSubscriptions, createDb, authUsers, companies, companyLogos, assets, companyMemberships, mcpOauthTokens, mcpOauthRequests, mcpOauthGrants, mcpOauthClients, mcpOauthDeviceRequests, mcpMutationReceipts, agents, issues, issueComments, instanceUserRoles } from "@paperclipai/db";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { activityLog, mcpEventAdmissions, mcpEventDeliveries, mcpEventSubscriptions, createDb, authUsers, companies, companyLogos, assets, companyMemberships, mcpOauthTokens, mcpOauthRequests, mcpOauthGrants, mcpOauthClients, mcpOauthDeviceRequests, mcpOauthMetadataAdmissions, mcpMutationReceipts, agents, issues, issueComments, instanceUserRoles } from "@paperclipai/db";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createPublicMcpOAuth, publicMcpConfig, hashMcpSecret, DEVICE_GRANT } from "../services/public-mcp/oauth.js";
 import { McpApiError, createMcpApiDispatch, createPublicMcpExecutor, publicMcpCapabilities } from "../services/public-mcp/capabilities.js";
@@ -151,6 +151,83 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
         await db.delete(mcpOauthClients).where(eq(mcpOauthClients.id, id));
       }
     }
+  });
+
+  describe("CIMD network admission", () => {
+    beforeEach(async () => { await db.delete(mcpOauthMetadataAdmissions); });
+    afterEach(async () => { await db.delete(mcpOauthMetadataAdmissions); });
+    const input = (index: number) => ({ client_id: `https://admission.example/${index}.json`, redirect_uri: redirectUri,
+      response_type: "code", resource: config.resource, code_challenge: challenge, code_challenge_method: "S256" });
+    const metadata = (url: URL) => new Response(JSON.stringify({ client_id: url.toString(), client_name: "Admission test",
+      redirect_uris: [redirectUri], grant_types: ["authorization_code", DEVICE_GRANT] }), { headers: { "content-type": "application/json" } });
+
+    it("rejects wrong resources, scopes and disabled connections before fetching", async () => {
+      const fetcher = vi.fn(async (url: URL) => metadata(url));
+      const client = createPublicMcpOAuth(db, config, { metadataFetch: fetcher });
+      for (const override of [{ resource: "https://wrong.example/mcp" }, { scope: "paperclip:read invalid" }]) {
+        await expect(client.authorize({ ...input(0), ...override })).rejects.toThrow();
+        await expect(client.deviceAuthorize({ ...input(0), ...override })).rejects.toThrow();
+      }
+      await instanceSettingsService(db).updateExperimental({ enablePublicMcp: false });
+      try {
+        await expect(client.authorize(input(0))).rejects.toMatchObject({ status: 503 });
+        await expect(client.deviceAuthorize(input(0))).rejects.toMatchObject({ status: 503 });
+      } finally { await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true }); }
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(await db.select().from(mcpOauthMetadataAdmissions)).toHaveLength(0);
+    });
+
+    it.each(["fetch failure", "invalid metadata", "redirect mismatch"])("retains admission after %s across replicas and both grants", async mode => {
+      const fetcher = vi.fn(async (url: URL) => {
+        if (mode === "fetch failure") throw new Error("Remote unavailable");
+        if (mode === "invalid metadata") return new Response("{}", { headers: { "content-type": "application/json" } });
+        // Browser rejects the callback; device rejects the unsupported grant.
+        return new Response(JSON.stringify({ client_id: url.toString(), client_name: "Mismatch", redirect_uris: ["https://other.example/callback"], grant_types: ["authorization_code"] }), { headers: { "content-type": "application/json" } });
+      });
+      const clients = [createPublicMcpOAuth(db, config, { metadataFetch: fetcher }), createPublicMcpOAuth(db, config, { metadataFetch: fetcher })];
+      const outcomes = await Promise.allSettled(Array.from({ length: 12 }, (_, i) =>
+        i % 2 ? clients[1]!.deviceAuthorize(input(i), "same-source") : clients[0]!.authorize(input(i), "same-source")));
+      expect(fetcher).toHaveBeenCalledTimes(6);
+      expect(outcomes.every(result => result.status === "rejected")).toBe(true);
+      expect(outcomes.filter(result => result.status === "rejected" && result.reason.status === 429)).toHaveLength(6);
+      const receipts = await db.select().from(mcpOauthMetadataAdmissions);
+      expect(receipts).toHaveLength(6);
+      expect(receipts.every(row => row.sourceHash === hashMcpSecret(config.resource + ":same-source"))).toBe(true);
+      expect(JSON.stringify(receipts)).not.toContain("same-source");
+      // Expired receipts are pruned on the next attempt, including after restart.
+      await db.update(mcpOauthMetadataAdmissions).set({ expiresAt: new Date(0) });
+      const restarted = createPublicMcpOAuth(db, config, { metadataFetch: fetcher });
+      await expect(restarted.authorize(input(99), "same-source")).rejects.not.toMatchObject({ status: 429 });
+      expect(fetcher).toHaveBeenCalledTimes(7);
+      expect(await db.select().from(mcpOauthMetadataAdmissions)).toHaveLength(1);
+    });
+
+    it("caps unique-source failures globally without blocking registered clients", async () => {
+      const fetcher = vi.fn(async () => { throw new Error("Remote unavailable"); });
+      const clients = [createPublicMcpOAuth(db, config, { metadataFetch: fetcher }), createPublicMcpOAuth(db, config, { metadataFetch: fetcher })];
+      const outcomes = await Promise.allSettled(Array.from({ length: 65 }, (_, i) =>
+        i % 2 ? clients[1]!.deviceAuthorize(input(i), `source-${i}`) : clients[0]!.authorize(input(i), `source-${i}`)));
+      expect(fetcher).toHaveBeenCalledTimes(60);
+      expect(outcomes.filter(result => result.status === "rejected" && result.reason.status === 429)).toHaveLength(5);
+      expect(await db.select().from(mcpOauthMetadataAdmissions)).toHaveLength(60);
+      const registered = await oauth.register({ client_name: "Local client", redirect_uris: [redirectUri] }, randomUUID());
+      await expect(clients[0]!.authorize({ ...input(99), client_id: registered.client_id })).resolves.toContain("/mcp-connect/");
+      expect(fetcher).toHaveBeenCalledTimes(60);
+    });
+
+    it("commits admission before slow network work without holding the shared lock", async () => {
+      let release!: () => void;
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      const fetcher = vi.fn(async () => { await pending; throw new Error("Remote timeout"); });
+      const clients = [createPublicMcpOAuth(db, config, { metadataFetch: fetcher }), createPublicMcpOAuth(db, config, { metadataFetch: fetcher })];
+      const requests = Array.from({ length: 6 }, (_, i) => clients[i % 2]!.authorize(input(i), "slow-source"));
+      const outcomes = Promise.allSettled(requests);
+      try {
+        await expect.poll(() => fetcher.mock.calls.length).toBe(6);
+        await expect(clients[1]!.deviceAuthorize(input(7), "slow-source")).rejects.toMatchObject({ status: 429 });
+        expect(await db.select().from(mcpOauthMetadataAdmissions)).toHaveLength(6);
+      } finally { release(); await outcomes; }
+    });
   });
 
   it("requires exact redirect, resource, S256 PKCE and real browser consent", async () => {

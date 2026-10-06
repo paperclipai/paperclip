@@ -13,6 +13,14 @@ export const mcpOauthClients = pgTable("mcp_oauth_clients", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Instance-level, short-lived admission receipts bound unauthenticated CIMD
+// network work across replicas. Failed lookups consume the same quota as success.
+export const mcpOauthMetadataAdmissions = pgTable("mcp_oauth_metadata_admissions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sourceHash: text("source_hash").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (t) => [index("mcp_oauth_metadata_admissions_expiry_idx").on(t.expiresAt)]);
+
 export const mcpOauthGrants = pgTable("mcp_oauth_grants", {
   id: uuid("id").primaryKey().defaultRandom(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
