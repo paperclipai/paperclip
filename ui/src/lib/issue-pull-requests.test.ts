@@ -30,6 +30,13 @@ describe("saved issue pull requests", () => {
     expect(getIssuePullRequests([old, merged])).toEqual([merged]);
   });
 
+  it.each(["?diff=split", "#discussion_r123", "/files", "/"])("deduplicates GitHub navigation variants: %s", (suffix) => {
+    const old = product({ id: "old", updatedAt: new Date("2026-10-05T12:00:00Z") });
+    const merged = product({ status: "merged", url: `https://github.com/Example/Private-Repo/pull/42${suffix}` });
+    expect(getIssuePullRequests([old, merged])).toEqual([merged]);
+    expect(pullRequestHref(merged)).toBe(merged.url);
+  });
+
   it("puts actionable reviews before historical PRs and ignores other work products", () => {
     const review = product();
     const merged = product({ id: "merged", url: "https://github.com/example/repo/pull/12", status: "merged" });

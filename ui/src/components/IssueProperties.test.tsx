@@ -506,6 +506,37 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it.each([
+    { statusLabel: "Open", statusCategory: "open", liveness: "stale", statusIconKey: "git-pull-request", review: true },
+    { statusLabel: "Merged", statusCategory: "succeeded", liveness: "fresh", statusIconKey: "git-merge", review: false },
+    { statusLabel: "Not found", statusCategory: "archived", liveness: "stale", statusIconKey: null, review: true },
+  ] as const)("combines a saved PR with its $statusLabel provider status and freshness", async (provider) => {
+    const canonical = "https://github.com/example/private-repo/pull/42";
+    const savedUrl = `${canonical}?diff=split#discussion_r123`;
+    mockIssuesApi.listWorkProducts.mockResolvedValue([{
+      id: "pr-1", type: "pull_request", title: "Update runtime probe", url: savedUrl,
+      metadata: {}, status: "ready_for_review", reviewState: "needs_board_review", updatedAt: new Date(),
+    }]);
+    const root = renderProperties(container, {
+      issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true,
+      externalObjects: [{
+        pill: { providerKey: "github", objectType: "pull_request", url: canonical, ...provider },
+        mentionCount: 1, sourceLabels: ["Comment"],
+        group: { object: null, mentions: [], mentionCount: 1, sourceLabels: ["Comment"] },
+      }],
+    });
+    await waitForAssertion(() => {
+      const links = container.querySelectorAll('a[href*="/pull/42"]');
+      expect(links).toHaveLength(1);
+      expect(links[0].getAttribute("href")).toBe(savedUrl);
+      const row = links[0].closest("li")!;
+      expect(row.textContent).toContain(provider.statusLabel);
+      expect(row.querySelector("[data-external-liveness]")?.getAttribute("data-external-liveness")).toBe(provider.liveness);
+      expect(row.textContent?.includes("Review requested")).toBe(provider.review);
+    });
+    act(() => root.unmount());
+  });
+
   beforeEach(() => {
     mockSidebarState.isMobile = false;
     container = document.createElement("div");

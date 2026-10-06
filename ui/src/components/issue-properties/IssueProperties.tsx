@@ -1,5 +1,5 @@
 import { IssuePullRequestLinks } from "../IssuePullRequestLinks";
-import { getIssuePullRequests, pullRequestHref } from "../../lib/issue-pull-requests";
+import { getIssuePullRequests, pullRequestHref, pullRequestIdentity } from "../../lib/issue-pull-requests";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -305,8 +305,8 @@ export function IssueProperties({
   });
   const pullRequests = useMemo(() => getIssuePullRequests(paneTabWorkProducts), [paneTabWorkProducts]);
   const remainingExternalObjects = useMemo(() => {
-    const urls = new Set(pullRequests.map(pullRequestHref).filter(Boolean));
-    return externalObjects?.filter((entry) => !entry.pill.url || !urls.has(entry.pill.url));
+    const identities = new Set(pullRequests.map((product) => pullRequestIdentity(pullRequestHref(product))).filter(Boolean));
+    return externalObjects?.filter((entry) => !identities.has(pullRequestIdentity(entry.pill.url)));
   }, [externalObjects, pullRequests]);
   const { data: paneTabDocuments } = useIssueDocuments(taskChatShellEnabled ? issue.id : null);
   // Proxy `artifact-review-*` documents surface only through their Work
@@ -2593,7 +2593,7 @@ export function IssueProperties({
         {pullRequests.length > 0 || workProductsError ? (
           <PropertyRow label="Pull requests" wrap>
             <div className="flex min-w-0 flex-col gap-2">
-              <IssuePullRequestLinks products={pullRequests} />
+              <IssuePullRequestLinks products={pullRequests} externalObjects={externalObjects?.map((entry) => entry.pill)} />
               {workProductsError ? (
                 <span className="text-xs text-muted-foreground">
                   Couldn’t load pull requests. <button type="button" className="text-primary hover:underline" onClick={() => void refetchWorkProducts()}>Retry</button>
