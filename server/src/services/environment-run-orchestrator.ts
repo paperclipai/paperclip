@@ -298,6 +298,19 @@ export function environmentRunOrchestrator(
     });
 
     // Step 3: Log lease acquisition activity
+    // Guard: the lease runtime may legitimately return `leaseRecord.lease`
+    // null (e.g. when `getLeaseById` rejects an invalid UUID). Without this
+    // check, the heartbeat-run path crashes here with
+    // `Cannot read properties of null (reading 'id')`. Surface the failure
+    // as `lease_acquire_failed` so the heartbeat `try/catch` can terminalize
+    // the run instead of crashing the whole loop.
+    if (!leaseRecord?.lease) {
+      throw new EnvironmentRunError(
+        "lease_acquire_failed",
+        `Lease acquisition returned no lease for environment "${environment.id}".`,
+        { environmentId: environment.id, driver: environment.driver },
+      );
+    }
     await logActivity(db, {
       companyId: input.companyId,
       actorType: "agent",

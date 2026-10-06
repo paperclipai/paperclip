@@ -796,6 +796,57 @@ describe("native runner lifecycle changes before lease acquisition", () => {
 });
 
 
+describe("acquireForRun null-lease guard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("throws EnvironmentRunError(lease_acquire_failed) when runtime yields lease=null", async () => {
+    // Regression test for the bug exposed by the UUID guard on
+    // `getLeaseById`: when the runtime legitimately returns
+    // `{ environment, lease: null, leaseContext: null }`, the orchestrator
+    // must NOT crash with `Cannot read properties of null (reading 'id')`
+    // on `leaseRecord.lease.id` inside `logActivity`. Instead it must
+    // surface a typed `lease_acquire_failed` error that the heartbeat
+    // `try/catch` can terminalize as a regular failed run.
+    const environment = makeEnvironment("sandbox");
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async () => ({
+      environment,
+      lease: null,
+      leaseContext: null,
+    }));
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environmentRuntime: makeMockRuntime({ acquireRunLease }),
+    });
+    await expect(
+      orchestrator.acquireForRun({
+        companyId: "company-1",
+        selectedEnvironmentId: "env-1",
+        localEnvironmentId: "local",
+        adapterType: "paperclip_runner",
+        adapterConfig: { lifecycleMode: "per_turn" },
+        issueId: "task-1",
+        heartbeatRunId: "run-1",
+        agentId: "agent-1",
+        persistedExecutionWorkspace: null,
+        executionWorkspaceSettings: null,
+      }),
+    ).rejects.toMatchObject({
+      name: "EnvironmentRunError",
+      code: "lease_acquire_failed",
+      environmentId: "env-1",
+    });
+    // The crash path would have called `logActivity("environment.lease_acquired")`
+    // before throwing. We must NOT record an `entityId: null` activity entry.
+    const leaseAcquiredCalls = mockLogActivity.mock.calls.filter(
+      ([, payload]: [unknown, { action?: string }]) =>
+        payload?.action === "environment.lease_acquired",
+    );
+    expect(leaseAcquiredCalls).toHaveLength(0);
+  });
+});
+
 describe("admitted native lifecycle recovery", () => {
   it.each([
     ["warm", "per_turn", "per_turn", true],

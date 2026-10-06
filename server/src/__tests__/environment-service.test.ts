@@ -2030,4 +2030,18 @@ describeEmbeddedPostgres("environmentService leases", () => {
       expect(lease.status).toBe("active");
     });
   });
+
+  describe("getLeaseById input validation", () => {
+    // Regression test: before the UUID guard, `getLeaseById("")` reached the
+    // SQL driver with `$1=''`, which Postgres rejected with
+    // `invalid input syntax for type uuid: ""`. The activity log filled up
+    // with these errors on every heartbeat that touched a fresh workspace.
+    it.each(["", "not-a-uuid", "12345", "abc-def", "  "])(
+      "returns null without hitting the DB for invalid id %j",
+      async (badId) => {
+        const result = await svc.getLeaseById(badId);
+        expect(result).toBeNull();
+      },
+    );
+  });
 });
