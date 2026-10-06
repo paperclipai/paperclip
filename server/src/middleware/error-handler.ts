@@ -181,6 +181,13 @@ export function errorHandler(
     const secretSensitiveServerError =
       err.status >= 500 &&
       isSecretSensitiveHttpRequest(req.method, req.originalUrl);
+    // Belt-and-braces for authorization failures (#11267): every 401/403
+    // carries a stable top-level `code` even when the thrower passed no
+    // details.code, and the content type is forced to JSON so an edge proxy
+    // cannot content-negotiate the body into an HTML error page.
+    const derivedAuthzCode =
+      err.status === 401 ? "unauthorized" : err.status === 403 ? "forbidden" : null;
+    if (derivedAuthzCode) res.type("application/json");
     res.status(err.status).json(
       secretSensitiveServerError
         ? { error: "Internal server error" }
@@ -188,7 +195,9 @@ export function errorHandler(
             error: sanitizeSecretSensitiveResponse(req, err.message),
             ...(typeof responseDetails?.code === "string"
               ? { code: responseDetails.code }
-              : {}),
+              : derivedAuthzCode
+                ? { code: derivedAuthzCode }
+                : {}),
             ...(redactedSkillPolicyDenial &&
             typeof responseDetails?.reason === "string"
               ? { reason: responseDetails.reason }
