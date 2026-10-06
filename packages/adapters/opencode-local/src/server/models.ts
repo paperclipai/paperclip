@@ -107,6 +107,14 @@ function normalizeEnv(input: unknown): Record<string, string> {
   return env;
 }
 
+function assertLocalModelDiscoveryAllowed(env: Record<string, string>): void {
+  // Discovery runs directly under the service UID, outside the agent's
+  // execution target. A private credential file is still readable there.
+  if (process.env.PAPERCLIP_DATABASE_URL_FILE?.trim() || env.PAPERCLIP_DATABASE_URL_FILE?.trim()) {
+    throw new Error("OpenCode model discovery requires an isolated environment with file-backed database credentials.");
+  }
+}
+
 function isVolatileEnvKey(key: string): boolean {
   if (VOLATILE_ENV_KEY_EXACT.has(key)) return true;
   return VOLATILE_ENV_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
@@ -146,6 +154,7 @@ export async function discoverOpenCodeModels(
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
+  assertLocalModelDiscoveryAllowed(env);
   // Ensure HOME points to the actual running user's home directory.
   // When the server is started via `runuser -u <user>`, HOME may still
   // reflect the parent process (e.g. /root), causing OpenCode to miss
@@ -219,6 +228,7 @@ export async function discoverOpenCodeModelsCached(
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
+  assertLocalModelDiscoveryAllowed(env);
   const key = discoveryCacheKey(command, cwd, env);
   const now = Date.now();
   pruneExpiredDiscoveryCache(now);

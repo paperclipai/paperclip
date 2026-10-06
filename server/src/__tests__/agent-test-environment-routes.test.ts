@@ -1,4 +1,7 @@
 import express from "express";
+import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -247,6 +250,88 @@ describe("agent test-environment route", () => {
   afterEach(async () => {
     await unregisterTestAdapter("external_test");
   });
+
+  it.each(["opencode_local", "pi_local"] as const)(
+    "does not launch %s discovery under the service UID with a file-backed DB source",
+    async (adapterType) => {
+      const scratch = await mkdtemp(path.join(process.env.PAPERCLIP_RUN_SCRATCH_DIR ?? os.tmpdir(), "paperclip-discovery-"));
+      const credentialFile = path.join(scratch, "database-url");
+      const command = path.join(scratch, "model-command");
+      const marker = path.join(scratch, "command-launched");
+      const syntheticCredential = "postgres://fixture:synthetic-only@localhost/fixture";
+      const previousSource = process.env.PAPERCLIP_DATABASE_URL_FILE;
+      try {
+        await writeFile(credentialFile, syntheticCredential, { mode: 0o600 });
+        await chmod(credentialFile, 0o600);
+        await writeFile(command, `#!/bin/sh
+printf launched > "$MARKER_PATH"
+if [ -n "\${TEST_CREDENTIAL_PATH:-}" ]; then
+  cat "$TEST_CREDENTIAL_PATH"
+  exit 7
+fi
+case "$1" in
+  models) printf 'fixture/model\\n' ;;
+  --list-models) printf 'provider  model  context\\nfixture  model  0\\n' ;;
+esac
+`, { mode: 0o700 });
+        await chmod(command, 0o700);
+        process.env.PAPERCLIP_DATABASE_URL_FILE = credentialFile;
+
+        const app = await createApp();
+        const res = await request(app)
+          .post(`/api/companies/company-1/adapters/${adapterType}/test-environment`)
+          .send({ adapterConfig: {
+            command,
+            cwd: scratch,
+            model: "fixture/model",
+            env: { MARKER_PATH: marker, TEST_CREDENTIAL_PATH: credentialFile },
+          } });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(res.body.status).toBe("fail");
+        expect(res.body.checks).toEqual([expect.objectContaining({
+          code: `${adapterType}_requires_isolation`,
+          level: "error",
+        })]);
+        expect(JSON.stringify(res.body)).not.toContain(syntheticCredential);
+        expect(JSON.stringify(res.body)).not.toContain(credentialFile);
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+
+        // Direct callers of discovery must be guarded too, including a
+        // caller-supplied env that runChildProcess would otherwise re-merge.
+        const discover = adapterType === "opencode_local"
+          ? (await import("@paperclipai/adapter-opencode-local/server")).discoverOpenCodeModels
+          : (await import("@paperclipai/adapter-pi-local/server")).discoverPiModels;
+        const discoverCached = adapterType === "opencode_local"
+          ? (await import("../../../packages/adapters/opencode-local/src/server/models.js")).discoverOpenCodeModelsCached
+          : (await import("../../../packages/adapters/pi-local/src/server/models.js")).discoverPiModelsCached;
+        await expect(discover({ command, cwd: scratch, env: {
+          MARKER_PATH: marker, TEST_CREDENTIAL_PATH: credentialFile,
+        } })).rejects.toThrow("requires an isolated environment");
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+
+        delete process.env.PAPERCLIP_DATABASE_URL_FILE;
+        await expect(discover({ command, cwd: scratch, env: {
+          MARKER_PATH: marker, PAPERCLIP_DATABASE_URL_FILE: credentialFile,
+        } })).rejects.toThrow("requires an isolated environment");
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+        // Positive control: ordinary discovery still launches and parses the
+        // same command when the service has no file-backed DB source.
+        const models = await discoverCached({ command, cwd: scratch, env: { MARKER_PATH: marker } });
+        expect(models).toEqual([{ id: "fixture/model", label: "fixture/model" }]);
+        expect(await readFile(marker, "utf8")).toBe("launched");
+        await rm(marker);
+        process.env.PAPERCLIP_DATABASE_URL_FILE = credentialFile;
+        await expect(discoverCached({ command, cwd: scratch, env: { MARKER_PATH: marker } }))
+          .rejects.toThrow("requires an isolated environment");
+        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        if (previousSource === undefined) delete process.env.PAPERCLIP_DATABASE_URL_FILE;
+        else process.env.PAPERCLIP_DATABASE_URL_FILE = previousSource;
+        await rm(scratch, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("tests the instance default sandbox when the agent inherits its environment", async () => {
     const environmentId = "11111111-1111-4111-8111-111111111111";

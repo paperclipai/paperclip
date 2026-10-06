@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { expect, test } from "vitest";
 
 import { HERMES_CLI } from "../shared/constants.js";
@@ -43,6 +43,30 @@ test("testEnvironment accepts config.command when hermesCommand is absent", asyn
       (check) => check.code === "hermes_version" && check.message.includes("fake-hermes 1.2.3"),
     )).toBe(true);
   } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("testEnvironment refuses an unconfined Hermes command before probing it", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "hermes-db-isolation-"));
+  const cliPath = path.join(tempDir, "fake-hermes");
+  const marker = path.join(tempDir, "executed");
+  const previous = process.env.PAPERCLIP_DATABASE_URL_FILE;
+  try {
+    await writeFile(cliPath, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`, "utf8");
+    await chmod(cliPath, 0o755);
+    process.env.PAPERCLIP_DATABASE_URL_FILE = "/synthetic/service/credential";
+    const result = await testEnvironment({
+      companyId: "synthetic-company",
+      adapterType: "hermes_local",
+      config: { command: cliPath },
+    });
+    expect(result.status).toBe("fail");
+    expect(result.checks).toEqual([expect.objectContaining({ code: "hermes_local_requires_isolation", level: "error" })]);
+    await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    if (previous === undefined) delete process.env.PAPERCLIP_DATABASE_URL_FILE;
+    else process.env.PAPERCLIP_DATABASE_URL_FILE = previous;
     await rm(tempDir, { recursive: true, force: true });
   }
 });

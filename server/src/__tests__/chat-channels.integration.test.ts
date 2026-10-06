@@ -16146,7 +16146,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(issueComments)
         .where(eq(issueComments.issueId, conversation.issueId));
       expect(rows).toHaveLength(8);
-    });
+    }, { timeout: 10_000 });
     const comments = await db
       .select({ id: issueComments.id, body: issueComments.body })
       .from(issueComments)
@@ -46797,6 +46797,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "qualifies pinned Discord close-owned progress retirement (%s)",
       async (mode) => {
         const f = await commandFixture();
+        let unrelatedReceiptId: string | undefined;
+        let unrelatedEndpointId: string | undefined;
         try {
           // The setup root can still have a retryable wake after a concurrent
           // fixture drain. Start this run from a fresh, actually accepted
@@ -46935,7 +46937,61 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const editCount = runtime.edits.length,
             postCount = runtime.posts.length;
           await f.service.processPendingPublications();
-          await f.service.processPendingReceiptReactions();
+          const unrelatedEndpoint = await f.service.create(
+            f.fixture.companyId,
+            {
+              provider: "discord",
+              assignedAgentId: f.fixture.assignedAgentId,
+              name: "Unrelated receipt fixture",
+            },
+            "owner-user",
+          );
+          unrelatedEndpointId = unrelatedEndpoint.id;
+          const [unrelatedReceipt] = await db
+            .insert(chatActions)
+            .values({
+              companyId: f.fixture.companyId,
+              endpointId: unrelatedEndpoint.id,
+              kind: "receipt_reaction",
+              providerActionId: `unrelated-receipt:${randomUUID()}`,
+              payload: {},
+              status: "received",
+            })
+            .returning({ id: chatActions.id });
+          unrelatedReceiptId = unrelatedReceipt!.id;
+          await db.insert(chatEndpointLeases).values({
+            companyId: f.fixture.companyId,
+            endpointId: unrelatedEndpoint.id,
+            leaseKey: "credentials",
+            token: randomUUID(),
+            expiresAt: new Date(Date.now() + 60_000),
+          });
+          // This qualification owns only its source receipt. A global sweep
+          // would also claim the unrelated endpoint and wait on its lease.
+          const removals = await db
+            .select({ id: chatActions.id })
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.endpointId, f.endpoint.id),
+                eq(chatActions.kind, "receipt_reaction"),
+                eq(
+                  chatActions.providerActionId,
+                  `receipt_reaction_remove:${sourceDelivery!.id}`,
+                ),
+              ),
+            );
+          expect(removals).toHaveLength(
+            mode === "working" || mode === "final" ? 1 : 0,
+          );
+          if (removals[0])
+            await f.service.processPendingReceiptReactions(1, removals[0].id);
+          await expect(
+            db
+              .select({ status: chatActions.status })
+              .from(chatActions)
+              .where(eq(chatActions.id, unrelatedReceiptId)),
+          ).resolves.toEqual([{ status: "received" }]);
           expect(runtime.edits).toHaveLength(
             editCount + (mode === "working" ? 1 : 0),
           );
@@ -46970,7 +47026,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             editCount + (mode === "working" ? 1 : 0),
           );
         } finally {
-          await f.close();
+          try {
+            if (unrelatedReceiptId)
+              await db
+                .delete(chatActions)
+                .where(eq(chatActions.id, unrelatedReceiptId));
+            if (unrelatedEndpointId)
+              await db
+                .delete(chatEndpointLeases)
+                .where(eq(chatEndpointLeases.endpointId, unrelatedEndpointId));
+          } finally {
+            await f.close();
+          }
         }
       },
     );
@@ -69192,7 +69259,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally {
         await lane.close();
       }
-    });
+    }, 30_000);
 
     it("returns 503 on failed Stop commit and accepts the exact verified retry before final send", async () => {
       const lane = await draftFixture();

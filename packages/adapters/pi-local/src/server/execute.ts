@@ -394,7 +394,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resolvedCommand,
     });
 
-    if (!executionTargetIsRemote) {
+    if (!executionTargetIsRemote && process.env.PAPERCLIP_DATABASE_URL_FILE?.trim()) {
+      // The CLI run is sandboxed below, but local model discovery is not.
+      if (!model) throw new Error("Pi requires `adapterConfig.model` in provider/model format.");
+    } else if (!executionTargetIsRemote) {
       await ensurePiModelConfiguredAndAvailable({
         model,
         command,

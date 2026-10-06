@@ -918,6 +918,92 @@ describe.sequential("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it("blocks agent-authenticated self-updates that select the Bubblewrap launcher", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ adapterConfig: { filesystemSandboxCommand: "/workspace/fake-bwrap" } }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("adapterConfig.filesystemSandboxCommand");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects process adapter selection and agent command updates in file-backed database mode", async () => {
+    const previous = process.env.PAPERCLIP_DATABASE_URL_FILE;
+    process.env.PAPERCLIP_DATABASE_URL_FILE = "/synthetic/service/credential";
+    try {
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        source: "agent_key",
+        runId: "run-1",
+      });
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ adapterConfig: { command: process.execPath } }));
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("Process adapter cannot run with file-backed database credentials");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+
+      const boardApp = await createApp({
+        type: "board",
+        userId: "instance-admin-user",
+        source: "session",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+      const createRes = await requestApp(boardApp, (baseUrl) => request(baseUrl)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({ name: "Unsafe process agent", role: "engineer", adapterType: "process", adapterConfig: { command: process.execPath } }));
+      expect(createRes.status).toBe(422);
+      expect(createRes.body.error).toContain("Process adapter cannot run with file-backed database credentials");
+      expect(mockAgentService.create).not.toHaveBeenCalled();
+
+      const hermesRes = await requestApp(boardApp, (baseUrl) => request(baseUrl)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({ name: "Unsafe Hermes agent", role: "engineer", adapterType: "hermes_local", adapterConfig: {} }));
+      expect(hermesRes.status).toBe(422);
+      expect(hermesRes.body.error).toContain("Hermes local adapter cannot run with file-backed database credentials");
+      expect(mockAgentService.create).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_DATABASE_URL_FILE;
+      else process.env.PAPERCLIP_DATABASE_URL_FILE = previous;
+    }
+  });
+
+  it("blocks agent changes to connector auth source fields in file-backed database mode", async () => {
+    const previous = process.env.PAPERCLIP_DATABASE_URL_FILE;
+    process.env.PAPERCLIP_DATABASE_URL_FILE = "/synthetic/service/credential";
+    try {
+      const app = await createApp({ type: "agent", agentId, companyId, source: "agent_key", runId: "run-1" });
+      for (const adapterConfig of [
+        { env: { CODEX_HOME: "/synthetic/service" } },
+        { paperclipConnectorSkillDigest: "a".repeat(64) },
+        { managedAiConnection: { method: "subscription" } },
+      ]) {
+        const res = await requestApp(app, (baseUrl) => request(baseUrl)
+          .patch(`/api/agents/${agentId}`)
+          .send({ adapterConfig }));
+        expect(res.status).toBe(403);
+        expect(res.body.error).toContain("connector authentication sources");
+      }
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_DATABASE_URL_FILE;
+      else process.env.PAPERCLIP_DATABASE_URL_FILE = previous;
+    }
+  });
+
   it("blocks agent-authenticated self-updates that set instructions bundle roots", async () => {
     const app = await createApp({
       type: "agent",

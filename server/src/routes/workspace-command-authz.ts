@@ -79,10 +79,15 @@ export function collectAgentAdapterWorkspaceCommandPaths(
   prefix = "adapterConfig",
 ): string[] {
   if (!isRecord(adapterConfig)) return [];
-  return collectWorkspaceStrategyCommandPaths(
-    adapterConfig.workspaceStrategy,
-    `${prefix}.workspaceStrategy`,
-  );
+  return [
+    ...collectWorkspaceStrategyCommandPaths(
+      adapterConfig.workspaceStrategy,
+      `${prefix}.workspaceStrategy`,
+    ),
+    ...(hasOwn(adapterConfig, "filesystemSandboxCommand")
+      ? [`${prefix}.filesystemSandboxCommand`]
+      : []),
+  ];
 }
 
 export function collectProjectExecutionWorkspaceCommandPaths(policy: unknown): string[] {
@@ -139,14 +144,10 @@ export function collectIssueWorkspaceCommandPaths(input: {
   }
   if (isRecord(input.assigneeAdapterOverrides)) {
     const adapterConfig = input.assigneeAdapterOverrides.adapterConfig;
-    if (isRecord(adapterConfig)) {
-      paths.push(
-        ...collectWorkspaceStrategyCommandPaths(
-          adapterConfig.workspaceStrategy,
-          "assigneeAdapterOverrides.adapterConfig.workspaceStrategy",
-        ),
-      );
-    }
+    paths.push(...collectAgentAdapterWorkspaceCommandPaths(
+      adapterConfig,
+      "assigneeAdapterOverrides.adapterConfig",
+    ));
   }
   return paths;
 }

@@ -1,7 +1,7 @@
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { formatDatabaseBackupResult, runDatabaseBackup } from "@paperclipai/db";
+import { formatDatabaseBackupResult, resolveDatabaseConnectionString, runDatabaseBackup } from "@paperclipai/db";
 import {
   expandHomePrefix,
   resolveDefaultBackupDir,
@@ -19,12 +19,21 @@ type DbBackupOptions = {
 };
 
 function resolveConnectionString(configPath?: string): { value: string; source: string } {
-  const envUrl = process.env.DATABASE_URL?.trim();
-  if (envUrl) return { value: envUrl, source: "DATABASE_URL" };
-
   const config = readConfig(configPath);
-  if (config?.database.mode === "postgres" && config.database.connectionString?.trim()) {
-    return { value: config.database.connectionString.trim(), source: "config.database.connectionString" };
+  if (process.env.PAPERCLIP_DATABASE_URL_FILE && config?.database.mode !== "postgres") {
+    throw new Error("PAPERCLIP_DATABASE_URL_FILE requires PostgreSQL mode");
+  }
+  const resolved = resolveDatabaseConnectionString({
+    configConnectionString: config?.database.mode === "postgres" ? config.database.connectionString : undefined,
+  });
+  if (resolved) {
+    const source = process.env.PAPERCLIP_DATABASE_URL_FILE
+      ? "PAPERCLIP_DATABASE_URL_FILE"
+      : process.env.DATABASE_URL ? "DATABASE_URL" : "config.database.connectionString";
+    return { value: resolved, source };
+  }
+  if (config?.database.mode === "postgres") {
+    throw new Error("PostgreSQL mode has no configured database credential source");
   }
 
   const port = config?.database.embeddedPostgresPort ?? 54329;

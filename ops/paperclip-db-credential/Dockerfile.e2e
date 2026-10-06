@@ -1,0 +1,11 @@
+FROM postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+
+# The production Python job entrypoints and pg-client require python3. Keep
+# this dependency in the disposable smoke image, never on the live host.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3=3.13.5-1 \
+    && test "$(dpkg-query -W -f='${Version}' python3)" = '3.13.5-1' \
+    && mkdir -p /probe \
+    && printf '%s\n' 'postgres://synthetic:uid_probe_only@127.0.0.1/synthetic' > /probe/database-url \
+    && chmod 0600 /probe/database-url \
+    && rm -rf /var/lib/apt/lists/*

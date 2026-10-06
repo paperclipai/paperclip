@@ -39,6 +39,15 @@ describe("workspace host-command mutation detection", () => {
       expected: "executionWorkspaceSettings.workspaceRuntime.services[0].command",
     },
     {
+      name: "issue adapter Bubblewrap launcher",
+      actual: () => collectIssueWorkspaceCommandPaths({
+        assigneeAdapterOverrides: {
+          adapterConfig: { filesystemSandboxCommand: "/workspace/fake-bwrap" },
+        },
+      }),
+      expected: "assigneeAdapterOverrides.adapterConfig.filesystemSandboxCommand",
+    },
+    {
       name: "execution workspace config commands",
       actual: () => collectExecutionWorkspaceCommandPaths({
         config: { workspaceRuntime: { commands: [{ name: "seed", command: "pnpm seed" }] } },

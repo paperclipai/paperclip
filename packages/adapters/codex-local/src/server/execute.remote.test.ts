@@ -216,7 +216,7 @@ describe("codex remote execution", () => {
     }));
   });
 
-  it("stages only the allowlist into the home asset: keeps config.toml/skills/auth, drops session+sqlite state, no exclude", async () => {
+  it("stages only the allowlist and selected skills into the home asset", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-allowlist-"));
     cleanupDirs.push(rootDir);
     const workspaceDir = path.join(rootDir, "workspace");
@@ -325,10 +325,12 @@ describe("codex remote execution", () => {
     for (const decoy of ["logs_2.sqlite", "state_5.sqlite", "sessions", "tmp", "plugins"]) {
       expect(snap.entries).not.toContain(decoy);
     }
-    // Phase-3 behavioral invariants: provider routing + skills + auth survive staging.
+    // Provider routing, selected skills and auth survive; a planted unselected
+    // home skill cannot become a remote asset.
     expect(snap.configToml).toContain("[model_providers.bifrost]");
     expect(snap.configToml).toContain("model_provider");
-    expect(snap.skillEntries).toContain("demo");
+    expect(snap.skillEntries).toContain("paperclip");
+    expect(snap.skillEntries).not.toContain("demo");
     expect(snap.authJson).toContain("refresh_token");
 
     // The staged temp dir is removed after execute completes (cleanup on teardown).

@@ -1,5 +1,6 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 import { open as openFile } from "node:fs/promises";
@@ -68,7 +69,6 @@ type ExtensionDefinition = {
 
 const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
 const BACKUP_DATA_CURSOR_ROWS = 100;
-const BACKUP_CLI_STDERR_BYTES = 64 * 1024;
 const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
@@ -292,29 +292,83 @@ function formatSqlValue(
   return formatSqlLiteral(String(val));
 }
 
-function appendCapturedStderr(previous: string, chunk: Buffer | string): string {
-  const next = previous + (Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk);
-  if (Buffer.byteLength(next, "utf8") <= BACKUP_CLI_STDERR_BYTES) return next;
-  return Buffer.from(next, "utf8").subarray(-BACKUP_CLI_STDERR_BYTES).toString("utf8");
-}
-
 async function waitForChildExit(child: ReturnType<typeof spawn>, label: string): Promise<void> {
-  let stderr = "";
-  child.stderr?.on("data", (chunk) => {
-    stderr = appendCapturedStderr(stderr, chunk);
+  // libpq and psql may include the service file, SQL values, or connection URL
+  // in stderr. Keep only a small sample for classification, never raw output.
+  const stderrChunks: Buffer[] = [];
+  let stderrBytes = 0;
+  child.stderr?.on("data", (chunk: Buffer) => {
+    const remaining = 8192 - stderrBytes;
+    if (remaining <= 0) return;
+    const sample = Buffer.from(chunk.subarray(0, remaining));
+    stderrChunks.push(sample);
+    stderrBytes += sample.length;
   });
 
   const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
     child.once("error", reject);
-    child.once("exit", (code, signal) => resolve({ code, signal }));
+    // "close" follows stdio drain, so stderr classification is complete.
+    child.once("close", (code, signal) => resolve({ code, signal }));
   });
 
   if (result.signal) {
-    throw new Error(`${label} exited via ${result.signal}${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
+    throw new Error(`${label} exited via ${result.signal}`);
   }
   if (result.code !== 0) {
-    throw new Error(`${label} failed with exit code ${result.code ?? "unknown"}${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
+    const stderr = Buffer.concat(stderrChunks).toString("utf8");
+    const reason = /password authentication failed|no password supplied|authentication failed/i.test(stderr)
+      ? "authentication failed"
+      : /permission denied|must be owner of|insufficient privilege/i.test(stderr)
+        ? "insufficient privileges"
+        : /connection refused|could not connect to server|could not translate host name|timeout expired/i.test(stderr)
+          ? "connection unavailable"
+          : /no space left on device|disk full/i.test(stderr)
+            ? "storage full"
+            : /syntax error at or near/i.test(stderr)
+              ? "SQL syntax error"
+              : "unclassified database client error";
+    throw new Error(`${label} failed with exit code ${result.code ?? "unknown"} (${reason})`);
   }
+}
+
+function createPrivatePgServiceFile(connectionString: string): { file: string; cleanup: () => void } {
+  let url: URL;
+  try {
+    url = new URL(connectionString);
+  } catch {
+    throw new Error("PostgreSQL CLI requires a valid connection URL");
+  }
+  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
+    throw new Error("PostgreSQL CLI requires a PostgreSQL connection URL");
+  }
+  const params = new Map<string, string>();
+  if (url.hostname) params.set("host", url.hostname.replace(/^\[|\]$/g, ""));
+  if (url.port) params.set("port", url.port);
+  if (url.pathname.length > 1) params.set("dbname", decodeURIComponent(url.pathname.slice(1)));
+  if (url.username) params.set("user", decodeURIComponent(url.username));
+  if (url.password) params.set("password", decodeURIComponent(url.password));
+  for (const [key, value] of url.searchParams) {
+    if (!/^[a-z][a-z0-9_]*$/i.test(key) || key === "service" || key === "servicefile") {
+      throw new Error("PostgreSQL CLI URL contains an unsupported connection parameter");
+    }
+    params.set(key, value);
+  }
+  if ([...params.values()].some((value) => /[\r\n\0]/.test(value))) {
+    throw new Error("PostgreSQL CLI URL contains an invalid connection parameter");
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), "paperclip-pg-service-"));
+  const file = join(dir, "pg_service.conf");
+  try {
+    writeFileSync(file, `[paperclip]\n${[...params].map(([key, value]) => `${key}=${value}`).join("\n")}\n`, {
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch {
+    rmSync(dir, { recursive: true, force: true });
+    throw new Error("Could not create a private PostgreSQL CLI service file");
+  }
+  return { file, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 async function runPgDumpBackup(opts: {
@@ -323,66 +377,80 @@ async function runPgDumpBackup(opts: {
   connectTimeout: number;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
-  const child = spawn(
-    pgDumpBin,
-    [
-      `--dbname=${opts.connectionString}`,
-      "--format=plain",
-      "--clean",
-      "--if-exists",
-      "--no-owner",
-      "--no-privileges",
-    ],
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        PGCONNECT_TIMEOUT: String(opts.connectTimeout),
+  const service = createPrivatePgServiceFile(opts.connectionString);
+  try {
+    const child = spawn(
+      pgDumpBin,
+      [
+        "--no-password",
+        "--format=plain",
+        "--clean",
+        "--if-exists",
+        "--no-owner",
+        "--no-privileges",
+      ],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          // A private libpq service file preserves URI query options without
+          // exposing the connection URL in argv or the process environment.
+          PGSERVICEFILE: service.file,
+          PGSERVICE: "paperclip",
+          PGCONNECT_TIMEOUT: String(opts.connectTimeout),
+        },
       },
-    },
-  );
+    );
+    if (!child.stdout) throw new Error("pg_dump did not expose stdout");
 
-  if (!child.stdout) {
-    throw new Error("pg_dump did not expose stdout");
+    await Promise.all([
+      pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
+      waitForChildExit(child, pgDumpBin),
+    ]);
+  } finally {
+    service.cleanup();
   }
-
-  await Promise.all([
-    pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
-    waitForChildExit(child, pgDumpBin),
-  ]);
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
   const psqlBin = process.env.PAPERCLIP_PSQL_PATH || "psql";
-  const child = spawn(
-    psqlBin,
-    [
-      `--dbname=${opts.connectionString}`,
-      "--set=ON_ERROR_STOP=1",
-      "--quiet",
-      "--no-psqlrc",
-    ],
-    {
-      stdio: ["pipe", "ignore", "pipe"],
-      env: {
-        ...process.env,
-        PGCONNECT_TIMEOUT: String(connectTimeout),
+  const service = createPrivatePgServiceFile(opts.connectionString);
+  try {
+    const child = spawn(
+      psqlBin,
+      [
+        "--no-password",
+        "--set=ON_ERROR_STOP=1",
+        "--quiet",
+        "--no-psqlrc",
+      ],
+      {
+        stdio: ["pipe", "ignore", "pipe"],
+        env: {
+          ...process.env,
+          PGSERVICEFILE: service.file,
+          PGSERVICE: "paperclip",
+          PGCONNECT_TIMEOUT: String(connectTimeout),
+        },
       },
-    },
-  );
+    );
+    if (!child.stdin) throw new Error("psql did not expose stdin");
 
-  if (!child.stdin) {
-    throw new Error("psql did not expose stdin");
+    const input = opts.backupFile.endsWith(".gz")
+      ? createReadStream(opts.backupFile).pipe(createGunzip())
+      : createReadStream(opts.backupFile);
+
+    const [inputResult, psqlResult] = await Promise.allSettled([
+      pipeline(input, child.stdin),
+      waitForChildExit(child, psqlBin),
+    ]);
+    // psql can reject credentials and close stdin before the stream finishes.
+    // Prefer its classified exit error over the resulting write EPIPE.
+    if (psqlResult.status === "rejected") throw psqlResult.reason;
+    if (inputResult.status === "rejected") throw inputResult.reason;
+  } finally {
+    service.cleanup();
   }
-
-  const input = opts.backupFile.endsWith(".gz")
-    ? createReadStream(opts.backupFile).pipe(createGunzip())
-    : createReadStream(opts.backupFile);
-
-  await Promise.all([
-    pipeline(input, child.stdin),
-    waitForChildExit(child, psqlBin),
-  ]);
 }
 
 async function hasStatementBreakpoints(backupFile: string): Promise<boolean> {

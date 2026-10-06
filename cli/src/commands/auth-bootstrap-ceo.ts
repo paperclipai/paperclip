@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { and, eq, gt, isNull } from "drizzle-orm";
-import { createDb, instanceUserRoles, invites } from "@paperclipai/db";
+import { createDb, instanceUserRoles, invites, resolveDatabaseConnectionString } from "@paperclipai/db";
 import { inferBindModeFromHost } from "@paperclipai/shared";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
@@ -18,10 +18,13 @@ function createInviteToken() {
 function resolveDbUrl(configPath?: string, explicitDbUrl?: string) {
   if (explicitDbUrl) return explicitDbUrl;
   const config = readConfig(configPath);
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  if (config?.database.mode === "postgres" && config.database.connectionString) {
-    return config.database.connectionString;
+  if (process.env.PAPERCLIP_DATABASE_URL_FILE && config?.database.mode !== "postgres") {
+    throw new Error("PAPERCLIP_DATABASE_URL_FILE requires PostgreSQL mode");
   }
+  const configured = resolveDatabaseConnectionString({
+    configConnectionString: config?.database.mode === "postgres" ? config.database.connectionString : undefined,
+  });
+  if (configured) return configured;
   if (config?.database.mode === "embedded-postgres") {
     const port = config.database.embeddedPostgresPort ?? 54329;
     return `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;

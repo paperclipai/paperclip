@@ -1,0 +1,13 @@
+FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+
+# Disposable proof of the same bwrap launcher used by local CLI adapters.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      bubblewrap=0.8.0-2+deb12u1 python3=3.11.2-1+b1 \
+    && test "$(dpkg-query -W -f='${Version}' bubblewrap)" = '0.8.0-2+deb12u1' \
+    && test "$(dpkg-query -W -f='${Version}' python3)" = '3.11.2-1+b1' \
+    && mkdir -p /run/credentials/paperclip \
+    && printf '%s\n' 'postgres://synthetic:local_bwrap_only@127.0.0.1/synthetic' \
+      > /run/credentials/paperclip/database-url \
+    && chmod 0600 /run/credentials/paperclip/database-url \
+    && rm -rf /var/lib/apt/lists/*

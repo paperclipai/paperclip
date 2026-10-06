@@ -115,9 +115,12 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
   const jwtFile = jwtEnv ? null : readAgentJwtSecretFromEnvFile(agentJwtEnvFile);
   const jwtSource = jwtEnv ? "env" : jwtFile ? "file" : "missing";
 
+  const dbCredentialFile = process.env.PAPERCLIP_DATABASE_URL_FILE?.trim();
   const dbUrl = process.env.DATABASE_URL ?? config?.database?.connectionString ?? "";
   const databaseMode = config?.database?.mode ?? "embedded-postgres";
-  const dbUrlSource: EnvSource = process.env.DATABASE_URL ? "env" : config?.database?.connectionString ? "config" : "missing";
+  const dbUrlSource: EnvSource = dbCredentialFile
+    ? "env"
+    : process.env.DATABASE_URL ? "env" : config?.database?.connectionString ? "config" : "missing";
   const publicUrl =
     process.env.PAPERCLIP_PUBLIC_URL ??
     process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
@@ -197,12 +200,14 @@ function collectDeploymentEnvRows(config: PaperclipConfig | null, configPath: st
             : `Set in ${agentJwtEnvFile}`,
     },
     {
-      key: "DATABASE_URL",
-      value: dbUrl,
+      key: dbCredentialFile ? "PAPERCLIP_DATABASE_URL_FILE" : "DATABASE_URL",
+      value: dbCredentialFile ?? dbUrl,
       source: dbUrlSource,
       required: true,
       note:
-        databaseMode === "postgres"
+        dbCredentialFile
+          ? "Private credential file; URL stays out of config and environment"
+          : databaseMode === "postgres"
           ? "Configured for postgres mode (required)"
           : "Required for live deployment with managed PostgreSQL",
     },

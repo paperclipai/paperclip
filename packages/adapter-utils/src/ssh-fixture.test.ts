@@ -490,6 +490,36 @@ describe("ssh env-lab fixture", () => {
     await target.cleanup();
   });
 
+  it("does not load user SSH config before remote isolation in file-backed mode", async () => {
+    const priorSource = process.env.PAPERCLIP_DATABASE_URL_FILE;
+    process.env.PAPERCLIP_DATABASE_URL_FILE = "/synthetic/missing";
+    try {
+      const target = await buildSshSpawnTarget({
+        spec: {
+          host: "ssh.example.test",
+          port: 22,
+          username: "ssh-user",
+          remoteCwd: "/srv/paperclip/workspace",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+        command: "node",
+        args: ["--version"],
+        env: {},
+      });
+      try {
+        expect(target.args.slice(0, 2)).toEqual(["-F", "/dev/null"]);
+      } finally {
+        await target.cleanup();
+      }
+    } finally {
+      if (priorSource === undefined) delete process.env.PAPERCLIP_DATABASE_URL_FILE;
+      else process.env.PAPERCLIP_DATABASE_URL_FILE = priorSource;
+    }
+  });
+
   it("rejects invalid environment variable keys when constructing SSH spawn targets", async () => {
     await expect(
       buildSshSpawnTarget({

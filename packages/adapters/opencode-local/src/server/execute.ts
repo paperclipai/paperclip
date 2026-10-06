@@ -363,7 +363,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       includeRuntimeKeys: ["HOME"],
       resolvedCommand,
     });
-    if (!executionTargetIsRemote) {
+    if (!executionTargetIsRemote && process.env.PAPERCLIP_DATABASE_URL_FILE?.trim()) {
+      // The CLI run is sandboxed below, but local model discovery is not.
+      requireOpenCodeModelId(model);
+    } else if (!executionTargetIsRemote) {
       await ensureOpenCodeModelConfiguredAndAvailable({
         model,
         command,

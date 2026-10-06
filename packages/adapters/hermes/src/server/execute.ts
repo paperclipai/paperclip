@@ -335,6 +335,11 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
 export async function execute(
   ctx: AdapterExecutionContext,
 ): Promise<AdapterExecutionResult> {
+  // hermes_local uses runChildProcess directly as the service UID. Its CLI and
+  // preflight cannot be confined away from a file-backed service DB secret.
+  if (process.env.PAPERCLIP_DATABASE_URL_FILE?.trim()) {
+    throw new Error("Hermes local adapter cannot run with file-backed database credentials; use an isolated adapter.");
+  }
   const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
 
   // ── Resolve configuration ──────────────────────────────────────────────

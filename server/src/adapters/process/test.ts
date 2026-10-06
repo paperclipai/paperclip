@@ -21,6 +21,19 @@ export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
   const checks: AdapterEnvironmentCheck[] = [];
+  if (process.env.PAPERCLIP_DATABASE_URL_FILE?.trim()) {
+    return {
+      adapterType: ctx.adapterType,
+      status: "fail",
+      checks: [{
+        code: "process_adapter_requires_isolation",
+        level: "error",
+        message: "Process adapter cannot run with file-backed database credentials.",
+        hint: "Select an isolated adapter before enabling the file-backed database source.",
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
   const config = parseObject(ctx.config);
   const command = asString(config.command, "");
   const cwd = asString(config.cwd, process.cwd());

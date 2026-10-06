@@ -376,6 +376,7 @@ async function createSshAuthArgs(
 ): Promise<{ args: string[]; cleanup: () => Promise<void> }> {
   const tempFiles: Array<() => Promise<void>> = [];
   const sshArgs = [
+    ...(process.env.PAPERCLIP_DATABASE_URL_FILE?.trim() ? ["-F", "/dev/null"] : []),
     "-o",
     "BatchMode=yes",
     "-o",

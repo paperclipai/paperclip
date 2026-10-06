@@ -16,6 +16,7 @@ import type {
   UsageSummary,
 } from "@paperclipai/adapter-utils";
 import {
+  assertFileBackedDbAgentExecutionAllowed,
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
   adapterExecutionTargetDuplexObservabilityRecorder,
@@ -83,6 +84,7 @@ import {
   resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   rewriteWorkspaceCwdEnvVarsForExecution,
+  sanitizeInheritedPaperclipEnv,
   shapePaperclipWorkspaceEnvForExecution,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -326,6 +328,8 @@ export interface AcpxRemoteManagedHomeContext {
    * value only when its own bundle holds symbolic links.
    */
   skillsBundleDir: string | null;
+  /** Exact selected runtime skill names from the host preparation step. */
+  selectedSkillNames: string[];
   /**
    * Runs the shared workspace+assets staging seam and returns the prepared
    * runtime. The seam passes its per-adapter home `assets` here; the returned
@@ -1892,6 +1896,7 @@ async function buildRuntime(input: {
     executionTarget: input.ctx.executionTarget,
     legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
   });
+  assertFileBackedDbAgentExecutionAllowed(executionTarget, null, "acpx");
   const remoteExecutionIdentity = adapterExecutionTargetSessionIdentity(executionTarget);
   const effectiveExecutionCwd =
     remoteExecutionIdentity && typeof remoteExecutionIdentity.remoteCwd === "string"
@@ -2349,6 +2354,9 @@ async function buildRuntime(input: {
               onLog: input.ctx.onLog,
               onRuntimeProgress: input.ctx.onRuntimeProgress,
               skillsBundleDir: claudeSkillsBundleDir,
+              selectedSkillNames: Array.isArray(skillsIdentity.selectedSkills)
+                ? skillsIdentity.selectedSkills.filter((name): name is string => typeof name === "string")
+                : [],
               stage,
             });
             return {
@@ -2678,7 +2686,7 @@ function resolveRuntimeEnv(
     platform?: typeof process.platform;
   },
 ): Record<string, string> {
-  const inheritedEnv = options.inheritedEnv ?? process.env;
+  const inheritedEnv = sanitizeInheritedPaperclipEnv(options.inheritedEnv ?? process.env);
   const projectedHostEnv = projectAcpxInheritedHostEnvironment(
     inheritedEnv,
     acpxAgent,
@@ -2692,6 +2700,17 @@ function resolveRuntimeEnv(
     env,
     (options.platform ?? process.platform) === "win32",
   );
+  // Explicit run contributions must not reintroduce the service credential
+  // path after the inherited environment has been sanitized.
+  delete mergedEnv.PAPERCLIP_DATABASE_URL_FILE;
+  if (process.env.PAPERCLIP_DATABASE_URL_FILE?.trim()) {
+    delete mergedEnv.DATABASE_URL;
+    delete mergedEnv.DATABASE_MIGRATION_URL;
+    delete mergedEnv.PAPERCLIP_AGENT_JWT_SECRET;
+    for (const key of Object.keys(mergedEnv)) {
+      if (/^PG[A-Z0-9_]+$/.test(key)) delete mergedEnv[key];
+    }
+  }
   const finalEnv = Object.fromEntries(
     Object.entries(mergedEnv).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
