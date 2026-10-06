@@ -18,6 +18,10 @@ import {
   resolvePaperclipRunnerModel,
   normalizeLegacyRunnerProvider,
 } from "./paperclip-runner-permissions.js";
+import {
+  buildLocalAgentProcessEnv,
+  sanitizeInheritedPaperclipEnv,
+} from "./agent-environment.js";
 import type {
   AdapterExecutionContext,
   AdapterRuntimeToolAccess,
@@ -3489,20 +3493,7 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
   return shapedWorkspaceEnv;
 }
 
-export function sanitizeInheritedPaperclipEnv(
-  baseEnv: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...baseEnv };
-  delete env.PAPERCLIPAI_CMD;
-  for (const key of Object.keys(env)) {
-    if (!key.startsWith("PAPERCLIP_")) continue;
-    if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
-    if (key === "PAPERCLIP_LISTEN_HOST") continue;
-    if (key === "PAPERCLIP_LISTEN_PORT") continue;
-    delete env[key];
-  }
-  return env;
-}
+export { buildLocalAgentProcessEnv, sanitizeInheritedPaperclipEnv };
 
 export function defaultPathForPlatform() {
   if (process.platform === "win32") {
@@ -4684,10 +4675,7 @@ export async function runChildProcess(
     opts.onLogError ??
     ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
-      ...opts.env,
-    };
+    const rawMerged = buildLocalAgentProcessEnv(process.env, opts.env);
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".

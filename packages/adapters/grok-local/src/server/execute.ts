@@ -30,6 +30,7 @@ import {
   buildRuntimeToolsEnv,
   ensureAbsoluteDirectory,
   ensurePathInEnv,
+  buildLocalAgentProcessEnv,
   joinPromptSections,
   materializePaperclipSkillCopy,
   parseObject,
@@ -374,7 +375,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     // Explicit empty overrides clear inherited API keys in the child process.
     // Use the same precedence here when selecting its credential home.
     const isGrokSubscriptionMode = !hasNonEmptyEnvValue(
-      config.managedAiConnection ? env : { ...process.env, ...env },
+      config.managedAiConnection ? env : buildLocalAgentProcessEnv(process.env, env),
       "XAI_API_KEY",
     );
     if (isGrokSubscriptionMode) {
@@ -480,7 +481,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
 
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
     const effectiveEnv = Object.fromEntries(
-      Object.entries({ ...process.env, ...env }).filter(
+      Object.entries(buildLocalAgentProcessEnv(process.env, env)).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );

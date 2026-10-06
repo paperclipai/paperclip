@@ -29,6 +29,7 @@ import type {
 
 import {
   runChildProcess,
+  buildLocalAgentProcessEnv,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
   renderTemplate,
@@ -485,8 +486,11 @@ export async function execute(
   // ── Build environment ──────────────────────────────────────────────────
   const userEnv = config.env as Record<string, string> | undefined;
   const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-    ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
+    ...Object.fromEntries(
+      Object.entries(
+        buildLocalAgentProcessEnv(process.env, userEnv && typeof userEnv === "object" ? userEnv : {}),
+      ).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    ),
     ...buildPaperclipEnv(ctx.agent),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
