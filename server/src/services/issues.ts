@@ -11119,8 +11119,16 @@ export function issueService(db: Db) {
                 where e.id = ${chatConversations.endpointId} and e.company_id = ${chatConversations.companyId} and e.provider = 'slack')`));
         }
         if (updated.assigneeAgentId !== existing.assigneeAgentId || updated.assigneeUserId !== existing.assigneeUserId) {
-          const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
-          await issueThreadInteractionService(tx).expireConnectionIntentsForOwnershipChange(updated);
+          const { issueThreadInteractionService, expireConnectionIntentsForOwnershipChangeInTransaction } =
+            await import("./issue-thread-interactions.js");
+          if (options.lifecycleFence) {
+            // The canonical preparation already holds this company fence before
+            // any reads/row locks; the supplied participant re-enters it on the
+            // same tx. Never create an owning service transaction inside tx.
+            await expireConnectionIntentsForOwnershipChangeInTransaction(tx, updated);
+          } else {
+            await issueThreadInteractionService(tx).expireConnectionIntentsForOwnershipChange(updated);
+          }
         }
         if (existing.status !== updated.status) {
           if (

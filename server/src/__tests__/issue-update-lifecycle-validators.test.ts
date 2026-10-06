@@ -10,11 +10,13 @@ vi.mock("../services/chat-completion-delivery.js", () => ({ recordChatCompletion
 
 // Real canonical update and validators; synthetic rows, no SQL execution or DB.
 // The settings branch is explicitly mocked and is not an executor-read proof.
-function fixture(owned: boolean, membership = true) {
+function fixture(owned: boolean, membership = true, expiryFence?: Promise<void>) {
   let row: any = { id: "issue-1", companyId: "company-1", status: "todo", title: "Work",
     assigneeAgentId: null, assigneeUserId: null, parentId: null, projectId: null,
     goalId: null, conversationAgentId: null, originKind: "manual", statusVersion: 1 };
   const events: string[] = [];
+  let enteredExpiry!: () => void;
+  const expiryEntered = new Promise<void>((resolve) => { enteredExpiry = resolve; });
   const predicates: Array<{ table: string; sql: string; params: unknown[] }> = [];
   const writes: unknown[] = [];
   function query(rows: unknown[], table?: string) {
@@ -27,7 +29,11 @@ function fixture(owned: boolean, membership = true) {
     return q;
   }
   const tx: any = {
-    execute: vi.fn(async () => { events.push("fence"); return []; }),
+    execute: vi.fn(async () => {
+      events.push("fence");
+      if (events.filter((event) => event === "fence").length === 2) { enteredExpiry(); await expiryFence; }
+      return [];
+    }),
     transaction: () => { throw new Error("nested-transaction"); },
     select: () => ({ from: (table: any) => {
       const name = getTableName(table); events.push(`tx:${name}`);
@@ -49,14 +55,21 @@ function fixture(owned: boolean, membership = true) {
       writes.push({ table: name, patch: { ...patch } }); row = { ...row, ...patch }; return query([{ ...row }]);
     } }) }),
   };
+  let allowRootPreparation = false;
   const root: any = {
-    select: () => ({ from: (table: any) => { throw new Error(`root-read:${getTableName(table)}`); } }),
+    select: (...args: any[]) => {
+      if (allowRootPreparation) return tx.select(...args);
+      return { from: (table: any) => { throw new Error(`root-read:${getTableName(table)}`); } };
+    },
     transaction: vi.fn(async (callback: any) => { events.push("begin"); const result = await callback(tx); events.push("callback-return"); return result; }),
   };
-  return { events, predicates, writes, root, tx, getRow: () => structuredClone(row),
-    run: () => issueService(root).update("issue-1", {
-      companyGuard: "company-1", assigneeUserId: "user-1",
-    }, owned ? root : tx, [], [], { lifecycleFence: true }) };
+  return { expiryEntered, events, predicates, writes, root, tx, getRow: () => structuredClone(row),
+    run: (options: { lifecycleFence?: boolean } = { lifecycleFence: true }, assigneeUserId: string | null = "user-1") => {
+      allowRootPreparation = !options.lifecycleFence;
+      return issueService(root).update("issue-1", {
+        companyGuard: "company-1", assigneeUserId,
+      }, owned ? root : tx, [], [], options);
+    } };
 }
 
 describe("dark canonical user validator uses preparation executor (recording only)", () => {
@@ -79,10 +92,53 @@ describe("dark canonical user validator uses preparation executor (recording onl
     expect(expiration.sql).toBe('(\"issue_thread_interactions\".\"company_id\" = $1 and \"issue_thread_interactions\".\"issue_id\" = $2 and \"issue_thread_interactions\".\"kind\" = $3 and \"issue_thread_interactions\".\"status\" = $4)');
     expect(f.predicates.find((p) => p.table === "agent_wakeup_requests")?.params)
       .toEqual(["company-1", "user", "issue-1"]);
-    expect(f.events.filter((event) => event === "fence")).toHaveLength(1);
+    expect(f.events.filter((event) => event === "fence")).toHaveLength(2);
     expect(f.events.filter((event) => event === "callback-return")).toHaveLength(owned ? 1 : 0);
     expect(f.root.transaction).toHaveBeenCalledTimes(owned ? 1 : 0);
   });
+  it.each([false, true])("awaits the supplied expiry participant after canonical reassignment (owned=%s)", async (owned) => {
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const f = fixture(owned, true, barrier); const pending = f.run();
+    void pending.catch(() => {});
+    try {
+      expect(await Promise.race([f.expiryEntered.then(() => "entered"), pending.then(() => "returned")])).toBe("entered");
+      expect(f.writes.map((w: any) => w.table)).toEqual(["agent_wakeup_requests", "issues"]);
+      expect(f.events).not.toContain("callback-return");
+    } finally { release(); }
+    await pending;
+    expect(f.writes.map((w: any) => w.table)).toEqual(["agent_wakeup_requests", "issues", "issue_thread_interactions"]);
+    expect(f.root.transaction).toHaveBeenCalledTimes(owned ? 1 : 0);
+  });
+  it.each([false, true])("propagates expiry fence rejection without expiry or caller return (owned=%s)", async (owned) => {
+    let reject!: (error: Error) => void;
+    const barrier = new Promise<void>((_, fail) => { reject = fail; });
+    void barrier.catch(() => {});
+    const f = fixture(owned, true, barrier); const pending = f.run(); void pending.catch(() => {});
+    const error = new Error("expiry-fence-denied");
+    try {
+      expect(await Promise.race([f.expiryEntered.then(() => "entered"), pending.then(() => "returned")])).toBe("entered");
+    } finally { reject(error); }
+    await expect(pending).rejects.toBe(error);
+    expect(f.writes.map((w: any) => w.table)).toEqual(["agent_wakeup_requests", "issues"]);
+    // Eager issue recording remains: error propagation, NOT rollback evidence.
+    expect(f.events).not.toContain("callback-return");
+  });
+  for (const owned of [false, true]) {
+    for (const options of [{}, { lifecycleFence: false }]) {
+      it(`retains ordinary reassignment expiry without fence owned=${owned} options=${JSON.stringify(options)}`, async () => {
+        const f = fixture(owned); await f.run(options);
+        expect(f.events.filter((event) => event === "fence")).toEqual([]);
+        expect(f.writes.map((w: any) => w.table)).toEqual(["agent_wakeup_requests", "issues", "issue_thread_interactions"]);
+        expect(f.root.transaction).toHaveBeenCalledTimes(owned ? 1 : 0);
+      });
+    }
+    it(`does not expire connection intents for unchanged ownership owned=${owned}`, async () => {
+      const f = fixture(owned); await f.run({ lifecycleFence: true }, null);
+      expect(f.events.filter((event) => event === "fence")).toHaveLength(1);
+      expect(f.writes.map((w: any) => w.table)).toEqual(["issues"]);
+    });
+  }
   it.each([false, true])("rejects missing membership without recorded writes (owned=%s)", async (owned) => {
     const f = fixture(owned, false); const before = f.getRow();
     await expect(f.run()).rejects.toThrow("Assignee user not found");
