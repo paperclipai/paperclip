@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, companyMemberships, createDb, principalPermissionGrants } from "@paperclipai/db";
+import { activityLog, agents, companies, companyMemberships, createDb, principalPermissionGrants } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET, type PermissionKey } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.js";
@@ -137,6 +137,7 @@ describeDatabase("new agent configuration defaults", () => {
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
     await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
+    await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
   });
 
@@ -178,6 +179,7 @@ describeDatabase("new agent configuration defaults", () => {
 
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
+    await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
   });
 
@@ -207,6 +209,7 @@ describeDatabase("new agent configuration defaults", () => {
 
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
+    await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
   });
 
@@ -235,6 +238,7 @@ describeDatabase("new agent configuration defaults", () => {
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
     await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
+    await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
   });
 });
