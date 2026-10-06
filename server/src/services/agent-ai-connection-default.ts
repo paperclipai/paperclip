@@ -35,8 +35,13 @@ export function defaultAiConnectionForHire(
   if (inherited.data.mode === "router") {
     // The host validates pool membership, access and harness compatibility for
     // the new agent. Never silently replace an incompatible pool with local auth.
-    const childProvider = AI_PROVIDERS.find((provider) =>
-      compatible({ provider, method: "api_key", mode: "responsible_user" }));
+    // OpenCode also supports explicitly configured providers whose models are
+    // outside the managed OpenRouter catalog. Their auth still takes precedence.
+    const childProvider = adapterType === "opencode_local"
+      || (adapterType === "paperclip_runner" && config.provider === "opencode")
+      ? "openrouter"
+      : AI_PROVIDERS.find((provider) =>
+        compatible({ provider, method: "api_key", mode: "responsible_user" }));
     return childProvider && hasChildAuth(childProvider) ? undefined : inherited.data;
   }
   if (inherited.data.mode !== "delegated" && compatible(inherited.data)) {

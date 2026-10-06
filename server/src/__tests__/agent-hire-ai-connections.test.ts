@@ -130,6 +130,26 @@ describe("agent-created hires use managed AI connections", () => {
     expect(agent.adapterConfig.env[key]).toEqual({ type: "plain", value: "fixture-explicit-key" });
   });
 
+  it.each([
+    ["opencode_local", {}, "PAPERCLIP_OPENCODE_PROVIDERS"],
+    ["opencode_local", { model: "anthropic/claude-sonnet-5" }, "OPENCODE_AUTH_JSON"],
+    ["paperclip_runner", { provider: "opencode", model: "anthropic/claude-sonnet-5" }, "OPENCODE_CONFIG_CONTENT"],
+  ] as const)("%s hires with %j keep explicit %s auth outside the managed OpenRouter model catalog", async (adapterType, config, key) => {
+    const f = await fixture("openai");
+    const p = await poolFixture(f);
+    await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
+    const provider = { npm: "@ai-sdk/anthropic", options: { apiKey: "fixture-explicit-key" }, models: { "claude-sonnet-5": { name: "Claude fixture" } } };
+    const value = JSON.stringify(key === "PAPERCLIP_OPENCODE_PROVIDERS" ? { anthropic: provider }
+      : key === "OPENCODE_CONFIG_CONTENT" ? { provider: { anthropic: provider } }
+      : { anthropic: { type: "api", key: "fixture-explicit-key" } });
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+      name: "Independent OpenCode teammate", role: "engineer", adapterType, adapterConfig: { ...config, env: { [key]: value } },
+    }));
+    expect(agent.runtimeConfig.aiConnection).toBeUndefined();
+    expect(agent.adapterConfig.env[key]).toEqual({ type: "plain", value });
+    expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, agent.id))).toEqual([]);
+  });
+
   it.each(["agent-hires", "agents"])("%s installs authorized pool members atomically with the new agent", async (endpoint) => {
     const f = await fixture("openai");
     const p = await poolFixture(f);
