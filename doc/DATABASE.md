@@ -421,6 +421,8 @@ plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
 `paperclipai db:backup` / `pnpm db:backup` commands and backup retention
 configuration.
 
+Backup health checks validate the newest gzip stream and report `database_backup_invalid` for an empty, truncated, or corrupt dump. Validation streams the contents without loading the dump into memory and caches the result while file metadata stays unchanged. Weekly and monthly retention only use valid compressed dumps as bucket representatives. Uncompressed leftovers and invalid dumps stay within the retention horizon for recovery; they cannot replace a valid backup.
+
 Database backups do not include non-database instance files such as local-disk
 uploads, workspace files, or the local encrypted secrets master key. Back those paths
 up separately when you need full instance disaster recovery.

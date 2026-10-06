@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
@@ -86,11 +86,17 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       const janNewest = path.join(backupDir, "paperclip-test-2026-01-28T12-00-00.sql.gz");
       const janOlder = path.join(backupDir, "paperclip-test-2026-01-10T12-00-00.sql.gz");
       const decOld = path.join(backupDir, "paperclip-test-2025-12-15T12-00-00.sql.gz");
+      const janOrphan = path.join(backupDir, "paperclip-test-2026-01-29T12-00-00.sql");
+      const janTruncated = path.join(backupDir, "paperclip-test-2026-01-30T12-00-00.sql.gz");
 
       try {
-        fs.writeFileSync(janNewest, "jan-newest");
-        fs.writeFileSync(janOlder, "jan-older");
-        fs.writeFileSync(decOld, "dec-old");
+        fs.writeFileSync(janNewest, gzipSync("-- jan-newest"));
+        fs.writeFileSync(janOlder, gzipSync("-- jan-older"));
+        fs.writeFileSync(decOld, gzipSync("-- dec-old"));
+        fs.writeFileSync(janOrphan, "-- incomplete SQL");
+        fs.writeFileSync(janTruncated, gzipSync("-- truncated SQL").subarray(0, 20));
+        fs.utimesSync(janOrphan, new Date("2026-01-29T12:00:00Z"), new Date("2026-01-29T12:00:00Z"));
+        fs.utimesSync(janTruncated, new Date("2026-01-30T12:00:00Z"), new Date("2026-01-30T12:00:00Z"));
 
         fs.utimesSync(janNewest, new Date("2026-01-28T12:00:00Z"), new Date("2026-01-28T12:00:00Z"));
         fs.utimesSync(janOlder, new Date("2026-01-10T12:00:00Z"), new Date("2026-01-10T12:00:00Z"));

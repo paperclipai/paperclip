@@ -6,6 +6,7 @@ import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
+import { isCompressedDatabaseBackupValid } from "./backup-integrity.js";
 
 export type BackupRetentionPolicy = {
   dailyDays: number;
@@ -120,7 +121,7 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
  * - Monthly tier: keep the NEWEST backup per calendar month for `monthlyMonths` months
  * - Everything else is deleted
  */
-function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): number {
+async function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, filenamePrefix: string): Promise<number> {
   if (!existsSync(backupDir)) return 0;
 
   const now = Date.now();
@@ -136,7 +137,7 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
     if (!name.endsWith(".sql") && !name.endsWith(".sql.gz")) continue;
     const fullPath = resolve(backupDir, name);
     const stat = statSync(fullPath);
-    entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
+    if (stat.isFile()) entries.push({ name, fullPath, mtimeMs: stat.mtimeMs });
   }
 
   // Sort newest first so the first entry per week/month bucket is the one we keep
@@ -149,6 +150,13 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   for (const entry of entries) {
     // Daily tier — keep everything within dailyDays
     if (entry.mtimeMs >= dailyCutoff) continue;
+
+    // Uncompressed leftovers and invalid gzip files must not displace a valid
+    // representative. Keep them for recovery inside the retention horizon;
+    // files beyond that horizon still follow the normal expiration rule.
+    if (entry.mtimeMs >= Math.min(weeklyCutoff, monthlyCutoff) && (
+      !entry.name.endsWith(".sql.gz") || !await isCompressedDatabaseBackupValid(entry.fullPath)
+    )) continue;
 
     const date = new Date(entry.mtimeMs);
     const week = isoWeekKey(date);
@@ -557,7 +565,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        const prunedCount = await pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
           backupFile,
           sizeBytes,
@@ -1027,7 +1035,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;
-    const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+    const prunedCount = await pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {
       backupFile,

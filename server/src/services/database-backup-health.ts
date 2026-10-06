@@ -1,9 +1,11 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { isCompressedDatabaseBackupValid } from "@paperclipai/db/backup-integrity";
 
 export type DatabaseBackupHealthWarningCode =
   | "database_backup_check_failed"
   | "database_backup_last_failure"
+  | "database_backup_invalid"
   | "database_backup_missing"
   | "database_backup_stale";
 
@@ -102,9 +104,9 @@ function findLatestBackup(backupDir: string, nowMs: number) {
   };
 }
 
-export function inspectDatabaseBackupHealth(
+export async function inspectDatabaseBackupHealth(
   opts: InspectDatabaseBackupHealthOptions,
-): DatabaseBackupHealthStatus {
+): Promise<DatabaseBackupHealthStatus> {
   const warnings: DatabaseBackupHealthWarning[] = [];
   const now = opts.now ?? new Date();
   const maxAgeHours = Math.max(1, opts.maxAgeHours);
@@ -125,6 +127,13 @@ export function inspectDatabaseBackupHealth(
       warnings.push({
         code: "database_backup_stale",
         message: `Latest database backup is ${latestBackup.ageHours}h old, exceeding ${maxAgeHours}h.`,
+      });
+    }
+
+    if (latestBackup && !await isCompressedDatabaseBackupValid(latestBackup.path)) {
+      warnings.push({
+        code: "database_backup_invalid",
+        message: "Latest database backup is empty or has an incomplete or corrupt gzip stream.",
       });
     }
 
