@@ -106,6 +106,13 @@ export interface AdapterExecutionResult {
   sessionId?: string | null;
   sessionParams?: Record<string, unknown> | null;
   sessionDisplayId?: string | null;
+  /**
+   * Identity of this execution on the remote runtime, when the adapter drives
+   * one instead of a local process (a gateway, a sandboxed runner, ...). The
+   * server persists it on the run, so a reader can pair Paperclip's run with
+   * the provider's own record instead of inferring it from logs.
+   */
+  externalRunId?: string | null;
   provider?: string | null;
   biller?: string | null;
   model?: string | null;
