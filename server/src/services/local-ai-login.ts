@@ -8,6 +8,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { readVerifiedLocalAiCredential } from "./local-ai-credentials.js";
+import { localAiLoginCommand } from "./local-ai-login-command.js";
 import { logActivity } from "./activity-log.js";
 
 const LOCAL_LOGIN_METHOD = "local_subscription";
@@ -15,16 +16,11 @@ const ATTEMPT_DURATION_MS = 30 * 60 * 1000;
 function loginHome(id: string) {
   return path.join(resolvePaperclipInstanceRoot(), "ai-local-logins", id);
 }
-const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 function presentAttempt(id: string, expiresAt: Date, provider: string): LocalAiLoginAttempt {
   const directory = loginHome(id);
   return {
     sessionId: id, expiresAt: expiresAt.toISOString(),
-    command: provider === "openai"
-      ? `(export CODEX_HOME=${shellQuote(directory)} && mkdir -p "$CODEX_HOME" && codex -c 'cli_auth_credentials_store="file"' login --device-auth)`
-      : provider === "anthropic"
-        ? `(export CLAUDE_CONFIG_DIR=${shellQuote(directory)} && mkdir -p "$CLAUDE_CONFIG_DIR" && claude auth login)`
-        : `(export GROK_HOME=${shellQuote(directory)} && mkdir -p "$GROK_HOME" && grok login --device-auth)`,
+    command: localAiLoginCommand(provider, directory),
   };
 }
 async function prepareHome(id: string, provider: string) {
