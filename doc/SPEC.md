@@ -24,6 +24,7 @@ Every Company has a **Board** that governs high-impact decisions. The Board is t
 Human invitations default to Operator, with company editing, invitations,
 connections, tools, environments, pipelines, and audit views available by
 default. Join approval and member-permission management remain separate grants.
+An inviter must hold these membership grants to invite a role that includes them.
 See [human Operator defaults](SPEC-implementation.md#91-board-auth).
 
 **V1: Single human Board.** One human operator.

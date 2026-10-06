@@ -589,6 +589,10 @@ creation and configuration, skill editing, environment management, invitations,
 task assignment, pipeline editing, connection and tool management/use, and tool
 and agent-action audit views. Operators do not receive `joins:approve` or
 `users:manage_permissions`. Explicit invitation grants remain authoritative.
+Creating a human invitation also requires any of these two membership powers
+included in its selected role. Operators can invite Operators and Viewers;
+inviting an Admin requires join approval, and inviting an Owner also requires
+member-permission management.
 This preset change adds no database migration; existing role-default seeding
 continues to insert missing grants without replacing custom scopes.
 
