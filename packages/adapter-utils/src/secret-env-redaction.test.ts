@@ -38,9 +38,26 @@ describe("collectKnownSecretEnvValues", () => {
       "DATABASE_URL",
       "ANTHROPIC_API_KEY",
       "BETTER_AUTH_SECRET",
+      "XAI_API_KEY",
+      "AWS_BEARER_TOKEN_BEDROCK",
     ]) {
       expect(KNOWN_SECRET_ENV_VAR_NAMES).toContain(name);
     }
+  });
+
+  it("redacts provider keys set by local adapters", () => {
+    const values = collectKnownSecretEnvValues({
+      XAI_API_KEY: "xai-test-key-abcdefghijklmnop",
+      AWS_BEARER_TOKEN_BEDROCK: "bedrock-bearer-token-abcdefgh",
+    });
+    expect(values).toContain("xai-test-key-abcdefghijklmnop");
+    expect(values).toContain("bedrock-bearer-token-abcdefgh");
+    const out = redactKnownSecretEnvValues(
+      "XAI_API_KEY=xai-test-key-abcdefghijklmnop\nAWS_BEARER_TOKEN_BEDROCK=bedrock-bearer-token-abcdefgh",
+      values,
+    );
+    expect(out).not.toContain("xai-test-key-abcdefghijklmnop");
+    expect(out).not.toContain("bedrock-bearer-token-abcdefgh");
   });
 });
 

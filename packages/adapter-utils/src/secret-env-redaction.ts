@@ -33,6 +33,7 @@ export const KNOWN_SECRET_ENV_VAR_NAMES: readonly string[] = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "OPENAI_API_KEY",
+  "XAI_API_KEY",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "OPENROUTER_API_KEY",
@@ -53,6 +54,7 @@ export const KNOWN_SECRET_ENV_VAR_NAMES: readonly string[] = [
   "AWS_SESSION_TOKEN",
   "AWS_SECRET_ACCESS_KEY",
   "AWS_ACCESS_KEY_ID",
+  "AWS_BEARER_TOKEN_BEDROCK",
 ] as const;
 
 // A short value (e.g. "1", "true", an empty string) is too likely to appear
