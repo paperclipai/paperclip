@@ -56,13 +56,15 @@ export type SecretSensitiveRouteFamily =
   | "voice_sessions"
   | "mcp_oauth"
   | "api_mcp"
-  | "chat_endpoint_setup";
+  | "chat_endpoint_setup"
+  | "mcp_connectors";
 
 const SECRET_SENSITIVE_HTTP_PATHS: ReadonlyArray<readonly [SecretSensitiveRouteFamily, RegExp]> = [
   ["voice_sessions", /^\/api\/companies\/[^/]+\/voice-sessions(?:\/|$)/],
   ["mcp_oauth", /^\/mcp\/(?:oauth|paperclip)(?:\/|$)/],
   ["api_mcp", /^\/api\/mcp(?:\/|$)/],
   ["chat_endpoint_setup", /^\/api\/chat-endpoints\/[^/]+\/setup(?:-secret)?(?:\/|$)/],
+  ["mcp_connectors", /^\/api\/mcp-connectors(?:\/|$)/],
 ];
 const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);
 
