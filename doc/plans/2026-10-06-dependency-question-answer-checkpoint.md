@@ -39,3 +39,21 @@ other participants require exact-head review/next verification before wiring.
 Restoration remains unwired; queue admission/orphan/live 15min acceptance missing.
 Pending human-only DB question remains unchanged. Separate rebase and fresh-head
 validation needed for the existing upstream conflict.
+
+## Effective resolver restriction follow-up
+
+Dark supplied answer now captures effective policy/source and nested excludedActor
+ type/id before suspension, preserving inherited/non-enumerable/getter-backed
+narrowing fields. String restrictions and explicit null/undefined remain intact.
+Ordinary non-opt-in branch unchanged. No production opt-in or authority claim.
+
+Actual canonical/evaluator recording covers inherited policy/nested identity veto,
+different-user positives, getter-backed identity mutation across fence, null
+excluded identity, string not_creator and null/undefined/anyone/human_only positives.
+Initial inherited-field focused run failed. Intermediate string projection regression
+caught as one expected FAIL / twelve skipped (5.13s), then fixed.
+Final explicit four-file replay: 81 PASS / 8.60s / exit 0, same env/node/config/pool
+as above. A nonexistent fifth resolution filename was not selected or counted.
+Writer-boundary + human-gates: 19 PASS / one original missing-intent RED / 6.25s /
+exit 1. No DB/server/listener, typecheck/build/full gates or full participant replay.
+Synthetic rows and predicates are not SQL filtering/isolation/authority/rollback.

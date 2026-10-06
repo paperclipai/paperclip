@@ -48,6 +48,52 @@ describe("dark supplied canonical question answer recording", () => {
     const f = fixture(); f.release(); const actor = Object.create({ resolverPolicyRestriction: { policy: "not_creator", source: "issue_review", excludedActor: { type: "user", id: "user-1" } } }); actor.userId = "user-1";
     await expect(invoke(f, undefined, actor)).rejects.toMatchObject({ status: 403 }); expect(f.events).not.toContain("card-write");
   });
+  it.each(["restriction", "excludedActor"])("preserves effective inherited %s audience restriction", async representation => {
+    const f = fixture(); f.release();
+    const restriction = representation === "restriction"
+      ? Object.create({ policy: "not_creator", source: "issue_review", excludedActor: { type: "user", id: "user-1" } })
+      : { policy: "not_creator", source: "issue_review", excludedActor: Object.create({ type: "user", id: "user-1" }) };
+    await expect(invoke(f, undefined, { userId: "user-1", resolverPolicyRestriction: restriction })).rejects.toMatchObject({ status: 403 });
+    expect(f.card.status).toBe("pending"); expect(f.deliveries).toEqual([]); expect(f.events).not.toContain("card-write");
+  });
+  it("retains string not_creator restriction", async () => {
+    const f = fixture(); f.card.createdByUserId = "user-1"; f.release();
+    await expect(invoke(f, undefined, { userId: "user-1", resolverPolicyRestriction: "not_creator" })).rejects.toMatchObject({ status: 403 });
+    expect(f.card.status).toBe("pending"); expect(f.deliveries).toEqual([]);
+  });
+  it.each(["restriction", "excludedActor"])("allows a different user with inherited %s fields", async representation => {
+    const f = fixture(); f.release();
+    const restriction = representation === "restriction"
+      ? Object.create({ policy: "not_creator", source: "issue_review", excludedActor: { type: "user", id: "other-user" } })
+      : { policy: "not_creator", source: "issue_review", excludedActor: Object.create({ type: "user", id: "other-user" }) };
+    expect((await invoke(f, undefined, { userId: "user-1", resolverPolicyRestriction: restriction })).status).toBe("answered");
+    expect(f.deliveries).toHaveLength(1);
+  });
+  it("captures non-enumerable getter fields and nested identity before the fence", async () => {
+    const f = fixture(); let excludedId = "user-1"; let policy = "not_creator"; let reads = 0;
+    const excludedActor = Object.defineProperties({}, {
+      type: { get: () => "user" }, id: { get: () => { reads++; return excludedId; } },
+    });
+    const restriction = Object.defineProperties({}, {
+      policy: { get: () => policy }, source: { get: () => "issue_review" }, excludedActor: { get: () => excludedActor },
+    });
+    const pending = invoke(f, undefined, { userId: "user-1", resolverPolicyRestriction: restriction });
+    const rejected = expect(pending).rejects.toMatchObject({ status: 403 });
+    expect(f.events).toEqual(["fence"]); expect(reads).toBe(1);
+    excludedId = "other-user"; policy = "anyone"; f.release(); await rejected;
+    expect(reads).toBe(1); expect(f.card.status).toBe("pending"); expect(f.deliveries).toEqual([]);
+  });
+  it("retains fail-closed null excluded identity", async () => {
+    const f = fixture(); f.release();
+    const restriction = Object.create({ policy: "not_creator", source: "issue_review", excludedActor: null });
+    await expect(invoke(f, undefined, { userId: "user-1", resolverPolicyRestriction: restriction })).rejects.toMatchObject({ status: 403 });
+    expect(f.deliveries).toEqual([]); expect(f.card.status).toBe("pending");
+  });
+  it.each([null, undefined, "anyone", "human_only"])("retains non-excluding restriction %s", async restriction => {
+    const f = fixture(); f.release();
+    expect((await invoke(f, undefined, { userId: "user-1", resolverPolicyRestriction: restriction })).status).toBe("answered");
+    expect(f.deliveries).toHaveLength(1);
+  });
   it("propagates delivery failure with no successful return (not rollback)", async () => {
     const error = new Error("delivery-store"); const f = fixture({ insertError: error }); f.release(); await expect(invoke(f)).rejects.toBe(error); expect(f.card.status).toBe("answered");
   });

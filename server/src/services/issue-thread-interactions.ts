@@ -5106,10 +5106,20 @@ export function issueThreadInteractionService(
         }
         issue = { id: issue.id, companyId: issue.companyId };
         input = { answers: structuredClone(input.answers), summaryMarkdown: input.summaryMarkdown };
+        // Capture effective audience fields, including inherited/non-enumerable
+        // identities. structuredClone would silently drop narrowing restrictions.
+        const restriction = actor.resolverPolicyRestriction;
+        const excludedActor = typeof restriction === "object" ? restriction?.excludedActor : undefined;
         actor = {
           identityContextId: actor.identityContextId, agentId: actor.agentId,
           runId: actor.runId, userId: actor.userId, systemId: actor.systemId,
-          resolverPolicyRestriction: structuredClone(actor.resolverPolicyRestriction),
+          resolverPolicyRestriction: restriction == null || typeof restriction === "string" ? restriction : {
+            policy: restriction.policy,
+            source: restriction.source,
+            excludedActor: excludedActor == null ? excludedActor : {
+              type: excludedActor.type, id: excludedActor.id,
+            },
+          },
         };
         await acquireIssueLifecycleFenceInTransaction(suppliedTx, issue.companyId);
         const [authoritativeIssue] = await suppliedTx.select().from(issues).where(and(
