@@ -8,6 +8,140 @@ import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { acquireIssueLifecycleFenceInTransaction } from "./issue-lifecycle-fence.js";
+
+type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+async function persistApprovalRevision(
+  writer: Pick<Db, "select" | "update">, id: string, decidedByUserId: string,
+  decisionNote?: string | null, companyId?: string,
+) {
+  const existing = await writer.select().from(approvals)
+    .where(and(eq(approvals.id, id), companyId === undefined ? undefined : eq(approvals.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!existing) throw notFound("Approval not found");
+  if (companyId !== undefined && existing.companyId !== companyId) throw notFound("Approval not found");
+  if (existing.status !== "pending") throw unprocessable("Only pending approvals can request revision");
+  const now = new Date();
+  const updated = await writer.update(approvals).set({
+    status: "revision_requested", decidedByUserId, decisionNote: decisionNote ?? null,
+    decidedAt: now, updatedAt: now,
+  }).where(and(eq(approvals.id, id),
+    companyId === undefined ? undefined : eq(approvals.companyId, companyId),
+    companyId === undefined ? undefined : eq(approvals.status, "pending"),
+  )).returning().then((rows) => rows[0]);
+  if (companyId !== undefined && !updated) throw unprocessable("Approval revision lost pending status");
+  return updated;
+}
+
+// Dark supplied-tx gate participant. Not authenticated decision authority or
+// restoration. Caller must take the company protocol before earlier reads/locks.
+export async function requestApprovalRevisionInTransaction(tx: Transaction, input: {
+  companyId: string; approvalId: string; decidedByUserId: string; decisionNote?: string | null;
+}) {
+  const { companyId, approvalId, decidedByUserId, decisionNote } = input;
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval revision requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  return persistApprovalRevision(tx, approvalId, decidedByUserId, decisionNote, companyId);
+}
+
+async function persistApprovalCancellation(writer: Pick<Db, "update">, id: string, reason?: string | null, companyId?: string) {
+  const now = new Date();
+  return writer.update(approvals).set({
+    status: "cancelled", decisionNote: reason ?? null, decidedAt: now, updatedAt: now,
+  }).where(and(eq(approvals.id, id), inArray(approvals.status, ["pending", "revision_requested"]),
+    companyId === undefined ? undefined : eq(approvals.companyId, companyId),
+  )).returning().then((rows) => rows[0] ?? null);
+}
+
+// Dark participant: cancellation only, not a board decision or issue restoration.
+export async function cancelApprovalInTransaction(tx: Transaction, input: {
+  companyId: string; approvalId: string; reason?: string | null;
+}) {
+  const { companyId, approvalId, reason } = input;
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval cancellation requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  return persistApprovalCancellation(tx, approvalId, reason, companyId);
+}
+
+async function persistApprovalResubmission(
+  writer: Pick<Db, "select" | "update">, id: string,
+  payload?: Record<string, unknown>, companyId?: string,
+) {
+  const existing = await writer.select().from(approvals)
+    .where(and(eq(approvals.id, id), companyId === undefined ? undefined : eq(approvals.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!existing || (companyId !== undefined && existing.companyId !== companyId)) throw notFound("Approval not found");
+  if (existing.status !== "revision_requested") throw unprocessable("Only revision requested approvals can be resubmitted");
+  const updated = await writer.update(approvals).set({
+    status: "pending", payload: payload ?? existing.payload, decisionNote: null,
+    decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
+  }).where(and(eq(approvals.id, id),
+    companyId === undefined ? undefined : eq(approvals.companyId, companyId),
+    companyId === undefined ? undefined : eq(approvals.status, "revision_requested"),
+  )).returning().then((rows) => rows[0]);
+  if (companyId !== undefined && !updated) throw unprocessable("Approval resubmission lost revision requested status");
+  return updated;
+}
+
+function snapshotResubmissionPayload(payload?: Record<string, unknown>) {
+  if (payload == null) return payload;
+  const encoded = approvals.payload.mapToDriverValue(payload);
+  if (typeof encoded !== "string" || encoded === "null") {
+    throw unprocessable("Lifecycle-fenced resubmission requires present non-null encoded JSON payload");
+  }
+  return approvals.payload.mapFromDriverValue(encoded);
+}
+
+// Dark supplied-tx participant. Not authenticated authority or restoration.
+export async function resubmitApprovalInTransaction(tx: Transaction, input: {
+  companyId: string; approvalId: string; payload?: Record<string, unknown>;
+}) {
+  const { companyId, approvalId } = input;
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval resubmission requires companyId");
+  const payload = snapshotResubmissionPayload(input.payload);
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  return persistApprovalResubmission(tx, approvalId, payload, companyId);
+}
+
+function persistApprovalCreation(writer: Pick<Db, "insert">, companyId: string,
+  data: Omit<typeof approvals.$inferInsert, "companyId">,
+) {
+  return writer.insert(approvals).values({ ...data, companyId }).returning().then((rows) => rows[0]);
+}
+
+function snapshotPendingApprovalCreation(data: Omit<typeof approvals.$inferInsert, "companyId">) {
+  const allowed = new Set(["type", "payload", "requestedByAgentId", "requestedByUserId", "status"]);
+  if (Reflect.ownKeys(data).some((key) => typeof key !== "string" || !allowed.has(key))
+    || (data.status !== undefined && data.status !== "pending")) {
+    throw unprocessable("Lifecycle-fenced approval creation accepts pending request fields only");
+  }
+  const { type, requestedByAgentId, requestedByUserId } = data;
+  const payload = snapshotResubmissionPayload(data.payload);
+  if (payload == null) throw unprocessable("Lifecycle-fenced approval creation requires JSON payload");
+  return { type, requestedByAgentId, requestedByUserId, payload, status: "pending" };
+}
+
+async function createFencedApproval(db: Db, companyId: string,
+  data: Omit<typeof approvals.$inferInsert, "companyId">,
+) {
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval creation requires companyId");
+  const snapshot = snapshotPendingApprovalCreation(data);
+  return db.transaction((tx) => createApprovalInTransaction(tx, { companyId, data: snapshot }));
+}
+
+// Dark pending gate participant; not authenticated request authority or restoration.
+export async function createApprovalInTransaction(tx: Transaction, input: {
+  companyId: string; data: Omit<typeof approvals.$inferInsert, "companyId">;
+}) {
+  const { companyId } = input;
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval creation requires companyId");
+  const data = snapshotPendingApprovalCreation(input.data);
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  const created = await persistApprovalCreation(tx, companyId, data);
+  if (!created) throw unprocessable("Lifecycle-fenced approval creation returned no approval");
+  return created;
+}
 
 export function approvalService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
@@ -114,30 +248,27 @@ export function approvalService(db: Db) {
       return rows[0] ?? null;
     },
 
-    create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
-      db
-        .insert(approvals)
-        .values({ ...data, companyId })
-        .returning()
-        .then((rows) => rows[0]),
+    create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">,
+      options?: { lifecycleFence?: boolean },
+    ) => {
+      if (options?.lifecycleFence) return createFencedApproval(db, companyId, data);
+      return persistApprovalCreation(db, companyId, data);
+    },
 
     // Cancel an open (pending/revision_requested) approval without a board
     // decision — e.g. when its paired agent is terminated during duplicate
     // cleanup. Idempotent: a no-op on already-resolved approvals.
-    cancel: async (id: string, reason?: string | null) => {
-      const now = new Date();
-      const updated = await db
-        .update(approvals)
-        .set({
-          status: "cancelled",
-          decisionNote: reason ?? null,
-          decidedAt: now,
-          updatedAt: now,
-        })
-        .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return updated;
+    cancel: async (id: string, reason?: string | null,
+      options?: { lifecycleFence?: boolean; companyId?: string },
+    ) => {
+      if (options?.lifecycleFence) {
+        const companyId = options.companyId;
+        if (!companyId) throw unprocessable("Lifecycle-fenced approval cancellation requires companyId");
+        return db.transaction((tx) => cancelApprovalInTransaction(tx, {
+          companyId, approvalId: id, reason,
+        }));
+      }
+      return persistApprovalCancellation(db, id, reason);
     },
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
@@ -244,47 +375,29 @@ export function approvalService(db: Db) {
       });
     },
 
-    requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
-      const existing = await getExistingApproval(id);
-      if (existing.status !== "pending") {
-        throw unprocessable("Only pending approvals can request revision");
+    requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null,
+      options?: { lifecycleFence?: boolean; companyId?: string },
+    ) => {
+      if (options?.lifecycleFence) {
+        const companyId = options.companyId;
+        if (!companyId) throw unprocessable("Lifecycle-fenced approval revision requires companyId");
+        return db.transaction((tx) => requestApprovalRevisionInTransaction(tx, {
+          companyId, approvalId: id, decidedByUserId, decisionNote,
+        }));
       }
-
-      const now = new Date();
-      return db
-        .update(approvals)
-        .set({
-          status: "revision_requested",
-          decidedByUserId,
-          decisionNote: decisionNote ?? null,
-          decidedAt: now,
-          updatedAt: now,
-        })
-        .where(eq(approvals.id, id))
-        .returning()
-        .then((rows) => rows[0]);
+      return persistApprovalRevision(db, id, decidedByUserId, decisionNote);
     },
 
-    resubmit: async (id: string, payload?: Record<string, unknown>) => {
-      const existing = await getExistingApproval(id);
-      if (existing.status !== "revision_requested") {
-        throw unprocessable("Only revision requested approvals can be resubmitted");
+    resubmit: async (id: string, payload?: Record<string, unknown>,
+      options?: { lifecycleFence?: boolean; companyId?: string },
+    ) => {
+      if (options?.lifecycleFence) {
+        const companyId = options.companyId;
+        if (!companyId) throw unprocessable("Lifecycle-fenced approval resubmission requires companyId");
+        const capturedPayload = snapshotResubmissionPayload(payload);
+        return db.transaction((tx) => resubmitApprovalInTransaction(tx, { companyId, approvalId: id, payload: capturedPayload }));
       }
-
-      const now = new Date();
-      return db
-        .update(approvals)
-        .set({
-          status: "pending",
-          payload: payload ?? existing.payload,
-          decisionNote: null,
-          decidedByUserId: null,
-          decidedAt: null,
-          updatedAt: now,
-        })
-        .where(eq(approvals.id, id))
-        .returning()
-        .then((rows) => rows[0]);
+      return persistApprovalResubmission(db, id, payload);
     },
 
     listComments: async (approvalId: string) => {

@@ -144,6 +144,7 @@ import {
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { acquireIssueLifecycleFenceInTransaction } from "./issue-lifecycle-fence.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
@@ -7152,8 +7153,8 @@ export function issueService(db: Db) {
     });
   }
 
-  async function assertAssignableUser(companyId: string, userId: string) {
-    const membership = await db
+  async function assertAssignableUser(companyId: string, userId: string, dbOrTx: DbReader = db) {
+    const membership = await dbOrTx
       .select({ id: companyMemberships.id })
       .from(companyMemberships)
       .where(
@@ -7424,11 +7425,10 @@ export function issueService(db: Db) {
     }
   }
 
-  async function syncBlockedByIssueIds(
+  async function validateBlockedByIssueIds(
     issueId: string,
     companyId: string,
     blockedByIssueIds: string[],
-    actor: { agentId?: string | null; userId?: string | null } = {},
     dbOrTx: any = db,
   ) {
     const deduped = [...new Set(blockedByIssueIds)];
@@ -7457,7 +7457,17 @@ export function issueService(db: Db) {
       }
       await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
     }
+    return deduped;
+  }
 
+  async function syncBlockedByIssueIds(
+    issueId: string,
+    companyId: string,
+    blockedByIssueIds: string[],
+    actor: { agentId?: string | null; userId?: string | null } = {},
+    dbOrTx: any = db,
+  ) {
+    const deduped = await validateBlockedByIssueIds(issueId, companyId, blockedByIssueIds, dbOrTx);
     await dbOrTx
       .delete(issueRelations)
       .where(
@@ -10649,14 +10659,54 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
       postCommitActions?: IssuePostCommitAction[],
-      options: { bindRuntimeSharedWorkspace?: boolean } = {},
+      options: { bindRuntimeSharedWorkspace?: boolean; lifecycleFence?: boolean } = {},
     ) => {
+      // Dark opt-in only. Capture caller-owned values synchronously, before
+      // transaction startup or fence suspension. Keep executor/queue identities.
+      const lifecycleFence = options.lifecycleFence;
+      if (lifecycleFence) {
+        options = {
+          lifecycleFence,
+          bindRuntimeSharedWorkspace: options.bindRuntimeSharedWorkspace,
+        };
+        // JSON columns accept persistence-compatible values (including toJSON),
+        // not only structured-clone-compatible objects. Materialize their
+        // driver representation before cloning timestamps and relation arrays.
+        const snapshot = { ...data };
+        for (const [key, column] of Object.entries(getTableColumns(issues))) {
+          if (column.dataType !== "json" || !(key in snapshot)) continue;
+          const value = snapshot[key as keyof typeof snapshot];
+          if (value === null || value === undefined) continue;
+          const encoded = column.mapToDriverValue(value);
+          if (typeof encoded !== "string") {
+            throw unprocessable(`Lifecycle snapshot requires valid JSON text for ${key}`);
+          }
+          const decoded = column.mapFromDriverValue(encoded);
+          // Decoded JSON null would become SQL NULL on the second encoding.
+          // This dark opt-in rejects that ambiguous representation explicitly.
+          if (decoded === null) {
+            throw unprocessable(`Lifecycle snapshot cannot represent JSON null for ${key}`);
+          }
+          Object.assign(snapshot, { [key]: decoded });
+        }
+        data = structuredClone(snapshot);
+      }
+      // Callers supply trusted routing before domain reads;
+      // an outer transaction must enter here before taking other row locks.
+      if (options.lifecycleFence && !data.companyGuard) {
+        throw new Error("Lifecycle-fenced update requires companyGuard");
+      }
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications =
         postCommitActivityPublications ?? ownedActivityPublications;
       const ownedPostCommitActions: IssuePostCommitAction[] = [];
       const queuedPostCommitActions =
         postCommitActions ?? ownedPostCommitActions;
+      const ownsTransaction = dbOrTx === db;
+      const prepareUpdate = async (dbOrTx: any) => {
+      if (options.lifecycleFence) {
+        await acquireIssueLifecycleFenceInTransaction(dbOrTx, data.companyGuard!);
+      }
       // A caller that supplies `companyGuard` gets the company added to
       // every read, lock, and write predicate below. A check before this
       // call is not a boundary: `issues.company_id` can change between
@@ -10672,8 +10722,35 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
-      if (data.parentId !== undefined && data.parentId !== existing.parentId) {
-        await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
+      const parentChanged = data.parentId !== undefined && data.parentId !== existing.parentId;
+      const effectiveParentId = data.parentId !== undefined ? data.parentId : existing.parentId;
+      if (options.lifecycleFence || parentChanged) {
+        if (options.lifecycleFence && effectiveParentId !== null) {
+          // Dark updates require a complete effective same-company ancestry,
+          // including retained parents. Other writers do not yet participate.
+          const visited = new Set<string>([id]);
+          let parentId: string | null = effectiveParentId;
+          for (let depth = 0; parentId !== null; depth++) {
+            if (depth >= 100 || visited.has(parentId)) {
+              throw unprocessable("Lifecycle parent ancestry is cyclic or exceeds depth limit");
+            }
+            visited.add(parentId);
+            const [parent] = await dbOrTx.select({
+              id: issues.id, companyId: issues.companyId, parentId: issues.parentId,
+              conversationAgentId: issues.conversationAgentId,
+            }).from(issues).where(and(eq(issues.id, parentId), eq(issues.companyId, existing.companyId)));
+            if (!parent || parent.companyId !== existing.companyId || parent.id !== parentId
+              || (parent.parentId !== null && typeof parent.parentId !== "string")) {
+              throw unprocessable("Lifecycle parent ancestry is incomplete");
+            }
+            if (depth === 0 && parentChanged && parent.conversationAgentId) {
+              throw unprocessable("Conversations cannot have new subtasks; create a task in a project instead");
+            }
+            parentId = parent.parentId;
+          }
+        } else if (parentChanged) {
+          await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
+        }
       }
       if (existing.conversationAgentId) {
         if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
@@ -10722,7 +10799,9 @@ export function issueService(db: Db) {
         }
       }
       const isolatedWorkspacesEnabled = (
-        await instanceSettings.getExperimental()
+        await instanceSettings.getExperimental(
+          options.lifecycleFence ? { db: dbOrTx } : undefined,
+        )
       ).enableIsolatedWorkspaces;
       if (options.bindRuntimeSharedWorkspace) {
         const workspaceId = issueData.executionWorkspaceId ?? existing.executionWorkspaceId;
@@ -10844,6 +10923,7 @@ export function issueService(db: Db) {
         await assertAssignableUser(
           existing.companyId,
           issueData.assigneeUserId,
+          dbOrTx,
         );
       }
       let nextProjectId =
@@ -10882,6 +10962,7 @@ export function issueService(db: Db) {
           existing.companyId,
           null,
           nextProjectWorkspaceId,
+          options.lifecycleFence ? dbOrTx : db,
         );
         validatedProjectWorkspace = workspace;
         nextProjectId = workspace.projectId;
@@ -10892,6 +10973,7 @@ export function issueService(db: Db) {
           existing.companyId,
           null,
           nextExecutionWorkspaceId,
+          options.lifecycleFence ? dbOrTx : db,
         );
         validatedExecutionWorkspace = workspace;
         nextProjectId = workspace.projectId;
@@ -10903,6 +10985,7 @@ export function issueService(db: Db) {
             existing.companyId,
             nextProjectId,
             nextProjectWorkspaceId,
+            options.lifecycleFence ? dbOrTx : db,
           );
         }
       }
@@ -10912,6 +10995,7 @@ export function issueService(db: Db) {
             existing.companyId,
             nextProjectId,
             nextExecutionWorkspaceId,
+            options.lifecycleFence ? dbOrTx : db,
           );
         }
       }
@@ -10954,6 +11038,12 @@ export function issueService(db: Db) {
         patch.executionLockedAt = null;
       }
 
+      // Dark opt-in validates the replacement before canonical writes, on the
+      // fenced preparation executor. Sync still revalidates on its supplied tx;
+      // nonparticipants are not serialized by this local preflight.
+      if (options.lifecycleFence && blockedByIssueIds !== undefined) {
+        await validateBlockedByIssueIds(id, existing.companyId, blockedByIssueIds, dbOrTx);
+      }
       const runUpdate = async (tx: any) => {
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
@@ -11113,7 +11203,7 @@ export function issueService(db: Db) {
                 const nativeQuestion =
                   nativeQuestionCancellationIdentity(interaction);
                 if (nativeQuestion) {
-                  if (dbOrTx !== db && !postCommitActions) {
+                  if (!ownsTransaction && !postCommitActions) {
                     throw new Error(
                       "Terminal native question updates in an external transaction require a post-commit action queue",
                     );
@@ -11285,7 +11375,7 @@ export function issueService(db: Db) {
           receiptExisting.status !== "done" &&
           updated.status === "done"
         ) {
-          if (dbOrTx !== db && !postCommitActivityPublications) {
+          if (!ownsTransaction && !postCommitActivityPublications) {
             throw new Error(
               "Human completion in an external transaction requires a post-commit activity queue",
             );
@@ -11324,14 +11414,16 @@ export function issueService(db: Db) {
         };
       };
 
-      const result = await (dbOrTx === db
-        ? db.transaction(runUpdate)
-        : runUpdate(dbOrTx));
-      if (dbOrTx === db && !postCommitActivityPublications) {
+      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+      };
+      const result = await (options.lifecycleFence && ownsTransaction
+        ? db.transaction(prepareUpdate)
+        : prepareUpdate(dbOrTx));
+      if (ownsTransaction && !postCommitActivityPublications) {
         for (const publication of ownedActivityPublications)
           publishActivity(publication);
       }
-      if (dbOrTx === db && !postCommitActions) {
+      if (ownsTransaction && !postCommitActions) {
         await executeIssuePostCommitActions(db, ownedPostCommitActions);
       }
       return result;

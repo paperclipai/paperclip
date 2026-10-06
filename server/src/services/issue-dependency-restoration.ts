@@ -1,0 +1,173 @@
+import { and, eq } from "drizzle-orm";
+import { agentWakeupRequests, approvals, issueApprovals, issueRelations, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import { issueService } from "./issues.js";
+import { issueTreeControlService } from "./issue-tree-control.js";
+import { acquireIssueLifecycleFenceInTransaction } from "./issue-lifecycle-fence.js";
+import { buildIssueBlockersResolvedWakeStateKey, findExistingIssueBlockersResolvedWakeForReadyState } from "./issue-dependency-wakeups.js";
+
+type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type RestorationOwner = Parameters<typeof restoreDependencyReadyIssueInTransaction>[2];
+type CanonicalPatch = Parameters<ReturnType<typeof issueService>["update"]>[1];
+
+// Narrow dark relation participant: snapshot only routing and replacement ids,
+// not an arbitrary canonical patch. Every production graph writer must still
+// migrate to this fence before this entry is wired.
+export async function replaceIssueBlockersWithRestorationInTransaction(
+  tx: Transaction,
+  input: { companyId: string; dependentIssueId: string; blockerIssueIds: string[] },
+  owner: RestorationOwner,
+) {
+  const { companyId, dependentIssueId } = input;
+  const blockerIssueIds = [...input.blockerIssueIds];
+  const { db, activityPublications, actions } = owner;
+  if (db === (tx as unknown as Db)) throw new Error("dependency_restore_requires_distinct_root_db");
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  const before = await tx.select({ blockerIssueId: issueRelations.issueId }).from(issueRelations)
+    .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.relatedIssueId, dependentIssueId), eq(issueRelations.type, "blocks")));
+  const receipt = await issueService(db).update(dependentIssueId,
+    { companyGuard: companyId, blockedByIssueIds: blockerIssueIds }, tx, activityPublications, actions, { lifecycleFence: true });
+  // This entry returns a row, not a composed canonical change receipt. The
+  // replacement receipt alone omits the later restoration transition.
+  const issue = receipt ? (({ changes: _changes, ...row }) => row)(receipt) : receipt;
+  const removedBlockerIssueIds = [...new Set(before.map(row => row.blockerIssueId))]
+    .filter(id => !blockerIssueIds.includes(id)).sort();
+  if (!issue || removedBlockerIssueIds.length === 0) return { issue, intentId: null };
+  const intentId = await restoreReadyIssueInTransaction(tx, { companyId, dependentIssueId },
+    { kind: "relation_removal", removedBlockerIssueIds, blockerIssueIds: [...new Set(blockerIssueIds)].sort() },
+    { db, activityPublications, actions });
+  if (!intentId) return { issue, intentId };
+  // Return the authoritative post-restoration row, not the earlier blocked
+  // relation-write snapshot. Still inside the caller-owned transaction.
+  const [restored] = await tx.select().from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, dependentIssueId)));
+  if (!restored || restored.status !== "todo") throw new Error("dependency_restore_not_persisted");
+  return { issue: { ...issue, ...restored }, intentId };
+}
+
+// Dark common writer checkpoint. Production callers MUST NOT migrate until all
+// graph/tree/gate/native participants enter the same fence before reads/locks.
+// Caller owns tx and flushes queues after commit; this never dispatches a wake.
+export async function updateIssueWithDependencyRestorationInTransaction(
+  tx: Transaction,
+  input: { issueId: string; patch: CanonicalPatch & { companyGuard: string } },
+  owner: RestorationOwner,
+) {
+  const { issueId, patch } = input;
+  const { db, activityPublications, actions } = owner;
+  if (db === (tx as unknown as Db)) throw new Error("dependency_restore_requires_distinct_root_db");
+  // Invoke canonical snapshot synchronously before its first fence await. Do
+  // not pre-await here: caller data must not retarget preparation while waiting.
+  const issue = await issueService(db).update(issueId, patch, tx,
+    activityPublications, actions, { lifecycleFence: true });
+  const intentIds: string[] = [];
+  if (!issue || issue.status !== "done") return { issue, intentIds };
+  const candidates = await issueService(tx as unknown as Db).listWakeableBlockedDependents(issue.id);
+  for (const candidate of [...candidates].sort((a, b) => a.id.localeCompare(b.id))) {
+    const intentId = await restoreDependencyReadyIssueInTransaction(tx, {
+      companyId: issue.companyId, dependentIssueId: candidate.id, resolvedBlockerIssueId: issue.id,
+    }, { db, activityPublications, actions });
+    if (intentId) intentIds.push(intentId);
+  }
+  return { issue, intentIds };
+}
+
+// Dark implementation checkpoint: no production emitter calls this function.
+// Caller owns the transaction; no detached restore or external wake is allowed.
+export async function restoreDependencyReadyIssueInTransaction(
+  tx: Transaction,
+  input: { companyId: string; dependentIssueId: string; resolvedBlockerIssueId: string },
+  owner: {
+    db: Db;
+    activityPublications: NonNullable<Parameters<ReturnType<typeof issueService>["update"]>[3]>;
+    actions: NonNullable<Parameters<ReturnType<typeof issueService>["update"]>[4]>;
+  },
+): Promise<string | null> {
+  return restoreReadyIssueInTransaction(tx, input,
+    { kind: "blocker_done", resolvedBlockerIssueId: input.resolvedBlockerIssueId }, owner);
+}
+
+// Removal evidence is produced only by the fenced replacement writer above.
+// Do not expose a caller-supplied "removed" bypass on the blocker-done API.
+async function restoreReadyIssueInTransaction(
+  tx: Transaction,
+  input: { companyId: string; dependentIssueId: string },
+  cause: { kind: "blocker_done"; resolvedBlockerIssueId: string }
+    | { kind: "relation_removal"; removedBlockerIssueIds: string[]; blockerIssueIds: string[] },
+  owner: RestorationOwner,
+): Promise<string | null> {
+  // Capture routing and caller-owned queues before any await. The caller must
+  // publish/execute these queues only AFTER the outer transaction commits.
+  const { companyId, dependentIssueId } = input;
+  const { db, activityPublications, actions } = owner;
+  if (db === (tx as unknown as Db)) throw new Error("dependency_restore_requires_distinct_root_db");
+  // First operation on this path. This dark participant alone does NOT fence
+  // existing non-participating writers. Caller must also acquire the same fence
+  // before its earlier reads/locks; production wiring requires that migration.
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  // Caller input is routing, not proof that the blocker completed. Keep its
+  // authoritative status stable through this transaction. This is still dark:
+  // graph-wide writer lock ordering/fences are not established by this lock.
+  if (cause.kind === "blocker_done") {
+    const [blocker] = await tx.select({ id: issues.id, companyId: issues.companyId, status: issues.status }).from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, cause.resolvedBlockerIssueId)))
+      .for("share");
+    if (!blocker || blocker.id !== cause.resolvedBlockerIssueId || blocker.companyId !== companyId
+      || blocker.status !== "done") return null;
+  }
+  const [dependent] = await tx.select().from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, dependentIssueId)))
+    .for("update");
+  if (!dependent || dependent.companyId !== companyId || dependent.id !== dependentIssueId
+    || dependent.status !== "blocked" || !dependent.assigneeAgentId) return null;
+  // Conservative dark boundary: unmodeled holds and leases are not authority
+  // to resume. Cross-writer locking still needs integration.
+  if (dependent.executionRunId || dependent.checkoutRunId || dependent.conversationAgentId
+    || dependent.unblockDescriptor || dependent.executionState || dependent.executionPolicy) return null;
+  // Reuse the authoritative tree snapshot, on the supplied transaction rather
+  // than the root DB. This veto is NOT a concurrent hold-insertion/parent-edit
+  // fence: the common tree/graph writer discipline is still a wiring prerequisite.
+  const treeAssessment = await issueTreeControlService(tx as unknown as Db).getPauseHoldAssessment(companyId, dependentIssueId);
+  if (treeAssessment.state !== "clear") return null;
+  const interactions = await tx.select({ status: issueThreadInteractions.status }).from(issueThreadInteractions)
+    .where(and(eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, dependentIssueId)));
+  if (interactions.some((row) => row.status === "pending")) return null;
+  const gates = await tx.select({ status: approvals.status }).from(issueApprovals)
+    .innerJoin(approvals, and(eq(issueApprovals.approvalId, approvals.id), eq(approvals.companyId, companyId)))
+    .where(and(eq(issueApprovals.companyId, companyId), eq(issueApprovals.issueId, dependentIssueId)));
+  if (gates.some((row) => row.status === "pending" || row.status === "revision_requested")) return null;
+  let blockerIssueIds: string[];
+  if (cause.kind === "blocker_done") {
+    const candidates = await issueService(tx as unknown as Db).listWakeableBlockedDependents(cause.resolvedBlockerIssueId);
+    const candidate = candidates.find((row) => row.id === dependentIssueId);
+    if (!candidate || candidate.assigneeAgentId !== dependent.assigneeAgentId
+      || !candidate.blockerIssueIds.includes(cause.resolvedBlockerIssueId)) return null;
+    blockerIssueIds = [...candidate.blockerIssueIds];
+  } else {
+    const readiness = await issueService(tx as unknown as Db).getDependencyReadiness(dependentIssueId);
+    if (!readiness?.isDependencyReady) return null;
+    blockerIssueIds = [...new Set(readiness.blockerIssueIds)].sort();
+    if (JSON.stringify(blockerIssueIds) !== JSON.stringify(cause.blockerIssueIds)) return null;
+  }
+  // Capture the cycle BEFORE canonical metadata cleanup.
+  const idempotencyKey = buildIssueBlockersResolvedWakeStateKey({
+    dependentIssueId, blockerIssueIds, blockedTransitionAt: dependent.blockedTransitionAt,
+  });
+  // Existing-intent plus still-blocked is ambiguous legacy state. Leave it
+  // untouched in this dark slice; integration must define reconciliation.
+  if (await findExistingIssueBlockersResolvedWakeForReadyState(tx as unknown as Db, {
+    companyId, dependentIssueId, blockerIssueIds, blockedTransitionAt: dependent.blockedTransitionAt,
+  })) return null;
+  const restored = await issueService(db).update(dependentIssueId,
+    { status: "todo", companyGuard: companyId }, tx, activityPublications, actions, { lifecycleFence: true });
+  if (!restored || restored.status !== "todo") throw new Error("dependency_restore_not_persisted");
+  const [intent] = await tx.insert(agentWakeupRequests).values({
+    companyId, agentId: dependent.assigneeAgentId, source: "automation", triggerDetail: "system",
+    reason: "issue_blockers_resolved", status: "queued", idempotencyKey,
+    requestedByActorType: "system", requestedByActorId: "dependency-restoration",
+    payload: { issueId: dependentIssueId, taskId: dependentIssueId, blockerIssueIds,
+      ...(cause.kind === "blocker_done" ? { resolvedBlockerIssueId: cause.resolvedBlockerIssueId }
+        : { removedBlockerIssueIds: cause.removedBlockerIssueIds }) },
+  }).returning({ id: agentWakeupRequests.id });
+  if (!intent) throw new Error("dependency_restore_intent_not_persisted");
+  return intent.id;
+}
