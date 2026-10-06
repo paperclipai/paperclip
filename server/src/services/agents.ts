@@ -40,7 +40,7 @@ import {
 import { logActivity } from "./activity-log.js";
 import { recordAgentStatusEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
-import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { REDACTED_EVENT_VALUE, sanitizeAgentAdapterConfig, sanitizeRecord } from "../redaction.js";
 import {
   assertClaudeOAuthBindingInvariant,
   claudeOAuthBindingsMatchExactly,
@@ -155,7 +155,7 @@ function buildConfigSnapshot(
 ): AgentConfigSnapshot {
   const adapterConfig =
     typeof row.adapterConfig === "object" && row.adapterConfig !== null && !Array.isArray(row.adapterConfig)
-      ? sanitizeRecord(row.adapterConfig as Record<string, unknown>)
+      ? sanitizeAgentAdapterConfig(row.adapterConfig as Record<string, unknown>)
       : {};
   const runtimeConfig =
     typeof row.runtimeConfig === "object" && row.runtimeConfig !== null && !Array.isArray(row.runtimeConfig)
