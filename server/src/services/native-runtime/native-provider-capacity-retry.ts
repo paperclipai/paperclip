@@ -27,8 +27,18 @@ export async function materializeNativeProviderCapacityRetry(input: {
   const now = new Date();
   const dueAt = new Date(now.getTime() + 60_000 * 2 ** (attempt - 1));
   const retryId = randomUUID();
+  const predecessorContext = { ...run.contextSnapshot };
+  // Resume receipts and delivered wake input belong to the failed run. The
+  // new turn has ordinary task authority; history comes from retryOfRunId.
+  // Match the consumed-input boundary used by native safe replacements.
+  for (const key of [
+    "explicitUserContinuation", "wakeCommentId", "wakeCommentIds", "commentId",
+    "commentIds", "latestCommentId", "resumeIntent", "followUpRequested",
+    "paperclipWake", "paperclipWakeComment", "paperclipTaskMarkdown", "paperclipTaskMarkdownCompact",
+    "paperclipTaskMarkdownAssignment", "paperclipTaskMarkdownAssignmentCompact", "paperclipTurnContext",
+  ]) delete predecessorContext[key];
   const contextSnapshot = {
-    ...run.contextSnapshot,
+    ...predecessorContext,
     issueId: input.issueId,
     taskId: input.issueId,
     forceFreshSession: true,

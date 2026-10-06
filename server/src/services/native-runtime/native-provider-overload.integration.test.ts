@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, completionContracts, createDb, environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, completionContracts, createDb, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
 import type { ControlPlanePort, NativeExecutionInputV1, PrpEvent, PrpTerminalState } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
@@ -19,6 +19,7 @@ import { NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js
 import { heartbeatService } from "../heartbeat.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
+import { buildExecutionContinuation } from "../execution-continuation.js";
 
 describe("durable native provider capacity retry", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -104,7 +105,8 @@ describe("durable native provider capacity retry", () => {
       expect(successors).toHaveLength(1);
       const retry = successors[0];
       expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: failure + 1, scheduledRetryReason: "native_provider_overloaded", error: NATIVE_PROVIDER_OVERLOADED_MESSAGE,
-        contextSnapshot: { issueId, wakeCommentId: "original-message", forceFreshSession: true, executionRetryAccounting: { version: 1, failureRetries: failure + 1, maxTurnContinuations: 0 } } });
+        contextSnapshot: { issueId, forceFreshSession: true, executionRetryAccounting: { version: 1, failureRetries: failure + 1, maxTurnContinuations: 0 } } });
+      expect(retry.contextSnapshot).not.toHaveProperty("wakeCommentId");
       expect(retry.scheduledRetryAt!.getTime() - before).toBeGreaterThanOrEqual(60_000 * 2 ** failure);
       expect(retry.scheduledRetryAt!.getTime() - Date.now()).toBeLessThanOrEqual(60_000 * 2 ** failure);
       const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, retry.id));
@@ -119,6 +121,32 @@ describe("durable native provider capacity retry", () => {
       runId = retry.id;
     }
     expect(unexpected).not.toHaveBeenCalled();
+  });
+
+  it("uses failed-run history without lending a resumed task's consumed continuation receipt", async () => {
+    const issueId = randomUUID(), runId = randomUUID(), olderRunId = randomUUID(), commentId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Resumed capacity task", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "capacity-owner" });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: "capacity-owner", authorType: "user", body: "Continue the investigation." });
+    const consumedContext = { issueId, wakeCommentId: commentId, wakeCommentIds: [commentId],
+      explicitUserContinuation: { previousRunId: olderRunId, commentId },
+      previousRunId: olderRunId, resumeIntent: "continue", paperclipTurnContext: "Previously delivered context" };
+    await db.insert(heartbeatRuns).values([
+      { id: olderRunId, companyId, agentId, status: "failed", contextSnapshot: { issueId } },
+      { id: runId, companyId, agentId, responsibleUserId: "capacity-owner", contextSnapshot: consumedContext },
+    ]);
+    await acceptCapacityFailure(runId, issueId);
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
+    expect(retry.contextSnapshot).not.toHaveProperty("explicitUserContinuation");
+    expect(retry.contextSnapshot).not.toHaveProperty("wakeCommentId");
+    expect(retry.contextSnapshot).not.toHaveProperty("resumeIntent");
+    expect(retry.contextSnapshot).not.toHaveProperty("paperclipTurnContext");
+    const continuation = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+      runId: retry.id, context: retry.contextSnapshot!, summary: null, exposeLowTrustRaw: false });
+    expect(continuation).toMatchObject({ trigger: { sourceRunId: runId }, objective: "Continue the investigation.",
+      messages: [expect.objectContaining({ id: commentId, body: "Continue the investigation." })] });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].contextSnapshot)
+      .toEqual(consumedContext);
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, retry.id));
   });
 
   it("does not claim a capacity retry before predecessor cleanup settles", async () => {

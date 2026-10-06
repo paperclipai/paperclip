@@ -480,7 +480,10 @@ minute; the second waits two minutes. Both spend the existing failure-retry
 budget. Exhaustion requires an explicit retry or a model change.
 
 Retries use a fresh provider session and the normal task context, without an
-automatic model switch. Finalization replay and restart reuse the same successor.
+automatic model switch. Consumed wake input and continuation receipts stay on
+the failed run; `retryOfRunId` supplies task history without lending the new run
+its predecessor's resume authority. Finalization replay and restart reuse the
+same successor.
 Scheduling preserves pending review authority and respects task holds; promotion,
 claim, and dispatch recheck ownership, dependencies, governance, pause, budget,
 and execution locks. Claim also waits for the predecessor's provider execution,
