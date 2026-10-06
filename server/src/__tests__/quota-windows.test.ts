@@ -327,6 +327,8 @@ describe("parseClaudeCliUsageText", () => {
         resetsAt: null,
         valueLabel: null,
         detail: "Resets 5pm (America/Chicago)",
+        kind: "session",
+        windowSeconds: 18_000,
       },
       {
         label: "Current week (all models)",
@@ -334,6 +336,8 @@ describe("parseClaudeCliUsageText", () => {
         resetsAt: null,
         valueLabel: null,
         detail: "Resets Mar 18 at 7:59am (America/Chicago)",
+        kind: "weekly",
+        windowSeconds: 604_800,
       },
       {
         label: "Current week (Sonnet only)",
@@ -341,6 +345,8 @@ describe("parseClaudeCliUsageText", () => {
         resetsAt: null,
         valueLabel: null,
         detail: "Resets Mar 18 at 8:59am (America/Chicago)",
+        kind: "other",
+        windowSeconds: 604_800,
       },
       {
         label: "Extra usage",
@@ -348,6 +354,8 @@ describe("parseClaudeCliUsageText", () => {
         resetsAt: null,
         valueLabel: null,
         detail: "Extra usage not enabled • /extra-usage to enable",
+        kind: "other",
+        windowSeconds: null,
       },
     ]);
   });
@@ -596,6 +604,22 @@ describe("fetchClaudeQuota", () => {
     expect(windows.map((w: QuotaWindow) => w.usedPercent)).toEqual([10, 20, 30, 40]);
   });
 
+  it("classifies only the account-wide windows as session and weekly", async () => {
+    mockFetch({
+      five_hour: { utilization: 10, resets_at: null },
+      seven_day: { utilization: 20, resets_at: null },
+      seven_day_sonnet: { utilization: 30, resets_at: null },
+      seven_day_opus: { utilization: 40, resets_at: null },
+    });
+    const windows = await fetchClaudeQuota("token");
+    expect(windows.map((w: QuotaWindow) => [w.kind, w.windowSeconds])).toEqual([
+      ["session", 18_000],
+      ["weekly", 604_800],
+      ["other", 604_800],
+      ["other", 604_800],
+    ]);
+  });
+
   it("parses extra usage when the OAuth response includes it", async () => {
     mockFetch({
       extra_usage: {
@@ -611,6 +635,8 @@ describe("fetchClaudeQuota", () => {
         resetsAt: null,
         valueLabel: "Not enabled",
         detail: "Extra usage not enabled",
+        kind: "other",
+        windowSeconds: null,
       },
     ]);
   });
@@ -704,6 +730,24 @@ describe("fetchCodexQuota", () => {
     expect(windows).toHaveLength(2);
     expect(windows[0]!.label).toBe("5h limit");
     expect(windows[1]!.label).toBe("Weekly limit");
+    expect(windows.map((w) => [w.kind, w.windowSeconds])).toEqual([
+      ["session", 18_000],
+      ["weekly", 604_800],
+    ]);
+  });
+
+  it("classifies WHAM windows by their reported length and falls back to the slot", async () => {
+    mockFetch({
+      rate_limit: {
+        primary_window: { used_percent: 10, limit_window_seconds: 604_800 },
+        secondary_window: { used_percent: 60 },
+      },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows.map((w) => [w.kind, w.windowSeconds])).toEqual([
+      ["weekly", 604_800],
+      ["weekly", 604_800],
+    ]);
   });
 
   it("includes Credits window when credits present and not unlimited", async () => {
@@ -712,7 +756,7 @@ describe("fetchCodexQuota", () => {
     });
     const windows = await fetchCodexQuota("token", null);
     expect(windows).toHaveLength(1);
-    expect(windows[0]).toMatchObject({ label: "Credits", valueLabel: "$4.20 remaining", usedPercent: null });
+    expect(windows[0]).toMatchObject({ label: "Credits", valueLabel: "$4.20 remaining", usedPercent: null, kind: "other" });
   });
 
   it("omits Credits window when unlimited is true", async () => {
@@ -768,6 +812,8 @@ describe("mapCodexRpcQuota", () => {
         resetsAt: "2025-11-18T21:06:40.000Z",
         valueLabel: null,
         detail: null,
+        kind: "session",
+        windowSeconds: 18_000,
       },
       {
         label: "Weekly limit",
@@ -775,6 +821,8 @@ describe("mapCodexRpcQuota", () => {
         resetsAt: null,
         valueLabel: null,
         detail: null,
+        kind: "weekly",
+        windowSeconds: 604_800,
       },
       {
         label: "GPT-5.3-Codex-Spark · 5h limit",
@@ -782,6 +830,8 @@ describe("mapCodexRpcQuota", () => {
         resetsAt: null,
         valueLabel: null,
         detail: null,
+        kind: "other",
+        windowSeconds: 18_000,
       },
       {
         label: "GPT-5.3-Codex-Spark · Weekly limit",
@@ -789,6 +839,8 @@ describe("mapCodexRpcQuota", () => {
         resetsAt: null,
         valueLabel: null,
         detail: null,
+        kind: "other",
+        windowSeconds: 604_800,
       },
     ]);
   });
@@ -811,6 +863,8 @@ describe("mapCodexRpcQuota", () => {
         resetsAt: null,
         valueLabel: "$12.34 remaining",
         detail: null,
+        kind: "other",
+        windowSeconds: null,
       },
     ]);
   });

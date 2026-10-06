@@ -1025,6 +1025,7 @@ npx paperclipai cost by-biller --company-id <company-id>
 npx paperclipai cost by-project --company-id <company-id>
 npx paperclipai cost window-spend --company-id <company-id>
 npx paperclipai cost quota-windows --company-id <company-id>
+npx paperclipai cost quota-pacing --company-id <company-id>
 npx paperclipai cost issue <issue-id>
 npx paperclipai cost event:create --company-id <company-id> --payload-json '{...}'
 ```

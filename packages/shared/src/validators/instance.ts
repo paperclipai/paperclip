@@ -6,8 +6,17 @@ import {
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
 } from "../types/instance.js";
+import {
+  DEFAULT_QUOTA_PACING_SETTINGS,
+  QUOTA_PACING_MAX_POLL_INTERVAL_SEC,
+  QUOTA_PACING_MAX_SESSION_RESERVE_PERCENT,
+  QUOTA_PACING_MAX_WEEKLY_ALLOWANCE_PERCENT,
+  QUOTA_PACING_MIN_POLL_INTERVAL_SEC,
+  QUOTA_PACING_MODE_SETTINGS,
+  type QuotaPacingSettings,
+} from "../types/quota-pacing.js";
 import { feedbackDataSharingPreferenceSchema } from "./feedback.js";
-import { shapeWithoutDefaults } from "./partial.js";
+import { objectWithoutDefaults, shapeWithoutDefaults } from "./partial.js";
 
 function presetSchema<T extends readonly number[]>(presets: T, label: string) {
   return z.number().refine(
@@ -22,6 +31,37 @@ export const backupRetentionPolicySchema = z.object({
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
 });
 
+// Not strict: a stored row that carries an unknown nested key must still load.
+// The patch schema below is strict, so a write cannot add one.
+export const quotaPacingSettingsSchema = z.object({
+  enabled: z.boolean().default(DEFAULT_QUOTA_PACING_SETTINGS.enabled),
+  mode: z.enum(QUOTA_PACING_MODE_SETTINGS).default(DEFAULT_QUOTA_PACING_SETTINGS.mode),
+  sessionReservePercent: z
+    .number()
+    .int()
+    .min(0)
+    .max(QUOTA_PACING_MAX_SESSION_RESERVE_PERCENT)
+    .default(DEFAULT_QUOTA_PACING_SETTINGS.sessionReservePercent),
+  weeklyAllowancePercent: z
+    .number()
+    .int()
+    .min(0)
+    .max(QUOTA_PACING_MAX_WEEKLY_ALLOWANCE_PERCENT)
+    .default(DEFAULT_QUOTA_PACING_SETTINGS.weeklyAllowancePercent),
+  pollIntervalSec: z
+    .number()
+    .int()
+    .min(QUOTA_PACING_MIN_POLL_INTERVAL_SEC)
+    .max(QUOTA_PACING_MAX_POLL_INTERVAL_SEC)
+    .default(DEFAULT_QUOTA_PACING_SETTINGS.pollIntervalSec),
+});
+
+// A patch changes only the keys it sends; the service merges it over the
+// stored pacing settings.
+export const patchQuotaPacingSettingsSchema = objectWithoutDefaults(quotaPacingSettingsSchema)
+  .partial()
+  .strict();
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(
@@ -31,10 +71,14 @@ export const instanceGeneralSettingsSchema = z.object({
   // Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
   // Kubernetes sandbox provider and denies local/ssh execution (cloud_tenant).
   executionMode: z.enum(["kubernetes", "any"]).optional(),
+  quotaPacing: quotaPacingSettingsSchema.default(DEFAULT_QUOTA_PACING_SETTINGS),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z
-  .object(shapeWithoutDefaults(instanceGeneralSettingsSchema.shape))
+  .object({
+    ...shapeWithoutDefaults(instanceGeneralSettingsSchema.shape),
+    quotaPacing: patchQuotaPacingSettingsSchema,
+  })
   .partial()
   .strict();
 
@@ -131,9 +175,13 @@ export const startTaskDrainRequestSchema = z.object({
 }).strict();
 
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;
+export type PatchQuotaPacingSettings = Partial<QuotaPacingSettings>;
 // The patch schema removes each default so an absent key stays absent. Declare
 // the type from the full settings type, so every field keeps its precise type.
-export type PatchInstanceGeneralSettings = Partial<InstanceGeneralSettings>;
+// Pacing settings merge key by key, so their patch is partial too.
+export type PatchInstanceGeneralSettings = Partial<Omit<InstanceGeneralSettings, "quotaPacing">> & {
+  quotaPacing?: PatchQuotaPacingSettings;
+};
 export type InstanceExperimentalSettings = z.infer<typeof instanceExperimentalSettingsSchema>;
 export type PatchInstanceExperimentalSettings = Partial<
   Omit<

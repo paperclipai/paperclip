@@ -24,6 +24,7 @@ import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
+import { QuotaPacingPanel } from "../components/QuotaPacingPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
@@ -979,6 +980,7 @@ export function Costs({
         </TabsContent>
 
         <TabsContent value="providers" className="mt-4 space-y-4">
+          {selectedCompanyId ? <QuotaPacingPanel companyId={selectedCompanyId} /> : null}
           {showCustomPrompt ? (
             <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
           ) : (

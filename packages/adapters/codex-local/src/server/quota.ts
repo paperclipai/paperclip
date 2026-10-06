@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import type { ProviderQuotaResult, QuotaWindow, QuotaWindowKind } from "@paperclipai/adapter-utils";
 import {
   classifyCodexAuthRefreshFailure,
   type CodexAuthRefreshFailureClass,
@@ -11,6 +11,10 @@ import {
 const CODEX_USAGE_SOURCE_RPC = "codex-rpc";
 const CODEX_USAGE_SOURCE_WHAM = "codex-wham";
 const MAX_QUOTA_ERROR_BODY_BYTES = 4_000;
+// Conventional Codex window lengths, used only when a response omits them.
+const CODEX_PRIMARY_WINDOW_SECONDS = 5 * 60 * 60;
+const CODEX_SECONDARY_WINDOW_SECONDS = 7 * 24 * 60 * 60;
+const DAY_SECONDS = 24 * 60 * 60;
 
 export function codexHomeDir(): string {
   const fromEnv = process.env.CODEX_HOME;
@@ -218,6 +222,30 @@ export function secondsToWindowLabel(
   return `${Math.round(hours / 24)}d`;
 }
 
+function positiveFinite(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
+ * Classify a Codex rate-limit window for run pacing. The reported window
+ * length decides the kind; the primary/secondary slot supplies the
+ * conventional length when the response omits it. Model-scoped limits are
+ * never the account-wide session or weekly window.
+ */
+function codexWindowShape(
+  reportedSeconds: number | null | undefined,
+  slot: "primary" | "secondary",
+  accountWide = true,
+): { kind: QuotaWindowKind; windowSeconds: number } {
+  const windowSeconds =
+    positiveFinite(reportedSeconds)
+    ?? (slot === "primary" ? CODEX_PRIMARY_WINDOW_SECONDS : CODEX_SECONDARY_WINDOW_SECONDS);
+  if (!accountWide) return { kind: "other", windowSeconds };
+  if (windowSeconds <= DAY_SECONDS) return { kind: "session", windowSeconds };
+  if (windowSeconds <= 8 * DAY_SECONDS) return { kind: "weekly", windowSeconds };
+  return { kind: "other", windowSeconds };
+}
+
 /** fetch with an abort-based timeout so a hanging provider api doesn't block the response indefinitely */
 export async function fetchWithTimeout(
   url: string,
@@ -310,6 +338,7 @@ export async function fetchCodexQuota(
           : (w.reset_at ?? null),
       valueLabel: null,
       detail: null,
+      ...codexWindowShape(w.limit_window_seconds, "primary"),
     });
   }
   if (rateLimit?.secondary_window != null) {
@@ -323,6 +352,7 @@ export async function fetchCodexQuota(
           : (w.reset_at ?? null),
       valueLabel: null,
       detail: null,
+      ...codexWindowShape(w.limit_window_seconds, "secondary"),
     });
   }
   if (body.credits != null && body.credits.unlimited !== true) {
@@ -334,6 +364,8 @@ export async function fetchCodexQuota(
       resetsAt: null,
       valueLabel,
       detail: null,
+      kind: "other",
+      windowSeconds: null,
     });
   }
   return windows;
@@ -385,14 +417,21 @@ function unixSecondsToIso(value: number | null | undefined): string | null {
   return new Date(value * 1000).toISOString();
 }
 
-function buildCodexRpcWindow(label: string, window: CodexRpcWindow | null | undefined): QuotaWindow | null {
+function buildCodexRpcWindow(
+  label: string,
+  window: CodexRpcWindow | null | undefined,
+  slot: "primary" | "secondary",
+  accountWide: boolean,
+): QuotaWindow | null {
   if (!window) return null;
+  const durationMins = positiveFinite(window.windowDurationMins);
   return {
     label,
     usedPercent: normalizeCodexUsedPercent(window.usedPercent),
     resetsAt: unixSecondsToIso(window.resetsAt),
     valueLabel: null,
     detail: null,
+    ...codexWindowShape(durationMins == null ? null : durationMins * 60, slot, accountWide),
   };
 }
 
@@ -433,17 +472,20 @@ export function mapCodexRpcQuota(result: CodexRpcRateLimitsResult, account?: Cod
       limitId === "codex"
         ? ""
         : `${limit.limitName ?? limitId} · `;
-    const primary = buildCodexRpcWindow(`${prefix}5h limit`, limit.primary);
+    const accountWide = limitId === "codex";
+    const primary = buildCodexRpcWindow(`${prefix}5h limit`, limit.primary, "primary", accountWide);
     if (primary) windows.push(primary);
-    const secondary = buildCodexRpcWindow(`${prefix}Weekly limit`, limit.secondary);
+    const secondary = buildCodexRpcWindow(`${prefix}Weekly limit`, limit.secondary, "secondary", accountWide);
     if (secondary) windows.push(secondary);
-    if (limitId === "codex" && limit.credits && limit.credits.unlimited !== true) {
+    if (accountWide && limit.credits && limit.credits.unlimited !== true) {
       windows.push({
         label: "Credits",
         usedPercent: null,
         resetsAt: null,
         valueLabel: parseCreditBalance(limit.credits.balance) ?? "N/A",
         detail: null,
+        kind: "other",
+        windowSeconds: null,
       });
     }
   }

@@ -4,12 +4,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import type { ProviderQuotaResult, QuotaWindow, QuotaWindowKind } from "@paperclipai/adapter-utils";
 
 const execFileAsync = promisify(execFile);
 
 const CLAUDE_USAGE_SOURCE_OAUTH = "anthropic-oauth";
 const CLAUDE_USAGE_SOURCE_CLI = "claude-cli";
+const CLAUDE_SESSION_WINDOW_SECONDS = 5 * 60 * 60;
+const CLAUDE_WEEKLY_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 
 export function claudeConfigDir(): string {
   const fromEnv = process.env.CLAUDE_CONFIG_DIR;
@@ -201,11 +203,27 @@ export async function readClaudeToken(options: { allowKeychain?: boolean } = {})
   if (process.env.CLAUDE_CONFIG_DIR?.trim()) {
     return readClaudeTokenFromKeychain(isolatedKeychainService(configDir));
   }
-  // Only an explicit local-account import may consult the user's Keychain.
+  // Only an explicit local-account import or quota polling may consult the
+  // user's Keychain.
   if (options.allowKeychain) {
     return readClaudeTokenFromKeychain("Claude Code-credentials");
   }
   return null;
+}
+
+/**
+ * Read the OAuth token that quota polling uses.
+ *
+ * On macOS, Claude Code keeps the machine-level login in the unsuffixed
+ * Keychain item and writes no credentials file. Without the Keychain read,
+ * quota polling falls back to the CLI `/usage` scrape, which needs a TTY and
+ * fails when the server runs as a background service (launchd). That fallback
+ * already reads the same Keychain login through the `claude` binary, so this
+ * read exposes no new account. The token goes only to the Anthropic usage API.
+ * A custom CLAUDE_CONFIG_DIR still reads only its own suffixed item.
+ */
+export function readClaudeQuotaToken(): Promise<string | null> {
+  return readClaudeToken({ allowKeychain: true });
 }
 
 interface AnthropicUsageWindow {
@@ -289,6 +307,8 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
       resetsAt: body.five_hour.resets_at ?? null,
       valueLabel: null,
       detail: null,
+      kind: "session",
+      windowSeconds: CLAUDE_SESSION_WINDOW_SECONDS,
     });
   }
   if (body.seven_day != null) {
@@ -298,6 +318,8 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
       resetsAt: body.seven_day.resets_at ?? null,
       valueLabel: null,
       detail: null,
+      kind: "weekly",
+      windowSeconds: CLAUDE_WEEKLY_WINDOW_SECONDS,
     });
   }
   if (body.seven_day_sonnet != null) {
@@ -307,6 +329,8 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
       resetsAt: body.seven_day_sonnet.resets_at ?? null,
       valueLabel: null,
       detail: null,
+      kind: "other",
+      windowSeconds: CLAUDE_WEEKLY_WINDOW_SECONDS,
     });
   }
   if (body.seven_day_opus != null) {
@@ -316,6 +340,8 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
       resetsAt: body.seven_day_opus.resets_at ?? null,
       valueLabel: null,
       detail: null,
+      kind: "other",
+      windowSeconds: CLAUDE_WEEKLY_WINDOW_SECONDS,
     });
   }
   if (body.extra_usage != null) {
@@ -331,6 +357,8 @@ export async function fetchClaudeQuota(token: string): Promise<QuotaWindow[]> {
         body.extra_usage.is_enabled === false
           ? "Extra usage not enabled"
           : "Monthly extra usage pool",
+      kind: "other",
+      windowSeconds: null,
     });
   }
   return windows;
@@ -423,6 +451,21 @@ function canonicalQuotaLabel(line: string): string {
   }
 }
 
+/** Classify a canonical Claude usage label for run pacing. */
+function claudeWindowShape(label: string): { kind: QuotaWindowKind; windowSeconds: number | null } {
+  switch (normalizeForLabelSearch(label)) {
+    case "currentsession":
+      return { kind: "session", windowSeconds: CLAUDE_SESSION_WINDOW_SECONDS };
+    case "currentweekallmodels":
+      return { kind: "weekly", windowSeconds: CLAUDE_WEEKLY_WINDOW_SECONDS };
+    case "currentweeksonnetonly":
+    case "currentweekopusonly":
+      return { kind: "other", windowSeconds: CLAUDE_WEEKLY_WINDOW_SECONDS };
+    default:
+      return { kind: "other", windowSeconds: null };
+  }
+}
+
 function formatClaudeCliDetail(label: string, lines: string[]): string | null {
   const normalizedLabel = normalizeForLabelSearch(label);
   if (normalizedLabel === "extrausage") {
@@ -477,6 +520,7 @@ export function parseClaudeCliUsageText(text: string): QuotaWindow[] {
       resetsAt: null,
       valueLabel: null,
       detail: formatClaudeCliDetail(section.label, section.lines),
+      ...claudeWindowShape(section.label),
     };
   });
 
@@ -551,7 +595,7 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
 
   const authStatus = await readClaudeAuthStatus();
   const authDescription = describeClaudeSubscriptionAuth(authStatus);
-  const token = await readClaudeToken();
+  const token = await readClaudeQuotaToken();
 
   const errors: string[] = [];
 
