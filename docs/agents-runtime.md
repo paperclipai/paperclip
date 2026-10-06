@@ -41,6 +41,7 @@ Built-in adapters:
 - `pi_local`: runs an embedded Pi agent locally
 - `hermes_local`: starts your local `hermes` CLI through `@paperclipai/hermes-paperclip-adapter`
 - `hermes_gateway`: calls an already-running Hermes API server through `@paperclipai/hermes-paperclip-adapter/gateway`
+- `google_vertex`: runs Hermes locally with its provider fixed to Google Vertex AI, using OAuth2 service-account credentials or ADC
 - `openclaw_gateway`: connects to an OpenClaw gateway endpoint
 - `process`: generic shell command adapter
 - `http`: calls an external HTTP endpoint
@@ -49,7 +50,7 @@ External plugin adapters (install via the adapter manager or API):
 
 - `droid_local`: runs your local Factory Droid CLI (`@henkey/droid-paperclip-adapter`)
 
-For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine. For `hermes_gateway`, Paperclip assumes the Hermes API server is already running, reachable from the Paperclip server, and configured with an API key. The older `@paperclipai/adapter-hermes-gateway` npm package is only a deprecated compatibility shim; the adapter type remains `hermes_gateway`.
+For local CLI adapters (`claude_local`, `codex_local`, `opencode_local`, `hermes_local`, `google_vertex`, `droid_local`), Paperclip assumes the CLI is already installed and authenticated on the host machine. `google_vertex` uses Hermes with Vertex OAuth2 credentials rather than a static model-provider key. For `hermes_gateway`, Paperclip assumes the Hermes API server is already running, reachable from the Paperclip server, and configured with an API key. The older `@paperclipai/adapter-hermes-gateway` npm package is only a deprecated compatibility shim; the adapter type remains `hermes_gateway`.
 
 ## 3.2 Runtime behavior
 

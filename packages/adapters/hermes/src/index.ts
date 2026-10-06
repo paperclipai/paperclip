@@ -36,6 +36,13 @@ export {
   models as hermesGatewayModels,
   type as hermesGatewayType,
 } from "./gateway/index.js";
+export {
+  createServerAdapter as createGoogleVertexServerAdapter,
+  agentConfigurationDoc as googleVertexAgentConfigurationDoc,
+  label as googleVertexLabel,
+  models as googleVertexModels,
+  type as googleVertexType,
+} from "./vertex/index.js";
 
 /**
  * Models available through Hermes Agent.

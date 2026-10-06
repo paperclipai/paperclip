@@ -32,7 +32,10 @@
     "./gateway/server": "./src/gateway/server/index.ts",
     "./gateway/ui": "./src/gateway/ui/index.ts",
     "./gateway/cli": "./src/gateway/cli/index.ts",
-    "./gateway/ui-parser": "./gateway-ui-parser.cjs"
+    "./gateway/ui-parser": "./gateway-ui-parser.cjs",
+    "./vertex": "./src/vertex/index.ts",
+    "./vertex/server": "./src/vertex/server/index.ts",
+    "./vertex/ui": "./src/vertex/ui/index.ts"
   },
   "paperclip": {
     "adapterUiParser": "1.0.0"
@@ -73,7 +76,19 @@
         "types": "./dist/gateway/cli/index.d.ts",
         "import": "./dist/gateway/cli/index.js"
       },
-      "./gateway/ui-parser": "./gateway-ui-parser.cjs"
+      "./gateway/ui-parser": "./gateway-ui-parser.cjs",
+      "./vertex": {
+        "types": "./dist/vertex/index.d.ts",
+        "import": "./dist/vertex/index.js"
+      },
+      "./vertex/server": {
+        "types": "./dist/vertex/server/index.d.ts",
+        "import": "./dist/vertex/server/index.js"
+      },
+      "./vertex/ui": {
+        "types": "./dist/vertex/ui/index.d.ts",
+        "import": "./dist/vertex/ui/index.js"
+      }
     },
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",

@@ -98,6 +98,7 @@ import {
 import {
   createHermesGatewayServerAdapter,
   createHermesLocalServerAdapter,
+  createGoogleVertexServerAdapter,
 } from "@paperclipai/hermes-paperclip-adapter";
 import {
   execute as openCodeExecute,
@@ -808,6 +809,11 @@ const hermesLocalAdapter: ServerAdapterModule = {
   runtimeToolDelivery: "environment",
 };
 
+const googleVertexAdapter: ServerAdapterModule = {
+  ...createGoogleVertexServerAdapter(),
+  runtimeToolDelivery: "environment",
+};
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   runtimeToolDelivery: "invocation_context",
@@ -887,6 +893,7 @@ function registerBuiltInAdapters() {
     kimiLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,
+    googleVertexAdapter,
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,
