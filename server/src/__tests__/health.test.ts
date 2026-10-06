@@ -363,6 +363,9 @@ describe("GET /health", () => {
       commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      features: {
+        authDisableSignUp: false,
+      },
       databaseBackup: {
         enabled: true,
         status: "warning",
@@ -421,6 +424,9 @@ describe("GET /health", () => {
       commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      features: {
+        authDisableSignUp: false,
+      },
     });
     expect(res.body.serverInfo).toBeUndefined();
   });
@@ -460,6 +466,9 @@ describe("GET /health", () => {
       commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      features: {
+        authDisableSignUp: false,
+      },
     });
     expect(res.body.serverInfo).toBeUndefined();
   });
@@ -505,6 +514,7 @@ describe("GET /health", () => {
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
       features: {
+        authDisableSignUp: false,
         companyDeletionEnabled: false,
       },
       serverInfo: testServerInfo,
