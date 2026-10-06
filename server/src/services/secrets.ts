@@ -755,6 +755,10 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function isSensitiveEnvKey(key: string) {
+  // Git author identity is public metadata. Exempt only these exact names,
+  // so adjacent credential keys such as GIT_AUTHOR_TOKEN remain protected.
+  const normalizedKey = key.toLowerCase();
+  if (normalizedKey === "git_author_name" || normalizedKey === "git_author_email") return false;
   return SENSITIVE_ENV_KEY_RE.test(key);
 }
 

@@ -267,6 +267,41 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/same company/i);
   });
 
+  it("accepts public Git author identity as plain values in strict secret mode", async () => {
+    const companyId = await seedCompany("Git identity");
+    const svc = secretService(db);
+    const env = {
+      GIT_AUTHOR_NAME: { type: "plain" as const, value: "Example Developer" },
+      GIT_AUTHOR_EMAIL: { type: "plain" as const, value: "developer@example.invalid" },
+    };
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(companyId, env, { strictMode: true }),
+    ).resolves.toEqual(env);
+  });
+
+  it.each(["AUTH", "AUTH_TOKEN", "HTTP_AUTHORIZATION", "GIT_AUTHOR_TOKEN", "GIT_AUTHOR_NAME_TOKEN", "GIT_AUTHOR_EMAIL_PASSWORD"])(
+    "still requires a secret reference for %s in strict mode",
+    async (key) => {
+      const companyId = await seedCompany("Sensitive environment");
+      await expect(
+        secretService(db).normalizeEnvBindingsForPersistence(
+          companyId, { [key]: { type: "plain", value: "test-secret" } },
+          { strictMode: true },
+        ),
+      ).rejects.toThrow(`Strict secret mode requires secret references for sensitive key: ${key}`);
+    },
+  );
+
+  it("rejects an author key with a trailing newline before persisting it", async () => {
+    const companyId = await seedCompany("Invalid Git identity key");
+    await expect(
+      secretService(db).normalizeEnvBindingsForPersistence(
+        companyId, { "GIT_AUTHOR_NAME\n": { type: "plain", value: "Example Developer" } },
+        { strictMode: true },
+      ),
+    ).rejects.toThrow("Invalid environment variable name");
+  });
+
   it("replaceSecretRefsForInstanceTarget moves the binding to the referenced secret's company", async () => {
     const companyA = await seedCompany("A");
     const companyB = await seedCompany("B");

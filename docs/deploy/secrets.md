@@ -218,6 +218,10 @@ npx paperclipai secrets doctor --company-id <company-id>
 
 When strict mode is enabled, sensitive env keys (matching `*_API_KEY`, `*_TOKEN`, `*_SECRET`) must use secret references instead of inline plain values.
 
+`GIT_AUTHOR_NAME` and `GIT_AUTHOR_EMAIL` hold public Git identity and can use
+plain values. This exception applies only to those exact keys. Credential keys
+such as `GIT_AUTHOR_TOKEN` still require secret references.
+
 ```sh
 PAPERCLIP_SECRETS_STRICT_MODE=true
 ```
