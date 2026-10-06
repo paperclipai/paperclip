@@ -957,3 +957,64 @@ describe("heartbeat run ID OpenAPI contract", () => {
     expect(checked).toBe(12);
   });
 });
+
+
+describe("ACC-2184 OpenAPI/runtime alignment", () => {
+  // ACC-2184 audit: every endpoint whose runtime rejects Bearer agents must
+  // declare board-only security in the generated OpenAPI document. The
+  // runtime sources assert
+  //     GET /api/companies/{companyId}/secrets             → assertBoard
+  //     GET /api/tool-gateway/audit                       → assertBoard + tools:view_audit
+  //     GET /api/companies/{companyId}/audit/agent-actions.csv → assertAgentAuditPermission (board+audit:view_agent_actions)
+  // The JSON variant of /audit/agent-actions must keep `actorScope` semantics
+  // in its summary/description because the runtime authorization branches on
+  // the actorScope query parameter (board-only when actorScope=agents,
+  // company-access otherwise with optional attribution-view).
+  it("classifies the three ACC-2184 endpoints as board-only", async () => {
+    const response = await request(createApp()).get("/api/openapi.json");
+    expect(response.status).toBe(200);
+    const boardOnlyPaths = [
+      "/api/companies/{companyId}/secrets",
+      "/api/tool-gateway/audit",
+      "/api/companies/{companyId}/audit/agent-actions.csv",
+    ];
+    for (const path of boardOnlyPaths) {
+      const operation = response.body.paths[path]?.get;
+      expect(operation, `missing operation for ${path}`).toBeDefined();
+      expect(operation.security).toEqual([
+        { BoardSessionAuth: [] },
+        { BoardApiKeyAuth: [] },
+      ]);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    }
+  });
+
+  it("documents actorScope semantics on the JSON audit/agent-actions variant", async () => {
+    const response = await request(createApp()).get("/api/openapi.json");
+    expect(response.status).toBe(200);
+    const json = response.body.paths["/api/companies/{companyId}/audit/agent-actions"]?.get;
+    expect(json).toBeDefined();
+    // JSON variant stays `authenticated` (its security array legitimately keeps
+    // AgentBearerAuth because actorScope=user|system|plugin is agent-callable).
+    expect(json["x-paperclip-authorization"]).toEqual({ actor: "authenticated" });
+    // The runtime branching must be reflected in summary/description so clients
+    // can tell when a Bearer agent will succeed vs hit the 403 'Board access
+    // required' path.
+    expect(json.summary).toMatch(/board-only by default/i);
+    expect(json.description).toMatch(/actorScope=agents/i);
+    expect(json.description).toMatch(/audit:view_agent_actions/i);
+    expect(json.description).toMatch(/accessTier/i);
+  });
+
+  it("documents the strict board check on the CSV audit/agent-actions variant", async () => {
+    const response = await request(createApp()).get("/api/openapi.json");
+    expect(response.status).toBe(200);
+    const csv = response.body.paths["/api/companies/{companyId}/audit/agent-actions.csv"]?.get;
+    expect(csv).toBeDefined();
+    expect(csv.summary).toMatch(/board-only/i);
+    expect(csv.description).toMatch(/audit:view_agent_actions/i);
+    // The CSV variant must be honest that it does NOT honor the actorScope
+    // branching the JSON endpoint does.
+    expect(csv.description).toMatch(/does not honor/i);
+  });
+});
