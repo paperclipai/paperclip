@@ -515,7 +515,9 @@ Termination commits API-key revocation in that same transaction.
 Hire approval and rejection commit with agent activation or termination, so a
 failed event write leaves the decision pending and retryable.
 
-The numeric event ID orders transitions for a resource. Plugin delivery
+Creation is delivered first for each resource, including a backfilled creation
+whose ID is newer than earlier captured transitions. The remaining events follow
+numeric ID order. Plugin delivery
 must enforce company scope, preserve resource order, and track acknowledgments
 per plugin. A global high-water mark can skip transactions that have not yet
 committed; it is not a safe delivery cursor. The journal stores only identity,
@@ -525,14 +527,21 @@ retains events, so consumers must revalidate existence and eligibility and load
 current authorized repository data. A termination hook does not authorize
 provider cleanup without the plugin's own authorization and retention policy.
 
-The migrations create empty journal and acknowledgment tables. They do not scan or backfill existing
-installs. Plugins use `ctx.events.listLifecycle(companyId, limit?, afterId?)` and
+Migration `0301_whole_venom.sql` seeds a one-time current-state baseline before
+plugin delivery is available. It records creation for existing hired agents and
+all projects, including archived projects. Pending hires stay behind approval.
+Paused and terminated agents receive missing final status intents. A partial
+journal ending at pause receives resume when the current agent is running.
+Existing records remain intact, and rerunning the baseline does not duplicate it.
+Resource writes wait for the migration transaction to commit. These records
+represent current desired state, not reconstructed historical transitions.
+There is no later or runtime journal backfill. Plugins use `ctx.events.listLifecycle(companyId, limit?, afterId?)` and
 `ctx.events.acknowledgeLifecycle(companyId, eventId)` with `events.subscribe`.
 The host requires a matching company invocation (or configured-company proactive
 access) and a ready plugin enabled for that company.
 `plugin_lifecycle_acknowledgments` stores progress independently
 for each plugin and event; plugin and event deletion cascade acknowledgments.
-Reads return only the earliest unacknowledged event for each resource, up to 100
+Reads return creation first, then the earliest unacknowledged transition for each resource, up to 100
 resources. Acknowledging a later event is rejected. Reads never consume work, so
 crashes, retries, and restarts cannot lose a hook; concurrent reads can repeat an
 event. There is no global cursor or backfill scan. Consumers must serialize their

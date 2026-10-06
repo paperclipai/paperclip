@@ -547,7 +547,7 @@ export interface PluginLocalFoldersClient {
  */
 export interface PluginEventsClient {
   /** Read durable resource hooks. Requires events.subscribe and a company scope.
-   * Only the earliest unacknowledged event for each resource is returned.
+   * Creation is delivered first, then the remaining events in id order.
    * Page using afterId; reset it each polling sweep to retry failures and late commits.
    * Events repeat until acknowledged; use a company-scoped provider idempotency key.
    */

@@ -43,11 +43,16 @@ approval. Project updates include repository/workspace mutations, but archive-on
 changes produce no hook. Provider cleanup and retention policy belong to the plugin.
 
 Reads return at most one pending event per resource (default 50, maximum 100).
-After acknowledging that event, a later read exposes its successor. A failed
+Creation is delivered before other events for that resource, even when its
+backfilled ID is newer. Remaining events follow ID order. After acknowledging
+an event, a later read exposes its successor. A failed
 resource remains pending without blocking other resources; process the rest of
 the batch independently. Progress is stored per plugin, survives worker restarts,
-and is not a global sequence cursor. New consumers can see previously recorded
-events, but no events are synthesized for resources that predate capture.
+and is not a global sequence cursor. The delivery migration seeds existing hired
+agents and all projects once, including archived projects. Pending hires require
+approval; paused and terminated agents retain their current status intents.
+This baseline represents current desired state, not reconstructed history.
+After that migration, capture stays forward-only; no later journal backfill runs.
 
 Delivery is at least once: concurrent reads or a crash after a provider operation
 can repeat an event. Serialize polling and use stable company/event idempotency

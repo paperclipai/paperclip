@@ -25,4 +25,17 @@ describe("Lifecycle inbox test harness", () => {
     await expect(denied.ctx.events.listLifecycle("a")).rejects.toThrow("events.subscribe");
     await expect(denied.ctx.events.acknowledgeLifecycle("a", "1")).rejects.toThrow("events.subscribe");
   });
+  it("delivers a backfilled creation before earlier transitions", async () => {
+    const harness = createTestHarness({ manifest });
+    const event: ResourceLifecycleEvent = { id: "1", companyId: "a", resourceType: "agent", resourceId: "agent", action: "pause", createdAt: new Date(0).toISOString() };
+    harness.seed({ lifecycleEvents: [event, { ...event, id: "2", action: "resume" }, { ...event, id: "3", action: "create" }] });
+    expect(await harness.ctx.events.listLifecycle("a")).toEqual([expect.objectContaining({ id: "3", action: "create" })]);
+    await expect(harness.ctx.events.acknowledgeLifecycle("a", "1")).rejects.toThrow("earlier lifecycle events");
+    await harness.ctx.events.acknowledgeLifecycle("a", "3");
+    expect(await harness.ctx.events.listLifecycle("a", 100, "3")).toEqual([]);
+    expect(await harness.ctx.events.listLifecycle("a")).toEqual([event]);
+    await harness.ctx.events.acknowledgeLifecycle("a", "1");
+    expect(await harness.ctx.events.listLifecycle("a")).toEqual([expect.objectContaining({ id: "2" })]);
+  });
+
 });

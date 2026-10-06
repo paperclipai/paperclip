@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { eq, sql } from "drizzle-orm";
 import { agentApiKeys, agents, budgetPolicies, companies, costEvents, createDb, pluginCompanySettings, pluginLifecycleAcknowledgments, plugins, projects, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
@@ -296,6 +297,77 @@ describePostgres("Resource lifecycle events", () => {
       expect(await events()).toEqual(before);
     } finally {
       await db.execute(sql`ALTER TABLE resource_lifecycle_events DROP CONSTRAINT fixture_reject_update`);
+    }
+  });
+
+  const backfillBaseline = () => db.transaction(async tx => {
+    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0301_whole_venom.sql", import.meta.url), "utf8");
+    const lock = migration.split("--> statement-breakpoint")[0];
+    const baseline = migration.slice(migration.indexOf("-- Seed a one-time current-state baseline"));
+    for (const statement of [lock, ...baseline.split("--> statement-breakpoint")]) {
+      if (statement.trim()) await tx.execute(sql.raw(statement));
+    }
+  });
+
+  it("backfills a current-state baseline once without bypassing approval or reordering partial histories", async () => {
+    const [live, paused, terminated, pending, partial, resumed] = await db.insert(agents).values([
+      { companyId, name: "Legacy live", status: "idle" },
+      { companyId, name: "Legacy paused", status: "paused" },
+      { companyId, name: "Legacy terminated", status: "terminated" },
+      { companyId, name: "Legacy pending", status: "pending_approval" },
+      { companyId, name: "Partial pause", status: "paused" },
+      { companyId, name: "Partial resume", status: "idle" },
+    ]).returning();
+    const [archived] = await db.insert(projects).values({ companyId, name: "Archived baseline", archivedAt: new Date(0) }).returning();
+    const existing = await createAgent();
+    const [earlyPause] = await db.insert(resourceLifecycleEvents).values([
+      { companyId, resourceType: "agent", resourceId: partial.id, action: "pause" },
+      { companyId, resourceType: "agent", resourceId: resumed.id, action: "pause" },
+    ]).returning();
+    const deletedId = randomUUID();
+    const [deleted] = await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "agent", resourceId: deletedId, action: "terminate" }).returning();
+    await backfillBaseline();
+    const baseline = (await events()).sort((a, b) => a.id - b.id);
+    const actions = (id: string) => baseline.filter(e => e.resourceId === id).map(e => e.action);
+    expect(actions(live.id)).toEqual(["create"]);
+    expect(actions(paused.id)).toEqual(["create", "pause"]);
+    expect(actions(terminated.id)).toEqual(["terminate"]);
+    expect(actions(pending.id)).toEqual([]);
+    expect(actions(partial.id)).toEqual(["pause", "create"]);
+    expect(actions(resumed.id)).toEqual(["pause", "create", "resume"]);
+    expect(actions(archived.id)).toEqual(["create"]);
+    expect(actions(existing.id)).toEqual(["create"]);
+    expect(baseline.find(e => e.id === deleted.id)).toEqual(deleted);
+    const plugin = await createPlugin();
+    const inbox = pluginLifecycleInbox(db, plugin.id);
+    const creation = (await inbox.list(companyId)).find(e => e.resourceId === partial.id)!;
+    expect(creation.action).toBe("create");
+    expect(Number(creation.id)).toBeGreaterThan(earlyPause.id);
+    await expect(inbox.acknowledge(companyId, String(earlyPause.id))).rejects.toMatchObject({ status: 409 });
+    await inbox.acknowledge(companyId, creation.id);
+    expect((await inbox.list(companyId)).find(e => e.resourceId === partial.id)).toMatchObject({ id: String(earlyPause.id), action: "pause" });
+    await backfillBaseline();
+    expect((await events()).sort((a, b) => a.id - b.id)).toEqual(baseline);
+  });
+
+  it("keeps delivery unavailable when the baseline migration fails", async () => {
+    await db.insert(agents).values({ companyId, name: "Legacy paused", status: "paused" });
+    await db.execute(sql`DROP TABLE plugin_lifecycle_acknowledgments`);
+    await db.execute(sql`DROP INDEX resource_lifecycle_events_resource_order_idx`);
+    const applyDeliveryMigration = () => db.transaction(async tx => {
+      const migration = readFileSync(new URL("../../../packages/db/src/migrations/0301_whole_venom.sql", import.meta.url), "utf8");
+      for (const statement of migration.split("--> statement-breakpoint")) {
+        if (statement.trim()) await tx.execute(sql.raw(statement));
+      }
+    });
+    await db.execute(sql`ALTER TABLE resource_lifecycle_events ADD CONSTRAINT fixture_reject_baseline CHECK (action <> 'pause') NOT VALID`);
+    try {
+      await expect(applyDeliveryMigration()).rejects.toThrow();
+      expect(await events()).toEqual([]);
+      expect((await db.execute(sql`SELECT to_regclass('public.plugin_lifecycle_acknowledgments') AS relation`))[0]).toMatchObject({ relation: null });
+    } finally {
+      await db.execute(sql`ALTER TABLE resource_lifecycle_events DROP CONSTRAINT fixture_reject_baseline`);
+      await applyDeliveryMigration();
     }
   });
 

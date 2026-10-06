@@ -872,14 +872,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("limit must be an integer from 1 to 100");
         if (afterId !== undefined && (typeof afterId !== "string" || !/^[1-9]\d*$/.test(afterId) || !Number.isSafeInteger(Number(afterId)))) throw new Error("Invalid lifecycle page id");
         const pending = [...lifecycleEvents.values()].filter(event => event.companyId === companyId && !lifecycleAcknowledgments.has(event.id))
-          .sort((a, b) => Number(a.id) - Number(b.id));
+          .sort((a, b) => (a.action === "create" ? 0 : 1) - (b.action === "create" ? 0 : 1) || Number(a.id) - Number(b.id));
         const resources = new Set<string>();
         return pending.filter(event => {
           const key = `${event.resourceType}:${event.resourceId}`;
           if (resources.has(key)) return false;
           resources.add(key);
           return true;
-        }).filter(event => afterId === undefined || Number(event.id) > Number(afterId)).slice(0, limit);
+        }).filter(event => afterId === undefined || Number(event.id) > Number(afterId))
+          .sort((a, b) => Number(a.id) - Number(b.id)).slice(0, limit);
       },
       async acknowledgeLifecycle(companyId, eventId) {
         requireCapability(manifest, capabilitySet, "events.subscribe");
@@ -888,7 +889,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         if (!event || event.companyId !== companyId) throw new Error("Lifecycle event not found");
         const earlier = [...lifecycleEvents.values()].some(other => other.companyId === companyId
           && other.resourceType === event.resourceType && other.resourceId === event.resourceId
-          && Number(other.id) < Number(event.id) && !lifecycleAcknowledgments.has(other.id));
+          && event.action !== "create" && (other.action === "create" || Number(other.id) < Number(event.id))
+          && !lifecycleAcknowledgments.has(other.id));
         if (earlier) throw new Error("Acknowledge earlier lifecycle events for this resource first");
         lifecycleAcknowledgments.add(eventId);
       },

@@ -15,7 +15,9 @@ export function pluginLifecycleInbox(db: Db, pluginId: string) {
     WHERE older.company_id = ${resourceLifecycleEvents.companyId}
       AND older.resource_type = ${resourceLifecycleEvents.resourceType}
       AND older.resource_id = ${resourceLifecycleEvents.resourceId}
-      AND older.id < ${resourceLifecycleEvents.id}
+      -- Backfilled creation must precede transitions captured before this baseline.
+      AND ${resourceLifecycleEvents.action} <> 'create'
+      AND (older.action = 'create' OR older.id < ${resourceLifecycleEvents.id})
       AND NOT EXISTS (SELECT 1 FROM plugin_lifecycle_acknowledgments ack
         WHERE ack.plugin_id = ${pluginId} AND ack.event_id = older.id)
   )`;
