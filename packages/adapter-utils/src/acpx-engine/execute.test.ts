@@ -1911,7 +1911,7 @@ describe("shared ACPX engine runtime behavior", () => {
   it("keeps managed GitHub launchers and rotated credentials out of session identity", async () => {
     const root = await makeTempRoot();
     const config = { agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
-    async function launch(runId: string, userPath = "/usr/bin:/bin", authenticationMode = "managed") {
+    async function launch(runId: string, userPath = "/usr/bin:/bin", authenticationMode = "managed", runtime?: Record<string, unknown>) {
       const directory = path.join(os.tmpdir(), "paperclip-github-runtime", runId);
       return runExecutor({ ...config, env: {
         PATH: `${directory}:${userPath}`, ZDOTDIR: directory,
@@ -1921,10 +1921,11 @@ describe("shared ACPX engine runtime behavior", () => {
         GITHUB_TOKEN: `github-${runId}`, GH_ENTERPRISE_TOKEN: `enterprise-${runId}`,
         GITHUB_ENTERPRISE_TOKEN: `enterprise-github-${runId}`, PAPERCLIP_GIT_TOKEN: `git-${runId}`,
         SSH_AUTH_SOCK: `/tmp/agent-${runId}.sock`,
-      } }, { runId, context: { taskId: "issue-1", githubAuthenticationMode: authenticationMode } });
+      } }, { runId, runtime, context: { taskId: "issue-1", githubAuthenticationMode: authenticationMode } });
     }
     const first = await launch("run-one");
-    const second = await launch("run-two");
+    const second = await launch("run-two", undefined, undefined, { sessionParams: first.result.sessionParams });
+    expect(second.sessionInputs[0]?.resumeSessionId).toBe(first.result.sessionId);
     const changed = await launch("run-three", "/usr/bin:/custom/bin");
     expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
     expect(changed.result.sessionParams?.configFingerprint).not.toBe(first.result.sessionParams?.configFingerprint);
@@ -1951,15 +1952,19 @@ describe("shared ACPX engine runtime behavior", () => {
     const root = await makeTempRoot();
     const remoteCwd = "/workspace/remote";
     const config = { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
-    const launch = (runId: string) => {
+    const launch = (runId: string, runtime?: Record<string, unknown>) => {
       const directory = `${remoteCwd}/.paperclip-runtime/github/${runId}`;
       return runExecutor({ ...config, env: { PATH: `${directory}:/usr/bin`, PAPERCLIP_GITHUB_LAUNCHER_DIR: directory, PAPERCLIP_GITHUB_BROKER_TOKEN: runId } }, {
-        runId, context: { taskId: "issue-1", githubAuthenticationMode: "managed" },
+        runId, runtime, context: { taskId: "issue-1", githubAuthenticationMode: "managed" },
         executionTarget: { kind: "remote", transport: "ssh", remoteCwd },
       });
     };
     const first = await launch("remote-one");
-    const second = await launch("remote-two");
+    const second = await launch("remote-two", { sessionParams: first.result.sessionParams });
+    expect(second.sessionInputs[0]?.resumeSessionId).toBe(first.result.sessionId);
+    const env = (second.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+    expect(env.PAPERCLIP_GITHUB_BROKER_TOKEN).toBe("remote-two");
+    expect(env.PATH).toContain("/remote-two:");
     expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
   });
 
