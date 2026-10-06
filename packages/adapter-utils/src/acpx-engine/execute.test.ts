@@ -550,15 +550,16 @@ describe("shared ACPX engine runtime behavior", () => {
     );
   });
 
-  it("keeps assigned API and tool credentials in the identity-enabled Codex shell environment", async () => {
+  it("keeps identity and scoped API access without exposing configured service tokens to Codex shells", async () => {
     const { meta } = await runExecutor({ agent: "codex", env: { MY_SERVICE_TOKEN: "assigned-tool-token" } }, {
       authToken: "assigned-run-token",
       agentIdentity: { keyId: "sha256:test", publicKeyPem: "public", privateKeyPem: "private" },
     });
     const config = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG));
     expect(config.shell_environment_policy.include_only).toEqual(expect.arrayContaining([
-      "PAPERCLIP_API_KEY", "MY_SERVICE_TOKEN", "PAPERCLIP_AGENT_PRIVATE_KEY",
+      "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
     ]));
+    expect(config.shell_environment_policy.include_only).not.toContain("MY_SERVICE_TOKEN");
     expect(JSON.stringify(config)).not.toContain("assigned-run-token");
     expect(JSON.stringify(config)).not.toContain("assigned-tool-token");
   });

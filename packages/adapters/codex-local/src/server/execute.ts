@@ -1232,9 +1232,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const identityNames = ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"];
         const shellKeys = [...new Set([
           "PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
-          // Only explicitly assigned run/config credentials cross this boundary.
-          // Arbitrary host variables (DATABASE_URL, passwords, etc.) do not.
-          ...Object.keys(env), ...identityNames,
+          // Keep Codex's default secret-name exclusions except for the scoped
+          // Paperclip API token used by the agent skill. Never include host env.
+          ...Object.keys(env).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+          ...identityNames,
         ])];
         args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
           "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);

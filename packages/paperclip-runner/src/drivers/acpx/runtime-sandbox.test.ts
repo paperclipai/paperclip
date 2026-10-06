@@ -52,6 +52,26 @@ describe("ACPX runtime sandbox", () => {
     expect((await stat(requirementsPath)).mode & 0o777).toBe(0o600);
   });
 
+  it("keeps provider credentials outside identity-enabled Codex shell commands", async () => {
+    const fixture = await sandboxFixture("codex");
+    const sandbox = await prepareAcpxRuntimeSandbox({
+      binding: fixture.binding, agent: "codex", environment: {
+        PATH: process.env.PATH,
+        OPENAI_API_KEY: "provider-secret", MY_SERVICE_TOKEN: "configured-secret",
+        PAPERCLIP_API_KEY: "scoped-run-token",
+        PAPERCLIP_AGENT_KEY_ID: "sha256:test", PAPERCLIP_AGENT_PUBLIC_KEY: "public-identity",
+        PAPERCLIP_AGENT_PRIVATE_KEY: "private-identity",
+      },
+    });
+    const config = await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8");
+    const keys = JSON.parse(config.split("\n").find(line => line.startsWith("include_only = "))!.slice("include_only = ".length));
+    expect(keys).toEqual(expect.arrayContaining(["PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]));
+    expect(keys).not.toContain("OPENAI_API_KEY");
+    expect(keys).not.toContain("MY_SERVICE_TOKEN");
+    expect(sandbox.launchEnvironment.OPENAI_API_KEY).toBe("provider-secret");
+    for (const value of ["provider-secret", "configured-secret", "scoped-run-token", "private-identity"]) expect(config).not.toContain(value);
+  });
+
   it.each(["claude-sonnet-5", "sonnet", "custom-deployment-id"])(
     "preserves the requested Claude model %s in its isolated settings",
     async (model) => {
