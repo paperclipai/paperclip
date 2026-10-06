@@ -210,6 +210,18 @@ export function approvalService(db: Db) {
     await builtInAgentService(db).ensure(companyId, sourceBuiltInAgentKey);
   }
 
+  // Ordinary comment APIs still require the original ID-only existence lookup.
+  // Decision persistence has its own scoped lookup; it must not replace this.
+  async function getExistingApproval(id: string) {
+    const existing = await db
+      .select()
+      .from(approvals)
+      .where(eq(approvals.id, id))
+      .then((rows) => rows[0] ?? null);
+    if (!existing) throw notFound("Approval not found");
+    return existing;
+  }
+
   async function resolveApproval(
     id: string, targetStatus: "approved" | "rejected", decidedByUserId: string,
     decisionNote: string | null | undefined,
