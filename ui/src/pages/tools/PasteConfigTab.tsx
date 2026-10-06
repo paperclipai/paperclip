@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { CheckCircle2, KeyRound, Loader2, ShieldCheck } from "lucide-react";
 import type {
   ConnectToolAppResult,
@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { toolsApi } from "@/api/tools";
+import { secretsApi } from "@/api/secrets";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { useNavigate } from "@/lib/router";
@@ -87,6 +88,18 @@ function missingCredentialFields(draft: McpJsonImportDraft, values: Record<strin
     .map((field) => field.configPath);
 }
 
+function credentialSecretSelectionsForDraft(
+  draft: McpJsonImportDraft,
+  selections: Record<string, string>,
+) {
+  return Object.fromEntries(
+    draft.credentialFields.flatMap((field) => {
+      const secretId = selections[credentialValueKey(draft, field.configPath)];
+      return secretId ? [[field.configPath, { secretId, versionSelector: "latest" as const }]] : [];
+    }),
+  );
+}
+
 function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
   const raw = (result.suggestedDefaults as { askFirstRiskLevels?: unknown })?.askFirstRiskLevels;
   return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
@@ -106,6 +119,11 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
   const [preview, setPreview] = useState<McpJsonImportPreview | null>(null);
   const [connectionNames, setConnectionNames] = useState<Record<string, string>>({});
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({});
+  const [credentialSecretSelections, setCredentialSecretSelections] = useState<Record<string, string>>({});
+  const secretCatalog = useQuery({
+    queryKey: ["secret-catalog", companyId],
+    queryFn: () => secretsApi.catalog(companyId),
+  });
   const [connectResult, setConnectResult] = useState<ConnectToolAppResult | null>(null);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [activatedName, setActivatedName] = useState<string | null>(null);
@@ -158,10 +176,12 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
     mutationFn: (draft: McpJsonImportDraft) => {
       const url = draftConnectUrl(draft);
       if (!url) throw new Error("Only remote HTTP drafts can be checked and activated from pasted config.");
+      const selections = credentialSecretSelectionsForDraft(draft, credentialSecretSelections);
       return toolsApi.connectApp(companyId, {
         link: url,
         name: connectionNames[draft.name]?.trim() || draft.name,
         credentialValues: credentialValuesForDraft(draft, credentialValues),
+        ...(Object.keys(selections).length > 0 ? { credentialSecretSelections: selections } : {}),
       });
     },
     onSuccess: (result) => {
@@ -317,7 +337,10 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
             </h3>
             {drafts.map((draft, index) => {
               const url = draftConnectUrl(draft);
-              const missingFields = missingCredentialFields(draft, credentialValues);
+              const missingFields = missingCredentialFields(draft, {
+                ...credentialSecretSelections,
+                ...credentialValues,
+              });
               return (
                 <DraftCard
                   key={`${draft.name}-${index}`}
@@ -327,9 +350,26 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
                     setConnectionNames((previous) => ({ ...previous, [draft.name]: value }))
                   }
                   credentialValues={credentialValues}
-                  onCredentialChange={(configPath, value) =>
-                    setCredentialValues((prev) => ({ ...prev, [credentialValueKey(draft, configPath)]: value }))
-                  }
+                  onCredentialChange={(configPath, value) => {
+                    const key = credentialValueKey(draft, configPath);
+                    setCredentialValues((prev) => ({ ...prev, [key]: value }));
+                    if (value) setCredentialSecretSelections((prev) => {
+                      const next = { ...prev };
+                      delete next[key];
+                      return next;
+                    });
+                  }}
+                  credentialSecretSelections={credentialSecretSelections}
+                  onCredentialSecretChange={(configPath, secretId) => {
+                    const key = credentialValueKey(draft, configPath);
+                    setCredentialSecretSelections((prev) => ({ ...prev, [key]: secretId }));
+                    setCredentialValues((prev) => {
+                      const next = { ...prev };
+                      delete next[key];
+                      return next;
+                    });
+                  }}
+                  activeSecrets={(secretCatalog.data ?? []).filter((secret) => secret.status === "active")}
                   checking={connectMutation.isPending && connectMutation.variables?.name === draft.name}
                   canCheck={Boolean(url) && missingFields.length === 0}
                   onCheck={url ? () => connectMutation.mutate(draft) : undefined}
@@ -380,6 +420,9 @@ function DraftCard({
   onConnectionNameChange,
   credentialValues,
   onCredentialChange,
+  credentialSecretSelections,
+  onCredentialSecretChange,
+  activeSecrets,
   checking,
   canCheck,
   onCheck,
@@ -389,6 +432,9 @@ function DraftCard({
   onConnectionNameChange: (value: string) => void;
   credentialValues: Record<string, string>;
   onCredentialChange: (configPath: string, value: string) => void;
+  credentialSecretSelections: Record<string, string>;
+  onCredentialSecretChange: (configPath: string, secretId: string) => void;
+  activeSecrets: Array<{ id: string; name: string; key: string }>;
   checking: boolean;
   canCheck: boolean;
   onCheck?: () => void;
@@ -428,7 +474,7 @@ function DraftCard({
                 <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
                 {humanizeKey(field.label || field.key)}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <code className="rounded border border-border bg-muted/40 px-2 py-1 font-mono text-(length:--text-micro) text-muted-foreground">
                   {field.key}
                 </code>
@@ -439,6 +485,18 @@ function DraftCard({
                   placeholder="Paste replacement value"
                   className="h-8 max-w-sm text-xs"
                 />
+                <span className="text-xs text-muted-foreground">or</span>
+                <select
+                  aria-label={`Use existing secret for ${humanizeKey(field.label || field.key)}`}
+                  value={credentialSecretSelections[credentialValueKey(draft, field.configPath)] ?? ""}
+                  onChange={(event) => onCredentialSecretChange(field.configPath, event.target.value)}
+                  className="h-8 max-w-sm rounded-md border border-input bg-background px-2 text-xs"
+                >
+                  <option value="">Use an existing secret</option>
+                  {activeSecrets.map((secret) => (
+                    <option key={secret.id} value={secret.id}>{secret.name} ({secret.key})</option>
+                  ))}
+                </select>
               </div>
             </div>
           ))}

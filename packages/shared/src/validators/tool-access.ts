@@ -415,6 +415,13 @@ export const connectToolAppSchema = z.object({
   link: z.string().trim().url().max(2000).optional(),
   name: z.string().trim().min(1).max(160).optional(),
   credentialValues: z.record(z.string().trim().min(1).max(200), z.string().min(1)).optional(),
+  credentialSecretSelections: z.record(
+    z.string().trim().min(1).max(200),
+    z.object({
+      secretId: z.string().guid(),
+      versionSelector: z.union([z.literal("latest"), z.number().int().positive()]).optional(),
+    }).strict(),
+  ).optional(),
   configValues: z.record(z.string().trim().min(1).max(200), z.unknown()).optional(),
   applicationId: z.string().guid().optional(),
   /** Pending connection request this setup should resolve after authorization. */
@@ -440,6 +447,15 @@ export const connectToolAppSchema = z.object({
 }).superRefine((value, ctx) => {
   if (value.configValues) rejectSensitiveConfigKeys(value.configValues, ctx, ["configValues"]);
   if (value.credentialValues) rejectUnsafeHeaderCredentials(value.credentialValues, ctx, ["credentialValues"]);
+  for (const configPath of Object.keys(value.credentialSecretSelections ?? {})) {
+    if (value.credentialValues?.[configPath] !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["credentialSecretSelections", configPath],
+        message: "Choose a new credential value or an existing secret, not both",
+      });
+    }
+  }
   if ((value.grantKind === "agent") !== Boolean(value.subjectAgentId)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectAgentId"], message: "subjectAgentId is required exactly for an agent grant" });
   }

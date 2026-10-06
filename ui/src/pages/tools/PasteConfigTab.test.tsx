@@ -14,9 +14,11 @@ const toolsApiMock = vi.hoisted(() => ({
   startOAuth: vi.fn(),
   finishApp: vi.fn(),
 }));
+const secretsApiMock = vi.hoisted(() => ({ catalog: vi.fn() }));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({ toolsApi: toolsApiMock }));
+vi.mock("@/api/secrets", () => ({ secretsApi: secretsApiMock }));
 vi.mock("@/lib/browserNavigation", () => ({ navigateTopLevel: navigateTopLevelMock }));
 // The tab uses `useNavigate` from the app router (PAP-11088 draft hand-off),
 // which needs CompanyProvider; stub it so the copy hint renders in isolation.
@@ -53,6 +55,13 @@ function setInputValue(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
   setter?.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function setSelectValue(select: HTMLSelectElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set;
+  setter?.call(select, value);
+  select.dispatchEvent(new Event("input", { bubbles: true }));
+  select.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 function buttonStartingWith(text: string): HTMLButtonElement | undefined {
@@ -175,6 +184,7 @@ describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    secretsApiMock.catalog.mockResolvedValue([]);
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -217,6 +227,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    secretsApiMock.catalog.mockResolvedValue([]);
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -375,6 +386,59 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
       link: "https://secure.example/mcp",
       name: "secure-demo",
       credentialValues: { "headers.Authorization": "Bearer new" },
+    });
+  });
+
+  it("uses active secret metadata without sending a replacement value", async () => {
+    const secretId = "22222222-2222-4222-8222-222222222222";
+    secretsApiMock.catalog.mockResolvedValue([
+      { id: secretId, name: "Dida API token", key: "integrations/dida365/api-token", status: "active" },
+      { id: "33333333-3333-4333-8333-333333333333", name: "Old token", key: "old", status: "disabled" },
+    ]);
+    await pasteAndCheck(
+      {
+        drafts: [{
+          name: "dida365",
+          transport: "mcp_remote",
+          status: "draft",
+          config: { url: "https://mcp.dida365.com" },
+          credentialRefs: [],
+          credentialFields: [{
+            configPath: "headers.Authorization",
+            label: "Authorization",
+            placement: "header",
+            key: "Authorization",
+            prefix: null,
+            required: true,
+          }],
+          warnings: [],
+        }],
+      },
+      '{ "mcpServers": { "dida365": { "url": "https://mcp.dida365.com" } } }',
+    );
+    await flushReact();
+
+    const select = container.querySelector('select[aria-label="Use existing secret for Authorization"]') as HTMLSelectElement;
+    expect(select.textContent).toContain("Dida API token");
+    expect(select.textContent).not.toContain("Old token");
+    await act(async () => {
+      setSelectValue(select, secretId);
+    });
+    await flushReact();
+    expect(buttonStartingWith("Check actions")!.disabled).toBe(false);
+
+    toolsApiMock.connectApp.mockResolvedValue(connectResult());
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(toolsApiMock.connectApp).toHaveBeenCalledWith("company-1", {
+      link: "https://mcp.dida365.com/",
+      name: "dida365",
+      credentialValues: {},
+      credentialSecretSelections: {
+        "headers.Authorization": { secretId, versionSelector: "latest" },
+      },
     });
   });
 

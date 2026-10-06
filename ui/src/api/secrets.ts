@@ -26,6 +26,8 @@ export interface SecretUsageResponse {
   bindings: CompanySecretUsageBinding[];
 }
 
+export type SecretCatalogEntry = Pick<CompanySecret, "id" | "name" | "key" | "status">;
+
 /** One "My secrets" row: a company definition paired with the current user's own value (if set). */
 export interface MyUserSecretEntry {
   definition: UserSecretDefinition;
@@ -148,6 +150,8 @@ export interface SecretProviderConfigDiscoveryPreviewInput {
 }
 
 export const secretsApi = {
+  catalog: (companyId: string) =>
+    api.get<SecretCatalogEntry[]>(`/companies/${companyId}/secrets/catalog`),
   list: (companyId: string) => api.get<CompanySecret[]>(`/companies/${companyId}/secrets`),
   providers: (companyId: string) =>
     api.get<SecretProviderDescriptor[]>(`/companies/${companyId}/secret-providers`),

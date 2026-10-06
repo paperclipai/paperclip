@@ -12672,6 +12672,7 @@ export function toolAccessService(
     assertLocalStdioCanBeEnabled(transport, false);
 
     const credentialValues = input.credentialValues ?? {};
+    const credentialSecretSelections = input.credentialSecretSelections ?? {};
     // A curated method declares its auth kind. A pasted URL declares one only
     // under Advanced authentication; on the simple path it starts from what the
     // operator supplied and is upgraded to `oauth` when discovery proves the
@@ -12684,7 +12685,7 @@ export function toolAccessService(
           ? "api_key"
           : input.authMode === "none"
             ? "none"
-            : Object.keys(credentialValues).length > 0
+            : Object.keys(credentialValues).length > 0 || Object.keys(credentialSecretSelections).length > 0
               ? "api_key"
               : "none");
     const credentialSecretRefs: CreateToolConnection["credentialSecretRefs"] =
@@ -12763,12 +12764,48 @@ export function toolAccessService(
           ? []
           : galleryEntry && !remoteMcpConnector
             ? credentialFieldsFor(galleryEntry, method?.key)
-            : linkCredentialFields({ ...Object.fromEntries(retainedCredentialSecretRefs.filter((ref) => ref.configPath.startsWith("headers.") || ref.configPath === "credentials.authorization").map((ref) => [ref.configPath, "retained"])), ...credentialValues });
+            : linkCredentialFields({
+                ...Object.fromEntries(retainedCredentialSecretRefs.filter((ref) => ref.configPath.startsWith("headers.") || ref.configPath === "credentials.authorization").map((ref) => [ref.configPath, "retained"])),
+                ...Object.fromEntries(Object.keys(credentialSecretSelections).map((configPath) => [configPath, "selected"])),
+                ...credentialValues,
+              });
       for (const field of credentialFields) {
         const value = credentialValues[field.configPath];
+        const selected = credentialSecretSelections[field.configPath];
         const retainedSecretRef = retainedCredentialSecretRefs.find(
           (ref) => ref.configPath === field.configPath,
         );
+        if (selected) {
+          const secret = await secrets.getById(selected.secretId);
+          if (!secret || secret.companyId !== companyId || secret.scope !== "company") {
+            throw badRequest(`Selected secret is not available for ${field.configPath}`);
+          }
+          if (secret.status !== "active") {
+            throw badRequest(`Selected secret must be active for ${field.configPath}`);
+          }
+          if (typeof selected.versionSelector === "number" && selected.versionSelector > secret.latestVersion) {
+            throw badRequest(`Selected secret version is not available for ${field.configPath}`);
+          }
+          const versionSelector = selected.versionSelector ?? "latest";
+          credentialSecretRefs.push({
+            secretId: secret.id,
+            versionSelector,
+            configPath: field.configPath,
+            required: field.required ?? true,
+            label: field.label,
+          });
+          if (field.placement === "header" && field.key) {
+            credentialRefs.push({
+              name: field.configPath,
+              secretId: secret.id,
+              version: versionSelector,
+              placement: "header",
+              key: field.key,
+              prefix: field.prefix ?? null,
+            });
+          }
+          continue;
+        }
         if (!value && retainedSecretRef) {
           credentialSecretRefs.push(retainedSecretRef);
           if (field.placement === "header" && field.key) {

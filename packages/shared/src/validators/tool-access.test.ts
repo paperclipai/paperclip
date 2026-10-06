@@ -118,6 +118,31 @@ describe("tool access validators", () => {
     }).success).toBe(true);
   });
 
+  it("accepts existing secret selections and rejects ambiguous credential input", () => {
+    const secretId = "22222222-2222-4222-8222-222222222222";
+    expect(connectToolAppSchema.safeParse({
+      link: "https://mcp.example.test/mcp",
+      credentialSecretSelections: {
+        "headers.Authorization": { secretId, versionSelector: "latest" },
+      },
+    }).success).toBe(true);
+
+    const ambiguous = connectToolAppSchema.safeParse({
+      link: "https://mcp.example.test/mcp",
+      credentialValues: { "headers.Authorization": "Bearer new" },
+      credentialSecretSelections: {
+        "headers.Authorization": { secretId },
+      },
+    });
+    expect(ambiguous.success).toBe(false);
+    expect(connectToolAppSchema.safeParse({
+      link: "https://mcp.example.test/mcp",
+      credentialSecretSelections: {
+        "headers.Authorization": { secretId: "not-a-guid" },
+      },
+    }).success).toBe(false);
+  });
+
   it("rejects header credentials Paperclip refuses to send", () => {
     for (const configPath of ["headers.Host", "headers.Cookie", "headers.Transfer-Encoding", "headers.Sec-Fetch-Mode"]) {
       const parsed = connectToolAppSchema.safeParse({
