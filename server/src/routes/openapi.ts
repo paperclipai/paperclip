@@ -3457,6 +3457,25 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/identity",
+  tags: ["agents"],
+  summary: "Get an agent's public cryptographic identity, or null before provisioning",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: r.ok(z.object({
+      algorithm: z.literal("Ed25519"),
+      keyId: z.string(),
+      publicKeyPem: z.string(),
+      createdAt: z.string().datetime(),
+    }).nullable()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/agents/{id}",
   tags: ["agents"],
