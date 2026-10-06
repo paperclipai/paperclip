@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { getTableName } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { withdrawInteractionWithNativeCancellation } from "../services/interaction-native-withdrawal.js";
 const sink = vi.hoisted(() => ({ live: [] as any[], events: [] as string[] }));
 vi.mock("../services/live-events.js", () => ({ publishLiveEvent: (e: any) => sink.live.push(e) }));
 vi.mock("../services/instance-settings.js", () => ({ instanceSettingsService: () => ({ getGeneral: async () => ({ censorUsernameInLogs: false }) }) }));
@@ -35,6 +36,26 @@ function fixture(config: { lost?: boolean; status?: string } = {}) {
 }
 const invoke = (f: ReturnType<typeof fixture>, issue = { id: "issue-1", companyId: "company-1" }, actor = { userId: "user-1" }, input = { reason: "Offline withdrawal" }, options: any = { lifecycleFence: true }) =>
   (issueThreadInteractionService(f.root).withdrawInteraction as any)(issue, "interaction-1", input, actor, options);
+describe("dark owned native composition linked activity recording", () => {
+  const compose = (f: ReturnType<typeof fixture>) => withdrawInteractionWithNativeCancellation(f.root, { id: "issue-1", companyId: "company-1" }, "interaction-1", { reason: "Offline" }, { userId: "user-1" });
+  it("flushes linked-secret activity exactly once after outer resolve with null native receipt", async () => {
+    const f = fixture(); let commit!: () => void; let enter!: () => void;
+    const entered = new Promise<void>(r => { enter = r; }); const barrier = new Promise<void>(r => { commit = r; });
+    f.root.transaction = async (cb: any) => { const receipt = await cb(f.tx); enter(); await barrier; return receipt; };
+    const pending = compose(f); void pending.catch(() => {});
+    try { expect(await Promise.race([entered.then(() => "callback"), pending.then(() => "settled")])).toBe("callback"); expect(sink.live).toEqual([]); }
+    finally { commit(); await pending.catch(() => {}); }
+    expect(await pending).toMatchObject({ nativeRunId: null, interaction: { status: "cancelled" } });
+    expect(sink.live).toHaveLength(1); expect(sink.live[0].payload.action).toBe("secret.proposal.withdrawn");
+  });
+  it("discards linked activity on outer rejection; eager log rows are not rollback", async () => {
+    const f = fixture(); const error = new Error("outer-rejected"); f.root.transaction = async (cb: any) => { await cb(f.tx); throw error; };
+    await expect(compose(f)).rejects.toBe(error); expect(sink.live).toEqual([]); expect(f.patches.some(p => p.name === "activity_log")).toBe(true);
+  });
+  it("discards linked activity on callback card rejection", async () => {
+    const f = fixture({ lost: true }); await expect(compose(f)).rejects.toMatchObject({ status: 409 }); expect(sink.live).toEqual([]);
+  });
+});
 describe("dark owned withdrawal actual canonical publication recording", () => {
   it("starts root transaction before reads and defers linked activity until outer resolve", async () => {
     const f = fixture(); let done!: () => void; let commit!: () => void;

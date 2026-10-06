@@ -33,6 +33,34 @@ function fixture(config: { runStatus?: string; missingRun?: boolean; markerError
 }
 const invoke = (f: ReturnType<typeof fixture>, issue = { id: "issue-1", companyId: "company-1" }, input = { reason: "Offline" }, actor = { userId: "user-1" }, queue: any = []) =>
   (composition as any).withdrawInteractionWithNativeCancellationInTransaction(f.tx, issue, "card-1", input, actor, { postCommitPublications: queue });
+describe("dark owned native withdrawal composition recording", () => {
+  it("captures routing actor and reason before deferred root startup", async () => {
+    const f = fixture(); f.release(); let start!: () => void; const barrier = new Promise<void>(r => { start = r; });
+    const root: any = { transaction: async (cb: any) => { await barrier; return cb(f.tx); } };
+    const issue = { id: "issue-1", companyId: "company-1" }; const actor = { userId: "user-1" }; const input = { reason: "Before" };
+    const pending = composition.withdrawInteractionWithNativeCancellation(root, issue, "card-1", input, actor); void pending.catch(() => {});
+    issue.id = "other"; issue.companyId = "foreign"; actor.userId = "other"; input.reason = "After"; start();
+    const result = await pending; expect(result.interaction.result).toMatchObject({ reason: "Before" }); expect(result.interaction.resolvedByUserId).toBe("user-1"); expect(result.nativeRunId).toBe("run-1"); expect(f.queries[0].params).toEqual(["issue-1", "company-1"]);
+  });
+  it("does not expose receipt after outer rejection; eager marker is not rollback", async () => {
+    const f = fixture(); f.release(); const error = new Error("outer-rejected");
+    const root: any = { transaction: async (cb: any) => { await cb(f.tx); throw error; } };
+    await expect(composition.withdrawInteractionWithNativeCancellation(root, { id: "issue-1", companyId: "company-1" }, "card-1", {}, { userId: "user-1" })).rejects.toBe(error); expect(f.markers).toHaveLength(1);
+  });
+  it("rejects missing company before transaction startup", async () => {
+    const transaction = vi.fn(); await expect(composition.withdrawInteractionWithNativeCancellation({ transaction } as any, { id: "issue-1", companyId: "" }, "card-1", {}, {})).rejects.toMatchObject({ status: 422 }); expect(transaction).not.toHaveBeenCalled();
+  });
+  it("starts at root and exposes receipt only after outer transaction resolves", async () => {
+    const f = fixture(); f.release(); let commit!: () => void; let entered!: () => void;
+    const signal = new Promise<void>(r => { entered = r; }); const barrier = new Promise<void>(r => { commit = r; });
+    const root: any = { select: () => { throw new Error("root-read"); }, transaction: async (cb: any) => { f.events.push("tx"); const result = await cb(f.tx); entered(); await barrier; return result; } };
+    const pending = (composition as any).withdrawInteractionWithNativeCancellation(root, { id: "issue-1", companyId: "company-1" }, "card-1", { reason: "Offline" }, { userId: "user-1" });
+    let settled = false; const observed = Promise.resolve(pending).then(v => { settled = true; return v; }); void observed.catch(() => {});
+    try { expect(await Promise.race([signal.then(() => "callback"), observed.then(() => "settled")])).toBe("callback"); expect(settled).toBe(false); expect(f.markers).toHaveLength(1); }
+    finally { commit(); await observed.catch(() => {}); }
+    expect(await observed).toMatchObject({ interaction: { status: "cancelled" }, nativeRunId: "run-1" }); expect(f.events[0]).toBe("tx");
+  });
+});
 describe("dark supplied native withdrawal composition recording", () => {
   it.each(["queued", "running", "succeeded", "cancelled"])("eligibility uses actual native status %s", async status => {
     const f = fixture({ runStatus: status }); f.release();
