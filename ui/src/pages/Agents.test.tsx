@@ -1005,13 +1005,16 @@ describe("Agents", () => {
     expect(container.querySelector(".min-w-\\(--sz-7rem\\)")).toBeNull();
   });
 
-  it("keeps row membership actions reachable while hiding star actions on mobile", async () => {
+  it.each([
+    ["streamlined", Agents],
+    ["production", ProductionAgents],
+  ] as const)("omits star and leave/join actions from %s agent index rows", async (_mode, AgentList) => {
     root = createRoot(container);
     await act(async () => {
       root!.render(
         <QueryClientProvider client={queryClient}>
           <ToastProvider>
-            <Agents />
+            <AgentList />
           </ToastProvider>
         </QueryClientProvider>,
       );
@@ -1020,28 +1023,21 @@ describe("Agents", () => {
     await flushReact();
 
     // List view (default).
-    const orgAction = container.querySelector('[aria-label="Leave Alpha"]');
-    const orgStar = container.querySelector('[aria-label="Star Alpha"]');
-    expect(orgAction).not.toBeNull();
-    expect(orgStar).not.toBeNull();
-    expect(orgAction?.closest(".hidden")).toBeNull();
-    expect(orgStar?.closest(".hidden")).not.toBeNull();
+    expect(container.querySelector('[aria-label="Leave Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Join Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Star Alpha"]')).toBeNull();
 
-    // List view remains stable after explicitly selecting it.
-    const listToggle = Array.from(container.querySelectorAll("button")).find(
-      (btn) => btn.querySelector("svg.lucide-list"),
-    );
-    await act(async () => {
-      listToggle!.click();
-    });
-    await flushReact();
-
-    const listAction = container.querySelector('[aria-label="Leave Alpha"]');
-    const listStar = container.querySelector('[aria-label="Star Alpha"]');
-    expect(listAction).not.toBeNull();
-    expect(listStar).not.toBeNull();
-    expect(listAction?.closest(".hidden")).toBeNull();
-    expect(listStar?.closest(".hidden")).not.toBeNull();
+    // Org chart view.
+    const orgToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Org chart view"]');
+    if (orgToggle) {
+      await act(async () => {
+        orgToggle.click();
+      });
+      await flushReact();
+      expect(container.querySelector('[aria-label="Leave Alpha"]')).toBeNull();
+      expect(container.querySelector('[aria-label="Join Alpha"]')).toBeNull();
+      expect(container.querySelector('[aria-label="Star Alpha"]')).toBeNull();
+    }
   });
 
   it("does not dim left-membership agent names on mobile", async () => {
