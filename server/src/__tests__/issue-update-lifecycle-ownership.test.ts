@@ -93,7 +93,10 @@ describe("canonical human completion preserves root transaction ownership", () =
   });
   it.each([false, true])("supplied caller retains the missing-queue guard (fence=%s)", async (fence) => {
     const f = fixture();
-    await expect(f.run(false, fence)).rejects.toThrow("Human completion in an external transaction requires a post-commit activity queue");
+    await expect(f.run(false, fence)).rejects.toThrow(fence
+      ? "Lifecycle-fenced terminal updates in an external transaction require a post-commit activity queue"
+      : "Human completion in an external transaction requires a post-commit activity queue");
+    if (fence) expect(activity.events).toEqual([]);
     expect(activity.events).not.toContain("publish");
     expect(activity.events).not.toContain("archive");
     expect(activity.events).not.toContain("persist");

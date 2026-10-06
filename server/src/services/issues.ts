@@ -10678,13 +10678,20 @@ export function issueService(db: Db) {
       if (options.lifecycleFence && !data.companyGuard) {
         throw new Error("Lifecycle-fenced update requires companyGuard");
       }
+      const ownsTransaction = dbOrTx === db;
+      if (options.lifecycleFence && !ownsTransaction
+        && (data.status === "done" || data.status === "cancelled")
+        && !Array.isArray(postCommitActivityPublications)) {
+        // A private fallback queue cannot be returned or flushed by a supplied
+        // transaction caller. Reject before the first fence/read/write instead.
+        throw unprocessable("Lifecycle-fenced terminal updates in an external transaction require a post-commit activity queue");
+      }
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications =
         postCommitActivityPublications ?? ownedActivityPublications;
       const ownedPostCommitActions: IssuePostCommitAction[] = [];
       const queuedPostCommitActions =
         postCommitActions ?? ownedPostCommitActions;
-      const ownsTransaction = dbOrTx === db;
       const prepareUpdate = async (dbOrTx: any) => {
       if (options.lifecycleFence) {
         await acquireIssueLifecycleFenceInTransaction(dbOrTx, data.companyGuard!);

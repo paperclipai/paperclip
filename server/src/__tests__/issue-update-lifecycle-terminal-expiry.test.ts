@@ -50,6 +50,36 @@ function fixture() {
   return { root, tx, events, publications, run, card };
 }
 describe("dark canonical terminal expiry supplied integration", () => {
+  it.each(["done", "cancelled"])("rejects supplied %s without caller activity queue before any effects", async status => {
+    const f = fixture();
+    await expect(issueService(f.root).update("issue-1", { status, companyGuard: "company-1" }, f.tx, undefined, [], { lifecycleFence: true }))
+      .rejects.toMatchObject({ status: 422 });
+    expect(f.events).toEqual([]);
+    expect(f.card.status).toBe("pending");
+    expect(f.publications).toEqual([]);
+    expect(sink.live).toEqual([]);
+  });
+  it("rejects a supplied terminal update even when there are no pending cards", async () => {
+    const f = fixture(); f.card.status = "expired";
+    await expect(issueService(f.root).update("issue-1", { status: "done", companyGuard: "company-1" }, f.tx, undefined, [], { lifecycleFence: true }))
+      .rejects.toMatchObject({ status: 422 });
+    expect(f.events).toEqual([]); expect(sink.live).toEqual([]);
+  });
+  it.each([undefined, false])("ordinary supplied terminal without caller queue retains eager default flag=%s", async lifecycleFence => {
+    const f = fixture(); f.root.select = f.tx.select;
+    f.tx.transaction = async (cb: any) => { f.events.push("ordinary-nested"); return cb(f.tx); };
+    const args: any[] = ["issue-1", { status: "done" }, f.tx, undefined, []];
+    if (lifecycleFence !== undefined) args.push({ lifecycleFence });
+    await (issueService(f.root).update as any)(...args);
+    expect(f.card.status).toBe("expired"); expect(sink.live).toHaveLength(1);
+    expect(f.events).not.toContain("fence");
+  });
+  it("a nonterminal dark supplied update does not acquire the terminal queue requirement", async () => {
+    const f = fixture();
+    await expect(issueService(f.root).update("issue-1", { title: "Renamed", companyGuard: "company-1" }, f.tx, undefined, [], { lifecycleFence: true }))
+      .resolves.toMatchObject({ title: "Renamed", status: "in_progress" });
+    expect(f.card.status).toBe("pending"); expect(sink.live).toEqual([]);
+  });
   it("propagates outer commit rejection without emitting recorded activity", async () => {
     const f = fixture(); const error = new Error("commit-denied");
     f.root.transaction = async (cb: any) => { await cb(f.tx); throw error; };
