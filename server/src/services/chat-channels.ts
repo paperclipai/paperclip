@@ -1,3 +1,4 @@
+import { identifyTeamsImage, teamsImageNeedsIdentification } from "./chat-teams-image-type.js";
 import { withSlackBoardLease } from "./slack-board-lease.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { authorizeSlackBoardPublication } from "./slack-board-authority.js";
@@ -10592,6 +10593,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function ingestAttachments(input: {
     endpoint: EndpointRow;
+    isDirectMessage: boolean;
     endpointRuntime: ChatSdkEndpointRuntime;
     deliveryId: string;
     issueId: string;
@@ -10969,7 +10971,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           normalizeContentType(
             attachment.mimeType ?? "application/octet-stream",
           ) === "application/octet-stream";
-        if (!isAllowedContentType(contentType) && !identifyTelegram) {
+        const identifyTeams = input.endpoint.provider === "microsoft-teams" &&
+          input.isDirectMessage && teamsImageNeedsIdentification(attachment);
+        if (!isAllowedContentType(contentType) && !identifyTelegram && !identifyTeams) {
           omit("unsupported_type");
           continue;
         }
@@ -10987,6 +10991,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         if (body.length > MAX_ATTACHMENT_BYTES) {
           omit("downloaded_too_large");
           continue;
+        }
+        if (identifyTeams) {
+          const identified = await identifyTeamsImage(body);
+          if (!identified || !isAllowedContentType(identified)) {
+            omit("unsupported_type");
+            continue;
+          }
+          contentType = identified;
         }
         if (identifyTelegram) {
           contentType =
@@ -15374,6 +15386,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // committed delivery link and fill in only files that are still
         // missing from this exact inbound comment.
         const attachmentResult = await ingestAttachments({
+          isDirectMessage: thread.isDM,
           endpoint,
           endpointRuntime,
           deliveryId: activeDelivery.id,
@@ -16483,6 +16496,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
       const { actorUserId, comment, conversation, issue } = taskMutation;
       const attachmentResult = await ingestAttachments({
+        isDirectMessage: thread.isDM,
         endpoint,
         endpointRuntime,
         deliveryId: activeDelivery.id,

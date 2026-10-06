@@ -20019,6 +20019,68 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
   });
 
+  it.each([
+    "png", "jpeg_misleading_extension", "gif", "webp", "wildcard_nameless",
+    "invalid", "explicitly_denied", "wildcard_unavailable", "misleading_extension",
+    "declared_too_large", "downloaded_too_large", "too_many_pixels", "unauthorized", "group",
+  ])("identifies generic personal Teams images after admission: %s", async (mode) => {
+    const fixture = await seedCompany();
+    const storage = createStorageService();
+    const { callbacks, endpoint, service, wakeup } = await configuredTeamsEndpoint(fixture, { storage: storage.storage });
+    try {
+      if (mode === "unauthorized") await service.update(endpoint.id, { allowUnlinkedPeople: false }, "owner-user");
+      if (mode === "group") await service.update(endpoint.id, { allowGroupChats: true }, "owner-user");
+      const format = mode === "jpeg_misleading_extension" ? "jpeg" : mode === "gif" ? "gif" : mode === "webp" ? "webp" : "png";
+      const body = mode === "invalid" ? Buffer.from("not an image")
+        : mode === "downloaded_too_large" ? Buffer.alloc(MAX_ATTACHMENT_BYTES + 1)
+        : await sharp({ create: {
+          width: mode === "too_many_pixels" ? 8_000 : 2,
+          height: mode === "too_many_pixels" ? 5_001 : 2,
+          channels: 3, background: "white",
+        } }).toFormat(format).toBuffer();
+      const fetchData = vi.fn(async () => body);
+      const wildcard = mode.startsWith("wildcard");
+      const conversationId = `a:generic-image-${mode}`;
+      const thread = makeThread({
+        channelId: `teams:${Buffer.from(conversationId).toString("base64url")}`,
+        id: `teams:${Buffer.from(conversationId).toString("base64url")}`,
+        isDM: mode !== "group", name: "Image fixture",
+      });
+      const message = makeMessage({ id: `generic-image-${mode}`, text: "Inspect this image", mentioned: mode === "group", attachments: [{
+        type: wildcard ? "image" : "file",
+        name: wildcard ? undefined : mode === "misleading_extension" ? "photo.png.exe" : "photo.png",
+        mimeType: wildcard ? "image/*" : mode === "explicitly_denied" ? "application/x-executable" : "application/octet-stream",
+        size: mode === "declared_too_large" ? MAX_ATTACHMENT_BYTES + 1 : mode === "downloaded_too_large" ? 1 : body.length,
+        fetchData: mode === "wildcard_unavailable" ? undefined : fetchData,
+        ...(wildcard ? {} : { fetchMetadata: { testRecoveryKey: `generic-image-${mode}` } }),
+      } as Attachment] });
+      const input = { callbacks, endpointId: endpoint.id, provider: "microsoft-teams" as const, thread: thread.thread, message,
+        trigger: mode === "group" ? "mention" as const : "direct_message" as const };
+      await deliverMessage(input);
+      await deliverMessage(input);
+      if (["png", "jpeg_misleading_extension", "gif", "webp", "wildcard_nameless"].includes(mode)) {
+        expect(storage.putFile).toHaveBeenCalledOnce();
+        expect(storage.putFile.mock.calls[0]![0]).toMatchObject({ contentType: `image/${format}`, body });
+        expect(fetchData).toHaveBeenCalledOnce();
+        expect(wakeup).toHaveBeenCalledOnce();
+      } else {
+        expect(storage.putFile).not.toHaveBeenCalled();
+        if (["explicitly_denied", "wildcard_unavailable", "misleading_extension", "declared_too_large", "unauthorized", "group"].includes(mode)) {
+          expect(fetchData).not.toHaveBeenCalled();
+        }
+        if (mode === "unauthorized") expect(wakeup).not.toHaveBeenCalled();
+        else if (mode !== "group") {
+          const reason = mode === "wildcard_unavailable" ? "download_unavailable"
+            : mode === "declared_too_large" || mode === "downloaded_too_large" ? mode : "unsupported_type";
+          expect(JSON.stringify(wakeup.mock.calls)).toContain(reason);
+          expect(wakeup).toHaveBeenCalledOnce();
+        }
+      }
+    } finally {
+      await service.shutdown();
+    }
+  });
+
   it("ingests Teams files only from personal chats and keeps non-DM references link-only", async () => {
     const fixture = await seedCompany();
     const storage = createStorageService();
