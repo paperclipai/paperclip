@@ -148,7 +148,7 @@ export const toolConnections = pgTable(
   },
   (table) => [
     check("tool_connections_ownership_check", sql`${table.ownership} in ('platform_shared', 'platform_provisioned', 'customer', 'dcr')`),
-    check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'runtime_auth')`),
+    check("tool_connections_transport_check", sql`${table.transport} in ('mcp_remote', 'connector', 'rest_api', 'local_stdio', 'chat_sdk', 'runtime_auth')`),
     check("tool_connections_purpose_check", sql`${table.connectionPurpose} in ('tool', 'channel', 'ai')`),
     check("tool_connections_channel_transport_check", sql`(
       (${table.connectionPurpose} = 'tool' and ${table.transport} not in ('chat_sdk', 'runtime_auth'))
@@ -638,6 +638,40 @@ export const toolRuntimeSlots = pgTable(
     index("tool_runtime_slots_connection_idx").on(table.connectionId),
     index("tool_runtime_slots_execution_workspace_idx").on(table.companyId, table.executionWorkspaceId),
     uniqueIndex("tool_runtime_slots_slot_key_uq").on(table.companyId, table.slotKey),
+  ],
+);
+
+/**
+ * Outbound MCP connectors (`transport: "connector"`). A connector runs inside an
+ * operator's private network, dials out to Paperclip and relays governed MCP
+ * traffic to upstreams named in its own config. Token and credential material is
+ * stored only as SHA-256 hashes. See doc/connections/MCP-CONNECTOR.md.
+ */
+export const toolMcpConnectors = pgTable(
+  "tool_mcp_connectors",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    status: text("status").$type<"pending" | "active" | "revoked">().notNull().default("pending"),
+    enrollmentTokenHash: text("enrollment_token_hash"),
+    enrollmentExpiresAt: timestamp("enrollment_expires_at", { withTimezone: true }),
+    enrollmentUsedAt: timestamp("enrollment_used_at", { withTimezone: true }),
+    credentialHash: text("credential_hash"),
+    credentialRotatedAt: timestamp("credential_rotated_at", { withTimezone: true }),
+    version: text("version"),
+    upstreams: jsonb("upstreams").$type<string[]>().notNull().default([]),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    lastConnectedAt: timestamp("last_connected_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdByUserId: text("created_by_user_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check("tool_mcp_connectors_status_check", sql`${table.status} in ('pending', 'active', 'revoked')`),
+    index("tool_mcp_connectors_company_idx").on(table.companyId),
+    uniqueIndex("tool_mcp_connectors_company_name_uq").on(table.companyId, table.name),
   ],
 );
 

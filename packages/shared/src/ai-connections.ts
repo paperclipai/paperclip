@@ -6,7 +6,7 @@ export const connectionPurposeTransportSchema = z.discriminatedUnion(
   [
     z.object({
       connectionPurpose: z.literal("tool"),
-      transport: z.enum(["mcp_remote", "rest_api", "local_stdio"]),
+      transport: z.enum(["mcp_remote", "connector", "rest_api", "local_stdio"]),
     }),
     z.object({
       connectionPurpose: z.literal("channel"),

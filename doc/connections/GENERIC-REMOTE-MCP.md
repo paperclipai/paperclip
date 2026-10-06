@@ -24,6 +24,13 @@ secret handling, catalog refresh and review cannot diverge between them.
 **Advanced → Run your own** is a separate, higher-trust path for local stdio
 commands and is deliberately not covered here.
 
+**Server on a private network?** An internet-facing Paperclip
+(`authenticated` + `public`) refuses private and reserved addresses here, by
+design. Run an [outbound MCP connector](./MCP-CONNECTOR.md) inside that network
+(**Advanced → Connectors**): it dials out to Paperclip, publishes only upstream
+*names*, and the connection gets the same review, profiles, policies, approvals
+and audit as a connection made on this page.
+
 Don't know the address or the headers? The question-mark control beside
 **Paste a config** gives you a request you can hand to an agent: it asks the
 agent to consult the vendor's current documentation and reply with one
@@ -43,7 +50,7 @@ endpoint and branches:
 | Needs authorization, and publishes discoverable OAuth metadata | **Sign in to continue** — a browser sign-in at the provider. |
 | Needs authorization, but no discoverable sign-in | A prompt to add the key or headers its docs list, under **Advanced authentication**. |
 | Needs a client you registered yourself | A prompt for a client ID and secret. The draft connection is kept — you don't start over. |
-| Not a valid address / private network / unreachable | The specific problem and which field to change. |
+| Not a valid address / private network / unreachable | The specific problem and which field to change. For a private network, use an [outbound MCP connector](./MCP-CONNECTOR.md). |
 
 An unknown server is labelled **Unverified server** with its host shown, at every
 step through review, access and install. Reads are enabled for review;

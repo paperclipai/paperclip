@@ -226,7 +226,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
     && (Boolean(runIdentity?.activeIdentityContextId) && (connection.config?.sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github")
       || connection.credentialPolicy === "per_user"
       || !isToolConnectionAttentionHealth(connection.healthStatus))
-    && (["mcp_remote", "local_stdio"].includes(connection.transport) || isBrowserUseConnection(connection) || githubBotConnectionIds.has(connection.id))
+    && (["mcp_remote", "connector", "local_stdio"].includes(connection.transport) || isBrowserUseConnection(connection) || githubBotConnectionIds.has(connection.id))
   ).map((connection) => connection.id));
   const assignment = {
     version: 1,

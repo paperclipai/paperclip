@@ -295,6 +295,7 @@ import {
   confirmChatIdentityLinkSchema,
   createChatEndpointSchema,
   createChatIdentityLinkIntentSchema,
+  createMcpConnectorSchema,
   inspectPhotonProjectSchema,
   photonProjectIdSchema,
   photonLineIdSchema,
@@ -1517,6 +1518,10 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/tools/stdio-templates/{templateId}/disable",
   "POST /api/companies/{companyId}/tools/mcp/import-json",
   "POST /api/companies/{companyId}/tools/policy/test",
+  "GET /api/companies/{companyId}/tools/mcp-connectors",
+  "POST /api/companies/{companyId}/tools/mcp-connectors",
+  "POST /api/companies/{companyId}/tools/mcp-connectors/{connectorId}/reenroll",
+  "POST /api/companies/{companyId}/tools/mcp-connectors/{connectorId}/revoke",
   "GET /api/companies/{companyId}/tools/gateways",
   "POST /api/companies/{companyId}/tools/gateways",
   "PATCH /api/tool-gateway/gateways/{gatewayId}",
@@ -11288,6 +11293,56 @@ registerCurrentRoute({
   tags: ["tool-access"],
   summary: "Test tool policy decision",
   body: toolPolicyTestRequestSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/mcp-connectors",
+  tags: ["tool-access"],
+  summary: "List MCP connectors",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/mcp-connectors",
+  tags: ["tool-access"],
+  summary: "Create an MCP connector",
+  body: createMcpConnectorSchema,
+  responses: {
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/mcp-connectors/{connectorId}/reenroll",
+  tags: ["tool-access"],
+  summary: "Re-enroll an MCP connector",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/mcp-connectors/{connectorId}/revoke",
+  tags: ["tool-access"],
+  summary: "Revoke an MCP connector",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 // --- Tool gateway ------------------------------------------------------------

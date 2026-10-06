@@ -80,6 +80,7 @@ import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { toolAccessRoutes } from "./routes/tool-access.js";
+import { mcpConnectorRoutes } from "./routes/mcp-connectors.js";
 import {
   chatChannelRoutes,
   chatWebhookRoutes,
@@ -860,6 +861,7 @@ export async function createApp(
       connectionIntentHeartbeat,
     }),
   );
+  api.use(mcpConnectorRoutes(db));
   api.use(connectionIntentBoardRoutes(db, connectionIntentHeartbeat));
   api.use(
     smokeLabRoutes(db, {
