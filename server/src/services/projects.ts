@@ -34,7 +34,7 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
-import { recordProjectUpdateEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
+import { recordProjectLifecycleEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -878,7 +878,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
           } else await service.createWorkspace(projectId, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id } });
         }
         await tx.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, projectId));
-        await recordProjectUpdateEvent(tx as unknown as Db, project.companyId, projectId);
+        await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, projectId);
         return service.getById(projectId);
       });
     },
@@ -893,7 +893,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
       const existingProject = await db
-        .select({ id: projects.id, companyId: projects.companyId, name: projects.name })
+        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt })
         .from(projects)
         .where(eq(projects.id, id)).for("update")
         .then((rows) => rows[0] ?? null);
@@ -937,8 +937,11 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         await syncGoalLinks(db, id, row.companyId, ids);
       }
 
-      if (Object.entries(projectData).some(([key, value]) => value !== undefined && key !== "archivedAt" && key !== "updatedAt") || ids !== undefined) {
-        await recordProjectUpdateEvent(db, row.companyId, id);
+      if (Object.entries(projectData).some(([key, value]) => value !== undefined && key !== "archivedAt" && key !== "updatedAt") || ids !== undefined || (existingProject.archivedAt && !row.archivedAt)) {
+        await recordProjectLifecycleEvent(db, row.companyId, id);
+      }
+      if (row.archivedAt && !existingProject.archivedAt) {
+        await recordProjectLifecycleEvent(db, row.companyId, id, "archive");
       }
 
       const [withGoals] = await attachGoals(db, [row]);
@@ -1080,7 +1083,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       });
 
       if (created && options.captureWorkspaceUpdates !== false) {
-        await recordProjectUpdateEvent(db, created.companyId, projectId);
+        await recordProjectLifecycleEvent(db, created.companyId, projectId);
       }
       return created ? toWorkspace(created) : null;
     }),
@@ -1237,7 +1240,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       });
 
       if (updated && options.captureWorkspaceUpdates !== false) {
-        await recordProjectUpdateEvent(db, updated.companyId, projectId);
+        await recordProjectLifecycleEvent(db, updated.companyId, projectId);
       }
       return updated ? toWorkspace(updated) : null;
     }),
@@ -1292,7 +1295,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       });
 
       if (removed && options.captureWorkspaceUpdates !== false) {
-        await recordProjectUpdateEvent(db, removed.companyId, projectId);
+        await recordProjectLifecycleEvent(db, removed.companyId, projectId);
       }
       return removed ? toWorkspace(removed) : null;
     }),

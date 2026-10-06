@@ -219,7 +219,7 @@ describePostgres("Resource lifecycle events", () => {
     expect(await db.select().from(resourceLifecycleEvents).where(eq(resourceLifecycleEvents.companyId, otherCompanyId))).toEqual([]);
   });
 
-  it("captures project and workspace updates, batches repository replacement, and ignores archive-only changes", async () => {
+  it("captures project and workspace updates and batches repository replacement", async () => {
     const service = projectService(db);
     const project = await service.createWithRepositories(companyId, { name: "Mutable project" }, [
       { id: "1", fullName: "fixture/one", url: "https://github.com/fixture/one", connections: [] },
@@ -236,10 +236,40 @@ describePostgres("Resource lifecycle events", () => {
     ]);
     expect(await events()).toHaveLength(beforeReplace + 1);
     const beforeArchive = await events();
-    await service.update(project.id, { archivedAt: new Date(), name: undefined });
-    expect(await events()).toEqual(beforeArchive);
     expect((await service.getById(project.id))?.workspaces).toHaveLength(2);
     expect(beforeArchive.sort((a, b) => a.id - b.id).map(row => row.action)).toEqual(["create", "update", "update", "update", "update", "update"]);
+  });
+
+  it("records archive once per transition and update on restore, retaining repositories", async () => {
+    const service = projectService(db);
+    const project = await service.createWithRepositories(companyId, { name: "Archive fixture" }, [
+      { id: "1", fullName: "fixture/one", url: "https://github.com/fixture/one", connections: [] },
+    ]);
+    await Promise.all([
+      service.update(project.id, { archivedAt: new Date(), name: undefined }),
+      service.update(project.id, { archivedAt: new Date() }),
+    ]);
+    expect((await events()).map(row => row.action)).toEqual(["create", "archive"]);
+    expect((await service.getById(project.id))?.workspaces).toHaveLength(1);
+    await service.update(project.id, { archivedAt: null });
+    await service.update(project.id, { archivedAt: null });
+    await service.update(project.id, { archivedAt: new Date(), name: "Edited and archived" });
+    expect((await events()).sort((a, b) => a.id - b.id).map(row => row.action))
+      .toEqual(["create", "archive", "update", "update", "archive"]);
+  });
+
+  it("rolls back archive and combined edits when the archive record fails", async () => {
+    const service = projectService(db);
+    const project = await service.create(companyId, { name: "Retained project" });
+    const before = await events();
+    await db.execute(sql`ALTER TABLE resource_lifecycle_events ADD CONSTRAINT fixture_reject_archive CHECK (action <> 'archive') NOT VALID`);
+    try {
+      await expect(service.update(project.id, { archivedAt: new Date(), name: "Rejected edit" })).rejects.toThrow();
+      expect(await service.getById(project.id)).toMatchObject({ name: "Retained project", archivedAt: null });
+      expect(await events()).toEqual(before);
+    } finally {
+      await db.execute(sql`ALTER TABLE resource_lifecycle_events DROP CONSTRAINT fixture_reject_archive`);
+    }
   });
 
   it("rolls back project and repository mutations when their update record fails", async () => {

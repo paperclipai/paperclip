@@ -506,7 +506,11 @@ until status and event commit, so concurrent repeat requests emit one hook.
 Project edits and workspace additions, updates, and removals append `update`.
 Repository replacement emits one aggregate update; project creation with repositories
 emits only creation. Project mutations hold the project row lock until their record
-commits. An archive-only change emits nothing and preserves workspace records.
+commits. An active-to-archived transition emits `archive`; restoring an archived
+project emits `update`. Repeat archive or restore requests emit no new status
+record. An edit combined with archive emits `update` followed by `archive` in
+the same transaction. Archiving preserves workspace records and authorizes no
+provider cleanup.
 Termination commits API-key revocation in that same transaction.
 Hire approval and rejection commit with agent activation or termination, so a
 failed event write leaves the decision pending and retryable.
