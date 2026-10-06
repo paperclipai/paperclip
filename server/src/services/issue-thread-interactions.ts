@@ -4995,16 +4995,15 @@ export function issueThreadInteractionService(
         }
         if (current.status !== "pending") throw interactionTerminalError(current);
         if (suppliedTx && current.kind === "request_confirmation") {
-          // Deny a known executing/executed action before any linked writes.
-          // Retain the post-revocation check below for a concurrent claim;
-          // this snapshot does not replace canonical revocation/CAS or rollback.
-          const active = await tx.select({ id: toolActionRequests.id })
+          // Lock existing linked rows before preflight/revocation in stable ID
+          // order. This is not a phantom-insert fence or a common writer protocol.
+          // Retain the post-revocation check and root rollback responsibility.
+          const linked = await tx.select({ id: toolActionRequests.id, status: toolActionRequests.status })
             .from(toolActionRequests).where(and(
               eq(toolActionRequests.companyId, current.companyId),
               eq(toolActionRequests.interactionId, current.id),
-              inArray(toolActionRequests.status, ["executing", "executed"]),
-            )).then(rows => rows[0] ?? null);
-          if (active) throw conflict(
+            )).orderBy(asc(toolActionRequests.id)).for("update");
+          if (linked.some(row => row.status === "executing" || row.status === "executed")) throw conflict(
             "The linked tool action is already executing and can no longer be withdrawn",
           );
         }

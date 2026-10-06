@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { issues, issueThreadInteractions, toolActionRequests } from "@paperclipai/db";
-import { PgDialect } from "drizzle-orm/pg-core";
+import { PgDialect, PgSelectBuilder } from "drizzle-orm/pg-core";
 import * as service from "../services/issue-thread-interactions.js";
 vi.mock("../services/instance-settings.js", () => ({ instanceSettingsService: () => ({}) }));
 vi.mock("../telemetry.js", () => ({ getTelemetryClient: () => null }));
@@ -19,7 +19,11 @@ function fixture(config: { status?: string; missingIssue?: boolean; missingCard?
       if (table === issueThreadInteractions) { events.push("card-read"); return Object.assign(Promise.resolve(config.missingCard ? [] : [row]), { for: async (mode: string) => { expect(mode).toBe("update"); events.push("card-lock"); if (config.lockError) throw config.lockError; return config.missingLockedCard ? [] : [{ ...row, status: config.lockedStatus ?? row.status }]; } }); }
       expect(table).toBe(toolActionRequests); events.push("active-tool-read");
       if (config.activeReadError) throw config.activeReadError;
-      return Promise.resolve(config.activeTool || (config.activeAfterRevocation && events.includes("tool-write")) ? [{ id: "tool-1" }] : []);
+      const activeRows = () => config.activeTool || (config.activeAfterRevocation && events.includes("tool-write")) ? [{ id: "tool-1", status: "executing" }] : [];
+      return Object.assign(Promise.resolve(activeRows()), { orderBy: (column: any) => ({ for: async (mode: string) => {
+        expect(mode).toBe("update"); expect(dialect.sqlToQuery(column).sql).toBe('"tool_action_requests"."id" asc');
+        events.push("tool-lock"); return activeRows();
+      } }) });
     } }) }),
     update: (table: any) => ({ set: (patch: any) => ({ where: (q: any) => {
       queries.push(dialect.sqlToQuery(q)); patches.push(patch);
@@ -32,6 +36,28 @@ function fixture(config: { status?: string; missingIssue?: boolean; missingCard?
 const invoke = (f: ReturnType<typeof fixture>, issue = { id: "issue-1", companyId: "company-1" }, actor = { userId: "user-1" }, input = { reason: "Offline withdrawal" }, queue: any = []) =>
   (service as any).withdrawInteractionInTransaction(f.tx, issue, "interaction-1", input, actor, { postCommitPublications: queue });
 describe("dark supplied root-first canonical withdrawal recording", () => {
+  it("renders actual scoped ordered tool lock and propagates lock rejection without writes", async () => {
+    const f = fixture(); f.release(); const originalSelect = f.tx.select;
+    const error = new Error("tool-lock-denied"); let rendered: any;
+    f.tx.select = (fields: any) => ({ from: (table: any) => {
+      if (table !== toolActionRequests) return originalSelect(fields).from(table);
+      const q: any = new PgSelectBuilder({ fields, session: undefined, dialect: new PgDialect() }).from(table);
+      q.then = (ok: any, no: any) => { rendered = q.toSQL(); return Promise.reject(error).then(ok, no); };
+      return q;
+    } });
+    await expect(invoke(f)).rejects.toBe(error);
+    expect(rendered.sql).toBe('select "id", "status" from "tool_action_requests" where ("tool_action_requests"."company_id" = $1 and "tool_action_requests"."interaction_id" = $2) order by "tool_action_requests"."id" asc for update');
+    expect(rendered.params).toEqual(["company-1", "interaction-1"]);
+    expect(f.patches).toEqual([]);
+  });
+  it("locks all scoped linked tool rows in ID order before revocation", async () => {
+    const f = fixture(); f.release(); await invoke(f);
+    expect(f.events.indexOf("tool-lock")).toBeGreaterThan(f.events.indexOf("card-lock"));
+    expect(f.events.indexOf("tool-lock")).toBeLessThan(f.events.indexOf("tool-write"));
+    const query = f.queries[3];
+    expect(query.sql).toBe('(\"tool_action_requests\".\"company_id\" = $1 and \"tool_action_requests\".\"interaction_id\" = $2)');
+    expect(query.params).toEqual(["company-1", "interaction-1"]);
+  });
   it("revalidates locked pending card before linked revocation", async () => {
     const f = fixture({ lockedStatus: "answered" }); f.release();
     await expect(invoke(f)).rejects.toMatchObject({ status: 409 });
@@ -56,7 +82,7 @@ describe("dark supplied root-first canonical withdrawal recording", () => {
     finally { f.release(); }
     const result = await pending;
     expect(result).toMatchObject({ id: "interaction-1", status: "cancelled", resolvedByUserId: "user-1" });
-    expect(f.events).toEqual(["fence", "issue-lock", "card-read", "card-read", "card-lock", "active-tool-read", "tool-write", "active-tool-read", "card-write"]);
+    expect(f.events).toEqual(["fence", "issue-lock", "card-read", "card-read", "card-lock", "active-tool-read", "tool-lock", "tool-write", "active-tool-read", "card-write"]);
     expect(f.queries[0].params).toEqual(["issue-1", "company-1"]);
     expect(f.queries[1].params).toEqual(["interaction-1", "company-1", "issue-1"]);
     expect(f.queries.at(-1).params).toEqual(["interaction-1", "pending", "company-1", "issue-1"]);
@@ -86,7 +112,7 @@ describe("dark supplied root-first canonical withdrawal recording", () => {
     await expect(invoke(f)).rejects.toMatchObject({ status: 409 });
     expect(f.events).toContain("card-lock");
     expect(f.events).toContain("active-tool-read");
-    expect(f.queries.at(-1).params).toEqual(["company-1", "interaction-1", "executing", "executed"]);
+    expect(f.queries.at(-1).params).toEqual(["company-1", "interaction-1"]);
     expect(f.patches).toEqual([]);
   });
   it("propagates active-tool preflight failure before linked writes", async () => {
