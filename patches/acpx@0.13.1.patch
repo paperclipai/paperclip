@@ -1,5 +1,5 @@
 diff --git a/dist/client-CxNllqui.d.ts b/dist/client-CxNllqui.d.ts
-index 5e2113ac0a1a92c99322cf01e5c106760a0b0dbf..b7b5151f3da45b5e0d12aea55e9f3b071ab54a8d 100644
+index 5e2113a..b7b5151 100644
 --- a/dist/client-CxNllqui.d.ts
 +++ b/dist/client-CxNllqui.d.ts
 @@ -135,6 +135,7 @@ declare class AcpClient {
@@ -11,7 +11,7 @@ index 5e2113ac0a1a92c99322cf01e5c106760a0b0dbf..b7b5151f3da45b5e0d12aea55e9f3b07
    private setSessionModelThroughConfig;
    private setSessionModelThroughLegacyMethod;
 diff --git a/dist/live-checkpoint-BSIrfgVo.js b/dist/live-checkpoint-BSIrfgVo.js
-index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d2e777e9e 100644
+index d454fd7..952299f 100644
 --- a/dist/live-checkpoint-BSIrfgVo.js
 +++ b/dist/live-checkpoint-BSIrfgVo.js
 @@ -1068,6 +1068,7 @@ function serializeSessionRecordForDisk(record) {
@@ -554,7 +554,7 @@ index d454fd7c5bf742b469be75eb8c3988b694a0ffaa..e3a4989473bba20e6dcdccbac086bb6d
  			stopReason: response.stopReason,
  			source: "rpc"
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415d1fba4bf 100644
+index e8102ac..d3a9ba6 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -1,7 +1,8 @@
@@ -665,7 +665,7 @@ index e8102acb03c4c38830ad5ec22f356125eb0423b7..d3a9ba6266a29926ed53302410534415
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
 diff --git a/dist/runtime.js b/dist/runtime.js
-index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd43b1a0f77 100644
+index a1f4a70..4adf612 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -371,7 +371,7 @@ const PROMPT_EVENT_PARSERS = {
@@ -838,7 +838,48 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  	async cancel(handle) {
  		await this.activeControllers.get(handle.acpxRecordId ?? handle.sessionKey)?.requestCancelActivePrompt();
  	}
-@@ -2055,6 +2131,7 @@ var AcpxRuntime = class {
+@@ -1797,6 +1873,8 @@ var AcpRuntimeManager = class {
+ function safeSessionId(sessionId) {
+ 	return encodeURIComponent(sessionId);
+ }
++// Serialize all stores that target the same session file in this process.
++var sessionFileSaveQueues = new Map();
+ var FileSessionStore = class {
+ 	stateDir;
+ 	constructor(stateDir) {
+@@ -1829,14 +1907,27 @@ var FileSessionStore = class {
+ 		return parseSessionRecord(parsed) ?? void 0;
+ 	}
+ 	async save(record) {
+-		await this.ensureDir();
+ 		const persisted = serializeSessionRecordForDisk(record);
+ 		assertPersistedKeyPolicy(persisted);
+ 		const file = this.filePath(record.acpxRecordId);
+-		const tempFile = createAtomicWriteTempPath(file);
+ 		const payload = JSON.stringify(persisted, null, 2);
+-		await fs.writeFile(tempFile, `${payload}\n`, "utf8");
+-		await fs.rename(tempFile, file);
++		const previous = sessionFileSaveQueues.get(file) ?? Promise.resolve();
++		const operation = previous.catch(() => {}).then(async () => {
++			await this.ensureDir();
++			const tempFile = createAtomicWriteTempPath(file);
++			try {
++				await fs.writeFile(tempFile, `${payload}\n`, "utf8");
++				await fs.rename(tempFile, file);
++			} finally {
++				await fs.rm(tempFile, { force: true }).catch(() => {});
++			}
++		});
++		sessionFileSaveQueues.set(file, operation);
++		try {
++			await operation;
++		} finally {
++			if (sessionFileSaveQueues.get(file) === operation) sessionFileSaveQueues.delete(file);
++		}
+ 	}
+ };
+ function createFileSessionStore(options) {
+@@ -2055,6 +2146,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -846,7 +887,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -2087,6 +2164,7 @@ var AcpxRuntime = class {
+@@ -2087,6 +2179,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,
@@ -854,7 +895,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -2119,6 +2197,14 @@ var AcpxRuntime = class {
+@@ -2119,6 +2212,14 @@ var AcpxRuntime = class {
  		const { handle, state } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).setConfigOption(handle, input.key, input.value, state.mode);
  	}
@@ -870,7 +911,7 @@ index a1f4a70a003792c6eacf68b6b038f37bfec1db53..fe2484de6978fd16bfdd55ce69066fd4
  		const { handle } = this.resolveManagerHandle(input.handle);
  		await (await this.getManager()).cancel(handle);
 diff --git a/dist/session-options-DwRDODlr.d.ts b/dist/session-options-DwRDODlr.d.ts
-index c3da1645235bbea22de3f8484149051cd7dca56b..5ccc8dda101e7c90f61483c86fd2731855ce2e51 100644
+index c3da164..c94c25d 100644
 --- a/dist/session-options-DwRDODlr.d.ts
 +++ b/dist/session-options-DwRDODlr.d.ts
 @@ -1,4 +1,5 @@

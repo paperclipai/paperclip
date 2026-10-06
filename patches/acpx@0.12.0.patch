@@ -1,5 +1,5 @@
 diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
-index 243c9d13bcba520923b63adfddad75cf2d94362d..e2a254d4e57fb2e246ccb742f2e9de5a8a461d20 100644
+index 243c9d1..e2a254d 100644
 --- a/dist/live-checkpoint-ClPCSdrW.js
 +++ b/dist/live-checkpoint-ClPCSdrW.js
 @@ -1532,7 +1532,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
@@ -146,7 +146,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..e2a254d4e57fb2e246ccb742f2e9de5a
  		return {
  			stopReason: response.stopReason,
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index ccdbe5b032521518022223733049b8b38793473b..416bdaae1450c6e85b34afd154349770f9f7b0a9 100644
+index ccdbe5b..416bdaa 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -45,6 +45,7 @@ type AcpRuntimeTurnAttachment = {
@@ -185,7 +185,7 @@ index ccdbe5b032521518022223733049b8b38793473b..416bdaae1450c6e85b34afd154349770
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f8626e697ad 100644
+index 6c9cc99..5216bd6 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
 @@ -744,7 +744,8 @@ var AcpRuntimeManager = class {
@@ -206,7 +206,48 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f86
  				timeoutMs: task.input.timeoutMs ?? this.options.timeoutMs,
  				conversation: turn.conversation,
  				promptMessageId: turn.promptMessageId
-@@ -1586,6 +1588,7 @@ var AcpxRuntime = class {
+@@ -1346,6 +1348,8 @@ var AcpRuntimeManager = class {
+ function safeSessionId(sessionId) {
+ 	return encodeURIComponent(sessionId);
+ }
++// Serialize all stores that target the same session file in this process.
++var sessionFileSaveQueues = new Map();
+ var FileSessionStore = class {
+ 	stateDir;
+ 	constructor(stateDir) {
+@@ -1378,14 +1382,27 @@ var FileSessionStore = class {
+ 		return parseSessionRecord(parsed) ?? void 0;
+ 	}
+ 	async save(record) {
+-		await this.ensureDir();
+ 		const persisted = serializeSessionRecordForDisk(record);
+ 		assertPersistedKeyPolicy(persisted);
+ 		const file = this.filePath(record.acpxRecordId);
+-		const tempFile = `${file}.${process.pid}.${Date.now()}.tmp`;
+ 		const payload = JSON.stringify(persisted, null, 2);
+-		await fs.writeFile(tempFile, `${payload}\n`, "utf8");
+-		await fs.rename(tempFile, file);
++		const previous = sessionFileSaveQueues.get(file) ?? Promise.resolve();
++		const operation = previous.catch(() => {}).then(async () => {
++			await this.ensureDir();
++			const tempFile = `${file}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
++			try {
++				await fs.writeFile(tempFile, `${payload}\n`, "utf8");
++				await fs.rename(tempFile, file);
++			} finally {
++				await fs.rm(tempFile, { force: true }).catch(() => {});
++			}
++		});
++		sessionFileSaveQueues.set(file, operation);
++		try {
++			await operation;
++		} finally {
++			if (sessionFileSaveQueues.get(file) === operation) sessionFileSaveQueues.delete(file);
++		}
+ 	}
+ };
+ function createFileSessionStore(options) {
+@@ -1586,6 +1603,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -214,7 +255,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f86
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -1614,6 +1617,7 @@ var AcpxRuntime = class {
+@@ -1614,6 +1632,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,
@@ -223,7 +264,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f86
  			mode: input.mode,
  			sessionMode: state.mode,
 diff --git a/dist/session-options-jkYbBxGE.d.ts b/dist/session-options-jkYbBxGE.d.ts
-index 9d37f377fb6a0828e0d2bc5a48754f3aa71509a4..22dda59e0b7616a20ad45218913e5d8f884bae49 100644
+index 9d37f37..22dda59 100644
 --- a/dist/session-options-jkYbBxGE.d.ts
 +++ b/dist/session-options-jkYbBxGE.d.ts
 @@ -84,6 +84,10 @@ type AcpClientOptions = {
