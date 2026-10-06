@@ -165,6 +165,10 @@ export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
+// Windowed tail for the display fallback: scanning the whole 4 MiB capture on
+// every chunk is quadratic on the server event loop. The terminal result is
+// always at the end of the stream, so a bounded tail is sufficient evidence.
+const TERMINAL_RESULT_FALLBACK_TAIL_CHARS = 64 * 1024;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const SENSITIVE_ENV_KEY =
@@ -4888,10 +4892,20 @@ export async function runChildProcess(
                   terminalResultSeen = terminalCleanup.hasTerminalResult(output);
                 }
                 // Raw retention can clip a large record that literal redaction
-                // shrinks below the display cap. Only fall back to redacted capture.
+                // shrinks below the display cap. Only fall back to redacted capture,
+                // windowed to a bounded tail so per-chunk work stays constant.
                 if (!terminalResultSeen && displayFallbackSafe() && (stdout || stderr) &&
                   (stdout !== output.stdout || stderr !== output.stderr)) {
-                  terminalResultSeen = terminalCleanup.hasTerminalResult({ stdout, stderr });
+                  const stdoutTail = stdout.length > TERMINAL_RESULT_FALLBACK_TAIL_CHARS
+                    ? stdout.slice(-TERMINAL_RESULT_FALLBACK_TAIL_CHARS)
+                    : stdout;
+                  const stderrTail = stderr.length > TERMINAL_RESULT_FALLBACK_TAIL_CHARS
+                    ? stderr.slice(-TERMINAL_RESULT_FALLBACK_TAIL_CHARS)
+                    : stderr;
+                  terminalResultSeen = terminalCleanup.hasTerminalResult({
+                    stdout: stdoutTail,
+                    stderr: stderrTail,
+                  });
                 }
               };
               // append inspects before trimming and preserves recognized match

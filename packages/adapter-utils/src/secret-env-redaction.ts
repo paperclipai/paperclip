@@ -221,13 +221,55 @@ function redactControlText(text: string, ranges: readonly RedactionRange[], clip
 
 /** Private bounded raw scan state; callers can obtain only sanitized text. */
 export function createSecretEnvRedactionScanner(secretValues: readonly string[], cap: number) {
+  const values = [...new Set(secretValues)].filter(Boolean);
+  const maxSecretLength = values.reduce((longest, value) => Math.max(longest, value.length), 0);
+  // Any match involving the new chunk starts within this overlap of retention.
+  // Scanning only the bounded tail keeps per-chunk work constant instead of
+  // re-scanning the whole retained window (up to cap) on every chunk.
+  const overlap = maxSecretLength > 0 ? maxSecretLength - 1 : 0;
   let retained = "";
   let coverage: RedactionRange[] = [];
   let clippedLine = false;
   return {
     append(chunk: string, inspect?: (sanitized: string) => void): void {
+      const scanPrefixLength = Math.min(overlap, retained.length);
+      const scanBase = retained.length - scanPrefixLength;
+      let fresh: RedactionRange[] = [];
+      if (values.length > 0 && (scanPrefixLength > 0 || chunk.length > 0)) {
+        const scanText = retained.slice(scanBase) + chunk;
+        const found = findMergedRanges(scanText, values);
+        for (const range of found) {
+          fresh.push({ from: range.from + scanBase, to: range.to + scanBase });
+        }
+      }
+      // Coverage is already sorted; fresh starts at scanBase near the end, so
+      // only the small tail overlapping the scan window can interact with it.
+      // Merging just that tail keeps per-chunk work constant when thousands of
+      // earlier matches are retained.
+      let ranges: RedactionRange[];
+      if (coverage.length === 0) {
+        ranges = fresh;
+      } else if (fresh.length === 0) {
+        ranges = coverage;
+      } else {
+        let split = coverage.length;
+        while (split > 0 && coverage[split - 1]!.to > scanBase) split -= 1;
+        const tail = coverage.slice(split);
+        tail.push(...fresh);
+        tail.sort((a, b) => a.from - b.from || b.to - a.to);
+        const mergedTail: RedactionRange[] = [];
+        for (const range of tail) {
+          const current = mergedTail[mergedTail.length - 1];
+          if (current && range.from < current.to) {
+            current.to = Math.max(current.to, range.to);
+          } else {
+            mergedTail.push({ ...range });
+          }
+        }
+        ranges = coverage.slice(0, split);
+        ranges.push(...mergedTail);
+      }
       const candidate = retained + chunk;
-      const ranges = findMergedRanges(candidate, secretValues, 0, coverage);
       try {
         // Inspect the whole candidate before trimming, independent of log carry.
         inspect?.(redactControlText(candidate, ranges, clippedLine));
@@ -236,13 +278,15 @@ export function createSecretEnvRedactionScanner(secretValues: readonly string[],
         // A retained suffix is not a new record. Keep suppressing its leading
         // fragment until retention starts at an original newline boundary.
         if (trim > 0) clippedLine = candidate[trim - 1] !== "\n";
-        retained = candidate.slice(trim);
+        retained = trim === 0 ? candidate : candidate.slice(trim);
         // Coverage is evidence of a previously COMPLETE match. Keep it even if
         // clipping makes its retained suffix no longer match the original value.
-        coverage = ranges.filter((range) => range.to > trim).map((range) => ({
-          from: Math.max(0, range.from - trim),
-          to: range.to - trim,
-        }));
+        coverage = trim === 0
+          ? ranges
+          : ranges.filter((range) => range.to > trim).map((range) => ({
+              from: Math.max(0, range.from - trim),
+              to: range.to - trim,
+            }));
       }
     },
     snapshot(): string {
@@ -366,14 +410,50 @@ function createPossibleSecretPrefixMatcher(values: readonly string[]) {
 /** Ordered stable control records; never emit a clipped record as a new event. */
 export function createSecretEnvRedactionControlStream(secretValues: readonly string[], cap: number) {
   const values = [...new Set(secretValues)].filter(Boolean);
+  const maxSecretLength = values.reduce((longest, value) => Math.max(longest, value.length), 0);
+  // Incremental carry: only the bounded tail plus the new chunk can hold a
+  // match that is not already covered, so per-chunk scanning stays constant.
+  const overlap = maxSecretLength > 0 ? maxSecretLength - 1 : 0;
   const possiblePrefixLength = createPossibleSecretPrefixMatcher(values);
   let pending = "";
   let coverage: RedactionRange[] = [];
   let clippedLine = false;
 
   const consume = (chunk: string, eof: boolean): string => {
+    const scanPrefixLength = Math.min(overlap, pending.length);
+    const scanBase = pending.length - scanPrefixLength;
+    let fresh: RedactionRange[] = [];
+    if (values.length > 0 && (scanPrefixLength > 0 || chunk.length > 0)) {
+      const scanText = pending.slice(scanBase) + chunk;
+      const found = findMergedRanges(scanText, values);
+      for (const range of found) {
+        fresh.push({ from: range.from + scanBase, to: range.to + scanBase });
+      }
+    }
+    let ranges: RedactionRange[];
+    if (coverage.length === 0) {
+      ranges = fresh;
+    } else if (fresh.length === 0) {
+      ranges = coverage;
+    } else {
+      let split = coverage.length;
+      while (split > 0 && coverage[split - 1]!.to > scanBase) split -= 1;
+      const tail = coverage.slice(split);
+      tail.push(...fresh);
+      tail.sort((a, b) => a.from - b.from || b.to - a.to);
+      const mergedTail: RedactionRange[] = [];
+      for (const range of tail) {
+        const current = mergedTail[mergedTail.length - 1];
+        if (current && range.from < current.to) {
+          current.to = Math.max(current.to, range.to);
+        } else {
+          mergedTail.push({ ...range });
+        }
+      }
+      ranges = coverage.slice(0, split);
+      ranges.push(...mergedTail);
+    }
     const candidate = pending + chunk;
-    const ranges = findMergedRanges(candidate, values, 0, coverage);
     const stableEnd = eof ? candidate.length : candidate.length - possiblePrefixLength(candidate);
     const end = eof ? stableEnd : (stableEnd > 0 ? candidate.lastIndexOf("\n", stableEnd - 1) + 1 : 0);
     const firstLineEnd = clippedLine ? candidate.indexOf("\n") + 1 : 0;
