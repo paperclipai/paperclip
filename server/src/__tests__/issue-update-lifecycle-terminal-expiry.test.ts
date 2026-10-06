@@ -4,7 +4,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 import { publishActivity } from "../services/activity-log.js";
-import { nativeQuestionRunToCancelInTransaction, nativeQuestionRunToCancel, requestNativeQuestionRunCancellationInTransaction } from "../services/native-runtime/native-question-bridge.js";
+import { nativeQuestionRunToCancelInTransaction, nativeQuestionRunToCancel, requestNativeQuestionRunCancellation, requestNativeQuestionRunCancellationInTransaction } from "../services/native-runtime/native-question-bridge.js";
 const sink = vi.hoisted(() => ({ live: [] as any[] }));
 vi.mock("../services/live-events.js", () => ({ publishLiveEvent: (event: any) => sink.live.push(event) }));
 vi.mock("../services/instance-settings.js", () => ({ instanceSettingsService: () => ({ getExperimental: async () => ({ enableIsolatedWorkspaces: false }), getGeneral: async () => ({ censorUsernameInLogs: false }) }) }));
@@ -71,6 +71,56 @@ function nativeFixture() {
   return f;
 }
 describe("dark canonical terminal expiry supplied integration", () => {
+  it("starts opt-in owned native marker transaction before any domain read", async () => {
+    const f = nativeFixture();
+    await expect(requestNativeQuestionRunCancellation(f.root, f.card, { kind: "issue_terminal", issueStatus: "done" }, { lifecycleFence: true })).resolves.toBe("run-1");
+    expect(f.events).toEqual(["begin", "fence", "read:heartbeat_runs", "write:heartbeat_runs", "outer-resolve"]);
+    expect(sink.live).toEqual([]);
+  });
+  it.each(["issue_terminal", "interaction_withdrawn", "interaction_cancelled"])("captures owned native marker before deferred startup cause=%s", async kind => {
+    const f = nativeFixture(); let release!: () => void; let entered!: () => void;
+    const barrier = new Promise<void>(r => { release = r; }); const signal = new Promise<void>(r => { entered = r; });
+    f.root.transaction = async (cb: any) => { f.events.push("begin"); entered(); await barrier; const value = await cb(f.tx); f.events.push("outer-resolve"); return value; };
+    const cause: any = kind === "issue_terminal" ? { kind, issueStatus: "done" } : { kind, interactionId: "card-1" };
+    const operation = requestNativeQuestionRunCancellation(f.root, f.card, cause, { lifecycleFence: true });
+    try {
+      expect(await Promise.race([signal.then(() => "begin"), operation.then(() => "settled", () => "rejected")])).toBe("begin");
+      expect(f.events).toEqual(["begin"]);
+      Object.assign(f.card, { companyId: "other-company", issueId: "other-issue", sourceRunId: "other-run", idempotencyKey: "bad" });
+      f.card.payload.runtimeRequestId = "mutated"; f.card.payload.questionSet = null;
+      Object.assign(cause, { kind: "issue_terminal", issueStatus: "cancelled", interactionId: "other-card" });
+    } finally { release(); }
+    expect(await operation).toBe("run-1");
+    expect(f.native.predicates[0].params).toEqual(["run-1", "company-1", "issue-1", "native"]);
+    expect(JSON.parse(f.native.marker.params[1])).toMatchObject(kind === "issue_terminal" ? { kind, issueStatus: "done", issueId: "issue-1" } : { kind, interactionId: "card-1", issueId: "issue-1" });
+    expect(f.events).toEqual(["begin", "fence", "read:heartbeat_runs", "write:heartbeat_runs", "outer-resolve"]);
+  });
+  it("denies owned native marker without company or root transaction before effects", async () => {
+    const f = nativeFixture(); f.card.companyId = "";
+    await expect(requestNativeQuestionRunCancellation(f.root, f.card, { kind: "issue_terminal", issueStatus: "done" }, { lifecycleFence: true })).rejects.toMatchObject({ status: 422 });
+    f.card.companyId = "company-1";
+    await expect(requestNativeQuestionRunCancellation({ select: f.tx.select, update: f.tx.update }, f.card, { kind: "issue_terminal", issueStatus: "done" }, { lifecycleFence: true })).rejects.toMatchObject({ status: 422 });
+    expect(f.events).toEqual([]); expect(f.native.marker).toBeNull();
+  });
+  it.each([undefined, false])("preserves ordinary native marker without owned transaction flag=%s", async lifecycleFence => {
+    const f = nativeFixture();
+    const args: any[] = [f.tx, f.card, { kind: "issue_terminal", issueStatus: "done" }];
+    if (lifecycleFence !== undefined) args.push({ lifecycleFence });
+    expect(await (requestNativeQuestionRunCancellation as any)(...args)).toBe("run-1");
+    expect(f.events).toEqual(["read:heartbeat_runs", "write:heartbeat_runs"]);
+  });
+  it("owned native marker propagates simulated commit rejection without live effects", async () => {
+    const f = nativeFixture(); const error = new Error("marker-outer-rejection");
+    f.root.transaction = async (cb: any) => { f.events.push("begin"); await cb(f.tx); throw error; };
+    await expect(requestNativeQuestionRunCancellation(f.root, f.card, { kind: "issue_terminal", issueStatus: "done" }, { lifecycleFence: true })).rejects.toBe(error);
+    expect(f.native.marker).not.toBeNull(); // eager recording, NOT rollback
+    expect(sink.live).toEqual([]); expect(f.events).not.toContain("outer-resolve");
+  });
+  it("owned native marker propagates fence rejection before any read", async () => {
+    const f = nativeFixture(); const error = new Error("owned-marker-fence"); f.tx.execute = async () => { throw error; };
+    await expect(requestNativeQuestionRunCancellation(f.root, f.card, { kind: "issue_terminal", issueStatus: "done" }, { lifecycleFence: true })).rejects.toBe(error);
+    expect(f.events).toEqual(["begin"]); expect(f.native.marker).toBeNull();
+  });
   it("fences native cancellation lookup without writing a marker", async () => {
     const f = nativeFixture();
     await expect(nativeQuestionRunToCancelInTransaction(f.tx, f.card)).resolves.toBe("run-1");

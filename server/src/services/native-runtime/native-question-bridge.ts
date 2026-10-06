@@ -337,10 +337,18 @@ export async function nativeQuestionRunToCancel(
  * strand a native run after its question has expired.
  */
 export async function requestNativeQuestionRunCancellation(
-  db: NativeQuestionMutationDb,
+  db: NativeQuestionMutationDb & Partial<Pick<Db, "transaction">>,
   interaction: NativeQuestionAuthorizationIdentity,
   cause: NativeQuestionCancellationCause,
+  options: { lifecycleFence?: boolean } = {},
 ): Promise<string | null> {
+  if (options.lifecycleFence) {
+    const identity = captureNativeQuestionAuthorizationIdentity(interaction);
+    const capturedCause = captureNativeQuestionCancellationCause(cause);
+    if (!identity.companyId) throw unprocessable("Lifecycle native cancellation requires companyId");
+    if (typeof db.transaction !== "function") throw unprocessable("Lifecycle native cancellation requires a root-owned transaction");
+    return db.transaction((tx) => requestNativeQuestionRunCancellationInTransaction(tx, identity, capturedCause));
+  }
   const run = await authorizedNativeRun(db, interaction);
   if (!run || !["queued", "running"].includes(run.status)) return null;
   const marker = JSON.stringify({
@@ -403,15 +411,19 @@ export async function nativeQuestionRunToCancelInTransaction(
   return run && ["queued", "running"].includes(run.status) ? run.id : null;
 }
 
+function captureNativeQuestionCancellationCause(cause: NativeQuestionCancellationCause): NativeQuestionCancellationCause {
+  return cause.kind === "issue_terminal"
+    ? { kind: cause.kind, issueStatus: cause.issueStatus }
+    : { kind: cause.kind, interactionId: cause.interactionId };
+}
+
 export async function requestNativeQuestionRunCancellationInTransaction(
   tx: DbTransaction,
   interaction: NativeQuestionAuthorizationIdentity,
   cause: NativeQuestionCancellationCause,
 ): Promise<string | null> {
   const identity = captureNativeQuestionAuthorizationIdentity(interaction);
-  const capturedCause: NativeQuestionCancellationCause = cause.kind === "issue_terminal"
-    ? { kind: cause.kind, issueStatus: cause.issueStatus }
-    : { kind: cause.kind, interactionId: cause.interactionId };
+  const capturedCause = captureNativeQuestionCancellationCause(cause);
   if (!identity.companyId) throw unprocessable("Lifecycle native cancellation requires companyId");
   await acquireIssueLifecycleFenceInTransaction(tx, identity.companyId);
   return requestNativeQuestionRunCancellation(tx, identity, capturedCause);
