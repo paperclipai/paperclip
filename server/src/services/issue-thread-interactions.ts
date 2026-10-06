@@ -246,6 +246,46 @@ export async function withdrawInteractionInTransaction(
   );
 }
 
+function captureLifecycleQuestionAnswer(
+  issue: { id: string; companyId: string },
+  input: RespondIssueThreadInteraction,
+  actor: InteractionActor,
+) {
+  const capturedIssue = { id: issue.id, companyId: issue.companyId };
+  if (!capturedIssue.companyId) throw unprocessable("Lifecycle answers require companyId");
+  const capturedInput = { answers: structuredClone(input.answers), summaryMarkdown: input.summaryMarkdown };
+  const restriction = actor.resolverPolicyRestriction;
+  const excludedActor = typeof restriction === "object" ? restriction?.excludedActor : undefined;
+  const capturedActor: InteractionActor = {
+    identityContextId: actor.identityContextId, agentId: actor.agentId,
+    runId: actor.runId, userId: actor.userId, systemId: actor.systemId,
+    resolverPolicyRestriction: restriction == null || typeof restriction === "string" ? restriction : {
+      policy: restriction.policy,
+      source: restriction.source,
+      excludedActor: excludedActor == null ? excludedActor : {
+        type: excludedActor.type, id: excludedActor.id,
+      },
+    },
+  };
+  return { issue: capturedIssue, input: capturedInput, actor: capturedActor };
+}
+
+/** Dark owned answer boundary. Requires actual root DB, never an existing tx
+ * under earlier locks. Caller owns postcommit delivery dispatch/touch/telemetry.
+ * Transaction resolution is not provider delivery or authenticated authority. */
+export async function answerQuestionsWithLifecycleFence(
+  rootDb: Db,
+  issue: { id: string; companyId: string },
+  interactionId: string,
+  input: RespondIssueThreadInteraction,
+  actor: InteractionActor,
+) {
+  const captured = captureLifecycleQuestionAnswer(issue, input, actor);
+  return rootDb.transaction(tx => answerQuestionsInTransaction(
+    tx as unknown as LifecycleTransaction, captured.issue, interactionId, captured.input, captured.actor,
+  ));
+}
+
 /** Dark supplied question-answer participant. Root caller owns commit, delivery
  * dispatch, touch and telemetry. No arbitrary hooks or production opt-in. */
 export async function answerQuestionsInTransaction(
@@ -5104,23 +5144,7 @@ export function issueThreadInteractionService(
         if (!issue.companyId || Object.keys(mutationOptions).length) {
           throw unprocessable("Lifecycle answers require companyId and do not support arbitrary hooks");
         }
-        issue = { id: issue.id, companyId: issue.companyId };
-        input = { answers: structuredClone(input.answers), summaryMarkdown: input.summaryMarkdown };
-        // Capture effective audience fields, including inherited/non-enumerable
-        // identities. structuredClone would silently drop narrowing restrictions.
-        const restriction = actor.resolverPolicyRestriction;
-        const excludedActor = typeof restriction === "object" ? restriction?.excludedActor : undefined;
-        actor = {
-          identityContextId: actor.identityContextId, agentId: actor.agentId,
-          runId: actor.runId, userId: actor.userId, systemId: actor.systemId,
-          resolverPolicyRestriction: restriction == null || typeof restriction === "string" ? restriction : {
-            policy: restriction.policy,
-            source: restriction.source,
-            excludedActor: excludedActor == null ? excludedActor : {
-              type: excludedActor.type, id: excludedActor.id,
-            },
-          },
-        };
+        ({ issue, input, actor } = captureLifecycleQuestionAnswer(issue, input, actor));
         await acquireIssueLifecycleFenceInTransaction(suppliedTx, issue.companyId);
         const [authoritativeIssue] = await suppliedTx.select().from(issues).where(and(
           eq(issues.id, issue.id), eq(issues.companyId, issue.companyId),

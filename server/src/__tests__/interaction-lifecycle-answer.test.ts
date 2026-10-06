@@ -28,6 +28,63 @@ function fixture(config: { status?: string; issueStatus?: string; insertError?: 
 }
 const invoke = (f: ReturnType<typeof fixture>, input: any = { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }] }, actor: any = { userId: "user-1" }) => (service as any).answerQuestionsInTransaction(f.tx, { id: "issue-1", companyId: "company-1" }, "card-1", input, actor);
 describe("dark supplied canonical question answer recording", () => {
+  it("starts owned answer before reads and captures input before deferred transaction startup", async () => {
+    const f = fixture(); let start!: () => void; let commit!: () => void;
+    const startup = new Promise<void>(r => { start = r; });
+    const committed = new Promise<void>(r => { commit = r; });
+    const root: any = { select: () => { throw new Error("root-read"); }, transaction: async (callback: any) => {
+      f.events.push("owned-tx"); await startup; const result = await callback(f.tx); await committed; return result;
+    } };
+    const issue = { id: "issue-1", companyId: "company-1" };
+    const input = { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }], summaryMarkdown: "Original" };
+    const actor = { userId: "user-1" };
+    const pending = (service as any).answerQuestionsWithLifecycleFence(root, issue, "card-1", input, actor);
+    let returned = false; const observed = pending.then((row: any) => { returned = true; return row; });
+    void observed.catch(() => {});
+    try {
+      expect(f.events).toEqual(["owned-tx"]);
+      issue.id = "other-issue"; issue.companyId = "other-company"; input.answers[0].otherText = "After"; actor.userId = "other-user";
+      start(); f.release();
+      await vi.waitFor(() => expect(f.deliveries).toHaveLength(1));
+      expect(returned).toBe(false); commit(); const row = await observed;
+      expect(row.result.answers[0].otherText).toBe("Before"); expect(row.resolvedByUserId).toBe("user-1");
+      expect(f.queries[0].params).toEqual(["issue-1", "company-1"]);
+    } finally {
+      start(); f.release(); commit(); await Promise.allSettled([observed]);
+    }
+  });
+  it("keeps inherited audience veto across owned deferred startup", async () => {
+    const f = fixture(); let start!: () => void;
+    const startup = new Promise<void>(r => { start = r; });
+    const root: any = { transaction: async (callback: any) => { await startup; return callback(f.tx); } };
+    const restriction = Object.create({ policy: "not_creator", source: "issue_review", excludedActor: { type: "user", id: "user-1" } });
+    const actor = { userId: "user-1", resolverPolicyRestriction: restriction };
+    const pending = (service as any).answerQuestionsWithLifecycleFence(root, { id: "issue-1", companyId: "company-1" }, "card-1", { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }] }, actor);
+    const rejected = expect(pending).rejects.toMatchObject({ status: 403 });
+    restriction.policy = "anyone"; restriction.excludedActor = { type: "user", id: "other-user" };
+    start(); f.release(); await rejected;
+    expect(f.card.status).toBe("pending"); expect(f.deliveries).toEqual([]); expect(f.events).not.toContain("card-write");
+  });
+  it("does not return an owned receipt when outer commit promise rejects (not rollback)", async () => {
+    const f = fixture(); f.release(); const error = new Error("outer-commit");
+    const root: any = { transaction: async (callback: any) => { await callback(f.tx); throw error; } };
+    await expect((service as any).answerQuestionsWithLifecycleFence(root, { id: "issue-1", companyId: "company-1" }, "card-1", { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }] }, { userId: "user-1" })).rejects.toBe(error);
+    expect(f.card.status).toBe("answered"); expect(f.deliveries).toHaveLength(1);
+  });
+  it("propagates owned delivery rejection without successful return", async () => {
+    const error = new Error("delivery-store"); const f = fixture({ insertError: error }); f.release();
+    const root: any = { transaction: async (callback: any) => callback(f.tx) };
+    await expect((service as any).answerQuestionsWithLifecycleFence(root, { id: "issue-1", companyId: "company-1" }, "card-1", { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }] }, { userId: "user-1" })).rejects.toBe(error);
+    expect(f.card.status).toBe("answered"); expect(f.deliveries).toEqual([]);
+  });
+  it("denies missing company and getter failure before owned startup", async () => {
+    const f = fixture(); const transaction = vi.fn(); const root: any = { transaction };
+    await expect((service as any).answerQuestionsWithLifecycleFence(root, { id: "issue-1", companyId: "" }, "card-1", { answers: [] }, {})).rejects.toMatchObject({ status: 422 });
+    const error = new Error("audience-getter");
+    const actor = Object.defineProperty({ userId: "user-1" }, "resolverPolicyRestriction", { get: () => { throw error; } });
+    await expect((service as any).answerQuestionsWithLifecycleFence(root, { id: "issue-1", companyId: "company-1" }, "card-1", { answers: [] }, actor)).rejects.toBe(error);
+    expect(transaction).not.toHaveBeenCalled(); expect(f.events).toEqual([]);
+  });
   it("waits for fence and captures nested answer and actor before suspension", async () => {
     const f = fixture(); const input = { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }], summaryMarkdown: "Original" }; const actor = { userId: "user-1" };
     const pending = invoke(f, input, actor); expect(f.events).toEqual(["fence"]);
