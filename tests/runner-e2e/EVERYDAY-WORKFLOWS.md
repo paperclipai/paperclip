@@ -40,7 +40,9 @@ See [controlled recovery tests](../runner-recovery/README.md).
 The local matrix has fourteen cases on native Codex `gpt-5.6-sol`, native ACPX Claude
 `claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 42 cells. The two core profiles
 also declare build/revise, delegation, controller-restart, and skill-creation cases
-on Daytona: eight cells. Remote runner-process killing is not supported. For remote controller
+on Daytona: eight cells. OpenCode adds only local hiring/reuse and delegation,
+for 52 cells total. Hiring/reuse and delegation have one attempt and a
+1,000-cent company and lead-agent hard stop. Remote runner-process killing is not supported. For remote controller
 restart, a verified first download supplies the persistence checkpoint; the
 controller is interrupted during a subsequent revision with another queued
 requirement.

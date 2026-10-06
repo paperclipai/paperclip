@@ -686,3 +686,10 @@ requirements, and advisory warnings for missing or external references. New
 upstream skills require reviewed selection; removed or deselected skills remain
 installed. Editing starts with an independent copy. Write-back and PR publication
 are a later milestone; exact path and commit provenance provide their base.
+
+### Experimental connection routing
+
+A virtual AI connection can rotate new task/agent allocations through an
+authorized pool while preserving session affinity. Admission, credentials and
+durable recovery remain host responsibilities; policy can be supplied by an
+opt-in plugin. See [the experimental contract](connections/AI-CONNECTION-ROUTERS.md).

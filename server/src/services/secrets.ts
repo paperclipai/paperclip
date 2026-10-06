@@ -2397,6 +2397,8 @@ export function secretService(db: Db | DbTransaction) {
       // update matches the latest version, so a concurrent rotation between the
       // read and the write cannot pass. A mismatch throws a 409 conflict.
       expectedLatestVersion?: number;
+      /** Internal authenticated refresh write-back only; never accepted by HTTP schemas. */
+      preserveAiSessionEpoch?: boolean;
     },
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
@@ -2534,6 +2536,7 @@ export function secretService(db: Db | DbTransaction) {
           .update(companySecrets)
           .set({
             latestVersion: nextVersion,
+            aiSessionEpoch: input.preserveAiSessionEpoch ? secret.aiSessionEpoch : sql`${companySecrets.aiSessionEpoch} + 1`,
             externalRef: prepared.externalRef,
             providerConfigId,
             lastRotatedAt: new Date(),
@@ -4589,6 +4592,8 @@ export function secretService(db: Db | DbTransaction) {
         providerVersionRef?: string | null;
         providerConfigId?: string | null;
         expectedLatestVersion?: number;
+      /** Internal authenticated refresh write-back only; never accepted by HTTP schemas. */
+      preserveAiSessionEpoch?: boolean;
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {

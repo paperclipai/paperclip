@@ -50,6 +50,7 @@ import {
 } from "./terminal-session-failure.js";
 export type { AcpxTerminalSessionFailure } from "./terminal-session-failure.js";
 import type { WorkspaceRestoreFailureCode, WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
+import type { WorkspaceRestoreDiagnostic } from "../workspace-restore-diagnostics.js";
 import {
   classifyWorkspaceRestoreFailure,
   describeWorkspaceRestoreFailure,
@@ -4077,7 +4078,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // status stay exactly what the turn produced — this is a signal, not an
       // outcome change.
       let workspaceRestoreFailureField:
-        | { workspaceRestoreFailure: WorkspaceRestoreFailureCode }
+        | { workspaceRestoreFailure: WorkspaceRestoreFailureCode; workspaceRestoreDiagnostic?: WorkspaceRestoreDiagnostic }
         | Record<string, never> = {};
       // The one settlement step name whose error can be the same workspace-
       // restore failure the adapter teardown closure already classifies (a
@@ -5410,7 +5411,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             await withAdapterExecutionPhase(ctx, "workspace_restore", () => runRuntimeSpan("sandbox.syncBack", async () => {
               const restoreOutcome = await syncBackManagedHome(prepared);
               if (!restoreOutcome.ok) {
-                workspaceRestoreFailureField = { workspaceRestoreFailure: restoreOutcome.code };
+                workspaceRestoreFailureField = {
+                  workspaceRestoreFailure: restoreOutcome.code,
+                  ...(restoreOutcome.diagnostic ? { workspaceRestoreDiagnostic: restoreOutcome.diagnostic } : {}),
+                };
               }
             }));
           }

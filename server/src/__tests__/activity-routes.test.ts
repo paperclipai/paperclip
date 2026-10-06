@@ -277,6 +277,26 @@ describe.sequential("activity routes", () => {
     expect(mockActivityService.create).not.toHaveBeenCalled();
   });
 
+  it.each([null, { id: "issue-uuid-1", companyId: "company-2" }])(
+    "does not start run reads or retries for a missing or cross-company task", async (issue) => {
+      mockIssueService.getByIdentifier.mockResolvedValue(issue);
+      const app = await createApp();
+      const res = await request(app).get("/api/issues/TEST-1/runs");
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: "Issue not found" });
+      expect(mockActivityService.runsForIssue).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not start run reads or retries when task read authorization is denied", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({ id: "issue-uuid-1", companyId: "company-1" });
+    mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "denied", explanation: "Denied by test policy." });
+    const app = await createApp();
+    const res = await request(app).get("/api/issues/TEST-1/runs");
+    expect(res.status).toBe(403);
+    expect(mockActivityService.runsForIssue).not.toHaveBeenCalled();
+  });
+
   it("returns 200 [] (not 404) when listing issues for another company's run, preserving API contract and the cross-tenant oracle", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-2",

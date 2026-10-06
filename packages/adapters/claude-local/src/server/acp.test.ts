@@ -1065,10 +1065,13 @@ describe("claude_local ACP lane", () => {
       // Only a fixed diagnostic may contain the errno, never the raw error.
       expect(result.exitCode).toBe(0);
       expect(result.resultJson?.workspaceRestoreFailure).toBe("restore_permission_denied");
+      expect(result.resultJson?.workspaceRestoreDiagnostic).toEqual({
+        phase: "workspace", step: "directory_merge", errorCode: "EACCES",
+      });
       const allLogs = loggedLines.join("");
       expect(allLogs).not.toContain("SENTINEL-HOST-PATH-marker");
       expect(allLogs).not.toContain(localCwd);
-      const diagnostic = '[paperclip] Workspace restore diagnostic: {"phase":"workspace","errorCode":"EACCES"}\n';
+      const diagnostic = '[paperclip] Workspace restore diagnostic: {"phase":"workspace","step":"directory_merge","errorCode":"EACCES"}\n';
       expect(loggedLines.filter((line) => line.includes("Workspace restore diagnostic:"))).toEqual([diagnostic]);
       expect(loggedLines.filter((line) => line !== diagnostic).join("")).not.toContain("EACCES");
       expect(allLogs).toContain("permission denied");

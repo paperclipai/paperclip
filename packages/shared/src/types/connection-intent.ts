@@ -62,6 +62,7 @@ export type ConnectionIntentSetupConnection = Pick<ToolConnection, "id" | "appli
 export interface ConnectionIntentSetupOptions {
   /** Resume this request's saved AgentMail account after a partial setup. */
   emailSetup?: { credentialConnectionId: string | null; readyConnectionId: string | null };
+  canGrantAccess?: boolean;
   aiConnection?: import("../ai-connections.js").AiConnectionBinding;
   /** Legacy authentication stays unchanged until the normal validated agent update succeeds. */
   aiConnectionRequiresAdoption?: boolean;

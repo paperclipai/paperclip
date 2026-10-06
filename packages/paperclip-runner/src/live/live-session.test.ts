@@ -897,7 +897,7 @@ describe("Capability live runnerd and Codex session", () => {
     expect(session.snapshot().config).toMatchObject({
       provider: "opencode",
       driver: "opencode_server",
-      providerVersion: "1.18.32",
+      providerVersion: "1.18.34",
       requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731",
     });
     await service.shutdown(session.id);

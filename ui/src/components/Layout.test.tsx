@@ -1456,9 +1456,15 @@ describe("Layout mobile keyboard handling", () => {
     viewport.listeners.clear();
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
     Object.defineProperty(window, "visualViewport", { configurable: true, value: viewport });
+    // The nav tracker clamps scroll positions to the document's scroll range,
+    // which jsdom reports as empty.
+    Object.defineProperty(document.documentElement, "scrollHeight", { configurable: true, value: 3000 });
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
   });
 
   afterEach(() => {
+    delete (document.documentElement as { scrollHeight?: number }).scrollHeight;
+    delete (document.documentElement as { clientHeight?: number }).clientHeight;
     container.remove();
     document.body.innerHTML = "";
     document.documentElement.classList.remove("keyboard-open");

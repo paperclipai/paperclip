@@ -10,6 +10,12 @@ import {
 const agentId = "11111111-1111-4111-8111-111111111111";
 
 describe("connection intent contracts", () => {
+  it("accepts bounded exact access requests without caller-supplied agent identity", () => {
+    expect(connectionRequestInputSchema.parse({ service: "composio", connectionId: agentId, toolNames: ["COMPOSIO_SEARCH_TOOLS"] })).toMatchObject({ connectionId: agentId });
+    expect(connectionRequestInputSchema.safeParse({ service: "composio", toolNames: ["read", "read"] }).success).toBe(false);
+    expect(connectionRequestInputSchema.safeParse({ service: "composio", toolNames: Array.from({ length: 21 }, (_, i) => `tool-${i}`) }).success).toBe(false);
+    expect(connectionRequestInputSchema.safeParse({ service: "composio", agentId }).success).toBe(false);
+  });
   it("accepts the versioned server-authored payload and safe phases", () => {
     expect(connectionIntentPayloadSchema.parse({
       version: 1,
@@ -43,6 +49,18 @@ describe("connection intent contracts", () => {
       connectionId: "22222222-2222-4222-8222-222222222222",
     }).outcome).toBe("connected");
     expect(connectionIntentResultSchema.parse({ version: 1, outcome: "declined" }).outcome).toBe("declined");
+  });
+
+  it("bounds the server-authored grant and rejects duplicate or unreviewable tools", () => {
+    const tool = { catalogEntryId: agentId, toolName: "search", versionHash: "v1", permission: "allowed" };
+    const base = { version: 1, serviceSlug: "composio", serviceName: "Composio", requestingAgentId: agentId,
+      requestingAgentName: "CEO", phase: "requested" };
+    const payload = (tools: unknown[]) => ({ ...base, accessRequest: { connectionId: agentId, connectionName: "Account", tools } });
+    expect(connectionIntentPayloadSchema.safeParse(payload([tool])).success).toBe(true);
+    expect(connectionIntentPayloadSchema.safeParse(payload([])).success).toBe(false);
+    expect(connectionIntentPayloadSchema.safeParse(payload([tool, tool])).success).toBe(false);
+    expect(connectionIntentPayloadSchema.safeParse(payload([{ ...tool, versionHash: "" }])).success).toBe(false);
+    expect(connectionIntentPayloadSchema.safeParse(payload([{ ...tool, permission: "allow_all" }])).success).toBe(false);
   });
 
   it("keeps generic interaction creation closed to the server-owned kind", () => {

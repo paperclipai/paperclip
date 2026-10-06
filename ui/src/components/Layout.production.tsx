@@ -46,6 +46,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
+import { useMobileNavVisibility } from "../hooks/useMobileNavVisibility";
 import { healthApi } from "../api/health";
 import {
   resolveArchivedCompanyBounce,
@@ -173,17 +174,15 @@ export function Layout() {
   // app nav collapses to its rail throughout the Skills Store section (PAP-10879).
   const isSkillsRoute = isSkillsStoreRoute(location.pathname, companyPrefix);
   const onboardingTriggered = useRef(false);
-  const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
   const mainContentRef = useRef<HTMLElement | null>(null);
   const scrollMemory = useRef(new NavigationScrollMemory());
   const activeScrollKey = useRef<string>(location.key);
-  const [mobileNavVisible, setMobileNavVisible] = useState(true);
   // iOS reports the software keyboard only through visualViewport, so measure
   // it and lift the docked composer by hand.
   const keyboardInset = useKeyboardInset(isMobile);
   const keyboardOpen = keyboardInset > 0;
-  const keyboardOpenRef = useRef(keyboardOpen);
+  const mobileNavVisible = useMobileNavVisibility(isMobile, location.pathname, keyboardOpen);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
@@ -475,15 +474,6 @@ export function Layout() {
     onGoToInbox: () => navigate("/inbox"),
   });
 
-  useEffect(() => {
-    if (!isMobile) {
-      setMobileNavVisible(true);
-      return;
-    }
-    lastMainScrollTop.current = 0;
-    setMobileNavVisible(true);
-  }, [isMobile]);
-
   // Swipe gesture to open/close sidebar on mobile
   useEffect(() => {
     if (!isMobile) return;
@@ -528,55 +518,6 @@ export function Layout() {
       document.removeEventListener("touchend", onTouchEnd);
     };
   }, [isMobile, sidebarOpen, setSidebarOpen]);
-
-  useEffect(() => {
-    keyboardOpenRef.current = keyboardOpen;
-  }, [keyboardOpen]);
-
-  const updateMobileNavVisibility = useCallback((currentTop: number) => {
-    // iOS scrolls the page while it animates the keyboard in and out. Toggling
-    // the nav there would slide the composer offset by a nav height in the
-    // middle of that animation.
-    // Keep recording the position while the nav is frozen. Without it the
-    // first scroll after the keyboard closes measures its delta against a
-    // stale position and reads the direction backwards.
-    if (keyboardOpenRef.current) {
-      lastMainScrollTop.current = currentTop;
-      return;
-    }
-    const delta = currentTop - lastMainScrollTop.current;
-
-    if (currentTop <= 24) {
-      setMobileNavVisible(true);
-    } else if (delta > 8) {
-      setMobileNavVisible(false);
-    } else if (delta < -8) {
-      setMobileNavVisible(true);
-    }
-
-    lastMainScrollTop.current = currentTop;
-  }, []);
-
-  useEffect(() => {
-    if (!isMobile) {
-      setMobileNavVisible(true);
-      lastMainScrollTop.current = 0;
-      return;
-    }
-
-    const onScroll = () => {
-      updateMobileNavVisibility(
-        window.scrollY || document.documentElement.scrollTop || 0,
-      );
-    };
-
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-    };
-  }, [isMobile, updateMobileNavVisibility]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -767,6 +708,12 @@ export function Layout() {
                               "calc(var(--sz-keyboard-inset) + var(--sz-calc-14))",
                           }
                         : null),
+                      "--mobile-nav-motion-duration": mobileNavVisible
+                          ? "var(--motion-mobile-nav-enter)"
+                          : "var(--motion-mobile-nav-exit)",
+                      "--mobile-nav-motion-ease": mobileNavVisible
+                          ? "var(--motion-ease-out-expo)"
+                          : "var(--motion-ease-standard)",
                       } as CSSProperties)
                     : undefined
                 }
@@ -776,7 +723,7 @@ export function Layout() {
                   // changes (e.g. switching skill-detail tabs) don't widen/shift
                   // when the vertical scrollbar appears or disappears (PAP-10907).
                   isMobile
-                    ? isTaskDetailRoute && mobileNavVisible
+                    ? isTaskDetailRoute
                       ? "overflow-visible pb-(--tc-composer-visible-nav-offset)"
                       : "overflow-visible pb-(--sz-calc-14)"
                     : "overflow-auto [scrollbar-gutter:stable]",

@@ -34,6 +34,7 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -592,19 +593,21 @@ export function projectService(db: Db) {
     // together (goalIds wins resolution, mirroring the update path).
     const legacyGoalId = ids?.[0] ?? null;
 
-    const row = await db
-      .insert(projects)
-      .values({ ...projectData, goalId: legacyGoalId, companyId })
-      .returning()
-      .then((rows) => rows[0]);
-
-    if (ids && ids.length > 0) {
-      await syncGoalLinks(db, row.id, companyId, ids);
-    }
-
-    const [withGoals] = await attachGoals(db, [row]);
-    const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
-    return enriched!;
+    return db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const row = await tx
+        .insert(projects)
+        .values({ ...projectData, goalId: legacyGoalId, companyId })
+        .returning()
+        .then((rows) => rows[0]);
+      if (ids && ids.length > 0) {
+        await syncGoalLinks(txDb, row.id, companyId, ids);
+      }
+      await recordResourceCreationEvent(txDb, companyId, "project", row.id);
+      const [withGoals] = await attachGoals(txDb, [row]);
+      const [enriched] = withGoals ? await attachWorkspaces(txDb, [withGoals]) : [];
+      return enriched!;
+    });
   };
 
   const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {

@@ -7,6 +7,7 @@ import { mergeComposerRunSettings, type ComposerRunSettings } from "@/components
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
+import { trackRecentProject } from "@/lib/recent-projects";
 import { Settings as ChatSettings } from "lucide-react";
 import { agentDetailHref } from "./agent-detail-navigation";
 import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
@@ -14,7 +15,7 @@ import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTa
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { EmailThreadProvider } from "../components/EmailMessageCard";
 import { EmailTaskActivity } from "../components/EmailTaskActivity";
-import { TaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
+import { TaskChatScrollNavigation, taskChatScrollEntry } from "@/components/task-chat/scroll-navigation";
 import {
   memo,
   useCallback,
@@ -300,7 +301,7 @@ import {
   buildAnsweredQuestionsDeliveryText,
   buildIssueThreadInteractionSummary,
 } from "../lib/issue-thread-interactions";
-import { resolveIssueDocumentDeepLink } from "../lib/issue-document-deep-link";
+import { resolveIssueDocumentDeepLink, sameIssueDocumentHash } from "../lib/issue-document-deep-link";
 import {
   buildIssueSiblingNavigation,
   shouldRenderRichSubIssuesSection,
@@ -2414,9 +2415,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       ) : (
         <TaskChatScrollNavigation.Provider
           value={{
-            key: scrollLocation.key,
+            ...taskChatScrollEntry(scrollLocation),
             restore: scrollNavigationType === "POP",
-            hash: scrollLocation.hash,
           }}
         >
           <EmailThreadProvider companyId={companyId} issueId={issueId}>
@@ -2430,15 +2430,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             initialHistoryPending={!!issueId && (
               initialHistoryPending ||
               commentsInitialLoading ||
-              // Saved replies and the description can render while supporting
-              // history loads. Only an otherwise empty thread needs that data
-              // before deciding whether it has anything to show.
-              ((classicTaskInterfaceEnabled || (commentsForThread.length === 0 && !issueBrief?.description)) && (
-                initialMetadataPending ||
-                activityPending ||
-                linkedRunsPending ||
-                !runtimeSelectionKnown
-              )))
+              // These responses add rows or change the composer takeover.
+              // Coordinate the first reveal so each response does not move a
+              // conversation the reader has already started looking at.
+              initialMetadataPending ||
+              activityPending ||
+              linkedRunsPending ||
+              !runtimeSelectionKnown)
             }
             initialHistoryError={
               initialHistoryError ||
@@ -4164,7 +4162,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       changes: _changes,
       blockedByIssueIds: _blockedByIssueIds,
       ...nextIssue
-    }) => {
+    }, data) => {
+      if (Object.prototype.hasOwnProperty.call(data, "projectId")) {
+        trackRecentProject(nextIssue.projectId ?? "", nextIssue.companyId);
+      }
       const issueRefs = new Set<string>([issueId!, nextIssue.id]);
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
       mergeIssueResponseIntoCaches(issueRefs, nextIssue);
@@ -6076,12 +6077,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [clearPanelMaximizeRequest],
   );
 
-  // React Router does not emit a location update when the user clicks a link
-  // whose hash is already current. Capture that repeated intent so a manually
-  // collapsed document reopens and scrolls back into view.
+  // Keep first and repeated document clicks inside the mounted task and its
+  // query cache. Native anchors reset thread scroll or reload alias URLs.
   useEffect(() => {
-    const handleSameHashDocumentClick = (event: MouseEvent) => {
+    const handleDocumentClick = (event: MouseEvent) => {
       if (
+        event.defaultPrevented ||
         event.button !== 0 ||
         event.metaKey ||
         event.ctrlKey ||
@@ -6092,31 +6093,46 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       const target = event.target;
       if (!(target instanceof Element)) return;
       const anchor = target.closest<HTMLAnchorElement>("a[href]");
-      if (!anchor) return;
+      if (!anchor || anchor.hasAttribute("download") || (anchor.target && anchor.target !== "_self")) return;
       const rawHref = anchor.getAttribute("href");
       if (!rawHref) return;
 
-      let targetUrl: URL;
-      try {
-        targetUrl = new URL(rawHref, window.location.href);
-      } catch {
-        return;
+      const currentUrl = new URL(`${location.pathname}${location.search}${location.hash}`, window.location.origin);
+      const hash = sameIssueDocumentHash(rawHref, currentUrl, [issue?.id, issue?.identifier, issueId].filter((id): id is string => !!id));
+      if (!hash) return;
+      const route = resolveIssueDocumentDeepLink(hash);
+      if (route?.kind === "properties-pane" && (!taskInterfaceSettingsLoaded || !taskChatShellEnabled)) return;
+      event.preventDefault();
+      // Let link handlers close any hovered task preview. Router links and
+      // popover triggers honor defaultPrevented and skip their navigation.
+      if (hash === location.hash) {
+        routeIssueDocumentDeepLink(hash);
+      } else {
+        navigate(`${location.pathname}${location.search}${hash}`, {
+          preventScrollReset: true,
+          state: {
+            ...(location.state && typeof location.state === "object" ? location.state : {}),
+            taskDocumentScrollEntry: taskChatScrollEntry(location),
+          },
+        });
       }
-      const sameIssue =
-        rawHref.startsWith("#") ||
-        (targetUrl.pathname === location.pathname &&
-          targetUrl.search === location.search);
-      if (!sameIssue || targetUrl.hash !== location.hash) return;
-      routeIssueDocumentDeepLink(targetUrl.hash);
     };
 
-    document.addEventListener("click", handleSameHashDocumentClick, true);
+    document.addEventListener("click", handleDocumentClick, true);
     return () =>
-      document.removeEventListener("click", handleSameHashDocumentClick, true);
+      document.removeEventListener("click", handleDocumentClick, true);
   }, [
+    issue?.id,
+    issue?.identifier,
+    issueId,
+    navigate,
     location.hash,
+    location.key,
     location.pathname,
     location.search,
+    location.state,
+    taskChatShellEnabled,
+    taskInterfaceSettingsLoaded,
     routeIssueDocumentDeepLink,
   ]);
 
@@ -8262,7 +8278,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               showCloseButton={!taskChatShellEnabled}
               className={cn(
                 taskChatShellEnabled
-                  ? "h-(--sz-85dvh) max-h-(--sz-85dvh) w-full max-w-none gap-0 p-0 pb-(--sz-safe-bottom)"
+                  ? "mobile-task-side-panel inset-0 h-dvh max-h-dvh w-full max-w-none gap-0 border-0 p-0 pt-(--sz-safe-top) pb-(--sz-safe-bottom)"
                   : documentDeepLink?.documentKey === "plan"
                     ? "inset-0 h-dvh w-screen max-w-none gap-0 border-0 p-0 sm:max-w-none"
                     : "max-h-(--sz-85dvh) pb-(--sz-safe-bottom)",
@@ -8295,6 +8311,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     onAddSubIssue={openNewSubIssue}
                     onUpdate={(data) => updateIssue.mutate(data)}
                     inline
+                    mobile
                     hasActiveRun={resolvedHasActiveRun}
                     externalObjects={
                       externalObjectsState.isEnabled

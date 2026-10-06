@@ -2052,6 +2052,41 @@
       "when": 1790891286527,
       "tag": "0294_chilly_marvel_apes",
       "breakpoints": true
+    },
+    {
+      "idx": 295,
+      "version": "7",
+      "when": 1790994114760,
+      "tag": "0295_public_captain_cross",
+      "breakpoints": true
+    },
+    {
+      "idx": 296,
+      "version": "7",
+      "when": 1791028244412,
+      "tag": "0296_stiff_thaddeus_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 297,
+      "version": "7",
+      "when": 1791233758328,
+      "tag": "0297_foamy_swordsman",
+      "breakpoints": true
+    },
+    {
+      "idx": 298,
+      "version": "7",
+      "when": 1791241297512,
+      "tag": "0298_connection_agent_instructions",
+      "breakpoints": true
+    },
+    {
+      "idx": 299,
+      "version": "7",
+      "when": 1791248126600,
+      "tag": "0299_absent_ser_duncan",
+      "breakpoints": true
     }
   ]
 }

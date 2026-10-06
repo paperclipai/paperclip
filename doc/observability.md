@@ -443,6 +443,30 @@ values become `unknown`. A signal such as `SIGKILL` does not establish who sent
 it or prove an out-of-memory kill. These fields do not change error grouping
 or run outcomes, and do not include process output or adapter result payloads.
 
+For a native Codex turn that ends with a structured HTTP 400 model/ChatGPT
+compatibility rejection, the run records `native_provider_model_rejected`
+and a fixed message that asks the user to select a supported model or connection.
+This requires a committed runner terminal for the selected model and the exact
+failed turn. Agent text, tool output, unrelated turns, and unknown provider
+errors do not create this classification. The provider diagnostic contains only
+`provider=codex`, `category=model_auth_incompatible`, `status=400`, and
+`authMode=chatgpt`. It excludes the model name and provider response. This does
+not change credentials, select a fallback model, replay a turn, or alter the
+accepted semantic result or cleanup. The existing configuration-blocker recovery
+path requires a configuration change instead of automatically retrying the same
+model and connection. Native finalization also derives this evidence from the
+committed event and the run's pinned provider configuration before it can queue
+a failed-result retry. This survives a controller restart before the adapter
+diagnostic is saved. Invalid bindings, missing evidence, or a mismatched event
+hash do not grant this classification. A current worker's task is blocked for a
+configuration change. A pending review instead keeps its original decision and
+status version, releases execution, and creates no automatic recovery action.
+After repairing the configuration, explicitly retry the reviewer to resolve the
+same pending review. The Board's exact failed-run Retry accepts this classified
+native failure only while its saved review is still current and pending; caller
+payloads cannot select a different review. Dispatch checks that assignment again.
+Superseded or completed reviews retain their authority.
+
 An unconfirmed adapter Stop timeout has an event-local `adapter_stop` context:
 the run UUID, built-in adapter type, native/legacy runtime mode, configured
 wait duration, and whether abort was requested. Invalid identities become
@@ -503,6 +527,33 @@ includes `workspaceRestoreFailure` with one of the shared, path-free codes:
 or `restore_failed`. Unknown values are omitted. Workspace paths and arbitrary
 pre-restore result data are not included. A later successful run does not, by
 itself, establish that an earlier failed restore recovered the workspace files.
+
+When available, the saved `workspaceRestoreDiagnostic` adds the bounded fields
+`workspaceRestorePhase`, `workspaceRestoreStep`, `workspaceRestoreErrorCode`,
+`workspaceRestoreHttpStatus`, and `workspaceRestoreExitCode` to `run_execution`.
+The phase is `workspace` or `asset`. The failing step is one of `git_export`,
+`git_import`, `workspace_transfer`, `workspace_extract`, `directory_merge`,
+`git_integration`, `index_reset`, `git_ref_cleanup`, or `asset_restore`.
+Nested steps retain the most specific failing operation. Error codes come from
+the restore diagnostic allowlist, with unrecognized codes reported as `unknown`;
+HTTP statuses are integers from 400 through 599 and process exit codes are
+integers from 1 through 255. These fields accompany a known restore failure code
+only. They omit error messages, raw command lines, paths, process output, and arbitrary
+cause data. Git error wrappers preserve only these safe codes and numbers for
+diagnostics, without adding the original error as a cause.
+For `git_integration`, optional `workspaceRestoreGitCommand` identifies the fixed
+command family: `rev_parse`, `symbolic_ref`, `merge_base`, `merge_tree`,
+`commit_tree`, `update_ref`, or `log`. `workspaceRestoreGitFailureKind` is
+`merge_conflict`, `invalid_object`, `ref_conflict`, `permission_denied`, or
+`unknown`. A merge conflict requires an uninterrupted `merge-tree --write-tree`
+exit of 1 with a completed tree ID in stdout; exit 1 alone is ambiguous.
+Object and ref classifications require recognized Git diagnostics;
+permission denial requires an OS `EACCES` or `EPERM` code. Unrecognized or
+localized messages remain `unknown`. Up to 16 KiB of stderr is inspected only
+in memory; no arguments, stderr, paths, repository URLs, filenames, or ref names
+enter these fields. Handled probes and successful retries emit no diagnostic.
+This does not change
+restore behavior, retries, timeouts, or recovery policy.
 
 A caught directory-merge lock timeout also records `restoreLockOwnerState`
 (`alive`, `dead`, `unknown`, `missing`, or `invalid`), `restoreLockKnownLocalHolder`,

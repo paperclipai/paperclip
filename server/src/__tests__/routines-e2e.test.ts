@@ -238,6 +238,119 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     return { companyId, agentId, projectId, userId };
   }
 
+  function routineResourceRequests(app: express.Express, routineId: string, triggerId = routineId) {
+    const path = `/api/routines/${encodeURIComponent(routineId)}`;
+    const triggerPath = `/api/routine-triggers/${encodeURIComponent(triggerId)}`;
+    const nestedId = "12345678-1234-4234-8234-123456789abc";
+    return [
+      request(app).get(path),
+      request(app).get(`${path}/runs`),
+      request(app).get(`${path}/revisions`),
+      request(app).get(`${path}/description/annotations`),
+      request(app).get(`${path}/description/annotations/${nestedId}`),
+      request(app).post(`${path}/description/annotations`).send({
+        baseRevisionId: nestedId, baseRevisionNumber: 1, body: "Review this text",
+        selector: {
+          quote: { exact: "text" },
+          position: { normalizedStart: 0, normalizedEnd: 4, markdownStart: 0, markdownEnd: 4 },
+        },
+      }),
+      request(app).post(`${path}/description/annotations/${nestedId}/comments`).send({ body: "Review" }),
+      request(app).patch(`${path}/description/annotations/${nestedId}`).send({ status: "resolved" }),
+      request(app).patch(path).send({ title: "Updated routine" }),
+      request(app).post(`${path}/revisions/${nestedId}/restore`).send({}),
+      request(app).post(`${path}/triggers`).send({ kind: "api" }),
+      request(app).post(`${path}/run`).send({}),
+      request(app).patch(triggerPath).send({ enabled: false }),
+      request(app).delete(triggerPath),
+      request(app).post(`${triggerPath}/rotate-secret`).send({}),
+    ];
+  }
+
+  it("returns not found without queries for malformed routine and trigger IDs on every resource route", async () => {
+    const { companyId, agentId, userId } = await seedFixture();
+    const actors = [
+      { type: "board", userId, source: "session", companyIds: [companyId] },
+      { type: "agent", agentId, companyId },
+      { type: "none" },
+    ];
+    const fullId = "12345678-1234-4234-8234-123456789abc";
+    for (const actor of actors) {
+      const app = await createApp(actor);
+      const spies = [
+        vi.spyOn(db, "select"), vi.spyOn(db, "insert"),
+        vi.spyOn(db, "update"), vi.spyOn(db, "delete"),
+      ];
+      try {
+        for (const id of [fullId.slice(0, 8), "not-a-uuid", ` ${fullId}`, `${fullId}\n`, `{${fullId}\n}`]) {
+          for (const pending of routineResourceRequests(app, id)) {
+            const response = await pending;
+            expect(response.status, JSON.stringify(response.body)).toBe(404);
+            expect(response.body).toEqual({ error: response.req.path.includes("/routine-triggers/")
+              ? "Routine trigger not found" : "Routine not found" });
+          }
+        }
+        const invalidBody = await request(app).patch("/api/routines/not-a-uuid").send({ title: 42 });
+        expect(invalidBody.status).toBe(400);
+        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+    }
+  }, 20_000);
+
+  it("keeps missing and cross-company routine resources indistinguishable", async () => {
+    const { companyId, agentId, userId } = await seedFixture();
+    const routineId = randomUUID();
+    const triggerId = randomUUID();
+    await db.insert(routines).values({ id: routineId, companyId, assigneeAgentId: agentId, title: "Private routine" });
+    await db.insert(routineTriggers).values({ id: triggerId, companyId, routineId, kind: "api" });
+    for (const actor of [
+      { type: "board", userId, source: "session", isInstanceAdmin: true, companyIds: [randomUUID()] },
+      { type: "agent", agentId: randomUUID(), companyId: randomUUID() },
+      { type: "none" },
+    ]) {
+      const app = await createApp(actor);
+      for (const [id, tid] of [[routineId, triggerId], [routineId.toUpperCase(), `{${triggerId}}`], [randomUUID(), randomUUID()]]) {
+        for (const pending of routineResourceRequests(app, id!, tid!)) {
+          const response = await pending;
+          expect(response.status, JSON.stringify(response.body)).toBe(404);
+          expect(response.body).toEqual({ error: response.req.path.includes("/routine-triggers/")
+            ? "Routine trigger not found" : "Routine not found" });
+        }
+      }
+    }
+    expect(await db.select().from(routines)).toMatchObject([{ id: routineId, title: "Private routine" }]);
+    expect(await db.select().from(routineTriggers)).toMatchObject([{ id: triggerId, enabled: true }]);
+    expect(await db.select().from(activityLog)).toEqual([]);
+  }, 20_000);
+
+  it("preserves UUID routine reads and assignee-only mutations", async () => {
+    const { companyId, agentId, userId } = await seedFixture();
+    const routineId = randomUUID();
+    const triggerId = randomUUID();
+    await db.insert(routines).values({ id: routineId, companyId, assigneeAgentId: agentId, title: "Private routine" });
+    await db.insert(routineTriggers).values({ id: triggerId, companyId, routineId, kind: "api" });
+    const owner = await createApp({ type: "agent", agentId, companyId });
+    const otherAgent = await createApp({ type: "agent", agentId: randomUUID(), companyId });
+    const board = await createApp({ type: "board", userId, source: "session", companyIds: [companyId] });
+    for (const app of [owner, otherAgent, board]) {
+      const response = await request(app).get(`/api/routines/${routineId.toUpperCase()}`);
+      expect(response.status).toBe(200);
+      expect(response.body.id).toBe(routineId);
+    }
+    for (const [index, pending] of routineResourceRequests(otherAgent, routineId, triggerId).entries()) {
+      const response = await pending;
+      expect(response.status, JSON.stringify(response.body)).toBe(index < 2 ? 200 : 403);
+    }
+    const updated = await request(owner).patch(`/api/routines/${routineId}`).send({ title: "Owner update" });
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    expect(updated.body.title).toBe("Owner update");
+    const changedTrigger = await request(board).patch(`/api/routine-triggers/${triggerId}`).send({ enabled: false });
+    expect(changedTrigger.status, JSON.stringify(changedTrigger.body)).toBe(200);
+    expect(changedTrigger.body.enabled).toBe(false);
+  }, 20_000);
+
   it.each(["bearer", "hmac_sha256", "github_hmac", "none"] as const)(
     "authenticates %s HTTP deliveries, persists payloads, and enforces trigger lifecycle",
     async (signingMode) => {

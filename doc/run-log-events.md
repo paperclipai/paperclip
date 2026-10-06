@@ -327,6 +327,17 @@ the enclosing workspace task. The original error and restore safety policy are
 unchanged. These lines stay in the instance run log and its configured durable
 storage, and are not new first-party telemetry events.
 
+The optional `step` identifies the failed restore operation. For
+`phase=workspace` and `step=git_integration`, `gitCommand` identifies one fixed
+command family (`rev_parse`, `symbolic_ref`, `merge_base`, `merge_tree`,
+`commit_tree`, `update_ref`, or `log`). `gitFailureKind` is `merge_conflict`,
+`invalid_object`, `ref_conflict`, `permission_denied`, or `unknown`; it is a
+bounded diagnostic clue, not a new recovery or retry decision. Only supported
+exit/OS codes and recognized Git messages produce a specific classification.
+No command arguments, stderr, filenames, repository URLs, or ref names are saved.
+The same closed fields persist in `workspaceRestoreDiagnostic` and are
+revalidated before projection into an enabled Sentry failure report.
+
 ## Codex resume usage snapshot
 
 The native runner retains a bounded local `harness.diagnostic` event with code

@@ -43,6 +43,26 @@ action on the left and the primary action on the right. A step owns its whole
 footer: do not render Save & exit in a separate parent block below it. Check this
 alignment in every step and conditional state, not just the first screen.
 
+## Mobile navigation and text fields
+
+The fixed bottom navigation uses an opaque surface so scrolling content cannot
+show through its labels. On touch devices, editable controls use at least the
+16px base typography token to prevent Safari's automatic focus zoom. Larger
+title sizes remain larger.
+
+The bottom navigation responds to accumulated scrolling, ignoring small
+reversals and Safari's edge bounce. It glides out and eases back in with shared
+motion tokens; the task composer follows the same motion. Keep page padding
+stable while the navigation moves, and honor reduced-motion preferences.
+
+Task conversations reveal their initial comments, interaction cards, plan, and
+relevant run history together after positioning the latest message. Keep the
+mobile loading surface at a stable viewport height while that history loads;
+concealed content must not stretch the document. Background refreshes keep an
+already revealed conversation and composer mounted and visible.
+Bound the initial wait to 15 seconds. If a request stalls, reveal the available
+conversation and composer with a notice that some history is still loading.
+
 ## Contextual feedback
 
 Task chat shows execution errors and waits only while they remain relevant.
@@ -100,6 +120,8 @@ See `doc/design/PRIOR-ART.md` — a previous audit pass (PAP-280/283/284, on the
 How-to guide for day-to-day UI changes: see `doc/design/CHANGING-THE-UI.md`.
 
 ## Motion tokens (Task Chat Redesign)
+
+Mobile task panels fill the viewport within the safe area. Their top toolbar shows the current tab title, an open-tab count and selector, an add action, and an X to return to the feed. The selector lists tabs vertically with wrapping titles, an explicit current-tab check, and visible close controls. Each touch control uses the 44px size token. Desktop tabs keep their horizontal layout. Document links within the current task open through the router and retain the feed's reading position and query cache.
 
 The redesigned task thread (flag `enableTaskChatRedesign`) is the first surface to
 tokenize motion. Principles — reasoning only; values live in `ui/src/index.css`:

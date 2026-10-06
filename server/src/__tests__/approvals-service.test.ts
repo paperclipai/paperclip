@@ -49,7 +49,7 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
   const update = vi.fn(() => ({ set }));
 
   return {
-    db: { select, update },
+    db: { select, update, transaction: vi.fn(async (callback: (db: unknown) => Promise<unknown>) => callback({ select, update })) },
     selectWhere,
     returning,
   };
@@ -103,6 +103,17 @@ describe("approvalService resolution idempotency", () => {
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1", approved.payload);
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not notify the adapter when the approval transaction fails to commit", async () => {
+    const approved = createApproval("approved");
+    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+    dbStub.db.transaction.mockImplementationOnce(async callback => {
+      await callback(dbStub.db);
+      throw new Error("commit failed");
+    });
+    await expect(approvalService(dbStub.db as any).approve("approval-1", "board")).rejects.toThrow("commit failed");
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
   });
 
   it("creates the agent from payload when approval does not reference a pending agent", async () => {

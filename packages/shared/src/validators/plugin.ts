@@ -782,6 +782,7 @@ export const pluginManifestV1Schema = z.object({
     "minimumPaperclipVersion must follow semver (e.g. 1.0.0)",
   ).optional(),
   capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
+  aiConnectionRouter: z.object({ name: z.string().trim().min(1).max(100), description: z.string().trim().min(1).max(500) }).strict().optional(),
   entrypoints: z.object({
     worker: z.string().min(1),
     ui: z.string().min(1).optional(),
@@ -834,6 +835,10 @@ export const pluginManifestV1Schema = z.object({
   // The host enforces capabilities at install and runtime. A plugin must
   // declare every capability it needs up-front; silently having more features
   // than capabilities would cause runtime rejections.
+
+  if (manifest.aiConnectionRouter && !manifest.capabilities.includes("ai.connections.route")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "ai.connections.route is required for aiConnectionRouter", path: ["capabilities"] });
+  }
 
   // tools require agent.tools.register (PLUGIN_SPEC.md §11)
   if (manifest.tools && manifest.tools.length > 0) {
