@@ -44,6 +44,25 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("schedules a capacity retry while preserving partial work and review authority", () => {
+    for (const nativeReviewOutcome of [undefined, "pending"] as const) {
+      const decision = arbitrate({ terminalState: "failed", providerOverloaded: true, nativeReviewOutcome });
+      expect(decision).toMatchObject({ statusAction: "preserve", reasonCode: "native_provider_overloaded" });
+      expect(decision.effects).toContainEqual(expect.objectContaining({ kind: "schedule_retry", cause: "native_provider_overloaded" }));
+    }
+    expect(arbitrate({ terminalState: "failed", providerOverloaded: true, failureRetryCount: 2 }))
+      .toMatchObject({ statusAction: "blocked", reasonCode: "native_provider_overloaded_exhausted", effects: [{ kind: "bind_blocker", owner: "board", action: expect.stringContaining("Automatic retries exhausted") }] });
+  });
+  it.each([
+    { hasActivePauseHold: true }, { hasUnresolvedIssueBlockers: true },
+    { governanceGate: { kind: "approval" as const, id: "approval" } },
+    { priorIssueStatus: "blocked" as const }, { priorIssueStatus: "done" as const },
+    { workspaceFinalizeStatus: "failed" as const }, { nativeReviewOutcome: "stale" as const },
+    { nativeReviewOutcome: "resolved" as const },
+  ])("does not schedule capacity retries through existing authority or cleanup gates (%j)", (gate) => {
+    const decision = arbitrate({ terminalState: "failed", providerOverloaded: true, ...gate });
+    expect(decision.effects.some(effect => effect.kind === "schedule_retry")).toBe(false);
+  });
   it.each(["in_progress", "in_review"] as const)("blocks a current worker's proven model rejection without a retry (%s)", (priorIssueStatus) => {
     const decision = arbitrate({ priorIssueStatus, terminalState: "failed", providerModelRejected: true });
     expect(decision).toMatchObject({ statusAction: "blocked", toStatus: "blocked", reasonCode: "native_provider_model_rejected", unblockDescriptor: { owner: "board" } });
@@ -528,7 +547,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v8",
+        policyVersion: "phase6-v9",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

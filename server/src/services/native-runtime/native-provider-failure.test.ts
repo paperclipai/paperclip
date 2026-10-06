@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PrpEvent, PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
-import { createNativeProviderFailureObservation, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE } from "./native-provider-failure.js";
+import { createNativeProviderFailureObservation, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 
 const model = "test-model";
 const response = {
@@ -19,6 +19,19 @@ const terminal: PrpTerminalState = {
 const observation = () => createNativeProviderFailureObservation({ kind: "codex", model });
 
 describe("native provider failure observation", () => {
+  it("surfaces a structured capacity failure without copying arbitrary provider text", () => {
+    const observed = createNativeProviderFailureObservation({ kind: "codex" });
+    observed.observe({ ...event, payload: { status: "failed", error: { codexErrorInfo: "serverOverloaded", message: "Private arbitrary response" } } });
+    expect(observed.forTerminal("turn", terminal)).toEqual({ errorCode: "native_provider_overloaded", errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE, diagnostic: { provider: "codex", category: "server_overloaded" } });
+    expect(observed.forTerminal("different-turn", terminal)).toBeNull();
+    expect(observed.forTerminal("turn", { ...terminal, runTerminalState: "succeeded" })).toBeNull();
+  });
+
+  it.each(["usageLimitExceeded", "other", "unauthorized", undefined])("does not retry unrelated provider errors (%s)", (codexErrorInfo) => {
+    const observed = observation();
+    observed.observe({ ...event, payload: { status: "failed", error: { codexErrorInfo, message: NATIVE_PROVIDER_OVERLOADED_MESSAGE } } });
+    expect(observed.forTerminal("turn", terminal)).toBeNull();
+  });
   it("binds the structured rejection to the failed turn and emits no response or model text", () => {
     const observed = observation();
     observed.observe(event);

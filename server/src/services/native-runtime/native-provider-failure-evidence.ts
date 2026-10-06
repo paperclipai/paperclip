@@ -10,7 +10,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /** Re-derive authority from immutable run-bound evidence, including after restart. */
-export async function readPersistedNativeModelRejection(
+export async function readPersistedNativeProviderFailure(
   db: Db,
   run: typeof heartbeatRuns.$inferSelect,
   turnId: string | null,
@@ -20,7 +20,7 @@ export async function readPersistedNativeModelRejection(
       terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed") return null;
   let execution;
   try { execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput); } catch { return null; }
-  if (execution.provider.kind !== "codex" || !execution.provider.model ||
+  if (execution.provider.kind !== "codex" ||
       execution.binding.runId !== run.id || execution.binding.companyId !== run.companyId ||
       execution.binding.agentId !== run.agentId || execution.binding.issueId !== run.nativeIssueId ||
       execution.session.normalizedSessionId !== run.nativeSessionId ||
@@ -42,4 +42,11 @@ export async function readPersistedNativeModelRejection(
   const observed = createNativeProviderFailureObservation(execution.provider);
   observed.observe(parsed.event);
   return observed.forTerminal(turnId, terminal);
+}
+
+export async function readPersistedNativeModelRejection(
+  ...args: Parameters<typeof readPersistedNativeProviderFailure>
+) {
+  const failure = await readPersistedNativeProviderFailure(...args);
+  return failure?.errorCode === "native_provider_model_rejected" ? failure : null;
 }
