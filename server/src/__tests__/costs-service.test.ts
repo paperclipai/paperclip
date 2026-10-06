@@ -473,6 +473,59 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(agent?.spentMonthlyCents).toBe(0);
   });
 
+  it("reports list-price estimates for unpriced metered model usage", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const occurredAt = new Date("2026-09-21T12:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Metered Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const event = await costs.createEvent(companyId, {
+      agentId,
+      provider: "openai",
+      biller: "openai",
+      billingType: "metered_api",
+      costStatus: "unpriced",
+      model: "gpt-5.6-luna",
+      inputTokens: 100_000,
+      cachedInputTokens: 80_000,
+      outputTokens: 1_000,
+      costCents: 0,
+      occurredAt,
+    });
+    const range = {
+      from: new Date("2026-09-21T00:00:00.000Z"),
+      to: new Date("2026-09-21T23:59:59.999Z"),
+    };
+
+    const summary = await costs.summary(companyId, range);
+    const [byAgentModel] = await costs.byAgentModel(companyId, range);
+    const financeSummary = await finance.summary(companyId, range);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+
+    expect(event.costCents).toBe(0);
+    expect(agent?.spentMonthlyCents).toBe(0);
+    expect(summary.spendCents).toBeCloseTo(0.68);
+    expect(byAgentModel?.costCents).toBeCloseTo(0.68);
+    expect(financeSummary.estimatedDebitCents).toBeCloseTo(0.68);
+  });
+
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
