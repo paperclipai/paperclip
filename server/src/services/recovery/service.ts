@@ -3,6 +3,7 @@ import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { executionRetryAccounting } from "../execution-recovery-attempt.js";
+import { isExplicitContinuationRetryClaim } from "../explicit-continuation-retry-claim.js";
 import {
   decideLegacyContinuation, legacyDispositionEpisode, legacyDispositionFingerprint,
   LEGACY_DISPOSITION_REPAIR_INSTRUCTION, type LegacyDispositionEpisode,
@@ -89,7 +90,7 @@ import { budgetService } from "../budgets.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import {
-  legacyExecutionNeedsReconciliation,
+  legacyExecutionNeedsReconciliationWithEvidence,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
@@ -163,8 +164,8 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
   "cancelled",
   "timed_out",
 ] as const;
-export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
-export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
+export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 5 * 60 * 1000;
+export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 15 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND =
   RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
@@ -490,6 +491,8 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
+  "native_provider_model_rejected",
+  "provider_tool_definition_invalid",
   "adapter_engine_unavailable",
   "agent_not_invokable",
   "agent_not_found",
@@ -624,7 +627,7 @@ export function classifyAdapterFailureForRecovery(
 ): AdapterFailureRecoveryClassification {
   // An engine prerequisite cannot be repaired by asking the same unavailable
   // engine to retry. Use the existing configuration-blocker path.
-  if (latestRun.errorCode === "adapter_engine_unavailable") {
+  if (latestRun.errorCode === "adapter_engine_unavailable" || latestRun.errorCode === "provider_tool_definition_invalid" || latestRun.errorCode === "native_provider_model_rejected") {
     return { kind: "configuration_incomplete" };
   }
   if (
@@ -911,6 +914,8 @@ export function recoveryService(
     scheduleRecoveryRetry?: (
       runId: string,
     ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
+    /** Settle retained explicit retry claims through the queue-first release policy. */
+    settleExplicitContinuationRetry?: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>;
     /**
      * Whether a failed or interrupted run has consumed every bounded
      * transient retry, so `scheduleRecoveryRetry` can no longer produce a
@@ -1922,7 +1927,7 @@ export function recoveryService(
         // Failure recovery shares the durable incident budget and delay. It
         // cannot fall through into the productive-work continuation queue.
         if (predecessor.runtimeMode === "native") return null;
-        if (legacyExecutionNeedsReconciliation(predecessor)) {
+        if (await legacyExecutionNeedsReconciliationWithEvidence(db, predecessor)) {
           await terminalizeLegacyExecution({
             db,
             run: predecessor,
@@ -4602,7 +4607,7 @@ export function recoveryService(
               eq(heartbeatRuns.id, executionRecoverySource.id),
             ),
           );
-        if (source && legacyExecutionNeedsReconciliation(source)) {
+        if (source && await legacyExecutionNeedsReconciliationWithEvidence(db, source)) {
           await terminalizeLegacyExecution({
             db,
             run: source,
@@ -6097,6 +6102,7 @@ export function recoveryService(
         : [];
     const runStatusById = new Map<string, string>();
     for (const row of runRows) runStatusById.set(row.id, row.status);
+    const runById = new Map(runRows.map(row => [row.id, row]));
 
     // Collect the runs that a non-terminal issue still references. Such a run is
     // the live run of an active issue. A different, terminal issue can also hold
@@ -6158,6 +6164,18 @@ export function recoveryService(
     };
 
     for (const issue of candidates) {
+      const originalOwner = issue.executionRunId ? runById.get(issue.executionRunId) : undefined;
+      // The pre-pass can lose its terminal write to the executor and observe a
+      // newer terminal status. Do not test claim ownership using the old status.
+      const owner = originalOwner ? { ...originalOwner,
+        status: runStatusById.get(originalOwner.id) ?? originalOwner.status } : undefined;
+      if (owner && isExplicitContinuationRetryClaim(issue, owner)) {
+        // A terminal row can still own cleanup and a pending bounded retry.
+        // Re-enter the same policy rather than erasing its exact-owner proof.
+        // That policy handles pending cleanup, newer input, and final denial.
+        await deps.settleExplicitContinuationRetry?.(owner);
+        continue;
+      }
       if (
         !isCleanable(issue.checkoutRunId) ||
         !isCleanable(issue.executionRunId)

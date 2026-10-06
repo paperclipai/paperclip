@@ -98,6 +98,7 @@ const runtime = shape({
   pricingAsOf: optional(string),
   pricingUrl: optional(url),
 });
+const assistant = shape({ provider: oneOf("openai", "anthropic"), model: string, observedModels: array(string), requests: integer, inputTokens: number, outputTokens: number, cachedInputTokens: number, estimatedCostUsd: number, pricingAsOf: string, pricingUrl: url });
 const llm = shape({
   runCount: integer,
   runsWithTokenUsage: integer,
@@ -111,6 +112,7 @@ const llm = shape({
 });
 const billing = shape({
   judge: optional(shape({ inputTokens: nullable(number), outputTokens: nullable(number), estimatedCostUsd: nullable(number), reservedCostUsd: number })),
+  assistant: optional(assistant),
   llm,
   runtime,
   reportedCostUsd: number,
@@ -144,6 +146,7 @@ const matcher: Rule = (value, at) => {
   rule(value, at);
 };
 const fields = {
+  publicMcp: optional(assistant),
   schema: oneOf(
     "paperclip.runner-e2e.result/v1",
     "paperclip.runner-e2e.result/v2",

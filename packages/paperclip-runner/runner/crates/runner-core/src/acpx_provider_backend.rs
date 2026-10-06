@@ -153,7 +153,7 @@ impl AcpxProviderDescriptor {
                 "@agentclientprotocol/claude-agent-acp",
                 "0.73.0",
                 Some("@anthropic-ai/claude-agent-sdk"),
-                Some("0.3.280"),
+                Some("0.3.286"),
                 "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
             ),
             "codex" => (
@@ -161,7 +161,7 @@ impl AcpxProviderDescriptor {
                 "@agentclientprotocol/codex-acp",
                 "1.6.2",
                 Some("@openai/codex"),
-                Some("0.156.0"),
+                Some("0.160.0"),
                 "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
             ),
             "pi" => (
@@ -1044,6 +1044,18 @@ impl AcpxCommandExecutor {
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
         let mut durable_descriptor = descriptor.clone();
         durable_descriptor.run_id = state.descriptor.run_id.clone();
+        // session/load reconnects MCP using this attachment's bindings. All
+        // other context remains part of the immutable provider profile.
+        let mut previous_descriptor = state.descriptor.clone();
+        for context in [
+            &mut durable_descriptor.runtime_context,
+            &mut previous_descriptor.runtime_context,
+        ] {
+            if let Some(object) = context.as_object_mut() {
+                object.remove("mcp");
+                object.remove("aggregateDigest");
+            }
+        }
         let only_recovery_notice_pending = state
             .pending_events
             .iter()
@@ -1053,7 +1065,7 @@ impl AcpxCommandExecutor {
             || state.identity.is_none()
             || state.active_turn_id.is_some()
             || !only_recovery_notice_pending
-            || durable_descriptor != state.descriptor
+            || durable_descriptor != previous_descriptor
         {
             return Err(DurableRunnerError::invalid(
                 "run.attach requires the same settled ACPX provider profile and session",
@@ -2245,7 +2257,7 @@ mod tests {
                     "@agentclientprotocol/claude-agent-acp",
                     "0.73.0",
                     json!("@anthropic-ai/claude-agent-sdk"),
-                    json!("0.3.280"),
+                    json!("0.3.286"),
                     "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
                 )
             } else {
@@ -2254,7 +2266,7 @@ mod tests {
                     "@agentclientprotocol/codex-acp",
                     "1.6.2",
                     json!("@openai/codex"),
-                    json!("0.156.0"),
+                    json!("0.160.0"),
                     "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
                 )
             };
@@ -2869,6 +2881,7 @@ mod tests {
         };
         let mut descriptor_value = descriptor("codex");
         descriptor_value["sidecarCommand"] = json!(command);
+        descriptor_value["runtimeContext"] = json!({ "instructions": { "digest": "stable" }, "mcp": { "digest": "before" }, "aggregateDigest": "before" });
         descriptor_value["sidecarArgs"] = json!([]);
         descriptor_value["runtimeDirectory"] = json!(runtime);
         descriptor_value["cwd"] = json!(workspace);
@@ -3023,7 +3036,18 @@ mod tests {
         let mut changed_profile = warm_payload.clone();
         changed_profile["provider"]["instructions"] = json!("different profile");
         assert!(original.attach_run(&changed_profile).is_err());
-        original.attach_run(&warm_payload).unwrap();
+        let mut refreshed = warm_payload.clone();
+        refreshed["provider"]["runtimeContext"]["mcp"] = json!({ "digest": "after" });
+        refreshed["provider"]["runtimeContext"]["aggregateDigest"] = json!("after");
+        let mut changed_context = refreshed.clone();
+        changed_context["provider"]["runtimeContext"]["instructions"] =
+            json!({ "digest": "changed" });
+        assert!(original.attach_run(&changed_context).is_err());
+        original.attach_run(&refreshed).unwrap();
+        assert_eq!(
+            original.state.as_ref().unwrap().descriptor.runtime_context["mcp"]["digest"],
+            "after"
+        );
         assert_eq!(original.state.as_ref().unwrap().descriptor.run_id, "run-2");
         assert_eq!(original.context.run_id, "run-1");
         original.rotate_authority(&attached_config);

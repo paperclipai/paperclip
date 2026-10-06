@@ -1,3 +1,4 @@
+export { composioAppSetupSchema, composioAppsRefreshSchema, composioAppsSyncSchema, composioAppAccountSchema, type ComposioAppSetupInput, type ComposioAppSetupResult, type ComposioAppAccountInput, type ComposioAppAccount, type ComposioAppSnapshot, type ComposioAppSyncState, type ComposioAppsResponse } from "./composio-app-setup.js";
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   RUNNER_GOAL_MAX_OBJECTIVE_CHARS,
@@ -199,6 +200,7 @@ export type {
   AttentionWorkspaceRef,
 } from "./types/attention.js";
 export { ATTENTION_SOURCE_KINDS } from "./types/attention.js";
+export { questionSetToAskUserQuestionsPayload } from "./question-set.js";
 export type {
   DecisionQueue,
   DecisionQueueItem,
@@ -931,6 +933,7 @@ export type {
   AgentDetail,
   ClearAgentErrorResponse,
   AgentPermissions,
+  AgentPublicIdentity,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,
   AgentInstructionsFileDetail,
@@ -961,6 +964,8 @@ export type {
   SetupTokenTransportAdvisoryCode,
   AssetImage,
   Project,
+  ProjectDiscoverySummary,
+  ProjectDiscoveryPage,
   ProjectBudgetSummary,
   ProjectRepository,
   ProjectRepositoryOptions,
@@ -1917,6 +1922,7 @@ export {
   type ResetAgentSession,
   type TestAdapterEnvironment,
   type UpdateAgentPermissions,
+  projectDiscoverySchema,
   createProjectSchema,
   updateProjectSchema,
   createProjectWorkspaceSchema,
@@ -2080,6 +2086,7 @@ export {
   type CheckoutIssue,
   type AddIssueComment,
   type CreateIssueThreadInteraction,
+  type CreateIssueThreadInteractionInput,
   type AcceptIssueThreadInteraction,
   type RejectIssueThreadInteraction,
   type CancelIssueThreadInteraction,
@@ -2783,6 +2790,8 @@ export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from
 
 export * from "./agent-appearance.js";
 export * from "./ai-connections.js";
+export * from "./ai-connection-router.js";
+export * from "./ai-connection-usage.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";
 export { configureRailwaySshSchema, type ConfigureRailwaySsh, type RailwaySshSetup } from "./railway-connection.js";
@@ -2813,3 +2822,12 @@ export * from "./browser-use.js";
 export * from "./types/skill-source.js";
 export * from "./validators/skill-source.js";
 export * from "./github-skill-repository.js";
+export * from "./public-mcp.js";
+export * from "./mcp-setup.js";
+
+
+export * from "./ai-provider-routing.js";
+export { aiConnectionRouterSlug, aiConnectionRouterAppDefinition, aiConnectionRouterPluginKey } from "./ai-connection-router.js";
+export { isAppAggregator, aggregatorManagementUrl, aggregatorAppsSyncSchema, aggregatorAppsRefreshSchema, arcadeDiscoverySetupSchema, type AggregatorAppSnapshot, type AggregatorAppsResponse, type ArcadeDiscoverySetupInput } from "./aggregator-apps.js";
+
+export * from "./connection-instructions.js";

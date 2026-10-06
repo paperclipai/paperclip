@@ -57,6 +57,14 @@ export function isEphemeralCodexRuntimeAuthFile(
   );
 }
 
+/** Browser navigation diagnostics need a route, never OAuth query credentials. */
+export function browserDiagnosticUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? url.origin + url.pathname : "[non-HTTP URL]";
+  } catch { return "[invalid URL]"; }
+}
+
 export function redactText(value: string, secrets: readonly string[]) {
   let redacted = redactDiagnosticText(value, "[REDACTED]");
   return redactKnownSecretsAndShapes(redacted, secrets);

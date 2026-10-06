@@ -51,7 +51,7 @@ function createApp(actor: Express.Request["actor"], row: Record<string, unknown>
   return app;
 }
 
-describe.sequential("auth routes", () => {
+describe("auth routes", () => {
   const baseUser = {
     id: "user-1",
     name: "Jane Example",

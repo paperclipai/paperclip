@@ -1,3 +1,6 @@
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import {
   asString,
@@ -23,7 +26,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = asString(config.cwd, process.cwd());
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {
-    ...buildPaperclipEnv(agent),
+    ...buildPaperclipEnv(agent, ctx.agentIdentity),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
   for (const [k, v] of Object.entries(envConfig)) {
@@ -62,14 +65,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
   }
 
-  const proc = await runChildProcess(runId, command, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog,
-    onSpawn: ctx.onSpawn,
-  });
+  const instructions = parseObject(ctx.context.connectionInstructions);
+  let instructionsDirectory: string | undefined;
+  // Override configured/inherited paths even when the connection was removed.
+  env.PAPERCLIP_CONNECTION_INSTRUCTIONS_FILE = "";
+  let proc: Awaited<ReturnType<typeof runChildProcess>>;
+  try {
+    if (typeof instructions.text === "string" && instructions.text) {
+      instructionsDirectory = await mkdtemp(join(tmpdir(), "paperclip-connection-instructions-"));
+      const instructionsFile = join(instructionsDirectory, "instructions.json");
+      await writeFile(instructionsFile, JSON.stringify(instructions), { mode: 0o600 });
+      env.PAPERCLIP_CONNECTION_INSTRUCTIONS_FILE = instructionsFile;
+    }
+    proc = await runChildProcess(runId, command, args, {
+      cwd, env, timeoutSec, graceSec, onLog, onSpawn: ctx.onSpawn,
+    });
+  } finally {
+    if (instructionsDirectory) await rm(instructionsDirectory, { recursive: true, force: true });
+  }
 
   if (proc.timedOut) {
     return {

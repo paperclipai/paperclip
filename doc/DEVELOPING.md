@@ -103,6 +103,12 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+**Composer → New task** includes agent/user/project/task mentions, skill and
+routine slash commands, and populated rich chips on desktop and mobile. Agent
+mentions use the same avatars in suggestions, inserted chips, and the mocked
+creation receipt. The creation stories preserve the original Markdown references;
+they do not create real tasks or run agents.
+
 Use **Components → Agent setup prompt** to review the shared setup handoff:
 hover/focus logo motion, one-click copying with a prompt preview, animated
 confirmation, and manual-copy recovery. Opening the preview copies immediately;
@@ -140,11 +146,61 @@ choices, item verdicts, suggested tasks, tool reviews, runtime questions, and ph
 the bottom navigation. The normal message composer remains usable below the
 pending card.
 
+Use **Chat & Comments → Task Chat Unanswered Questions → Test Drive** to
+try a regular task question: dismiss it, reload, reopen its compact feed entry,
+and submit the preserved draft. The composer has no question pending badge.
+The demo uses real thread/form components with fixture response callbacks.
+The Agent Chat stories share the same component fixture.
+
+Use **Composer → New task** to review task creation through the production
+`TaskChatComposer`. The editor, file menu, work modes, assignee/model picker,
+and send control are shared with task chat. An inset bar above the composer uses
+the queued-message container and holds Project on the left. Its searchable picker
+shows project colors. Worktrees sits beside Project when the selected project has
+isolation enabled. Choose a new worktree, reuse an eligible worktree from that
+project, or keep the shared project workspace. Reuse carries the worktree's source
+checkout, including a non-primary checkout. Changing projects clears the
+previous worktree choice. Switching from reuse to a new worktree or the project
+workspace restores the project default checkout. Task creation uses the selected company and has
+no separate heading or settings control.
+Fresh tasks start with an empty request and the last task assignee chosen in that
+company, including a human. If that assignee is unavailable, the CEO is the
+default, or the first eligible agent when the company has no CEO. Explicit launch
+assignees and saved drafts keep their selection. Selecting an assignee never
+inserts a mention. Clicking the assignee opens its searchable list directly;
+model and effort have a separate trigger and appear only for agents whose
+harness supports those settings.
+Fresh tasks also keep the company's last project (including No project); launch
+context and saved drafts take precedence. New projects receive a random palette
+color and become the remembered project. The shared composer remembers the last
+effort within the company and applies it only when the selected model supports
+that level. Explicit task overrides and drafts take precedence. Default model
+labels show the configured or known adapter model, otherwise simply Default.
+Claude defaults supplied by the server's host environment remain Default unless
+the agent explicitly configures the model. Project edits on an existing task
+become the remembered project only after the task update succeeds.
+Clicking or tapping outside either selector dismisses it and preserves the task
+draft and selections. Mobile sheets return focus to the trigger without reopening.
+Stories cover empty and prefilled drafts, remembered, human, and unassigned
+selections, the direct assignee picker, sub-tasks, planning, files, saving,
+retryable failures, creation, light theme, and mobile, plus worktree reuse,
+loading, empty, error, and isolation-disabled states. Story submissions use local
+fixtures and never start an agent.
+
 Use **Composer → Model and effort picker** to review harness-specific model
 choices. Codex uses the curated adapter catalog unless the instance declares
 `PAPERCLIP_ADAPTER_MODELS`; general OpenAI API models are not Codex choices.
 The Paperclip Runner Codex profile shows the same known model effort levels.
 Its selected effort is saved with the run and sent to Codex for each turn.
+When Codex reports that a selected model is not supported with a ChatGPT account,
+the task shows **Model unavailable**, the provider's account restriction, and
+guidance to choose a supported model or clear the task's model override before
+retrying. The run retains this reason even when the runner saves a generic
+failure result.
+When a committed Codex terminal reports `serverOverloaded`, the task displays
+the model capacity error and **Model at capacity** on its scheduled retry card.
+Automatic retries wait one and two minutes, then stop. Use
+**Tasks → Model capacity retry** in Storybook to inspect the waiting state.
 Claude Code uses model-specific effort levels; Haiku has no effort slider.
 Grok uses its adapter's reasoning levels, including for its default model.
 Kimi shows effort only when its agent uses the CLI engine, including with its
@@ -228,10 +284,14 @@ are not automatically deleted and will accumulate until an operator prunes them.
 
 Publishing requires both the original actor and the current rerunner to be
 individual GitHub accounts named in `.github/CODEOWNERS` on the current default
-branch. Comments, teams and email entries do not grant access. Authorization runs
-before the build and again before deployment, including deployment-only reruns.
+branch. Individual accounts from every ownership rule are included, regardless
+of which paths they own. Comments, teams and email entries do not grant access.
+Authorization runs before the build and again before deployment, including
+deployment-only reruns.
 GitHub also requires a CODEOWNER environment approval, so editing authorization
 code on a branch cannot grant AWS access without an authorized reviewer.
+CODEOWNERS membership does not automatically add an account to the environment's
+required reviewers; a configured reviewer must approve each deployment.
 
 The build downloads the public source archive with no GitHub token permissions,
 AWS credentials or repository secrets. Dependency caching and install lifecycle
@@ -408,6 +468,11 @@ npx paperclipai allowed-hostname dotta-macbook-pro
 ```
 
 ## Test Commands
+
+The [feature map](../feature-map/README.md) is an optional reference for user
+entry points, targeted tests, manual verification recipes, and coverage gaps.
+Its page inventory is a source snapshot. The documented journeys have separate
+verification steps and do not run automatically from the map.
 
 Use the cheap local default unless you are specifically working on browser flows:
 
@@ -1152,6 +1217,11 @@ operator-controlled [runner API tools](runner-api-tools.md) rollout; enabling
 Agent Chat does not enable that API surface. Failed-turn retries restore the
 selected run's user comments so the agent can answer the original request.
 
+An unsaved Agent Chat uses an ephemeral `chat:<agent-id>` view-model ID. Task
+browser polling starts after the first send or upload creates a persisted task
+UUID. Saved chats retain the task browser's company and credential access checks.
+Task browser routes reject malformed task IDs with `404` before querying PostgreSQL.
+
 A native continuation that requires reconciliation shows **Recovery needed**
 with **Inspect run**; inspect the original outcome before resolving its recovery
 hold. A generic retry cannot resolve this incident. The runner's
@@ -1211,6 +1281,29 @@ and verifies them without uploading a binary or installing packages. Deploy
 the updated sandbox image with the matching runner qualification changes.
 
 ### Native runner restart recovery
+
+Project discovery through `list_projects` returns up to 50 compact summaries.
+It uses `GET /api/companies/:companyId/projects?view=summary&limit=50&cursor=...`;
+the cursor is optional. The database reads bounded summary projections. Agent
+and run trust boundaries narrow database candidates before per-project access
+checks. Projects with their own authorization policy remain candidates because
+that policy can contribute scope; every result still passes the full access check.
+Only visible projects determine page boundaries and continuations.
+The default project-list API response remains unchanged.
+Use its `nextCursor` as the next call's `cursor` until it is null; `limit` accepts
+1–50. Descriptions include at most 1,000 characters and an explicit truncation
+flag. Full project records remain available through the authorized project API.
+Workspace configuration is excluded from discovery responses so large projects
+cannot overflow the runner's durable tool-result command limit.
+
+When an accepted result survives a shutdown failure, workspace repair uses a
+new assessment for the repaired workspace state. Its status decision and
+assessment reference commit together. Recovery completes from the saved result
+without another provider turn, clears stale successful-run errors, and retains
+the original error in `recoveredExecutionFailure`. Exact-state session cleanup
+recognizes both the legacy `adapter_failed` and current `provider_transport_failed`
+close-failure labels. Process ownership, pending tool outcomes, and checkpoint
+verification still control whether that session can be reused.
 
 Paperclip Runner keeps its heartbeat run, native session, logical runner, and
 provider session identities across server restarts. A coordinated hot restart

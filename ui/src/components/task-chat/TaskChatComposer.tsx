@@ -49,6 +49,7 @@ import {
   type MarkdownEditorRef,
 } from "@/components/MarkdownEditor";
 import { nextWorkMode } from "@/lib/work-mode-meta";
+import { trackRecentAssignee, trackRecentAssigneeUser } from "@/lib/recent-assignees";
 import {
   InlineEntitySelector,
   type InlineEntityOption,
@@ -62,6 +63,7 @@ import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeov
 
 import { TaskChatPausedTakeover, type TaskComposerPause } from "./TaskChatPausedTakeover";
 import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
+import { TaskChatComposerBar } from "./TaskChatComposerBar";
 import { ComposerAddMenu, ComposerModeChip } from "./ComposerAddMenu";
 import type { ComposerRunSettings } from "./composer-run-settings";
 import type { Agent, IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
@@ -89,7 +91,7 @@ export interface TaskChatComposerTakeover {
 }
 
 interface TaskChatComposerProps {
-  onAdd: (
+  onAdd?: (
     body: string,
     reopen?: boolean,
     reassignment?: CommentReassignment,
@@ -97,6 +99,21 @@ interface TaskChatComposerProps {
     clientRequestId?: string,
     runSettings?: ComposerRunSettings,
   ) => Promise<void> | void;
+  /** New tasks share the editor and controls, but retain their draft until creation succeeds. */
+  creation?: {
+    value: string;
+    onChange: (value: string) => void;
+    onSubmit: (body: string, mode: IssueWorkMode, settings: ComposerRunSettings | null) => Promise<void>;
+    submitLabel: string;
+    canSubmitWithoutBody?: boolean;
+    header?: ReactNode;
+    details?: ReactNode;
+    contextBar?: ReactNode;
+    submitDisabled?: boolean;
+    onSelectFiles: (files: File[]) => void;
+    runSettings: ComposerRunSettings | null;
+    onRunSettingsChange: (settings: ComposerRunSettings | null) => void;
+  };
   confirmedSubmissionIds?: ReadonlySet<string>;
   onStop?: () => Promise<void>;
   stopPending?: boolean;
@@ -358,6 +375,7 @@ function escapeMarkdownLabel(name: string): string {
  */
 export function TaskChatComposer({
   onAdd,
+  creation,
   confirmedSubmissionIds,
   onStop,
   stopPending = false,
@@ -395,7 +413,8 @@ export function TaskChatComposer({
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
   const stopControl = useComposerStop(onStop, stopPending);
-  const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
+  const [localBody, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
+  const body = creation ? creation.value : localBody;
   const [submitting, setSubmitting] = useState(false);
   const [reviewError, setReviewError] = useState(false);
   const [uncertainSubmission, setUncertainSubmission] =
@@ -417,10 +436,13 @@ export function TaskChatComposer({
     useState<HTMLElement | null>(null);
   const [takeoverControlsSlot, setTakeoverControlsSlot] =
     useState<HTMLElement | null>(null);
-  const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
+  const [localPendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
+  const pendingMode = creation ? workMode : localPendingMode;
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
-  const [runSettings, setRunSettings] = useState<ComposerRunSettings | null>(null);
-  useEffect(() => setRunSettings(null), [draftKey, currentAssigneeValue]);
+  const [localRunSettings, setLocalRunSettings] = useState<ComposerRunSettings | null>(null);
+  const runSettings = creation ? creation.runSettings : localRunSettings;
+  const setRunSettings = creation ? creation.onRunSettingsChange : setLocalRunSettings;
+  useEffect(() => setLocalRunSettings(null), [draftKey, currentAssigneeValue]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [attachments, setAttachmentState] = useState<ComposerAttachment[]>(
     () =>
@@ -465,6 +487,10 @@ export function TaskChatComposer({
   } | null>(null);
   function changeBody(value: string) {
     bodyRef.current = value;
+    if (creation) {
+      creation.onChange(value);
+      return;
+    }
     setBody(value);
     const pending = pendingDraftRef.current;
     if (!pending || pending.draftKey !== draftKey ||
@@ -607,11 +633,11 @@ export function TaskChatComposer({
     !pause &&
     !queuedEdit &&
     !uncertainSubmission &&
-    Boolean(onAttachImage || onImageUpload);
+    Boolean(creation || onAttachImage || onImageUpload);
   const showAssignee = Boolean(
     enableReassign && reassignOptions && reassignOptions.length > 0,
   );
-  const assigneeValue = pendingAssignee ?? currentAssigneeValue;
+  const assigneeValue = creation ? currentAssigneeValue : pendingAssignee ?? currentAssigneeValue;
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
   const assigneeName =
@@ -637,8 +663,18 @@ export function TaskChatComposer({
   };
 
   function updatePendingAssignee(value: string | null) {
+    if (!creation && value && companyId) {
+      const selection = parseAssigneeValue(value);
+      if (selection?.assigneeAgentId) trackRecentAssignee(selection.assigneeAgentId, companyId);
+      if (selection?.assigneeUserId) trackRecentAssigneeUser(selection.assigneeUserId, companyId);
+    }
     setPendingAssignee(value);
     onPendingAssigneeChange?.(value);
+  }
+
+  function changeMode(mode: IssueWorkMode) {
+    setPendingMode(mode);
+    if (creation) void onWorkModeChange?.(mode);
   }
 
   /** Upload an image and return its URL for inline `![](src)` markdown. */
@@ -764,6 +800,11 @@ export function TaskChatComposer({
   function handleFileInputChange(evt: ChangeEvent<HTMLInputElement>) {
     const files = evt.target.files;
     if (files && files.length > 0) {
+      if (creation) {
+        creation.onSelectFiles(Array.from(files));
+        evt.target.value = "";
+        return;
+      }
       void (async () => {
         for (const file of Array.from(files)) await attachPickedFile(file);
       })();
@@ -787,6 +828,19 @@ export function TaskChatComposer({
     if (pause || !canAcceptFiles) return;
     const files = Array.from(evt.clipboardData?.files ?? []);
     if (files.length === 0) return;
+    if (creation) {
+      if (onImageUpload) {
+        const nonImages = files.filter((file) => !file.type.startsWith("image/"));
+        if (nonImages.length === 0) return;
+        creation.onSelectFiles(nonImages);
+        if (nonImages.length !== files.length) return;
+      } else {
+        creation.onSelectFiles(files);
+      }
+      evt.preventDefault();
+      evt.stopPropagation();
+      return;
+    }
     const nonImages = files.filter((file) => !file.type.startsWith("image/"));
     if (nonImages.length === 0) return;
     if (nonImages.length === files.length) {
@@ -830,6 +884,22 @@ export function TaskChatComposer({
 
   async function submit() {
     if (disabled || (pause && !canResetPausedConversation)) return;
+    if (creation) {
+      if (submittingRef.current || uploadPending || uploadFailed || creation.submitDisabled || (!bodyRef.current.trim() && !creation.canSubmitWithoutBody)) return;
+      submittingRef.current = true;
+      setSubmitting(true);
+      setActionError(null);
+      try {
+        await creation.onSubmit(bodyRef.current, pendingMode, runSettings);
+      } catch (error) {
+        setActionError(error instanceof Error ? error.message : "Failed to create task. Try again.");
+      } finally {
+        submittingRef.current = false;
+        setSubmitting(false);
+      }
+      return;
+    }
+    if (!onAdd) return;
     const retained =
       draftKey && !queuedEdit ? loadDraftSubmission(draftKey) : null;
     if (retained && !submitting) {
@@ -1116,7 +1186,7 @@ export function TaskChatComposer({
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-2">
+    <div className={cn("flex min-w-0 flex-col", creation?.contextBar ? "gap-0" : "gap-2")}>
       {takeoverVisible && takeover ? (
         <section
           className={cn(
@@ -1180,6 +1250,16 @@ export function TaskChatComposer({
           ) : null}
         </section>
       ) : null}
+      {creation?.contextBar ? (
+        <TaskChatComposerBar
+          className="flex h-11 min-w-0 items-center gap-2 px-2.5"
+          data-testid="task-chat-composer-context"
+          role="group"
+          aria-label="Task project and worktrees"
+        >
+          {creation.contextBar}
+        </TaskChatComposerBar>
+      ) : null}
       <div
         className={cn(
         streamlined
@@ -1200,11 +1280,12 @@ export function TaskChatComposer({
         if (isModeShortcut) {
           e.preventDefault();
           e.stopPropagation();
-          setPendingMode((mode) => nextWorkMode(mode));
+          changeMode(nextWorkMode(pendingMode));
         }
       }}
         onPasteCapture={handlePasteCapture}
       >
+        {creation?.header}
         {uncertainSubmission ? (
         <div
           role="alert"
@@ -1275,18 +1356,18 @@ export function TaskChatComposer({
                   ? (disabledReason ?? "Composer disabled")
                   : effectivePlaceholder
               }
-              readOnly={disabled || !!uncertainSubmission}
+              readOnly={disabled || !!uncertainSubmission || Boolean(creation && submitting)}
               mentions={mentions}
-              actionCommands={conversationMode ? [{
+              actionCommands={creation ? [] : conversationMode ? [{
                 id: "action:new", kind: "action", command: "new", name: "New session",
                 description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
                 disabled,
               }] : [goalCommandOption]}
               onSubmit={() => void submit()}
               imageUploadHandler={
-                canAcceptFiles ? uploadInlineImage : undefined
+                canAcceptFiles && (!creation || onImageUpload) ? uploadInlineImage : undefined
               }
-              onDropFile={canAcceptFiles ? attachNonImageFile : undefined}
+              onDropFile={canAcceptFiles && !creation ? attachNonImageFile : undefined}
               bordered={false}
               className={cn(disabled && "opacity-60")}
               contentClassName={
@@ -1301,7 +1382,7 @@ export function TaskChatComposer({
             <p
               className="px-1 text-xs text-destructive"
               role="alert"
-              data-testid="task-chat-goal-error"
+              data-testid={creation ? "task-chat-create-error" : "task-chat-goal-error"}
             >
               {actionError}
             </p>
@@ -1368,17 +1449,19 @@ export function TaskChatComposer({
             </AttachmentGroup>
           ) : null}
 
+          {creation?.details}
+
           <div
             className={cn("mt-2 flex items-center gap-x-2 gap-y-3", mobile && !queuedEdit ? "flex-nowrap" : "flex-wrap")}
             data-testid="task-chat-composer-actions"
           >
             <div className="flex min-w-0 max-w-full items-center gap-2">
             {canAcceptFiles ? (
-              <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileInputChange} />
+              <input ref={fileInputRef} type="file" className="hidden" multiple={Boolean(creation)} onChange={handleFileInputChange} />
             ) : null}
             <ComposerAddMenu
               mode={pendingMode}
-              onModeChange={!queuedEdit && onWorkModeChange ? setPendingMode : undefined}
+              onModeChange={!queuedEdit && onWorkModeChange ? changeMode : undefined}
               onAttachFile={canAcceptFiles ? () => fileInputRef.current?.click() : undefined}
               onGoal={!queuedEdit && !conversationMode && attachments.length === 0 &&
                 runnerGoalCapability?.availability === "available" && onRunnerGoalCommand
@@ -1395,7 +1478,7 @@ export function TaskChatComposer({
                   : "Editing queued message"}
               </span>
             ) : (
-              <ComposerModeChip mode={pendingMode} onRemove={onWorkModeChange ? () => setPendingMode("standard") : undefined}
+              <ComposerModeChip mode={pendingMode} onRemove={onWorkModeChange ? () => changeMode("standard") : undefined}
                 disabled={disabled || !!uncertainSubmission} testId="task-chat-composer-mode" mobile={mobile} />
             )}
             </div>
@@ -1495,7 +1578,8 @@ export function TaskChatComposer({
                     !!uncertainSubmission ||
                     uploadPending ||
                     uploadFailed ||
-                    (body.trim().length === 0 && attachedRefs.length === 0)
+                    Boolean(creation?.submitDisabled) ||
+                    (body.trim().length === 0 && attachedRefs.length === 0 && !creation?.canSubmitWithoutBody)
               }
               title={
                 showStop
@@ -1510,7 +1594,7 @@ export function TaskChatComposer({
                       ? "Waiting for upload to finish"
                       : uploadFailed
                         ? "Remove the failed attachment to send"
-                        : "Send (⌘+Enter)"
+                        : creation ? `${creation.submitLabel} (⌘+Enter)` : "Send (⌘+Enter)"
               }
               aria-label={
                 showStop
@@ -1521,8 +1605,9 @@ export function TaskChatComposer({
                     ? queuedEdit.stale
                       ? "Queue as new message"
                       : "Save queued message"
-                    : "Send"
+                    : creation?.submitLabel ?? "Send"
               }
+              aria-busy={submitting}
               className={cn(
                 "flex size-8 min-h-8 min-w-8 shrink-0 aspect-square items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",
                 streamlined

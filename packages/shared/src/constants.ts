@@ -1320,6 +1320,7 @@ export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
  * @see PLUGIN_SPEC.md §15 — Capability Model
  */
 export const PLUGIN_CAPABILITIES = [
+  "ai.connections.route",
   // Data Read
   "companies.read",
   "projects.read",

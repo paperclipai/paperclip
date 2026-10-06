@@ -1,5 +1,6 @@
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, or } from "drizzle-orm";
 import {
   type Db,
@@ -19,19 +20,24 @@ import {
 } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
+  aiConnectionCatalogSlug,
+  getAppStoreDefinition,
   aiConnectionMetadataSchema,
   aiSubscriptionNeedsIsolatedLogin,
   isAiConnectionCompatible,
+  supportsAiConnectionUsage,
   type AiConnectionBinding,
   type AiConnectionAttribution,
   type AiConnectionMetadata,
   type AiManagedConnectionSummary,
+  type AiConnectionUsage,
   type CreateAiConnection,
   type AiConnectionLoginIntent,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+import { probeAiConnectionUsage } from "./ai-connection-usage.js";
 
 /** Same human audience displayed by the existing Connections identity controls. */
 function canUseCredential(
@@ -132,6 +138,7 @@ export function aiConnectionService(db: Db) {
           grantId: grant.id,
           companyId,
           ...metadata.data,
+          usageProbeSupported: supportsAiConnectionUsage(metadata.data.provider, metadata.data.method),
           name: connection.name,
           accountLabel: grant.providerTenant?.name,
           ...(needsReconnect ? { unavailableReason: "Reconnect with a separate sign-in to protect your existing terminal login." } : {}),
@@ -190,9 +197,8 @@ export function aiConnectionService(db: Db) {
         throw unprocessable(
           "Reconnect this account before making it your default",
         );
-      const metadata = aiConnectionMetadataSchema.parse(
-        row.connection.config.ai,
-      );
+      const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
+      if (metadata.routing) throw unprocessable("Custom providers use an explicit connection selection on the agent.");
       // Keep old servers' method preferences intact during an additive rollout.
       await tx.insert(aiConnectionDefaults)
         .values({ companyId, userId, ...metadata, grantId })
@@ -207,6 +213,29 @@ export function aiConnectionService(db: Db) {
           set: { grantId, updatedAt: new Date() },
         });
     });
+  }
+  /** On-demand account observation for either runner; never probes ambient CLI auth. */
+  async function probeUsage(companyId: string, userId: string, connectionId: string, grantId?: string): Promise<AiConnectionUsage> {
+    if (!(await membership(companyId, userId))) throw forbidden("An active company member is required");
+    const candidates = (await rows(companyId)).filter((row) => row.connection.id === connectionId && (!grantId || row.grant.id === grantId));
+    const audience = await db.select().from(connectionGrantMembers).where(eq(connectionGrantMembers.companyId, companyId));
+    const visible = candidates.filter(({ grant }) => canUseCredential(grant, userId, audience.filter((member) => member.grantId === grant.id)));
+    if (!visible.length) throw notFound("AI connection not found");
+    if (visible.length > 1) throw unprocessable("Choose a credential grant for this usage check");
+    const row = visible[0]!;
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    if (!metadata.success) throw notFound("AI connection not found");
+    const identity = { connectionId: row.connection.id, grantId: row.grant.id, ...metadata.data };
+    const empty = { ...identity, checkedAt: new Date().toISOString(), source: null, planType: null, limits: [], overage: null };
+    if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" ||
+      row.connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(row.connection.config)) {
+      return { ...empty, status: "unavailable", errorCode: "connection_unavailable", message: "Reconnect or enable this AI connection before checking usage." };
+    }
+    if (!supportsAiConnectionUsage(metadata.data.provider, metadata.data.method)) {
+      return { ...identity, ...await probeAiConnectionUsage(metadata.data, "") };
+    }
+    const value = await credential(row);
+    return { ...identity, ...await probeAiConnectionUsage(metadata.data, value) };
   }
   async function select(input: {
     companyId: string;
@@ -356,7 +385,7 @@ export function aiConnectionService(db: Db) {
       !installs.length &&
       !(
         (input.allowUninstalledPersonal &&
-          binding.mode === "responsible_user" && grant.subjectUserId === userId) ||
+          grant.kind === "user" && grant.subjectUserId === userId) ||
         (input.allowUninstalledShared && binding.mode === "shared" && grant.kind === "organization")
       )
     )
@@ -374,6 +403,8 @@ export function aiConnectionService(db: Db) {
     };
   }
   async function credential(row: Pick<Awaited<ReturnType<typeof select>>, "connection" | "grant">) {
+    const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
+    if (metadata.routing?.auth === "none") return "";
     const ref = row.grant.credentialSecretRefs.find(
       (r) => r.configPath === "ai.credential",
     );
@@ -394,6 +425,8 @@ export function aiConnectionService(db: Db) {
       throw unprocessable("Reconnect this AI account", {
         code: "ai_connection_credential_missing",
       });
+    if (row.grant.kind === "user" && secret.scope !== "user")
+      throw forbidden("Credential ownership mismatch");
     const context = {
       consumerType: "tool_connection" as const,
       consumerId: row.connection.id,
@@ -435,6 +468,7 @@ export function aiConnectionService(db: Db) {
     sessionId?: string,
     attemptStartedAt = new Date(),
   ) {
+    const routing = "routing" in input ? input.routing : undefined;
     if (!(await membership(companyId, userId)))
       throw forbidden("An active company member must own this connection");
     const reconnect = input.connectionId
@@ -457,6 +491,8 @@ export function aiConnectionService(db: Db) {
         input.provider
     )
       throw unprocessable("Reconnect cannot change providers");
+    if (reconnect && !isDeepStrictEqual((reconnect.connection.config.ai as AiConnectionMetadata).routing, routing))
+      throw unprocessable("Reconnect must retain this connection’s routing. Create another connection to change its destination.");
     if (
       reconnect &&
       ((reconnect.connection.config.ai as AiConnectionMetadata).method !==
@@ -541,7 +577,8 @@ export function aiConnectionService(db: Db) {
           : source?.name === `ai-${grantId}`;
         if (!privateSlot) secretId = undefined;
       }
-      if (secretId)
+      if (!verifiedCredential) { secretId = undefined; }
+      else if (secretId)
         await secrets.rotate(
           secretId,
           { value: verifiedCredential },
@@ -589,15 +626,17 @@ export function aiConnectionService(db: Db) {
         if (targets.length !== new Set(input.agentIds).size)
           throw forbidden("Agent does not belong to this company");
       }
-      const key = `app-gallery:${input.provider}`;
+      const source = aiConnectionCatalogSlug(input.provider, routing);
+      const providerName = getAppStoreDefinition(source)?.name ?? AI_CONNECTION_CAPABILITIES[input.provider].name;
+      const key = `app-gallery:${source}`;
       await tx
         .insert(toolApplications)
         .values({
           companyId,
           applicationKey: key,
-          name: AI_CONNECTION_CAPABILITIES[input.provider].name,
+          name: providerName,
           type: "mcp_http",
-          metadata: { sourceTemplateKey: input.provider },
+          metadata: { sourceTemplateKey: source },
           ownerUserId: userId,
         })
         .onConflictDoNothing();
@@ -611,7 +650,7 @@ export function aiConnectionService(db: Db) {
               eq(toolApplications.applicationKey, key),
               eq(
                 toolApplications.name,
-                AI_CONNECTION_CAPABILITIES[input.provider].name,
+                providerName,
               ),
             ),
           ),
@@ -647,8 +686,8 @@ export function aiConnectionService(db: Db) {
             enabled: true,
             healthStatus: "ok",
             config: {
-              sourceTemplateKey: input.provider,
-              ai: { provider: input.provider, method: input.method },
+              sourceTemplateKey: source,
+              ai: { provider: input.provider, method: input.method, ...(routing ? { routing } : {}) },
               aiIsolatedSubscription: input.method === "subscription" && input.provider !== "anthropic",
             },
             createdByUserId: userId,
@@ -675,14 +714,14 @@ export function aiConnectionService(db: Db) {
           /* Safe account identity is optional. */
         }
       }
-      const refs = [
+      const refs = secretId ? [
         {
           secretId: secretId!,
           configPath: "ai.credential",
           required: true,
           versionSelector: "latest" as const,
         },
-      ];
+      ] : [];
       if (reconnect)
         await tx
           .update(connectionGrants)
@@ -713,7 +752,7 @@ export function aiConnectionService(db: Db) {
         .from(toolConnections)
         .where(eq(toolConnections.id, id));
       await syncConnectionCredentialBindings(tx, savedConnection, refs);
-      if (input.ownership === "personal") {
+      if (input.ownership === "personal" && !routing) {
         await tx
           .insert(aiConnectionDefaults)
           .values({
@@ -778,8 +817,8 @@ export function aiConnectionService(db: Db) {
   /** A late failure must never invalidate credentials that were refreshed or reconnected meanwhile. */
   async function markAuthenticationFailed(input: {
     companyId: string;
-    runId: string;
-    agentId: string;
+    runId?: string;
+    agentId?: string;
     runStartedAt: Date;
     attribution: AiConnectionAttribution & { identity: string };
   }) {
@@ -812,12 +851,12 @@ export function aiConnectionService(db: Db) {
       await tx.update(toolConnections).set({ healthStatus: "error", healthMessage: "Sign in again to restore this AI connection.", updatedAt: new Date() })
         .where(eq(toolConnections.id, connection.id));
       await logActivity(tx as unknown as Db, {
-        companyId: input.companyId, actorType: "system", actorId: "heartbeat",
+        companyId: input.companyId, actorType: "system", actorId: input.runId ? "heartbeat" : "adapter_test",
         agentId: input.agentId, runId: input.runId, action: "ai_connection.authentication_failed",
         entityType: "tool_connection", entityId: connection.id,
         details: { provider: attribution.provider, grantId: grant.id },
       });
     });
   }
-  return { list, select, credential, save, setDefault, membership, markAuthenticationFailed };
+  return { list, select, credential, probeUsage, save, setDefault, membership, markAuthenticationFailed };
 }

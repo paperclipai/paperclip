@@ -1,4 +1,4 @@
-import { AI_PROVIDERS, isAiConnectionCompatible, type AiConnectionBinding } from "@paperclipai/shared";
+import { AI_PROVIDERS, AI_CONNECTION_CAPABILITIES, isAiConnectionCompatible, type AiConnectionBinding } from "@paperclipai/shared";
 
 /** Provider authentication signals only. Tool authorization and quotas need different repairs. */
 export function isAiAuthenticationFailure(code: string | null | undefined): boolean {
@@ -18,7 +18,7 @@ export function aiBindingForAuthRecovery(
   config: Record<string, unknown>,
 ): AiConnectionBinding | undefined {
   for (const provider of AI_PROVIDERS) {
-    const binding = { provider, method: provider === "openrouter" ? "api_key" : "subscription", mode: "responsible_user" } as const;
+    const binding = { provider, method: AI_CONNECTION_CAPABILITIES[provider].methods.subscription ? "subscription" : "api_key", mode: "responsible_user" } as const;
     if (isAiConnectionCompatible(binding, adapterType, config.model, config.provider, config.acpxAgent)) return binding;
   }
   return undefined;

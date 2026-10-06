@@ -617,6 +617,14 @@ fn codex_account_updates_do_not_interrupt_turns_or_publish_account_details() {
                         assert!(!params.to_string().contains("fixture-login"));
                         assert!(params.get("authMode").is_none());
                         assert!(params.get("planType").is_none());
+                        let normalized = normalize_codex_notification(&method, &params);
+                        assert_eq!(normalized.len(), 1);
+                        assert_eq!(normalized[0].event_type, "harness.diagnostic");
+                        assert_eq!(normalized[0].payload["code"], "codex_unrelated_information");
+                        assert_eq!(
+                            normalized[0].payload["providerMethod"],
+                            params["providerMethod"]
+                        );
                     }
                     if method == "turn/completed" {
                         completed = true;
@@ -3477,6 +3485,65 @@ fn durable_backend_replays_pending_tool_calls_without_mutating_the_event_queue()
 }
 
 #[test]
+fn restart_lost_turn_retains_a_recoverable_cause_without_inventing_a_result() {
+    let directory = temporary_directory("restart-lost-turn");
+    let config = provider_config(
+        &directory,
+        &["--durable-turn-ids", "--linger-after-turn-start"],
+    );
+    let mut first = CodexCommandExecutor::new(&directory);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            "start",
+            3,
+            "turn.start",
+            json!({"text": "Watch the existing check run."}),
+        ))
+        .unwrap();
+    // The process disappeared while its command was in flight. Codex restores
+    // the conversation, but cannot restore the running turn.
+    drop(first);
+    fs::write(
+        directory.join("fake-state.json"),
+        serde_json::to_vec(&json!({
+            "threadId": "codex-thread-1", "activeTurnId": null, "nextTurn": 1,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut restored = CodexCommandExecutor::new(&directory);
+    restored
+        .execute(&command("snapshot", 4, "session.snapshot", json!({})))
+        .unwrap();
+    let events = poll_and_ack(&mut restored).unwrap();
+    let interrupted = events
+        .iter()
+        .find(|event| event.event_type == "turn.failed")
+        .unwrap();
+    assert_eq!(
+        interrupted.payload["error"]["code"],
+        "provider_turn_lost_on_restore"
+    );
+    assert_eq!(interrupted.payload["error"]["recoverable"], true);
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "run.result.proposed"));
+    restored.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn durable_backend_settles_pending_tools_when_recovery_finds_the_turn_ended() {
     let directory = temporary_directory("durable-tool-ended-offline");
     let config = provider_config(&directory, &["--require-dynamic-tool", "--emit-tool-call"]);
@@ -6288,6 +6355,34 @@ fn skill_wire_requests(directory: &Path) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+#[test]
+fn runtime_instructions_are_additive_for_codex_on_start_and_resume() {
+    let directory = temporary_directory("instruction-channel-wire");
+    let log = directory.join("requests.ndjson");
+    let config = provider_config(&directory, &["--request-log", log.to_str().unwrap()]);
+    let mut provider = CodexProvider::start(&config, None).unwrap();
+    let thread_id = provider.thread_id().to_owned();
+    provider.shutdown().unwrap();
+    let mut resumed = CodexProvider::start(&config, Some(&thread_id)).unwrap();
+    resumed.shutdown().unwrap();
+    let frames = skill_wire_requests(&directory);
+    for method in ["thread/start", "thread/resume"] {
+        let frame = frames
+            .iter()
+            .find(|frame| frame["method"] == method)
+            .unwrap();
+        assert_eq!(
+            frame["params"]["developerInstructions"], config.instructions,
+            "{method}"
+        );
+        assert!(
+            frame["params"].get("baseInstructions").is_none(),
+            "{method}"
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

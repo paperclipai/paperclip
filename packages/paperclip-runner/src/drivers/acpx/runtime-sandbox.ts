@@ -453,6 +453,16 @@ export async function prepareAcpxRuntimeSandbox(input: {
         // also affect provider startup and belongs at the launch boundary.
         "[features]",
         "shell_snapshot = false",
+        ...(input.environment?.PAPERCLIP_AGENT_KEY_ID ? [
+          "[shell_environment_policy]", 'inherit = "all"', "ignore_default_excludes = true",
+          `include_only = ${JSON.stringify([...new Set([
+            "PATH", "HOME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
+            "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+            // Provider/config secrets keep Codex's default shell exclusions;
+            // only Paperclip's scoped API token is required by Bash/curl skills.
+            ...Object.keys(input.environment).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+          ])])}`,
+        ] : []),
         "",
       ].join("\n"),
     );

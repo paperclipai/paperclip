@@ -395,6 +395,8 @@ export const companySkillFileUpdateSchema = z.object({
   content: z.string(),
   encoding: z.enum(["utf8", "base64"]).optional(),
   executable: z.boolean().optional(),
+  expectedVersionId: z.string().guid().nullable().optional(),
+  idempotencyKey: z.string().min(1).max(240).optional(),
 });
 
 export const companySkillFileDeleteSchema = z.object({

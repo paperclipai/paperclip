@@ -7,6 +7,19 @@ const run = (overrides: Partial<Run> = {}) => ({ resultJson: null, ...overrides 
 const collect = (error: unknown) => collectRunFailureDiagnostics(run(), { error });
 
 describe("run failure diagnostics", () => {
+  it("exports only the closed native model/auth rejection vocabulary", () => {
+    const diagnostic = { provider: "codex", category: "model_auth_incompatible", status: 400, authMode: "chatgpt" };
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      nativeProviderFailure: { ...diagnostic, model: "private-model", response: "private-provider-response", prompt: "private-prompt" },
+    } }), {}));
+    expect(result.provider).toEqual(diagnostic);
+    expect(JSON.stringify(result)).not.toContain("private");
+    for (const value of [null, [], { ...diagnostic, category: "private-category" },
+      Object.defineProperty({}, "provider", { get() { throw new Error("private"); } })]) {
+      expect(collectRunFailureDiagnostics(run({ resultJson: { nativeProviderFailure: value } }), {}).provider).toEqual({});
+    }
+  });
+
   it("selects bounded lock-owner evidence from a caught timeout cause", () => {
     const error = new Error("outer", { cause: Object.assign(new Error("lock timeout"), {
       code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT",
@@ -54,6 +67,93 @@ describe("run failure diagnostics", () => {
       expect(JSON.stringify(result)).not.toContain("private");
     },
   );
+
+  it("copies only classified restore diagnostics from the saved result", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      workspaceRestoreFailure: "restore_failed",
+      workspaceRestoreDiagnostic: {
+        phase: "workspace", step: "git_integration", errorCode: "unknown", httpStatus: 503, exitCode: 1,
+        gitCommand: "merge_tree", gitFailureKind: "merge_conflict",
+        message: "private command failed", path: "/private/workspace", stdout: "private file contents",
+        cause: { code: "EIO", message: "private nested cause" },
+      },
+    } }), {}));
+    expect(result.execution).toEqual({
+      workspaceRestoreFailure: "restore_failed", workspaceRestorePhase: "workspace",
+      workspaceRestoreStep: "git_integration", workspaceRestoreErrorCode: "unknown",
+      workspaceRestoreHttpStatus: 503, workspaceRestoreExitCode: 1,
+      workspaceRestoreGitCommand: "merge_tree", workspaceRestoreGitFailureKind: "merge_conflict",
+    });
+    expect(JSON.stringify(result)).not.toContain("private");
+    expect(result.exceptions).toEqual([]);
+  });
+
+  it.each([
+    { phase: "asset", step: "git_integration", gitCommand: "merge_tree", gitFailureKind: "merge_conflict" },
+    { phase: "workspace", step: "git_import", gitCommand: "merge_tree", gitFailureKind: "merge_conflict" },
+    { phase: "workspace", step: "git_integration", gitCommand: "private-command", gitFailureKind: "private-output" },
+  ])("omits unrelated or unrecognized persisted Git labels (%j)", (diagnostic) => {
+    const result = collectRunFailureDiagnostics(run({ resultJson: {
+      workspaceRestoreFailure: "restore_failed", workspaceRestoreDiagnostic: diagnostic,
+    } }), {});
+    expect(result.execution).not.toHaveProperty("workspaceRestoreGitCommand");
+    expect(result.execution).not.toHaveProperty("workspaceRestoreGitFailureKind");
+    expect(JSON.stringify(result)).not.toContain("private-");
+  });
+
+  it("requires a known restore failure before reading its diagnostic", () => {
+    const diagnostic = { phase: "workspace", step: "git_import", errorCode: "EIO", exitCode: 1 };
+    for (const code of [undefined, null, "private unknown classification"]) {
+      const result = collectRunFailureDiagnostics(run({ resultJson: {
+        workspaceRestoreFailure: code, workspaceRestoreDiagnostic: diagnostic,
+      } }), {});
+      expect(result.execution).toEqual({});
+    }
+    const resultJson = Object.defineProperty({}, "workspaceRestoreDiagnostic", {
+      get() { throw new Error("must not read unrelated diagnostic"); },
+    });
+    expect(collectRunFailureDiagnostics(run({ resultJson }), {}).execution).toEqual({});
+  });
+
+  it.each([null, false, 1, "private payload", [], { phase: "private phase", errorCode: "EIO" }])(
+    "omits malformed workspace restore diagnostics (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: {
+        workspaceRestoreFailure: "restore_failed", workspaceRestoreDiagnostic: value,
+      } }), {});
+      expect(result.execution).toEqual({ workspaceRestoreFailure: "restore_failed" });
+      expect(JSON.stringify(result)).not.toContain("private");
+    },
+  );
+
+  it.each([null, -1, Infinity, NaN, 1.5, 600, "private status", {}])(
+    "omits invalid restore status and exit values (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: {
+        workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreDiagnostic: {
+          phase: "asset", step: "private step", errorCode: "private code", httpStatus: value, exitCode: value,
+        },
+      } }), {});
+      expect(result.execution).toEqual({
+        workspaceRestoreFailure: "restore_failed", workspaceRestorePhase: "asset", workspaceRestoreErrorCode: "unknown",
+      });
+    },
+  );
+
+  it("does not walk restore causes or expose errors from diagnostic getters", () => {
+    const diagnostic = Object.defineProperties({ phase: "workspace", errorCode: "EIO" }, {
+      step: { get() { throw new Error("private getter"); } },
+      httpStatus: { get() { throw new Error("private getter"); } },
+      exitCode: { get() { throw new Error("private getter"); } },
+      cause: { get() { throw new Error("must not walk cause"); } },
+    });
+    const result = collectRunFailureDiagnostics(run({ resultJson: {
+      workspaceRestoreFailure: "restore_failed", workspaceRestoreDiagnostic: diagnostic,
+    } }), {});
+    expect(result.execution).toEqual({
+      workspaceRestoreFailure: "restore_failed", workspaceRestorePhase: "workspace", workspaceRestoreErrorCode: "EIO",
+    });
+    expect(result.exceptions).toEqual([]);
+  });
 
   it("includes only bounded ACP activity fields, not tool names, identities, or output", () => {
     const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {

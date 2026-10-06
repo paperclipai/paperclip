@@ -48,7 +48,7 @@ const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = external
   ? { supported: true }
   : await getEmbeddedPostgresTestSupport();
-const suite = support.supported ? describe.sequential : describe.skip;
+const suite = support.supported ? describe : describe.skip;
 const bytes = Buffer.from("Exact Teams file bytes\n");
 const uploadUrl =
   "https://tenant-my.sharepoint.com/personal/user/_api/upload?token=PRIVATE-TEAMS-UPLOAD-CANARY";

@@ -62,6 +62,7 @@ export type AuthorizationActor =
       | "board_key"
       | "agent_key"
       | "agent_jwt"
+      | "mcp_oauth"
       | "cloud_tenant"
       | "cloud_control"
       | "none";
@@ -1691,6 +1692,8 @@ export function authorizationService(db: Db | DbTransaction) {
           explanation: "Allowed because the actor is the local implicit board.",
         });
       }
+      // MCP grants always use their explicitly consented company membership,
+      // even when the consenting person is an instance administrator.
       // A cloud_tenant actor's computed `isInstanceAdmin` flag is trusted: it
       // can only be set by the attested trusted-header resolver (stack owner +
       // `enableOwnerInstanceAdmin`). The `instance_user_roles` DB lookup stays
@@ -1698,7 +1701,7 @@ export function authorizationService(db: Db | DbTransaction) {
       // instance_admin row left behind by deployments that ran the
       // pre-hardening cloud_tenant path still elevates nothing.
       if (
-        !input.actor.ignoreInstanceAdmin &&
+        !input.actor.ignoreInstanceAdmin && input.actor.source !== "mcp_oauth" &&
         (input.actor.isInstanceAdmin ||
           (input.actor.source !== "cloud_tenant" && await isInstanceAdmin(input.actor.userId)))
       ) {
@@ -2060,7 +2063,8 @@ export function authorizationService(db: Db | DbTransaction) {
         // implicit default-open policy remains responsible-user-only so an
         // absent row never becomes a company-wide cross-user grant.
         const grant = await findGrant(companyId, "agent", actorAgentId, "inbox:manage");
-        if (grant && (await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
+        if (grant && grant.scope?.responsibleUserOnly !== true &&
+            (await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
           return allow({
             action: input.action,
             reason: "allow_explicit_grant",
@@ -2461,8 +2465,28 @@ export function authorizationService(db: Db | DbTransaction) {
     return applyResponsibleUserIntersection(input, agentDecision);
   }
 
+  // A candidate filter only: project policies and responsible-user grants are
+  // still evaluated by decide(). Project policies can contribute an additional
+  // root/project scope, so the query must also retain projects with such policy.
+  async function projectDiscoveryCandidateIds(actor: AuthorizationActor, companyId: string): Promise<string[] | null> {
+    if (actor.type !== "agent" || !actor.agentId || actor.keyScope) return null;
+    const agent = await loadAgent(actor.agentId);
+    if (!agent || agent.companyId !== companyId) return [];
+    const run = await loadRunPolicy(actor.runId, companyId, agent.id);
+    const resolution = resolveCoreTrustPreset({ companyId, agent, run });
+    // A project can supply a missing boundary; never prefilter that case.
+    if (resolution.kind !== "low_trust_review") return null;
+    const ids = new Set(resolution.boundary.projectIds ?? []);
+    if (resolution.boundary.rootIssueId) {
+      const root = await loadIssue(resolution.boundary.rootIssueId);
+      if (root?.companyId === companyId && root.projectId) ids.add(root.projectId);
+    }
+    return [...ids];
+  }
+
   return {
     decide,
+    projectDiscoveryCandidateIds,
     decidePrincipalGrant,
   };
 }

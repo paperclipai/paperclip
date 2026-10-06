@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expectTaskPanelTab, selectTaskPanelTab } from "./helpers/task-panel-tabs";
 
 async function json(response: Awaited<ReturnType<APIRequestContext["get"]>>) {
   expect(response.ok(), `${response.status()}: ${await response.text()}`).toBe(true);
@@ -38,7 +39,7 @@ for (const mobile of [false, true]) {
     await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
     await page.getByRole("link", { name: "Open AGENTS.md", exact: true }).click();
     const panel = mobile ? page.getByTestId("mobile-task-side-panel") : page.locator("aside").filter({ has: page.getByRole("tab", { name: "AGENTS.md", exact: true }) });
-    await expect(panel.getByRole("tab", { name: "AGENTS.md", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expectTaskPanelTab(panel, mobile, "AGENTS.md");
     await expect(panel.getByRole("heading", { name: "File charter", exact: true, level: 1 })).toBeVisible();
     const raw = panel.getByRole("button", { name: "Raw", exact: true });
     await raw.click();
@@ -50,18 +51,25 @@ for (const mobile of [false, true]) {
     const markdownDownload = page.waitForEvent("download");
     await panel.getByRole("link", { name: "Download AGENTS.md", exact: true }).click();
     expect(await fs.readFile((await (await markdownDownload).path())!)).toEqual(files[0]!.buffer);
-    if (mobile) await panel.getByRole("button", { name: "Toggle side panel", exact: true }).click();
+    if (mobile) await panel.getByRole("button", { name: "Close side panel", exact: true }).click();
     await page.getByRole("link", { name: "Open notes.txt", exact: true }).click();
-    await expect(panel.getByRole("tab", { name: "notes.txt", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expectTaskPanelTab(panel, mobile, "notes.txt");
     await expect(panel.getByLabel("notes.txt raw text")).toContainText("<script>never execute</script>");
     await expect(panel.getByRole("group", { name: "Markdown view", exact: true })).toHaveCount(0);
     const textDownload = page.waitForEvent("download");
     await panel.getByRole("link", { name: "Download notes.txt", exact: true }).click();
     expect(await fs.readFile((await (await textDownload).path())!)).toEqual(files[1]!.buffer);
     await page.screenshot({ path: testInfo.outputPath("plain-text-download.png"), fullPage: true });
-    await panel.getByRole("tab", { name: "AGENTS.md", exact: true }).click();
+    await selectTaskPanelTab(page, panel, mobile, "AGENTS.md");
     await expect(panel.getByRole("heading", { name: "File charter", exact: true, level: 1 })).toBeVisible();
-    await expect(panel.getByRole("tab", { name: "AGENTS.md", exact: true })).toHaveCount(1);
+    if (mobile) {
+      await panel.getByRole("button", { name: /^Switch tabs, \d+ open$/ }).click();
+      const overview = page.getByRole("dialog", { name: "Open tabs", exact: true });
+      await expect(overview.getByRole("button", { name: "AGENTS.md", exact: true })).toHaveCount(1);
+      await overview.getByRole("button", { name: "AGENTS.md", exact: true }).click();
+    } else {
+      await expect(panel.getByRole("tab", { name: "AGENTS.md", exact: true })).toHaveCount(1);
+    }
     await panel.getByRole("button", { name: "Open a new tab", exact: true }).click();
     await page.getByRole("option", { name: /^Artifacts(?: Already open)?$/ }).click();
     const markdownCard = panel.getByRole("article").filter({ has: page.getByRole("heading", { name: "Delivered AGENTS.md", exact: true }) });
@@ -75,11 +83,11 @@ for (const mobile of [false, true]) {
     const textCard = panel.getByRole("article").filter({ has: page.getByRole("heading", { name: "Delivered notes.txt", exact: true }) });
     await textCard.getByRole("link", { name: "Download file", exact: true }).click();
     expect(await fs.readFile((await (await cardDownload).path())!)).toEqual(files[1]!.buffer);
-    await expect(panel.getByRole("tab", { name: "Artifacts", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expectTaskPanelTab(panel, mobile, "Artifacts");
     await panel.getByRole("button", { name: "Open in tab: Delivered notes.txt", exact: true }).click();
-    await expect(panel.getByRole("tab", { name: "notes.txt", exact: true })).toHaveAttribute("aria-selected", "true");
-    await panel.getByRole("tab", { name: "Artifacts", exact: true }).click();
+    await expectTaskPanelTab(panel, mobile, "notes.txt");
+    await selectTaskPanelTab(page, panel, mobile, "Artifacts");
     await panel.getByRole("button", { name: "Open in tab: Delivered AGENTS.md", exact: true }).click();
-    await expect(panel.getByRole("tab", { name: "AGENTS.md", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expectTaskPanelTab(panel, mobile, "AGENTS.md");
   });
 }

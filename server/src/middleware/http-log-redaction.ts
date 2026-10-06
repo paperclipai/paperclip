@@ -1,5 +1,6 @@
 export const HTTP_LOG_REDACT_PATHS = [
   "req.headers.authorization",
+  "res.headers.location",
   'req.headers["proxy-authorization"]',
   "req.headers.cookie",
   // "set-cookie" is normally a response header; keep the request-side

@@ -230,9 +230,10 @@ Runnerd build-metadata contract v2 advertises the exact transport inventory:
 `dial_ws_loopback`, `dial_wss`, and `listen_ws`. Plaintext dial destinations
 must resolve entirely to loopback. Public dial targets require TLS trust and
 hostname validation; a private CA bundle augments the platform roots and must
-be a bounded, private, regular file. Listener mode is fixed to port 43127 and a
-single run-bound path. All modes retain the same message/frame bounds and PRP
-authentication.
+be a bounded, private, regular file. Listener mode binds to `0.0.0.0` and a
+single run-bound path. The optional `--listen-port` selects a port in
+`1..=65535` and defaults to `43127`. Warm attachments retain the existing
+listening port. All modes retain the same message/frame bounds and PRP authentication.
 
 These are package-local Durable recovery and transport rules. Control-plane
 admission and deployment policy remain separately reviewed work.

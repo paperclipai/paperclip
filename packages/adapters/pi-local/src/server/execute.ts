@@ -45,6 +45,7 @@ import {
   resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
+  hydrateFreshSessionHandoff,
   selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
@@ -276,7 +277,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Build environment
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {
-    ...buildPaperclipEnv(agent),
+    ...buildPaperclipEnv(agent, ctx.agentIdentity),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
   env.PAPERCLIP_RUN_ID = runId;
@@ -662,6 +663,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const runAttempt = async (sessionFile: string) => {
       const attemptResumedSession = canResumeSession && sessionFile === sessionPath;
+      await hydrateFreshSessionHandoff(ctx, { resumedSession: attemptResumedSession });
       const attemptSections = selectPaperclipPromptSections(context, {
         resumedSession: attemptResumedSession,
         includeCommunicationGuidance: false,

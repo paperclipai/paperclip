@@ -18,6 +18,10 @@ vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(), get: state.getAgent
 vi.mock("@/api/agentChats", () => ({ agentChatsApi: { list: vi.fn(), ensure: state.ensure } }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: () => ({ user: { id: "user-a" } }) } }));
 vi.mock("./AgentAvatar", () => ({ AgentAvatar: () => null }));
+const memberships = vi.hoisted(() => ({ agentMemberships: {} as Record<string, string> }));
+vi.mock("@/api/resourceMemberships", () => ({ resourceMembershipsApi: {
+  listMine: async () => ({ projectMemberships: {}, agentMemberships: memberships.agentMemberships, starredProjectIds: [], starredAgentIds: [], starredDocumentIds: [] }),
+} }));
 let root: Root;
 let container: HTMLDivElement;
 let client: QueryClient;
@@ -36,6 +40,7 @@ beforeEach(() => {
   state.companyId = "company-a";
   state.navigate.mockReset(); state.closeSidebar.mockReset(); state.ensure.mockReset(); state.getAgent.mockReset();
   state.ensure.mockImplementation(async (_company, id) => chat(id));
+  memberships.agentMemberships = {};
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(queryKeys.auth.session, { user: { id: "user-a" } });
   client.setQueryData(queryKeys.agents.list("company-a"), roster);
@@ -45,8 +50,10 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); vi.unstubAllGlobals(); });
 it("adds through the server and reopens one cached conversation without a duplicate row", async () => {
   await render();
-  expect(container.querySelectorAll('nav[aria-label="Agent conversations"] a')).toHaveLength(1);
-  await addChat(); await choose("bob");
+  expect(container.querySelectorAll('nav[aria-label="Agent conversations"] a')).toHaveLength(2);
+  await addChat();
+  expect([...document.querySelectorAll("[role=option]")].find(option => option.textContent?.startsWith("bob"))?.textContent).not.toContain("Open chat");
+  await choose("bob");
   expect(state.ensure).toHaveBeenCalledWith("company-a", "bob");
   expect(state.navigate).toHaveBeenLastCalledWith("/chats/bob");
   expect(state.closeSidebar).toHaveBeenCalledWith(false);
@@ -134,4 +141,22 @@ it("keeps healthy chats usable while a historical lookup fails and retries", asy
   });
   expect(container.querySelector('[role="alert"]')).toBeNull();
   expect(container.querySelector('a[href="/chats/alice"]')).not.toBeNull();
+});
+
+it("lists every eligible agent: open chat, then conversations by recency, then the rest alphabetically", async () => {
+  const more = [
+    { ...roster[0], id: "zed", name: "Zed", urlKey: "zed" },
+    { ...roster[0], id: "carol", name: "carol", urlKey: "carol" },
+    { ...roster[0], id: "gone", name: "Gone", urlKey: "gone", status: "terminated" },
+    { ...roster[0], id: "left", name: "Left", urlKey: "left" },
+  ] as Agent[];
+  memberships.agentMemberships = { left: "left" };
+  client.setQueryData(queryKeys.agents.list("company-a"), [...more, ...roster]);
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat("bob")]);
+  await render();
+  await vi.waitFor(async () => {
+    await act(async () => {});
+    expect([...container.querySelectorAll('nav[aria-label="Agent conversations"] a')].map(link => link.getAttribute("href")))
+      .toEqual(["/chats/alice", "/chats/bob", "/chats/carol", "/chats/zed"]); // the open chat (alice) is pinned first
+  });
 });

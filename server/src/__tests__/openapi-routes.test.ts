@@ -61,6 +61,7 @@ const apiPrefixes: Record<string, string> = {
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
   "projects.ts": "/api",
+  "public-mcp.ts": "/api",
   "project-tools.ts": "/api",
   "resource-memberships.ts": "/api",
   "remote-agent-profiles.ts": "/api",
@@ -92,6 +93,14 @@ const HTTP_METHODS = new Set([
 const explicitOpenApiCoverageExclusions = new Set<string>();
 
 const explicitOpenApiOperationCoverageExclusions = new Set([
+  // OAuth discovery and protocol endpoints have their own metadata contract;
+  // browser connection-management operations remain documented in the board API.
+  "GET /.well-known/oauth-authorization-server",
+  "POST /mcp/oauth/register",
+  "POST /mcp/oauth/device_authorization",
+  "GET /mcp/oauth/authorize",
+  "POST /mcp/oauth/token",
+  "POST /mcp/oauth/revoke",
   // This endpoint is authenticated by the provider signature rather than by a
   // Paperclip board/agent credential. It intentionally stays out of the public
   // board API document, while this exact exclusion keeps route coverage honest.
@@ -132,6 +141,7 @@ function normalizeExpressPath(routePath: string) {
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
+  if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&
     routePath.startsWith("/api/chat-webhooks/")
@@ -227,6 +237,22 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents board-only pool management with revision-checked deletion", () => {
+    const { spec } = loadSpecRoutes();
+    const pools = spec.paths["/api/companies/{companyId}/ai-connection-pools"];
+    const remove = spec.paths["/api/companies/{companyId}/ai-connection-pools/{poolId}"].delete;
+    const inspection = spec.paths["/api/companies/{companyId}/ai-connection-pools/{poolId}/inspection"].get;
+    for (const operation of [pools.get, pools.post, remove, inspection]) {
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    }
+    expect(remove.requestBody.required).toBe(true);
+    expect(remove.requestBody.content["application/json"].schema).toMatchObject({
+      required: ["expectedRevision"], additionalProperties: false,
+      properties: { expectedRevision: { type: "integer", minimum: 0, exclusiveMinimum: true } },
+    });
+    expect(Object.keys(remove.responses)).toEqual(expect.arrayContaining(["200", "400", "401", "403", "404", "409"]));
+  });
+
   it("documents personal board-only announcements and private responses", () => {
     const { spec } = loadSpecRoutes();
     const current = spec.paths["/api/announcements/current"].get;

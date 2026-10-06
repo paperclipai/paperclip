@@ -18,10 +18,10 @@ use crate::codex_provider::{
     MAX_SETTLED_PROVIDER_TURN_IDS,
 };
 use crate::durable::{
-    create_private_temporary_file, current_unix_ms, open_private_regular_file,
-    sanitize_semantic_tool_input, sanitize_value, verify_private_directory, Command,
-    CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError, EventPriority,
-    OpenCodeLaunchProfile, PolledEvent, TerminalDeliveryReconciliation,
+    create_private_temporary_file, current_unix_ms, open_private_regular_file, sanitize_value,
+    validate_semantic_tool_input, verify_private_directory, Command, CommandExecution,
+    CommandExecutor, DurableRunnerConfig, DurableRunnerError, EventPriority, OpenCodeLaunchProfile,
+    PolledEvent, TerminalDeliveryReconciliation,
 };
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, semantic_value_digest, AuthorizedToolSet, DurableReplayFilter,
@@ -339,7 +339,7 @@ fn semantic_input_event(
     identity: &ProviderEventIdentity,
     call: &PendingToolCall,
 ) -> Result<NormalizedProviderEvent, DurableRunnerError> {
-    let safe_input = sanitize_semantic_tool_input(&call.operation_id, &call.input)?;
+    let safe_input = validate_semantic_tool_input(&call.operation_id, &call.input)?;
     Ok(NormalizedProviderEvent {
         event_type: "semantic_tool.input".to_owned(),
         priority: EventPriority::P0,
@@ -2103,17 +2103,29 @@ impl CodexCommandExecutor {
                                 "providerTurnId": previous_active_turn_id,
                                 "status": "failed",
                                 "providerTerminalObserved": false,
+                                "error": if provider_label == "codex" { json!({
+                                    "code": "provider_turn_lost_on_restore",
+                                    "recoverable": true,
+                                    "message": "The runner restored the conversation after process loss, but the previous turn is no longer active.",
+                                }) } else { Value::Null },
                             }),
                         };
-                        let outcome = terminal_events(
-                            state,
-                            "turn.failed",
-                            state.goal.as_ref().map(|goal| goal.status.as_str()),
-                        );
-                        state.extend_terminal_events(with_terminal_outcome(
-                            vec![provider_terminal],
-                            outcome,
-                        ))?;
+                        if provider_label == "codex" {
+                            // No provider result was observed. Preserve the lost
+                            // turn as a fact, but leave the run open for the
+                            // controller's bounded same-conversation recovery.
+                            state.push_terminal_event(provider_terminal)?;
+                        } else {
+                            let outcome = terminal_events(
+                                state,
+                                "turn.failed",
+                                state.goal.as_ref().map(|goal| goal.status.as_str()),
+                            );
+                            state.extend_terminal_events(with_terminal_outcome(
+                                vec![provider_terminal],
+                                outcome,
+                            ))?;
+                        }
                     }
                 } else {
                     state.push_event(reconciled)?;
@@ -3712,7 +3724,7 @@ impl CodexCommandExecutor {
         operation_id: String,
         input: Value,
     ) -> Result<(), DurableRunnerError> {
-        if let Err(error) = sanitize_semantic_tool_input(&operation_id, &input) {
+        if let Err(error) = validate_semantic_tool_input(&operation_id, &input) {
             return self.reject_tool_call(
                 call_id,
                 operation_id,
@@ -4933,7 +4945,7 @@ mod tests {
             CodexProviderConfig {
                 provider: "opencode".to_owned(),
                 driver: "opencode_server".to_owned(),
-                provider_version: "1.18.32".to_owned(),
+                provider_version: "1.18.34".to_owned(),
                 command: PathBuf::from("node"),
                 args: Vec::new(),
                 cwd: std::env::current_dir()
@@ -5295,7 +5307,7 @@ mod tests {
             CodexProviderConfig {
                 provider: "opencode".to_owned(),
                 driver: "opencode_server".to_owned(),
-                provider_version: "1.18.32".to_owned(),
+                provider_version: "1.18.34".to_owned(),
                 command: PathBuf::from("node"),
                 args: Vec::new(),
                 cwd: std::env::current_dir()
@@ -5512,7 +5524,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_input_rejects_credential_material_before_dispatch() {
+    fn semantic_input_preserves_credential_arguments_for_the_harness() {
         let identity = ProviderEventIdentity {
             runner_instance_id: "runner-1".to_owned(),
             run_id: "run-1".to_owned(),
@@ -5525,10 +5537,12 @@ mod tests {
             operation_id: "get_task_context".to_owned(),
             input: json!({"password": "do-not-persist", "safe": true}),
         };
-        assert!(semantic_input_event(&identity, &call)
-            .unwrap_err()
-            .to_string()
-            .contains("refusing to execute altered arguments"));
+        let event = semantic_input_event(&identity, &call).unwrap();
+        assert_eq!(event.payload["semantic_tool"]["input"], call.input);
+        assert_eq!(
+            event.payload["semantic_tool"]["content"]["digest"],
+            json!(semantic_value_digest(&call.input))
+        );
     }
 
     #[test]

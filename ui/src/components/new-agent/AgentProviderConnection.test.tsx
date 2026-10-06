@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { flushSync } from "react-dom";
+import type { LocalAiLoginStatus } from "@paperclipai/shared";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,7 +19,7 @@ const managedApi = vi.hoisted(() => ({
   loginResult: vi.fn(async () => ({ connectionId: "login-account", grantId: "login-grant" })),
   connectLocal: vi.fn(async () => ({ connectionId: "local-account", grantId: "local-grant" })),
   startLocalLogin: vi.fn(async () => ({ sessionId: "local-attempt", command: "CODEX_HOME='/fixture/isolated-login' codex login", expiresAt: "2026-09-11T20:00:00Z" })),
-  checkLocalLogin: vi.fn(async () => ({ status: "sign_in_required" as const })),
+  checkLocalLogin: vi.fn(async (): Promise<LocalAiLoginStatus> => ({ status: "sign_in_required" })),
   cancelLocalLogin: vi.fn(async () => ({})),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
 }));
@@ -234,14 +235,12 @@ describe("AgentProviderConnection reuse", () => {
   });
   it.each(["claude_local", "codex_local"] as const)("prepares and completes an isolated subscription on an authenticated self-hosted instance: %s", async adapterType => {
     const onComplete = vi.fn();
-    const command = adapterType === "claude_local" ? "CLAUDE_CONFIG_DIR='/isolated/claude' claude auth login" : "CODEX_HOME='/isolated/codex' codex login --device-auth";
-    managedApi.startLocalLogin.mockResolvedValue({ sessionId: "local-attempt", command, expiresAt: "2099-01-01T00:00:00Z" });
+    managedApi.checkLocalLogin.mockResolvedValue({ status: "ready" });
     const intent = { provider: adapterType === "claude_local" ? "anthropic" as const : "openai" as const, method: "subscription" as const, name: "Self-hosted account", ownership: "personal" as const, agentIds: [], allAgents: false };
     await mount(adapterType, false, false, false, false, false, { intent, onComplete }, true, "authenticated");
     openProvider();
-    await vi.waitFor(() => expect(host.textContent).toContain(command));
-    expect(host.textContent).toContain("Your existing terminal login stays separate");
-    expect(host.textContent).not.toContain("Connect uses your local");
+    await vi.waitFor(() => expect(host.textContent).toContain("is signed in"));
+    expect(host.textContent).not.toMatch(/CLAUDE_CONFIG_DIR|CODEX_HOME|Run this in a terminal/);
     expect(managedApi.startLocalLogin).toHaveBeenCalledWith("c1", intent);
     expect(managedApi.checkLocalLogin).toHaveBeenCalledWith("c1", { ...intent, localSessionId: "local-attempt" });
     click("Connect");
@@ -250,25 +249,27 @@ describe("AgentProviderConnection reuse", () => {
   });
   it.each(["claude_local", "codex_local"] as const)("connects a local subscription without a sandbox and supports retry: %s", async (adapterType) => {
     const onComplete = vi.fn();
+    managedApi.checkLocalLogin.mockResolvedValue({ status: "ready" });
     const intent = { provider: adapterType === "claude_local" ? "anthropic" as const : "openai" as const, method: "subscription" as const, name: "My account", ownership: "personal" as const, agentIds: [], allAgents: false };
     await mount(adapterType, false, false, false, false, false, { intent, onComplete }, true);
     openProvider();
-    await vi.waitFor(() => expect(host.textContent).toContain(adapterType === "claude_local" ? "claude auth login" : "codex login"));
-    expect(host.textContent).toContain("machine running Paperclip");
+    await vi.waitFor(() => expect(host.textContent).toContain("is signed in"));
+    expect(host.textContent).not.toMatch(/claude auth login|codex login|CODEX_HOME/);
     expect(host.textContent).not.toContain("sandbox");
     managedApi.connectLocal.mockRejectedValueOnce(new Error("Run local login and try again"));
     click("Connect");
     await vi.waitFor(() => expect(host.textContent).toContain("Run local login and try again"));
     expect(onComplete).not.toHaveBeenCalled();
     if (adapterType === "codex_local") {
-      click("Start sign-in again");
+      expect(host.textContent).not.toContain("Start sign-in again");
+      click("Use a different account");
       await vi.waitFor(() => expect(host.textContent).not.toContain("Run local login and try again"));
       await vi.waitFor(() => expect(managedApi.cancelLocalLogin).toHaveBeenCalledWith("c1", "local-attempt"));
-      await vi.waitFor(() => expect(host.textContent).toContain("codex login"));
+      await vi.waitFor(() => expect(host.textContent).toContain("is signed in"));
     }
     click("Connect");
     await vi.waitFor(() => expect(onComplete).toHaveBeenCalledWith({ connectionId: "local-account", grantId: "local-grant", method: "subscription" }));
-    expect(managedApi.connectLocal).toHaveBeenCalledWith("c1", adapterType === "codex_local" ? { ...intent, localSessionId: "local-attempt" } : intent);
+    expect(managedApi.connectLocal).toHaveBeenCalledWith("c1", { ...intent, localSessionId: "local-attempt" });
     expect(mocks.loginPanel).not.toHaveBeenCalled();
   });
   it("leaves a completed local account saved when its host is cancelled", async () => {
@@ -377,6 +378,36 @@ describe("AgentProviderConnection reuse", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(host.textContent).toContain("New subscription login");
+  });
+  it("lets a visible saved subscription be used without opening the provider first", async () => {
+    const { test, connected } = await mount("codex_local", false, true, true);
+    expect(host.querySelector("select")).not.toBeNull();
+    const use = [...host.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Use saved subscription"),
+    )!;
+    expect(use.disabled).toBe(false);
+    click("Use saved subscription");
+    await vi.waitFor(() =>
+      expect(connected).toHaveBeenCalledWith({
+        env: {
+          CODEX_HOME: { type: "secret_ref", secretId: "codex-home", version: "latest" },
+        },
+      }),
+    );
+    expect(test).toHaveBeenCalledWith(connected.mock.calls[0][0]);
+  });
+  it("still requires opening the provider before starting a new subscription login", async () => {
+    await mount("codex_local", false, true, true);
+    flushSync(() => {
+      const select = host.querySelector("select")!;
+      select.value = "";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const primary = [...host.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Connect"),
+    )!;
+    expect(primary.disabled).toBe(true);
+    expect(mocks.loginPanel).not.toHaveBeenCalled();
   });
   it.each(["claude_local", "codex_local"] as const)(
     "passes a personal reference without credentials for %s",

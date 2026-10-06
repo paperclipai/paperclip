@@ -2077,6 +2077,31 @@ rl.on("line", (line) => {
     ]));
   });
 
+  it("dispatches a bounded alias to the original long upstream tool name", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const upstreamName = "file_download_batch_exports_count_rows_create";
+    const fake = await startFakeRemoteMcpServer((request) => {
+      expect(request.body).toMatchObject({ method: "tools/call", params: { name: upstreamName, arguments: {} } });
+      return { body: { jsonrpc: "2.0", id: request.body?.id, result: { content: [{ type: "text", text: "ok" }] } } };
+    });
+    try {
+      const { catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        applicationKey: `app-gallery:posthog:${randomUUID()}`, toolName: upstreamName, url: fake.url,
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.catalogEntryId === catalogEntry.id)!;
+      expect(`mcp__paperclip-assigned__${tool.name}`.length).toBeLessThanOrEqual(128);
+      expect((await gateway.listToolsForSession(session.token)).find((entry) => entry.catalogEntryId === catalogEntry.id)?.name).toBe(tool.name);
+      await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} });
+    } finally {
+      await fake.close();
+    }
+  });
+
   it.each([
     ["local_trusted", { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const }],
     ["authenticated/private", { deploymentMode: "authenticated" as const, deploymentExposure: "private" as const }],
@@ -2811,7 +2836,7 @@ rl.on("line", (line) => {
         .where(eq(activityLog.action, "tool_gateway.call_completed"));
       expect(activity.details).toMatchObject({
         headerSummary: {
-          credentialHeaderNames: "***REDACTED***",
+          credentialHeaderNames: ["authorization"],
           passthroughHeaderNames: ["x-client-request-id"],
           droppedPassthroughHeaderNames: expect.arrayContaining([
             "authorization",
@@ -2905,7 +2930,7 @@ rl.on("line", (line) => {
         .where(eq(activityLog.action, "tool_gateway.call_completed"));
       expect(activity.details).toMatchObject({
         headerSummary: {
-          credentialHeaderNames: "***REDACTED***",
+          credentialHeaderNames: [],
           passthroughHeaderNames: ["x-client-request-id"],
           droppedPassthroughHeaderNames: expect.arrayContaining([
             "authorization",

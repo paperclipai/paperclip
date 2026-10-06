@@ -23,6 +23,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdentifier: vi.fn(),
 }));
+const mockNativeReviewAssignment = vi.hoisted(() => vi.fn());
 
 const mockExecutionProjection = vi.hoisted(() => ({
   executionProjectionForRun: vi.fn(async () => null),
@@ -79,6 +80,10 @@ const mockChatRunRetries = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/native-runtime/native-review-participant.js", async () => ({
+    ...(await vi.importActual<typeof import("../services/native-runtime/native-review-participant.js")>("../services/native-runtime/native-review-participant.js")),
+    getNativeReviewAssignment: mockNativeReviewAssignment,
+  }));
   vi.doMock("../services/execution-projection.js", () => mockExecutionProjection);
   vi.doMock("../routes/authz.js", async () =>
     vi.importActual("../routes/authz.js"),
@@ -287,6 +292,7 @@ describe("agent live run routes", () => {
     vi.clearAllMocks();
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
+    mockNativeReviewAssignment.mockReset().mockResolvedValue(null);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
       allowed: true,
@@ -966,6 +972,68 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({ manualUserWake: true }));
   });
 
+  describe("exact native model-rejected review retry", () => {
+    const reviewContext = {
+      nativeReviewInteractionId: "55555555-5555-4555-8555-555555555555",
+      nativeReviewDecisionId: "66666666-6666-4666-8666-666666666666",
+    };
+    const selectedRun = {
+      id: failedChatRunId, companyId: "company-1", agentId: routeAgentId,
+      status: "failed", runtimeMode: "native", errorCode: "native_provider_model_rejected",
+      nativeIssueId: failedChatIssueId,
+      contextSnapshot: { issueId: failedChatIssueId, ...reviewContext },
+    };
+    const selectedIssue = { id: failedChatIssueId, companyId: "company-1", status: "in_review", assigneeAgentId: "worker", assigneeUserId: null };
+    const retryBody = { failedRunId: failedChatRunId, reason: "retry_failed_run" };
+    beforeEach(() => {
+      mockAgentService.getById.mockResolvedValue({ id: routeAgentId, companyId: "company-1" });
+      mockHeartbeatService.getRun.mockResolvedValue(selectedRun);
+      mockIssueService.getById.mockResolvedValue(selectedIssue);
+      mockNativeReviewAssignment.mockResolvedValue({ interaction: { status: "pending" } });
+    });
+
+    it("permits the Board to retry the exact pending review using only saved context", async () => {
+      const fixture = createFailedChatRetryDb(false);
+      const res = await requestApp(await createApp(fixture.db), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({
+        ...retryBody, payload: { issueId: "forged", nativeReviewInteractionId: "forged", nativeReviewDecisionId: "forged" },
+      }));
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(mockNativeReviewAssignment).toHaveBeenCalledExactlyOnceWith(fixture.db, {
+        companyId: "company-1", issueId: failedChatIssueId, agentId: routeAgentId, contextSnapshot: reviewContext,
+      });
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledExactlyOnceWith(routeAgentId, expect.objectContaining({
+        failedRunId: failedChatRunId, reason: "retry_failed_run", payload: { issueId: failedChatIssueId },
+        requestedByActorType: "user", contextSnapshot: expect.objectContaining(reviewContext),
+      }));
+      expect(JSON.stringify(mockHeartbeatService.wakeup.mock.calls)).not.toContain("forged");
+    });
+
+    it.each(["agent-caller", "denied-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context", "stale", "resolved", "changed-reviewer"])(
+      "rejects an ineligible exact review retry (%s)", async scenario => {
+        let actor: Record<string, unknown> | undefined;
+        if (scenario === "agent-caller") actor = { type: "agent", agentId: routeAgentId, companyId: "company-1" };
+        if (scenario === "denied-task") mockAccessService.decide.mockImplementation(async ({ action }) => ({ allowed: action !== "issue:comment", explanation: "Denied" }));
+        if (scenario === "foreign-company") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, companyId: "company-2" });
+        if (scenario === "foreign-agent") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, agentId: "other-reviewer" });
+        if (scenario === "foreign-issue") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, nativeIssueId: "other-task" });
+        if (scenario === "legacy") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, runtimeMode: "legacy" });
+        if (scenario === "unknown-error") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, errorCode: "adapter_failed" });
+        if (scenario === "missing-context") mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: { issueId: failedChatIssueId } });
+        if (scenario === "stale" || scenario === "changed-reviewer") mockNativeReviewAssignment.mockResolvedValue(null);
+        if (scenario === "resolved") mockNativeReviewAssignment.mockResolvedValue({ interaction: { status: "accepted" } });
+        const fixture = createFailedChatRetryDb(false);
+        const res = await requestApp(await createApp(fixture.db, actor), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send({
+          ...retryBody, payload: { ...reviewContext },
+        }));
+        expect(res.status).toBe(["agent-caller", "denied-task"].includes(scenario) ? 403 : ["foreign-company", "foreign-agent"].includes(scenario) ? 404 : 409);
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+        if (["agent-caller", "denied-task", "foreign-company", "foreign-agent", "foreign-issue", "legacy", "unknown-error", "missing-context"].includes(scenario)) {
+          expect(mockNativeReviewAssignment).not.toHaveBeenCalled();
+        }
+      },
+    );
+  });
+
   describe("exact failed chat run retry", () => {
     const retryBody = {
       failedRunId: failedChatRunId,
@@ -1163,7 +1231,7 @@ describe("agent live run routes", () => {
         expect(res.status, JSON.stringify(res.body)).toBe(202);
         expect(res.body).toEqual(receipt);
         expect(mockHeartbeatService.getRun).toHaveBeenCalledWith(
-          failedChatRunId,
+          failedChatRunId, { includeExecutionEvidence: true },
         );
         expect(
           mockChatRunRetries.prepareFailedChatRunRetry,

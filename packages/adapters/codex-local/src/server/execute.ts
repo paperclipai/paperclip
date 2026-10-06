@@ -45,6 +45,8 @@ import {
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   renderTemplate,
+  hydrateFreshSessionHandoff,
+  selectInitialCommunicationGuidance,
   selectPaperclipPromptSections,
   isPaperclipRecoveryWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -752,7 +754,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
-    const paperclipBaseEnv = buildPaperclipEnv(agent);
+    const paperclipBaseEnv = buildPaperclipEnv(agent, ctx.agentIdentity);
     const runtimeMcpGateways = (ctx.runtimeMcp?.getServers() ?? []).map((server) => ({
       name: server.name,
       endpointPath: server.url,
@@ -1124,12 +1126,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           })
         : "";
     const runAttempt = async (resumeSessionId: string | null) => {
+      await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
       const renderedBootstrapPrompt =
         !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
           ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
           : "";
       const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
         resumedSession: Boolean(resumeSessionId),
+        includeCommunicationGuidance: false,
       });
       const shouldUseResumeDeltaPrompt = Boolean(resumeSessionId) && wakePrompt.length > 0;
       const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
@@ -1199,6 +1203,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const prompt = joinPromptSections([
         promptInstructionsPrefix,
         renderedBootstrapPrompt,
+        selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
         wakePrompt,
         codexFallbackHandoffNote,
         sessionHandoffNote,
@@ -1223,6 +1228,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
       );
       const args = execArgs.args;
+      if (ctx.agentIdentity) {
+        const identityNames = ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"];
+        const shellKeys = [...new Set([
+          "PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
+          // Keep Codex's default secret-name exclusions except for the scoped
+          // Paperclip API token used by the agent skill. Never include host env.
+          ...Object.keys(env).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+          ...identityNames,
+        ])];
+        args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
+          "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
+      }
       const commandNotesWithFastMode =
         execArgs.fastModeIgnoredReason == null
           ? commandNotes

@@ -58,6 +58,19 @@ import type {
   SuggestTasksResultCreatedTask,
 } from "@paperclipai/shared";
 
+export function isInteractionPreparingApproval(interaction: IssueThreadInteraction): boolean {
+  return interaction.status === "pending"
+    && interaction.acceptanceBlocker === "workspace_sync_pending";
+}
+
+/** Poll only while an approval is preparing; retain each surface's idle cadence. */
+export function interactionReadinessRefetchInterval(
+  interactions: IssueThreadInteraction[] | undefined,
+  fallback: number | false = false,
+): number | false {
+  return interactions?.some(isInteractionPreparingApproval) ? 2_000 : fallback;
+}
+
 export interface SuggestedTaskTreeNode {
   task: SuggestedTaskDraft;
   children: SuggestedTaskTreeNode[];

@@ -1443,9 +1443,8 @@ process.exit(1);
         expect(invocationPrompt).toContain("baseRevisionId set to that latestRevisionId");
         expect(capture.prompt).not.toContain("Execution contract:");
         expect(capture.prompt).not.toContain("Use child issues");
-      } else {
-        expect(capture.prompt).toContain("Execution contract:");
       }
+      expect(capture.prompt).not.toContain("Execution contract:");
       expect(capture.prompt).not.toContain("Follow the paperclip heartbeat.");
       if (resumedSession) {
         expect(capture.prompt).not.toContain("You are managed instructions.");

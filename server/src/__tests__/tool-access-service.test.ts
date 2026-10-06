@@ -2413,6 +2413,57 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it("persists generic instructions through PATCH with configuration permissions and company isolation", async () => {
+    const company = await createCompany(db);
+    const other = await createCompany(db);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const settings = { enabled: true, text: "Use the release handbook and cite the checklist." };
+    const app = createRouteApp(db);
+    const endpoint = `/api/tool-connections/${connection.id}`;
+    await request(app).patch(endpoint).send({ agentInstructions: settings }).expect(200);
+    expect((await request(app).get(endpoint).expect(200)).body.agentInstructions).toEqual(settings);
+    await request(app).patch(endpoint).send({ agentInstructions: { ...settings, text: " " } }).expect(400);
+    await request(app).patch(endpoint).send({ agentInstructions: { ...settings, enabled: false } }).expect(200);
+    expect((await request(app).get(endpoint).expect(200)).body.agentInstructions).toEqual({ ...settings, enabled: false });
+    const viewer = `viewer-${randomUUID()}`;
+    await grantBoardUser(db, company.id, viewer, [], "viewer");
+    await request(createRouteApp(db, boardSessionActor(company.id, "viewer", viewer))).patch(endpoint).send({ agentInstructions: settings }).expect(403);
+    await request(createRouteApp(db, boardSessionActor(other.id, "owner"))).patch(endpoint).send({ agentInstructions: settings }).expect(404);
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, connection.id));
+    expect(events.some(event => event.details?.agentInstructionsChanged === true)).toBe(true);
+  });
+
+  it("persists supplied defaults, retains them on catalog refresh, and requires Honcho workspace at setup", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "search", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: { workspace_id: { type: "string" } } } }]);
+    await expect(service.connectGalleryApp(company.id, { galleryKey: "honcho", credentialValues: { "credentials.authorization": "honcho-fixture-key" } })).rejects.toMatchObject({ status: 400 });
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "honcho", credentialValues: { "credentials.authorization": "honcho-fixture-key" }, configValues: { workspaceId: "fixture-workspace" } });
+    const template = getConnectableAppDefinition("honcho")!.agentInstructions!;
+    expect(connected.connection.agentInstructions).toEqual({ enabled: true, text: template.text, template: { id: template.id, version: template.version } });
+    await service.updateConnection(connected.connectionId, { agentInstructions: { enabled: false, text: "Keep this custom guidance." } });
+    await service.refreshCatalog(connected.connectionId);
+    expect((await service.getConnection(connected.connectionId)).agentInstructions).toEqual({ enabled: false, text: "Keep this custom guidance." });
+  });
+
+  it("preserves custom instructions and opt-outs through OAuth draft recovery and reconnect", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board" };
+    const settings = { enabled: false, text: "Look up the current decision before editing it." };
+    const input = { galleryKey: "google-chat", connectionMethodKey: "customer-read-oauth", grantKind: "user" as const, oauthClient: { clientId: "instructions-client", clientSecret: "instructions-secret" }, agentInstructions: settings };
+    const initial = await service.connectGalleryApp(company.id, input, actor);
+    const { agentInstructions: _settings, ...retained } = input;
+    const resumed = await service.connectGalleryApp(company.id, { ...retained, resumeConnectionId: initial.connectionId }, actor);
+    expect(resumed.connection.agentInstructions).toEqual(settings);
+    const started = await service.startOAuth(company.id, resumed.connectionId, { redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor });
+    expect(started.authorizationUrl).toBeTruthy();
+    expect((await service.getConnection(initial.connectionId)).agentInstructions).toEqual(settings);
+    await db.update(toolConnections).set({ status: "active", enabled: true }).where(eq(toolConnections.id, initial.connectionId));
+    const reconnected = await service.connectGalleryApp(company.id, { ...retained, reconnectConnectionId: initial.connectionId }, actor);
+    expect(reconnected.connection.agentInstructions).toEqual(settings);
+  });
+
   it.each(["read", "write"])("requests only reduced Chat scopes for customer-owned %s OAuth, including reconnect", async (capability) => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -2443,7 +2494,7 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
-  it.each(["airtable", "beehiiv", "miro", "netlify", "sentry", "supabase", "todoist", "ticktick", "hugging-face"])(
+  it.each(["airtable", "beehiiv", "miro", "neon", "netlify", "sentry", "supabase", "todoist", "ticktick", "hugging-face"])(
     "requests the reviewed read/write scopes for %s without adopting advertised admin scopes",
     async (slug) => {
       const company = await createCompany(db);
@@ -5123,9 +5174,19 @@ describeEmbeddedPostgres("tool access service", () => {
         "github",
         "github-code-review-bot",
         "youcom",
+        "enterpret",
+        "openrouter",
+        "bedrock",
+        "responses-api",
+        "messages-api",
+        "chat-completions-api",
+        "local",
       ]),
     );
-    expect(res.body.apps).toHaveLength(58);
+    expect(res.body.apps).toHaveLength(66);
+    for (const slug of ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
+      expect(res.body.apps.find((app: { slug: string }) => app.slug === slug).tags).toContain("model-provider");
+    }
     expect(
       res.body.apps.find((app: { slug: string }) => app.slug === "gmail")
         .ownershipAvailability,
@@ -5168,6 +5229,120 @@ describeEmbeddedPostgres("tool access service", () => {
           methods: expect.arrayContaining([
             expect.objectContaining({ key: "local", transport: "local_stdio" }),
           ]),
+        }),
+      ]),
+    );
+  });
+
+  it("quarantines newly discovered Enterpret tools on later refreshes", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = mockToolsList([
+      { name: "get_organization_details", annotations: { readOnlyHint: true } },
+    ]);
+
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "enterpret",
+        connectionMethodKey: "mcp-api-key",
+        credentialValues: { "credentials.authorization": "qa-secret" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(result.connection.config).toMatchObject({
+      sourceTemplateKey: "enterpret",
+      quarantineNewEntries: true,
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain("qa-secret");
+    await service.finishGalleryAppConnection(company.id, result.connectionId, {
+      enabledCatalogEntryIds: result.catalog.map((entry) => entry.id),
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
+    fetchMock.mockResolvedValueOnce(
+      mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: {
+          tools: [
+            { name: "get_organization_details", annotations: { readOnlyHint: true } },
+            { name: "new_enterpret_tool", annotations: { readOnlyHint: true } },
+          ],
+        },
+      }),
+    );
+    const refreshed = await service.refreshCatalog(result.connectionId, {
+      actorType: "user",
+      actorId: "board",
+    });
+    expect(refreshed.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolName: "get_organization_details", status: "active" }),
+        expect.objectContaining({
+          toolName: "new_enterpret_tool",
+          status: "quarantined",
+          quarantineReason: "pending_review",
+        }),
+      ]),
+    );
+
+    const reconnectFetchMock = mockToolsList([
+      { name: "get_organization_details", annotations: { readOnlyHint: true } },
+      { name: "new_enterpret_tool", annotations: { readOnlyHint: true } },
+      { name: "reconnect_discovered_tool", annotations: { readOnlyHint: true } },
+    ]);
+    const reconnected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "enterpret",
+        connectionMethodKey: "mcp-api-key",
+        reconnectConnectionId: result.connectionId,
+        credentialValues: { "credentials.authorization": "replacement-secret" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(reconnected.connectionId).toBe(result.connectionId);
+    expect(reconnected.catalog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolName: "get_organization_details", status: "active" }),
+      expect.objectContaining({ toolName: "new_enterpret_tool", status: "quarantined" }),
+      expect.objectContaining({ toolName: "reconnect_discovered_tool", status: "quarantined" }),
+    ]));
+
+    expect(reconnected.connection.config).toMatchObject({ quarantineNewEntries: true });
+    expect(JSON.stringify(reconnected.connection.config)).not.toContain("replacement-secret");
+    await service.finishGalleryAppConnection(company.id, reconnected.connectionId, {
+      enabledCatalogEntryIds: reconnected.catalog
+        .filter((entry) => entry.toolName === "get_organization_details")
+        .map((entry) => entry.id),
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
+
+    reconnectFetchMock.mockResolvedValueOnce(
+      mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: {
+          tools: [
+            { name: "get_organization_details", annotations: { readOnlyHint: true } },
+            { name: "new_enterpret_tool", annotations: { readOnlyHint: true } },
+            { name: "another_enterpret_tool", annotations: { readOnlyHint: true } },
+          ],
+        },
+      }),
+    );
+    const afterReplacement = await service.refreshCatalog(result.connectionId, {
+      actorType: "user",
+      actorId: "board",
+    });
+    expect(afterReplacement.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          toolName: "another_enterpret_tool",
+          status: "quarantined",
+          quarantineReason: "pending_review",
         }),
       ]),
     );
@@ -6131,6 +6306,52 @@ describeEmbeddedPostgres("tool access service", () => {
         state: restartedStateRow!.state,
         actor,
       }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("projects Neon's optional project pin and read-only mode into the hosted server URL", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+
+    const pinned = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "neon",
+        connectionMethodKey: "mcp-oauth",
+        name: "Neon pinned",
+        configValues: { projectId: "shy-sun-12345678", readOnly: true },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(pinned.connection.config).toMatchObject({
+      url: "https://mcp.neon.tech/mcp?projectId=shy-sun-12345678&readonly=true",
+      sourceTemplateKey: "neon",
+      connectionMethodKey: "mcp-oauth",
+      methodConfig: { projectId: "shy-sun-12345678", readOnly: true },
+    });
+
+    // The default path sends Neon's own defaults: no pin, no readonly flag.
+    const unpinned = await service.connectGalleryApp(
+      company.id,
+      { galleryKey: "neon", connectionMethodKey: "mcp-oauth", name: "Neon unpinned" },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(unpinned.connection.config).toMatchObject({
+      url: "https://mcp.neon.tech/mcp",
+      methodConfig: { readOnly: false },
+    });
+
+    await expect(
+      service.connectGalleryApp(
+        company.id,
+        {
+          galleryKey: "neon",
+          connectionMethodKey: "mcp-oauth",
+          name: "Neon invalid",
+          configValues: { projectId: "Shy Sun!" },
+        },
+        { actorType: "user", actorId: "board" },
+      ),
     ).rejects.toMatchObject({ status: 400 });
   });
 
@@ -16319,6 +16540,7 @@ describeEmbeddedPostgres("tool access service", () => {
             galleryKey: "github",
             connectionMethodKey: "mcp-key",
             name: "GitHub rollback",
+            connectionMethodKey: "mcp-key",
             credentialValues: { "credentials.authorization": "github-secret" },
           },
           { actorType: "user", actorId: "board" },
@@ -16437,6 +16659,7 @@ describeEmbeddedPostgres("tool access service", () => {
             galleryKey: "github",
             connectionMethodKey: "mcp-key",
             name: "GitHub reconnect",
+            connectionMethodKey: "mcp-key",
             credentialValues: { "credentials.authorization": "old-secret" },
           },
           { actorType: "user", actorId: "board" },
@@ -16640,6 +16863,7 @@ describeEmbeddedPostgres("tool access service", () => {
             galleryKey: "github",
             connectionMethodKey: "mcp-key",
             name: "Personal GitHub reconnect",
+            connectionMethodKey: "mcp-key",
             grantKind: "user",
             credentialValues: {
               "credentials.authorization": "old-personal-secret",
@@ -16728,6 +16952,7 @@ describeEmbeddedPostgres("tool access service", () => {
             galleryKey: "github",
             connectionMethodKey: "mcp-key",
             name: "Personal GitHub reconnect",
+            connectionMethodKey: "mcp-key",
             // No grantKind is sent on reconnect: the retained connection owns that
             // decision and must reactivate this same grant rather than insert a new
             // one or fall back to an organization credential.
@@ -18968,6 +19193,21 @@ describe("classifyRisk", () => {
     for (const name of ["fireflies_share_meeting", "fireflies_revoke_meeting_access", "fireflies_move_meeting", "fireflies_create_soundbite", "fireflies_update_meeting_title"])
       expect(classifyRisk({ name, annotations: { readOnlyHint: true } }, "fireflies")).toBe("write");
     expect(classifyRisk({ name: "fireflies_share_meeting", annotations: { destructiveHint: true } }, "fireflies")).toBe("destructive");
+  });
+
+  it("classifies Enterpret run_graph_query as write despite readOnlyHint", () => {
+    expect(
+      classifyRisk(
+        { name: "run_graph_query", annotations: { readOnlyHint: true } },
+        "enterpret",
+      ),
+    ).toBe("write");
+    expect(
+      classifyRisk(
+        { name: "get_organization_details", annotations: { readOnlyHint: true } },
+        "enterpret",
+      ),
+    ).toBe("read");
   });
 
   const risk = (name: string, annotations?: Record<string, unknown>) =>

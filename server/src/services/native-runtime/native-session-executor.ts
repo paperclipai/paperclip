@@ -3,12 +3,14 @@ import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
 
+import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import {
   isSupportedRemoteCodexVersion,
   parseCodexCliVersion,
   REMOTE_CODEX_SUPPORTED_RANGE,
 } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
+import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
 import { bindManagedNativeCredentialTurn, completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
@@ -2829,7 +2831,7 @@ export async function reconcileRetainedNativeSessionCleanup(
       const errorCode = run.errorCode ?? failure.errorCode;
       const error = run.error ?? failure.error;
       if (
-        errorCode !== "adapter_failed" ||
+        !["adapter_failed", "provider_transport_failed"].includes(String(errorCode)) ||
         error !==
           "provider_transport_failed: runner did not durably suspend before checkpoint" ||
         execution.binding.companyId !== run.companyId ||
@@ -5255,6 +5257,7 @@ function nativeSessionConfigDigest(
     .update(
       JSON.stringify({
         companyId: execution.binding.companyId,
+        ...(execution.binding.agentKeyId ? { agentKeyId: execution.binding.agentKeyId } : {}),
         normalizedSessionId: nativeSessionKey(execution),
         executionLocation,
         provider: execution.provider,
@@ -5307,6 +5310,7 @@ function nativeHarnessEnvironmentFingerprint(
     .update(
       canonicalJson({
         companyId: execution.binding.companyId,
+        ...(execution.binding.agentKeyId ? { agentKeyId: execution.binding.agentKeyId } : {}),
         agentId: execution.binding.agentId,
         issueId: execution.binding.issueId,
         normalizedSessionId: nativeSessionKey(execution),
@@ -6510,8 +6514,9 @@ export async function steerNativeSession(input: {
       steeringDeliveries.delete(deliveryKey);
     });
   }
-  // Do not await the persistence callback here: the route holds the run lock
-  // until acknowledgement. After a timeout this callback can acquire that lock.
+  // The route still serializes queue mutations on the task until acknowledgement.
+  // Reconciliation can acquire that task lock after success or a timeout; never
+  // join it from the provider's acknowledgement path.
   if (input.onAcknowledged)
     void delivery.then(input.onAcknowledged).catch(() => undefined);
   let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -7220,6 +7225,9 @@ function startNativeSessionExecutionLeaseRenewal(input: {
 }
 
 export async function executePaperclipNativeSession(input: {
+  getFreshSessionHandoff?: () => Promise<string | null>;
+  /** Retire a retained transport so recovery can replace provider tool declarations. */
+  refreshTools?: boolean;
   db: Db;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
@@ -7278,9 +7286,9 @@ export async function executePaperclipNativeSession(input: {
   enqueueWakeup?: (
     agentId: string,
     options: {
-      source: "assignment";
+      source: "assignment" | "automation";
       triggerDetail: "system";
-      reason: "issue_assigned";
+      reason: "issue_assigned" | "issue_commented";
       payload: Record<string, unknown>;
       idempotencyKey: string;
       requestedByActorType: "agent";
@@ -7289,6 +7297,14 @@ export async function executePaperclipNativeSession(input: {
     },
   ) => Promise<unknown>;
 }): Promise<AdapterExecutionResult> {
+  const agentKeyId = input.runnerEnvironment?.PAPERCLIP_AGENT_KEY_ID;
+  if (agentKeyId) {
+    // Recovered pre-upgrade inputs also need the current public identity marker
+    // before deciding whether an already-running provider can be reused.
+    input = { ...input, execution: { ...input.execution,
+      binding: { ...input.execution.binding, agentKeyId },
+    } };
+  }
   const runId = input.execution.binding.runId;
   if (nativeSessionStartups.has(runId)) {
     throw new Error("native_session_supervisor_busy");
@@ -7430,6 +7446,10 @@ export async function executePaperclipNativeSession(input: {
 async function executePaperclipNativeSessionWithinScope(
   input: Parameters<typeof executePaperclipNativeSession>[0],
 ): Promise<AdapterExecutionResult> {
+  const identityRedactor = createAgentIdentityRedactor(input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY);
+  const redactIdentityText = (text: string) => redactSensitiveText(
+    identityRedactor.chunk("diagnostic", text) + identityRedactor.finish("diagnostic"),
+  );
   if (
     input.execution.provider.kind !== "codex" &&
     input.execution.provider.kind !== "opencode" &&
@@ -7801,6 +7821,7 @@ async function executePaperclipNativeSessionWithinScope(
   let turnStartedAtMs: number | null = null;
   let firstAgentEventRecorded = false;
   let providerUsageLimitObserved = false;
+  const providerFailureObservation = createNativeProviderFailureObservation(input.execution.provider);
   let turnCompletedAtMs: number | null = null;
   let runnerSessionStartupScope: NativeRunSpanScope | null = null;
   let agentTurnScope: NativeRunSpanScope | null = null;
@@ -7847,6 +7868,7 @@ async function executePaperclipNativeSessionWithinScope(
       controlPlaneSourceInstanceId: controlPlaneInstanceId,
     },
     {
+      privateKeyPem: input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY,
       onCommittedEvent: async (event) => {
         await toolTrace.observe(event);
         if (event.eventType === "item.completed" &&
@@ -7857,6 +7879,7 @@ async function executePaperclipNativeSessionWithinScope(
         await liveQuestions.observe(event);
         await projectSessionGoalEvent(event);
         providerUsageLimitObserved ||= nativeProviderUsageLimitFromEvent(event);
+        providerFailureObservation.observe(event);
         const eventAtMs = Date.parse(event.emittedAt);
         const milestoneAtMs = Number.isFinite(eventAtMs)
           ? eventAtMs
@@ -8060,6 +8083,7 @@ async function executePaperclipNativeSessionWithinScope(
         await liveQuestions.observe(event);
         await projectSessionGoalEvent(event);
         providerUsageLimitObserved ||= nativeProviderUsageLimitFromEvent(event);
+        providerFailureObservation.observe(event);
         const questionFallback = await materializeRuntimeQuestionFallback({
           db: input.db,
           binding: input.execution.binding,
@@ -8133,6 +8157,7 @@ async function executePaperclipNativeSessionWithinScope(
         (hasBrokerCapability &&
           entry.credentialRunId !== input.execution.binding.runId);
       if (
+        input.refreshTools === true ||
         entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
         entry.instructionCopy?.root !== input.instructionWorkingCopy?.root ||
@@ -8329,6 +8354,8 @@ async function executePaperclipNativeSessionWithinScope(
         trace.activate(runnerSessionStartupScope);
         const result = await trace.run(runnerSessionStartupScope, () =>
           executeNativeSession({
+            resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner",
+            getFreshSessionHandoff: input.getFreshSessionHandoff,
             onSessionAdmission: async () => {
               // Invalidate prior stop evidence before a backend can spawn.
               await appendHeartbeatRunEvent(input.db, {
@@ -8401,6 +8428,7 @@ async function executePaperclipNativeSessionWithinScope(
             requireSessionCloseBeforeReturn: runnerdBackend !== null || input.instructionWorkingCopy !== undefined,
             onSessionClosed: input.instructionWorkingCopy?.collectStopped,
             onCheckpoint: async (snapshot) => {
+              snapshot = identityRedactor.redact(snapshot);
               if (warmSessionId !== null && warmConfigDigest !== null) {
                 await persistWarmNativeCheckpoint(
                   input.execution,
@@ -8417,7 +8445,7 @@ async function executePaperclipNativeSessionWithinScope(
               }
             },
             onPostCompletionEnrichmentFailure: async ({ stage, error }) => {
-              const detail = redactSensitiveText(
+              const detail = redactIdentityText(
                 error instanceof Error ? error.message : String(error),
               ).slice(-4_096);
               await input.onLog?.(
@@ -8428,7 +8456,7 @@ async function executePaperclipNativeSessionWithinScope(
             onSessionQuarantined: async (reason) => {
               await input.onLog?.(
                 "stderr",
-                `[paperclip-runner] warm native session quarantined: ${redactSensitiveText(reason).slice(-1_000)}\n`,
+                `[paperclip-runner] warm native session quarantined: ${redactIdentityText(reason).slice(-1_000)}\n`,
               );
             },
             onContinuityBreak: async (continuity) => {
@@ -8625,6 +8653,16 @@ async function executePaperclipNativeSessionWithinScope(
     clearSteeringDeliveries(input.execution.binding.runId);
     clearNativeRuntimeRequestResolutions(input.execution.binding.runId);
   } catch (error) {
+    // Preserve typed failure semantics while removing credentials before any
+    // persistence, reporting, logging, or rethrow at this boundary.
+    if (error instanceof Error) {
+      const originalMessage = error.message;
+      error.message = redactIdentityText(originalMessage);
+      if (error.stack) error.stack = redactIdentityText(originalMessage
+        ? error.stack.split(originalMessage).join(error.message) : error.stack);
+    } else {
+      error = identityRedactor.redact(error);
+    }
     if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
       await leaseRenewal.stop().catch(() => undefined);
       liveQuestions.close();
@@ -8663,7 +8701,7 @@ async function executePaperclipNativeSessionWithinScope(
         );
 
       const failedAtMs = Date.now();
-      const executionFailureMessage = redactSensitiveText(
+      const executionFailureMessage = redactIdentityText(
         error instanceof Error ? error.message : String(error),
       ).slice(-4_096);
       if (!taskSettleScope) {
@@ -8774,11 +8812,10 @@ async function executePaperclipNativeSessionWithinScope(
       const { exhausted } = recoveryProjection;
       const integrityFailure =
         sourceFailureCode === "native_event_replay_conflict";
-      const message =
-        error instanceof Error
-          ? error.message.slice(0, 2_000)
-          : String(error).slice(0, 2_000);
-      const sanitizedStderrTail = redactSensitiveText(message).slice(-4_096);
+      const message = redactIdentityText(
+        error instanceof Error ? error.message : String(error),
+      ).slice(0, 2_000);
+      const sanitizedStderrTail = redactIdentityText(message).slice(-4_096);
       // Set inside the transaction only when the write below genuinely
       // transitions the run into "failed". Read after the transaction
       // commits, so a rolled-back write never reports a false failure.
@@ -8809,7 +8846,7 @@ async function executePaperclipNativeSessionWithinScope(
             recoveryState:
               phase === "retryable_failure" ? "resuming_session" : "blocked",
             failureCode,
-            failureDetail: {
+            failureDetail: identityRedactor.redact({
               message,
               originalFailureCode:
                 error instanceof NativeProviderTerminalFailure
@@ -8846,7 +8883,7 @@ async function executePaperclipNativeSessionWithinScope(
                                   "bootstrap_retry"
                                 ? "Retry provider bootstrap on this same run; durable evidence proves no provider session or provider event was created."
                                 : "Resume this same run from its exact persisted native provider checkpoint after the retry delay.",
-            },
+            }),
             nextAttemptAt,
             recoveryHistory: sql`(
               select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)
@@ -9197,6 +9234,7 @@ async function executePaperclipNativeSessionWithinScope(
     );
     if (collectInstructions && !collectedByOwner) await instructionCopy!.collectStopped();
   }
+  const providerFailure = providerFailureObservation.forTerminal(native.turnId, native.terminal);
   const adapterResult: AdapterExecutionResult = {
     exitCode: native.terminal.runTerminalState === "succeeded" ? 0 : 1,
     signal: null,
@@ -9204,10 +9242,12 @@ async function executePaperclipNativeSessionWithinScope(
     errorMessage:
       native.terminal.runTerminalState === "succeeded"
         ? null
-        : `Native session ${native.terminal.runTerminalState}`,
+        : providerFailure?.errorMessage ?? `Native session ${native.terminal.runTerminalState}`,
+    ...(providerFailure ? { errorCode: providerFailure.errorCode } : {}),
     resultJson: {
       nativeResult: native.result as unknown as Record<string, unknown>,
       nativeTerminal: native.terminal as unknown as Record<string, unknown>,
+      ...(providerFailure ? { nativeProviderFailure: providerFailure.diagnostic } : {}),
       ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
       planSynchronizations,
     },
@@ -9401,8 +9441,8 @@ const RUNNERD_BINARY_CONTRACT_VERSION = 2;
 const REMOTE_PROVIDER_PACK_SCHEMA = "paperclip-runner/remote-provider-pack/v1";
 const REMOTE_PROVIDER_PACK_PINS = {
   nodeMinimum: "24.11.0",
-  codex: "0.156.0",
-  opencode: "1.18.32",
+  codex: "0.160.0",
+  opencode: "1.18.34",
   acpx: "0.13.1",
   claudeAcp: "0.73.0",
   codexAcp: "1.6.2",
@@ -10652,9 +10692,9 @@ export async function createRunnerdBackend(input: {
   enqueueWakeup?: (
     agentId: string,
     options: {
-      source: "assignment";
+      source: "assignment" | "automation";
       triggerDetail: "system";
-      reason: "issue_assigned";
+      reason: "issue_assigned" | "issue_commented";
       payload: Record<string, unknown>;
       idempotencyKey: string;
       requestedByActorType: "agent";

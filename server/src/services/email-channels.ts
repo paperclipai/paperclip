@@ -74,6 +74,8 @@ export type EmailActor = {
 type Endpoint = typeof chatEndpoints.$inferSelect;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export interface EmailChannelOptions {
+  /** Suppress periodic database work while an unclaimed Cloud app stands by. */
+  isBackgroundWorkEnabled?: () => boolean;
   heartbeat: Pick<ReturnType<typeof heartbeatService>, "wakeup">;
   storage?: StorageService;
   publicBaseUrl?: string;
@@ -129,14 +131,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
   let activeTick: Promise<void> | null = null;
   let timer: ReturnType<typeof setInterval> | undefined;
 
-  async function enabled() {
-    return (await instanceSettingsService(db).getExperimental())
-      .enableChatConnectors;
-  }
-  async function requireEnabled() {
-    if (!(await enabled()))
-      throw forbidden("Enable experimental chat connections first");
-  }
   async function getEndpoint(id: string) {
     const [row] = await db
       .select()
@@ -620,7 +614,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     input: EmailEndpointSetupInput,
     actor: EmailActor,
   ) {
-    await requireEnabled();
     const [agent] = await db
       .select()
       .from(agents)
@@ -797,6 +790,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           input.credentialConnectionId,
           agent.id,
           actor,
+          input.idempotencyKey,
         );
       } else if (controlKey) await vault(endpoint, "controlKey", controlKey);
       if (!controlKey) throw badRequest("AgentMail API key required");
@@ -919,7 +913,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
   }
 
   async function admit(endpoint: Endpoint, value: unknown) {
-    await requireEnabled();
     await active(endpoint);
     const event = normalizeAgentmailEvent(value);
     if (!event) return;
@@ -1452,7 +1445,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     input: EmailSendInput,
     actor: EmailActor,
   ): Promise<EmailPublicationSummary> {
-    await requireEnabled();
     const endpoint = await getEndpoint(input.endpointId);
     if (endpoint.companyId !== companyId)
       throw notFound("Email inbox not found");
@@ -1647,7 +1639,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     const input = send.request;
     let attempted = false;
     try {
-      await requireEnabled();
       await active(endpoint);
       const sourceId = input.parentIssueId ?? pub.issueId;
       await authorize(endpoint, sourceId, send.actor);
@@ -2052,6 +2043,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       await Promise.all(items.slice(i, i + 4).map(work));
   }
   async function tick() {
+    if (options.isBackgroundWorkEnabled?.() === false) return;
     if (activeTick) return activeTick;
     activeTick = runTick();
     try {
@@ -2064,11 +2056,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     if (ticking || stopped) return;
     ticking = true;
     try {
-      if (!(await enabled())) {
-        for (const state of sockets.values()) state.socket.close();
-        sockets.clear();
-        return;
-      }
       const endpoints = await db
         .select()
         .from(chatEndpoints)
@@ -2272,7 +2259,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       if (endpoint.status === "archived")
         throw conflict("This inbox is disconnected");
       if (action === "resume") {
-        await requireEnabled();
         if (!config.activationAt)
           throw conflict("Complete inbox setup before resuming");
         await agentmailApi(await credential(endpoint), fetchImpl).getInbox(
@@ -2368,7 +2354,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     receiveMode: "websocket" | "webhook",
     actor: EmailActor,
   ) {
-    await requireEnabled();
     const endpoint = await getEndpoint(id);
     if (endpoint.status === "archived" || !endpoint.botExternalId)
       throw conflict("Create a new inbox connection");
@@ -2591,7 +2576,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     };
   }
   async function assignedInboxes(companyId: string, agentId: string) {
-    if (!(await enabled())) return [];
     const rows = await db.select().from(chatEndpoints).where(and(
       eq(chatEndpoints.companyId, companyId), eq(chatEndpoints.assignedAgentId, agentId),
       eq(chatEndpoints.provider, "agentmail"), eq(chatEndpoints.status, "active"),
@@ -2610,7 +2594,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
   }
   return {
     assignedInboxes,
-    requireEnabled,
     authorizeRead,
     setup,
     getEndpoint,

@@ -1,4 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
+} from "../../contracts/completion-result.js";
 
 import { canonicalOpenCodeMcpToolName, startOpenCodeMcpBridge, type OpenCodeMcpBridge } from "./mcp-bridge.js";
 
@@ -38,8 +44,8 @@ describe("OpenCode MCP bridge", () => {
     expect(await listed.json()).toMatchObject({
       result: { tools: [
         { name: "documents.read" },
-        { name: "paperclip_finish" },
-        { name: "paperclip_block" },
+        { name: "paperclip_finish", description: PRP_COMPLETION_TOOL_DESCRIPTION, inputSchema: PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA },
+        { name: "paperclip_block", description: PRP_BLOCK_TOOL_DESCRIPTION, inputSchema: PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA },
       ] },
     });
   });

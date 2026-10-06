@@ -1,5 +1,13 @@
 # Runner E2E fixture authoring
 
+The [public MCP journeys](PUBLIC-MCP.md) reuse the fixture registry with a real
+authenticated browser session. `RunnerApi.setBrowserSession` binds that session
+to API calls, including encrypted secret provisioning via Node fetch. OAuth
+setup stays outside model context. The external assistant receives the catalog
+from `tools/list` and the shipped workflow skills; its calls execute against the
+real SDK transport. Client-side loss of a successful response is the sole fault
+injection in the uncertain-retry case. Task/run/document REST reads own grading.
+
 The fixture catalog is executable production-contract data. Keep it small,
 typed, deterministic, and free of raw credentials.
 
@@ -16,6 +24,17 @@ The suite definition fingerprint is historical comparison metadata. Any
 profile, model qualification, environment, task, or ranking-snapshot change
 must change that fingerprint automatically so the dashboard can annotate the
 boundary instead of silently joining unlike totals.
+
+The explicit [stock-harness suite](STOCK-HARNESS.md) wraps existing profiles with
+`productionDefaultHireProfile`: omit only `instructionsBundle` so the public
+hire route loads the shipped default, while preserving runtime, permissions,
+auth, skills, and managed secret references. Do not replace this with a fixture
+copy of the default manual. Public receipts check the exact independently
+specified bundle before provider execution and again during cleanup, along with
+both budget hard stops and actual legacy invocation prompts. Missing evidence
+fails closed. The definition fingerprint includes the helper, graders, journey
+sources, live fixture, and execution integration; editing those sources changes
+the suite revision automatically.
 
 ## Agent profiles
 
@@ -294,3 +313,34 @@ cleanup include unexpected manager runs. The grader checks saved human input,
 requester identity for scope questions, ownership history, no additional work or
 hires, and the browser-answer continuation. See [Direct blocker guidance](README.md#direct-blocker-guidance)
 for coverage boundaries and run commands.
+
+
+## Source-derived hiring template fixture
+
+The explicit `hiring-templates` suite reuses the public company/agent, personal
+managed account and browser chat fixtures. `hiringTemplateProfile` removes the
+custom instruction bundle from the ordinary profile; the real agent creation
+route selects the evaluated revision's CEO bundle. Keep its two local native
+profiles, five expected runs and 15-minute deadline stable for paired runs.
+`isManagedHiringCase` requests the account fixture and `chatNeedsApiTools`
+enables only the existing API-tool path. It adds no private fixture endpoint,
+provider fake or database write.
+
+`hiring-template-flow.ts` reads the production instructions and company skill
+files through public APIs before dispatch and verifies their hashes against the
+checkout. The public run-events API supplies paginated read evidence after
+execution. `hiring-template-scoring.ts` grades deterministic child documents,
+actual worker identity/account, reuse and source coverage independently of the
+agents' claims. `hiring-template.test.ts` calibrates production Codex/ACPX event
+shapes, wrong/missing/late reads, incorrect/default bundles, source mismatch,
+wrong hire/output, missing durable state, and an admissible historical four-file
+CEO with a long coder role.
+
+Preserve both dimensions in a comparison: `outcomePassed` describes the work;
+`comparisonStatus` describes whether the expected sources and reads were proven.
+Unprovable provider event shapes are coverage gaps. They must not become a
+passing template comparison or a claimed behavior regression. The existing
+report matcher paths carry the dimension and private final evidence carries the
+explicit status. Provider runs are separately authorized; unit results establish
+oracle calibration only. See the [suite contract](README.md#production-hiring-templates)
+for evidence, budgets, cleanup and exact IDs.

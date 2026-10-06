@@ -87,8 +87,8 @@
     },
     {
       "id": "company_skills",
-      "description": "Create or inspect company skills and synchronize the current agent's skills.",
-      "operationIds": ["create_skill", "list_company_skills", "sync_company_skills"]
+      "description": "Create, update, or inspect company skills and synchronize the current agent's skills.",
+      "operationIds": ["create_skill", "update_skill", "list_company_skills", "sync_company_skills"]
     },
     {
       "id": "secrets",
@@ -264,7 +264,7 @@
       "legacyGroup": 13,
       "name": "Reference files",
       "owner": "always instruction tools + optional domain tools + test-only escape hatch",
-      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "create_skill", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api", "create_project", "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions"],
+      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "create_skill", "update_skill", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api", "create_project", "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions"],
       "controlPlaneOperationIds": ["append_audit_record"],
       "realSurface": "agent instruction revisions, project, case, routine, company-skill, secret, portability, and administration services",
       "mockStateDomains": ["company", "cases", "routines", "skills", "secrets", "audit", "fault"],

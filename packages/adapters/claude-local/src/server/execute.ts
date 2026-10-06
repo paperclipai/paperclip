@@ -44,6 +44,8 @@ import {
   isPaperclipRuntimeEnvKey,
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
+  hydrateFreshSessionHandoff,
+  selectInitialCommunicationGuidance,
   selectPaperclipPromptSections,
   isPaperclipRecoveryWakePayload,
   rewriteWorkspaceCwdEnvVarsForExecution,
@@ -102,6 +104,7 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
 
 interface ClaudeExecutionInput {
+  agentIdentity?: AdapterExecutionContext["agentIdentity"];
   runId: string;
   agent: AdapterExecutionContext["agent"];
   config: Record<string, unknown>;
@@ -214,7 +217,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent, input.agentIdentity) };
   env.PAPERCLIP_RUN_ID = runId;
 
   const wakeTaskId =
@@ -454,6 +457,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   const runtimeConfig = await buildClaudeRuntimeConfig({
+    agentIdentity: ctx.agentIdentity,
     runId,
     agent,
     config,
@@ -776,7 +780,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runtimeSessionId.length > 0 &&
     isValidUuid &&
     hasMatchingPromptBundle &&
-    hasMatchingMcpServers &&
+    // Each CLI invocation loads --mcp-config, including --resume invocations.
+    // Refreshing tools does not invalidate the saved conversation.
     claudeSessionCwdMatchesExecutionTarget({
       runtimeSessionCwd,
       effectiveExecutionCwd,
@@ -825,7 +830,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (runtimeSessionId && !hasMatchingMcpServers) {
     await onLog(
       "stdout",
-      `[paperclip] Claude session "${runtimeSessionId}" was saved with a different runtime MCP server set and will not be resumed.\n`,
+      `[paperclip] Claude runtime MCP server set changed; loading current tools when resuming session "${runtimeSessionId}".\n`,
     );
   }
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
@@ -894,12 +899,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
     const renderedBootstrapPrompt =
       !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
         ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
         : "";
     const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
       resumedSession: Boolean(resumeSessionId),
+      includeCommunicationGuidance: false,
     });
     const shouldUseResumeDeltaPrompt = Boolean(resumeSessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
@@ -908,6 +915,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const prompt = joinPromptSections([
       renderedBootstrapPrompt,
+      selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
       wakePrompt,
       sessionHandoffNote,
       taskContextNote,

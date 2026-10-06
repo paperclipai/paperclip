@@ -15,6 +15,7 @@ import {
   companySecrets,
   createDb,
   environments,
+  principalPermissionGrants,
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
@@ -245,6 +246,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     await db.delete(userSecretDeclarations);
     await db.delete(userSecretDefinitions);
     await db.delete(adapterAuthSessions);
+    await db.delete(principalPermissionGrants);
     await db.delete(agents);
     await db.delete(environments);
     await db.delete(companies);

@@ -234,7 +234,7 @@ class FakeCleanRoomTransport implements CodexAppServerTransport {
         interactionKind: "questions",
         title: "Which way should I take this?",
         prompt: "Pick a direction for the clean-room issue.",
-        payload: { questions: [{ id: "path", prompt: "Which path?", options: ["a", "b"] }] },
+        payload: { version: 1, questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "path", prompt: "Which path?", required: true, answerMode: "single_select", options: [{ id: "a", label: "Path A" }, { id: "b", label: "Path B" }] }] } },
         continuationPolicy: "wake_assignee",
       });
     }

@@ -880,6 +880,16 @@ describe("persistent agent directories", () => {
       expect(await fs.readFile(path.join(blocked.localRoot, entryFile), "utf8")).toBe(initial);
       await expect(fs.stat(other.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
     });
+    // A fresh recovery worker retries after the holder releases the lock. It
+    // cleans the pending copy without changing the failed-save receipt.
+    const deferred = (await copies.get(companyId, blocked.runId))!;
+    await db.update(agentInstructionWorkingCopies).set({ nextAttemptAt: new Date(0) })
+      .where(eq(agentInstructionWorkingCopies.runId, blocked.runId));
+    await agentInstructionWorkingCopyService(db).recoverCaptured();
+    expect(await copies.get(companyId, blocked.runId)).toMatchObject({ state: deferred.state,
+      errorCode: deferred.errorCode, errorMessage: deferred.errorMessage,
+      candidateHash: deferred.candidateHash, receipt: { cleanupPending: false }, nextAttemptAt: null });
+    await expect(fs.stat(blocked.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each(["environment", "path", "lease-run"])("rejects destruction outside the registered copy binding (%s)", async mismatch => {

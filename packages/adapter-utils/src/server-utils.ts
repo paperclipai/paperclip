@@ -19,6 +19,8 @@ import {
   normalizeLegacyRunnerProvider,
 } from "./paperclip-runner-permissions.js";
 import type {
+  AdapterExecutionContext,
+  AgentRuntimeIdentity,
   AdapterRuntimeToolAccess,
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -167,7 +169,8 @@ export function isPaperclipRuntimeEnvKey(key: string): boolean {
 // Other PAPERCLIP_*-named config keys are allowed as long as Paperclip has
 // not assigned the same key for the run (runtime vars always win).
 export function isForbiddenConfigEnvKey(key: string): boolean {
-  return key === "PAPERCLIP_API_KEY" || key === "PAPERCLIP_WAKE_PAYLOAD_JSON";
+  return key === "PAPERCLIP_API_KEY" || key === "PAPERCLIP_WAKE_PAYLOAD_JSON" ||
+    AGENT_IDENTITY_ENV_KEYS.includes(key.toUpperCase());
 }
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
@@ -207,41 +210,15 @@ export function resolvePaperclipInstanceRootForAdapter(
 }
 
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
-  "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
-  "",
-  "Execution contract:",
-  "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
-  "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
-  "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
-  "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
-  "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
-  "- After 2 consecutive failures of the same control-plane write, stop retrying that write for the rest of the heartbeat. Continue useful work, report the failure in the final response, and rely on the adapter/runtime status channel as the sanctioned fallback.",
-  "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
-  "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
-  "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
-  "- Use `PAPERCLIP_SCRATCH_DIR` / `PAPERCLIP_RUN_SCRATCH_DIR` for temporary scratch files instead of ad hoc `/tmp` paths; Paperclip removes that run-owned directory after the run ends.",
-  "- To ask for that input, create an interaction on the current issue with POST /api/issues/$PAPERCLIP_TASK_ID/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response (it wakes on acceptance and rejection alike; only expiry does not wake); use wake_assignee_on_accept when you want to resume only after acceptance.",
-  "- Never create probe or throwaway issue-thread interactions to discover the interactions API shape or your permissions; schema discovery goes through the OpenAPI spec and explicit validation errors, not placeholder cards. Every ask_user_questions, suggest_tasks, or request_confirmation you post must carry a real, answerable prompt; withdraw one you no longer need instead of leaving it pending.",
-  "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/$PAPERCLIP_TASK_ID/comments or PATCH /api/issues/$PAPERCLIP_TASK_ID comment payload (substitute that issue's real id when it is not the current task). Generic agent comments on closed issues are inert by default.",
-  "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
-  "- If blocked, mark the issue blocked and name the unblock owner and action.",
-  "- Respect budget, pause/cancel, approval gates, and company boundaries.",
-  "- When the server-authenticated wake payload includes an External chat response contract, that narrower contract replaces the generic Paperclip comment, status, checkout, and final-disposition steps above for that turn. Follow the external-chat contract exactly; it does not relax any permission, approval, execution-policy, containment, budget, pause/cancel, or company boundary.",
+  "You are agent {{agent.id}} ({{agent.name}}).",
   "",
   CONNECTION_INTENT_AGENT_GUIDANCE,
 ].join("\n");
 
-// Chat behavior is supplied centrally by the server's task-context markdown.
-// Keep the ordinary task's completion/delegation contract out of this template.
-export const DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE = [
-  "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip conversation using the supplied chat mode directive.",
-  "Use available tools and assigned skills as needed; respect budget, pause/cancel, approval gates, and company boundaries.",
-  "Prefer the smallest verification that proves the action. Use PAPERCLIP_SCRATCH_DIR / PAPERCLIP_RUN_SCRATCH_DIR for temporary scratch files.",
-  "After 2 consecutive failures of the same control-plane write, stop retrying that write for the rest of the turn. Report the failure honestly; never claim an unconfirmed mutation succeeded.",
-  "Never create probe or throwaway issue-thread interactions. Every interaction must carry a real, answerable prompt; withdraw one you no longer need.",
-  "",
-  CONNECTION_INTENT_AGENT_GUIDANCE,
-].join("\n");
+// Task/chat modes arrive in server-owned context; operational procedures live
+// in the harness-delivered Paperclip skill rather than either default template.
+export const DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE =
+  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
 
 export const WATCHDOG_DEFAULT_MANDATE = [
   "You are running as a task watchdog, not as the original deliverable worker.",
@@ -2175,12 +2152,25 @@ export function isAssignmentShapedPaperclipWakeReason(
 
 // Select at the actual provider attempt boundary so a failed resume restores
 // the original snapshot once when retrying with a fresh session.
+export async function hydrateFreshSessionHandoff(
+  ctx: Pick<AdapterExecutionContext, "context" | "getFreshSessionHandoff">,
+  options: { resumedSession?: boolean } = {},
+): Promise<void> {
+  if (options.resumedSession === true || !ctx.getFreshSessionHandoff) return;
+  const handoff = await ctx.getFreshSessionHandoff();
+  if (handoff) ctx.context.paperclipFreshSessionHandoffMarkdown = handoff;
+  else delete ctx.context.paperclipFreshSessionHandoffMarkdown;
+}
+
 export function selectInitialCommunicationGuidance(
   context: Record<string, unknown> | null | undefined,
   options: { resumedSession?: boolean } = {},
 ): string {
   return options.resumedSession === true
-    ? "" : asString(context?.paperclipTaskCommunicationGuidance, "").trim();
+    ? "" : joinPromptSections([
+        asString(context?.paperclipTaskCommunicationGuidance, "").trim(),
+        asString(context?.paperclipFreshSessionHandoffMarkdown, "").trim(),
+      ]);
 }
 
 // Picks the task-context markdown variant for adapters that inject it into the
@@ -2228,6 +2218,7 @@ export function selectPaperclipPromptSections(
   options: {
     resumedSession?: boolean;
     includeCommunicationGuidance?: boolean;
+    /** @deprecated Generic execution instructions are no longer injected. */
     includeExecutionContract?: boolean;
     nativeWakeReaderAvailable?: boolean;
   } = {},
@@ -2256,6 +2247,7 @@ export function renderPaperclipWakePrompt(
   return joinPromptSections([
     renderPaperclipWakePromptBody(value, options),
     instructions ? `## Assigned connector skills\n\n${instructions}` : "",
+    asString(parseObject(parseObject(value).connectionInstructions).text, "").trim(),
   ]);
 }
 
@@ -2263,6 +2255,7 @@ function renderPaperclipWakePromptBody(
   value: unknown,
   options: {
     resumedSession?: boolean;
+    /** @deprecated Generic execution instructions are no longer injected. */
     includeExecutionContract?: boolean;
     // Conversation policy arrives in the server-owned task markdown. Generic
     // task disposition and child-delegation instructions conflict with it.
@@ -2287,12 +2280,6 @@ function renderPaperclipWakePromptBody(
     externalChatTurn ||
     externalChatReaderTurn ||
     externalChatQuestionResponseTurn;
-  // The heartbeat prompt template already carries the execution contract on
-  // fresh sessions; only resume deltas (which replace the template) and
-  // template-less adapters need the wake-payload copy. An explicit false means
-  // another delivery carrier owns the contract, including on resume.
-  const includeExecutionContract = options.conversationMode !== true &&
-    (options.includeExecutionContract ?? resumedSession);
   const hasWakeCommentBatch =
     normalized.comments.length > 0 ||
     normalized.includedCount > 0 ||
@@ -2383,7 +2370,7 @@ function renderPaperclipWakePromptBody(
     }
   };
 
-  const executionContractLines = externalChatContract
+  const wakeContractLines = externalChatContract
     ? [
         externalChatQuestionResponseTurn
           ? "## External chat answered-question contract"
@@ -2430,12 +2417,7 @@ function renderPaperclipWakePromptBody(
           `Fallback preference order: (1) send back to ${originalAssigneeLabel} with a retry instruction; (2) fix the runtime/adapter/workspace problem, then send it back; (3) reassign to another agent with the right specialty; (4) convert to an explicit manual-review state for the board.`,
           "",
         ]
-      : includeExecutionContract
-        ? [
-            "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Immediately before returning, verify that Paperclip records one of those dispositions; a successful process exit or final response is not sufficient. If no valid disposition is recorded, record it now and do not end the run. After 2 consecutive failures of the same control-plane write, stop retrying it for the rest of the heartbeat, continue useful work, report the failure in the final response, and rely on the adapter/runtime status channel as the sanctioned fallback. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
-            "",
-          ]
-        : [];
+      : [];
   const wakeSummaryLines = [
     `- reason: ${normalized.reason ?? "unknown"}`,
     `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
@@ -2493,7 +2475,7 @@ function renderPaperclipWakePromptBody(
             ]),
         "",
         ...externalInteractionContinuationLines,
-        ...executionContractLines,
+        ...wakeContractLines,
         ...wakeSummaryLines,
       ]
     : [
@@ -2523,7 +2505,7 @@ function renderPaperclipWakePromptBody(
           : []),
         "",
         ...externalInteractionContinuationLines,
-        ...executionContractLines,
+        ...wakeContractLines,
         ...wakeSummaryLines,
       ];
 
@@ -3213,10 +3195,22 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
+export const AGENT_IDENTITY_ENV_KEYS = [
+  "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+];
+
+export function buildAgentIdentityEnv(identity?: AgentRuntimeIdentity): Record<string, string> {
+  return identity ? {
+    PAPERCLIP_AGENT_KEY_ID: identity.keyId,
+    PAPERCLIP_AGENT_PUBLIC_KEY: identity.publicKeyPem,
+    PAPERCLIP_AGENT_PRIVATE_KEY: identity.privateKeyPem,
+  } : {};
+}
+
 export function buildPaperclipEnv(agent: {
   id: string;
   companyId: string;
-}): Record<string, string> {
+}, identity?: AgentRuntimeIdentity): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -3227,6 +3221,7 @@ export function buildPaperclipEnv(agent: {
   const vars: Record<string, string> = {
     PAPERCLIP_AGENT_ID: agent.id,
     PAPERCLIP_COMPANY_ID: agent.companyId,
+    ...buildAgentIdentityEnv(identity),
   };
   const runtimeHost = resolveHostForUrl(
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
@@ -3515,6 +3510,10 @@ export function sanitizeInheritedPaperclipEnv(
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   delete env.PAPERCLIPAI_CMD;
   for (const key of Object.keys(env)) {
+    if (AGENT_IDENTITY_ENV_KEYS.includes(key.toUpperCase())) {
+      delete env[key];
+      continue;
+    }
     if (!key.startsWith("PAPERCLIP_")) continue;
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
     if (key === "PAPERCLIP_LISTEN_HOST") continue;

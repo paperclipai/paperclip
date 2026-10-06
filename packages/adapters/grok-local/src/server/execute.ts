@@ -36,6 +36,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   readPaperclipRuntimeSkillEntries,
   renderTemplate,
+  hydrateFreshSessionHandoff,
   selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
@@ -310,7 +311,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
   const executeTurn = async (): Promise<AdapterExecutionResult> => {
     const envConfig = parseObject(config.env);
     const env: Record<string, string> = {
-      ...buildPaperclipEnv(agent),
+      ...buildPaperclipEnv(agent, ctx.agentIdentity),
       ...buildRuntimeToolsEnv(ctx.runtimeTools),
     };
     env.PAPERCLIP_RUN_ID = runId;
@@ -566,6 +567,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
       ctx.signal?.throwIfAborted();
       const attemptSections = selectPaperclipPromptSections(context, {
         resumedSession: Boolean(resumeSessionId),

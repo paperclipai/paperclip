@@ -177,6 +177,21 @@ idempotent actor synchronization operations, not arbitrary transactions. A
 persistent outage still fails the request after the bounded retries; each
 connection attempt remains subject to the configured database connect timeout.
 
+The dashboard's company lookup, agent and task counts, pending approval count,
+monthly spend, and run activity aggregate each retry these connection errors
+at most twice. The heartbeat run list and base issue lookup by UUID or identifier
+use the same bounded retries. Each callback is read-only and rebuilds its query
+for each attempt. A failed read does not replay completed reads, the budget
+workflow, or issue label and watchdog enrichment. Missing resources,
+authentication errors, and other database errors retain their usual behavior.
+This does not enable general SQL replay or retry a full request.
+
+The task run list also opts its execution-status projection into these bounded
+retries. Each of its four read-only lookups rebuilds only the failed query;
+completed lookups and the separate liveness backfill are not replayed. Projection
+callers that use a transaction retain single-attempt reads. The opt-in is only
+for a pooled database handle outside a transaction.
+
 ## Execution identity row locks
 
 Identity initialization, credential acquisition, and steering reconciliation lock
@@ -231,6 +246,38 @@ intentionally instance-scoped rather than company-scoped: an instance has one
 public identity, and the existing unique singleton-key index makes concurrent
 or later attempts to replace it fail closed. The server loads the row before
 constructing URL-dependent runtime services on every boot.
+
+### Unclaimed Cloud warm standby
+
+`PAPERCLIP_CLOUD_WARM_STANDBY=1` is an opt-in control-plane marker for an
+unclaimed warm application. It requires Cloud configuration, a stack identity,
+and runtime identity verification keys. After restoring the durable identity,
+startup checks once for company data. Existing companies or a persisted claim
+keep the application fully active. A failed database check fails startup.
+
+An empty unclaimed application keeps its HTTP server and sandbox plugins ready,
+but skips recurring database work: chat/email delivery, plugin jobs, browser
+cleanup, feedback export, import cleanup, execution reconciliation, heartbeat
+schedules, and automatic backups. Startup migrations, plugin installation, and
+other one-time preparation still run. Normal anonymous health probes return
+`warmStandby: true` without SQL or session lookups. This is application liveness,
+not a current database connectivity check. Other API requests and WebSocket upgrades return 503 until
+the signed claim succeeds. Page and asset requests serve only the static UI
+router, bypassing session, bearer-key, tenant, and other dynamic handlers.
+
+The existing signed claim on `GET /api/health` writes the identity durably before
+normal requests and polling resume. No polling discovers claims and no process
+restart is required. Timers resume on their next normal tick; request-driven
+work can proceed immediately. Claim failure leaves standby intact. A restart
+restores the claim even if provider environment alignment has not completed.
+Deleting a claimed workspace's last company never puts it back into standby.
+
+Deploy support before enabling the marker. Validate idle database transactions
+and health probes, claim/bootstrap latency, recurring work after claim, and a
+restart with stale provider variables on an isolated warm application first.
+Rollback by setting the marker to `0` and restarting. No schema changes are
+required. This mechanism does not sleep claimed workspaces or replace a durable
+scheduler for their background work.
 
 ## Resource membership tables
 
@@ -443,6 +490,74 @@ Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVID
 
 Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
 
+## Resource lifecycle events
+
+`resource_lifecycle_events` records content-free lifecycle hooks in the same
+transaction as the resource change. Hired agents and new projects emit `create`.
+Pending hires emit creation only when `activatePendingApproval` succeeds.
+Rejected hires emit termination without creation. Agents created as terminated
+emit no creation event. Capture is generic and works on self-hosted and managed
+instances; recording an event does not authorize a provider operation.
+
+A partial unique `(company_id, resource_type, resource_id)` index deduplicates
+creation. Each actual agent pause, resume, or termination appends another event,
+including budget actions and generic status updates. The agent row stays locked
+until status and event commit, so concurrent repeat requests emit one hook.
+Project edits and workspace additions, updates, and removals append `update`.
+Repository replacement emits one aggregate update; project creation with repositories
+emits only creation. Project mutations hold the project row lock until their record
+commits. An active-to-archived transition emits `archive`; restoring an archived
+project emits `update`. Repeat archive or restore requests emit no new status
+record. An edit combined with archive emits `update` followed by `archive` in
+the same transaction. Archiving preserves workspace records and authorizes no
+provider cleanup.
+Termination commits API-key revocation in that same transaction.
+Hire approval and rejection commit with agent activation or termination, so a
+failed event write leaves the decision pending and retryable.
+
+Creation is delivered first for each resource, including a backfilled creation
+whose ID is newer than earlier captured transitions. The remaining events follow
+numeric ID order. Plugin delivery
+must enforce company scope, preserve resource order, and track acknowledgments
+per plugin. A global high-water mark can skip transactions that have not yet
+committed; it is not a safe delivery cursor. The journal stores only identity,
+action, and timestamps, not repository snapshots, credentials, provider config,
+or resource health. Company deletion cascades to its events. Resource deletion
+retains events, so consumers must revalidate existence and eligibility and load
+current authorized repository data. A termination hook does not authorize
+provider cleanup without the plugin's own authorization and retention policy.
+
+Migration `0309_loving_the_hood.sql` seeds a one-time current-state baseline before
+plugin delivery is available. It records creation for existing hired agents and
+all projects, including archived projects. Pending hires stay behind approval.
+Paused and terminated agents receive missing final status intents. A partial
+journal ending at pause receives resume when the current agent is running.
+Archived projects receive missing archive intents. A partial journal ending at
+archive receives update when the current project is active.
+Existing records remain intact, and rerunning the baseline does not duplicate it.
+The migration also repairs the journal ID generator in older JavaScript restores
+that lost identity metadata, starting above existing IDs. New JavaScript backups
+preserve identity generation, sequence options, and sequence progress.
+Resource writes wait for the migration transaction to commit. These records
+represent current desired state, not reconstructed historical transitions.
+There is no later or runtime journal backfill. Plugins use `ctx.events.listLifecycle(companyId, limit?, afterId?)` and
+`ctx.events.acknowledgeLifecycle(companyId, eventId)` with `events.subscribe`.
+The host requires a matching company invocation (or configured-company proactive
+access) and a ready plugin enabled for that company.
+`plugin_lifecycle_acknowledgments` stores progress independently
+for each plugin and event; plugin and event deletion cascade acknowledgments.
+Reads return creation first, then the earliest unacknowledged transition for each resource, up to 100
+resources. Acknowledging a later event is rejected. Reads never consume work, so
+crashes, retries, and restarts cannot lose a hook; concurrent reads can repeat an
+event. There is no global cursor or runtime backfill scan. Consumers must serialize their
+processing and make provider operations idempotent before acknowledging success.
+Retention and provider integration remain separate work.
+
+Lifecycle polls can page past failed resources using the last returned event id as
+`afterId`. Reset `afterId` at the start of every polling sweep: it is a page
+cursor, never a persisted high-water mark. This retries failures and includes
+transactions that commit later with lower ids.
+
 ## Legacy controller ownership
 
 Legacy run claims atomically record `controller_boot_id`, a database-clock
@@ -484,3 +599,12 @@ reservation cannot silently disappear. Failed cleanup or an ambiguous storage
 write requires operator reconciliation before an unattached reservation is
 removed. The table stores no response bodies. See `doc/runner-api-tools.md` for
 limits and the operator override.
+
+## Agent identity keys and backups
+
+`agent_identity_keys` stores one encrypted Ed25519 identity per agent. Its migration
+creates schema only: existing agents provision on their next managed run. Public
+reads and server startup do not provision them. Normal backups preserve identity
+rows and need the matching secrets master key for recovery. Both development seed
+modes omit identity rows, including with live-work preservation, so copied agents
+get fresh identities. See [Agent cryptographic identity](AGENT-IDENTITY.md).

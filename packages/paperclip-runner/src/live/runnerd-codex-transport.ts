@@ -3211,6 +3211,9 @@ export function resolveRunnerdAcpxPermissionMode(
 }
 
 const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
+  "PAPERCLIP_AI_PROVIDER_KEY",
+  "PAPERCLIP_AI_PROVIDER_URL",
+  "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
   "PATH",
   "LANG",
   "LANGUAGE",
@@ -3245,6 +3248,10 @@ function createSanitizedOpenCodeRunnerEnvironment(
   source: NodeJS.ProcessEnv | undefined,
 ): NodeJS.ProcessEnv {
   const candidate = { ...process.env, ...source };
+  for (const key of ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]) {
+    delete candidate[key];
+    if (source?.[key] !== undefined) candidate[key] = source[key];
+  }
   return Object.fromEntries(
     Object.entries(candidate).filter(
       ([key, value]) =>
@@ -3581,20 +3588,31 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (method === "thread/turns/list") {
         data = turns.map(turn => ({ ...turn, items: [], itemsView: "notLoaded" }));
       } else {
-        if (params.turnId !== this.#turnId) throw new Error("codex_history_unavailable: requested turn is outside the retained runner event window");
+        if (!turns.some(turn => turn.id === params.turnId)) throw new Error("codex_history_unavailable: requested turn is outside the retained runner event window");
         const items = new Map<string, Record<string, unknown>>();
+        let semanticResultItem: Record<string, unknown> | null = null;
         let observedTurn = "";
         let observedStart = false;
         for (const event of this.#core?.store.state.committedEvents ?? []) {
+          if (event.envelope.runId !== this.#core?.store.state.identity.runId) continue;
           const payload = record(record(event.envelope.payload).payload);
           if (event.eventType === "turn.started") observedTurn = String(payload.providerTurnId ?? payload.turnId ?? record(payload.turn).id ?? "");
           if (event.eventType === "turn.started" && observedTurn === params.turnId) observedStart = true;
+          if (event.eventType === "run.result.proposed" && observedTurn === params.turnId) {
+            // Reconciliation can precede notification delivery. Recover the
+            // runner's authoritative result with the exact retained turn,
+            // rather than launching work again just to obtain a disposition.
+            const id = `runner-result-${event.sourceSeq}`;
+            semanticResultItem = { turnId: observedTurn, item: { id, type: "agentMessage", text: JSON.stringify(payload) } };
+          }
           if (event.eventType !== "item.completed" || observedTurn !== params.turnId) continue;
           const item = record(rehydrateRunnerdItemNotification(payload, this.#threadId, observedTurn).item);
           if (typeof item.id === "string") items.set(item.id, { turnId: observedTurn, item });
         }
         if (!observedStart) throw new Error("codex_history_incomplete: requested turn start is outside the retained runner event window");
         data = [...items.values()];
+        // Runner authority wins over schema-shaped prose in an assistant item.
+        if (semanticResultItem) data.push(semanticResultItem);
       }
       if (params.sortDirection === "desc") data.reverse();
       const offset = params.cursor == null ? 0 : Number(params.cursor);
@@ -3655,8 +3673,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           await new Promise((resolveWait) => setTimeout(resolveWait, 10));
         }
         if (terminal !== undefined) {
+          const payload = record(record(terminal.envelope.payload).payload);
           recoveredTurns.push({
             id: this.#turnId,
+            // Reconciliation must retain the cause, including the runner's
+            // explicit process-loss marker, rather than inventing error:null.
+            error: payload.error ?? record(payload.turn).error ?? null,
             status:
               terminal.eventType === "turn.completed"
                 ? "completed"
@@ -3668,6 +3690,24 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           });
         }
       }
+      // A controller can lose the checkpoint after a continuation is accepted.
+      // Keep its prior terminal as the history anchor, so driver recovery can
+      // adopt the later accepted turn instead of submitting it again. Items
+      // remain lazy and fail closed if their start left the retained window.
+      const priorTerminals = new Map<string, Record<string, unknown>>();
+      for (const event of this.#core?.store.state.committedEvents ?? []) {
+        if (event.envelope.runId !== this.#core?.store.state.identity.runId ||
+            !["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)) continue;
+        const payload = record(record(event.envelope.payload).payload);
+        const turnId = payload.providerTurnId ?? payload.turnId ?? record(payload.turn).id;
+        if (typeof turnId !== "string" || !turnId || turnId === this.#turnId) continue;
+        priorTerminals.set(turnId, {
+          id: turnId,
+          status: event.eventType.slice("turn.".length),
+          error: payload.error ?? record(payload.turn).error ?? null,
+        });
+      }
+      recoveredTurns.unshift(...priorTerminals.values());
       this.#recoveryTurnBindingPending = false;
       this.#pumpEvents();
       return {
@@ -4544,7 +4584,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       provider === "codex" &&
       record(params.config).include_collaboration_mode_instructions !== false;
     const unboundBaseInstructions = String(
-      params.baseInstructions ?? "You are a Paperclip agent.",
+      params.developerInstructions ?? params.baseInstructions ?? "You are a Paperclip agent.",
     );
     const baseInstructions =
       sourceRuntimeContext && runtimeContext
@@ -4672,7 +4712,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                       ? "opencode_server"
                       : "codex_app_server",
                   providerVersion:
-                    provider === "opencode" ? "1.18.32" : "codex-app-server-v1",
+                    provider === "opencode" ? "1.18.34" : "codex-app-server-v1",
                   command:
                     provider === "opencode"
                       ? providerNodeCommand

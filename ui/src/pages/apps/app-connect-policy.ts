@@ -67,6 +67,11 @@ export function canEnterAppsConnect(
     );
   }
   const source = searchParams.get("source") ?? "";
+  // Router connectors are registered by installed plugins, not the static
+  // catalog. AppsConnect resolves this reserved slug against the host gallery
+  // before rendering the pool wizard; unknown/uninstalled routers show its
+  // actionable unavailable state rather than bouncing back to the catalog.
+  if (/^ai-router-(?:[a-f0-9]{2})+$/.test(source)) return true;
   const entry = getAppStoreDefinition(source);
   if (
     !chatConnectorsEnabled &&
@@ -77,5 +82,5 @@ export function canEnterAppsConnect(
   // setup. Admit only known providers here; the setup flow then proves the
   // exact reconnect target is visible to the selected company before rendering.
   if (getConnectableAppDefinition(source) && searchParams.get("reconnect")?.trim()) return true;
-  return chatConnectorsEnabled ? appSupportsCatalogSetup(entry) : appSupportsToolCatalogSetup(entry);
+  return source === "agentmail" || chatConnectorsEnabled ? appSupportsCatalogSetup(entry) : appSupportsToolCatalogSetup(entry);
 }

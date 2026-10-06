@@ -12,9 +12,9 @@ describe("buildPaperclipTaskMarkdown", () => {
     const issue = { id: "task-id", identifier: "PAP-1", title: "Please investigate", description: "Please investigate sign-in failures", titleNeedsGeneration: true };
     const markdown = buildPaperclipTaskMarkdown({ issue });
     expect(markdown).toContain("As one of your first tool calls");
-    expect(markdown).toContain("Check the title tool result");
-    expect(markdown).toContain("retry once with a shorter, plain-language title");
-    expect(markdown).toContain("new idempotency key for changed arguments");
+    expect(markdown).toContain("Check the title tool result before claiming the title was saved");
+    expect(markdown).not.toContain("rejected as credential material");
+    expect(markdown).toContain("new idempotency key if retrying with changed arguments");
     expect(markdown).toContain("set_task_title");
     expect(markdown).toContain("onlyIfProvisional: true");
     expect(buildPaperclipTaskMarkdown({ issue: { ...issue, titleNeedsGeneration: false } })).not.toContain("Task title directive");

@@ -29,13 +29,12 @@ import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
-import { ACPX_CREDENTIAL_BINDING_ENV, ACPX_CREDENTIAL_NAMES } from "../drivers/acpx/environment.js";
+import { ACPX_CREDENTIAL_BINDING_ENV, ACPX_CREDENTIAL_NAMES, CLAUDE_ROUTING_ENV_KEYS } from "../drivers/acpx/environment.js";
 import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import {
   validatePrpEvent,
   type PrpEvent,
 } from "../protocol/replay-contract.js";
-import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
   type DurableRecoveryCommittedEvent,
   type DurableRecoveryCoreCommand,
@@ -55,6 +54,11 @@ const maxFrameBytes = 1024 * 1024;
 // Secure frames hex-encode ciphertext. Reserve envelope/tag space as well.
 const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
 const maxCommands = 500;
+class CommandJournalLimitError extends Error {
+  constructor(readonly code: "command_payload_too_large" | "command_journal_full") {
+    super(`Durable PRP command journal bound exceeded: ${code}.`);
+  }
+}
 // A provider can emit several 100-event runner batches before the transport's
 // polling turn regains the event loop. Match the transport's explicit deferred
 // event bound so a valid burst is not compacted before it can be observed.
@@ -409,6 +413,18 @@ export const durableRecoveryInternals = Object.freeze({ canonicalJson });
 
 function canonicalDigest(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+function matchesSemanticInputDigest(input: unknown, digest: unknown): boolean {
+  try {
+    // Wire integrity covers the complete input, including protected fields.
+    // Receipt redaction can erase those differences and has a separate hash.
+    return digest === `sha256:${canonicalDigest(input)}`;
+  } catch {
+    // Canonicalization bounds must keep the same permanent integrity fence.
+    // Never attach an input-derived error or payload to the diagnostic.
+    return false;
+  }
 }
 
 function exactIdentity(value: unknown): value is DurableRecoveryIdentity {
@@ -1476,6 +1492,12 @@ export class DurablePrpControlPlane {
   #connectionProcessing = new Map<AuthorityConnection, Promise<void>>();
   #pendingSemanticCalls = new Set<string>();
   #semanticResultPersistenceFailed = false;
+  #semanticResultFailures: Array<{
+    callId: string;
+    operationId: string;
+    stage: "persist_result" | "dispatch";
+    code: string;
+  }> = [];
   #port: number | null = null;
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
@@ -1641,6 +1663,7 @@ export class DurablePrpControlPlane {
     );
     return {
       persistenceFailed: this.#semanticResultPersistenceFailed,
+      failures: this.#semanticResultFailures,
       pending: pending.map((entry) => {
         const event = entry.envelope.payload as Record<string, unknown>;
         const payload = event.payload as Record<string, unknown>;
@@ -1948,12 +1971,10 @@ export class DurablePrpControlPlane {
       status: "pending",
       result: null,
     };
-    if (
-      this.#store.state.commands.length >= maxCommands ||
-      Buffer.byteLength(JSON.stringify(command)) > maxCommandBytes
-    ) {
-      throw new Error("Durable PRP command journal bound exceeded.");
-    }
+    if (this.#store.state.commands.length >= maxCommands)
+      throw new CommandJournalLimitError("command_journal_full");
+    if (Buffer.byteLength(JSON.stringify(command)) > maxCommandBytes)
+      throw new CommandJournalLimitError("command_payload_too_large");
     this.#store.state.commands.push(command);
     this.#store.save();
     if (deliverImmediately) {
@@ -3131,8 +3152,10 @@ export class DurablePrpControlPlane {
     if (
       isSemanticInput &&
       semantic !== undefined &&
-      (semantic.content as Record<string, unknown>).digest !==
-        digestPaperclipSemanticContent(semantic.input)
+      !matchesSemanticInputDigest(
+        semantic.input,
+        (semantic.content as Record<string, unknown>).digest,
+      )
     ) {
       // Only the authenticated, schema-valid, exactly correlated input may
       // permanently fail its owner. Never commit, dispatch, or ACK these bytes.
@@ -3262,6 +3285,18 @@ export class DurablePrpControlPlane {
       // evidence stays pending for authoritative reconciliation.
       if (existing === undefined && !alreadyQueued && !this.#pendingSemanticCalls.has(commandId)) {
         this.#pendingSemanticCalls.add(commandId);
+        const recordFailure = (stage: "persist_result" | "dispatch", error: unknown) => {
+          this.#semanticResultPersistenceFailed = true;
+          // Keep diagnostics bounded and content-free. Exception messages can
+          // contain tool bodies or credentials; retain only known error codes.
+          const storageCode = error && typeof error === "object" && "code" in error ? error.code : null;
+          const code = error instanceof CommandJournalLimitError ? error.code
+            : typeof storageCode === "string" && ["ENOSPC", "EDQUOT", "EACCES", "EPERM", "EIO", "EROFS"].includes(storageCode)
+              ? storageCode : stage === "dispatch" ? "dispatcher_rejected" : "result_persistence_failed";
+          this.#semanticResultFailures.push({ callId: call.callId, operationId: call.operationId, stage, code });
+          this.#semanticResultFailures = this.#semanticResultFailures.slice(-20);
+          this.disconnectActiveRunner();
+        };
         const queueResult = (result: unknown, isError: boolean): void => {
           try {
             // Retain the full input once in its canonical event. Copying a
@@ -3274,12 +3309,11 @@ export class DurablePrpControlPlane {
               commandId,
               true,
             );
-          } catch {
-            this.#semanticResultPersistenceFailed = true;
+          } catch (error) {
             // A result that cannot fit the bounded durable journal cannot be
             // acknowledged as a usable tool response. Force a reconnect so
             // the caller can recover or terminate the run explicitly.
-            this.disconnectActiveRunner();
+            recordFailure("persist_result", error);
           }
         };
         void this.#onSemanticToolInput(call)
@@ -3297,8 +3331,7 @@ export class DurablePrpControlPlane {
             }
             // A rejected dispatcher promise does not prove that its effect
             // rolled back. Do not fabricate a final failure or retry the write.
-            this.#semanticResultPersistenceFailed = true;
-            this.disconnectActiveRunner();
+            recordFailure("dispatch", error);
           })
           .finally(() => this.#pendingSemanticCalls.delete(commandId));
       }
@@ -3338,6 +3371,13 @@ const runnerPlatformEnvironmentKeys = [
 ] as const;
 
 const runnerExplicitProviderEnvironmentKeys = [
+  ...ACPX_CREDENTIAL_NAMES.claude.filter(name => !name.startsWith("AWS_")),
+  ...CLAUDE_ROUTING_ENV_KEYS,
+  "PAPERCLIP_AI_PROVIDER_KEY",
+  "PAPERCLIP_AI_PROVIDER_URL",
+  "PAPERCLIP_AGENT_KEY_ID",
+  "PAPERCLIP_AGENT_PUBLIC_KEY",
+  "PAPERCLIP_AGENT_PRIVATE_KEY",
   ...ACPX_CREDENTIAL_NAMES.pi,
   ...ACPX_CREDENTIAL_NAMES.cursor,
   ...ACPX_CREDENTIAL_NAMES.copilot,
@@ -3394,6 +3434,11 @@ function runnerEnvironment(
     for (const key of runnerExplicitProviderEnvironmentKeys) {
       const value = explicitSource[key];
       if (value !== undefined) environment[key] = value;
+    }
+    if (explicitSource.CLAUDE_CODE_USE_BEDROCK === "1") {
+      for (const key of ["AWS_BEARER_TOKEN_BEDROCK"] as const) {
+        if (explicitSource[key] !== undefined) environment[key] = explicitSource[key];
+      }
     }
     Object.assign(environment, githubCredentialEnvironment(explicitSource));
   }

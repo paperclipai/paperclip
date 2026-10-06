@@ -343,7 +343,7 @@ function resetMockDefaults() {
   mockLogActivity.mockImplementation(async () => undefined);
 }
 
-describe.sequential("agent cross-tenant route authorization", () => {
+describe("agent cross-tenant route authorization", () => {
   beforeEach(() => {
     resetMockDefaults();
   });
@@ -357,6 +357,12 @@ describe.sequential("agent cross-tenant route authorization", () => {
       isInstanceAdmin: false,
     };
     const deniedCases = [
+      {
+        label: "public cryptographic identity",
+        request: (app: express.Express) =>
+          requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}/identity`)),
+        untouched: [],
+      },
       {
         label: "pause",
         request: (app: express.Express) =>

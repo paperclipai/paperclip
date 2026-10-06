@@ -33,7 +33,7 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
   update_agent_instructions: "agent_instructions",
   get_agent_instruction_history: "agent_instructions",
   restore_agent_instructions: "agent_instructions",
- create_skill: "skills", create_task: "delegation", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
+ create_skill: "skills", update_skill: "skills", create_task: "delegation", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
   set_dependencies: "delegation", reassign_task: "delegation", list_approvals: "governance", get_approval: "governance",
   get_approval_context: "governance", request_approval: "governance",
   decide_approval: "governance", comment_on_approval: "governance",

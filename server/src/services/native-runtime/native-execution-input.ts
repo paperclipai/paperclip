@@ -42,6 +42,8 @@ export function buildNativeExecutionInput(input: {
   };
   taskPrompt: string;
   initialCommunicationGuidance?: string | null;
+  /** Bounded, redacted background restored only after a fresh provider bootstrap. */
+  freshSessionHandoff?: string | null;
   /**
    * The already-sanitized Paperclip wake envelope for this run. Native drivers
    * receive a closed execution input rather than the legacy adapter context,
@@ -55,6 +57,7 @@ export function buildNativeExecutionInput(input: {
   previousTurn?: { runId: string; task: { title: string; description: string | null } } | null;
   conversationMode?: boolean;
   agentId: string;
+  agentKeyId?: string;
   workspace: {
     id: string;
     cwd: string;
@@ -186,7 +189,9 @@ export function buildNativeExecutionInput(input: {
     : [];
   return parseNativeExecutionInput({
     schema: "paperclip.native-execution-input.v5",
-    ...(input.initialCommunicationGuidance ? { initialCommunicationGuidance: input.initialCommunicationGuidance } : {}),
+    ...((input.initialCommunicationGuidance || input.freshSessionHandoff) ? {
+      initialCommunicationGuidance: [input.initialCommunicationGuidance, input.freshSessionHandoff].filter(Boolean).join("\n\n"),
+    } : {}),
     ...(input.resumedSession && input.previousTurn && !input.conversationMode ? {
       continuationPrompt: buildNativeContinuationPrompt({
         wakePayload: input.wakePayload,
@@ -203,6 +208,7 @@ export function buildNativeExecutionInput(input: {
       runId: input.runId,
       issueId: input.issue.id,
       agentId: input.agentId,
+      ...(input.agentKeyId ? { agentKeyId: input.agentKeyId } : {}),
       executionWorkspaceId: input.workspace.id,
     },
     task: {

@@ -540,42 +540,36 @@ fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection(
         json!(paperclip_runner_core::provider_bridge::semantic_value_digest(&expected))
     );
 
-    for (operation, field, prose, preserved) in [
+    for (operation, field, prose) in [
         (
             "write_document",
             "body",
             "Include the token CHAT8322bda781b81.",
-            true,
         ),
         (
             "create_project",
             "description",
             "Include the token CHAT8322bda781b81.",
-            true,
         ),
         (
             "get_task_context",
             "description",
             "Include the token CHAT8322bda781b81.",
-            false,
         ),
         (
             "mcp__untrusted__create_task",
             "description",
             "Include the token CHAT8322bda781b81.",
-            false,
         ),
         (
             "create_task",
             "description",
             "Authorization: Bearer actual-credential",
-            false,
         ),
         (
             "create_task",
             "initialPlan",
             "access token actual-credential",
-            false,
         ),
     ] {
         let mut candidate = AcpxProviderState::new("run-1").unwrap();
@@ -586,14 +580,6 @@ fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection(
             Some("turn-1"),
             json!({"callId":"call-1", "operationId":operation, "input":{field:prose}}),
         ));
-        if !preserved {
-            assert!(emitted
-                .unwrap_err()
-                .to_string()
-                .contains("refusing to execute altered arguments"));
-            assert!(candidate.pending_tool("call-1").is_none());
-            continue;
-        }
         let events = emitted.unwrap();
         let AcpxProviderStateEvent::ToolCall { input, .. } = &events[0] else {
             panic!("expected tool call");

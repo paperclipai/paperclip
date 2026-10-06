@@ -7,8 +7,20 @@ import {
   classifyContinuationFailure,
 } from "./service.js";
 import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery.js";
+import { isConfigurationIncompleteFailedRun } from "../../modules/wake-queue/domain/values.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
+  it("waits for model configuration changes instead of retrying a typed native model rejection", () => {
+    const run = { errorCode: "native_provider_model_rejected", error: "Fixed model configuration message", resultJson: null };
+    expect(classifyAdapterFailureForRecovery(run)).toEqual({ kind: "configuration_incomplete" });
+    expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+    expect(isConfigurationIncompleteFailedRun(run)).toBe(true);
+    expect(isAiAuthenticationBlocked(run as never)).toBe(false);
+    const unknown = { ...run, errorCode: "adapter_failed", error: "native_provider_model_rejected" };
+    expect(classifyAdapterFailureForRecovery(unknown)).toBeNull();
+    expect(classifyContinuationFailure(unknown as never).kind).toBe("transient_infra");
+    expect(isConfigurationIncompleteFailedRun(unknown)).toBe(false);
+  });
   it.each(["acpx_auth_required", "claude_auth_required", "codex_auth_required", "adapter_auth_missing", "refresh_token_reused", "authentication_required"])("does not automatically retry provider authentication failure %s", (errorCode) => {
     const classification = classifyRunLiveness({ runStatus: "failed", issue: null, errorCode, authenticationRepairRequested: true });
     const run = { errorCode, ...classification };
@@ -171,5 +183,11 @@ describe("classifyAdapterFailureForRecovery", () => {
       error: "Workspace storage capacity limit reached.",
       resultJson: null,
     })).toBeNull();
+  });
+  it("holds invalid provider definitions for repair even with stale transient metadata", () => {
+    const run = { errorCode: "provider_tool_definition_invalid", error: "Tool name is too long.",
+      resultJson: { errorFamily: "transient_upstream" } };
+    expect(classifyAdapterFailureForRecovery(run)).toEqual({ kind: "configuration_incomplete" });
+    expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
   });
 });

@@ -280,6 +280,7 @@ export type {
   AgentDetail,
   ClearAgentErrorResponse,
   AgentPermissions,
+  AgentPublicIdentity,
   AgentRuntimeConfig,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,
@@ -351,7 +352,7 @@ export type {
   DocumentTextRange,
   UpdateDocumentAnnotationThreadRequest,
 } from "./document-annotation.js";
-export type { Project, ProjectRepository, ProjectRepositoryOptions, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
+export type { Project, ProjectDiscoverySummary, ProjectDiscoveryPage, ProjectRepository, ProjectRepositoryOptions, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
   CompanySearchCountType,
   CompanySearchExtractIssueResult,

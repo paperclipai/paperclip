@@ -47,6 +47,7 @@ export type CapabilitySemanticOperationId =
   | "reassign_task"
   | "set_dependencies"
   | "create_skill"
+  | "update_skill"
   | "create_project"
   | "list_project_repositories"
   | "list_projects"

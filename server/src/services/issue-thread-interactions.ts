@@ -2,6 +2,7 @@ import {
   currentContinuationOrigins,
   deliveredContinuationCommentIds,
 } from "./execution-continuation.js";
+import { parseQuestionInteractionAnswers } from "./question-interaction-answers.js";
 import { isUniqueViolation } from "../db-errors.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { connectionIntentDeliveries } from "@paperclipai/db";
@@ -47,6 +48,7 @@ import type {
   CancelIssueThreadInteraction,
   ConnectionIntentInteraction,
   CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   InteractionResolverGovernance,
   IssueReviewPolicy,
   IssueThreadInteraction,
@@ -1995,6 +1997,53 @@ export function issueThreadInteractionService(
       .then((rows) => rows[0] ?? null);
   }
 
+  // Readiness is a projection, not durable interaction state. Use the same
+  // source-run predicate as accept so another run cannot hold a ready card back.
+  async function withAcceptanceReadiness(
+    interactions: IssueThreadInteraction[],
+    issueWorkspace?: { companyId: string; executionWorkspaceId: string | null },
+  ): Promise<IssueThreadInteraction[]> {
+    const guarded = interactions.filter((interaction) =>
+      interaction.status === "pending"
+      && interaction.sourceRunId
+      && (interaction.kind === "request_checkbox_confirmation"
+        || (interaction.kind === "request_confirmation"
+          // Tool reviews resolve through their own route while the originating
+          // run may be waiting for the user's decision.
+          && !interaction.payload.toolAction)),
+    );
+    if (guarded.length === 0) return interactions;
+    const workspace = issueWorkspace ?? await db
+      .select({
+        companyId: issues.companyId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+      })
+      .from(issues)
+      .where(and(
+        eq(issues.id, guarded[0].issueId),
+        eq(issues.companyId, guarded[0].companyId),
+      ))
+      .then((rows) => rows[0]);
+    if (!workspace?.executionWorkspaceId) return interactions;
+
+    // Only pending confirmations need checks, once per source run even if that
+    // run produced several cards. Historical interactions add no queries.
+    const { companyId, executionWorkspaceId } = workspace;
+    const sourceRunIds = [...new Set(guarded.map((interaction) => interaction.sourceRunId!))];
+    const pendingRunIds = new Set<string>();
+    await Promise.all(sourceRunIds.map(async (runId) => {
+      if (!await runWorkspaceIsFinalized(db, companyId, executionWorkspaceId, runId)) {
+        pendingRunIds.add(runId);
+      }
+    }));
+    const guardedIds = new Set(guarded.map((interaction) => interaction.id));
+    return interactions.map((interaction) =>
+      guardedIds.has(interaction.id) && pendingRunIds.has(interaction.sourceRunId!)
+        ? { ...interaction, acceptanceBlocker: "workspace_sync_pending" }
+        : interaction,
+    );
+  }
+
   async function getForIssue(
     issue: { id: string; companyId: string },
     interactionId: string,
@@ -2011,7 +2060,7 @@ export function issueThreadInteractionService(
     ) {
       throw interactionNotFoundError();
     }
-    return hydrateInteraction(current);
+    return (await withAcceptanceReadiness([hydrateInteraction(current)]))[0];
   }
 
   async function assertIssueWorkspaceFinalizedForAccept(args: {
@@ -2565,7 +2614,7 @@ export function issueThreadInteractionService(
           || existing.sourceRunId !== input.sourceRunId
           || existing.addresseeUserId !== input.addresseeUserId
           || (existing.kind === "connection_intent"
-            ? (connectionIntentPayloadSchema.parse(existing.payload).serviceSlug !== payload.serviceSlug || connectionIntentPayloadSchema.parse(existing.payload).purpose !== payload.purpose)
+            ? (connectionIntentPayloadSchema.parse(existing.payload).serviceSlug !== payload.serviceSlug || connectionIntentPayloadSchema.parse(existing.payload).purpose !== payload.purpose || !isDeepStrictEqual(connectionIntentPayloadSchema.parse(existing.payload).accessRequest, payload.accessRequest))
             : !isDeepStrictEqual(existing.payload, payload))
         ) {
           throw conflict(
@@ -2602,7 +2651,7 @@ export function issueThreadInteractionService(
           eq(issueThreadInteractions.addresseeUserId, input.addresseeUserId),
         ));
         const reusable = pending.find((candidate) =>
-          connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug && connectionIntentPayloadSchema.parse(candidate.payload).purpose === payload.purpose);
+          connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug && connectionIntentPayloadSchema.parse(candidate.payload).purpose === payload.purpose && isDeepStrictEqual(connectionIntentPayloadSchema.parse(candidate.payload).accessRequest, payload.accessRequest));
         if (reusable) return reusable;
 
         const [sourceRun] = await tx.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
@@ -2625,7 +2674,7 @@ export function issueThreadInteractionService(
             sourceRunId: input.sourceRunId,
             originCommentIds,
             sourceIdentityContextId: input.sourceIdentityContextId ?? null,
-            title: `Connect ${payload.serviceName}`,
+            title: payload.accessRequest ? `Grant ${payload.serviceName} access to ${payload.requestingAgentName}?` : `Connect ${payload.serviceName}`,
             summary: `${payload.requestingAgentName} needs this connection to continue.`,
             createdByAgentId: payload.requestingAgentId,
             addresseeUserId: input.addresseeUserId,
@@ -2970,7 +3019,7 @@ export function issueThreadInteractionService(
       };
     },
     listForIssue: async (issueId: string) => {
-      const [rows, issueStatus] = await Promise.all([
+      const [rows, issue] = await Promise.all([
         db
           .select()
           .from(issueThreadInteractions)
@@ -2980,16 +3029,20 @@ export function issueThreadInteractionService(
             asc(issueThreadInteractions.id),
           ),
         db
-          .select({ status: issues.status })
+          .select({
+            status: issues.status,
+            companyId: issues.companyId,
+            executionWorkspaceId: issues.executionWorkspaceId,
+          })
           .from(issues)
           .where(eq(issues.id, issueId))
-          .then((issueRows) => issueRows[0]?.status ?? null),
+          .then((issueRows) => issueRows[0]),
       ]);
 
-      return rows.map((row) =>
+      const interactions = rows.map((row) =>
         hydrateInteraction(
-          issueStatus &&
-            isTerminalIssueStatus(issueStatus) &&
+          issue &&
+            isTerminalIssueStatus(issue.status) &&
             row.status === "pending"
             ? {
                 ...row,
@@ -3000,6 +3053,7 @@ export function issueThreadInteractionService(
             : row,
         ),
       );
+      return withAcceptanceReadiness(interactions, issue);
     },
 
     getById: async (interactionId: string) => {
@@ -3009,7 +3063,7 @@ export function issueThreadInteractionService(
         .where(eq(issueThreadInteractions.id, interactionId))
         .then((rows) => rows[0] ?? null);
 
-      return row ? hydrateInteraction(row) : null;
+      return row ? (await withAcceptanceReadiness([hydrateInteraction(row)]))[0] : null;
     },
 
     recordSecretProposalExecutionResult: async (
@@ -3309,7 +3363,7 @@ export function issueThreadInteractionService(
 
     create: async (
       issue: { id: string; companyId: string },
-      input: CreateIssueThreadInteraction,
+      input: CreateIssueThreadInteractionInput,
       actor: InteractionActor,
       options: CreateInteractionOptions = {},
     ) => {
@@ -4894,6 +4948,16 @@ export function issueThreadInteractionService(
         questions: interaction.payload.questions,
         answers: input.answers,
       });
+      if (interaction.payload.questionSet) {
+        try {
+          await parseQuestionInteractionAnswers(interaction.payload.questionSet, normalizedAnswers, interaction.payload.questions);
+        } catch (error) {
+          throw unprocessable(
+            error instanceof Error ? error.message : "Invalid question response",
+            { code: "invalid_question_response" },
+          );
+        }
+      }
 
       const updated = await db.transaction(async (tx) => {
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);

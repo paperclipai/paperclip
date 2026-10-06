@@ -588,7 +588,7 @@ fn reserved_completion_waits_for_feedback_and_allows_correction_in_same_turn() {
 }
 
 #[test]
-fn rejects_sensitive_reserved_input_before_dispatch_without_exposing_values() {
+fn preserves_sensitive_reserved_input_and_still_checks_result_correlation() {
     for mode in [
         "turns-sensitive-reserved-result-terminal",
         "turns-mismatched-sensitive-reserved-result-terminal",
@@ -597,18 +597,25 @@ fn rejects_sensitive_reserved_input_before_dispatch_without_exposing_values() {
         session
             .start_turn("turn-1", "Please help", &std::env::temp_dir())
             .unwrap();
-        let error = session
-            .poll_event(Duration::from_secs(1))
-            .unwrap_err()
-            .to_string();
+        let calls = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
         assert!(
-            error.contains("refusing to execute altered arguments"),
-            "{error}"
+            matches!(&calls[0], AcpxProviderStateEvent::ToolCall {input, ..}
+            if input["summary"].as_str().is_some_and(|summary| summary.contains("matching-sensitive-value")))
         );
-        assert!(!error.contains("matching-sensitive-value"), "{error}");
-        assert!(!error.contains("different-sensitive-value"), "{error}");
-        assert!(session.state().pending_tool("call-finish").is_none());
-        session.shutdown("already closed").unwrap();
+        assert!(session.state().pending_tool("call-finish").is_some());
+        if mode == "turns-mismatched-sensitive-reserved-result-terminal" {
+            let error = session
+                .poll_event(Duration::from_secs(1))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("does not match its authorized invocation"),
+                "{error}"
+            );
+            assert!(!error.contains("matching-sensitive-value"));
+            assert!(!error.contains("different-sensitive-value"));
+        }
+        session.shutdown("correlation checked").unwrap();
     }
 }
 

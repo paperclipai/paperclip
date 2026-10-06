@@ -57,6 +57,7 @@
 
 import os from "node:os";
 import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
+import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
@@ -116,6 +117,14 @@ export function captureException(error: unknown): void {
         contexts: { adapter_stop: { ...error.diagnostics } },
         fingerprint: ["{{ default }}"],
       });
+    } else if (error instanceof CloudPortfolioError) {
+      const exception = new Error(error.message);
+      exception.stack = error.stack;
+      sentryHandle.captureException(exception, {
+        tags: { error_code: "cloud_portfolio_failure" },
+        contexts: { cloud_portfolio: { ...CloudPortfolioError.diagnosticsFor(error) } },
+        fingerprint: ["{{ default }}"],
+      });
     } else {
       sentryHandle.captureException(error);
     }
@@ -126,7 +135,7 @@ export function captureException(error: unknown): void {
 }
 
 /** The run status values that mark a run as a genuine terminal failure. */
-export type RunFailureStatus = "failed" | "timed_out";
+export type RunFailureStatus = "failed" | "timed_out" | "cancelled";
 
 /**
  * The diagnostic values `captureRunFailure` sends with a terminal-failure

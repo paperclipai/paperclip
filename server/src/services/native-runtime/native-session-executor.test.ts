@@ -18,6 +18,7 @@ import {
 } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { inspect } from "node:util";
 import { join } from "node:path";
 import {
   heartbeatRuns,
@@ -39,7 +40,7 @@ import {
   type NativeExecutionInput,
   type PrpEvent,
 } from "@paperclipai/paperclip-runner";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
 import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
@@ -1087,8 +1088,8 @@ describe("remote provider pack manifest", () => {
     const payload = {
       pins: {
         nodeMinimum: "24.11.0",
-        codex: "0.156.0",
-        opencode: "1.18.32",
+        codex: "0.160.0",
+        opencode: "1.18.34",
         acpx: "0.13.1",
         claudeAcp: "0.73.0",
         codexAcp: "1.6.2",
@@ -1148,7 +1149,7 @@ describe("remote provider pack manifest", () => {
       );
     await writeManifest();
     expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
-      "1.18.32",
+      "1.18.34",
     );
     const candidatePath = "provider-assets/pi/linux-x64";
     await mkdir(join(root, candidatePath), { recursive: true });
@@ -2180,7 +2181,7 @@ describe("remote preinstalled executable discovery", () => {
       const shim =
         '#!/bin/sh\ncat "$(dirname "$0")/version.txt"\nprintf "%s\\n" "$@"\n';
       await writeFile(source, shim, { mode: 0o755 });
-      await writeFile(join(installation, "version.txt"), "codex-cli 0.156.0\n");
+      await writeFile(join(installation, "version.txt"), "codex-cli 0.160.0\n");
       // Existing deployments may already have the old symlink. Never write
       // through it into the shared installation while upgrading the launcher.
       await symlink(source, target);
@@ -2193,7 +2194,7 @@ describe("remote preinstalled executable discovery", () => {
           execFileSync(target, ["--version", "argument with 'quotes'"], {
             encoding: "utf8",
           }),
-        ).toBe("codex-cli 0.156.0\n--version\nargument with 'quotes'\n");
+        ).toBe("codex-cli 0.160.0\n--version\nargument with 'quotes'\n");
         expect(await readFile(source, "utf8")).toBe(shim);
       }
       expect(await readdir(join(root, "workspace", "bin"))).toEqual(["codex"]);
@@ -2641,6 +2642,7 @@ const execution = {
 describe("retained native cleanup activation", () => {
   it.each([
     "settled",
+    "provider_transport_failed",
     "canonical_source",
     "canonical_live_owner",
     "canonical_foreign_owner",
@@ -2955,7 +2957,7 @@ describe("retained native cleanup activation", () => {
       processGroupId: mode.endsWith("live_owner") ? process.pid : 99_999_999,
       completionContractId: "contract",
       completionContractSha256: "sha",
-      errorCode: "adapter_failed",
+      errorCode: mode === "provider_transport_failed" ? "provider_transport_failed" : "adapter_failed",
       error:
         "provider_transport_failed: runner did not durably suspend before checkpoint",
       runnerProfileJson: {
@@ -3822,6 +3824,7 @@ describe("retained native cleanup activation", () => {
         "provider_home",
         "legacy_copy",
         "settled",
+        "provider_transport_failed",
         "activation_commit_stalled",
         "empty_root",
         "distinct_provider_account",
@@ -6269,6 +6272,23 @@ describe("native warm session supervision", () => {
       return { base, next, run };
     }
 
+    it("replaces an older warm process before the first turn with cryptographic identity", async () => {
+      const { base } = fixture("identity-key-upgrade");
+      const next = { ...base, binding: { ...base.binding, runId: "identity-key-next" } };
+      const close = vi.fn(async () => undefined);
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        options.onSession?.({ close }); return result;
+      }).mockImplementationOnce(async options => {
+        expect(close).toHaveBeenCalledWith({ reason: "warm native session configuration changed" });
+        expect(options.existingSession).toBeUndefined();
+        return result;
+      });
+      await executePaperclipNativeSession({ db: leaseDb(base), execution: base, runnerInstanceId: "runner" });
+      await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: "runner",
+        runnerEnvironment: { PAPERCLIP_AGENT_KEY_ID: "sha256:identity-key" } });
+      expect(state.execute).toHaveBeenCalledTimes(2);
+    });
+
     it("awaits prior idle ownership retirement before launching the accepted-plan session", async () => {
       const { base, next, run } = fixture("identity-handoff");
       let finishClose!: () => void;
@@ -7590,6 +7610,34 @@ describe("native session bounded recovery", () => {
       phase: "retryable_failure",
       nextAttemptAt: expect.any(Date),
     });
+  });
+
+  it.each(["full", "truncated"])("redacts %s identity from native failure writes, logs, and rethrown errors", async (mode) => {
+    const privateKeyPem = generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const keyBody = privateKeyPem.split("\n")[1];
+    const failure = new Error(`native provider failed: ${mode === "full" ? privateKeyPem : privateKeyPem.slice(0, 64)}`);
+    void failure.stack; // Also cover stacks materialized before the catch boundary.
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const logs: string[] = [];
+    state.execute.mockReset().mockRejectedValueOnce(failure);
+    state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+    const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
+      update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
+    } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    try {
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, {}, updates), execution, runnerInstanceId: "runner",
+        runnerEnvironment: { PAPERCLIP_AGENT_PRIVATE_KEY: privateKeyPem },
+        onLog: async (_stream, text) => { logs.push(text); },
+      })).rejects.toBe(failure);
+      expect(updates.some(entry => entry.table === nativeRunFinalizations && entry.values.failureDetail)).toBe(true);
+      for (const output of [inspect(updates.map(entry => entry.values), { depth: null }), logs.join(""), failure.message, failure.stack!]) {
+        expect(output).not.toContain(keyBody.slice(0, 24));
+        expect(output).toContain("***REDACTED***");
+      }
+    } finally {
+      service.mockRestore();
+    }
   });
 
   it("persists actionable operator recovery without an automatic cleanup wake", async () => {
@@ -11175,7 +11223,7 @@ describe("runnerd provider runtime wiring", () => {
         }), stderr: "",
       };
       if (command.args?.[0] === "--version") return {
-        exitCode: 0, timedOut: false, stdout: "codex-cli 0.156.0", stderr: "",
+        exitCode: 0, timedOut: false, stdout: "codex-cli 0.160.0", stderr: "",
       };
       if (command.args?.[1]?.includes("base64")) return {
         exitCode: 1, timedOut: false, stdout: "", stderr: "",
@@ -11252,7 +11300,7 @@ describe("runnerd provider runtime wiring", () => {
         }), stderr: "",
       };
       if (command.args?.[0] === "--version") return {
-        exitCode: 0, timedOut: false, stdout: "codex-cli 0.156.0", stderr: "",
+        exitCode: 0, timedOut: false, stdout: "codex-cli 0.160.0", stderr: "",
       };
       if (command.args?.[2] === "paperclip-runner-launch") {
         throw new Error("fixture_stop_after_launch_staging");
@@ -11334,10 +11382,10 @@ describe("runnerd provider runtime wiring", () => {
 
   it.each([
     ...["current", "preinstalled-exact", "preinstalled-mismatch", "preinstalled-error", "preinstalled-timeout", "stale", "missing", "retained", "retained-mismatch", "retained-error", "retained-timeout", "retained-explicit"]
-      .map((image) => ({ image, version: "0.156.0", compatible: true })),
-    ...["0.149.0", "0.149.1", "0.153.4", "0.156.1"]
+      .map((image) => ({ image, version: "0.160.0", compatible: true })),
+    ...["0.149.0", "0.149.1", "0.153.4", "0.156.0", "0.160.1"]
       .map((version) => ({ image: "current", version, compatible: true })),
-    ...["0.148.9", "0.157.0", "1.0.0", "0.156.0-alpha.1", "unknown"]
+    ...["0.148.9", "0.161.0", "1.0.0", "0.160.0-alpha.1", "unknown"]
       .map((version) => ({ image: "current", version, compatible: false })),
   ])("uses shared Codex and the server-owned replacement artifact (image=$image, Codex=$version)", async ({ image, version, compatible }) => {
     const retained = image.startsWith("retained");
@@ -11431,7 +11479,7 @@ describe("runnerd provider runtime wiring", () => {
       controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
     };
     await expect(transport.controlPlaneRegistration({})).rejects.toThrow(
-      compatible ? "reached-preinstalled-codex-verification" : "runner_remote_provider_artifact_incompatible: supported Codex versions >=0.149.0 <0.157.0",
+      compatible ? "reached-preinstalled-codex-verification" : "runner_remote_provider_artifact_incompatible: supported Codex versions >=0.149.0 <0.161.0",
     );
     if (!compatible) {
       expect(syncIn).not.toHaveBeenCalled();
@@ -11439,7 +11487,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(onLog).not.toHaveBeenCalledWith("stderr", expect.stringContaining("using compatible Codex"));
       return;
     }
-    if (version !== "0.156.0") {
+    if (version !== "0.160.0") {
       expect(onLog).toHaveBeenCalledWith("stderr", expect.stringContaining(`using compatible Codex ${version}`));
     }
     if (needsReplacement) {

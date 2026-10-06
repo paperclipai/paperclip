@@ -188,6 +188,18 @@ Invariants:
 
 Invariant: plaintext key shown once at creation; only hash stored.
 
+### Agent cryptographic identity
+
+Each agent also has one Ed25519 identity in `agent_identity_keys`, separate from
+API bearer keys and company secrets. New-agent creation provisions it atomically;
+existing agents provision lazily before their first managed run. The schema-only
+migration and public reads never provision existing agents. Private PKCS#8 PEM
+material uses `local_encrypted`; public SPKI PEM and its SHA-256 key ID are readable
+through `GET /api/agents/:id/identity` and the agent Identity section. Managed
+processes receive the pair through runtime-only environment fields. See
+[Agent cryptographic identity](AGENT-IDENTITY.md) for storage, runtime, and copy
+semantics.
+
 ## 7.4 `goals`
 
 - `id` uuid pk
@@ -548,7 +560,7 @@ V1 non-terminal liveness rule:
 - recovery-action ownership is separate from source-task ownership: automatic repair and board escalation preserve both source assignee fields; reassignment requires an explicit board decision or a policy-defined serious failure
 - source-scoped recovery routing is cause-keyed: bounded continuity and disposition repair may retry only the original agent; provider-quota failures create/reuse a scheduled wait-recovery monitor; every other exhausted or unsafe path creates/reuses a board-owned recovery action with `routingPolicy: board_escalation_no_takeover_v1` and no substitute-agent wake
 - legacy active agent-owned recovery actions remain readable, resolvable, and API-compatible after upgrade, but reconciliation does not enqueue another takeover wake for them
-- active-run output silence is an informational board UI signal at one hour (`suspicious`) and four hours (`critical`); it does not create or update issues or recovery actions, comment on or block source work, change assignments, or wake an agent
+- active-run output silence is an informational board UI signal at five minutes (`suspicious`) and fifteen minutes (`critical`); it does not create or update issues or recovery actions, comment on or block source work, change assignments, or wake an agent
 - board snooze and continue decisions suppress the run signal until their stored re-arm time; a false-positive decision suppresses it permanently for that run; open legacy evaluation issues remain readable and manually resolvable without automatic refresh
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
@@ -592,7 +604,7 @@ conversation lifecycles, and protection against replaying superseded requests.
 | Action | Board | Agent |
 |---|---|---|
 | Create company | yes | no |
-| Hire/create agent | yes (direct) | request via approval |
+| Hire/create agent | yes (direct) | new standard agents: direct via `canCreateAgents`; low-trust policy or approval gates can restrict |
 | Pause/resume agent | yes | pause: no; resume: direct `agents:configure` grant only |
 | Create/update task | yes | yes |
 | Force reassign task | yes | limited |
@@ -610,6 +622,14 @@ agent actor calling `POST /agents/:agentId/resume` must pass the protected
 access does not bypass that decision, and `agents:suggest-changes` alone cannot
 apply the lifecycle change. Pause, clear-error, terminate, approval, and
 key-management routes remain board-only.
+
+An ordinary standard agent receives a direct `agents:configure` grant on
+creation. Existing agents keep their current permissions; no backfill runs.
+Low-trust and managed built-in agents do not receive this default. See
+[agent permission defaults](agent-permission-defaults.md) for the full inventory.
+Agent-authenticated changes cannot set or restore host-executed process adapter
+configuration, including commands and environment values. Agent-authenticated
+rollbacks cannot restore host-executed workspace commands either.
 
 ### 9.3.1 Shared default-open issue writes
 
@@ -1502,6 +1522,13 @@ Required UX behaviors:
 - conflict toasts on atomic checkout failure
 - no silent background failures; every failed run visible in UI
 
+Regular task chats and Agent Chat keep unanswered questions as compact,
+reopenable entries at their original position in the feed. Dismissing a question
+or sending a newer message clears its form from the composer without resolving
+the saved question. Questions do not contribute to composer pending counts.
+Dismissal persists locally for the person and task across reloads; reopening
+restores the original form and draft. Approval and permission gates are unchanged.
+
 ## 15. Operational Requirements
 
 ## 15.1 Environment
@@ -1533,6 +1560,7 @@ Required UX behaviors:
 
 - store only hashed agent API keys
 - redact secrets in logs (`adapter_config`, auth headers, env vars)
+- forward authorized semantic tool arguments unchanged, including credential-bearing document and instruction content; the provider harness owns credential-content policy, and diagnostic redaction must not act as a save or execution gate
 - CSRF protection for board session endpoints
 - rate limit auth and key-management endpoints
 - strict company boundary checks on every entity fetch/mutation
@@ -1701,12 +1729,18 @@ Confirmed project creation appears as a durable card in the shared task transcri
 
 ### User continuation after execution recovery stops
 
-An authenticated user message or an exact failed-run Retry can start a fresh
+An authenticated user message, a validated undelivered native message queue, or an exact failed-run Retry can start a fresh
 native or legacy conversation turn once the prior execution is confirmed stopped. Retain the source history and uncertain
 action outcomes; do not replay tool calls or reset the failed incident's automatic
 retry budget. Existing pause, approval, budget, ownership, and dependency gates
 remain in effect. See `doc/execution-semantics.md` for admission and stop-proof
 requirements.
+The task recovery notice offers Retry for eligible failures and verified native
+startup cancellations, with failed attempts explained inline. Preparing native
+turns keep the Steer label. Steer and Interrupt immediately move the submitted
+messages from the composer queue into the conversation while delivery proceeds.
+Provider acknowledgement remains authoritative; failed delivery restores the
+latest queue with an inline error. Neither action produces a toast.
 
 ### Managed AI authentication
 
@@ -1719,15 +1753,24 @@ Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
 methods, lifecycle, runtime enforcement, and migration details.
 
+The selected AI connection supports an on-demand usage probe through the common
+connection service, independent of legacy/native execution. The board usage
+endpoint rechecks company membership and the credential's human audience before
+reading its stored token. Report all returned allowance windows, model/feature
+scope, reset times, exhaustion and overage observations; missing values remain
+unknown and unsupported methods/provider failures are explicit. The account
+detail's Check usage action triggers the probe. No automatic detection, routing,
+budget enforcement, credential refresh or credit purchase follows from it.
+
 Provider login failures create a provider-specific Connections card on the task
 when the run fails, before generic recovery retries. Reconnect preserves account
 identity and permissions. Compatible legacy agents may explicitly adopt a
 validated connection inline; late failures must not invalidate newer credentials.
 
-### Experimental task-bound email
+### Task-bound email
 
-AgentMail channel connections extend the experimental conversation/task pipeline
-with explicit email publication. Each owned inbox/provider thread binds one task;
+AgentMail is a default connection and does not require the experimental chat
+setting. It extends the conversation/task pipeline with explicit email publication. Each owned inbox/provider thread binds one task;
 external email senders do not gain board authority. Incoming correspondence uses
 the assigned agent's normal execution controls. Internal task activity never
 implicitly sends email. New outgoing conversations create child tasks and durable
@@ -1883,3 +1926,45 @@ unavailable. Preserve current ownership and newer-work fences. See
   endpoints delegate to sources while retaining response shapes.
 - GitHub.com, manual refresh only. No upstream editing, polling, webhook sync, commits,
   or pull-request creation in this milestone.
+
+## Public assistant connection (opt-in)
+
+The user-authorized MCP surface connects assistants to an explicitly selected
+company as the consenting person. It exposes first-party task reads, additive
+task creation and comments, durable documents and approval links. It reuses
+existing domain authorization and scheduling; OAuth does not grant agent
+identity, native run ownership, approval decisions or third-party credentials.
+See [Public MCP](public-mcp.md) for the implemented instance-side boundary,
+configuration, plugin packages and outstanding hosted release gates. The
+[delivery plan](plans/2026-09-30-paperclip-public-mcp-and-plugins.md) separates
+external agent participation and granted third-party tools into later releases.
+
+### Experimental AI connection routing
+
+Opt-in plugin routers may represent a pool as an AI runtime binding. Core keeps
+company and credential authorization, atomically records task/agent affinity and
+a pool cursor, and persists concrete native recovery evidence. The full contract
+is in [AI-CONNECTION-ROUTERS.md](connections/AI-CONNECTION-ROUTERS.md). Disabled
+routing cannot allocate new tasks; already admitted native runs remain recoverable.
+
+### Connection instructions
+
+Connections can store optional, versioned agent instructions independently of
+provider and transport. Catalog templates control editor visibility; saved
+settings and runtime delivery also support connections without a template.
+The server includes instructions only when the connection and at least one
+action are available to the run's agent and responsible identity. An immutable
+per-turn snapshot participates in session compatibility, so subsequent turns
+remove stale instructions after edits or access revocation. See
+[Connection instructions](connections/CONNECTION-INSTRUCTIONS.md) for contracts,
+UI conventions, custom adapter integration, and initial memory templates.
+
+### Native provider capacity retry
+
+Committed, run-bound Codex `serverOverloaded` terminal failures display the model
+capacity error directly and schedule at most two automatic retries, after one
+and two minutes. Retries share the execution failure budget, retain task history,
+and honor current ownership, review, governance, pause, dependency, budget, and
+cleanup gates. Restart or duplicate finalization must not create another
+successor. Permanent model/auth incompatibility and usage-limit exhaustion retain
+their existing operator recovery requirements.

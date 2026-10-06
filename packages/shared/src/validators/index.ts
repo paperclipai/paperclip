@@ -387,6 +387,7 @@ export {
 } from "./agent.js";
 
 export {
+  projectDiscoverySchema,
   createProjectSchema,
   updateProjectSchema,
   createProjectWorkspaceSchema,
@@ -510,6 +511,7 @@ export {
   type CheckoutIssue,
   type AddIssueComment,
   type CreateIssueThreadInteraction,
+  type CreateIssueThreadInteractionInput,
   type AcceptIssueThreadInteraction,
   type RejectIssueThreadInteraction,
   type CancelIssueThreadInteraction,

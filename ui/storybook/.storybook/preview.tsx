@@ -735,10 +735,12 @@ function StorybookProviders({
   children,
   theme,
   initialViewportWidth,
+  initialEntries,
 }: {
   children: ReactNode;
   theme: "light" | "dark";
   initialViewportWidth?: number;
+  initialEntries?: string[];
 }) {
   const [queryClient] = useState(
     () =>
@@ -786,7 +788,7 @@ function StorybookProviders({
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <MemoryRouter initialEntries={["/PAP/storybook"]}>
+        <MemoryRouter initialEntries={initialEntries ?? ["/PAP/storybook"]}>
           <CompanyProvider>
             <EditorAutocompleteProvider>
               <ToastProvider>
@@ -818,7 +820,7 @@ const preview: Preview = {
       const initialViewportWidth = context.parameters.waitForViewport && typeof width === "string" && /^\d+px$/.test(width)
         ? Number.parseInt(width, 10) : undefined;
       return (
-        <StorybookProviders key={`${context.id}:${theme}`} theme={theme} initialViewportWidth={initialViewportWidth}>
+        <StorybookProviders key={`${context.id}:${theme}`} theme={theme} initialViewportWidth={initialViewportWidth} initialEntries={context.parameters.initialEntries}>
           <Story />
         </StorybookProviders>
       );

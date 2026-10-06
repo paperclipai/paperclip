@@ -42,6 +42,7 @@ const state = vi.hoisted(() => ({
 const managedApi = vi.hoisted(() => ({
   list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
+  setDefault: vi.fn(async () => ({})),
 }));
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
 vi.mock("@/api/agents", () => ({ agentsApi: api }));
@@ -527,11 +528,22 @@ describe("New agent setup", () => {
     await render("opencode_local");
     const model = "openrouter/anthropic/claude-sonnet-4.6";
     await fill("Model", model);
-    await click("Connect another account");
+    const connectionSelect = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+    await act(async () => connectionSelect.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const connectOption = [...document.querySelectorAll('[role="option"]')].find(option => option.textContent?.includes("Connect an account"))!;
+    expect(connectOption).toBeTruthy();
+    await act(async () => (connectOption as HTMLElement).click());
+    await settle();
     const dialog = document.querySelector('[role="dialog"]')!;
     expect(dialog).toBeTruthy();
     expect(api.hire).not.toHaveBeenCalled();
     expect(api.testEnvironment).not.toHaveBeenCalled();
+    const advanced = [...dialog.querySelectorAll("summary")].find(node => node.textContent?.includes("Advanced providers"))!;
+    await act(async () => advanced.click());
+    const openrouter = [...dialog.querySelectorAll("button")].find(node => node.textContent?.includes("OpenRouter"))!;
+    await act(async () => openrouter.click());
+    await settle();
     const input = dialog.querySelector('[aria-label="API key"]') as HTMLInputElement;
     expect(input).toBeTruthy();
     await act(async () => {
@@ -543,10 +555,11 @@ describe("New agent setup", () => {
     await act(async () => connectButton.click());
     await settle();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(managedApi.setDefault).not.toHaveBeenCalled();
     expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       provider: "openrouter", method: "api_key", apiKey: "example-test-secret",
     }));
-    const binding = { provider: "openrouter", method: "api_key", mode: "responsible_user" };
+    const binding = { provider: "openrouter", method: "api_key", mode: "delegated", connectionId: "managed-connection", grantId: "managed-grant" };
     await click("Run test");
     expect(api.testEnvironment.mock.calls[0][2]).toEqual(expect.objectContaining({
       aiConnection: binding, testCredentials: {},

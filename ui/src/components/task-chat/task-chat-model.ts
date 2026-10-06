@@ -508,6 +508,8 @@ export interface TaskChatTurnItem {
   kind: "turn";
   items: TaskChatTurnChildItem[];
   settled: boolean;
+  /** Superseded execution status is omitted; activity remains inspectable. */
+  historical?: boolean;
   /** Agent identity retained when a live runner turn becomes durable history. */
   agentName?: string;
   agentIcon?: string | null;

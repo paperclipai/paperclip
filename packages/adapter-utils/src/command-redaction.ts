@@ -1,7 +1,7 @@
 export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 
-// These exact public Executor helper addresses resemble dotted bearer tokens.
-// Do not exempt arbitrary provider paths, prefixes, or user-defined selectors.
+// Public Executor helper addresses retained for callers of this predicate.
+// Dotted addresses alone do not meet the JWT credential heuristic.
 const PUBLIC_EXECUTOR_TOOL_SELECTORS = new Set([
   "executor.coreTools.integrations.list",
   "executor.coreTools.connections.list",
@@ -11,7 +11,7 @@ export function isPublicExecutorToolSelector(value: string): boolean {
   return PUBLIC_EXECUTOR_TOOL_SELECTORS.has(value);
 }
 
-const SECRET_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
+const SECRET_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization(?:[-_]?code)?|bearer|secrets?|passwd|passwords?|credentials?|jwt|private[-_]?key|cookie|connectionstring)(?:[-_]?(?:value|header|prod(?:uction)?|dev(?:elopment)?|test|staging|primary|secondary))*`;
 
 const COMMAND_CLI_SECRET_OPTION_RE = new RegExp(
   String.raw`(\B-{1,2}${SECRET_NAME_PATTERN}(?:\s+|=)(["']?))[^\s"'` +
@@ -32,7 +32,20 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
 const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
 const COMMAND_JWT_RE =
-  /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g;
+  /\b[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,}){2}(?:\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})?\b/g;
+/** Recognize encoded JSON headers, without treating dotted identifiers as tokens. */
+export function looksLikeCredentialJwt(value: string): boolean {
+  const segments = value.split(".");
+  if (![3, 5].includes(segments.length) || segments.some((part) => !/^[A-Za-z0-9_-]{8,}$/.test(part))) return false;
+  if (segments[0].startsWith("eyJ")) return true;
+  try {
+    const header = JSON.parse(atob(segments[0].replace(/-/g, "+").replace(/_/g, "/")));
+    return typeof header === "object" && header !== null && typeof header.alg === "string";
+  } catch {
+    return false;
+  }
+}
+
 const COMMAND_SECRET_HINTS = [
   "api",
   "key",
@@ -87,12 +100,7 @@ export function redactCommandText(
     )
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
-    .replace(COMMAND_JWT_RE, (match, offset: number, source: string) => {
-      // The JWT heuristic may match only the first three segments; inspect the
-      // complete address so a longer secret sharing a prefix stays redacted.
-      const address = source.slice(offset).match(/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/)?.[0];
-      return address && isPublicExecutorToolSelector(address) ? match : redactedValue;
-    });
+    .replace(COMMAND_JWT_RE, (match) => looksLikeCredentialJwt(match) ? redactedValue : match);
 }
 
 // A JSON secret field is a key/value pair such as `"token":"opaque-value"`. The

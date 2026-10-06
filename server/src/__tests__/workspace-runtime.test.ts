@@ -6743,35 +6743,44 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         executionWorkspaceId,
         serviceName: "web",
         status: "provisioning",
+        healthStatus: "unknown",
         providerRef: null,
       });
       expect(existsSync(markerPath)).toBe(false);
 
       await waitForMarker(markerPath);
-      const startingRow = await waitForPersistedStatus("starting");
-      expect(startingRow).toMatchObject({
+      // Readiness begins before the PID-bearing transaction commits. Keep the
+      // listener independent of DB reads and verify the completed records.
+      const services = await startPromise;
+      expect(services).toHaveLength(1);
+      expect(services[0]).toMatchObject({
+        id: provisioningRow.id,
         companyId,
         projectId,
         projectWorkspaceId,
         executionWorkspaceId,
         issueId,
         serviceName: "web",
-        status: "starting",
-        healthStatus: "unknown",
-      });
-      expect(startingRow.providerRef).toMatch(/^\d+$/);
-      expect(startingRow.port).toEqual(expect.any(Number));
-
-      const services = await startPromise;
-      expect(services).toHaveLength(1);
-      expect(services[0]).toMatchObject({
-        id: startingRow.id,
         status: "running",
         healthStatus: "healthy",
       });
+      expect(services[0]!.providerRef).toMatch(/^\d+$/);
+      expect(services[0]!.port).toEqual(expect.any(Number));
 
       const runningRow = await waitForPersistedStatus("running");
-      expect(runningRow.id).toBe(startingRow.id);
+      expect(runningRow).toMatchObject({
+        id: provisioningRow.id,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId,
+        issueId,
+        serviceName: "web",
+        status: "running",
+        healthStatus: "healthy",
+        providerRef: services[0]!.providerRef,
+        port: services[0]!.port,
+      });
       await expect(fetch(services[0]!.url!)).resolves.toMatchObject({ ok: true });
       const runtimeProvisionOperations = await db
         .select()

@@ -159,7 +159,7 @@ function renderHandoff() {
   ].join("\n") + "\n";
 }
 
-async function buildContract() {
+export async function buildContract() {
   const contract = JSON.parse(await readFile(contractPath, "utf8"));
   const capabilities = await readSkillHeadings(contract.skillSources);
   const discoveredTools = await readLegacyTools();

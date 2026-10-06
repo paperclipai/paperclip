@@ -523,8 +523,8 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(retryRuns).toHaveLength(0);
   });
 
-  it("defers a run whose issue targets a busy shared workspace and schedules a bounded retry", async () => {
-    const fixture = await seedWorkspaceFixture();
+  it.each([0, 35 * 60_000])("defers a run in a busy shared workspace after %i ms of holder silence", async (silenceMs) => {
+    const fixture = await seedWorkspaceFixture({ holderActivityAt: new Date(Date.now() - silenceMs) });
 
     const run = await heartbeat.invoke(
       fixture.agentId,

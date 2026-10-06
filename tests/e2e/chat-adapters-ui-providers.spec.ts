@@ -165,12 +165,13 @@ test.describe.serial("native chat adapter UI", () => {
     ).toBeVisible();
     await page.goto(`/${seed.prefix}/apps/chat/endpoint-github/settings`);
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`));
-    await expect.poll(() => mock.chatEndpointListReads).toBe(0);
+    await expect.poll(() => mock.chatEndpointListReads).toBeGreaterThan(0);
+    await expect(page.getByRole("button", { name: "Connect AgentMail", exact: true })).toBeVisible();
     expect(mock.createdWithAgentId).toBeNull();
   });
 
   for (const enabled of [false, true]) {
-    test(`Agent Channels: one heading and current experiment gate (${enabled})`, async ({
+    test(`Agent Channels: default email surface and experimental providers (${enabled})`, async ({
       page,
     }) => {
       const github = PROVIDERS.find(
@@ -185,21 +186,18 @@ test.describe.serial("native chat adapter UI", () => {
         name: "Channels",
         exact: true,
       });
-      if (enabled) {
-        await expect(page).toHaveURL(/\/channels$/);
-        await expect(channelsHeading).toHaveCount(1);
-        await expect(channelsHeading).toBeVisible();
-        await expect(
-          page.getByRole("link", { name: "Connect a channel" }),
-        ).toBeVisible();
-        await expect.poll(() => mock.chatEndpointListReads).toBeGreaterThan(0);
-      } else {
-        await expect(page).toHaveURL(/\/overview$/);
-        await expect(channelsHeading).toHaveCount(0);
-        await expect(
-          page.getByRole("link", { name: "Channels", exact: true }),
-        ).toHaveCount(0);
-        expect(mock.chatEndpointListReads).toBe(0);
+      await expect(page).toHaveURL(/\/channels$/);
+      await expect(channelsHeading).toHaveCount(1);
+      await expect(channelsHeading).toBeVisible();
+      await expect(
+        page.getByRole("link", { name: "Connect a channel" }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("navigation", { name: "Maya navigation" }).getByRole("link", { name: "Channels", exact: true }),
+      ).toBeVisible();
+      await expect.poll(() => mock.chatEndpointListReads).toBeGreaterThan(0);
+      if (!enabled) {
+        await expect(page.getByText("Connect AgentMail from Connectors.", { exact: true })).toBeVisible();
       }
     });
   }

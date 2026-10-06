@@ -1,3 +1,4 @@
+import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
  * JSON-RPC 2.0 message types and protocol helpers for the host ↔ worker IPC
  * channel.
@@ -30,7 +31,7 @@ import type {
   IssueAssigneeAdapterOverrides,
   IssueAttachment,
   IssueThreadInteraction,
-  CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   Approval,
   PluginManagedAgentResolution,
   PluginManagedProjectResolution,
@@ -53,6 +54,7 @@ export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
 import type {
   PluginEvent,
+  ResourceLifecycleEvent,
   PluginIssueCheckoutOwnership,
   PluginIssueOrchestrationSummary,
   PluginIssueRelationSummary,
@@ -1350,6 +1352,7 @@ export interface HostToWorkerMethods {
     params: DetectExternalObjectsParams,
     result: DetectExternalObjectsResult,
   ];
+  routeAiConnection: [params: AiConnectionRouterRequest, result: AiConnectionRouterResult];
   resolveExternalObject: [
     params: ResolveExternalObjectParams,
     result: PluginExternalObjectResolveResult,
@@ -1478,6 +1481,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "performAction",
   "executeTool",
   "detectExternalObjects",
+  "routeAiConnection",
   "resolveExternalObject",
   "refreshExternalObjects",
   "environmentValidateConfig",
@@ -1639,6 +1643,8 @@ export interface WorkerToHostMethods {
   ];
 
   // Events
+  "events.listLifecycle": [params: { companyId: string; limit?: number; afterId?: string }, result: ResourceLifecycleEvent[]];
+  "events.acknowledgeLifecycle": [params: { companyId: string; eventId: string }, result: void];
   "events.emit": [
     params: { name: string; companyId: string; payload: unknown },
     result: void,
@@ -2003,7 +2009,7 @@ export interface WorkerToHostMethods {
     params: {
       issueId: string;
       companyId: string;
-      interaction: CreateIssueThreadInteraction;
+      interaction: CreateIssueThreadInteractionInput;
       authorAgentId?: string | null;
     },
     result: IssueThreadInteraction,
