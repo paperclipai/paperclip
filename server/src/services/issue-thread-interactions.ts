@@ -229,6 +229,23 @@ async function persistTerminalInteractionExpiry(
   return resolved;
 }
 
+// Dark root-first supplied withdrawal. Caller owns the outer transaction,
+// publication queue discard/flush, telemetry/touch and any native cancellation.
+// Never add this only inside an existing afterResolve callback under row locks.
+export async function withdrawInteractionInTransaction(
+  tx: LifecycleTransaction,
+  issue: { id: string; companyId: string },
+  interactionId: string,
+  input: WithdrawIssueThreadInteraction,
+  actor: InteractionActor,
+  options: { postCommitPublications: ActivityPublication[] },
+) {
+  return issueThreadInteractionService(tx as unknown as Db).withdrawInteraction(
+    issue, interactionId, input, actor, {},
+    { tx, postCommitPublications: options?.postCommitPublications },
+  );
+}
+
 type InteractionActor = {
   identityContextId?: string | null;
   agentId?: string | null;
@@ -4890,13 +4907,38 @@ export function issueThreadInteractionService(
       input: WithdrawIssueThreadInteraction,
       actor: InteractionActor,
       mutationOptions: InteractionResolutionMutationOptions = {},
+      suppliedLifecycle?: { tx: LifecycleTransaction; postCommitPublications: ActivityPublication[] },
     ) => {
+      const suppliedTx = suppliedLifecycle?.tx;
+      const postCommitPublications = suppliedLifecycle?.postCommitPublications;
+      if (suppliedTx) {
+        if (!issue.companyId || !Array.isArray(postCommitPublications)) {
+          throw unprocessable("Lifecycle withdrawal requires companyId and caller-owned publication queue");
+        }
+        if (Object.keys(mutationOptions).length) {
+          throw unprocessable("Lifecycle withdrawal does not support arbitrary resolution hooks");
+        }
+        issue = { id: issue.id, companyId: issue.companyId };
+        input = { reason: input.reason };
+        actor = { agentId: actor.agentId, runId: actor.runId, userId: actor.userId, systemId: actor.systemId };
+        // Parse and capture before the first fence suspension.
+        withdrawIssueThreadInteractionSchema.parse(input);
+        await acquireIssueLifecycleFenceInTransaction(suppliedTx, issue.companyId);
+        const [authoritativeIssue] = await suppliedTx.select().from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId))).for("update");
+        if (!authoritativeIssue) throw notFound("Issue not found");
+        assertIssueOpenForInteractionResolution(authoritativeIssue);
+      }
       assertIssueOpenForInteractionResolution(issue);
       const data = withdrawIssueThreadInteractionSchema.parse(input);
-      const current = await db
+      const current = await (suppliedTx ?? db)
         .select()
         .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.id, interactionId))
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          suppliedTx ? eq(issueThreadInteractions.companyId, issue.companyId) : undefined,
+          suppliedTx ? eq(issueThreadInteractions.issueId, issue.id) : undefined,
+        ))
         .then((rows) => rows[0] ?? null);
       if (
         !current ||
@@ -4917,7 +4959,7 @@ export function issueThreadInteractionService(
       // "approved" is revoked too — the request can be approved from the tool
       // review queue while the card is still pending, and an executable
       // request must not outlive a withdrawn card.
-      const updated = await db.transaction(async (tx) => {
+      const persistWithdrawal = async (tx: LifecycleTransaction) => {
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
@@ -4930,7 +4972,7 @@ export function issueThreadInteractionService(
           actor,
           reason,
           now,
-        });
+        }, postCommitPublications);
         if (current.kind === "request_confirmation") {
           const active = await tx
             .select({ id: toolActionRequests.id })
@@ -4967,6 +5009,8 @@ export function issueThreadInteractionService(
             and(
               eq(issueThreadInteractions.id, interactionId),
               eq(issueThreadInteractions.status, "pending"),
+              suppliedTx ? eq(issueThreadInteractions.companyId, issue.companyId) : undefined,
+              suppliedTx ? eq(issueThreadInteractions.issueId, issue.id) : undefined,
             ),
           )
           .returning();
@@ -4978,11 +5022,13 @@ export function issueThreadInteractionService(
           withdrawn,
         );
         return row;
-      });
-
-      await touchIssue(db, issue.id);
+      };
+      const updated = suppliedTx ? await persistWithdrawal(suppliedTx) : await db.transaction(persistWithdrawal);
       const withdrawn = hydrateInteraction(updated);
-      await emitInteractionResolvedTelemetry(db, withdrawn);
+      if (!suppliedTx) {
+        await touchIssue(db, issue.id);
+        await emitInteractionResolvedTelemetry(db, withdrawn);
+      }
       return withdrawn;
     },
 
