@@ -1,6 +1,6 @@
 import { getTableName } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
-import { PgDialect } from "drizzle-orm/pg-core";
+import { PgDialect, PgSelectBuilder } from "drizzle-orm/pg-core";
 import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 import { publishActivity } from "../services/activity-log.js";
@@ -18,7 +18,7 @@ vi.mock("../telemetry.js", () => ({ getTelemetryClient: () => null }));
 function fixture() {
   sink.live.length = 0;
   const events: string[] = []; const publications: any[] = [];
-  const native: any = { run: null, marker: null, predicates: [] };
+  const native: any = { run: null, marker: null, predicates: [], locks: [] };
   const dialect = new PgDialect();
   let row: any = { id: "issue-1", companyId: "company-1", status: "in_progress", title: "Offline", parentId: null, projectId: null, goalId: null, originKind: "manual", assigneeAgentId: "agent-1", assigneeUserId: null, statusVersion: 1 };
   const card: any = { id: "card-1", companyId: "company-1", issueId: "issue-1", kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Offline" }, result: null };
@@ -36,6 +36,7 @@ function fixture() {
       if (name === "heartbeat_runs") {
         const q = query(native.run ? [{ ...native.run }] : []);
         q.where = (predicate: any) => { native.predicates.push(dialect.sqlToQuery(predicate)); return q; };
+        q.for = (mode: string) => { native.locks.push(mode); return q; };
         return q;
       }
       if (["goals", "projects", "issue_labels", "labels", "issue_watchdogs"].includes(name)) return query([]);
@@ -71,6 +72,42 @@ function nativeFixture() {
   return f;
 }
 describe("dark canonical terminal expiry supplied integration", () => {
+  it("renders actual locked SELECT and stops before marker when row-lock acquisition rejects", async () => {
+    const f = nativeFixture(); const error = new Error("run-row-lock-denied"); let rendered: any;
+    f.tx.select = (fields: any) => ({ from: (table: any) => {
+      const q: any = new PgSelectBuilder({ fields, session: undefined, dialect: new PgDialect() }).from(table);
+      q.then = (_ok: any, no: any) => { rendered = q.toSQL(); return Promise.reject(error).then(_ok, no); };
+      return q;
+    } });
+    await expect(requestNativeQuestionRunCancellationInTransaction(f.tx, f.card, { kind: "interaction_withdrawn", interactionId: "card-1" })).rejects.toBe(error);
+    expect(rendered.sql).toMatch(/limit \$5 for update$/);
+    expect(rendered.params).toEqual(["run-1", "company-1", "issue-1", "native", 1]);
+    expect(f.native.marker).toBeNull(); expect(sink.live).toEqual([]);
+    expect(f.events).toEqual(["fence"]);
+  });
+  it.each([false, true])("locks authoritative marker run before write owned=%s", async owned => {
+    const f = nativeFixture();
+    const cause = { kind: "interaction_withdrawn" as const, interactionId: "card-1" };
+    const result = owned
+      ? requestNativeQuestionRunCancellation(f.root, f.card, cause, { lifecycleFence: true })
+      : requestNativeQuestionRunCancellationInTransaction(f.tx, f.card, cause);
+    expect(await result).toBe("run-1");
+    expect(f.native.locks).toEqual(["update"]);
+    expect(f.native.predicates[0].params).toEqual(["run-1", "company-1", "issue-1", "native"]);
+    expect(f.native.marker).not.toBeNull();
+  });
+  it.each(["cancelled", "succeeded", null])("locks marker selection but vetoes ineligible run %s", async status => {
+    const f = nativeFixture();
+    if (status === null) f.native.run = null; else f.native.run.status = status;
+    expect(await requestNativeQuestionRunCancellationInTransaction(f.tx, f.card, { kind: "issue_terminal", issueStatus: "done" })).toBeNull();
+    expect(f.native.locks).toEqual(["update"]); expect(f.native.marker).toBeNull();
+  });
+  it("keeps read-only lookup and ordinary marker free of the new run lock", async () => {
+    const f = nativeFixture();
+    expect(await nativeQuestionRunToCancelInTransaction(f.tx, f.card)).toBe("run-1");
+    expect(await requestNativeQuestionRunCancellation(f.tx, f.card, { kind: "interaction_cancelled", interactionId: "card-1" })).toBe("run-1");
+    expect(f.native.locks).toEqual([]);
+  });
   it("starts opt-in owned native lookup before domain reads without marker writes", async () => {
     const f = nativeFixture();
     await expect(nativeQuestionRunToCancel(f.root, f.card, { lifecycleFence: true })).resolves.toBe("run-1");

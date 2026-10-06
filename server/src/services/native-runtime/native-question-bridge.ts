@@ -94,10 +94,11 @@ function toInteractionPayload(questionSet: PaperclipQuestionSet, runtimeRequestI
 async function authorizedNativeRun(
   db: Pick<Db | DbTransaction, "select">,
   interaction: NativeQuestionAuthorizationIdentity,
+  lockForUpdate = false,
 ) {
   const requestId = requestIdForInteraction(interaction);
   if (!requestId || !interaction.sourceRunId) return null;
-  const run = await db.select({
+  const query = db.select({
     id: heartbeatRuns.id,
     companyId: heartbeatRuns.companyId,
     issueId: heartbeatRuns.nativeIssueId,
@@ -109,7 +110,8 @@ async function authorizedNativeRun(
     eq(heartbeatRuns.companyId, interaction.companyId),
     eq(heartbeatRuns.nativeIssueId, interaction.issueId),
     eq(heartbeatRuns.runtimeMode, "native"),
-  )).limit(1).then((rows) => rows[0] ?? null);
+  )).limit(1);
+  const run = await (lockForUpdate ? query.for("update") : query).then((rows) => rows[0] ?? null);
   return run ? { ...run, requestId } : null;
 }
 
@@ -359,6 +361,15 @@ export async function requestNativeQuestionRunCancellation(
     return db.transaction((tx) => requestNativeQuestionRunCancellationInTransaction(tx, identity, capturedCause));
   }
   const run = await authorizedNativeRun(db, interaction);
+  return persistNativeQuestionCancellationMarker(db, interaction, cause, run);
+}
+
+async function persistNativeQuestionCancellationMarker(
+  db: NativeQuestionMutationDb,
+  interaction: NativeQuestionAuthorizationIdentity,
+  cause: NativeQuestionCancellationCause,
+  run: Awaited<ReturnType<typeof authorizedNativeRun>>,
+): Promise<string | null> {
   if (!run || !["queued", "running"].includes(run.status)) return null;
   const marker = JSON.stringify({
     version: 1,
@@ -435,7 +446,11 @@ export async function requestNativeQuestionRunCancellationInTransaction(
   const capturedCause = captureNativeQuestionCancellationCause(cause);
   if (!identity.companyId) throw unprocessable("Lifecycle native cancellation requires companyId");
   await acquireIssueLifecycleFenceInTransaction(tx, identity.companyId);
-  return requestNativeQuestionRunCancellation(tx, identity, capturedCause);
+  // Take the authoritative run-row lock before reading eligibility and retain
+  // it through marker persistence on this supplied transaction. Other lifecycle
+  // participants still need the same pre-read ordering before production wiring.
+  const run = await authorizedNativeRun(tx, identity, true);
+  return persistNativeQuestionCancellationMarker(tx, identity, capturedCause, run);
 }
 
 /** Capture the minimum bound identity needed to cancel after the issue transaction commits. */
