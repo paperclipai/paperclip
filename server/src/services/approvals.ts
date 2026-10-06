@@ -45,6 +45,25 @@ export async function requestApprovalRevisionInTransaction(tx: Transaction, inpu
   return persistApprovalRevision(tx, approvalId, decidedByUserId, decisionNote, companyId);
 }
 
+async function persistApprovalCancellation(writer: Pick<Db, "update">, id: string, reason?: string | null, companyId?: string) {
+  const now = new Date();
+  return writer.update(approvals).set({
+    status: "cancelled", decisionNote: reason ?? null, decidedAt: now, updatedAt: now,
+  }).where(and(eq(approvals.id, id), inArray(approvals.status, ["pending", "revision_requested"]),
+    companyId === undefined ? undefined : eq(approvals.companyId, companyId),
+  )).returning().then((rows) => rows[0] ?? null);
+}
+
+// Dark participant: cancellation only, not a board decision or issue restoration.
+export async function cancelApprovalInTransaction(tx: Transaction, input: {
+  companyId: string; approvalId: string; reason?: string | null;
+}) {
+  const { companyId, approvalId, reason } = input;
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval cancellation requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  return persistApprovalCancellation(tx, approvalId, reason, companyId);
+}
+
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
@@ -161,20 +180,17 @@ export function approvalService(db: Db) {
     // Cancel an open (pending/revision_requested) approval without a board
     // decision — e.g. when its paired agent is terminated during duplicate
     // cleanup. Idempotent: a no-op on already-resolved approvals.
-    cancel: async (id: string, reason?: string | null) => {
-      const now = new Date();
-      const updated = await db
-        .update(approvals)
-        .set({
-          status: "cancelled",
-          decisionNote: reason ?? null,
-          decidedAt: now,
-          updatedAt: now,
-        })
-        .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return updated;
+    cancel: async (id: string, reason?: string | null,
+      options?: { lifecycleFence?: boolean; companyId?: string },
+    ) => {
+      if (options?.lifecycleFence) {
+        const companyId = options.companyId;
+        if (!companyId) throw unprocessable("Lifecycle-fenced approval cancellation requires companyId");
+        return db.transaction((tx) => cancelApprovalInTransaction(tx, {
+          companyId, approvalId: id, reason,
+        }));
+      }
+      return persistApprovalCancellation(db, id, reason);
     },
 
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
