@@ -337,16 +337,20 @@ describe("PaperclipControlPlanePort conformance", () => {
       ["halves", [keyBody.slice(0, 31), keyBody.slice(31)]],
       ["bytes", [...keyBody]],
     ] as const) {
-      for (const chunk of chunks) {
+      for (const [index, chunk] of chunks.entries()) {
         const event: PrpEvent = {
           schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq: sourceSeq++,
           sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
           normalizedSessionId: identity.sessionId, turnId: "identity-turn", itemId,
           eventType: "item.delta", schemaVersion: 1, priority: 1, emittedAt: new Date().toISOString(),
-          payload: { kind: "commandExecution", text: chunk, update: { delta: chunk } },
+          payload: { itemId, kind: "commandExecution", text: chunk, update: { delta: chunk } },
         };
         await port.appendEvent(event);
         expect((await port.appendEvent(event)).disposition).toBe("duplicate");
+        if (index === 0) await port.appendEvent({
+          ...event, sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq: sourceSeq++,
+          payload: { itemId: "another-provider-item", kind: "commandExecution", text: "Unrelated output\n", update: { delta: "Unrelated output\n" } },
+        });
       }
     }
     const persistedEvents = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
@@ -356,7 +360,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect(JSON.stringify(value)).toContain("***REDACTED***");
     }
     for (const itemId of ["halves", "bytes"]) {
-      const deltas = observed.filter(event => event.itemId === itemId).map(event => event.payload);
+      const deltas = observed.filter(event => event.payload.itemId === itemId).map(event => event.payload);
       expect(deltas.map(delta => delta.text).join("")).toBe("***REDACTED***");
       expect(deltas.map(delta => (delta.update as { delta: string }).delta).join("")).toBe("***REDACTED***");
     }

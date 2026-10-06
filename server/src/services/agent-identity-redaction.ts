@@ -24,7 +24,8 @@ export function createAgentIdentityRedactor(privateKeyPem?: string) {
           if (text.endsWith(value.slice(0, size))) { held = size; break; }
         }
       }
-      pending.set(stream, held ? text.slice(-held) : "");
+      if (held) pending.set(stream, text.slice(-held));
+      else pending.delete(stream);
       return held ? text.slice(0, -held) : text;
     },
     // An interrupted partial secret must not be flushed as plaintext.
@@ -35,6 +36,9 @@ export function createAgentIdentityRedactor(privateKeyPem?: string) {
     },
     /** Delta payloads can repeat output under text and provider-specific fields. */
     delta<T>(stream: string, value: T): T {
+      const payload = value as Record<string, unknown>;
+      // Durable transports can share one envelope item ID across provider items.
+      stream = JSON.stringify([stream, payload.itemId, payload.providerItemId, payload.channel, payload.stream]);
       const visit = (entry: unknown, path: string, field: string): unknown => {
         if (typeof entry === "string") {
           return /^(text|delta|output|patch)$/.test(field)

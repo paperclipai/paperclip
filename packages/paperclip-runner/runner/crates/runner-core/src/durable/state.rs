@@ -1660,6 +1660,14 @@ impl IdentityOutputBuffer {
     }
 
     fn redact_with_key(&mut self, stream: &str, payload: &Value, key: &str) -> Value {
+        let stream = json!([
+            stream,
+            payload.get("itemId"),
+            payload.get("providerItemId"),
+            payload.get("channel"),
+            payload.get("stream")
+        ])
+        .to_string();
         let mut values = vec![key.to_owned(), key.trim().to_owned()];
         values.extend(
             key.lines()
@@ -1667,7 +1675,7 @@ impl IdentityOutputBuffer {
                 .map(str::to_owned),
         );
         values.sort_by_key(|value| std::cmp::Reverse(value.len()));
-        self.visit(stream, "", payload, &values)
+        self.visit(&stream, "", payload, &values)
     }
 
     fn visit(&mut self, path: &str, field: &str, value: &Value, secrets: &[String]) -> Value {
@@ -2483,16 +2491,19 @@ mod tests {
         for split in 1..body.len() {
             let mut buffer = IdentityOutputBuffer::default();
             let first = buffer.redact_with_key(
-                "item-1",
-                &json!({"text": &body[..split], "update": {"delta": &body[..split]}}),
+                "envelope-item",
+                &json!({"itemId": "item-1", "text": &body[..split], "update": {"delta": &body[..split]}}),
                 key,
             );
-            let other =
-                buffer.redact_with_key("item-2", &json!({"text": "ordinary output\n"}), key);
+            let other = buffer.redact_with_key(
+                "envelope-item",
+                &json!({"itemId": "item-2", "text": "ordinary output\n"}),
+                key,
+            );
             assert_eq!(other["text"], "ordinary output\n");
             let second = buffer.redact_with_key(
-                "item-1",
-                &json!({"text": &body[split..], "update": {"delta": &body[split..]}}),
+                "envelope-item",
+                &json!({"itemId": "item-1", "text": &body[split..], "update": {"delta": &body[split..]}}),
                 key,
             );
             assert_eq!(first["text"], "");

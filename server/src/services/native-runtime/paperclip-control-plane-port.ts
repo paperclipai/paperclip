@@ -40,6 +40,9 @@ export interface PaperclipControlPlaneBinding {
   controlPlaneSourceInstanceId: string;
 }
 
+const IDENTITY_DELTA_RETRY_WINDOW = 1_024;
+const IDENTITY_DELTA_RETRY_BYTES = 4 * 1024 * 1024;
+
 function isPrpEvent(value: NativeRunEvent | PrpEvent): value is PrpEvent {
   return "schema" in value && [
     "paperclip.prp.event.v1",
@@ -73,7 +76,8 @@ function assertTerminal(value: unknown): asserts value is PrpTerminalState {
 export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #db: Db;
   readonly #identityRedactor: ReturnType<typeof createAgentIdentityRedactor>;
-  readonly #redactedDeltas = new Map<string, { event: PrpEvent; originalSha: string }>();
+  readonly #redactedDeltas = new Map<string, { event: PrpEvent; originalSha: string; bytes: number }>();
+  #redactedDeltaBytes = 0;
   readonly #binding: PaperclipControlPlaneBinding;
   #sessionId: string | null = null;
   readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
@@ -200,7 +204,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (event.sourceInstanceId !== expectedSourceInstanceId) {
       throw new Error("native_event_source_binding_mismatch");
     }
-    if (event.eventType === "item.delta") {
+    if (event.eventType === "item.delta" && this.#identityRedactor.values.length > 0) {
       const key = `${event.sourceInstanceId}:${event.sourceEventId}`;
       const cached = this.#redactedDeltas.get(key);
       const originalSha = nativeSha256(validated.event);
@@ -213,7 +217,16 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
           validated.event.payload,
         ) };
         // Retries must use the same redacted payload without consuming a delta twice.
-        this.#redactedDeltas.set(key, { event, originalSha });
+        const bytes = Buffer.byteLength(JSON.stringify(event));
+        this.#redactedDeltas.set(key, { event, originalSha, bytes });
+        this.#redactedDeltaBytes += bytes;
+        // Match the bounded runner transcript retry window; large tool output
+        // also has a byte cap so long runs cannot retain another full transcript.
+        while (this.#redactedDeltas.size > IDENTITY_DELTA_RETRY_WINDOW || this.#redactedDeltaBytes > IDENTITY_DELTA_RETRY_BYTES) {
+          const oldest = this.#redactedDeltas.keys().next().value!;
+          this.#redactedDeltaBytes -= this.#redactedDeltas.get(oldest)!.bytes;
+          this.#redactedDeltas.delete(oldest);
+        }
       }
     }
     const persisted = await appendHeartbeatRunEvent(this.#db, {
