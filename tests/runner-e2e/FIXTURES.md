@@ -1,5 +1,11 @@
 # Runner E2E fixture authoring
 
+## Connection creation fixtures
+
+See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
+`provider-connections` suite, local/staging target ownership, dedicated browser
+profiles, credential handoffs, private evidence, and cleanup contract.
+
 The [public MCP journeys](PUBLIC-MCP.md) reuse the fixture registry with a real
 authenticated browser session. `RunnerApi.setBrowserSession` binds that session
 to API calls, including encrypted secret provisioning via Node fetch. OAuth

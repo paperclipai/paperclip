@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
@@ -57,6 +57,22 @@ function registerModuleMocks() {
   vi.doMock("../services/adapter-plugin-store.js", () => mockAdapterPluginStore);
 }
 
+function resetAdapterMocks() {
+  vi.resetAllMocks();
+  mockAdapterPluginStore.listAdapterPlugins.mockReturnValue([]);
+  mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
+  mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
+  mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
+  mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-routes-test");
+  mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
+  mockAdapterPluginStore.setAdapterDisabled.mockReturnValue(false);
+  mockPluginLoader.buildExternalAdapters.mockResolvedValue([]);
+  mockPluginLoader.loadExternalAdapterPackage.mockResolvedValue(null);
+  mockPluginLoader.getUiParserSource.mockResolvedValue(null);
+  mockPluginLoader.getOrExtractUiParserSource.mockResolvedValue(null);
+  mockPluginLoader.reloadExternalAdapter.mockResolvedValue(null);
+}
+
 function createApp(
   actorOverrides: Partial<Express.Request["actor"]> = {},
   options: Parameters<typeof adapterRoutes>[0] = {},
@@ -80,31 +96,11 @@ function createApp(
 }
 
 describe("adapter routes", () => {
-  beforeEach(async () => {
-    vi.resetModules();
-    vi.doUnmock("node:child_process");
-    vi.doUnmock("../adapters/registry.js");
-    vi.doUnmock("../adapters/plugin-loader.js");
-    vi.doUnmock("../services/adapter-plugin-store.js");
-    vi.doUnmock("../routes/adapters.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
+  // Keep the route and middleware on one module graph so HttpError retains
+  // its identity. Reset mock state and adapter overrides between tests.
+  beforeAll(async () => {
     registerModuleMocks();
-    mockAdapterPluginStore.listAdapterPlugins.mockReturnValue([]);
-    mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
-    mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
-    mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
-    mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-routes-test");
-    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
-    mockAdapterPluginStore.setAdapterDisabled.mockReturnValue(false);
-    mockPluginLoader.buildExternalAdapters.mockResolvedValue([]);
-    mockPluginLoader.loadExternalAdapterPackage.mockResolvedValue(null);
-    mockPluginLoader.getUiParserSource.mockResolvedValue(null);
-    mockPluginLoader.getOrExtractUiParserSource.mockResolvedValue(null);
-    mockPluginLoader.reloadExternalAdapter.mockResolvedValue(null);
-    // Load the route and error handler through one module cache after reset.
-    // Concurrent importActual mock factories can split HttpError identity,
-    // turning an expected authorization denial into an unhandled 500.
+    resetAdapterMocks();
     const registry = await import("../adapters/registry.js");
     const routes = await import("../routes/adapters.js");
     const middleware = await import("../middleware/index.js");
@@ -115,6 +111,10 @@ describe("adapter routes", () => {
     setOverridePaused = registry.setOverridePaused;
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;
+  });
+
+  beforeEach(() => {
+    resetAdapterMocks();
     setOverridePaused("claude_local", false);
     unregisterServerAdapter("hermes_local");
     unregisterServerAdapter("claude_local");

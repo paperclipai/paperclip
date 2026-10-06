@@ -3,6 +3,7 @@ import { nativeCompletionTasks, nativeCompletionDefinitionDigest } from "./nativ
 import { NATIVE_INSTRUCTION_SUITE, NATIVE_INSTRUCTION_BASE_SHA, nativeInstructionDefinitionDigest } from "./native-instruction-consolidation.js";
 import { nativeCompletionProfile, NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
 import { chatConfirmationTasks } from "./chat-cases.js";
+import { buildConnectionSuite } from "./connection-cases.js";
 import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDigest } from "./hiring-template-cases.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
@@ -1489,6 +1490,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     expectedMatrixSize: 1,
     definitionMetadata: { version: 8, instructions: "fixed-external", nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25, generatedFileCount: 60_000, filenameBytes: 39_828_890, scheduling: "explicit-only", finalization: "committed-without-active-sync-or-retry", copyback: "all-generated-file-contents-change-each-turn" },
   },
+  buildConnectionSuite(runnerProfiles, runnerEnvironments),
 ] as const;
 
 export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
@@ -1548,8 +1550,8 @@ export function buildRunnerMatrix(
                 ]),
               ],
               requiredCredentials: [
-                profile.credential,
-                ...(environment.credential ? [environment.credential] : []),
+                ...(task.flow === "provider_connection" ? [] : [profile.credential]),
+                ...(task.flow !== "provider_connection" && environment.credential ? [environment.credential] : []),
               ],
             }))
             .filter((execution) => !excludedExecutionIds.has(execution.id)),
@@ -1595,8 +1597,10 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 }
 
 export function validateRunnerCatalog(): MatrixExecution[] {
-  const allProfiles = [...extendedHarnessProfiles, ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
+  const connectionSuite = runnerSuites.find(suite => suite.id === "provider-connections")!;
+  const allProfiles = [...connectionSuite.profiles, ...extendedHarnessProfiles, ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
+    ...connectionSuite.tasks,
     extendedHarnessFileTask,
     ...contextIntegrityTasks,
     ...blockerTasks,

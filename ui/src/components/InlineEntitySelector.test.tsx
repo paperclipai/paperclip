@@ -33,9 +33,9 @@ describe("InlineEntitySelector", () => {
     document.body.innerHTML = "";
   });
 
-  it("allows touch scrolling in a mobile picker portalled outside a parent dialog", async () => {
+  it.each([false, true])("allows wheel and touch scrolling outside a parent dialog (mobile: %s)", async (mobile) => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query === "(max-width: 40rem)",
+      matches: mobile && query === "(max-width: 40rem)",
       media: query,
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -56,7 +56,7 @@ describe("InlineEntitySelector", () => {
               onChange={vi.fn()}
               triggerTestId="nested-assignee-picker"
               openOnFocus={false}
-              disablePortal
+              modal
             />
           </DialogContent>
         </Dialog>,
@@ -78,6 +78,9 @@ describe("InlineEntitySelector", () => {
         clientHeight: { configurable: true, value: 200 },
       });
       const option = list.querySelector("button")!;
+      const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 100 });
+      option.dispatchEvent(wheel);
+      expect(wheel.defaultPrevented).toBe(false);
       const touch = (type: string, y: number) => {
         const event = new Event(type, { bubbles: true, cancelable: true });
         Object.defineProperties(event, {

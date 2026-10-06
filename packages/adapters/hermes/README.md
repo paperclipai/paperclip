@@ -237,6 +237,7 @@ Available toolsets: `terminal`, `file`, `web`, `browser`, `code_execution`, `vis
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `cwd` | string | *(assigned task workspace)* | Absolute working directory override. Without an override, use Paperclip's resolved task workspace. |
 | `persistSession` | boolean | `true` | Resume sessions across heartbeats |
 | `worktreeMode` | boolean | `false` | Git worktree isolation |
 | `checkpoints` | boolean | `false` | Enable filesystem checkpoints for rollback |

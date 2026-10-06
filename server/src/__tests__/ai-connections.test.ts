@@ -4,12 +4,14 @@ import { issueRecoveryActionService } from "../services/issue-recovery-actions.j
 import { localAiLoginService } from "../services/local-ai-login.js";
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
@@ -72,6 +74,44 @@ describe("managed AI connections", () => {
       const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
       expect(grant.credentialSecretRefs).toEqual([]);
     } finally { await Promise.all([first.cleanup(), second.cleanup()]); }
+  });
+  it("never restores retained Grok transcripts into same-user runtime homes", async () => {
+    const account = await service.save(companyId, "alice", {
+      provider: "xai", method: "api_key", ownership: "personal",
+      name: "Grok history isolation", agentIds: [], allAgents: true,
+    }, "fixture-grok-key");
+    const taskKey = `grok-history-${randomUUID()}`;
+    const runInput = { ...input, taskKey, adapterType: "grok_local", responsibleUserId: "alice", config: {},
+      binding: { provider: "xai", method: "api_key", mode: "connection", connectionId: account.connectionId, grantId: account.grantId } as const };
+    const first = await prepareManagedAiRuntime(db, runInput);
+    const scope = createHash("sha256").update(JSON.stringify([
+      companyId, agentId, taskKey, first.sessionIdentity,
+    ])).digest("hex");
+    await first.cleanup();
+    // Seed a valid archive from the earlier implementation. Runtime preparation
+    // must not decrypt it onto the host, even for its authorized agent/task.
+    const retained = await localEncryptedProvider.createVersion({ value: JSON.stringify({
+      scope, entries: [{ name: "history.json", bytes: Buffer.from("previous-task-private-transcript").toString("base64") }],
+    }) });
+    await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: "grok_local", taskKey,
+      sessionParamsJson: { sessionId: "history", paperclipGrokHistory: { scope, material: retained.material } } });
+    const resumed = await prepareManagedAiRuntime(db, runInput);
+    const peer = await prepareManagedAiRuntime(db, { ...runInput, agentId: randomUUID() });
+    try {
+      expect(resumed.home).not.toBe(first.home);
+      expect(peer.home).not.toBe(resumed.home);
+      const transcript = path.join(String(resumed.config.env.GROK_HOME), "sessions", "history.json");
+      // A separate same-UID process can bypass 0700. It must find no restored
+      // transcript because none was materialized, not because of permissions.
+      const crossAgentRead = spawnSync(process.execPath, ["-e", `
+        const fs = require("node:fs");
+        try { process.stdout.write(fs.readFileSync(process.argv[1], "utf8")); }
+        catch (error) { process.stdout.write(error.code); }
+      `, transcript], { encoding: "utf8" });
+      expect(crossAgentRead.status).toBe(0);
+      expect(crossAgentRead.stdout).toBe("ENOENT");
+      await expect(access(transcript)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await Promise.all([resumed.cleanup(), peer.cleanup()]); }
   });
   it("authenticates local Gemini probes and runs with the saved key in an isolated home", async () => {
     const root = await mkdtemp(path.join(home, "gemini-auth-"));

@@ -1,5 +1,9 @@
 # Paperclip evaluation guide
 
+The explicit-only [live provider connection suite](../tests/runner-e2e/PROVIDER-CONNECTIONS.md)
+is a Product E2E workflow for fresh subscription/API-key/gateway connections,
+with attended login and independent artifact checks against local or staging targets.
+
 Paperclip has two live eval families with different questions, owners, and
 evidence. Choose the family before selecting a model, profile, or case.
 

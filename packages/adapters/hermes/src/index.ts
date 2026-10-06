@@ -99,6 +99,7 @@ tools, persistent memory, session persistence, skills, and MCP support.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| cwd | string | (assigned task workspace) | Absolute working directory override; otherwise use Paperclip's resolved task workspace |
 | persistSession | boolean | true | Resume sessions across heartbeats |
 | worktreeMode | boolean | false | Use git worktree for isolated changes |
 | checkpoints | boolean | false | Enable filesystem checkpoints |

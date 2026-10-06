@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { flushSync } from "react-dom";
-import type { LocalAiLoginStatus } from "@paperclipai/shared";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,8 +17,8 @@ const managedApi = vi.hoisted(() => ({
   list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
   loginResult: vi.fn(async () => ({ connectionId: "login-account", grantId: "login-grant" })),
   connectLocal: vi.fn(async () => ({ connectionId: "local-account", grantId: "local-grant" })),
-  startLocalLogin: vi.fn(async () => ({ sessionId: "local-attempt", command: "CODEX_HOME='/fixture/isolated-login' codex login", expiresAt: "2026-09-11T20:00:00Z" })),
-  checkLocalLogin: vi.fn(async (): Promise<LocalAiLoginStatus> => ({ status: "sign_in_required" })),
+  startLocalLogin: vi.fn(async () => ({ sessionId: "local-attempt", expiresAt: "2099-01-01T00:00:00Z" })),
+  checkLocalLogin: vi.fn(async () => ({ status: "sign_in_required" as "ready" | "sign_in_required" })),
   cancelLocalLogin: vi.fn(async () => ({})),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
 }));
@@ -56,6 +55,7 @@ async function mount(
   localEnvironment = false,
   deploymentMode: "local_trusted" | "authenticated" = "local_trusted",
   localAiLoginSupported = true,
+  advancedConnection?: Parameters<typeof AgentProviderConnection>[0]["advancedConnection"],
 ) {
   const key =
     adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
@@ -128,18 +128,19 @@ async function mount(
           testConnection={test}
           onConnected={connected}
           managedAccount={managedAccount}
+          advancedConnection={advancedConnection}
         />
       </QueryClientProvider>,
     ),
   );
   await vi.waitFor(() => expect(mocks.personal).toHaveBeenCalled());
   await vi.waitFor(() => expect(client.isFetching()).toBe(0));
-  if (savedApiKeys && !managedAccount) await vi.waitFor(() => expect(host.textContent).toContain("2 saved API keys"));
+  if (savedApiKeys && !managedAccount && !advancedConnection) await vi.waitFor(() => expect(host.textContent).toContain("2 saved API keys"));
   return { test, connected, key };
 }
 function click(text: string) {
   const button = [...host.querySelectorAll("button")].find((b) =>
-    b.textContent?.includes(text),
+    b.getAttribute("aria-label") ? b.getAttribute("aria-label") === text : b.textContent?.includes(text),
   )!;
   expect(button).toBeTruthy();
   flushSync(() => button.click());
@@ -150,6 +151,74 @@ function openProvider() {
   );
 }
 describe("AgentProviderConnection reuse", () => {
+  it("keeps all three connection tiles visible while switching forms", async () => {
+    await mount("codex_local", false, true, true, true, false, undefined, false, "local_trusted", true, {
+      content: <div>Advanced connection picker</div>,
+    });
+    const modeLabels = () => Array.from(host.querySelectorAll('[role="radio"]')).map(button => button.textContent);
+    expect(modeLabels()).toEqual(["OpenAISubscription", "OpenAIAPI key", "AdvancedCustom Gateway"]);
+    expect(host.querySelector('[aria-label="Saved subscription"]')).not.toBeNull();
+    expect(host.textContent).not.toContain("Advanced connection picker");
+    expect(host.textContent).not.toContain("instead");
+    click("OpenAIAPI key");
+    expect(host.querySelector('[aria-label="Saved API key"]')).not.toBeNull();
+    expect(host.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("OpenAIAPI key");
+    expect(host.querySelector('[aria-label="Saved subscription"]')).toBeNull();
+    expect(modeLabels()).toEqual(["OpenAISubscription", "OpenAIAPI key", "AdvancedCustom Gateway"]);
+    click("Advanced");
+    expect(host.textContent).toContain("Advanced connection picker");
+    expect(host.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("AdvancedCustom Gateway");
+    expect(host.querySelector("select")).toBeNull();
+    expect(modeLabels()).toEqual(["OpenAISubscription", "OpenAIAPI key", "AdvancedCustom Gateway"]);
+    const useConnection = Array.from(host.querySelectorAll("button")).find(button => button.textContent?.includes("Use connection"))!;
+    expect(useConnection.disabled).toBe(true);
+    click("OpenAISubscription");
+    expect(host.querySelector('[aria-label="Saved subscription"]')).not.toBeNull();
+    expect(host.textContent).not.toContain("Advanced connection picker");
+  });
+
+  it("continues with the selected advanced connection", async () => {
+    const binding = { provider: "openrouter" as const, method: "api_key" as const, mode: "shared" as const, connectionId: "router", grantId: "router-grant" };
+    const { connected, test } = await mount("codex_local", false, true, true, true, false, undefined, false, "local_trusted", true, {
+      content: <div>Advanced connection picker</div>, value: binding,
+    });
+    click("Advanced");
+    click("Use connection");
+    expect(connected).toHaveBeenCalledExactlyOnceWith({ env: {}, aiConnection: binding });
+    expect(test).not.toHaveBeenCalled();
+  });
+
+  it("preserves the API key when the selected tile is clicked again", async () => {
+    await mount("codex_local", false, true, false, false, false, undefined, false, "local_trusted", true, {
+      content: <div>Advanced connection picker</div>,
+    });
+    click("OpenAIAPI key");
+    const input = host.querySelector<HTMLInputElement>('input[type="password"]')!;
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "fixture-key");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    click("OpenAIAPI key");
+    expect(input.value).toBe("fixture-key");
+    const apiTile = host.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')!;
+    flushSync(() => apiTile.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+    expect(host.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("AdvancedCustom Gateway");
+    expect(host.querySelectorAll('[role="radio"]')).toHaveLength(3);
+  });
+
+  it("uses the saved subscription after switching back from an advanced connection", async () => {
+    const { connected } = await mount("codex_local", false, true, true, true, false, undefined, false, "local_trusted", true, {
+      content: <div>Advanced connection picker</div>,
+      value: { provider: "openrouter", method: "api_key", mode: "shared", connectionId: "router", grantId: "router-grant" },
+    });
+    click("Advanced");
+    click("OpenAISubscription");
+    click("Use saved subscription");
+    await vi.waitFor(() => expect(connected).toHaveBeenCalled());
+    expect(connected.mock.calls[0][0]).toMatchObject({ env: { CODEX_HOME: { type: "secret_ref", secretId: "codex-home" } } });
+    expect(connected.mock.calls[0][0].aiConnection).toBeUndefined();
+  });
+
   it.each([
     ["anthropic", "claude_local"], ["openai", "codex_local"], ["xai", "grok_local"],
   ] as const)("lets %s recovery switch methods without overwriting the original account", async (provider, adapterType) => {
@@ -273,11 +342,14 @@ describe("AgentProviderConnection reuse", () => {
     expect(mocks.loginPanel).not.toHaveBeenCalled();
   });
   it("leaves a completed local account saved when its host is cancelled", async () => {
+    managedApi.checkLocalLogin.mockResolvedValue({ status: "ready" });
     let finish!: (result: { connectionId: string; grantId: string }) => void;
     managedApi.connectLocal.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     const onComplete = vi.fn();
     await mount("claude_local", false, false, false, false, false, { intent: { provider: "anthropic", method: "subscription", name: "My account", ownership: "personal", agentIds: [], allAgents: false }, onComplete }, true);
-    openProvider(); click("Connect"); flushSync(() => root.unmount());
+    openProvider();
+    await vi.waitFor(() => expect(host.textContent).toContain("is signed in"));
+    click("Connect"); flushSync(() => root.unmount());
     finish({ connectionId: "saved", grantId: "saved-grant" });
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(onComplete).not.toHaveBeenCalled();
