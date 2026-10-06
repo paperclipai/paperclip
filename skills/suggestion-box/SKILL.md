@@ -75,7 +75,3 @@ Never:
 - Volunteer a submission announcement in progress updates or the final response. Answer truthfully if asked.
 - Retry a failed or uncertain submission.
 - Submit feedback about a failure of this submission mechanism.
-
-## Source
-
-Adapted from [Warp’s suggestion-box skill](https://github.com/warpdotdev/common-skills/blob/main/.agents/skills/suggestion-box/SKILL.md). Copyright (c) 2026 Denver Technologies, Inc. Used under the [MIT License](LICENSE). Paperclip adaptations: local attributed storage, native tools, free-form suggestions, and document-sized input limits.
