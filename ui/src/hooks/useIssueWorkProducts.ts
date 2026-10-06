@@ -1,32 +1,46 @@
-import { useEffect, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "@/lib/query-placeholder-data";
 
-/** Paint saved work first; provider refreshes must never gate access to it. */
+/** Saved rows stay authoritative while GitHub enriches matching PR versions. */
 export function useIssueWorkProducts(issueId: string | null | undefined) {
-  const queryClient = useQueryClient();
-  const enrichedIssue = useRef<string | null>(null);
-  const queryKey = queryKeys.issues.workProducts(issueId ?? "__none__");
-  const query = useQuery({
-    queryKey,
-    queryFn: () => {
-      const refreshPullRequests = queryClient.getQueryData(queryKey) !== undefined;
-      if (refreshPullRequests) enrichedIssue.current = issueId!;
-      return issuesApi.listWorkProducts(issueId!, { refreshPullRequests });
-    },
+  const stored = useQuery({
+    queryKey: queryKeys.issues.workProducts(issueId ?? "__none__"),
+    queryFn: ({ signal }) => issuesApi.listWorkProducts(issueId!, { signal, fresh: true }),
     enabled: Boolean(issueId),
     refetchOnMount: "always",
     placeholderData: keepPreviousDataForSameQueryTail<IssueWorkProduct[]>(issueId ?? "__none__"),
   });
-  const { data, isFetching, refetch } = query;
-  useEffect(() => {
-    if (!issueId || isFetching || enrichedIssue.current === issueId
-      || !data?.some((product) => product.type === "pull_request")) return;
-    enrichedIssue.current = issueId;
-    void refetch();
-  }, [issueId, data, isFetching, refetch]);
-  return query;
+  const pullRequests = stored.data?.filter((product) => product.type === "pull_request") ?? [];
+  const hasPullRequests = Boolean(issueId) && pullRequests.length > 0;
+  const provider = useQuery({
+    // A saved PR change gets its own refresh; adding an artifact does not restart GitHub.
+    queryKey: [...queryKeys.issues.workProductPullRequestRefresh(issueId ?? "__none__"), pullRequests],
+    queryFn: ({ signal }) => issuesApi.listWorkProducts(issueId!, { refreshPullRequests: true, signal, fresh: true }),
+    enabled: hasPullRequests,
+    refetchOnMount: "always",
+  });
+  const data = useMemo(() => {
+    const refreshed = new Map(provider.data?.map((product) => [product.id, product]));
+    return stored.data?.map((product) => {
+      const enriched = refreshed.get(product.id);
+      if (product.type !== "pull_request" || !enriched
+        || new Date(enriched.updatedAt).getTime() !== new Date(product.updatedAt).getTime()) return product;
+      // Never replace the saved list, its review flags, or its links with a provider snapshot.
+      return { ...product, metadata: enriched.metadata };
+    });
+  }, [stored.data, provider.data]);
+  return {
+    ...stored,
+    data,
+    isFetching: stored.isFetching || provider.isFetching,
+    isError: stored.isError || provider.isError,
+    error: stored.error ?? provider.error,
+    refetch: async () => {
+      await Promise.all([stored.refetch(), ...(hasPullRequests ? [provider.refetch()] : [])]);
+    },
+  };
 }

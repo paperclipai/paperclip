@@ -499,7 +499,7 @@ describe("IssueProperties", () => {
       <IssueProperties issue={createIssue()} childIssues={[]} onUpdate={vi.fn()} inline />
     </QueryClientProvider>));
     await waitForAssertion(() => {
-      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith("issue-1", { refreshPullRequests: true });
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith("issue-1", expect.objectContaining({ refreshPullRequests: true }));
       expect(container.textContent).toContain("merged");
       expect(container.textContent).not.toContain("Review requested");
     });
@@ -539,7 +539,7 @@ describe("IssueProperties", () => {
     mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => options?.refreshPullRequests ? refresh : [saved]);
     const root = renderProperties(container, { issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true });
     await waitForAssertion(() => {
-      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith("issue-1", { refreshPullRequests: true });
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith("issue-1", expect.objectContaining({ refreshPullRequests: true }));
       expect(container.querySelector(`a[href="${saved.url}"]`)).not.toBeNull();
       expect(container.textContent).toContain("Review requested");
     });

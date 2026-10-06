@@ -233,7 +233,7 @@ describe("markdown work product review row", () => {
     mockIssuesApi.listWorkProducts.mockImplementation(async (_id, options) => options?.refreshPullRequests ? refresh : [saved]);
     await renderTab({}, saved.title);
     await waitForAssertion(() => {
-      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith(issue.id, { refreshPullRequests: true });
+      expect(mockIssuesApi.listWorkProducts).toHaveBeenCalledWith(issue.id, expect.objectContaining({ refreshPullRequests: true }));
       expect(container.querySelector(`a[href="${saved.url}"]`)).not.toBeNull();
     });
     finishRefresh([{ ...saved, metadata: { state: "merged" } }]);
