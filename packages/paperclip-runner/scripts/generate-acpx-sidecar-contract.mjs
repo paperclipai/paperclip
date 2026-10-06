@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readAcpxSidecarProtocolVersion } from "./acpx-sidecar-contract.mjs";
+import { matchesGeneratedContent } from "./lib/generated-content.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const schema = JSON.parse(
@@ -71,7 +72,7 @@ const outputs = [
 if (process.argv.includes("--check")) {
   const stale = [];
   for (const [path, content] of outputs)
-    if ((await readFile(path, "utf8").catch(() => "")) !== content)
+    if (!matchesGeneratedContent(await readFile(path, "utf8").catch(() => ""), content))
       stale.push(path);
   if (stale.length > 0) {
     process.stderr.write(
