@@ -2136,6 +2136,13 @@
       "when": 1791308714862,
       "tag": "0306_familiar_titania",
       "breakpoints": true
+    },
+    {
+      "idx": 307,
+      "version": "7",
+      "when": 1791311441769,
+      "tag": "0307_cool_naoko",
+      "breakpoints": true
     }
   ]
 }
