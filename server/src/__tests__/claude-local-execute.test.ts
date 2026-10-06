@@ -490,6 +490,56 @@ describe("claude execute", () => {
     }
   });
 
+  it("omits --strict-mcp-config when inheritHostMcpServers is enabled", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-mcp-inherit-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      const run = async (runId: string, agentId: string, inheritHostMcpServers: boolean | undefined) => {
+        await execute({
+          runId,
+          agent: { id: agentId, companyId: "co-1", name: agentId, adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+          runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+          config: {
+            engine: "cli",
+            command: commandPath,
+            cwd: workspace,
+            env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+            promptTemplate: "Do work.",
+            ...(inheritHostMcpServers === undefined ? {} : { inheritHostMcpServers }),
+          },
+          runtimeMcp: {
+            getServers: () => [{
+              name: "alpha",
+              url: "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp",
+              token: "alpha-token",
+              connectionId: "connection-alpha",
+            }],
+          },
+          context: {},
+          authToken: "tok",
+          onLog: async () => {},
+        });
+        return JSON.parse(await fs.readFile(capturePath, "utf8"));
+      };
+
+      const inherit = await run("run-inherit", "agent-inherit", true);
+      const strict = await run("run-strict", "agent-strict", false);
+      const unset = await run("run-unset", "agent-unset", undefined);
+
+      // Paperclip's own MCP config is still passed; only the strict flag is dropped.
+      expect(inherit.argv).toContain("--mcp-config");
+      expect(inherit.argv).not.toContain("--strict-mcp-config");
+      expect(JSON.parse(inherit.mcpConfigContents).mcpServers.alpha.url).toBe(
+        "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp",
+      );
+      expect(strict.argv).toEqual(expect.arrayContaining(["--mcp-config", "--strict-mcp-config"]));
+      expect(unset.argv).toEqual(expect.arrayContaining(["--mcp-config", "--strict-mcp-config"]));
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   /**
    * Regression tests for https://github.com/paperclipai/paperclip/issues/2848
    *
