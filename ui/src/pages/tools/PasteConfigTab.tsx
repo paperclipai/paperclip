@@ -136,6 +136,8 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
     onSuccess: (result) => {
       setPreview(result);
       setConnectionNames(Object.fromEntries(result.drafts.map((draft) => [draft.name, draft.name])));
+      setCredentialValues({});
+      setCredentialSecretSelections({});
       setConnectResult(null);
       setActivatedName(null);
     },
@@ -335,6 +337,20 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
               <CheckCircle2 className="h-4 w-4 text-emerald-600" />
               We found {drafts.length} {drafts.length === 1 ? "app" : "apps"} in that config
             </h3>
+            {drafts.some((draft) => draft.credentialFields.length > 0) && secretCatalog.isError ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                <span>Couldn’t load existing secrets. You can retry or enter a new value.</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={secretCatalog.isFetching}
+                  onClick={() => void secretCatalog.refetch()}
+                >
+                  {secretCatalog.isFetching ? "Retrying…" : "Retry secrets"}
+                </Button>
+              </div>
+            ) : null}
             {drafts.map((draft, index) => {
               const url = draftConnectUrl(draft);
               const missingFields = missingCredentialFields(draft, {

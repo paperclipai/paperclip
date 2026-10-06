@@ -442,6 +442,92 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     });
   });
 
+  it("clears an existing secret selection when a new config is imported", async () => {
+    const secretId = "22222222-2222-4222-8222-222222222222";
+    secretsApiMock.catalog.mockResolvedValue([
+      { id: secretId, name: "Dida API token", key: "integrations/dida365/api-token", status: "active" },
+    ]);
+    const previewFor = (url: string): McpJsonImportPreview => ({
+      drafts: [{
+        name: "dida365",
+        transport: "mcp_remote",
+        status: "draft",
+        config: { url },
+        credentialRefs: [],
+        credentialFields: [{
+          configPath: "headers.Authorization",
+          label: "Authorization",
+          placement: "header",
+          key: "Authorization",
+          prefix: null,
+          required: true,
+        }],
+        warnings: [],
+      }],
+    });
+    await pasteAndCheck(
+      previewFor("https://first.example/mcp"),
+      '{ "mcpServers": { "dida365": { "url": "https://first.example/mcp" } } }',
+    );
+    await flushReact();
+
+    let select = container.querySelector('select[aria-label="Use existing secret for Authorization"]') as HTMLSelectElement;
+    await act(async () => setSelectValue(select, secretId));
+    await flushReact();
+
+    toolsApiMock.importMcpJson.mockResolvedValue(previewFor("https://second.example/mcp"));
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => setTextareaValue(
+      textarea,
+      '{ "mcpServers": { "dida365": { "url": "https://second.example/mcp" } } }',
+    ));
+    await flushReact();
+    await act(async () => {
+      buttonStartingWith("Check config")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    select = container.querySelector('select[aria-label="Use existing secret for Authorization"]') as HTMLSelectElement;
+    expect(select.value).toBe("");
+    expect(buttonStartingWith("Check actions")!.disabled).toBe(true);
+  });
+
+  it("surfaces a secret catalog error and lets the operator retry", async () => {
+    secretsApiMock.catalog
+      .mockRejectedValueOnce(new Error("catalog offline"))
+      .mockResolvedValueOnce([]);
+    await pasteAndCheck({
+      drafts: [{
+        name: "dida365",
+        transport: "mcp_remote",
+        status: "draft",
+        config: { url: "https://mcp.dida365.com" },
+        credentialRefs: [],
+        credentialFields: [{
+          configPath: "headers.Authorization",
+          label: "Authorization",
+          placement: "header",
+          key: "Authorization",
+          prefix: null,
+          required: true,
+        }],
+        warnings: [],
+      }],
+    }, '{ "mcpServers": { "dida365": { "url": "https://mcp.dida365.com" } } }');
+    await flushReact();
+
+    expect(container.textContent).toContain("Couldn’t load existing secrets");
+    const retry = buttonStartingWith("Retry secrets");
+    expect(retry).toBeTruthy();
+    await act(async () => {
+      retry!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(secretsApiMock.catalog).toHaveBeenCalledTimes(2);
+    expect(container.textContent).not.toContain("Couldn’t load existing secrets");
+  });
+
   it("starts OAuth for the original generic connection instead of rendering an empty catalog", async () => {
     await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
     const nameInput = container.querySelector('input[placeholder="notion"]') as HTMLInputElement;
