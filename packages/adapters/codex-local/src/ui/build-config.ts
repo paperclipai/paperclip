@@ -42,7 +42,7 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
     if (v.codexAcpStateDir) ac.stateDir = v.codexAcpStateDir;
     ac.warmHandleIdleMs = v.codexAcpWarmHandleIdleMs ?? 0;
   }
-  ac.timeoutSec = 0;
+  ac.timeoutSec = v.timeoutSec ?? v.adapterSchemaValues?.timeoutSec ?? 0;
   ac.graceSec = 15;
   const env = buildAdapterEnvConfig(v.envBindings, v.envVars);
   if (Object.keys(env).length > 0) ac.env = env;

@@ -37,6 +37,17 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
 }
 
 describe("buildClaudeLocalConfig", () => {
+  it.each(["auto", "cli", "acp"] as const)("preserves explicit timeouts with the %s engine", (claudeEngine) => {
+    expect(buildClaudeLocalConfig(makeValues({ claudeEngine, timeoutSec: 1800 })).timeoutSec).toBe(1800);
+    expect(buildClaudeLocalConfig(makeValues({ claudeEngine, timeoutSec: 0 })).timeoutSec).toBe(0);
+  });
+
+  it("uses schema-backed timeouts and retains the unlimited default", () => {
+    expect(buildClaudeLocalConfig(makeValues({ adapterSchemaValues: { timeoutSec: 900 } })).timeoutSec).toBe(900);
+    expect(buildClaudeLocalConfig(makeValues({ timeoutSec: 0, adapterSchemaValues: { timeoutSec: 900 } })).timeoutSec).toBe(0);
+    expect(buildClaudeLocalConfig(makeValues()).timeoutSec).toBe(0);
+  });
+
   it("omits engine for the auto default so runtime fallback remains available", () => {
     const config = buildClaudeLocalConfig(makeValues({ claudeEngine: "auto" }));
 

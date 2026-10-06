@@ -11,6 +11,13 @@ export function getConfigSchema(): AdapterConfigSchema {
   return {
     fields: [
       {
+        key: "timeoutSec",
+        label: "Timeout (sec)",
+        type: "number",
+        default: 0,
+        hint: "Maximum seconds a run can take before being terminated. Use a non-negative value. 0 uses the execution target default: no adapter timeout on local or SSH targets, and a four-hour adapter timeout on remote sandbox targets.",
+      },
+      {
         key: "engine",
         label: "Execution engine",
         type: "select",

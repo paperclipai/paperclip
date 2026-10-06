@@ -13,6 +13,9 @@ import { AgentConfigForm, AdapterLoginPanel, subtractPersistedOverlay, type Adap
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
+import * as schemaConfigFields from "../adapters/schema-config-fields";
+import { getConfigSchema as getClaudeConfigSchema } from "../../../packages/adapters/claude-local/src/server/config-schema";
+import { getConfigSchema as getCodexConfigSchema } from "../../../packages/adapters/codex-local/src/server/config-schema";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(),
@@ -737,6 +740,59 @@ describe("AgentConfigForm environment selector", () => {
     roots = [];
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it.each([
+    ["claude_local", getClaudeConfigSchema],
+    ["codex_local", getCodexConfigSchema],
+  ] as const)("shows and preserves a saved %s timeout even when its schema advertises it", async (adapterType, getConfigSchema) => {
+    const schemaHook = vi.spyOn(schemaConfigFields, "useConfigSchema").mockReturnValue(getConfigSchema());
+    try {
+      const schema = getConfigSchema();
+      expect(schema.fields.find(field => field.key === "timeoutSec")).toMatchObject({ type: "number", default: 0 });
+      expect(schema.fields.find(field => field.key === "timeoutSec")?.hint).toContain("four-hour adapter timeout on remote sandbox targets");
+      const result = await renderForm([], { adapterType, adapterConfig: { timeoutSec: 1800, model: "saved-model" } });
+      roots.push(result.root);
+      const policy = result.container.querySelector<HTMLElement>('[data-config-section="run-policy"]')!;
+      expect(policy.textContent?.match(/Timeout \(sec\)/g)).toHaveLength(1);
+      const timeout = Array.from(policy.querySelectorAll<HTMLInputElement>("input")).find(input => input.value === "1800")!;
+      expect(timeout).toBeDefined();
+
+      // Saving an unrelated setting must retain the timeout supplied by PATCH.
+      await act(() => setInputValue(result.container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]')!, "Renamed"));
+      await clickByText(result.container, "Save");
+      expect(result.onSave.mock.calls[0]?.[0]).not.toHaveProperty("adapterConfig");
+      result.onSave.mockClear();
+      await act(() => setInputValue(timeout, "-1"));
+      expect(timeout.getAttribute("aria-invalid")).toBe("true");
+      expect(policy.textContent).toContain("Enter a number of at least 0.");
+      await act(() => setInputValue(result.container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]')!, "Renamed again"));
+      await clickByText(result.container, "Save");
+      expect(result.onSave.mock.calls[0]?.[0]).not.toHaveProperty("adapterConfig");
+      result.onSave.mockClear();
+      await act(() => setInputValue(timeout, "900"));
+      await clickByText(result.container, "Save");
+      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: { timeoutSec: 900, model: "saved-model" } }));
+      result.onSave.mockClear();
+      await act(() => setInputValue(timeout, "0"));
+      await clickByText(result.container, "Save");
+      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: { timeoutSec: 0, model: "saved-model" } }));
+    } finally {
+      schemaHook.mockRestore();
+    }
+  });
+
+  it.each(["claude_local", "codex_local"])("collects a %s timeout in create mode", async (adapterType) => {
+    const result = await renderCreateForm([], { adapterType, timeoutSec: 1800 });
+    roots.push(result.root);
+    const policy = result.container.querySelector<HTMLElement>('[data-config-section="run-policy"]')!;
+    expect(policy.textContent).toContain("Timeout (sec)");
+    const timeout = Array.from(policy.querySelectorAll<HTMLInputElement>("input")).find(input => input.value === "1800")!;
+    await act(() => setInputValue(timeout, "-1"));
+    expect(result.onChange).not.toHaveBeenCalled();
+    expect(timeout.getAttribute("aria-invalid")).toBe("true");
+    await act(() => setInputValue(timeout, "900"));
+    expect(result.onChange).toHaveBeenCalledWith({ timeoutSec: 900 });
   });
 
   it("promotes environment drafts through the page Save action and discards them through the page Discard action", async () => {
