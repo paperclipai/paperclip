@@ -375,13 +375,11 @@ export async function requestNativeQuestionRunCancellation(
  * any earlier domain locks; reentry is not a general late-lock protocol.
  * Only capture fields consumed by the canonical authorization/marker helper.
  */
-export async function requestNativeQuestionRunCancellationInTransaction(
-  tx: DbTransaction,
+function captureNativeQuestionAuthorizationIdentity(
   interaction: NativeQuestionAuthorizationIdentity,
-  cause: NativeQuestionCancellationCause,
-): Promise<string | null> {
+): NativeQuestionAuthorizationIdentity {
   const payload = record(interaction.payload);
-  const identity: NativeQuestionAuthorizationIdentity = {
+  return {
     companyId: interaction.companyId,
     issueId: interaction.issueId,
     sourceRunId: interaction.sourceRunId,
@@ -391,6 +389,26 @@ export async function requestNativeQuestionRunCancellationInTransaction(
       runtimeRequestId: payload.runtimeRequestId,
     } : null,
   };
+}
+
+/** Dark supplied-tx lookup only: returns no authority or durable receipt. */
+export async function nativeQuestionRunToCancelInTransaction(
+  tx: DbTransaction,
+  interaction: NativeQuestionAuthorizationIdentity,
+): Promise<string | null> {
+  const identity = captureNativeQuestionAuthorizationIdentity(interaction);
+  if (!identity.companyId) throw unprocessable("Lifecycle native cancellation lookup requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, identity.companyId);
+  const run = await authorizedNativeRun(tx, identity);
+  return run && ["queued", "running"].includes(run.status) ? run.id : null;
+}
+
+export async function requestNativeQuestionRunCancellationInTransaction(
+  tx: DbTransaction,
+  interaction: NativeQuestionAuthorizationIdentity,
+  cause: NativeQuestionCancellationCause,
+): Promise<string | null> {
+  const identity = captureNativeQuestionAuthorizationIdentity(interaction);
   const capturedCause: NativeQuestionCancellationCause = cause.kind === "issue_terminal"
     ? { kind: cause.kind, issueStatus: cause.issueStatus }
     : { kind: cause.kind, interactionId: cause.interactionId };

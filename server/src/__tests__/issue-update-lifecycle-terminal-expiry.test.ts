@@ -4,7 +4,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 import { publishActivity } from "../services/activity-log.js";
-import { requestNativeQuestionRunCancellationInTransaction } from "../services/native-runtime/native-question-bridge.js";
+import { nativeQuestionRunToCancelInTransaction, nativeQuestionRunToCancel, requestNativeQuestionRunCancellationInTransaction } from "../services/native-runtime/native-question-bridge.js";
 const sink = vi.hoisted(() => ({ live: [] as any[] }));
 vi.mock("../services/live-events.js", () => ({ publishLiveEvent: (event: any) => sink.live.push(event) }));
 vi.mock("../services/instance-settings.js", () => ({ instanceSettingsService: () => ({ getExperimental: async () => ({ enableIsolatedWorkspaces: false }), getGeneral: async () => ({ censorUsernameInLogs: false }) }) }));
@@ -71,6 +71,57 @@ function nativeFixture() {
   return f;
 }
 describe("dark canonical terminal expiry supplied integration", () => {
+  it("fences native cancellation lookup without writing a marker", async () => {
+    const f = nativeFixture();
+    await expect(nativeQuestionRunToCancelInTransaction(f.tx, f.card)).resolves.toBe("run-1");
+    expect(f.events).toEqual(["fence", "read:heartbeat_runs"]);
+    expect(f.native.predicates[0].params).toEqual(["run-1", "company-1", "issue-1", "native"]);
+    expect(f.native.marker).toBeNull(); expect(sink.live).toEqual([]);
+  });
+  it("captures native lookup identity before its suspended fence", async () => {
+    const f = nativeFixture(); let release!: () => void; let entered!: () => void;
+    const barrier = new Promise<void>(r => { release = r; }); const signal = new Promise<void>(r => { entered = r; });
+    f.tx.execute = async () => { f.events.push("fence"); entered(); await barrier; };
+    const operation = nativeQuestionRunToCancelInTransaction(f.tx, f.card);
+    try {
+      expect(await Promise.race([signal.then(() => "fence"), operation.then(() => "settled", () => "rejected")])).toBe("fence");
+      expect(f.events).toEqual(["fence"]);
+      Object.assign(f.card, { companyId: "other-company", issueId: "other-issue", sourceRunId: "other-run", idempotencyKey: "bad" });
+      f.card.payload.runtimeRequestId = "other-request"; f.card.payload.questionSet = null;
+    } finally { release(); }
+    expect(await operation).toBe("run-1");
+    expect(f.native.predicates[0].params).toEqual(["run-1", "company-1", "issue-1", "native"]);
+    expect(f.native.marker).toBeNull();
+  });
+  it("propagates lookup fence rejection without a read", async () => {
+    const f = nativeFixture(); const error = new Error("lookup-fence"); f.tx.execute = async () => { throw error; };
+    await expect(nativeQuestionRunToCancelInTransaction(f.tx, f.card)).rejects.toBe(error);
+    expect(f.events).toEqual([]); expect(f.native.marker).toBeNull();
+  });
+  it("denies missing lookup company before effects", async () => {
+    const f = nativeFixture(); f.card.companyId = "";
+    await expect(nativeQuestionRunToCancelInTransaction(f.tx, f.card)).rejects.toMatchObject({ status: 422 });
+    expect(f.events).toEqual([]);
+  });
+  it.each(["queued", "running", "succeeded", "cancelled"])("preserves native lookup ordinary result without writes for status=%s", async status => {
+    const f = nativeFixture(); f.native.run.status = status;
+    const expected = ["queued", "running"].includes(status) ? "run-1" : null;
+    expect(await nativeQuestionRunToCancelInTransaction(f.tx, f.card)).toBe(expected);
+    expect(f.events).toEqual(["fence", "read:heartbeat_runs"]);
+    f.events.length = 0;
+    expect(await nativeQuestionRunToCancel(f.tx, f.card)).toBe(expected);
+    expect(f.events).toEqual(["read:heartbeat_runs"]); expect(f.native.marker).toBeNull();
+  });
+  it("fenced invalid binding lookup is a no-read null", async () => {
+    const f = nativeFixture(); f.card.payload.runtimeRequestId = "other-request";
+    expect(await nativeQuestionRunToCancelInTransaction(f.tx, f.card)).toBeNull();
+    expect(f.events).toEqual(["fence"]); expect(f.native.marker).toBeNull();
+  });
+  it("lookup read rejection preserves error identity and never writes", async () => {
+    const f = nativeFixture(); const error = new Error("lookup-read"); f.tx.select = () => { throw error; };
+    await expect(nativeQuestionRunToCancelInTransaction(f.tx, f.card)).rejects.toBe(error);
+    expect(f.events).toEqual(["fence"]); expect(f.native.marker).toBeNull();
+  });
   it("fences the native marker participant before its own authoritative read", async () => {
     const f = nativeFixture();
     await expect(requestNativeQuestionRunCancellationInTransaction(f.tx, f.card, { kind: "issue_terminal", issueStatus: "done" })).resolves.toBe("run-1");
