@@ -77,7 +77,7 @@ test("Hermes keeps the operational Paperclip skill linked after an empty replace
       agentId: "11111111-1111-4111-8111-111111111111",
       companyId: "22222222-2222-4222-8222-222222222222",
       config: {
-        env: { HOME: home },
+        env: { HOME: home, HERMES_HOME: path.join(home, "hermes-home") },
         paperclipRuntimeSkills: [{
           key: "paperclipai/paperclip/paperclip",
           runtimeName: "paperclip",
@@ -88,7 +88,13 @@ test("Hermes keeps the operational Paperclip skill linked after an empty replace
     }, []);
 
     expect(snapshot?.desiredSkills).toContain("paperclipai/paperclip/paperclip");
-    expect((await fs.lstat(path.join(home, ".hermes", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect(
+      (await fs.lstat(path.join(home, "hermes-home", "skills", "paperclip"))).isSymbolicLink(),
+    ).toBe(true);
+    // Regression: $HOME/.hermes must NOT be created — it is not the Hermes skills dir.
+    await expect(
+      fs.lstat(path.join(home, ".hermes", "skills", "paperclip")),
+    ).rejects.toThrow();
   } finally {
     await fs.rm(home, { recursive: true, force: true });
   }
@@ -96,9 +102,10 @@ test("Hermes keeps the operational Paperclip skill linked after an empty replace
 
 test("Hermes rejects a conflicting operational skill target", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-core-conflict-"));
+  const hermesHome = path.join(home, "hermes-home");
   try {
     const source = path.join(home, "runtime-skills", "paperclip");
-    const target = path.join(home, ".hermes", "skills", "paperclip");
+    const target = path.join(hermesHome, "skills", "paperclip");
     await fs.mkdir(source, { recursive: true });
     await fs.writeFile(path.join(source, "SKILL.md"), "# Paperclip\n", "utf8");
     await fs.mkdir(target, { recursive: true });
@@ -110,7 +117,7 @@ test("Hermes rejects a conflicting operational skill target", async () => {
       agentId: "11111111-1111-4111-8111-111111111111",
       companyId: "22222222-2222-4222-8222-222222222222",
       config: {
-        env: { HOME: home },
+        env: { HOME: home, HERMES_HOME: hermesHome },
         paperclipRuntimeSkills: [{
           key: "paperclipai/paperclip/paperclip",
           runtimeName: "paperclip",
@@ -125,10 +132,11 @@ test("Hermes rejects a conflicting operational skill target", async () => {
 
 test("Hermes rejects a live symlink owned by another operational skill", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-core-link-conflict-"));
+  const hermesHome = path.join(home, "hermes-home");
   try {
     const source = path.join(home, "runtime-skills", "paperclip");
     const conflictingSource = path.join(home, "external-skills", "paperclip");
-    const target = path.join(home, ".hermes", "skills", "paperclip");
+    const target = path.join(hermesHome, "skills", "paperclip");
     await fs.mkdir(source, { recursive: true });
     await fs.writeFile(path.join(source, "SKILL.md"), "# Paperclip\n", "utf8");
     await fs.mkdir(conflictingSource, { recursive: true });
@@ -142,7 +150,7 @@ test("Hermes rejects a live symlink owned by another operational skill", async (
       agentId: "11111111-1111-4111-8111-111111111111",
       companyId: "22222222-2222-4222-8222-222222222222",
       config: {
-        env: { HOME: home },
+        env: { HOME: home, HERMES_HOME: hermesHome },
         paperclipRuntimeSkills: [{
           key: "paperclipai/paperclip/paperclip",
           runtimeName: "paperclip",
@@ -151,6 +159,54 @@ test("Hermes rejects a live symlink owned by another operational skill", async (
       },
     }, [])).rejects.toThrow("occupied by another installation");
   } finally {
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});
+
+test("HERMES_HOME takes precedence over HOME for the Hermes skills dir", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-home-precedence-"));
+  const previousHermesHome = process.env.HERMES_HOME;
+  try {
+    const source = path.join(home, "runtime-skills", "paperclip");
+    await fs.mkdir(source, { recursive: true });
+    await fs.writeFile(path.join(source, "SKILL.md"), "# Paperclip\n", "utf8");
+    const hermesHome = path.join(home, "custom-hermes-home");
+    const adapter = createServerAdapter();
+    const config = {
+      env: { HOME: home },
+      paperclipRuntimeSkills: [{
+        key: "paperclipai/paperclip/paperclip",
+        runtimeName: "paperclip",
+        source,
+      }],
+      paperclipSkillSync: { desiredSkills: [] },
+    };
+    const withProcessEnv = async () => {
+      await adapter.syncSkills?.({
+        adapterType: "hermes_local",
+        agentId: "11111111-1111-4111-8111-111111111111",
+        companyId: "22222222-4222-4222-8222-222222222222",
+        config,
+      }, []);
+    };
+    process.env.HERMES_HOME = hermesHome;
+    await withProcessEnv();
+    expect((await fs.lstat(path.join(hermesHome, "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    await expect(fs.lstat(path.join(home, ".hermes", "skills", "paperclip"))).rejects.toThrow();
+    // An explicit adapter config wins over the process environment.
+    process.env.HERMES_HOME = path.join(home, "ignored-process-home");
+    const configHome = path.join(home, "config-home");
+    await adapter.syncSkills?.({
+      adapterType: "hermes_local",
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId: "22222222-4222-4222-8222-222222222222",
+      config: { ...config, env: { HOME: home, HERMES_HOME: configHome } },
+    }, []);
+    expect((await fs.lstat(path.join(configHome, "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    await expect(fs.lstat(path.join(home, "ignored-process-home", "skills", "paperclip"))).rejects.toThrow();
+  } finally {
+    if (previousHermesHome === undefined) delete process.env.HERMES_HOME;
+    else process.env.HERMES_HOME = previousHermesHome;
     await fs.rm(home, { recursive: true, force: true });
   }
 });

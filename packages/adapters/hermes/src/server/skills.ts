@@ -24,14 +24,70 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
-
-function resolveHermesHome(config: Record<string, unknown>): string {
+/**
+ * Read an env value that the adapter config may express either as a plain
+ * string or as a structured binding. Secret bindings are never resolved here:
+ * they return null so the caller falls back to the platform default.
+ */
+function envPlainString(value: unknown): string | null {
+  if (typeof value === "string") return asString(value);
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (record.type === "plain") return asString(record.value);
+  }
+  return null;
+}
+function expandHome(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/") || value.startsWith("~\\"))
+    return path.join(os.homedir(), value.slice(2));
+  return value;
+}
+/**
+ * Resolve the Hermes home directory the same way Hermes itself does
+ * (hermes_constants.get_hermes_home): an explicit HERMES_HOME wins, otherwise the
+ * platform default. The platform default is `%LOCALAPPDATA%/hermes` on Windows and
+ * `~/.hermes` elsewhere — NOT `~/.hermes` everywhere.
+ *
+ * Deriving skills from `$HOME/.hermes/skills` unconditionally wrote Paperclip's
+ * skill junctions somewhere Hermes never looks on Windows, so every synced skill
+ * was invisible to the runtime while Paperclip still reported it as configured.
+ * This mirrors the CODEX_HOME / CLAUDE_HOME / KIMI_CODE_HOME handling in
+ * paperclipai/dist/index.js, which the Hermes adapter was missing.
+ */
+export function resolveHermesHome(config: Record<string, unknown>): string {
   const env =
     typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
       ? (config.env as Record<string, unknown>)
       : {};
-  const configuredHome = asString(env.HOME);
-  return configuredHome ? path.resolve(configuredHome) : os.homedir();
+  // config.env wins over process.env: it is the adapter config the operator set
+  // deliberately, and execute.js forwards it to the spawned Hermes process, so
+  // both sides then agree on one home.
+  const configuredHome = envPlainString(env.HERMES_HOME) ?? envPlainString(process.env.HERMES_HOME);
+  if (configuredHome) {
+    return path.resolve(
+      expandHome(
+        configuredHome.replace(/%([^%]+)%/g, (_, key) => (process.env[key] ?? `%${key}%`)),
+      ),
+    );
+  }
+  // Matches _get_platform_default_hermes_home(): HERMES_DATA_DIR_SUFFIX lets a
+  // parallel install keep its data under a suffixed directory.
+  const suffix = envPlainString(env.HERMES_DATA_DIR_SUFFIX) ?? envPlainString(process.env.HERMES_DATA_DIR_SUFFIX) ?? "";
+  if (process.platform === "win32") {
+    const localAppData = envPlainString(env.LOCALAPPDATA) ?? envPlainString(process.env.LOCALAPPDATA);
+    const configuredHome = envPlainString(env.HOME);
+    const base = localAppData
+      ? path.resolve(localAppData)
+      : path.join(
+          configuredHome ? path.resolve(configuredHome) : os.homedir(),
+          "AppData",
+          "Local",
+        );
+    return path.join(base, `hermes${suffix}`);
+  }
+  const home = envPlainString(env.HOME);
+  return path.join(home ? path.resolve(home) : os.homedir(), `.hermes${suffix}`);
 }
 
 interface SkillFrontmatter {
@@ -131,7 +187,7 @@ async function buildSkillEntry(
 
 async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
   const home = resolveHermesHome(config);
-  const hermesSkillsHome = path.join(home, ".hermes", "skills");
+  const hermesSkillsHome = path.join(home, "skills");
 
   // 1. Scan Paperclip-managed skills (bundled with the adapter)
   const paperclipEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
@@ -224,7 +280,7 @@ export async function reconcileHermesPaperclipSkills(
       ]))
     : resolveLegacyPaperclipDesiredSkillNames(config, availableEntries);
   const desiredSet = new Set(desiredSkills);
-  const skillsHome = path.join(resolveHermesHome(config), ".hermes", "skills");
+  const skillsHome = path.join(resolveHermesHome(config), "skills");
   await fs.mkdir(skillsHome, { recursive: true });
   const installed = await readInstalledSkillTargets(skillsHome);
   const availableByRuntimeName = new Map(availableEntries.map((entry) => [entry.runtimeName, entry]));
