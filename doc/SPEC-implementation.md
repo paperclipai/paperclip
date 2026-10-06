@@ -584,6 +584,14 @@ conversation lifecycles, and protection against replaying superseded requests.
 - Board has full read/write across all companies in deployment
 - Every board mutation writes to `activity_log`
 
+Human invitations default to the Operator role. Its default grants allow agent
+creation and configuration, skill editing, environment management, invitations,
+task assignment, pipeline editing, connection and tool management/use, and tool
+and agent-action audit views. Operators do not receive `joins:approve` or
+`users:manage_permissions`. Explicit invitation grants remain authoritative.
+This preset change adds no database migration; existing role-default seeding
+continues to insert missing grants without replacing custom scopes.
+
 ## 9.2 Agent Auth
 
 - Bearer API key mapped to one agent and company
