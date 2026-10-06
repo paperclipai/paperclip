@@ -451,8 +451,8 @@ failed turn. Agent text, tool output, unrelated turns, and unknown provider
 errors do not create this classification. The provider diagnostic contains only
 `provider=codex`, `category=model_auth_incompatible`, `status=400`, and
 `authMode=chatgpt`. It excludes the model name and provider response. This does
-not change credentials, select a fallback model, replay a turn, or alter native
-result finalization and cleanup. The existing configuration-blocker recovery
+not change credentials, select a fallback model, replay a turn, or alter the
+accepted semantic result or cleanup. The existing configuration-blocker recovery
 path requires a configuration change instead of automatically retrying the same
 model and connection. Native finalization also derives this evidence from the
 committed event and the run's pinned provider configuration before it can queue
