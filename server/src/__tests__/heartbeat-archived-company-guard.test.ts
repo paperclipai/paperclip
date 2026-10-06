@@ -240,6 +240,30 @@ describeEmbeddedPostgres("heartbeat archived-company guard", () => {
     expect(status).toBe("queued");
   });
 
+  it("does not promote due scheduled retries for archived companies", async () => {
+    const { companyId, agentId } = await insertArchivedAgent();
+    const runId = randomUUID();
+    const dueAt = new Date("2026-06-04T00:00:00Z");
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "scheduled_retry",
+      scheduledRetryAt: dueAt,
+      scheduledRetryReason: "transient_failure",
+      scheduledRetryAttempt: 1,
+    });
+
+    const promoted = await heartbeatService(db).promoteDueScheduledRetries(dueAt);
+
+    expect(promoted).toEqual({ promoted: 0, runIds: [] });
+    await expect(db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)).resolves.toEqual([
+      { status: "scheduled_retry" },
+    ]);
+  });
+
   it("rejects explicit user invokes for non-active companies", async () => {
     const { agentId } = await insertArchivedAgent();
 

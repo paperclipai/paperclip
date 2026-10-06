@@ -2,9 +2,11 @@
 
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
+import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
+import { ToastProvider } from "../context/ToastContext";
 import { Companies } from "./Companies";
 
 const mockCompaniesApi = vi.hoisted(() => ({
@@ -13,6 +15,8 @@ const mockCompaniesApi = vi.hoisted(() => ({
   remove: vi.fn(),
 }));
 const mockOpenOnboarding = vi.hoisted(() => vi.fn());
+const mockCompanyStatus = vi.hoisted(() => ({ value: "active" as "active" | "archived" }));
+const mockPushToast = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/companies", () => ({
   companiesApi: mockCompaniesApi,
@@ -25,7 +29,7 @@ vi.mock("../context/CompanyContext", () => ({
         id: "company-1",
         issuePrefix: "PAP",
         name: "Acme Labs",
-        status: "active",
+        status: mockCompanyStatus.value,
         budgetMonthlyCents: 0,
         spentMonthlyCents: 0,
       },
@@ -43,6 +47,27 @@ vi.mock("../context/DialogContext", () => ({
 
 vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
+}));
+
+vi.mock("../context/ToastContext", () => ({
+  ToastProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
+  useToastActions: () => ({ pushToast: mockPushToast }),
+}));
+
+vi.mock("@/components/ui/dropdown-menu", () => ({
+  DropdownMenu: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DropdownMenuContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DropdownMenuItem: ({
+    children,
+    disabled,
+    onClick,
+  }: {
+    children: ReactNode;
+    disabled?: boolean;
+    onClick?: () => void;
+  }) => <button disabled={disabled} onClick={onClick}>{children}</button>,
+  DropdownMenuSeparator: () => <hr />,
+  DropdownMenuTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -74,6 +99,7 @@ describe("Companies page", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockCompaniesApi.stats.mockResolvedValue({});
+    mockCompanyStatus.value = "active";
   });
 
   afterEach(() => {
@@ -82,7 +108,8 @@ describe("Companies page", () => {
     vi.clearAllMocks();
   });
 
-  async function renderPage({ cloud }: { cloud?: boolean } = {}) {
+  async function renderPage({ cloud, status }: { cloud?: boolean; status?: "active" | "archived" } = {}) {
+    if (status) mockCompanyStatus.value = status;
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -91,7 +118,9 @@ describe("Companies page", () => {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <Companies />
+          <ToastProvider>
+            <Companies />
+          </ToastProvider>
         </QueryClientProvider>,
       );
     });
@@ -118,6 +147,29 @@ describe("Companies page", () => {
     expect(container.textContent).not.toContain("New Organization");
     expect(container.textContent).toContain("Acme Labs");
     expect(mockOpenOnboarding).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("reports an unarchive failure", async () => {
+    mockCompaniesApi.update.mockRejectedValue(new Error("Network unavailable"));
+    const root = await renderPage({ status: "archived" });
+    const unarchiveButton = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Unarchive"),
+    );
+
+    expect(unarchiveButton).toBeDefined();
+    act(() => unarchiveButton?.click());
+    await flushReact();
+    await flushReact();
+
+    expect(mockPushToast).toHaveBeenCalledWith({
+      tone: "error",
+      title: "Could not unarchive organization",
+      body: "Network unavailable",
+    });
 
     act(() => {
       root.unmount();
