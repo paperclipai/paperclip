@@ -5183,7 +5183,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "local",
       ]),
     );
-    expect(res.body.apps).toHaveLength(66);
+    expect(res.body.apps).toHaveLength(67);
     for (const slug of ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
       expect(res.body.apps.find((app: { slug: string }) => app.slug === slug).tags).toContain("model-provider");
     }
@@ -6307,6 +6307,52 @@ describeEmbeddedPostgres("tool access service", () => {
         actor,
       }),
     ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("connects Superagent with an organization API key sent as a bearer header", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = mockToolsList([
+      { name: "list_findings", annotations: { readOnlyHint: true } },
+      { name: "create_repository_report" },
+      { name: "delete_finding", annotations: { destructiveHint: true } },
+    ]);
+
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "superagent",
+        credentialValues: { "credentials.authorization": "sk_live_test-secret" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://www.superagent.sh/mcp",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer sk_live_test-secret",
+        }),
+      }),
+    );
+    expect(result.connection).toMatchObject({
+      authKind: "api_key",
+      config: {
+        url: "https://www.superagent.sh/mcp",
+        sourceTemplateKey: "superagent",
+        connectionMethodKey: "mcp-api-key",
+      },
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain(
+      "sk_live_test-secret",
+    );
+    expect(result.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolName: "list_findings", riskLevel: "read", status: "active" }),
+        expect.objectContaining({ toolName: "create_repository_report", riskLevel: "write", status: "active" }),
+        expect.objectContaining({ toolName: "delete_finding", riskLevel: "destructive", status: "active" }),
+      ]),
+    );
   });
 
   it("projects Neon's optional project pin and read-only mode into the hosted server URL", async () => {
@@ -19189,6 +19235,30 @@ describe("classifyRisk", () => {
     for (const name of ["fireflies_share_meeting", "fireflies_revoke_meeting_access", "fireflies_move_meeting", "fireflies_create_soundbite", "fireflies_update_meeting_title"])
       expect(classifyRisk({ name, annotations: { readOnlyHint: true } }, "fireflies")).toBe("write");
     expect(classifyRisk({ name: "fireflies_share_meeting", annotations: { destructiveHint: true } }, "fireflies")).toBe("destructive");
+  });
+
+  it("classifies Superagent mutations whose names read like reads as writes", () => {
+    for (const name of ["list_findings", "get_finding", "get_context_score", "list_agent_alerts"])
+      expect(classifyRisk({ name }, "superagent")).toBe("read");
+    for (const name of [
+      "triage_finding",
+      "restore_agent_builtin_rule",
+      "scan_package",
+      "discover_application_inventory",
+      "trigger_dependency_updates",
+      "test_telemetry_endpoint",
+      "create_repository_report",
+      "set_agent_builtin_rule_mode",
+    ])
+      expect(classifyRisk({ name }, "superagent")).toBe("write");
+    for (const name of ["delete_finding", "delete_agent_rule", "revoke_agent_client"])
+      expect(classifyRisk({ name }, "superagent")).toBe("destructive");
+    // A provider write hint wins over a read-looking name; a read-only hint
+    // opts a tool outside list/get into reads.
+    expect(classifyRisk({ name: "get_finding", annotations: { readOnlyHint: false } }, "superagent")).toBe("write");
+    expect(classifyRisk({ name: "validate_agent_rule", annotations: { readOnlyHint: true } }, "superagent")).toBe("read");
+    // Without the provider rule, the generic classifier treats these as reads.
+    expect(classifyRisk({ name: "triage_finding" })).toBe("read");
   });
 
   it("classifies Enterpret run_graph_query as write despite readOnlyHint", () => {

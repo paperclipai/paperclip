@@ -1043,6 +1043,7 @@ const categoryBySlug = {
   sentry: "developer",
   similarweb: "analytics",
   stripe: "commerce",
+  superagent: "developer",
   supabase: "data",
   "ticket-tailor": "commerce",
   ticktick: "productivity",
@@ -1143,6 +1144,7 @@ const apiKeySpec = {
     prefix: "Bearer ",
     placeholder: "sbp_...",
   },
+  superagent: { name: "Authorization", prefix: "Bearer ", placeholder: "sk_live_..." },
   youcom: {
     name: "Authorization",
     prefix: "Bearer ",
@@ -1219,6 +1221,16 @@ const specialMethodsFor = (entry) => {
         key: "workspaceId", label: "Honcho workspace", type: "text", required: true,
         placeholder: "Workspace ID", validation: { maxLength: 512 },
       }] } : {}),
+    }),
+  ];
+  // Superagent's hosted server advertises protected-resource metadata, but its
+  // authorization server publishes no OAuth metadata, so organization API keys
+  // are the only working credential.
+  if (entry.slug === "superagent") return [
+    apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+      whenToUse: "Connect with a Superagent organization API key.",
+      guidanceMd: "Open Superagent Settings → API keys, create a separate key for Paperclip, and paste it below.",
+      consoleLinks: { keys: "https://www.superagent.sh/app/settings#api-keys", docs: entry.docsUrl },
     }),
   ];
   if (entry.slug === "zep") return [oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
@@ -1665,7 +1677,7 @@ for (const entry of researchManifest.entries) {
     schemaVersion: 1,
     slug: entry.slug,
     name: entry.name,
-    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers." })[entry.slug] ?? (entry.slug === "fireflies"
+    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", superagent: "Review security findings, start red-team reports, and score content and packages before agents trust them.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers." })[entry.slug] ?? (entry.slug === "fireflies"
       ? "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines."
       : `Connect ${entry.name}'s provider-hosted MCP server.`),
     categories: [categoryBySlug[entry.slug] ?? "other"],

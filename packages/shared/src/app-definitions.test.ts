@@ -273,7 +273,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(50);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(51);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -437,15 +437,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 53 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 54 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(53);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(54);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 53);
+    ).toHaveProperty("size", 54);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -817,7 +817,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(66);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(67);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1101,6 +1101,56 @@ describe("AppDefinition catalog", () => {
       });
       expect(method.warnings?.length).toBe(2);
     }
+  });
+  it("connects Superagent's hosted server with an organization API key only", () => {
+    const superagent = APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
+    expect(superagent).toMatchObject({
+      name: "Superagent",
+      categories: ["developer"],
+      urlPatterns: ["https://www.superagent.sh/*"],
+      docsUrl: "https://www.superagent.sh/docs/mcp",
+      branding: { logoUrl: "/brands/apps/superagent.png" },
+    });
+    // The hosted server publishes no OAuth authorization-server metadata, so
+    // there is no browser sign-in method and no OAuth redirect constraint.
+    expect(superagent.redirectConstraints).toBeUndefined();
+    expect(superagent.branding.darkLogoUrl).toBeUndefined();
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "superagent")).toBe(true);
+    expect(superagent.methods).toHaveLength(1);
+    const [apiKey] = superagent.methods;
+    expect(apiKey).toMatchObject({
+      key: "mcp-api-key",
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      // The bare superagent.sh domain redirects, and some clients drop POST
+      // bodies on redirect, so the www host is pinned.
+      defaults: { serverUrl: "https://www.superagent.sh/mcp" },
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+      consoleLinks: {
+        keys: "https://www.superagent.sh/app/settings#api-keys",
+        docs: "https://www.superagent.sh/docs/mcp",
+      },
+    });
+    expect(apiKey!.tenantFields ?? []).toEqual([]);
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({
+        key: "authorization",
+        type: "password",
+        placeholder: "sk_live_...",
+        secret: true,
+        required: true,
+      }),
+    ]);
+    expect(apiKey!.credentialFields?.[0]?.helperMd).toContain("not scoped");
+    expect(apiKey!.warnings).toEqual([
+      expect.stringContaining("consume organization credits"),
+    ]);
   });
   it("requires only reviewed provider or safety-boundary configuration on the default path", () => {
     const required = APP_DEFINITIONS.flatMap((app) =>

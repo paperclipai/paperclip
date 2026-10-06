@@ -2406,6 +2406,15 @@ export function classifyRisk(
     return "write";
   if (sourceTemplateKey === "posthog" && normalizedToolName === "exec")
     return "destructive";
+  // Superagent mirrors its REST API, and several mutations use verbs the
+  // generic classifier reads as reads: billable triage_finding, scans,
+  // restore_agent_builtin_rule, and credential-revoking revoke_agent_client.
+  // Only list/get tools and tools the provider marks read-only are reads.
+  if (sourceTemplateKey === "superagent") {
+    if (verbMatches(tool.name, "delete|remove|destroy|revoke")) return "destructive";
+    if (annotations.readOnlyHint === false || annotations.writeHint === true) return "write";
+    return /^(list|get)-/.test(normalizedToolName) || annotations.readOnlyHint === true ? "read" : "write";
+  }
   if (
     sourceTemplateKey === "shopify" &&
     SHOPIFY_DESTRUCTIVE_TOOLS.has(normalizedToolName)

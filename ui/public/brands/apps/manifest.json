@@ -410,6 +410,12 @@
       "localAsset": "/brands/apps/supabase.svg"
     },
     {
+      "slug": "superagent",
+      "provider": "Superagent",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/superagent.png"
+    },
+    {
       "slug": "telegram",
       "provider": "Telegram",
       "catalogVisible": true,
