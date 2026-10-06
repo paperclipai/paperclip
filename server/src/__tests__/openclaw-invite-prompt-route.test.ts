@@ -126,7 +126,7 @@ function createApp(actor: Record<string, unknown>, db: Record<string, unknown>) 
   return app;
 }
 
-describe.sequential("POST /companies/:companyId/openclaw/invite-prompt", () => {
+describe("POST /companies/:companyId/openclaw/invite-prompt", () => {
   const companyBranding = {
     name: "Acme AI",
     logoAssetId: "logo-1",

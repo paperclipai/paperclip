@@ -7,6 +7,8 @@ import {
   type RemoteMcpConnectorId,
 } from "./remote-mcp-connectors.js";
 import composioCatalog from "./composio-search-catalog.json" with { type: "json" };
+import arcadeCatalog from "./arcade-app-catalog.json" with { type: "json" };
+import { aggregatorAppIdentity } from "./aggregator-app-catalog.js";
 import { prepareConnectionSearch, scoreConnectionSearch } from "./connection-search.js";
 
 export const AGGREGATOR_PRIORITY = [
@@ -211,6 +213,19 @@ for (const [toolkit, name] of composioCatalog.toolkits as Array<[string, string]
       providers: { composio: composioCatalog.verifiedAt },
       evidenceUrls: { composio: evidenceUrl },
     });
+  }
+}
+
+for (const app of arcadeCatalog.apps) {
+  const existing = AGGREGATOR_SUPPORT_INDEX.find((entry) =>
+    entry.slug === app.slug || aggregatorAppIdentity(entry.name) === aggregatorAppIdentity(app.name));
+  if (existing) {
+    existing.aliases = [...new Set([...existing.aliases, app.slug, ...app.aliases])];
+    existing.providers = { ...existing.providers, arcade: arcadeCatalog.verifiedAt };
+    existing.evidenceUrls = { ...existing.evidenceUrls, arcade: app.docsUrl };
+  } else {
+    AGGREGATOR_SUPPORT_INDEX.push({ slug: app.slug, name: app.name, aliases: app.aliases,
+      providers: { arcade: arcadeCatalog.verifiedAt }, evidenceUrls: { arcade: app.docsUrl } });
   }
 }
 

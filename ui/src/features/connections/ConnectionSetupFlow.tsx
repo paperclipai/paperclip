@@ -1,4 +1,9 @@
+import { StepHeader } from "./ConnectionSetupHeader";
+export { StepHeader } from "./ConnectionSetupHeader";
+import { ConnectionInstructionsEditor } from "./ConnectionInstructions";
+import { connectionInstructionsConfig, defaultConnectionAgentInstructions, type ConnectionAgentInstructions } from "@paperclipai/shared";
 import { RemoteMcpProductionSetup } from "./remote-mcp/RemoteMcpProductionSetup";
+import { findAggregatorApp } from "@paperclipai/shared/aggregator-app-catalog";
 import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
 import { ConnectionChoiceList } from "./ConnectionChoiceList";
@@ -502,6 +507,11 @@ export function readConnectionIntentOAuthOutcome(
 }
 
 export interface ConnectionSetupFlowProps {
+  /** Optional settings composed into the standard credential form above its footer. */
+  additionalSettings?: ReactNode;
+  /** Provider prerequisites shown before credentials in the standard setup flow. */
+  connectionSettings?: ReactNode;
+  additionalSettingsValid?: boolean;
   upstreamServiceName?: string;
   aiConnection?: import("@paperclipai/shared").AiConnectionBinding;
   /** Provider-specific authentication inside the existing access/setup shell. Undefined retains the standard credential form. */
@@ -554,12 +564,16 @@ export function ConnectionSetupFlow(props: ConnectionSetupFlowProps = {}) {
   }
   if (!props.byoOnly && (props.credentialSource ?? "paperclip_vault") === "paperclip_vault"
     && isRemoteMcpConnectorId(provider) && (!method || isRemoteMcpConnectorMethod(provider, method))) {
-    return <RemoteMcpProductionSetup key={`${interactionId || "page"}:${provider}`} {...props} interactionId={interactionId} providerId={provider} connection={existing.data} />;
+    const target = findAggregatorApp(provider, searchParams.get("targetToolkit"));
+    return <RemoteMcpProductionSetup key={`${interactionId || "page"}:${provider}`} {...props} upstreamServiceName={props.upstreamServiceName ?? target?.name} interactionId={interactionId} providerId={provider} connection={existing.data} />;
   }
   return <StandardConnectionSetupFlow {...props} />;
 }
 
 function StandardConnectionSetupFlow({
+  additionalSettings,
+  connectionSettings,
+  additionalSettingsValid = true,
   byoOnly = false,
   credentialSource = "paperclip_vault",
   host = "page",
@@ -669,6 +683,7 @@ function StandardConnectionSetupFlow({
   const [curatedOAuthClientSecret, setCuratedOAuthClientSecret] = useState("");
   const [vercelConnector, setVercelConnector] = useState("");
   const [connectionMethodKey, setConnectionMethodKey] = useState(aiConnection && aiConnection.mode !== "responsible_user" ? `ai-${aiConnection.method}` : "");
+  const [instructionDraft, setInstructionDraft] = useState<{ slug: string; value: ConnectionAgentInstructions } | null>(null);
   const [configValues, setConfigValues] = useState<Record<string, string | boolean>>({});
   const [googleSheetsLinks, setGoogleSheetsLinks] = useState("");
   const [googleSheetsError, setGoogleSheetsError] = useState<string | null>(null);
@@ -1207,17 +1222,32 @@ function StandardConnectionSetupFlow({
     }
   };
 
+  const instructionConnection = resumeConnection ?? reconnectConnection ?? resumableOAuthConnection;
+  const instructionTemplate = entry?.agentInstructions;
+  const instructionValue = entry && instructionTemplate
+    ? instructionDraft?.slug === entry.slug ? instructionDraft.value
+      : instructionConnection ? instructionConnection.agentInstructions ?? { ...defaultConnectionAgentInstructions(instructionTemplate)!, enabled: false }
+      : defaultConnectionAgentInstructions(instructionTemplate)
+    : null;
+  const instructionsValid = !instructionValue || Boolean(instructionValue.text.trim());
+
   const oauthStartMutation = useMutation({
     // Retry/reconnect reads identity from the durable connection. Provider is
     // not identity: an organization Notion connection must stay organization-
     // scoped, while a personal one must put its token back on that user grant.
-    mutationFn: (connection: ToolConnection) => toolsApi.startOAuth(connection.id, {
+    mutationFn: async (connection: ToolConnection) => {
+      // Persist before navigation, including retries that reuse an existing OAuth draft.
+      if (instructionValue && JSON.stringify(instructionValue) !== JSON.stringify(connection.agentInstructions)) {
+        await toolsApi.updateConnection(connection.id, { agentInstructions: instructionValue });
+      }
+      return toolsApi.startOAuth(connection.id, {
       asCurrentUser: connection.credentialPolicy === "per_user",
       ...(connection.credentialPolicy === "per_agent"
         ? { asAgentId: configuredAgentIdentity(connection) ?? [...installAgentIds][0] }
         : {}),
       ...(connectionIntentId ? { interactionId: connectionIntentId } : {}),
-    }),
+      });
+    },
     onSuccess: (start) => void prepareAndOpenOAuth(start),
     onError: (error) => {
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
@@ -1279,6 +1309,7 @@ function StandardConnectionSetupFlow({
         );
         result = await toolsApi.connectApp(selectedCompanyId!, {
           galleryKey: connectEntry.slug,
+          ...(instructionValue ? { agentInstructions: instructionValue } : {}),
           ...(connectionMethodKey ? { connectionMethodKey } : {}),
           name: connectionName,
           credentialSource,
@@ -1619,16 +1650,12 @@ function StandardConnectionSetupFlow({
 
   useEffect(() => {
     const savedConnection = resumeConnection ?? reconnectConnection;
-    const savedOAuth = savedConnection?.config?.oauth as Record<string, unknown> | undefined;
     if (
       !savedConnection
       || !entry
-      || (savedConnection.status !== "draft" && savedOAuth?.clientRegistrationSource !== "manual")
       || hydratedResumeConnectionIdRef.current === savedConnection.id
     ) return;
-    const storedConfig = savedConnection.config && typeof savedConnection.config === "object"
-      ? savedConnection.config
-      : {};
+    const storedConfig = connectionInstructionsConfig(savedConnection);
     const storedSource = typeof storedConfig.sourceTemplateKey === "string"
       ? storedConfig.sourceTemplateKey
       : null;
@@ -1714,6 +1741,7 @@ function StandardConnectionSetupFlow({
       const finished = await toolsApi.finishApp(selectedCompanyId!, connected.connectionId, {
         enabledCatalogEntryIds: enabledIds,
         askFirstCatalogEntryIds: askFirstIds,
+        ...(instructionValue ? { agentInstructions: instructionValue } : {}),
         access: selection,
         ...(requestedAgentId ? { preserveExistingAccess: true } : {}),
       });
@@ -1936,6 +1964,7 @@ function StandardConnectionSetupFlow({
   // same controls the deleted Access step owned, inline and never blocking.
   const renderConnectionDefaults = step === "key" ? (
     (extra?: ReactNode, forceOpen?: boolean) => (
+    <>
     <ConnectionAccessDefaults
       key="connection-defaults"
       extra={extra}
@@ -1975,6 +2004,9 @@ function StandardConnectionSetupFlow({
       preserveAgentAccess={Boolean(automaticOAuthEntry && (resumableOAuthConnection || reconnectConnection))}
       disabled={connectMutation.isPending || oauthStartMutation.isPending}
     />
+    {entry && instructionTemplate && instructionValue && <div className="mt-6"><ConnectionInstructionsEditor provider={entry.name} template={instructionTemplate} value={instructionValue} onChange={(value) => setInstructionDraft({ slug: entry.slug, value })} disabled={connectMutation.isPending || oauthStartMutation.isPending} /></div>}
+    {additionalSettings && <div className="mt-6">{additionalSettings}</div>}
+    </>
     )
   ) : null;
   // A provider can advertise registration and still refuse this deployment's
@@ -2054,6 +2086,7 @@ function StandardConnectionSetupFlow({
           </div>
         ) : null}
         defaults={curatedOAuthDefaults}
+        settingsValid={additionalSettingsValid && instructionsValid}
         onOpenAuthorization={openAuthorizationTab}
         onRetry={async () => {
           const firstAttempt = !directOAuthAccessConfirmedRef.current;
@@ -2247,7 +2280,7 @@ function StandardConnectionSetupFlow({
                   ? "Choose a reviewed app to connect through Vercel."
                   : "Pick the app you want your agents to use."
                 : stepLabels.length <= 1
-                  ? "Connect now — permissions and access are yours to change afterwards."
+                  ? undefined
                   : `Step ${stepIndex + 1} of ${stepLabels.length}`
             }
             step={step}
@@ -2265,6 +2298,8 @@ function StandardConnectionSetupFlow({
           />
         )
       )}
+
+      {step === "key" && connectionSettings && <div className="mx-auto mb-6 max-w-xl">{connectionSettings}</div>}
 
       {step === "gallery" && (
         <GalleryStep
@@ -2379,6 +2414,7 @@ function StandardConnectionSetupFlow({
         </div>
       ) : step === "key" && entry && credentialStep !== undefined ? credentialStep : step === "key" && entry ? (
         <KeyStep
+          settingsValid={additionalSettingsValid && instructionsValid}
           entry={entry}
           error={connectMutation.isError ? (connectMutation.error instanceof Error ? connectMutation.error.message : "Please check your key and try again.") : null}
           values={credentials}
@@ -2559,76 +2595,6 @@ function StandardConnectionSetupFlow({
   );
 }
 
-export function StepHeader({
-  title,
-  headingRef,
-  subtitle,
-  step,
-  activeIndex,
-  labels,
-  appIdentity,
-  unverifiedHost,
-  onCancel,
-}: {
-  title?: string;
-  headingRef?: Ref<HTMLHeadingElement>;
-  subtitle: string;
-  step: Step;
-  activeIndex: number;
-  labels: string[];
-  appIdentity?: { name: string; logoUrl: string | null; darkLogoUrl?: string | null };
-  /**
-   * Host of an unknown remote MCP server. Present for the whole generic flow so
-   * the operator can see whose server they are configuring at every step, not
-   * just on the screen where they pasted the address.
-   */
-  unverifiedHost?: string | null;
-  onCancel?: () => void;
-}) {
-  return (
-    <div className="mb-6">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-3">
-          {appIdentity ? (
-            <AppLogo name={appIdentity.name} logoUrl={appIdentity.logoUrl} darkLogoUrl={appIdentity.darkLogoUrl} size={44} />
-          ) : null}
-          <div>
-            <h1 ref={headingRef} tabIndex={headingRef ? -1 : undefined} className="text-2xl font-bold tracking-tight outline-none">
-              {title ?? (appIdentity ? `Connect ${appIdentity.name}` : "Connect your own MCP server")}
-            </h1>
-            <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
-            {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-2" /> : null}
-          </div>
-        </div>
-        {onCancel && <Button variant="ghost" size="sm" onClick={onCancel}>
-          Cancel
-        </Button>}
-      </div>
-      {step !== "gallery" && labels.length > 1 && (
-        // A landmark with stable hooks, so the step model can be read without
-        // guessing at Tailwind classes. The dots are decoration — the label
-        // line below already says the same thing, so announcing both would
-        // read every step name twice.
-        <nav className="mt-4" aria-label="Setup progress" data-testid="wizard-stepper">
-          <ol className="flex gap-2" aria-hidden="true">
-            {labels.map((label, i) => (
-              <li
-                key={label}
-                data-testid="wizard-step-dot"
-                data-step-active={i === activeIndex ? "true" : undefined}
-                className={cn("h-1 w-20 rounded-full", i <= activeIndex ? "bg-foreground" : "bg-border")}
-              />
-            ))}
-          </ol>
-          <div className="mt-2 text-xs text-muted-foreground" data-testid="wizard-step-labels">
-            {labels.join("   ·   ")}
-          </div>
-        </nav>
-      )}
-    </div>
-  );
-}
-
 export function OAuthConnectStateScreen({
   entry,
   identity,
@@ -2642,6 +2608,7 @@ export function OAuthConnectStateScreen({
   guidance,
   defaults,
   onRetry,
+  settingsValid = true,
   onOpenAuthorization,
   onBack,
   onCancel,
@@ -2673,6 +2640,7 @@ export function OAuthConnectStateScreen({
   guidance?: ReactNode;
   /** The stated default and its Advanced disclosure (PAP-659 C0). */
   defaults?: ReactNode;
+  settingsValid?: boolean;
   onOpenAuthorization?: () => void;
   onRetry: () => void;
   onBack: () => void;
@@ -2760,7 +2728,7 @@ export function OAuthConnectStateScreen({
 
         <div className="mt-6 flex items-center gap-2">
           {phase === "error" || phase === "entry" ? (
-            <Button type="button" onClick={onRetry}>
+            <Button type="button" onClick={onRetry} disabled={!settingsValid}>
               {phase === "entry"
                 ? resuming ? `Finish with ${serverName}` : `Continue to ${serverName}`
                 : "Try again"}
@@ -3417,6 +3385,7 @@ function SegmentedOption({
 }
 
 function KeyStep({
+  settingsValid = true,
   entry,
   error,
   values,
@@ -3442,6 +3411,7 @@ function KeyStep({
   onBack,
   onConnect,
 }: {
+  settingsValid?: boolean;
   entry: AppDefinition;
   error?: string | null;
   values: Record<string, string>;
@@ -3672,7 +3642,7 @@ function KeyStep({
 
   if (isGoogleSheetsRobotMethod(entry, method)) {
     const parsed = parseGoogleSheetIds(googleSheetsLinks);
-    const canConnect = !unavailable && Boolean(robotEmail) && googleSheetsLinks.trim().length > 0;
+    const canConnect = settingsValid && !unavailable && Boolean(robotEmail) && googleSheetsLinks.trim().length > 0;
     return (
       <div className="mx-auto max-w-xl">
         <div className="space-y-6">
@@ -3838,9 +3808,9 @@ function KeyStep({
                 placeholder={field.type === "text" && field.secret === false ? field.placeholder : "••••••••••••••••"}
                 className="mt-2 h-11 font-mono"
               />
-              <p className="mt-2 text-xs text-muted-foreground">
-                {field.helperMd ?? "Create a key with read and write permissions for the resources your agents need. Paperclip cannot add permissions to an existing key."}
-              </p>
+              {field.helperMd && <p className="mt-2 text-xs text-muted-foreground">
+                {field.helperMd}
+              </p>}
               {field.helpUrl && (
                 <a
                   href={field.helpUrl}
@@ -3864,7 +3834,7 @@ function KeyStep({
         <Button variant="ghost" onClick={onBack} disabled={submitting}>
           Back
         </Button>
-        <Button onClick={onConnect} disabled={submitting || !hasMethodSelection || !allFilled || !oauthClientFilled || !vercelConnectorFilled || !configFilled || !configRequirementMet}>
+        <Button onClick={onConnect} disabled={submitting || !settingsValid || !hasMethodSelection || !allFilled || !oauthClientFilled || !vercelConnectorFilled || !configFilled || !configRequirementMet}>
           {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           {submitting
             ? "Checking…"
@@ -4039,9 +4009,12 @@ function MethodConfigField({
           value={typeof value === "string" ? value : ""}
           onChange={(event) => onChange(event.target.value)}
           placeholder={field.placeholder}
+          aria-label={field.label}
+          maxLength={field.validation?.maxLength}
           className="mt-2 h-11"
         />
       )}
+      {field.required && (typeof value !== "string" || !value.trim()) && <p className="mt-2 text-xs text-muted-foreground">{field.label} is required.</p>}
       {field.helperMd && <p className="mt-2 text-xs text-muted-foreground">{field.helperMd}</p>}
     </div>
   );
@@ -4390,7 +4363,7 @@ export function connectionDefaultSummarySentence(input: {
 }
 
 /**
- * The stated default plus the collapsed Advanced disclosure that replaced the
+ * The stated default plus the collapsed Change disclosure that replaced the
  * Access step. It sits in the same place on every connector and never blocks
  * the primary action: opening it is optional, and everything inside it can
  * also be changed on the Permissions tab after connecting.
@@ -4428,38 +4401,30 @@ export function ConnectionAccessDefaults({
   const [open, setOpen] = useState(false);
   const expanded = open || forceOpen;
   return (
-    <div className="mt-6 rounded-lg border border-border bg-muted/30 px-4 py-3">
+    <Collapsible open={expanded} onOpenChange={setOpen} className="mt-6 rounded-lg border border-border bg-muted/30 px-4 py-3">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <p className="text-sm text-muted-foreground">{sentence}</p>
-        <Button
+        <CollapsibleTrigger asChild><Button
           type="button"
           variant="link"
           className="h-auto p-0 text-xs font-semibold underline underline-offset-2"
-          aria-expanded={expanded}
           disabled={disabled}
-          onClick={() => setOpen((previous) => !previous)}
         >
           Change
-        </Button>
+        </Button></CollapsibleTrigger>
       </div>
       {(notice ?? []).map((reason) => (
         <p key={reason} className="mt-2 text-xs text-muted-foreground">{reason}</p>
       ))}
-      <Collapsible open={expanded} onOpenChange={setOpen}>
-        <CollapsibleTrigger className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground">
-          {expanded ? <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" /> : <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />}
-          Advanced
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="mt-3 space-y-6">
-            {extra}
-            {agents
-              ? <AccessStepContent {...accessProps} agents={agents} bare hideFooter submitLabel="" onBack={() => {}} onContinue={() => {}} />
-              : <AccessStep {...accessProps} companyId={companyId} bare hideFooter submitLabel="" onBack={() => {}} onContinue={() => {}} />}
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-    </div>
+      <CollapsibleContent>
+        <div className="mt-3 space-y-6">
+          {extra}
+          {agents
+            ? <AccessStepContent {...accessProps} agents={agents} bare hideFooter submitLabel="" onBack={() => {}} onContinue={() => {}} />
+            : <AccessStep {...accessProps} companyId={companyId} bare hideFooter submitLabel="" onBack={() => {}} onContinue={() => {}} />}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

@@ -2,8 +2,10 @@ import type { heartbeatRuns } from "@paperclipai/db";
 import { readRunCancellation } from "./run-cancellation.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
+import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
+import { readNativeModelRejectionDiagnostic } from "./native-runtime/native-provider-failure.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Context = Record<string, string | number | boolean>;
@@ -165,12 +167,26 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
   if (typeof toolInventoryComplete === "boolean") execution.acpToolInventoryComplete = toolInventoryComplete;
   const restoreFailure = read(result, "workspaceRestoreFailure");
   const restoreCode = WORKSPACE_RESTORE_FAILURE_CODES.find((code) => code === restoreFailure);
-  if (restoreCode) execution.workspaceRestoreFailure = restoreCode;
+  if (restoreCode) {
+    execution.workspaceRestoreFailure = restoreCode;
+    const diagnostic = sanitizeWorkspaceRestoreDiagnostic(read(result, "workspaceRestoreDiagnostic"));
+    if (diagnostic) {
+      execution.workspaceRestorePhase = diagnostic.phase;
+      execution.workspaceRestoreErrorCode = diagnostic.errorCode;
+      if (diagnostic.step) execution.workspaceRestoreStep = diagnostic.step;
+      if (diagnostic.httpStatus !== undefined) execution.workspaceRestoreHttpStatus = diagnostic.httpStatus;
+      if (diagnostic.exitCode !== undefined) execution.workspaceRestoreExitCode = diagnostic.exitCode;
+      if (diagnostic.gitCommand) execution.workspaceRestoreGitCommand = diagnostic.gitCommand;
+      if (diagnostic.gitFailureKind) execution.workspaceRestoreGitFailureKind = diagnostic.gitFailureKind;
+    }
+  }
   const adapter = scalars(options.adapterErrorMeta, [
     "category", "phase", "errorName", "acpCode", "causeMessage", "retryable",
     "stackPreview", "status", "statusCode", "requestId",
   ]);
   const provider = scalars(read(result, "terminalSessionFailure"), ["category", "title", "details"]);
+  const nativeProviderFailure = readNativeModelRejectionDiagnostic(read(result, "nativeProviderFailure"));
+  if (nativeProviderFailure) Object.assign(provider, nativeProviderFailure);
   const truncatedFields: string[] = [];
   const providerTruncation = read(read(result, "terminalSessionFailure"), "truncatedFields");
   if (Array.isArray(providerTruncation)) {

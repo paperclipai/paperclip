@@ -75,6 +75,19 @@ export interface ProjectManagedByPlugin {
   updatedAt: Date;
 }
 
+export interface ProjectDiscoverySummary {
+  id: string;
+  name: string;
+  status: string;
+  description: string | null;
+  descriptionTruncated: boolean;
+}
+
+export interface ProjectDiscoveryPage {
+  projects: ProjectDiscoverySummary[];
+  nextCursor: string | null;
+}
+
 export interface Project {
   id: string;
   companyId: string;

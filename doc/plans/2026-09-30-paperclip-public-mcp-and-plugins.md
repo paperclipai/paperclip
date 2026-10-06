@@ -355,7 +355,7 @@ Current local qualification:
   exact source fingerprints and costs.
 
 This is a usable opt-in first release for existing teams. Applying Core updates
-adds migrations 0294, 0295 and 0296 plus disabled MCP code. An operator must enable
+adds migrations 0301 through 0304 plus disabled MCP code. An operator must enable
 **Settings → Experimental → Assistant connections (MCP)**, configure the public URL, and expose the
 authenticated instance over HTTPS. A team member can then connect Codex or Claude
 Code directly, consent to a company, review work, delegate tasks as themselves,

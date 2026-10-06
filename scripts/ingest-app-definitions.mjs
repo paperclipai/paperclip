@@ -1130,6 +1130,10 @@ const specialMethodsFor = (entry) => {
     apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
       guidanceMd: `Open the ${entry.name} dashboard, create an API key for the account agents should use, and paste it below.`,
       consoleLinks: { keys: entry.slug === "mem0" ? "https://app.mem0.ai/dashboard/api-keys" : "https://app.honcho.dev", docs: entry.docsUrl },
+      ...(entry.slug === "honcho" ? { tenantFields: [{
+        key: "workspaceId", label: "Honcho workspace", type: "text", required: true,
+        placeholder: "Workspace ID", validation: { maxLength: 512 },
+      }] } : {}),
     }),
   ];
   if (entry.slug === "zep") return [oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
@@ -1753,6 +1757,21 @@ for (const app of apps) {
         : { key: "write", label: "Read and write", description: "Query and change the databases you authorize in PlanetScale." };
     }
   }
+}
+
+// Reviewed instruction templates are authored in each app's definition. Keep
+// that optional capability intact when regenerating its transport/auth fields.
+for (const app of apps) {
+  const definitionPath = path.join(out, `${app.slug}.json`);
+  if (!fs.existsSync(definitionPath)) continue;
+  const { agentInstructions: template } = JSON.parse(fs.readFileSync(definitionPath, "utf8"));
+  if (template === undefined) continue;
+  if (!template || typeof template.id !== "string" || !template.id.trim() || template.id.length > 160
+    || !Number.isInteger(template.version) || template.version < 1
+    || typeof template.text !== "string" || !template.text.trim() || template.text.length > 2000) {
+    throw new Error(`${app.slug}: invalid agent instruction template`);
+  }
+  app.agentInstructions = template;
 }
 
 const validateApp = (app) => {

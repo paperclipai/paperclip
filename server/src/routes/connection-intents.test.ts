@@ -37,6 +37,8 @@ describe("runtime connection MCP contract", () => {
           type: "object",
           properties: {
             service: { type: "string" },
+            connectionId: { type: "string", description: "Reuse this saved connection" },
+            toolNames: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 20, uniqueItems: true, description: "Exact indexed tools needed by this agent" },
             targetService: { type: "string", description: "App slug returned by search only when the user explicitly named this external provider" },
             selectionInteractionId: {
               type: "string",

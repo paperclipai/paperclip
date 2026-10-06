@@ -122,6 +122,6 @@ export function fastModeAvailable(agent: ComposerAgent, model: string): boolean 
 }
 
 export function modelLabel(agent: ComposerAgent, model: string): string {
-  if (!model) return agent.defaultLabel ?? "Harness default";
+  if (!model) return agent.defaultLabel ?? "Default";
   return agent.models.find((option) => option.id === model)?.label ?? model;
 }

@@ -333,7 +333,7 @@ describe("OpenCodeServerDriver", () => {
           headers: { "Content-Type": "application/json" },
         });
       if (url.pathname === "/global/health")
-        return json({ healthy: true, version: "1.18.32" });
+        return json({ healthy: true, version: "1.18.34" });
       if (url.pathname === "/event") {
         return new Response(
           new ReadableStream<Uint8Array>({
@@ -705,7 +705,7 @@ describe("OpenCodeServerDriver", () => {
       output: 2,
       costUsd: 0.001,
       provider: "openrouter",
-      driverVersion: "1.18.32",
+      driverVersion: "1.18.34",
     });
     await session.interrupt?.({ turnId: turn.turnId });
     const snapshot = await session.snapshot();
@@ -2151,6 +2151,86 @@ describe("OpenCodeServerDriver", () => {
       "This is the complete substantive answer emitted after the accepted completion tool call.",
     );
     await session.close({ reason: "test" });
+  });
+
+  it.each(["session.idle", "session.status", "session.error", "aborted"])("settles accepted completion before a racing %s event", async terminalType => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-completion-race-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-completion-race-workspace-"));
+    roots.push(root, workspace);
+    let stream: ReadableStreamDefaultController<Uint8Array>;
+    let releaseFeedback!: () => void;
+    let feedbackStarted!: () => void;
+    const started = new Promise<void>(resolve => { feedbackStarted = resolve; });
+    const release = new Promise<void>(resolve => { releaseFeedback = resolve; });
+    const feedback = "Accepted. Keep the exact saved document link in the final response.";
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+      fetch: async (input, init) => String(input).endsWith("/event")
+        ? new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }), { headers: { "Content-Type": "text/event-stream" } })
+        : fetch(input, init),
+      completionFeedback: async () => { feedbackStarted(); await release; return feedback; },
+    });
+    const session = await driver.openSession({ runId: "completion-race", normalizedSessionId: "completion-race", workingDirectory: workspace });
+    try {
+      const events = collectTurnEvents(session.events());
+      await session.startTurn({ message: { role: "user", text: "completion-feedback" } });
+      await started;
+      stream!.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: terminalType === "aborted" ? "session.error" : terminalType, id: "terminal-during-feedback", properties: { sessionID: session.ids().providerSessionId, status: { type: "idle" }, error: terminalType === "aborted" ? { name: "MessageAbortedError", data: { message: "Aborted" } } : { name: "FixtureError", message: "Provider ended during feedback." } } })}\n\n`));
+      // Drain the queued SSE frame before releasing the controller response.
+      await new Promise<void>(resolve => setImmediate(resolve));
+      releaseFeedback();
+      const observed = await events;
+      const proposed = observed.findIndex(event => event.eventType === "run.result.proposed");
+      const completed = observed.findIndex(event => event.eventType === "item.completed" && event.payload.kind === "dynamicToolCall" && (event.payload.item as { result?: unknown })?.result === feedback);
+      const terminal = observed.findIndex(event => TURN_TERMINAL_EVENT_TYPES.has(event.eventType));
+      expect(proposed).toBeGreaterThanOrEqual(0);
+      expect(completed).toBeGreaterThan(proposed);
+      expect(terminal).toBeGreaterThan(completed);
+      expect(observed.filter(event => event.eventType === "run.result.proposed")).toHaveLength(1);
+      expect((await session.snapshot()).semanticResult).not.toBeNull();
+      const sessionRoots = (await readdir(root, { withFileTypes: true })).filter(entry => entry.isDirectory());
+      await expect.poll(async () => JSON.parse(await readFile(join(root, sessionRoots[0]!.name, "data/fake-completion-feedback.json"), "utf8"))).toMatchObject([
+        { result: { content: [{ text: expect.stringContaining(feedback) }] } },
+      ]);
+    } finally {
+      releaseFeedback();
+      await session.close({ reason: "test complete" });
+    }
+  });
+
+  it.each(["close", "interrupt"] as const)("settles bound completion before explicit %s", async operation => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-completion-stop-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-completion-stop-workspace-"));
+    roots.push(root, workspace);
+    let releaseFeedback!: () => void, feedbackStarted!: () => void;
+    const started = new Promise<void>(resolve => { feedbackStarted = resolve; });
+    const release = new Promise<void>(resolve => { releaseFeedback = resolve; });
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+      completionFeedback: async () => { feedbackStarted(); await release; return "Accepted completion."; },
+    });
+    const session = await driver.openSession({ runId: "completion-stop", normalizedSessionId: "completion-stop", workingDirectory: workspace });
+    try {
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      await started;
+      let stopped = false;
+      const stop = session[operation]({ reason: "fixture stop" }).then(() => { stopped = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      releaseFeedback();
+      await stop;
+      expect((await session.snapshot()).semanticResult).not.toBeNull();
+      const transcript = await session.transcript();
+      expect(transcript.events.filter(event => event.eventType === "run.result.proposed")).toHaveLength(1);
+      expect(transcript.events.some(event => event.eventType === "item.completed" && (event.payload.item as { is_error?: boolean })?.is_error)).toBe(false);
+    } finally {
+      releaseFeedback();
+      await session.close({ reason: "test complete" });
+    }
   });
 
   it("rejects malformed and oversized SSE frames", async () => {

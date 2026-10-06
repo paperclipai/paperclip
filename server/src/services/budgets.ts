@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { recordAgentStatusEvent } from "./resource-lifecycle-events.js";
 import {
   agents,
   approvals,
@@ -214,15 +215,15 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
   async function pauseScopeForBudget(policy: PolicyRow) {
     const now = new Date();
     if (policy.scopeType === "agent") {
-      await db
-        .update(agents)
-        .set({
-          status: "paused",
-          pauseReason: "budget",
-          pausedAt: now,
-          updatedAt: now,
-        })
-        .where(and(eq(agents.id, policy.scopeId), inArray(agents.status, ["active", "idle", "running", "error"])));
+      await db.transaction(async tx => {
+        const [agent] = await tx.select().from(agents)
+          .where(and(eq(agents.id, policy.scopeId), eq(agents.companyId, policy.companyId))).for("update");
+        if (agent && ["active", "idle", "running", "error"].includes(agent.status)) {
+          await tx.update(agents).set({ status: "paused", pauseReason: "budget", pausedAt: now, updatedAt: now })
+            .where(eq(agents.id, agent.id));
+          await recordAgentStatusEvent(tx as unknown as Db, agent.companyId, agent.id, agent.status, "paused");
+        }
+      });
       return;
     }
 
@@ -261,15 +262,15 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
   async function resumeScopeFromBudget(policy: PolicyRow) {
     const now = new Date();
     if (policy.scopeType === "agent") {
-      await db
-        .update(agents)
-        .set({
-          status: "idle",
-          pauseReason: null,
-          pausedAt: null,
-          updatedAt: now,
-        })
-        .where(and(eq(agents.id, policy.scopeId), eq(agents.pauseReason, "budget")));
+      await db.transaction(async tx => {
+        const [agent] = await tx.select().from(agents)
+          .where(and(eq(agents.id, policy.scopeId), eq(agents.companyId, policy.companyId))).for("update");
+        if (agent?.status === "paused" && agent.pauseReason === "budget") {
+          await tx.update(agents).set({ status: "idle", pauseReason: null, pausedAt: null, updatedAt: now })
+            .where(eq(agents.id, agent.id));
+          await recordAgentStatusEvent(tx as unknown as Db, agent.companyId, agent.id, agent.status, "idle");
+        }
+      });
       return;
     }
 

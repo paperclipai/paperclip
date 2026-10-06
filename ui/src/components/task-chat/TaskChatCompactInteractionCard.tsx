@@ -1927,18 +1927,12 @@ export function TaskChatCompactInteractionCard({
 
   if (interaction.kind === "connection_intent") {
     return (
-      <InteractionShell
-        interaction={interaction}
-        audienceLabel={audienceLabel}
-        presentation={presentation}
-      >
         <ConnectionIntentInteractionBody
           interaction={interaction}
           currentUserId={currentUserId}
           addresseeLabel={addresseeLabel ?? "the addressed user"}
           addresseeName={interaction.addresseeUserId ? userLabelMap?.get(interaction.addresseeUserId) : undefined}
         />
-      </InteractionShell>
     );
   }
 

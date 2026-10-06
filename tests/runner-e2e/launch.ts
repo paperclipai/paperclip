@@ -52,6 +52,7 @@ import {
 } from "./types.js";
 import { assertRunnerE2EPrerequisites } from "./prerequisites.js";
 import { assertNativeCompletionSelection, prepareNativeCompletionPreflight, NATIVE_COMPLETION_PREFLIGHT_ENV } from "./native-completion-admission.js";
+import { assertNativeInstructionSelection, prepareNativeInstructionPreflight, NATIVE_INSTRUCTION_PREFLIGHT_ENV, NATIVE_INSTRUCTION_SUITE } from "./native-instruction-consolidation.js";
 import { prepareStockHarnessPreflight, STOCK_PREFLIGHT_ENV } from "./stock-harness-admission.js";
 
 import {
@@ -1087,6 +1088,7 @@ async function main() {
   // profiles remain discoverable, but cannot reach a provider.
   assertRunnerE2EPrerequisites(executions);
   assertNativeCompletionSelection(executions);
+  assertNativeInstructionSelection(executions);
   const campaignId = cleanId(
     process.env.PAPERCLIP_E2E_CAMPAIGN_ID ??
       `local-${new Date().toISOString().replace(/[:.]/g, "-")}`,
@@ -1095,6 +1097,9 @@ async function main() {
   await mkdir(summaryDir, { recursive: true });
   if (executions.some(execution => execution.suite.id === "native-completion")) {
     process.env[NATIVE_COMPLETION_PREFLIGHT_ENV] = prepareNativeCompletionPreflight(summaryDir);
+  }
+  if (executions.some(execution => execution.suite.id === NATIVE_INSTRUCTION_SUITE)) {
+    process.env[NATIVE_INSTRUCTION_PREFLIGHT_ENV] = prepareNativeInstructionPreflight(summaryDir);
   }
   if (executions.some(execution => execution.suite.id === "stock-harness")) {
     process.env[STOCK_PREFLIGHT_ENV] = prepareStockHarnessPreflight(summaryDir);

@@ -107,6 +107,28 @@ describe("stopped task recovery notice", () => {
     expect(onRetried).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.",
+    "The selected model is not supported by the current ChatGPT connection. Choose a supported model or a compatible AI connection.",
+  ])("shows the model rejection and repair action without expanding run logs: %s", async (runError) => {
+    vi.mocked(activityApi.runsForIssue).mockResolvedValue([{ runId: "model-run", agentId: "agent",
+      status: "failed", errorCode: "native_provider_model_rejected" }] as never);
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="model-task" onRetried={onRetried} blocker={{
+        recoveryActionId: "recovery", runId: "model-run", agentId: "agent",
+        cause: "native_continuation_requires_reconciliation", canRetry: true,
+        runError,
+        nextAction: "Inspect the original failure before continuing.",
+      }} />
+    </QueryClientProvider>));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    expect(container.textContent).toContain("Model unavailable.");
+    expect(container.textContent).toContain(runError);
+    expect(container.textContent).toContain("clear the task's model override, then retry");
+    expect(container.textContent).toContain("Inspect the original failure before continuing.");
+    expect(container.querySelector("button")?.textContent).toBe("Retry");
+  });
+
   it.each(["native_continuation_requires_reconciliation", "uncertain_external_action"])("offers Retry for a server-admitted native failure: %s", async cause => {
     await act(async () => root.render(<QueryClientProvider client={client}>
       <ExecutionBlockerNotice companyId="company" issueId="task" onRetried={onRetried} blocker={{

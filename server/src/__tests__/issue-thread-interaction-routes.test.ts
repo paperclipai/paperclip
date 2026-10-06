@@ -308,7 +308,7 @@ async function resolveMockInteraction(
   return interaction;
 }
 
-describe.sequential("issue thread interaction routes", () => {
+describe("issue thread interaction routes", () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");

@@ -237,6 +237,22 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents board-only pool management with revision-checked deletion", () => {
+    const { spec } = loadSpecRoutes();
+    const pools = spec.paths["/api/companies/{companyId}/ai-connection-pools"];
+    const remove = spec.paths["/api/companies/{companyId}/ai-connection-pools/{poolId}"].delete;
+    const inspection = spec.paths["/api/companies/{companyId}/ai-connection-pools/{poolId}/inspection"].get;
+    for (const operation of [pools.get, pools.post, remove, inspection]) {
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    }
+    expect(remove.requestBody.required).toBe(true);
+    expect(remove.requestBody.content["application/json"].schema).toMatchObject({
+      required: ["expectedRevision"], additionalProperties: false,
+      properties: { expectedRevision: { type: "integer", minimum: 0, exclusiveMinimum: true } },
+    });
+    expect(Object.keys(remove.responses)).toEqual(expect.arrayContaining(["200", "400", "401", "403", "404", "409"]));
+  });
+
   it("documents personal board-only announcements and private responses", () => {
     const { spec } = loadSpecRoutes();
     const current = spec.paths["/api/announcements/current"].get;

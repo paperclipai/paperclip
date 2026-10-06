@@ -144,6 +144,7 @@ describe("claude CLI model compatibility check", () => {
   it.each([
     ["claude-fable-5-1", "2.1.251", "2.1.247"],
     ["claude-opus-5-5", "2.1.280", "2.1.279"],
+    ["claude-sonnet-5-5", "2.1.284", "2.1.283"],
   ])("fails before the hello probe for %s below CLI %s", async (model, minimumVersion, detectedVersion) => {
     probeResult.value = {
       exitCode: 0,

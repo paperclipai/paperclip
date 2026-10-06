@@ -17,6 +17,7 @@ import {
   pluginCompanySettings,
   pluginManagedResources,
   plugins,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
@@ -106,6 +107,7 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
     await db.delete(pluginManagedResources);
     await db.delete(pluginCompanySettings);
     await db.delete(approvals);
+    await db.delete(principalPermissionGrants);
     await db.delete(agents);
     await db.delete(plugins);
     await db.delete(companies);

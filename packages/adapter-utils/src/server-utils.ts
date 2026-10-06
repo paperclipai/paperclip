@@ -2245,6 +2245,7 @@ export function renderPaperclipWakePrompt(
   return joinPromptSections([
     renderPaperclipWakePromptBody(value, options),
     instructions ? `## Assigned connector skills\n\n${instructions}` : "",
+    asString(parseObject(parseObject(value).connectionInstructions).text, "").trim(),
   ]);
 }
 

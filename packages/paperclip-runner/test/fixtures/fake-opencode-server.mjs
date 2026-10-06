@@ -240,17 +240,25 @@ async function callTerminalTool(promptBody) {
     const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: bad });
     await writeFile(join(process.env.XDG_DATA_HOME, "fake-criteria-repair.json"), JSON.stringify(rejected));
   }
-  return mcpRequest("tools/call", {
+  const call = () => mcpRequest("tools/call", {
     name: blocked ? "paperclip_block" : "paperclip_finish",
     arguments: result,
   });
+  const first = await call();
+  if (String(prompt.message ?? prompt.task?.prompt ?? "").includes("completion-feedback")) {
+    const outcomes = [first];
+    if (first.result?.isError) outcomes.push(await call());
+    await writeFile(join(process.env.XDG_DATA_HOME, "fake-completion-feedback.json"), JSON.stringify(outcomes));
+    return outcomes.at(-1);
+  }
+  return first;
 }
 
 const server = createServer(async (request, response) => {
   if (request.headers.authorization !== expectedAuth)
     return json(response, 401, { error: "unauthorized" });
   if (request.url === "/global/health")
-    return json(response, 200, { healthy: true, version: "1.18.32" });
+    return json(response, 200, { healthy: true, version: "1.18.34" });
   if (request.url === "/event") {
     eventConnections += 1;
     response.writeHead(200, {

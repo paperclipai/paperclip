@@ -16,6 +16,31 @@ scheduled execution gets
 a fresh Paperclip home, embedded Postgres database, instance configuration,
 port, workspace, company, encrypted secrets, environment, and agent.
 
+## Native procedure guidance comparison (explicit only)
+
+Select `--suite everyday-workflows --environment local --case hire-reuse --case delegate-feedback
+--profile runner-codex --profile runner-acpx-claude --profile runner-opencode` for the six comparison
+cells on native Codex, ACPX Claude, and OpenCode.
+Both variants use the same Studio Lead persona, original user requests,
+artifact oracle, lifecycle checks, models and permissions. Each cell permits
+one attempt, a 12-minute deadline, at most 12 story run records, and a
+1,000-cent company hard stop; the lead also has a 1,000-cent hard stop. Worker
+runs count toward the company budget. The suite is excluded from `--all`.
+
+Compare frozen branches on the same master with identical fixture sources.
+Retain each original grade, source SHA, harness digest, actual run inventory,
+downloaded artifacts and partial cost evidence. Check hiring identity/reuse,
+worker ownership, delivered revisions, dependency release and parent completion
+ordering independently of aggregate grades. These bounded stories do not
+qualify every existing-blocker combination or arbitrary provider resume.
+
+The provider-free `native-procedure-measurement.test.ts` uses the server's real
+tool authority and captures scripted start/resume/continuation delivery plus
+the OpenCode MCP catalog. It includes descriptions and argument schemas. Its
+byte counts are not model token counts or proof of an upstream harness's lazy
+loading/truncation. The older completion measurement used a partial catalog;
+do not use it as a full production tool-payload baseline.
+
 The vocabulary is: a **campaign** is one workflow invocation against one SHA; a
 **suite** is a durable testing purpose; a **matrix** is that suite's profiles ×
 environments × cases; an **execution/cell** is one parallel job; and an
@@ -428,6 +453,10 @@ pnpm test:e2e:runner -- --id agent-chat-hardening.runner-codex.local.stop-startu
 
 The independent, explicit-only `native-completion` suite qualifies native finish/block descriptions on unchanged master defaults. It preserves the original assigned-skill document journey and pairs it with whole-task blocking across three native profiles, with enforced single attempts. See [NATIVE-COMPLETION.md](NATIVE-COMPLETION.md) for admission, provenance and limits.
 
+The separate, explicit-only `native-instruction-consolidation` suite reuses those original tasks and strict graders to compare completion constraints on the production defaults at `2a8a99e4a5f69aa803b3f10b982f583e75a87042`. It declares six local cells: document completion and whole-task blocking on native Codex, ACPX Claude, and OpenCode. Each cell allows one attempt and applies a 1,000-cent company and agent budget hard stop. Its source gate rejects dirty, mixed, unknown, or unrelated source changes before credentials load. A provider-free fixture captures the complete Paperclip instruction/tool/message projection at the scripted runnerd RPC boundary on start, full-task resume and compact user-follow-up continuation for native input v4 and v5. That capture measures bytes; it does not measure vendor-owned prompts, tokens, billing, or model behavior. See the [comparison plan](../../doc/plans/2026-10-03-native-completion-consolidation.md) for exact scope and live qualification limits. Existing `native-completion` results do not qualify this new reduction.
+
+The corrected source variants add explicit blocker explanations and canonical document citations. Accepted feedback repeats links only for this run's current saved revisions, and Markdown navigation preserves document anchors after issue details load. Observation v3 independently requires the persisted provider final to explain missing release/deployment access and, for completion, link this task's one revisioned document on the same origin. A correct structured blocker, an unblock action alone, or an unbound/foreign document URL cannot pass. These stricter checks and browser navigation apply only to the manual instruction comparison; the existing `native-completion` suite keeps v2 checks. Task prompts and the durable-output oracle remain unchanged. Admission now requires eighteen shared runnerd RPC captures and six direct OpenCode HTTP captures using a local fake server, all provider-free. Replay of retained v2 evidence is a separate diagnostic, never a replacement for its original verdict. See the [answer correction](../../doc/plans/2026-10-04-native-completion-answer-fix.md).
+
 `context-integrity` is an explicit-only local suite with two bounded cases across
 ten listed legacy/native profiles (20 cells). Six cells are pending-prerequisite
 profiles and are listed for discovery but rejected before provider credentials are
@@ -771,6 +800,12 @@ The temporary Paperclip home, embedded database, raw workspace, master key,
 and unredacted logs are removed after each attempt. Daytona teardown destroys
 the environment and any reusable leases through the public API; provider-side
 auto-stop/archive/delete values remain as cancellation backstops.
+
+## Planning guidance utility
+
+The explicit-only [planning comparison](PLAN-TASK-GUIDANCE.md) tests current, short,
+and disabled planning skills across four saved business outcomes on native Codex.
+It adds twelve single-attempt cells and does not expand `--all`.
 
 ## GitHub Actions
 

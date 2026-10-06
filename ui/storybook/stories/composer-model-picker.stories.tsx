@@ -406,7 +406,7 @@ export const ProductionIntermediateWidthPlan: Story = {
   play: async ({ canvasElement }) => {
     const screen = within(canvasElement.ownerDocument.body);
     const chip = screen.getByRole("button", { name: "Remove Plan mode" }).getBoundingClientRect();
-    const capsule = screen.getByTestId("task-chat-composer-assignee").getBoundingClientRect();
+    const capsule = screen.getByTestId("task-chat-composer-selection").getBoundingClientRect();
     const send = screen.getByRole("button", { name: "Send message" }).getBoundingClientRect();
     await expect(chip.height).toBe(capsule.height);
     await expect(Math.abs(send.top - capsule.top)).toBeLessThanOrEqual(1);

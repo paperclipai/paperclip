@@ -164,7 +164,7 @@ async function closeServer(server: Server | null) {
   });
 }
 
-describe.sequential("execution environment route guards", () => {
+describe("execution environment route guards", () => {
   afterAll(async () => {
     await closeServer(projectServer);
     await closeServer(issueServer);

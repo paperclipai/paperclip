@@ -1111,6 +1111,16 @@ const connectionIntentBrandAssetSchema = z
 
 export const connectionIntentPayloadSchema = z
   .object({
+    accessRequest: z.object({
+      connectionId: z.string().guid(),
+      connectionName: z.string().trim().min(1).max(160),
+      tools: z.array(z.object({
+        catalogEntryId: z.string().guid(),
+        toolName: z.string().trim().min(1).max(160),
+        versionHash: z.string().min(1).max(256),
+        permission: z.enum(["allowed", "ask_first"]),
+      }).strict()).min(1).max(20).refine(tools => new Set(tools.map(tool => tool.catalogEntryId)).size === tools.length, "Requested tools must be unique"),
+    }).strict().optional(),
     upstreamService: z.object({ slug: z.string().min(1).max(120), name: z.string().min(1).max(160), selectionInteractionId: z.string().guid().optional() }).strict().optional(),
     purpose: z.enum(["ai", "channel"]).optional(),
     version: z.literal(1),

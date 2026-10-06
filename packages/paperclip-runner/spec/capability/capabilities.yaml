@@ -435,9 +435,9 @@
       ]
     },
     {
-      "id": "skill:skills/paperclip/SKILL.md:key-endpoints-hot-routes:696",
+      "id": "skill:skills/paperclip/SKILL.md:key-endpoints-hot-routes:694",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/SKILL.md:696",
+      "sourceAnchor": "skills/paperclip/SKILL.md:694",
       "title": "Key Endpoints (Hot Routes)",
       "expectedSemantics": "Skill guidance headed “Key Endpoints (Hot Routes)”.",
       "primaryDisposition": "optional_agent_tool",
@@ -446,13 +446,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/SKILL.md:696"
+        "skill:skills/paperclip/SKILL.md:694"
       ]
     },
     {
-      "id": "skill:skills/paperclip/SKILL.md:searching-issues:725",
+      "id": "skill:skills/paperclip/SKILL.md:searching-issues:723",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/SKILL.md:725",
+      "sourceAnchor": "skills/paperclip/SKILL.md:723",
       "title": "Searching Issues",
       "expectedSemantics": "Skill guidance headed “Searching Issues”.",
       "primaryDisposition": "optional_agent_tool",
@@ -461,13 +461,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/SKILL.md:725"
+        "skill:skills/paperclip/SKILL.md:723"
       ]
     },
     {
-      "id": "skill:skills/paperclip/SKILL.md:full-reference:735",
+      "id": "skill:skills/paperclip/SKILL.md:full-reference:733",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/SKILL.md:735",
+      "sourceAnchor": "skills/paperclip/SKILL.md:733",
       "title": "Full Reference",
       "expectedSemantics": "Skill guidance headed “Full Reference”.",
       "primaryDisposition": "optional_agent_tool",
@@ -476,13 +476,13 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/SKILL.md:735"
+        "skill:skills/paperclip/SKILL.md:733"
       ]
     },
     {
-      "id": "skill:skills/paperclip/SKILL.md:conversational-confirmation-answers:739",
+      "id": "skill:skills/paperclip/SKILL.md:conversational-confirmation-answers:737",
       "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/SKILL.md:739",
+      "sourceAnchor": "skills/paperclip/SKILL.md:737",
       "title": "Conversational confirmation answers",
       "expectedSemantics": "Skill guidance headed “Conversational confirmation answers”.",
       "primaryDisposition": "always_agent_tool",
@@ -491,7 +491,7 @@
         "control_plane_invariant"
       ],
       "evidenceIds": [
-        "skill:skills/paperclip/SKILL.md:739"
+        "skill:skills/paperclip/SKILL.md:737"
       ]
     },
     {

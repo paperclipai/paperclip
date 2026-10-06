@@ -2,7 +2,7 @@
 
 This image is the Paperclip Cloud fleet sandbox image plus a source-built
 `paperclip-runnerd` and immutable provider pack. The pack contains Node 24.11,
-OpenCode 1.18.32, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP
+OpenCode 1.18.34, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP
 agents, and the production lockfile. Its manifest digests each executable bridge
 and binds the pack to the runner source revision, avoiding artifact upload and
 npm installation on every fresh lease.
@@ -14,14 +14,18 @@ image that this Dockerfile can extend directly.
 
 ## Harness versions
 
-The September 22, 2026 refresh pins Codex 0.156.0, Claude Agent SDK
-0.3.280 (Claude Code 2.1.280), and OpenCode 1.18.32 in the shared provider
+The October 2026 refreshes pin Codex 0.160.0, Claude Agent SDK
+0.3.286 (Claude Code 2.1.286), and OpenCode 1.18.34 in the shared provider
 pack. Claude Code 2.1.280 is the minimum for
-[Opus 5.5](https://code.claude.com/docs/en/model-config); it also supports
-Fable 5.1. Codex uses the current
-[GPT-6 Sol and Luna model IDs](https://learn.chatgpt.com/docs/models).
-Grok CLI 1.0.41 supports the current
-[Grok 4.7](https://docs.x.ai/developers/grok-4-7) model family.
+[Opus 5.5](https://code.claude.com/docs/en/model-config) and 2.1.284 is the
+minimum for Sonnet 5.5; the pinned runtime also supports Fable 5.1. Codex
+0.160.0 ships bundled metadata for the current
+[GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna model IDs](https://learn.chatgpt.com/docs/models).
+The same refresh pins Grok CLI 1.0.46, Gemini CLI 0.62.0, Kimi Code 2.1.1,
+Cursor CLI 2026.10.01-e373342, and GitHub CLI 2.102.0 in the sandbox layer.
+Grok CLI 1.0.46 supports the current
+[Grok 4.7](https://docs.x.ai/developers/grok-4-7) model family. Hermes stays
+at 0.19.0, the newest release on PyPI.
 
 Keep the patched ACP bridge versions separate from their CLI runtime pins.
 Their executable digests do not change when only the runtime dependency

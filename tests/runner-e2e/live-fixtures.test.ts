@@ -4,6 +4,29 @@ import { runnerMatrix } from "./catalog.js";
 import { setupLiveFixtures } from "./live-fixtures.js";
 
 describe("live runner fixtures", () => {
+  it.each(["runner-codex", "runner-acpx-claude", "runner-opencode"].flatMap(profile =>
+    ["hire-reuse", "delegate-feedback"].map(task => [profile, task]))) (
+    "applies %s %s budget stops in actual setup with a nonce and only its selected credential", async (profile, task) => {
+      const execution = runnerMatrix.find(row => row.id === `everyday-workflows.${profile}.local.${task}`)!;
+      let agentBody: any;
+      let companyBody: any;
+      const api = {
+        async get() { return [{ id: "local", driver: "local" }]; },
+        async postSensitive(url: string) { return url.endsWith("/ai-connections") ? { connectionId: "account" } : { id: "secret" }; },
+        async post(url: string, data: any) {
+          if (url === "/api/companies") { companyBody = data; return { id: "company", name: "Test" }; }
+          if (url.endsWith("/agents")) { agentBody = data; return { id: "lead", ...data }; }
+          throw new Error(`Unexpected POST ${url}`);
+        },
+      } as unknown as RunnerApi;
+      const fixtures = await setupLiveFixtures({ api, execution, executionNonce: "random-nonce", workspacePath: "/tmp/test",
+        credentials: { [execution.profile.credential]: "test-value" } });
+      expect(companyBody.budgetMonthlyCents).toBe(1_000);
+      expect(agentBody.budgetMonthlyCents).toBe(1_000);
+      await fixtures.teardown();
+    },
+  );
+
   it.each(["runner-codex", "legacy-codex", "runner-acpx-claude", "legacy-opencode"])(
     "creates a production-default %s hire with company and agent budget stops", async (profile) => {
       const execution = runnerMatrix.find(row => row.suite.id === "stock-harness" && row.profile.id === profile)!;
@@ -51,6 +74,7 @@ describe("live runner fixtures", () => {
     ["runner-acpx-claude", "hiring-templates", "hire-coder-template-reuse"],
     ["runner-codex", "everyday-workflows", "hire-reuse"],
     ["runner-acpx-claude", "everyday-workflows", "hire-reuse"],
+    ["runner-opencode", "everyday-workflows", "hire-reuse"],
     ["runner-codex", "agent-chat-hardening", "hire-delegate-reuse"],
     ["runner-acpx-claude", "agent-chat-hardening", "hire-delegate-reuse"],
   ])(
@@ -64,7 +88,7 @@ describe("live runner fixtures", () => {
           e.environment.id === "local",
       )!;
       const provider =
-        profile === "runner-acpx-claude" ? "anthropic" : "openai";
+        profile === "runner-acpx-claude" ? "anthropic" : profile === "runner-opencode" ? "openrouter" : "openai";
       let connected = false;
       let agentBody: any;
       const api = {
@@ -101,8 +125,7 @@ describe("live runner fixtures", () => {
         executionNonce: "nonce",
         workspacePath: "/tmp/test",
         credentials: {
-          OPENAI_API_KEY: "test-value",
-          ANTHROPIC_API_KEY: "test-value",
+          [execution.profile.credential]: "test-value",
         },
       });
       expect(connected).toBe(true);

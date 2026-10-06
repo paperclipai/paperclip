@@ -1,6 +1,7 @@
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
+import { NATIVE_MODEL_REJECTION_MESSAGE } from "./native-provider-failure.js";
 
-export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v7";
+export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v8";
 
 export type NativeAuthoritativeIssueStatus =
   | "backlog"
@@ -115,6 +116,8 @@ export function arbitrateNativeStatus(input: {
   reviewOwnerUserId?: string | null;
   /** Review decisions own task state; a reviewer's finish report cannot override them. */
   nativeReviewOutcome?: "resolved" | "pending" | "stale";
+  /** Re-derived from the committed runner terminal and pinned execution identity. */
+  providerModelRejected?: boolean;
   agentId: string;
   priorIssueStatus: NativeAuthoritativeIssueStatus;
 }): NativeStatusDecision {
@@ -144,6 +147,31 @@ export function arbitrateNativeStatus(input: {
           agentId: input.agentId,
         },
       ],
+    };
+  }
+  if (input.providerModelRejected && input.terminalState === "failed" &&
+      input.nativeReviewOutcome !== "stale" && input.nativeReviewOutcome !== "resolved") {
+    if (input.nativeReviewOutcome === "pending") {
+      // The pending review is bound to the worker's status decision and
+      // version. Preserve that authority so an explicit retry after a
+      // configuration repair can resolve the same review. In particular,
+      // do not create the normal unresolved-review recovery action.
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "preserve",
+        toStatus: input.priorIssueStatus,
+        reasonCode: "native_provider_model_rejected",
+        unblockDescriptor: null,
+        effects: [{ kind: "release_checkout" }],
+      };
+    }
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "blocked",
+      toStatus: "blocked",
+      reasonCode: "native_provider_model_rejected",
+      unblockDescriptor: { owner: "board", action: NATIVE_MODEL_REJECTION_MESSAGE },
+      effects: [{ kind: "bind_blocker", owner: "board", action: NATIVE_MODEL_REJECTION_MESSAGE }],
     };
   }
   if (input.nativeReviewOutcome) {
