@@ -1,4 +1,4 @@
-import { test, expect, request as pwRequest, type APIRequestContext } from "@playwright/test";
+import { test, expect, request as pwRequest, type APIRequestContext, type APIResponse } from "@playwright/test";
 
 /**
  * E2E: Signoff execution policy flow.
@@ -59,18 +59,21 @@ async function createAgentRequest(token: string): Promise<APIRequestContext> {
 
 /** Invoke a heartbeat run for an agent, returning the run ID. */
 async function invokeHeartbeat(
-  board: APIRequestContext,
+  board: Pick<APIRequestContext, "get" | "post">,
   agentId: string,
   issueId: string,
 ): Promise<string> {
-  const res = await board.post(`${BASE_URL}/api/agents/${agentId}/heartbeat/invoke`, {
-    data: {
-      reason: "issue_assigned",
-      payload: { issueId, taskId: issueId, taskKey: issueId },
-    },
-  });
-  expect(res.ok()).toBe(true);
-  const run = await res.json();
+  const requestRun = async () => {
+    const res = await board.post(`${BASE_URL}/api/agents/${agentId}/heartbeat/invoke`, {
+      data: {
+        reason: "issue_assigned",
+        payload: { issueId, taskId: issueId, taskKey: issueId },
+      },
+    });
+    expect(res.ok()).toBe(true);
+    return res.json();
+  };
+  let run = await requestRun();
   if (typeof run.id === "string" && run.id.length > 0) return run.id;
 
   // A stage transition can already be replacing the previous executor's run
@@ -112,13 +115,21 @@ async function invokeHeartbeat(
         return candidate;
       }
     }
+    // A skipped legacy invoke does not promise that a run will be created.
+    // Once the previous owner releases the lock, request admission again if
+    // no matching run exists. Keep the assignee guard above and the original
+    // deadline so this cannot start work for a non-participant or hide a stall.
+    if (!issueRunLock.executionRunId && !issueRunLock.checkoutRunId) {
+      run = await requestRun();
+      if (typeof run.id === "string" && run.id.length > 0) return run.id;
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   } while (Date.now() < deadline);
 
   throw new Error(`No issue-bound heartbeat run became available for agent ${agentId}`);
 }
 
-async function getIssueRunLockState(board: APIRequestContext, issueId: string): Promise<IssueRunLockState> {
+async function getIssueRunLockState(board: Pick<APIRequestContext, "get">, issueId: string): Promise<IssueRunLockState> {
   const res = await board.get(`${BASE_URL}/api/issues/${issueId}`);
   expect(res.ok()).toBe(true);
   const issue = await res.json();
@@ -581,5 +592,66 @@ test.describe("Signoff execution policy", () => {
     expect(doneIssue.status).toBe("done");
     expect(doneIssue.executionState.status).toBe("completed");
     expect(doneIssue.executionState.completedStageIds).toHaveLength(1);
+  });
+});
+
+
+// These cases verify the helper's admission protocol with synthetic responses.
+// The signoff scenarios above continue to use the real API and database.
+test.describe("signoff heartbeat admission helper", () => {
+  const response = (body: unknown) => ({
+    ok: () => true,
+    json: async () => body,
+  } as APIResponse);
+
+  test("retries a skipped invoke only after the previous issue lock is released", async () => {
+    let invocations = 0;
+    let issueReads = 0;
+    const board: Pick<APIRequestContext, "get" | "post"> = {
+      post: async () => {
+        invocations += 1;
+        if (invocations === 1) return response({ status: "skipped" });
+        expect(issueReads).toBe(2);
+        return response({ id: "reviewer-run" });
+      },
+      get: async (url) => {
+        if (url.endsWith("/api/issues/issue")) {
+          issueReads += 1;
+          return response({
+            companyId: "company",
+            assigneeAgentId: "reviewer",
+            executionRunId: issueReads === 1 ? "executor-run" : null,
+            checkoutRunId: null,
+          });
+        }
+        if (url.endsWith("/api/heartbeat-runs/executor-run")) {
+          return response({ agentId: "executor", contextSnapshot: { issueId: "issue" } });
+        }
+        if (url.includes("/heartbeat-runs?")) return response([]);
+        throw new Error(`Unexpected helper request: ${url}`);
+      },
+    };
+
+    expect(await invokeHeartbeat(board, "reviewer", "issue")).toBe("reviewer-run");
+    expect(invocations).toBe(2);
+  });
+
+  test("keeps a non-participant's skipped invoke on the rejection path", async () => {
+    let invocations = 0;
+    const board: Pick<APIRequestContext, "get" | "post"> = {
+      post: async () => {
+        invocations += 1;
+        return response({ status: "skipped" });
+      },
+      get: async () => response({
+        companyId: "company",
+        assigneeAgentId: "reviewer",
+        executionRunId: "reviewer-run",
+        checkoutRunId: null,
+      }),
+    };
+
+    expect(await invokeHeartbeat(board, "approver", "issue")).toBe("reviewer-run");
+    expect(invocations).toBe(1);
   });
 });

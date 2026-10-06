@@ -100,7 +100,7 @@ describe("createChatReconciliationCoordinator", () => {
     expect(flush).not.toContain("chatChannels.processPendingPublications()");
     expect(
       flush.slice(0, flush.indexOf("const chatReconciliation")),
-    ).not.toContain("await enqueueChatRunMilestones");
+    ).not.toContain("await chatChannels.enqueueRunMilestones");
     // The service integration tests hold real publication workers while this
     // scheduled method returns; app shutdown must also join those workers.
     expect(source).toContain("await chatChannels.shutdown()");

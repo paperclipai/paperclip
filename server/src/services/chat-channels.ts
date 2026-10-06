@@ -1,3 +1,4 @@
+import { createChatQueryExecutor } from "./chat-query-executor.js";
 import { withSlackBoardLease } from "./slack-board-lease.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { authorizeSlackBoardPublication } from "./slack-board-authority.js";
@@ -334,7 +335,7 @@ import {
 import { chatProviderConversationUrl } from "./chat-provider-links.js";
 import { classifyChatPublicationError } from "./chat-publication-errors.js";
 import {
-  enqueueChatRunMilestones,
+  createChatRunPublicationProjector,
   safeMilestoneText,
 } from "./chat-run-publications.js";
 import {
@@ -1424,6 +1425,8 @@ function providerEffectPayload(
 }
 
 export interface ChatChannelServiceOptions {
+  /** Startup choice: reuse query compilation and skip proven-empty scans. */
+  idleOptimizations?: boolean;
   /**
    * Provider webhooks await only the durable ingress write, then finish task
    * processing outside the provider response budget. Tests may leave this off
@@ -2998,6 +3001,8 @@ export async function hydrateOutboundAttachment(input: {
 
 export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const runtime = options.runtime ?? createChatSdkRuntime();
+  const idleQueries = createChatQueryExecutor(options.idleOptimizations === true);
+  const runPublicationProjector = createChatRunPublicationProjector(db, options);
   const githubManualMessages = new WeakMap<object, { policy: GitHubReviewPolicy; revision: number; event: "mention" | "comment" }>();
   const githubAutomaticMessages = new WeakMap<object, { context: GitHubReviewEventContext; revision: number; policy: GitHubReviewPolicy }>();
   const runtimeVersions = new Map<string, string>();
@@ -4007,35 +4012,43 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
+  const buildReceiptReactionCandidates = (specific: boolean) => db
+      .select({ id: chatActions.id })
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.kind, "receipt_reaction"),
+          ...(specific ? [eq(chatActions.id, sql.placeholder("actionId"))] : []),
+          or(
+            eq(chatActions.status, "received"),
+            and(
+              eq(chatActions.status, "processing"),
+              lte(chatActions.updatedAt, sql.placeholder("staleBefore")),
+            ),
+            and(
+              eq(chatActions.status, "failed"),
+              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
+              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${sql.placeholder("nowIso")}::timestamptz)`,
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(chatActions.createdAt))
+      .limit(sql.placeholder("limit"));
+  const receiptReactionCandidates = {
+    all: idleQueries.query("chat_receipt_reactions_all", () => buildReceiptReactionCandidates(false)),
+    one: idleQueries.query("chat_receipt_reactions_one", () => buildReceiptReactionCandidates(true)),
+  };
+
   async function processPendingReceiptReactions(
     limit = 25,
     onlyActionId?: string,
   ) {
     const now = new Date();
     const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
-    const actions = await db
-      .select({ id: chatActions.id })
-      .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.kind, "receipt_reaction"),
-          ...(onlyActionId ? [eq(chatActions.id, onlyActionId)] : []),
-          or(
-            eq(chatActions.status, "received"),
-            and(
-              eq(chatActions.status, "processing"),
-              lte(chatActions.updatedAt, staleBefore),
-            ),
-            and(
-              eq(chatActions.status, "failed"),
-              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
-              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
-            ),
-          ),
-        ),
-      )
-      .orderBy(asc(chatActions.createdAt))
-      .limit(limit);
+    const actions = await (onlyActionId ? receiptReactionCandidates.one : receiptReactionCandidates.all)({
+      actionId: onlyActionId, nowIso: now.toISOString(), staleBefore: staleBefore.toISOString(), limit,
+    });
     for (const action of actions) await processReceiptReaction(action.id);
     return actions.length;
   }
@@ -4490,10 +4503,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
-  async function processPendingTelegramMaintenance(limit = 25) {
-    // Keyset scanning bounds each sweep without starving endpoints behind a
-    // page whose subscriptions were already confirmed. No provider I/O here.
-    const candidates = await db
+  const buildTelegramEndpointCandidates = (specific: boolean) => db
       .select({ endpoint: chatEndpoints })
       .from(chatEndpoints)
       .innerJoin(
@@ -4509,13 +4519,57 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           eq(chatEndpoints.status, "active"),
           eq(toolConnections.status, "active"),
           eq(toolConnections.enabled, true),
-          telegramSubscriptionScanAfter
-            ? gt(chatEndpoints.id, telegramSubscriptionScanAfter)
+          specific
+            ? gt(chatEndpoints.id, sql.placeholder("afterId"))
             : undefined,
         ),
       )
       .orderBy(asc(chatEndpoints.id))
-      .limit(Math.max(1, Math.min(limit, 100)));
+      .limit(sql.placeholder("limit"));
+  const telegramEndpointCandidates = {
+    all: idleQueries.query("chat_telegram_endpoints_all", () => buildTelegramEndpointCandidates(false)),
+    one: idleQueries.query("chat_telegram_endpoints_one", () => buildTelegramEndpointCandidates(true)),
+  };
+
+  const telegramMaintenanceCandidates = idleQueries.query(
+    "chat_telegram_maintenance",
+    () => db
+      .select({ id: chatActions.id })
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.kind, "telegram_maintenance"),
+          sql`(${chatActions.payload}->>'operation' <> 'stop_subscription' or exists (
+            select 1 from ${chatEndpoints} inner join ${toolConnections}
+              on ${toolConnections.id} = ${chatEndpoints.connectionId} and ${toolConnections.companyId} = ${chatEndpoints.companyId}
+            where ${chatEndpoints.id} = ${chatActions.endpointId} and ${chatEndpoints.companyId} = ${chatActions.companyId}
+              and ${chatEndpoints.provider} = 'telegram' and ${chatEndpoints.status} = 'active'
+              and ${toolConnections.status} = 'active' and ${toolConnections.enabled} = true
+          ))`,
+          or(
+            eq(chatActions.status, "received"),
+            and(
+              eq(chatActions.status, "processing"),
+              lte(chatActions.updatedAt, sql.placeholder("staleBefore")),
+            ),
+            and(
+              eq(chatActions.status, "failed"),
+              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
+              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${sql.placeholder("nowIso")}::timestamptz)`,
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(chatActions.createdAt))
+      .limit(sql.placeholder("limit"))
+  );
+
+  async function processPendingTelegramMaintenance(limit = 25) {
+    // Keyset scanning bounds each sweep without starving endpoints behind a
+    // page whose subscriptions were already confirmed. No provider I/O here.
+    const candidates = await (telegramSubscriptionScanAfter ? telegramEndpointCandidates.one : telegramEndpointCandidates.all)({
+      afterId: telegramSubscriptionScanAfter, limit: Math.max(1, Math.min(limit, 100)),
+    });
     telegramSubscriptionScanAfter =
       candidates.length >= Math.max(1, Math.min(limit, 100))
         ? candidates.at(-1)!.endpoint.id
@@ -4540,35 +4594,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
     const now = new Date();
     const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
-    const actions = await db
-      .select({ id: chatActions.id })
-      .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.kind, "telegram_maintenance"),
-          sql`(${chatActions.payload}->>'operation' <> 'stop_subscription' or exists (
-            select 1 from ${chatEndpoints} inner join ${toolConnections}
-              on ${toolConnections.id} = ${chatEndpoints.connectionId} and ${toolConnections.companyId} = ${chatEndpoints.companyId}
-            where ${chatEndpoints.id} = ${chatActions.endpointId} and ${chatEndpoints.companyId} = ${chatActions.companyId}
-              and ${chatEndpoints.provider} = 'telegram' and ${chatEndpoints.status} = 'active'
-              and ${toolConnections.status} = 'active' and ${toolConnections.enabled} = true
-          ))`,
-          or(
-            eq(chatActions.status, "received"),
-            and(
-              eq(chatActions.status, "processing"),
-              lte(chatActions.updatedAt, staleBefore),
-            ),
-            and(
-              eq(chatActions.status, "failed"),
-              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
-              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
-            ),
-          ),
-        ),
-      )
-      .orderBy(asc(chatActions.createdAt))
-      .limit(limit);
+    const actions = await telegramMaintenanceCandidates({ nowIso: now.toISOString(), staleBefore: staleBefore.toISOString(), limit });
     for (const action of actions) await processTelegramMaintenance(action.id);
     return actions.length;
   }
@@ -5477,10 +5503,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
-  async function processPendingProviderEffects(limit = 25) {
-    const now = new Date();
-    const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
-    const actions = await db
+  const providerEffectCandidates = idleQueries.query("chat_provider_effects", () =>
+    db
       .select()
       .from(chatActions)
       .where(
@@ -5490,18 +5514,24 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             eq(chatActions.status, "received"),
             and(
               eq(chatActions.status, "processing"),
-              lte(chatActions.updatedAt, staleBefore),
+              lte(chatActions.updatedAt, sql.placeholder("staleBefore")),
             ),
             and(
               eq(chatActions.status, "failed"),
               sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
-              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
+              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${sql.placeholder("nowIso")}::timestamptz)`,
             ),
           ),
         ),
       )
       .orderBy(asc(chatActions.createdAt))
-      .limit(limit);
+      .limit(sql.placeholder("limit"))
+  );
+
+  async function processPendingProviderEffects(limit = 25) {
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
+    const actions = await providerEffectCandidates({ nowIso: now.toISOString(), staleBefore: staleBefore.toISOString(), limit });
     for (const action of actions) {
       if (action.status === "processing" && action.updatedAt <= staleBefore) {
         await quarantineStaleProviderEffect(action);
@@ -8085,11 +8115,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
-  async function reconcileProviderRuntimes() {
-    if (shuttingDown) {
-      return { eligible: 0, local: 0, ownedElsewhere: 0, failed: 0 };
-    }
-    const eligibleRows = await db
+  const providerRuntimeCandidates = idleQueries.query(
+    "chat_provider_runtimes",
+    () => db
       .select({ endpointId: chatEndpoints.id })
       .from(chatEndpoints)
       .innerJoin(
@@ -8106,7 +8134,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           eq(toolConnections.status, "active"),
           eq(toolConnections.enabled, true),
         ),
-      );
+      )
+  );
+
+  async function reconcileProviderRuntimes() {
+    if (shuttingDown) {
+      return { eligible: 0, local: 0, ownedElsewhere: 0, failed: 0 };
+    }
+    const eligibleRows = await providerRuntimeCandidates();
     const eligibleIds = new Set(eligibleRows.map((row) => row.endpointId));
     await Promise.all(
       [...discordGatewayOwnerships.values()]
@@ -13483,10 +13518,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return task;
   }
 
-  async function processFailedChatRunRetries(limit = 20) {
-    if (shuttingDown) return 0;
-    const now = new Date();
-    const candidates = await db
+  const failedRetryCandidates = idleQueries.query("chat_failed_run_retries", () =>
+    db
       .select({ id: chatActions.id })
       .from(chatActions)
       .where(
@@ -13498,27 +13531,32 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               eq(chatActions.status, "processing"),
               lte(
                 chatActions.updatedAt,
-                new Date(now.getTime() - DELIVERY_PROCESSING_STALE_MS),
+                sql.placeholder("staleBefore"),
               ),
             ),
           ),
-          sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
+          sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${sql.placeholder("nowIso")}::timestamptz)`,
         ),
       )
       .orderBy(asc(chatActions.createdAt), asc(chatActions.id))
-      .limit(Math.max(1, Math.min(50, limit)));
+      .limit(sql.placeholder("limit"))
+  );
+
+  async function processFailedChatRunRetries(limit = 20) {
+    if (shuttingDown) return 0;
+    const now = new Date();
+    const candidates = await failedRetryCandidates({
+      nowIso: now.toISOString(), staleBefore: new Date(now.getTime() - DELIVERY_PROCESSING_STALE_MS).toISOString(),
+      limit: Math.max(1, Math.min(50, limit)),
+    });
     for (const candidate of candidates)
       await processFailedChatRunRetry(candidate.id);
     return candidates.length;
   }
 
   let failedRetryNoticeCursor: { createdAt: Date; id: string } | null = null;
-  async function enqueueFailedChatRetryPublications(
-    limit: number,
-  ): Promise<number> {
-    const cursor = failedRetryNoticeCursor;
-    const batchSize = Math.max(1, Math.min(50, limit));
-    const candidates = await db
+  const buildRetryNoticeCandidates = (withCursor: boolean) =>
+    db
       .select({ action: chatActions, receipt: agentWakeupRequests })
       .from(chatActions)
       .innerJoin(
@@ -13532,8 +13570,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         and(
           eq(chatActions.kind, "failed_run_retry"),
           isNull(agentWakeupRequests.runId),
-          cursor
-            ? sql`(${chatActions.createdAt}, ${chatActions.id}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
+          withCursor
+            ? sql`(${chatActions.createdAt}, ${chatActions.id}) > (${sql.placeholder("cursorCreatedAt")}::timestamptz, ${sql.placeholder("cursorId")}::uuid)`
             : undefined,
           inArray(agentWakeupRequests.status, [
             "deferred_issue_execution",
@@ -13548,7 +13586,20 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .orderBy(asc(chatActions.createdAt), asc(chatActions.id))
-      .limit(batchSize);
+      .limit(sql.placeholder("limit"));
+  const retryNoticeCandidates = {
+    first: idleQueries.query("chat_retry_notices_first", () => buildRetryNoticeCandidates(false)),
+    after: idleQueries.query("chat_retry_notices_after", () => buildRetryNoticeCandidates(true)),
+  };
+
+  async function enqueueFailedChatRetryPublications(
+    limit: number,
+  ): Promise<number> {
+    const cursor = failedRetryNoticeCursor;
+    const batchSize = Math.max(1, Math.min(50, limit));
+    const candidates = await (cursor ? retryNoticeCandidates.after : retryNoticeCandidates.first)({
+      cursorCreatedAt: cursor?.createdAt.toISOString(), cursorId: cursor?.id, limit: batchSize,
+    });
     const last = candidates.at(-1)?.action;
     failedRetryNoticeCursor =
       candidates.length >= batchSize && last
@@ -13886,11 +13937,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return Boolean(link);
   }
 
-  async function enqueueInboundWakeupPublications(limit = 50): Promise<number> {
-    if (shuttingDown) return 0;
-    const retryInserted = await enqueueFailedChatRetryPublications(limit);
+  function buildInboundNoticeCandidates(withCursor: boolean) {
     const owner = alias(agentWakeupRequests, "chat_notice_owner");
-    const cursor = inboundWakeNoticeCursor;
     const sourceRemoved = sql`exists (select 1 from issue_comments removed_comment
       where removed_comment.company_id = ${chatActions.companyId}
         and removed_comment.issue_id::text = ${chatActions.payload}->>'issueId'
@@ -13908,9 +13956,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         and queued_notice.state = 'published'
         and queued_notice.idempotency_key = 'wake:' || ${owner.id}::text || ':queued:' ||
           ${chatActions.endpointId}::text || ':' || ${chatActions.conversationId}::text)`;
-    // A bounded keyset sweep, not an in-memory work queue. Advancing even past
-    // revoked candidates prevents an inaccessible old message starving others.
-    const candidates = await db
+    return db
       .select({ action: chatActions })
       .from(chatActions)
       .innerJoin(
@@ -13941,8 +13987,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           sql`(( ${owner.status} = 'deferred_issue_execution'
           and ${agentWakeupRequests.status} not in ('cancelled','failed','skipped') and not (${sourceRemoved}))
           or ${hasVisibleQueue})`,
-          cursor
-            ? sql`(${chatActions.createdAt}, ${chatActions.id}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
+          withCursor
+            ? sql`(${chatActions.createdAt}, ${chatActions.id}) > (${sql.placeholder("cursorCreatedAt")}::timestamptz, ${sql.placeholder("cursorId")}::uuid)`
             : undefined,
           sql`not exists (select 1 from chat_publications notice
           where notice.company_id = ${chatActions.companyId}
@@ -13954,7 +14000,22 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .orderBy(asc(chatActions.createdAt), asc(chatActions.id))
-      .limit(Math.max(1, Math.min(limit, 200)));
+      .limit(sql.placeholder("limit"));
+  }
+  const inboundNoticeCandidates = {
+    first: idleQueries.query("chat_inbound_notices_first", () => buildInboundNoticeCandidates(false)),
+    after: idleQueries.query("chat_inbound_notices_after", () => buildInboundNoticeCandidates(true)),
+  };
+
+  async function enqueueInboundWakeupPublications(limit = 50): Promise<number> {
+    if (shuttingDown) return 0;
+    const retryInserted = await enqueueFailedChatRetryPublications(limit);
+    const cursor = inboundWakeNoticeCursor;
+    // A bounded keyset sweep, not an in-memory work queue. Advancing even past
+    // revoked candidates prevents an inaccessible old message starving others.
+    const candidates = await (cursor ? inboundNoticeCandidates.after : inboundNoticeCandidates.first)({
+      cursorCreatedAt: cursor?.createdAt.toISOString(), cursorId: cursor?.id, limit: Math.max(1, Math.min(limit, 200)),
+    });
     const last = candidates.at(-1)?.action;
     inboundWakeNoticeCursor =
       candidates.length >= Math.max(1, Math.min(limit, 200)) && last
@@ -14224,20 +14285,20 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     );
   }
 
-  async function settleRejectedInboundWakeups(onlyDeliveryId?: string) {
-    await db
+  const buildRejectInboundWakeups = (specific: boolean) =>
+    db
       .update(chatActions)
       .set({
         status: "failed",
         result: { code: "inbound_wakeup_delivery_rejected" },
-        updatedAt: new Date(),
+        updatedAt: sql`${sql.placeholder("updatedAt")}::timestamptz`,
       })
       .where(
         and(
           eq(chatActions.kind, "inbound_wakeup"),
           eq(chatActions.status, "preparing"),
-          onlyDeliveryId
-            ? eq(chatActions.deliveryId, onlyDeliveryId)
+          specific
+            ? eq(chatActions.deliveryId, sql.placeholder("deliveryId"))
             : undefined,
           sql`exists (select 1 from ${chatDeliveries}
             where ${chatDeliveries.id} = ${chatActions.deliveryId}
@@ -14246,6 +14307,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               and ${chatDeliveries.state} in ('filtered', 'failed'))`,
         ),
       );
+  const rejectInboundWakeups = {
+    all: idleQueries.query("chat_rejected_wakeups_all", () => buildRejectInboundWakeups(false)),
+    one: idleQueries.query("chat_rejected_wakeups_one", () => buildRejectInboundWakeups(true)),
+  };
+
+  async function settleRejectedInboundWakeups(onlyDeliveryId?: string) {
+    await (onlyDeliveryId ? rejectInboundWakeups.one : rejectInboundWakeups.all)({
+      deliveryId: onlyDeliveryId, updatedAt: new Date().toISOString(),
+    });
   }
 
   async function processInboundWakeup(deliveryId: string): Promise<boolean> {
@@ -16975,7 +17045,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .then((rows) => rows[0] ?? candidate);
   }
 
-  function pendingInboundWakeupCondition(readyOnly = false): SQL {
+  function pendingInboundWakeupCondition(readyOnly = false, staleBefore?: SQL): SQL {
     return sql`exists (
       select 1 from ${chatActions}
       where ${chatActions.deliveryId} = ${chatDeliveries.id}
@@ -16987,7 +17057,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           readyOnly
             ? sql`and (
           (${chatActions.status} = 'issued' and (${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= now()))
-          or (${chatActions.status} = 'processing' and ${chatActions.updatedAt} <= ${new Date(Date.now() - DELIVERY_PROCESSING_STALE_MS).toISOString()}::timestamptz)
+          or (${chatActions.status} = 'processing' and ${chatActions.updatedAt} <= ${staleBefore ?? new Date(Date.now() - DELIVERY_PROCESSING_STALE_MS).toISOString()}::timestamptz)
         )`
             : sql``
         }
@@ -19779,10 +19849,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
-  async function reconcileTerminalConfirmationActions(
-    limit = 100,
-  ): Promise<number> {
-    const candidates = await db
+  const terminalConfirmationCandidates = idleQueries.query("chat_terminal_confirmations", () =>
+    db
       .select({ id: chatActions.id })
       .from(chatActions)
       .where(
@@ -19792,7 +19860,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         ),
       )
       .orderBy(asc(chatActions.updatedAt), asc(chatActions.id))
-      .limit(limit);
+      .limit(sql.placeholder("limit"))
+  );
+
+  async function reconcileTerminalConfirmationActions(
+    limit = 100,
+  ): Promise<number> {
+    const candidates = await terminalConfirmationCandidates({ limit });
     let settled = 0;
     for (const candidate of candidates) {
       if (await settleTerminalConfirmationAction(candidate.id)) settled += 1;
@@ -19800,14 +19874,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return settled;
   }
 
-  async function processPendingInteractionWakeups(
-    limit = 100,
-  ): Promise<number> {
-    const staleBefore = new Date(Date.now() - 30_000);
-    const retryBefore = new Date(
-      Date.now() - CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS,
-    );
-    const candidates = await db
+  const interactionWakeupCandidates = idleQueries.query("chat_interaction_wakeups", () =>
+    db
       .select()
       .from(chatActions)
       .where(
@@ -19818,18 +19886,30 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               eq(chatActions.status, "issued"),
               or(
                 isNull(chatActions.result),
-                lte(chatActions.updatedAt, retryBefore),
+                lte(chatActions.updatedAt, sql.placeholder("retryBefore")),
               ),
             ),
             and(
               eq(chatActions.status, "processing"),
-              lte(chatActions.updatedAt, staleBefore),
+              lte(chatActions.updatedAt, sql.placeholder("staleBefore")),
             ),
           ),
         ),
       )
       .orderBy(asc(chatActions.updatedAt), asc(chatActions.id))
-      .limit(limit);
+      .limit(sql.placeholder("limit"))
+  );
+
+  async function processPendingInteractionWakeups(
+    limit = 100,
+  ): Promise<number> {
+    const staleBefore = new Date(Date.now() - 30_000);
+    const retryBefore = new Date(
+      Date.now() - CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS,
+    );
+    const candidates = await interactionWakeupCandidates({
+      staleBefore: staleBefore.toISOString(), retryBefore: retryBefore.toISOString(), limit,
+    });
     let processed = 0;
     for (const candidate of candidates) {
       const [claimed] = await db
@@ -22828,18 +22908,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
-  async function processPendingSlackTaskStarts(limit: number) {
-    const now = new Date();
-    const staleAdmission = new Date(
-      now.getTime() - SLACK_COMMAND_ADMISSION_STALE_MS,
-    );
-    const staleProviderPost = new Date(
-      now.getTime() - SLACK_COMMAND_EXPLICIT_RETRY_STALE_MS,
-    );
-    const staleValidation = new Date(
-      now.getTime() - SLACK_COMMAND_POST_STALE_MS,
-    );
-    const actions = await db
+  const slackTaskStartCandidates = idleQueries.query(
+    "chat_slack_task_starts",
+    () => db
       .select({ id: chatActions.id })
       .from(chatActions)
       .leftJoin(chatEndpoints, eq(chatEndpoints.id, chatActions.endpointId))
@@ -22854,7 +22925,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           or(
             and(
               eq(chatActions.status, "queued"),
-              sql`(${chatActions.result}->>'retryAt' is null or ${chatActions.result}->>'retryAt' <= ${now.toISOString()})`,
+              sql`(${chatActions.result}->>'retryAt' is null or ${chatActions.result}->>'retryAt' <= ${sql.placeholder("nowIso")})`,
             ),
             and(
               eq(chatActions.status, "provider_confirmed"),
@@ -22869,21 +22940,38 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             ),
             and(
               eq(chatActions.status, "admitting"),
-              lte(chatActions.updatedAt, staleAdmission),
+              lte(chatActions.updatedAt, sql.placeholder("staleAdmission")),
             ),
             and(
               eq(chatActions.status, "resolving"),
-              lte(chatActions.updatedAt, staleProviderPost),
+              lte(chatActions.updatedAt, sql.placeholder("staleProviderPost")),
             ),
             and(
               eq(chatActions.status, "validating"),
-              lte(chatActions.updatedAt, staleValidation),
+              lte(chatActions.updatedAt, sql.placeholder("staleValidation")),
             ),
           ),
         ),
       )
       .orderBy(asc(chatActions.createdAt))
-      .limit(limit);
+      .limit(sql.placeholder("limit"))
+  );
+
+  async function processPendingSlackTaskStarts(limit: number) {
+    const now = new Date();
+    const staleAdmission = new Date(
+      now.getTime() - SLACK_COMMAND_ADMISSION_STALE_MS,
+    );
+    const staleProviderPost = new Date(
+      now.getTime() - SLACK_COMMAND_EXPLICIT_RETRY_STALE_MS,
+    );
+    const staleValidation = new Date(
+      now.getTime() - SLACK_COMMAND_POST_STALE_MS,
+    );
+    const actions = await slackTaskStartCandidates({
+      nowIso: now.toISOString(), staleAdmission: staleAdmission.toISOString(),
+      staleProviderPost: staleProviderPost.toISOString(), staleValidation: staleValidation.toISOString(), limit,
+    });
     let processed = 0;
     for (let offset = 0; offset < actions.length; offset += 4) {
       const results = await Promise.all(
@@ -26028,35 +26116,44 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return rows.length;
   }
 
+  const buildGithubIngressCandidates = (specific: boolean) =>
+    db
+      .select({ id: chatActions.id })
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.kind, "github_webhook_ingress"),
+          ...(specific ? [eq(chatActions.id, sql.placeholder("actionId"))] : []),
+          or(
+            eq(chatActions.status, "received"),
+            and(
+              eq(chatActions.status, "processing"),
+              lte(chatActions.updatedAt, sql.placeholder("staleBefore")),
+            ),
+            and(
+              eq(chatActions.status, "failed"),
+              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
+              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${sql.placeholder("nowIso")}::timestamptz)`,
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(chatActions.createdAt))
+      .limit(sql.placeholder("limit"));
+  const githubIngressCandidates = {
+    all: idleQueries.query("chat_github_ingress_all", () => buildGithubIngressCandidates(false)),
+    one: idleQueries.query("chat_github_ingress_one", () => buildGithubIngressCandidates(true)),
+  };
+
   async function processPendingGitHubWebhookIngress(
     limit = 25,
     onlyActionId?: string,
   ) {
     const now = new Date();
     const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
-    const actions = await db
-      .select({ id: chatActions.id })
-      .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.kind, "github_webhook_ingress"),
-          ...(onlyActionId ? [eq(chatActions.id, onlyActionId)] : []),
-          or(
-            eq(chatActions.status, "received"),
-            and(
-              eq(chatActions.status, "processing"),
-              lte(chatActions.updatedAt, staleBefore),
-            ),
-            and(
-              eq(chatActions.status, "failed"),
-              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
-              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
-            ),
-          ),
-        ),
-      )
-      .orderBy(asc(chatActions.createdAt))
-      .limit(limit);
+    const actions = await (onlyActionId ? githubIngressCandidates.one : githubIngressCandidates.all)({
+      actionId: onlyActionId, nowIso: now.toISOString(), staleBefore: staleBefore.toISOString(), limit,
+    });
     for (const action of actions) await processGitHubWebhookIngress(action.id);
     return actions.length;
   }
@@ -26665,7 +26762,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           },
         },
       );
-      await enqueueChatRunMilestones(db, { publicBaseUrl: getPublicBaseUrl() });
+      await runPublicationProjector.enqueue({ publicBaseUrl: getPublicBaseUrl() });
       const authoritativeRun = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
@@ -26756,35 +26853,44 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
+  const buildSlackSessionStopCandidates = (specific: boolean) =>
+    db
+      .select({ id: chatActions.id })
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.kind, "slack_session_stop"),
+          ...(specific ? [eq(chatActions.id, sql.placeholder("actionId"))] : []),
+          or(
+            eq(chatActions.status, "received"),
+            and(
+              eq(chatActions.status, "processing"),
+              lte(chatActions.updatedAt, sql.placeholder("staleBefore")),
+            ),
+            and(
+              eq(chatActions.status, "failed"),
+              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
+              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${sql.placeholder("nowIso")}::timestamptz)`,
+            ),
+          ),
+        ),
+      )
+      .orderBy(asc(chatActions.createdAt))
+      .limit(sql.placeholder("limit"));
+  const slackSessionStopCandidates = {
+    all: idleQueries.query("chat_slack_stops_all", () => buildSlackSessionStopCandidates(false)),
+    one: idleQueries.query("chat_slack_stops_one", () => buildSlackSessionStopCandidates(true)),
+  };
+
   async function processPendingSlackSessionStops(
     limit = 25,
     onlyActionId?: string,
   ) {
     const now = new Date();
     const staleBefore = new Date(now.getTime() - PROVIDER_EFFECT_STALE_MS);
-    const actions = await db
-      .select({ id: chatActions.id })
-      .from(chatActions)
-      .where(
-        and(
-          eq(chatActions.kind, "slack_session_stop"),
-          ...(onlyActionId ? [eq(chatActions.id, onlyActionId)] : []),
-          or(
-            eq(chatActions.status, "received"),
-            and(
-              eq(chatActions.status, "processing"),
-              lte(chatActions.updatedAt, staleBefore),
-            ),
-            and(
-              eq(chatActions.status, "failed"),
-              sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
-              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
-            ),
-          ),
-        ),
-      )
-      .orderBy(asc(chatActions.createdAt))
-      .limit(limit);
+    const actions = await (onlyActionId ? slackSessionStopCandidates.one : slackSessionStopCandidates.all)({
+      actionId: onlyActionId, nowIso: now.toISOString(), staleBefore: staleBefore.toISOString(), limit,
+    });
     for (const action of actions) await processSlackSessionStop(action.id);
     return actions.length;
   }
@@ -27641,18 +27747,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
-  async function processPendingReactionDeliveries(
-    limit: number,
-    onlyDeliveryId?: string,
-  ): Promise<number> {
-    const now = new Date();
-    const candidates = await db
+  const buildReactionDeliveryCandidates = (specific: boolean) =>
+    db
       .select()
       .from(chatDeliveries)
       .where(
         and(
           sql`not exists (select 1 from chat_endpoints e where e.id = ${chatDeliveries.endpointId} and e.provider = 'agentmail')`,
-          onlyDeliveryId ? eq(chatDeliveries.id, onlyDeliveryId) : undefined,
+          specific ? eq(chatDeliveries.id, sql.placeholder("deliveryId")) : undefined,
           inArray(chatDeliveries.eventKind, [
             "reaction_added",
             "reaction_removed",
@@ -27662,21 +27764,34 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               eq(chatDeliveries.state, "received"),
               or(
                 isNull(chatDeliveries.nextAttemptAt),
-                lte(chatDeliveries.nextAttemptAt, now),
+                lte(chatDeliveries.nextAttemptAt, sql.placeholder("now")),
               ),
             ),
             and(
               eq(chatDeliveries.state, "retry"),
               or(
                 isNull(chatDeliveries.nextAttemptAt),
-                lte(chatDeliveries.nextAttemptAt, now),
+                lte(chatDeliveries.nextAttemptAt, sql.placeholder("now")),
               ),
             ),
           ),
         ),
       )
       .orderBy(asc(chatDeliveries.receivedAt), asc(chatDeliveries.id))
-      .limit(limit);
+      .limit(sql.placeholder("limit"));
+  const reactionDeliveryCandidates = {
+    all: idleQueries.query("chat_reaction_deliveries_all", () => buildReactionDeliveryCandidates(false)),
+    one: idleQueries.query("chat_reaction_deliveries_one", () => buildReactionDeliveryCandidates(true)),
+  };
+
+  async function processPendingReactionDeliveries(
+    limit: number,
+    onlyDeliveryId?: string,
+  ): Promise<number> {
+    const now = new Date();
+    const candidates = await (onlyDeliveryId ? reactionDeliveryCandidates.one : reactionDeliveryCandidates.all)({
+      deliveryId: onlyDeliveryId, now: now.toISOString(), limit,
+    });
     for (const candidate of candidates) {
       try {
         await processPendingReactionDelivery(candidate);
@@ -27700,11 +27815,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
    * authenticated attachment downloads through the endpoint runtime; unsafe
    * or no-longer-available files are omitted without losing the text turn.
    */
-  async function processPendingSlackBoardMessages(limit = 25) {
-    const pending = await db.select({ id: chatActions.id, companyId: chatActions.companyId, endpointId: chatActions.endpointId }).from(chatActions)
+  const slackBoardMessageCandidates = idleQueries.query("chat_slack_board_messages", () =>
+    db.select({ id: chatActions.id, companyId: chatActions.companyId, endpointId: chatActions.endpointId }).from(chatActions)
       .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.companyId, chatActions.companyId)))
       .where(and(eq(chatActions.kind, "slack_board_message"), eq(chatActions.status, "received"), notInArray(chatEndpoints.status, ["paused", "attention"])))
-      .orderBy(asc(chatActions.createdAt)).limit(limit);
+      .orderBy(asc(chatActions.createdAt)).limit(sql.placeholder("limit"))
+  );
+
+  async function processPendingSlackBoardMessages(limit = 25) {
+    const pending = await slackBoardMessageCandidates({ limit });
     for (const candidate of pending) {
       await withSlackBoardLease(db, { ...candidate, actionId: candidate.id }, fetchImpl, async (lease) => {
         const [action] = await db.select().from(chatActions).where(and(eq(chatActions.id, candidate.id), eq(chatActions.status, "received")));
@@ -27774,8 +27893,68 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
   }
 
+  const buildDeliveryCandidates = (specific: boolean) => db
+        .select()
+        .from(chatDeliveries)
+        .where(
+          and(
+            sql`not exists (select 1 from chat_endpoints e where e.id = ${chatDeliveries.endpointId} and e.provider = 'agentmail')`,
+            specific ? eq(chatDeliveries.id, sql.placeholder("deliveryId")) : undefined,
+            notInArray(chatDeliveries.eventKind, [
+              "reaction_added",
+              "reaction_removed",
+            ]),
+            or(
+              and(
+                eq(chatDeliveries.state, "processed"),
+                pendingInboundWakeupCondition(true, sql`${sql.placeholder("wakeStaleBefore")}`),
+              ),
+              and(
+                eq(chatDeliveries.state, "received"),
+                or(
+                  isNull(chatDeliveries.nextAttemptAt),
+                  lte(chatDeliveries.nextAttemptAt, sql.placeholder("now")),
+                ),
+              ),
+              and(
+                eq(chatDeliveries.state, "retry"),
+                or(
+                  isNull(chatDeliveries.nextAttemptAt),
+                  lte(chatDeliveries.nextAttemptAt, sql.placeholder("now")),
+                ),
+              ),
+              and(
+                eq(chatDeliveries.state, "processing"),
+                lte(chatDeliveries.updatedAt, sql.placeholder("staleBefore")),
+              ),
+            ),
+          ),
+        )
+        .orderBy(asc(chatDeliveries.receivedAt))
+        .limit(sql.placeholder("limit"));
+  const deliveryCandidates = {
+    all: idleQueries.query("chat_pending_deliveries_all", () => buildDeliveryCandidates(false)),
+    one: idleQueries.query("chat_pending_deliveries_one", () => buildDeliveryCandidates(true)),
+  };
+
+  const deliveryWorkPresence = idleQueries.query("chat_delivery_work_presence", () =>
+    db.select({
+      hasActions: sql<boolean>`exists (select 1 from ${chatActions})`,
+      hasDeliveries: sql<boolean>`exists (select 1 from ${chatDeliveries})`,
+    }).from(sql`(values (1)) as chat_delivery_probe(dummy)`),
+  );
+
   async function processPendingDeliveries(limit = 25, onlyDeliveryId?: string) {
-    await settleRejectedInboundWakeups(onlyDeliveryId);
+    // A presence result is used only in this pass. Explicit replays keep their
+    // direct selection path, and a later tick sees any newly committed work.
+    let hasActions = true;
+    let hasDeliveries = true;
+    if (options.idleOptimizations && !onlyDeliveryId) {
+      const [presence] = await deliveryWorkPresence();
+      hasActions = presence.hasActions;
+      hasDeliveries = presence.hasDeliveries;
+    }
+    if (hasActions) await settleRejectedInboundWakeups(onlyDeliveryId);
     // Provider-visible effects that are not backed by a task publication use
     // chat_actions as their outbox. Reconcile them before inbound deliveries
     // so a crashed processing claim is quarantined before the delivery worker
@@ -27783,19 +27962,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const actionRecovery = onlyDeliveryId
       ? null
       : Promise.allSettled([
-          processPendingSlackBoardMessages(limit),
-          processPendingGitHubWebhookIngress(limit),
-          processPendingProviderEffects(limit),
-          processPendingReceiptReactions(limit),
-          processPendingSlackSessionStops(limit),
+          ...(hasActions ? [
+            processPendingSlackBoardMessages(limit),
+            processPendingGitHubWebhookIngress(limit),
+            processPendingProviderEffects(limit),
+            processPendingReceiptReactions(limit),
+            processPendingSlackSessionStops(limit),
+          ] : []),
+          // Endpoint maintenance can stage an action even when the action
+          // table was empty when this pass began.
           processPendingTelegramMaintenance(limit),
-          // Slack task starts are an action-backed outbox. Queued work may
-          // post once; provider-confirmed rows perform Paperclip-only
-          // admission; a stale in-flight post is quarantined as unknown.
-          processPendingSlackTaskStarts(limit),
-          processFailedChatRunRetries(limit),
+          // Provider-confirmed starts may finish admission without a new post.
+          ...(hasActions ? [
+            processPendingSlackTaskStarts(limit),
+            processFailedChatRunRetries(limit),
+          ] : []),
         ]);
-    const reactionRecovery = processPendingReactionDeliveries(
+    const reactionRecovery = hasDeliveries ? processPendingReactionDeliveries(
       limit,
       onlyDeliveryId,
     ).catch((error) => {
@@ -27804,54 +27987,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         "chat reaction-link recovery selection failed",
       );
       return 0;
-    });
+    }) : 0;
     let ordinaryFailed = false;
     let ordinaryError: unknown = null;
     let rows: DeliveryRow[] = [];
     try {
-      const now = new Date();
-      const staleBefore = new Date(
-        now.getTime() - DELIVERY_PROCESSING_STALE_MS,
-      );
-      rows = await db
-        .select()
-        .from(chatDeliveries)
-        .where(
-          and(
-            sql`not exists (select 1 from chat_endpoints e where e.id = ${chatDeliveries.endpointId} and e.provider = 'agentmail')`,
-            onlyDeliveryId ? eq(chatDeliveries.id, onlyDeliveryId) : undefined,
-            notInArray(chatDeliveries.eventKind, [
-              "reaction_added",
-              "reaction_removed",
-            ]),
-            or(
-              and(
-                eq(chatDeliveries.state, "processed"),
-                pendingInboundWakeupCondition(true),
-              ),
-              and(
-                eq(chatDeliveries.state, "received"),
-                or(
-                  isNull(chatDeliveries.nextAttemptAt),
-                  lte(chatDeliveries.nextAttemptAt, now),
-                ),
-              ),
-              and(
-                eq(chatDeliveries.state, "retry"),
-                or(
-                  isNull(chatDeliveries.nextAttemptAt),
-                  lte(chatDeliveries.nextAttemptAt, now),
-                ),
-              ),
-              and(
-                eq(chatDeliveries.state, "processing"),
-                lte(chatDeliveries.updatedAt, staleBefore),
-              ),
-            ),
-          ),
-        )
-        .orderBy(asc(chatDeliveries.receivedAt))
-        .limit(limit);
+      if (hasDeliveries) {
+        const now = new Date();
+        const staleBefore = new Date(
+          now.getTime() - DELIVERY_PROCESSING_STALE_MS,
+        );
+        rows = await (onlyDeliveryId ? deliveryCandidates.one : deliveryCandidates.all)({
+          deliveryId: onlyDeliveryId, now: now.toISOString(), staleBefore: staleBefore.toISOString(),
+          wakeStaleBefore: new Date(Date.now() - DELIVERY_PROCESSING_STALE_MS).toISOString(), limit,
+        });
+      }
       const conversations = new Set<string>();
       for (const delivery of rows) {
         const lifecycleEffect = normalizedLifecycleEffect(delivery);
@@ -36158,9 +36308,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return { action, conversation, endpoint, mode, publication };
   }
 
-  async function processPendingSlackFileUploadReceipts(limit = 25) {
-    const selectedAt = new Date();
-    const actions = await db
+  const slackFileReceiptCandidates = idleQueries.query(
+    "chat_slack_file_receipts",
+    () => db
       .select()
       .from(chatActions)
       .where(
@@ -36197,20 +36347,28 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             and(
               eq(chatActions.status, "failed"),
               sql`coalesce(${chatActions.result}->>'retryable', 'false') = 'true'`,
-              sql`(${chatActions.result}->>'retryAt')::timestamptz <= ${selectedAt.toISOString()}::timestamptz`,
+              sql`(${chatActions.result}->>'retryAt')::timestamptz <= ${sql.placeholder("selectedAtIso")}::timestamptz`,
             ),
             and(
               eq(chatActions.status, "processing"),
               lte(
                 chatActions.updatedAt,
-                new Date(selectedAt.getTime() - SLACK_FILE_RECEIPT_STALE_MS),
+                sql.placeholder("staleBefore"),
               ),
             ),
           ),
         ),
       )
       .orderBy(asc(chatActions.updatedAt), asc(chatActions.id))
-      .limit(limit);
+      .limit(sql.placeholder("limit"))
+  );
+
+  async function processPendingSlackFileUploadReceipts(limit = 25) {
+    const selectedAt = new Date();
+    const actions = await slackFileReceiptCandidates({
+      selectedAtIso: selectedAt.toISOString(),
+      staleBefore: new Date(selectedAt.getTime() - SLACK_FILE_RECEIPT_STALE_MS).toISOString(), limit,
+    });
     let processed = 0;
     for (const selected of actions) {
       const payload = slackFileUploadReceiptPayload(selected.payload);
@@ -36642,32 +36800,41 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return processed;
   }
 
-  async function processPendingSlackSessionSyncs(
-    limit = 25,
-    onlyActionId?: string,
-  ) {
-    const now = new Date();
-    const actions = await db
+  const buildSlackSessionSyncCandidates = (specific: boolean) =>
+    db
       .select()
       .from(chatActions)
       .where(
         and(
           eq(chatActions.kind, "slack_session_sync"),
-          ...(onlyActionId ? [eq(chatActions.id, onlyActionId)] : []),
+          ...(specific ? [eq(chatActions.id, sql.placeholder("actionId"))] : []),
           or(
             and(
               eq(chatActions.status, "received"),
-              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${now.toISOString()}::timestamptz)`,
+              sql`(${chatActions.result}->>'retryAt' is null or (${chatActions.result}->>'retryAt')::timestamptz <= ${sql.placeholder("nowIso")}::timestamptz)`,
             ),
             and(
               eq(chatActions.status, "processing"),
-              lte(chatActions.updatedAt, new Date(now.getTime() - 60_000)),
+              lte(chatActions.updatedAt, sql.placeholder("staleBefore")),
             ),
           ),
         ),
       )
       .orderBy(asc(chatActions.updatedAt))
-      .limit(limit);
+      .limit(sql.placeholder("limit"));
+  const slackSessionSyncCandidates = {
+    all: idleQueries.query("chat_slack_syncs_all", () => buildSlackSessionSyncCandidates(false)),
+    one: idleQueries.query("chat_slack_syncs_one", () => buildSlackSessionSyncCandidates(true)),
+  };
+
+  async function processPendingSlackSessionSyncs(
+    limit = 25,
+    onlyActionId?: string,
+  ) {
+    const now = new Date();
+    const actions = await (onlyActionId ? slackSessionSyncCandidates.one : slackSessionSyncCandidates.all)({
+      actionId: onlyActionId, nowIso: now.toISOString(), staleBefore: new Date(now.getTime() - 60_000).toISOString(), limit,
+    });
     await options.slackSessionSyncSelectionBarrier?.();
     for (const action of actions) {
       const payload = slackSessionSyncPayload(action.payload);
@@ -37829,33 +37996,22 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     });
   }
 
-  async function processPendingPublications(
-    limit = 25,
-    { waitForCompletion = true }: { waitForCompletion?: boolean } = {},
-  ) {
-    if (shuttingDown) return 0;
-    await enqueueInboundWakeupPublications();
-    await reconcileTerminalConfirmationActions(limit);
-    const now = new Date();
-    const staleBefore = new Date(now.getTime() - 60_000);
-    // A process that disappears after the provider accepted a post but before
-    // Paperclip persisted its message id leaves an ambiguous delivery. Never
-    // resend it automatically; an operator can explicitly replay after
-    // checking the provider conversation.
-    const quarantinedPublications = await db
+  const quarantineStalePublications = idleQueries.query(
+    "chat_quarantine_publications",
+    () => db
       .update(chatPublications)
       .set({
         state: "delivery_unknown",
         nextAttemptAt: null,
         redactedError:
           "Provider delivery could not be confirmed after the worker stopped. Check the external conversation before replaying.",
-        updatedAt: now,
+        updatedAt: sql`${sql.placeholder("nowIso")}::timestamptz`,
       })
       .where(
         and(
           sql`not exists (select 1 from chat_endpoints e where e.id = ${chatPublications.endpointId} and e.publication_mode = 'explicit')`,
           eq(chatPublications.state, "streaming"),
-          lte(chatPublications.updatedAt, staleBefore),
+          lte(chatPublications.updatedAt, sql.placeholder("staleBefore")),
           // Teams owns separate staged I/O intents and a longer attempt lease.
           // Only that protocol may recover/quarantine its in-flight stages.
           notExists(
@@ -37884,60 +38040,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                     chatPublications.endpointId,
                   ),
                   sql`${chatEndpointLeases.leaseKey} = 'publication:' || ${chatPublications.id}::text || ':' || ${chatPublications.attempts}::text`,
-                  gt(chatEndpointLeases.expiresAt, now),
+                  gt(chatEndpointLeases.expiresAt, sql.placeholder("now")),
                 ),
               ),
           ),
         ),
       )
-      .returning({ id: chatPublications.id });
-    if (quarantinedPublications.length > 0) {
-      await db
-        .update(chatActions)
-        .set({
-          status: "delivery_unknown",
-          result: {
-            code: "task_control_delivery_unknown",
-            retryable: false,
-          },
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(chatActions.kind, "task_control_authorization"),
-            eq(chatActions.status, "processing"),
-            inArray(
-              chatActions.providerActionId,
-              quarantinedPublications.map(
-                (publication) => `task-control-authorization:${publication.id}`,
-              ),
-            ),
-          ),
-        );
-    }
-    const earlierPublication = alias(
-      chatPublications,
-      "earlier_chat_publications",
-    );
-    const attemptedIds: string[] = [];
-    const ownedTasks = new Set<Promise<void>>();
-    let failed = false;
-    let firstError: unknown;
-    try {
-      while (attemptedIds.length < limit && !failed && !shuttingDown) {
-        if (publicationEndpointTasks.size >= PUBLICATION_ENDPOINT_CONCURRENCY) {
-          if (!waitForCompletion) break;
-          await Promise.race(publicationEndpointTasks.values());
-          continue;
-        }
-        const busyEndpointIds = [...publicationEndpointTasks.keys()];
-        for (const [id, retryAfter] of teamsFileRetryAfter)
-          if (retryAfter <= Date.now()) teamsFileRetryAfter.delete(id);
-        const coolingTeamsPublicationIds = [...teamsFileRetryAfter.keys()];
-        // Select only each conversation's current head before applying the
-        // global limit. Re-query after every batch so one invocation can still
-        // drain a conversation's newly unblocked milestones in FIFO order.
-        const rows = await db
+      .returning({ id: chatPublications.id })
+  );
+
+  const publicationCandidates = idleQueries.query("chat_publication_candidates", () => {
+    const earlierPublication = alias(chatPublications, "earlier_chat_publications");
+    return db
           .select()
           .from(chatPublications)
           .where(
@@ -38019,12 +38133,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                     ),
                   )})`,
               ),
-              busyEndpointIds.length > 0
-                ? notInArray(chatPublications.endpointId, busyEndpointIds)
-                : undefined,
-              coolingTeamsPublicationIds.length > 0
-                ? notInArray(chatPublications.id, coolingTeamsPublicationIds)
-                : undefined,
+              sql`not (${chatPublications.endpointId} = any(${sql.placeholder("busyEndpointIds")}::uuid[]))`,
+              sql`not (${chatPublications.id} = any(${sql.placeholder("coolingTeamsPublicationIds")}::uuid[]))`,
               // Inactive endpoints must not consume the eligibility page or
               // acquire an artificial retry deadline. When an operator resumes
               // them, due work is immediately eligible; genuine provider retry
@@ -38042,11 +38152,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               ),
               or(
                 isNull(chatPublications.nextAttemptAt),
-                lte(chatPublications.nextAttemptAt, now),
+                lte(chatPublications.nextAttemptAt, sql.placeholder("now")),
               ),
-              attemptedIds.length > 0
-                ? notInArray(chatPublications.id, attemptedIds)
-                : undefined,
+              sql`not (${chatPublications.id} = any(${sql.placeholder("attemptedIds")}::uuid[]))`,
               notExists(
                 db
                   .select({ id: earlierPublication.id })
@@ -38073,7 +38181,86 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             asc(chatPublications.createdAt),
             asc(publicationTransportOrderKey(chatPublications)),
           )
-          .limit(limit - attemptedIds.length);
+          .limit(sql.placeholder("limit"));
+  });
+
+  const publicationWorkPresence = idleQueries.query("chat_publication_work_presence", () =>
+    db.select({
+      hasActions: sql<boolean>`exists (select 1 from ${chatActions})`,
+      hasPublications: sql<boolean>`exists (select 1 from ${chatPublications})`,
+    }).from(sql`(values (1)) as chat_publication_probe(dummy)`),
+  );
+
+  async function processPendingPublications(
+    limit = 25,
+    { waitForCompletion = true }: { waitForCompletion?: boolean } = {},
+  ) {
+    if (shuttingDown) return 0;
+    if (options.idleOptimizations && publicationEndpointTasks.size === 0 && teamsFileRetryAfter.size === 0) {
+      const [presence] = await publicationWorkPresence();
+      // A concurrent publisher can start while the database probe is pending.
+      // Preserve the existing wait/cleanup path whenever local work appeared.
+      if (!presence.hasActions && !presence.hasPublications && publicationEndpointTasks.size === 0 && teamsFileRetryAfter.size === 0) {
+        failedRetryNoticeCursor = null;
+        inboundWakeNoticeCursor = null;
+        return 0;
+      }
+    }
+    await enqueueInboundWakeupPublications();
+    await reconcileTerminalConfirmationActions(limit);
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - 60_000);
+    // A process that disappears after the provider accepted a post but before
+    // Paperclip persisted its message id leaves an ambiguous delivery. Never
+    // resend it automatically; an operator can explicitly replay after
+    // checking the provider conversation.
+    const quarantinedPublications = await quarantineStalePublications({ now: now.toISOString(), nowIso: now.toISOString(), staleBefore: staleBefore.toISOString() });
+    if (quarantinedPublications.length > 0) {
+      await db
+        .update(chatActions)
+        .set({
+          status: "delivery_unknown",
+          result: {
+            code: "task_control_delivery_unknown",
+            retryable: false,
+          },
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(chatActions.kind, "task_control_authorization"),
+            eq(chatActions.status, "processing"),
+            inArray(
+              chatActions.providerActionId,
+              quarantinedPublications.map(
+                (publication) => `task-control-authorization:${publication.id}`,
+              ),
+            ),
+          ),
+        );
+    }
+    const attemptedIds: string[] = [];
+    const ownedTasks = new Set<Promise<void>>();
+    let failed = false;
+    let firstError: unknown;
+    try {
+      while (attemptedIds.length < limit && !failed && !shuttingDown) {
+        if (publicationEndpointTasks.size >= PUBLICATION_ENDPOINT_CONCURRENCY) {
+          if (!waitForCompletion) break;
+          await Promise.race(publicationEndpointTasks.values());
+          continue;
+        }
+        const busyEndpointIds = [...publicationEndpointTasks.keys()];
+        for (const [id, retryAfter] of teamsFileRetryAfter)
+          if (retryAfter <= Date.now()) teamsFileRetryAfter.delete(id);
+        const coolingTeamsPublicationIds = [...teamsFileRetryAfter.keys()];
+        // Select only each conversation's current head before applying the
+        // global limit. Re-query after every batch so one invocation can still
+        // drain a conversation's newly unblocked milestones in FIFO order.
+        const rows = await publicationCandidates({
+          now: now.toISOString(), busyEndpointIds, coolingTeamsPublicationIds, attemptedIds,
+          limit: limit - attemptedIds.length,
+        });
         if (rows.length === 0) {
           // The query excluded the busy-endpoint snapshot above. A worker
           // may have completed while PostgreSQL selected this empty page,
@@ -38157,6 +38344,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return attemptedIds.length;
   }
 
+  const createGitHubMaintenanceServices = () => ({
+    reviews: githubChatReviewService(db, fetchImpl),
+    checks: githubReviewCheckService(db, fetchImpl),
+  });
+  let githubMaintenanceServices: ReturnType<typeof createGitHubMaintenanceServices> | null = null;
   let githubMaintenancePending = false;
   function scheduleGitHubMaintenance() {
     if (githubMaintenancePending || shuttingDown) return;
@@ -38164,8 +38356,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     scheduleMessageProcessing(async () => {
       try {
         // Provider I/O must not block Slack, Teams, or ordinary message receipts.
-        await githubChatReviewService(db, fetchImpl).processPending();
-        await githubReviewCheckService(db, fetchImpl).processPending();
+        const services = options.idleOptimizations
+          ? (githubMaintenanceServices ??= createGitHubMaintenanceServices())
+          : createGitHubMaintenanceServices();
+        await services.reviews.processPending();
+        await services.checks.processPending();
       } finally {
         githubMaintenancePending = false;
       }
@@ -38414,6 +38609,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     reconcileProviderRuntimes,
     processPendingPublications,
     enqueueInboundWakeupPublications,
+    enqueueRunMilestones: runPublicationProjector.enqueue,
     schedulePendingPublications,
     processPendingDeliveries,
     prepareFailedChatRunRetry,
@@ -38436,6 +38632,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       unregisterCommittedResponseAuthority();
       await Promise.allSettled([...publicationEndpointTasks.values()]);
       await Promise.allSettled([...backgroundMessageTasks]);
+      idleQueries.clear();
+      runPublicationProjector.clear();
+      githubMaintenanceServices = null;
       scheduledConversationDrains.clear();
       liveInboundMessages.clear();
       const ownedDiscordGateways = [...discordGatewayOwnerships.values()];

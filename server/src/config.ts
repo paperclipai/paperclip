@@ -65,6 +65,7 @@ export interface Config {
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
   chatWebhookPublicBaseUrl: string | undefined;
+  chatIdleOptimizations: boolean;
   authDisableSignUp: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
@@ -321,6 +322,7 @@ export function loadConfig(): Config {
     chatWebhookPublicBaseUrl: parseChatWebhookPublicBaseUrl(
       process.env.PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL,
     ),
+    chatIdleOptimizations: process.env.PAPERCLIP_CHAT_IDLE_OPTIMIZATIONS === "true",
     authDisableSignUp,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,

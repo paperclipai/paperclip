@@ -83,6 +83,27 @@ pnpm dev:stop --data-dir ./tmp/paperclip-dev
 
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
+### Chat idle optimizations
+
+Set `PAPERCLIP_CHAT_IDLE_OPTIMIZATIONS=true` in the instance environment to
+reuse compiled chat polling queries and skip scans whose source tables are empty.
+Only the value `true` enables it. It defaults to `false`; restart Paperclip after
+changing it. The startup log reports the active choice.
+
+Every executed query reads the database with fresh time, limit, cursor, and
+record-ID parameters. Presence probes run again on each pass; they do not cache
+whether work exists. Telegram endpoint maintenance, local publication waits and
+cooldown cleanup remain active. Historical records keep the normal recovery path.
+The optimizations keep the one-second polling interval and the existing event
+wakeups, authorization, and database driver `DATABASE_PREPARED_STATEMENTS` setting.
+GitHub maintenance reuses its service objects, while credentials and permissions
+are resolved during each operation.
+
+For an allocation comparison, use the same build and data with the setting off,
+on, then off. Warm up for two minutes and observe for two minutes per run. Check
+the startup log for the selected mode, and keep task execution and builds outside
+the observation windows. Report allocation separately from RSS/PSS and Swap.
+
 ### Mobile-friendly preview (`pnpm dev:mobile`)
 
 The vite dev server serves an unbundled module graph. This is fast to reload on a local machine but too heavy for phones and tablets on slow links (airplane wifi, mobile data, distant tailnet peers). `pnpm dev:mobile` builds the UI once and serves the small production bundle on port `3101` via `vite preview`, proxying `/api` requests to the dev API on `3100`.

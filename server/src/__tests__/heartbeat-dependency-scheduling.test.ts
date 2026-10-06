@@ -101,25 +101,10 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   }, 20_000);
 
   afterEach(async () => {
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    const runIds = await db
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .then((runs) => runs.map((run) => run.id));
-    await Promise.all(runIds.map((runId) => heartbeat.waitForRunExecutionDrain(runId)));
+    // Terminal rows and per-run live flags can settle before trailing events
+    // or a promoted queued run finish writing. Drain the complete lifecycle
+    // before deleting the parent rows that those writes still reference.
+    await heartbeat.drainActiveRunExecutions();
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -167,6 +152,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   });
 
   afterAll(async () => {
+    await heartbeat.drainActiveRunExecutions();
     await tempDb?.cleanup();
   });
 

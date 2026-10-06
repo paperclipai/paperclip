@@ -7837,22 +7837,24 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
 
     const reservePort = async () => {
       for (let attempt = 0; attempt < 100; attempt += 1) {
-        const probe = net.createServer();
-        // macOS can allocate an entire ephemeral range above 55535. Pick a
-        // bounded candidate so the test's HMR companion remains a valid port.
-        await new Promise<void>((resolve) => {
-          probe.once("error", () => resolve());
-          probe.listen(20_000 + Math.floor(Math.random() * 20_000), "127.0.0.1", resolve);
-        });
-        if (!probe.listening) continue;
-        const address = probe.address();
-        const port = typeof address === "object" && address ? address.port : null;
-        await new Promise<void>((resolve, reject) => {
-          probe.close((error) => error ? reject(error) : resolve());
-        });
-        if (port && port <= 55_535 && (port < 42_000 || port > 42_999)) return port;
+        // Keep the app port below 40000 so its HMR companion is valid and the
+        // legacy app remains outside the broker's dedicated allowlist.
+        const port = 20_000 + Math.floor(Math.random() * 20_000);
+        const probes: net.Server[] = [];
+        try {
+          // The fixture process binds both listeners. Keep the first probe
+          // open while checking the second so an occupied HMR port is rejected.
+          for (const listenerPort of [port, port + 10_000]) {
+            probes.push(await listenOnPort(listenerPort));
+          }
+          return port;
+        } catch {
+          continue;
+        } finally {
+          await Promise.all(probes.map((probe) => closeNetServer(probe)));
+        }
       }
-      throw new Error("Failed to reserve an HTTPS backfill test port outside the broker range");
+      throw new Error("Failed to reserve an HTTPS backfill test port pair");
     };
     const isLoopbackPortFree = async (port: number) => {
       const probe = net.createServer();

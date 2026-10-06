@@ -26,6 +26,7 @@ import {
   issueComments,
   issues,
 } from "@paperclipai/db";
+import { createChatQueryExecutor } from "./chat-query-executor.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { safeChatTaskUrl } from "./chat-task-url.js";
 import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
@@ -174,35 +175,37 @@ export function safeMilestoneText(input: {
   }`;
 }
 
-/**
- * Projects a bounded sample of native activity into the existing run working
- * lane. The selector intentionally reads only event identity, type, sequence,
- * and time; native messages and payloads stay inside Paperclip.
- */
-async function enqueueSafeNativeChatProgress(
+/** Owns compiled polling queries; authorization and pagination stay per invocation. */
+export function createChatRunPublicationProjector(
   db: Db,
-  input: { since: Date; limit: number },
-): Promise<number> {
-  const basePublication = alias(
-    chatPublications,
-    "safe_native_progress_base_publication",
-  );
-  const laterEvent = alias(
-    heartbeatRunEvents,
-    "safe_native_progress_later_event",
-  );
-  const issueIdFromContext = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
-  let inserted = 0;
-  let cursor: {
-    eventCreatedAt: Date;
-    runId: string;
-    conversationId: string;
-  } | null = null;
+  options: { idleOptimizations?: boolean } = {},
+) {
+  const idleQueries = createChatQueryExecutor(options.idleOptimizations === true);
+  const explicitlyAuthoredCommentReason = sql<boolean>`(
+    ${issueComments.metadata} ->> 'authorizationReason' = 'paperclip_runner_protocol'
+    or left(coalesce(${issueComments.metadata} ->> 'authorizationReason', ''), 6) = 'allow_'
+  )`;
 
-  while (inserted < input.limit) {
-    const pageSize = Math.max(25, Math.min(200, input.limit - inserted));
-    const pageCursor: typeof cursor = cursor;
-    const rows: SafeNativeChatProgressCandidate[] = await db
+  const conversationPresence = idleQueries.query("chat_projection_presence", () =>
+    db.select({ id: chatConversations.id }).from(chatConversations).limit(1),
+  );
+
+  /**
+   * Projects a bounded sample of native activity into the existing run working
+   * lane. The selector intentionally reads only event identity, type, sequence,
+   * and time; native messages and payloads stay inside Paperclip.
+   */
+  function buildNativeProgressCandidates(withCursor: boolean) {
+    const basePublication = alias(
+      chatPublications,
+      "safe_native_progress_base_publication",
+    );
+    const laterEvent = alias(
+      heartbeatRunEvents,
+      "safe_native_progress_later_event",
+    );
+    const issueIdFromContext = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+    return db
       .select({
         eventId: heartbeatRunEvents.id,
         eventSeq: heartbeatRunEvents.seq,
@@ -266,7 +269,7 @@ async function enqueueSafeNativeChatProgress(
           inArray(heartbeatRunEvents.eventType, [
             ...SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
           ]),
-          gte(heartbeatRunEvents.createdAt, input.since),
+          gte(heartbeatRunEvents.createdAt, sql.placeholder("since")),
           sql`${heartbeatRunEvents.createdAt} >= ${basePublication.createdAt} + interval '20 seconds'`,
           notExists(
             db
@@ -283,16 +286,16 @@ async function enqueueSafeNativeChatProgress(
                 ),
               ),
           ),
-          pageCursor
+          withCursor
             ? or(
-                gt(heartbeatRunEvents.createdAt, pageCursor.eventCreatedAt),
+                gt(heartbeatRunEvents.createdAt, sql.placeholder("eventCreatedAt")),
                 and(
-                  eq(heartbeatRunEvents.createdAt, pageCursor.eventCreatedAt),
+                  eq(heartbeatRunEvents.createdAt, sql.placeholder("eventCreatedAt")),
                   or(
-                    gt(heartbeatRuns.id, pageCursor.runId),
+                    gt(heartbeatRuns.id, sql.placeholder("runId")),
                     and(
-                      eq(heartbeatRuns.id, pageCursor.runId),
-                      gt(chatConversations.id, pageCursor.conversationId),
+                      eq(heartbeatRuns.id, sql.placeholder("runId")),
+                      gt(chatConversations.id, sql.placeholder("conversationId")),
                     ),
                   ),
                 ),
@@ -305,349 +308,347 @@ async function enqueueSafeNativeChatProgress(
         asc(heartbeatRuns.id),
         asc(chatConversations.id),
       )
-      .limit(pageSize);
-    if (rows.length === 0) break;
-    const lastRow = rows.at(-1)!;
-    cursor = {
-      eventCreatedAt: lastRow.eventCreatedAt,
-      runId: lastRow.runId,
-      conversationId: lastRow.conversationId,
-    };
+      .limit(sql.placeholder("pageSize"));
+  }
+  const nativeProgressCandidates = {
+    first: idleQueries.query("chat_native_progress_first", () => buildNativeProgressCandidates(false)),
+    after: idleQueries.query("chat_native_progress_after", () => buildNativeProgressCandidates(true)),
+  };
 
-    for (const row of rows) {
-      if (inserted >= input.limit) break;
-      const result = await db.transaction(async (tx) => {
-        // Keep the normal issue -> run order used by native finalization. The
-        // publication insert takes an issue FK lock, so locking the run first
-        // would invert that order against a concurrent terminal commit. A
-        // contended issue/run is optional progress, not a reason to hold other
-        // chats: skip it now and revisit it with a fresh cursor next sweep.
-        const currentIssue = await tx
-          .select({ id: issues.id })
-          .from(issues)
-          .where(
-            and(
-              eq(issues.id, row.issueId),
-              eq(issues.companyId, row.companyId),
-            ),
-          )
-          .for("update", { skipLocked: true })
-          .then((currentRows) => currentRows[0] ?? null);
-        if (!currentIssue) return 0;
-        // Native event admission serializes on the run row. Taking the same
-        // short lock makes terminal status, a later event, or a final comment
-        // win before this non-terminal projection can be inserted.
-        const currentRun = await tx
-          .select({ id: heartbeatRuns.id })
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.id, row.runId),
-              eq(heartbeatRuns.companyId, row.companyId),
-              eq(heartbeatRuns.agentId, row.agentId),
-              eq(heartbeatRuns.runtimeMode, "native"),
-              eq(heartbeatRuns.status, "running"),
-            ),
-          )
-          .for("update", { skipLocked: true })
-          .then((currentRows) => currentRows[0] ?? null);
-        if (!currentRun) return 0;
+  async function enqueueSafeNativeChatProgress(
+    input: { since: Date; limit: number },
+  ): Promise<number> {
+    let inserted = 0;
+    let cursor: {
+      eventCreatedAt: Date;
+      runId: string;
+      conversationId: string;
+    } | null = null;
 
-        const destination = await tx
-          .select({ id: chatConversations.id })
-          .from(chatConversations)
-          .innerJoin(
-            chatEndpoints,
-            and(
-              eq(chatEndpoints.companyId, chatConversations.companyId),
-              eq(chatEndpoints.id, chatConversations.endpointId),
-          eq(chatEndpoints.publicationMode, "automatic"),
-              eq(chatEndpoints.assignedAgentId, row.agentId),
-            ),
-          )
-          .where(
-            and(
-              eq(chatConversations.companyId, row.companyId),
-              eq(chatConversations.id, row.conversationId),
-              eq(chatConversations.endpointId, row.endpointId),
-              eq(chatConversations.issueId, row.issueId),
-              inArray(chatConversations.state, ["active", "waiting"]),
-            ),
-          )
-          .limit(1)
-          .then((currentRows) => currentRows[0] ?? null);
-        if (!destination) return 0;
+    while (inserted < input.limit) {
+      const pageSize = Math.max(25, Math.min(200, input.limit - inserted));
+      const rows: SafeNativeChatProgressCandidate[] = await (cursor ? nativeProgressCandidates.after : nativeProgressCandidates.first)({
+        since: input.since.toISOString(),
+        pageSize,
+        eventCreatedAt: cursor?.eventCreatedAt.toISOString(),
+        runId: cursor?.runId,
+        conversationId: cursor?.conversationId,
+      });
+      if (rows.length === 0) break;
+      const lastRow = rows.at(-1)!;
+      cursor = {
+        eventCreatedAt: lastRow.eventCreatedAt,
+        runId: lastRow.runId,
+        conversationId: lastRow.conversationId,
+      };
 
-        const [currentEvent] = await tx
-          .select({
-            id: heartbeatRunEvents.id,
-            seq: heartbeatRunEvents.seq,
-            eventType: heartbeatRunEvents.eventType,
-            createdAt: heartbeatRunEvents.createdAt,
-          })
-          .from(heartbeatRunEvents)
-          .where(
-            and(
-              eq(heartbeatRunEvents.companyId, row.companyId),
-              eq(heartbeatRunEvents.runId, row.runId),
-              inArray(heartbeatRunEvents.eventType, [
-                ...SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
-              ]),
-            ),
-          )
-          .orderBy(desc(heartbeatRunEvents.seq), desc(heartbeatRunEvents.id))
-          .limit(1);
-        if (
-          !currentEvent ||
-          currentEvent.id !== row.eventId ||
-          currentEvent.seq !== row.eventSeq ||
-          currentEvent.eventType !== row.eventType
-        ) {
-          return 0;
-        }
-        const progress = safeNativeChatProgressForEvent(
-          currentEvent.eventType,
-          row.agentName,
-        );
-        if (!progress) return 0;
+      for (const row of rows) {
+        if (inserted >= input.limit) break;
+        const result = await db.transaction(async (tx) => {
+          // Keep the normal issue -> run order used by native finalization. The
+          // publication insert takes an issue FK lock, so locking the run first
+          // would invert that order against a concurrent terminal commit. A
+          // contended issue/run is optional progress, not a reason to hold other
+          // chats: skip it now and revisit it with a fresh cursor next sweep.
+          const currentIssue = await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.id, row.issueId),
+                eq(issues.companyId, row.companyId),
+              ),
+            )
+            .for("update", { skipLocked: true })
+            .then((currentRows) => currentRows[0] ?? null);
+          if (!currentIssue) return 0;
+          // Native event admission serializes on the run row. Taking the same
+          // short lock makes terminal status, a later event, or a final comment
+          // win before this non-terminal projection can be inserted.
+          const currentRun = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.id, row.runId),
+                eq(heartbeatRuns.companyId, row.companyId),
+                eq(heartbeatRuns.agentId, row.agentId),
+                eq(heartbeatRuns.runtimeMode, "native"),
+                eq(heartbeatRuns.status, "running"),
+              ),
+            )
+            .for("update", { skipLocked: true })
+            .then((currentRows) => currentRows[0] ?? null);
+          if (!currentRun) return 0;
 
-        const baseKey = `run:${row.runId}:working:${row.endpointId}`;
-        const [currentBase] = await tx
-          .select({ createdAt: chatPublications.createdAt })
-          .from(chatPublications)
-          .where(
-            and(
-              eq(chatPublications.companyId, row.companyId),
-              eq(chatPublications.endpointId, row.endpointId),
-              eq(chatPublications.conversationId, row.conversationId),
-              eq(chatPublications.issueId, row.issueId),
-              eq(chatPublications.idempotencyKey, baseKey),
-              inArray(chatPublications.state, [
-                "pending",
-                "retry",
-                "streaming",
-                "published",
-              ]),
-            ),
-          )
-          .limit(1);
-        if (!currentBase) return 0;
+          const destination = await tx
+            .select({ id: chatConversations.id })
+            .from(chatConversations)
+            .innerJoin(
+              chatEndpoints,
+              and(
+                eq(chatEndpoints.companyId, chatConversations.companyId),
+                eq(chatEndpoints.id, chatConversations.endpointId),
+            eq(chatEndpoints.publicationMode, "automatic"),
+                eq(chatEndpoints.assignedAgentId, row.agentId),
+              ),
+            )
+            .where(
+              and(
+                eq(chatConversations.companyId, row.companyId),
+                eq(chatConversations.id, row.conversationId),
+                eq(chatConversations.endpointId, row.endpointId),
+                eq(chatConversations.issueId, row.issueId),
+                inArray(chatConversations.state, ["active", "waiting"]),
+              ),
+            )
+            .limit(1)
+            .then((currentRows) => currentRows[0] ?? null);
+          if (!destination) return 0;
 
-        const progressKeyPrefix = `${baseKey}:native:`;
-        const previousProgress = await tx
-          .select({
-            createdAt: chatPublications.createdAt,
-            idempotencyKey: chatPublications.idempotencyKey,
-          })
-          .from(chatPublications)
-          .where(
-            and(
-              eq(chatPublications.companyId, row.companyId),
-              eq(chatPublications.endpointId, row.endpointId),
-              eq(chatPublications.conversationId, row.conversationId),
-              eq(chatPublications.issueId, row.issueId),
-              like(chatPublications.idempotencyKey, `${progressKeyPrefix}%`),
+          const [currentEvent] = await tx
+            .select({
+              id: heartbeatRunEvents.id,
+              seq: heartbeatRunEvents.seq,
+              eventType: heartbeatRunEvents.eventType,
+              createdAt: heartbeatRunEvents.createdAt,
+            })
+            .from(heartbeatRunEvents)
+            .where(
+              and(
+                eq(heartbeatRunEvents.companyId, row.companyId),
+                eq(heartbeatRunEvents.runId, row.runId),
+                inArray(heartbeatRunEvents.eventType, [
+                  ...SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
+                ]),
+              ),
+            )
+            .orderBy(desc(heartbeatRunEvents.seq), desc(heartbeatRunEvents.id))
+            .limit(1);
+          if (
+            !currentEvent ||
+            currentEvent.id !== row.eventId ||
+            currentEvent.seq !== row.eventSeq ||
+            currentEvent.eventType !== row.eventType
+          ) {
+            return 0;
+          }
+          const progress = safeNativeChatProgressForEvent(
+            currentEvent.eventType,
+            row.agentName,
+          );
+          if (!progress) return 0;
+
+          const baseKey = `run:${row.runId}:working:${row.endpointId}`;
+          const [currentBase] = await tx
+            .select({ createdAt: chatPublications.createdAt })
+            .from(chatPublications)
+            .where(
+              and(
+                eq(chatPublications.companyId, row.companyId),
+                eq(chatPublications.endpointId, row.endpointId),
+                eq(chatPublications.conversationId, row.conversationId),
+                eq(chatPublications.issueId, row.issueId),
+                eq(chatPublications.idempotencyKey, baseKey),
+                inArray(chatPublications.state, [
+                  "pending",
+                  "retry",
+                  "streaming",
+                  "published",
+                ]),
+              ),
+            )
+            .limit(1);
+          if (!currentBase) return 0;
+
+          const progressKeyPrefix = `${baseKey}:native:`;
+          const previousProgress = await tx
+            .select({
+              createdAt: chatPublications.createdAt,
+              idempotencyKey: chatPublications.idempotencyKey,
+            })
+            .from(chatPublications)
+            .where(
+              and(
+                eq(chatPublications.companyId, row.companyId),
+                eq(chatPublications.endpointId, row.endpointId),
+                eq(chatPublications.conversationId, row.conversationId),
+                eq(chatPublications.issueId, row.issueId),
+                like(chatPublications.idempotencyKey, `${progressKeyPrefix}%`),
+              ),
+            );
+          if (
+            previousProgress.some((publication) =>
+              publication.idempotencyKey.startsWith(
+                `${progressKeyPrefix}${progress.phase}:`,
+              ),
+            )
+          ) {
+            return 0;
+          }
+          const lastProgressAt = Math.max(
+            currentBase.createdAt.getTime(),
+            ...previousProgress.map((publication) =>
+              publication.createdAt.getTime(),
             ),
           );
-        if (
-          previousProgress.some((publication) =>
-            publication.idempotencyKey.startsWith(
-              `${progressKeyPrefix}${progress.phase}:`,
-            ),
-          )
-        ) {
-          return 0;
-        }
-        const lastProgressAt = Math.max(
-          currentBase.createdAt.getTime(),
-          ...previousProgress.map((publication) =>
-            publication.createdAt.getTime(),
-          ),
-        );
-        if (
-          currentEvent.createdAt.getTime() - lastProgressAt <
-          SAFE_NATIVE_CHAT_PROGRESS_CADENCE_MS
-        ) {
-          return 0;
-        }
+          if (
+            currentEvent.createdAt.getTime() - lastProgressAt <
+            SAFE_NATIVE_CHAT_PROGRESS_CADENCE_MS
+          ) {
+            return 0;
+          }
 
-        const bindings = await resolveChatOriginPublicationBindings(
-          tx,
-          row.companyId,
-          row.issueId,
-          row.runId,
-        );
-        if (
-          !bindings.some(
-            (binding) =>
-              binding.endpointId === row.endpointId &&
-              binding.conversationId === row.conversationId,
-          )
-        ) {
-          return 0;
-        }
-        if (
-          await hasChatRunOwnedProviderInteraction(tx, {
-            companyId: row.companyId,
-            issueId: row.issueId,
-            runId: row.runId,
-          })
-        ) {
-          return 0;
-        }
-        const explicitlyAuthoredFinal = await tx
-          .select({ id: chatPublications.id })
-          .from(chatPublications)
-          .innerJoin(
-            issueComments,
-            and(
-              eq(issueComments.companyId, chatPublications.companyId),
-              eq(issueComments.id, chatPublications.commentId),
-            ),
-          )
-          .where(
-            and(
-              eq(chatPublications.companyId, row.companyId),
-              eq(chatPublications.endpointId, row.endpointId),
-              eq(chatPublications.conversationId, row.conversationId),
-              eq(chatPublications.issueId, row.issueId),
-              eq(issueComments.authorType, "agent"),
-              eq(issueComments.createdByRunId, row.runId),
-              sql`(
-                ${issueComments.metadata} ->> 'authorizationReason' = 'paperclip_runner_protocol'
-                or left(coalesce(${issueComments.metadata} ->> 'authorizationReason', ''), 6) = 'allow_'
-              )`,
-            ),
-          )
-          .limit(1);
-        if (explicitlyAuthoredFinal.length > 0) return 0;
+          const bindings = await resolveChatOriginPublicationBindings(
+            tx,
+            row.companyId,
+            row.issueId,
+            row.runId,
+          );
+          if (
+            !bindings.some(
+              (binding) =>
+                binding.endpointId === row.endpointId &&
+                binding.conversationId === row.conversationId,
+            )
+          ) {
+            return 0;
+          }
+          if (
+            await hasChatRunOwnedProviderInteraction(tx, {
+              companyId: row.companyId,
+              issueId: row.issueId,
+              runId: row.runId,
+            })
+          ) {
+            return 0;
+          }
+          const explicitlyAuthoredFinal = await tx
+            .select({ id: chatPublications.id })
+            .from(chatPublications)
+            .innerJoin(
+              issueComments,
+              and(
+                eq(issueComments.companyId, chatPublications.companyId),
+                eq(issueComments.id, chatPublications.commentId),
+              ),
+            )
+            .where(
+              and(
+                eq(chatPublications.companyId, row.companyId),
+                eq(chatPublications.endpointId, row.endpointId),
+                eq(chatPublications.conversationId, row.conversationId),
+                eq(chatPublications.issueId, row.issueId),
+                eq(issueComments.authorType, "agent"),
+                eq(issueComments.createdByRunId, row.runId),
+                sql`(
+                  ${issueComments.metadata} ->> 'authorizationReason' = 'paperclip_runner_protocol'
+                  or left(coalesce(${issueComments.metadata} ->> 'authorizationReason', ''), 6) = 'allow_'
+                )`,
+              ),
+            )
+            .limit(1);
+          if (explicitlyAuthoredFinal.length > 0) return 0;
 
-        const insertedRows = await tx
-          .insert(chatPublications)
-          .values({
-            companyId: row.companyId,
-            endpointId: row.endpointId,
-            conversationId: row.conversationId,
-            issueId: row.issueId,
-            idempotencyKey: `${progressKeyPrefix}${progress.phase}:${currentEvent.seq}`,
-            payload: projectSafeChatPublication({
-              classification: "external",
-              source: "safe_milestone",
-              text: progress.text,
-              progressState: "working",
-            }),
-            state: "pending",
-          })
-          .onConflictDoNothing()
-          .returning({ id: chatPublications.id });
-        return insertedRows.length;
-      });
-      inserted += result;
+          const insertedRows = await tx
+            .insert(chatPublications)
+            .values({
+              companyId: row.companyId,
+              endpointId: row.endpointId,
+              conversationId: row.conversationId,
+              issueId: row.issueId,
+              idempotencyKey: `${progressKeyPrefix}${progress.phase}:${currentEvent.seq}`,
+              payload: projectSafeChatPublication({
+                classification: "external",
+                source: "safe_milestone",
+                text: progress.text,
+                progressState: "working",
+              }),
+              state: "pending",
+            })
+            .onConflictDoNothing()
+            .returning({ id: chatPublications.id });
+          return insertedRows.length;
+        });
+        inserted += result;
+      }
+      if (rows.length < pageSize) break;
     }
-    if (rows.length < pageSize) break;
+    return inserted;
   }
-  return inserted;
-}
 
-/**
- * Project only coarse run lifecycle into bound external conversations. Raw
- * output, errors, tool events, and reasoning stay in Paperclip. Idempotency is
- * keyed by run, milestone, and endpoint so polling and restarts are harmless.
- */
-export async function enqueueChatRunMilestones(
-  db: Db,
-  input: {
-    publicBaseUrl?: string | null;
-    since?: Date;
-    limit?: number;
-  } = {},
-): Promise<number> {
-  const since = input.since ?? new Date(Date.now() - 24 * 60 * 60_000);
-  const limit = Math.max(1, Math.min(input.limit ?? 200, 1_000));
-  const issueIdFromContext = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
-  const explicitlyAuthoredCommentReason = sql<boolean>`(
-    ${issueComments.metadata} ->> 'authorizationReason' = 'paperclip_runner_protocol'
-    or left(coalesce(${issueComments.metadata} ->> 'authorizationReason', ''), 6) = 'allow_'
-  )`;
-  const milestoneFromStatus = sql<string>`case
-    when ${heartbeatRuns.status} = 'queued' then 'queued'
-    when ${heartbeatRuns.status} = 'running'
-      and ${inArray(heartbeatRuns.errorCode, [...OWNERSHIP_ATTENTION_CODES])}
-      then 'waiting_for_input'
-    when ${heartbeatRuns.status} = 'running' then 'working'
-    when ${heartbeatRuns.status} = 'succeeded' then 'completed'
-    else 'failed'
-  end`;
-  const hasQuestionContinuationTarget = sql<boolean>`exists (
-    select 1
-    from issue_question_response_deliveries question_delivery
-    inner join issue_thread_interactions question_interaction
-      on question_interaction.company_id = question_delivery.company_id
-      and question_interaction.issue_id = question_delivery.issue_id
-      and question_interaction.id = question_delivery.interaction_id
-    inner join chat_publications question_prompt
-      on question_prompt.company_id = question_delivery.company_id
-      and question_prompt.issue_id = question_delivery.issue_id
-      and question_prompt.payload ->> 'interactionId' = question_delivery.interaction_id::text
-      and question_prompt.idempotency_key = 'interaction:' || question_delivery.interaction_id::text || ':' || question_prompt.endpoint_id::text
-      and question_prompt.state = 'published'
-    where question_delivery.company_id = ${heartbeatRuns.companyId}
-      and question_delivery.issue_id::text = ${issueIdFromContext}
-      and question_delivery.target_run_id = ${heartbeatRuns.id}
-      and question_delivery.status in ('delivered', 'fallback_queued')
-      and question_interaction.kind = 'ask_user_questions'
-      and question_interaction.status = 'answered'
-  )`;
-  const hasDirectInteractionContinuation = sql<boolean>`exists (
-    select 1
-    from issue_thread_interactions interaction
-    inner join chat_publications interaction_prompt
-      on interaction_prompt.company_id = interaction.company_id
-      and interaction_prompt.issue_id = interaction.issue_id
-      and interaction_prompt.payload ->> 'interactionId' = interaction.id::text
-      and interaction_prompt.idempotency_key = 'interaction:' || interaction.id::text || ':' || interaction_prompt.endpoint_id::text
-      and interaction_prompt.state = 'published'
-    inner join agent_wakeup_requests continuation_wake
-      on continuation_wake.company_id = interaction.company_id
-      and continuation_wake.run_id = ${heartbeatRuns.id}
-      and continuation_wake.agent_id = ${heartbeatRuns.agentId}
-      and continuation_wake.status <> 'skipped'
-      and continuation_wake.idempotency_key = case
-        when interaction.kind = 'ask_user_questions'
-          and interaction.status = 'answered'
-          then 'question-response:' || interaction.id::text
-        else 'interaction:' || interaction.id::text || ':' || interaction.status
-      end
-    where interaction.company_id = ${heartbeatRuns.companyId}
-      and interaction.issue_id::text = ${issueIdFromContext}
-      and interaction.id::text = ${heartbeatRuns.contextSnapshot} ->> 'interactionId'
-      and interaction.source_run_id::text = ${heartbeatRuns.contextSnapshot} ->> 'sourceRunId'
-      and (
-        (
-          interaction.kind = 'ask_user_questions'
-          and interaction.status in ('answered', 'cancelled')
+  /**
+   * Project only coarse run lifecycle into bound external conversations. Raw
+   * output, errors, tool events, and reasoning stay in Paperclip. Idempotency is
+   * keyed by run, milestone, and endpoint so polling and restarts are harmless.
+   */
+  function buildRunMilestoneCandidates(withCursor: boolean) {
+    const issueIdFromContext = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+    const milestoneFromStatus = sql<string>`case
+      when ${heartbeatRuns.status} = 'queued' then 'queued'
+      when ${heartbeatRuns.status} = 'running'
+        and ${inArray(heartbeatRuns.errorCode, [...OWNERSHIP_ATTENTION_CODES])}
+        then 'waiting_for_input'
+      when ${heartbeatRuns.status} = 'running' then 'working'
+      when ${heartbeatRuns.status} = 'succeeded' then 'completed'
+      else 'failed'
+    end`;
+    const hasQuestionContinuationTarget = sql<boolean>`exists (
+      select 1
+      from issue_question_response_deliveries question_delivery
+      inner join issue_thread_interactions question_interaction
+        on question_interaction.company_id = question_delivery.company_id
+        and question_interaction.issue_id = question_delivery.issue_id
+        and question_interaction.id = question_delivery.interaction_id
+      inner join chat_publications question_prompt
+        on question_prompt.company_id = question_delivery.company_id
+        and question_prompt.issue_id = question_delivery.issue_id
+        and question_prompt.payload ->> 'interactionId' = question_delivery.interaction_id::text
+        and question_prompt.idempotency_key = 'interaction:' || question_delivery.interaction_id::text || ':' || question_prompt.endpoint_id::text
+        and question_prompt.state = 'published'
+      where question_delivery.company_id = ${heartbeatRuns.companyId}
+        and question_delivery.issue_id::text = ${issueIdFromContext}
+        and question_delivery.target_run_id = ${heartbeatRuns.id}
+        and question_delivery.status in ('delivered', 'fallback_queued')
+        and question_interaction.kind = 'ask_user_questions'
+        and question_interaction.status = 'answered'
+    )`;
+    const hasDirectInteractionContinuation = sql<boolean>`exists (
+      select 1
+      from issue_thread_interactions interaction
+      inner join chat_publications interaction_prompt
+        on interaction_prompt.company_id = interaction.company_id
+        and interaction_prompt.issue_id = interaction.issue_id
+        and interaction_prompt.payload ->> 'interactionId' = interaction.id::text
+        and interaction_prompt.idempotency_key = 'interaction:' || interaction.id::text || ':' || interaction_prompt.endpoint_id::text
+        and interaction_prompt.state = 'published'
+      inner join agent_wakeup_requests continuation_wake
+        on continuation_wake.company_id = interaction.company_id
+        and continuation_wake.run_id = ${heartbeatRuns.id}
+        and continuation_wake.agent_id = ${heartbeatRuns.agentId}
+        and continuation_wake.status <> 'skipped'
+        and continuation_wake.idempotency_key = case
+          when interaction.kind = 'ask_user_questions'
+            and interaction.status = 'answered'
+            then 'question-response:' || interaction.id::text
+          else 'interaction:' || interaction.id::text || ':' || interaction.status
+        end
+      where interaction.company_id = ${heartbeatRuns.companyId}
+        and interaction.issue_id::text = ${issueIdFromContext}
+        and interaction.id::text = ${heartbeatRuns.contextSnapshot} ->> 'interactionId'
+        and interaction.source_run_id::text = ${heartbeatRuns.contextSnapshot} ->> 'sourceRunId'
+        and (
+          (
+            interaction.kind = 'ask_user_questions'
+            and interaction.status in ('answered', 'cancelled')
+          )
+          or (
+            interaction.kind = 'request_confirmation'
+            and interaction.status in ('accepted', 'rejected', 'cancelled')
+          )
         )
-        or (
-          interaction.kind = 'request_confirmation'
-          and interaction.status in ('accepted', 'rejected', 'cancelled')
-        )
-      )
-  )`;
-  let inserted = 0;
-  let cursor: {
-    updatedAt: Date;
-    runId: string;
-    conversationId: string;
-  } | null = null;
-  const bindingsCache = new Map<
-    string,
-    Awaited<ReturnType<typeof resolveChatOriginPublicationBindings>>
-  >();
-  const providerInteractionCache = new Map<string, boolean>();
-  while (inserted < limit) {
-    const pageSize = Math.max(25, Math.min(200, limit - inserted));
-    const pageCursor: typeof cursor = cursor;
-    const rows: ChatRunMilestoneCandidate[] = await db
+    )`;
+    return db
       .select({
         runId: heartbeatRuns.id,
         runStatus: heartbeatRuns.status,
@@ -797,18 +798,18 @@ export async function enqueueChatRunMilestones(
                 and target_delivery.status in ('delivered', 'fallback_queued')
             )`,
           ),
-          gte(heartbeatRuns.updatedAt, since),
+          gte(heartbeatRuns.updatedAt, sql.placeholder("since")),
           isNull(chatPublications.id),
-          pageCursor
+          withCursor
             ? or(
-                gt(heartbeatRuns.updatedAt, pageCursor.updatedAt),
+                gt(heartbeatRuns.updatedAt, sql.placeholder("updatedAt")),
                 and(
-                  eq(heartbeatRuns.updatedAt, pageCursor.updatedAt),
+                  eq(heartbeatRuns.updatedAt, sql.placeholder("updatedAt")),
                   or(
-                    gt(heartbeatRuns.id, pageCursor.runId),
+                    gt(heartbeatRuns.id, sql.placeholder("runId")),
                     and(
-                      eq(heartbeatRuns.id, pageCursor.runId),
-                      gt(chatConversations.id, pageCursor.conversationId),
+                      eq(heartbeatRuns.id, sql.placeholder("runId")),
+                      gt(chatConversations.id, sql.placeholder("conversationId")),
                     ),
                   ),
                 ),
@@ -821,112 +822,151 @@ export async function enqueueChatRunMilestones(
         asc(heartbeatRuns.id),
         asc(chatConversations.id),
       )
-      .limit(pageSize);
-    if (rows.length === 0) break;
-    const lastRow = rows.at(-1)!;
-    cursor = {
-      updatedAt: lastRow.runUpdatedAt,
-      runId: lastRow.runId,
-      conversationId: lastRow.conversationId,
-    };
+      .limit(sql.placeholder("pageSize"));
+  }
+  const runMilestoneCandidates = {
+    first: idleQueries.query("chat_run_milestones_first", () => buildRunMilestoneCandidates(false)),
+    after: idleQueries.query("chat_run_milestones_after", () => buildRunMilestoneCandidates(true)),
+  };
 
-    for (const row of rows) {
-      if (inserted >= limit) break;
-      const milestone = milestoneForStatus(row.runStatus, row.runErrorCode);
-      if (!milestone) continue;
-      const bindingCacheKey = `${row.companyId}:${row.issueId}:${row.runId}`;
-      let bindings = bindingsCache.get(bindingCacheKey);
-      if (!bindings) {
-        bindings = await resolveChatOriginPublicationBindings(
-          db,
-          row.companyId,
-          row.issueId,
-          row.runId,
-        );
-        bindingsCache.set(bindingCacheKey, bindings);
-      }
-      if (
-        !bindings.some(
-          (binding) =>
-            binding.endpointId === row.endpointId &&
-            binding.conversationId === row.conversationId,
-        )
-      ) {
-        continue;
-      }
-      if (milestone === "completed" || milestone === "failed") {
-        let hasProviderInteraction =
-          providerInteractionCache.get(bindingCacheKey);
-        if (hasProviderInteraction === undefined) {
-          hasProviderInteraction = await hasChatRunOwnedProviderInteraction(
+  async function enqueueChatRunMilestones(
+    input: {
+      publicBaseUrl?: string | null;
+      since?: Date;
+      limit?: number;
+    } = {},
+  ): Promise<number> {
+    if (options.idleOptimizations && (await conversationPresence()).length === 0) return 0;
+    const since = input.since ?? new Date(Date.now() - 24 * 60 * 60_000);
+    const limit = Math.max(1, Math.min(input.limit ?? 200, 1_000));
+    let inserted = 0;
+    let cursor: {
+      updatedAt: Date;
+      runId: string;
+      conversationId: string;
+    } | null = null;
+    const bindingsCache = new Map<
+      string,
+      Awaited<ReturnType<typeof resolveChatOriginPublicationBindings>>
+    >();
+    const providerInteractionCache = new Map<string, boolean>();
+    while (inserted < limit) {
+      const pageSize = Math.max(25, Math.min(200, limit - inserted));
+      const rows: ChatRunMilestoneCandidate[] = await (cursor ? runMilestoneCandidates.after : runMilestoneCandidates.first)({
+        since: since.toISOString(),
+        pageSize,
+        updatedAt: cursor?.updatedAt.toISOString(),
+        runId: cursor?.runId,
+        conversationId: cursor?.conversationId,
+      });
+      if (rows.length === 0) break;
+      const lastRow = rows.at(-1)!;
+      cursor = {
+        updatedAt: lastRow.runUpdatedAt,
+        runId: lastRow.runId,
+        conversationId: lastRow.conversationId,
+      };
+
+      for (const row of rows) {
+        if (inserted >= limit) break;
+        const milestone = milestoneForStatus(row.runStatus, row.runErrorCode);
+        if (!milestone) continue;
+        const bindingCacheKey = `${row.companyId}:${row.issueId}:${row.runId}`;
+        let bindings = bindingsCache.get(bindingCacheKey);
+        if (!bindings) {
+          bindings = await resolveChatOriginPublicationBindings(
             db,
-            {
-              companyId: row.companyId,
-              issueId: row.issueId,
-              runId: row.runId,
-            },
+            row.companyId,
+            row.issueId,
+            row.runId,
           );
-          providerInteractionCache.set(bindingCacheKey, hasProviderInteraction);
+          bindingsCache.set(bindingCacheKey, bindings);
         }
-        if (hasProviderInteraction) continue;
-      }
-      if (milestone === "completed" || row.runStatus === "interrupted") {
-        const explicitlyAuthoredPublication = await db
-          .select({ id: chatPublications.id })
-          .from(chatPublications)
-          .innerJoin(
-            issueComments,
-            and(
-              eq(issueComments.companyId, chatPublications.companyId),
-              eq(issueComments.id, chatPublications.commentId),
-            ),
+        if (
+          !bindings.some(
+            (binding) =>
+              binding.endpointId === row.endpointId &&
+              binding.conversationId === row.conversationId,
           )
-          .where(
-            and(
-              eq(chatPublications.companyId, row.companyId),
-              eq(chatPublications.endpointId, row.endpointId),
-              eq(chatPublications.conversationId, row.conversationId),
-              eq(issueComments.authorType, "agent"),
-              eq(issueComments.createdByRunId, row.runId),
-              explicitlyAuthoredCommentReason,
-            ),
-          )
-          .limit(1);
-        if (explicitlyAuthoredPublication.length > 0) continue;
-      }
-      const result = await db
-        .insert(chatPublications)
-        .values({
-          companyId: row.companyId,
-          endpointId: row.endpointId,
-          conversationId: row.conversationId,
-          issueId: row.issueId,
-          idempotencyKey: `run:${row.runId}:${milestone}:${row.endpointId}`,
-          payload: projectSafeChatPublication({
-            classification: "external",
-            source: "safe_milestone",
-            text: safeMilestoneText({
-              agentName: row.agentName,
-              errorCode: row.runErrorCode,
-              milestone,
-              issueId: row.issueId,
-              publicBaseUrl: input.publicBaseUrl,
+        ) {
+          continue;
+        }
+        if (milestone === "completed" || milestone === "failed") {
+          let hasProviderInteraction =
+            providerInteractionCache.get(bindingCacheKey);
+          if (hasProviderInteraction === undefined) {
+            hasProviderInteraction = await hasChatRunOwnedProviderInteraction(
+              db,
+              {
+                companyId: row.companyId,
+                issueId: row.issueId,
+                runId: row.runId,
+              },
+            );
+            providerInteractionCache.set(bindingCacheKey, hasProviderInteraction);
+          }
+          if (hasProviderInteraction) continue;
+        }
+        if (milestone === "completed" || row.runStatus === "interrupted") {
+          const explicitlyAuthoredPublication = await db
+            .select({ id: chatPublications.id })
+            .from(chatPublications)
+            .innerJoin(
+              issueComments,
+              and(
+                eq(issueComments.companyId, chatPublications.companyId),
+                eq(issueComments.id, chatPublications.commentId),
+              ),
+            )
+            .where(
+              and(
+                eq(chatPublications.companyId, row.companyId),
+                eq(chatPublications.endpointId, row.endpointId),
+                eq(chatPublications.conversationId, row.conversationId),
+                eq(issueComments.authorType, "agent"),
+                eq(issueComments.createdByRunId, row.runId),
+                explicitlyAuthoredCommentReason,
+              ),
+            )
+            .limit(1);
+          if (explicitlyAuthoredPublication.length > 0) continue;
+        }
+        const result = await db
+          .insert(chatPublications)
+          .values({
+            companyId: row.companyId,
+            endpointId: row.endpointId,
+            conversationId: row.conversationId,
+            issueId: row.issueId,
+            idempotencyKey: `run:${row.runId}:${milestone}:${row.endpointId}`,
+            payload: projectSafeChatPublication({
+              classification: "external",
+              source: "safe_milestone",
+              text: safeMilestoneText({
+                agentName: row.agentName,
+                errorCode: row.runErrorCode,
+                milestone,
+                issueId: row.issueId,
+                publicBaseUrl: input.publicBaseUrl,
+              }),
+              progressState: milestone,
             }),
-            progressState: milestone,
-          }),
-          state: "pending",
-        })
-        .onConflictDoNothing()
-        .returning({ id: chatPublications.id });
-      inserted += result.length;
+            state: "pending",
+          })
+          .onConflictDoNothing()
+          .returning({ id: chatPublications.id });
+        inserted += result.length;
+      }
+      if (rows.length < pageSize) break;
     }
-    if (rows.length < pageSize) break;
+    if (inserted < limit) {
+      inserted += await enqueueSafeNativeChatProgress({
+        since,
+        limit: limit - inserted,
+      });
+    }
+    return inserted;
   }
-  if (inserted < limit) {
-    inserted += await enqueueSafeNativeChatProgress(db, {
-      since,
-      limit: limit - inserted,
-    });
-  }
-  return inserted;
+
+  return { enqueue: enqueueChatRunMilestones, clear: idleQueries.clear };
 }

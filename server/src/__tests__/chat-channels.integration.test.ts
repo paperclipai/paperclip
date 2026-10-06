@@ -147,7 +147,7 @@ import {
   telegramChatSdkCallbackData,
 } from "../services/chat-interaction-publications.js";
 import {
-  enqueueChatRunMilestones,
+  createChatRunPublicationProjector,
   resolveChatRunPresentationAuthorizationReason,
 } from "../services/chat-run-publications.js";
 import {
@@ -1007,6 +1007,11 @@ function webhookApp(
 
 describeEmbeddedPostgres("chat channel control-plane integration", () => {
   let db!: TestDb;
+  let milestoneProjector: ReturnType<typeof createChatRunPublicationProjector> | undefined;
+  const enqueueChatRunMilestones = (database: TestDb, input: Parameters<ReturnType<typeof createChatRunPublicationProjector>["enqueue"]>[0] = {}) => {
+    milestoneProjector ??= createChatRunPublicationProjector(database, { idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true" });
+    return milestoneProjector.enqueue(input);
+  };
   let tempDb: Awaited<
     ReturnType<typeof startEmbeddedPostgresTestDatabase>
   > | null = null;
@@ -1045,6 +1050,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   const fixtureCompanies = new Set<string>();
   const fixtureServices = new Set<ChatChannelService>();
   afterEach(async () => {
+    milestoneProjector?.clear();
+    milestoneProjector = undefined;
     try {
       await Promise.all([...fixtureServices].map((service) => service.shutdown()));
     } finally {
@@ -1193,6 +1200,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     overrides: Partial<
       Pick<
         ChatChannelServiceOptions,
+        | "idleOptimizations"
         | "credentialMutationLeaseRenewalIntervalMs"
         | "deferWebhookProcessing"
         | "discordGatewayEventBarrier"
@@ -1246,6 +1254,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       cancelRunOverride ?? (async () => ({ status: "cancelled" })),
     );
     const service = chatChannelService(db, {
+      idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true",
       fetch: providerFetch,
       heartbeat: { cancelRun, wakeup: receiptBackedWakeup(wakeup) },
       publicBaseUrl: "https://paperclip.example",
@@ -4227,6 +4236,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const smallDb = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 1 });
     const smallWake = vi.fn(async () => ({ accepted: true }));
     const worker = chatChannelService(smallDb, {
+      idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true",
       fetch: fakeSlackFetch() as typeof fetch,
       heartbeat: { wakeup: smallWake },
       publicBaseUrl: "https://paperclip.example",
@@ -16000,14 +16010,25 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const runtime = new FakeChatSdkRuntime();
     const deferred: Array<() => void> = [];
     const wakeup = vi.fn(async () => ({ accepted: true }));
+    let completeBatch!: () => void;
+    const batchReceipts = new Promise<void>((resolve) => { completeBatch = resolve; });
+    let receiptCount = 0;
+    const recordWakeup = receiptBackedWakeup(wakeup);
+    const observeWakeup: ChatChannelServiceOptions["heartbeat"]["wakeup"] = async (agentId, opts) => {
+      const result = await recordWakeup(agentId, opts);
+      if (agentId === fixture.assignedAgentId && ++receiptCount === 8) completeBatch();
+      return result;
+    };
     const service = chatChannelService(db, {
+      idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true",
       deferWebhookProcessing: true,
       fetch: fakeSlackFetch() as typeof globalThis.fetch,
-      heartbeat: { wakeup: receiptBackedWakeup(wakeup) },
+      heartbeat: { wakeup: observeWakeup },
       publicBaseUrl: "https://paperclip.example",
       runtime: runtime as unknown as ChatSdkRuntime,
       scheduleDeferredWork: (task) => deferred.push(task),
     });
+    fixtureServices.add(service);
     const endpoint = await service.create(
       fixture.companyId,
       { provider: "slack", assignedAgentId: fixture.assignedAgentId },
@@ -16120,38 +16141,36 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(deferred).toHaveLength(1);
 
     const competingService = chatChannelService(db, {
+      idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true",
       fetch: fakeSlackFetch() as typeof globalThis.fetch,
-      heartbeat: { wakeup: receiptBackedWakeup(wakeup) },
+      heartbeat: { wakeup: observeWakeup },
       publicBaseUrl: "https://paperclip.example",
       runtime: new FakeChatSdkRuntime() as unknown as ChatSdkRuntime,
     });
+    fixtureServices.add(competingService);
     deferred.shift()?.();
     // Simulate another server process reconciling the same durable rows at
     // the same time as the webhook process's deferred drain.
     await competingService.processPendingDeliveries();
-    await vi.waitFor(async () => {
-      const rows = await db
-        .select()
-        .from(chatConversations)
-        .where(eq(chatConversations.endpointId, endpoint.id));
-      expect(rows).toHaveLength(1);
-    });
-    const [conversation] = await db
+    // The competing sweep can return before the deferred owner starts or after
+    // losing its lease. Keep that owner running until all eight durable wake
+    // receipts exist, then inspect the completed conversation and batch.
+    // The test's existing deadline still bounds a missing or stalled wake.
+    await batchReceipts;
+    const conversations = await db
       .select()
       .from(chatConversations)
       .where(eq(chatConversations.endpointId, endpoint.id));
-    await vi.waitFor(async () => {
-      const rows = await db
-        .select({ id: issueComments.id })
-        .from(issueComments)
-        .where(eq(issueComments.issueId, conversation.issueId));
-      expect(rows).toHaveLength(8);
-    });
+    expect(conversations).toHaveLength(1);
+    const [conversation] = conversations;
+    await service.shutdown();
+    await competingService.shutdown();
     const comments = await db
       .select({ id: issueComments.id, body: issueComments.body })
       .from(issueComments)
       .where(eq(issueComments.issueId, conversation.issueId))
       .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+    expect(comments).toHaveLength(8);
     expect(comments.map((comment) => comment.body)).toEqual([
       "@maya acknowledge quickly",
       "follow-up 3",
@@ -16162,32 +16181,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       "follow-up 7",
       "follow-up 8",
     ]);
-    // Comment admission commits before the durable wake. Wait for this
-    // company's last wake too, not merely its already-visible last comment.
-    // The competing sweep may legitimately reconcile another fixture company.
-    await vi.waitFor(() => {
-      const calls = wakeup.mock.calls.filter(
-        (call) => call[0] === fixture.assignedAgentId,
-      );
-      expect(calls).toHaveLength(8);
-      expect(calls.map((call) => call[1]?.payload?.wakeCommentId)).toEqual(
-        comments.map((comment) => comment.id),
-      );
-    });
-    // The last comment and wakeup commit inside the lease. Under full-suite
-    // load the assertions above can observe those effects one microtask before
-    // the deferred owner's `finally` deletes its lease. Require prompt eventual
-    // release; a real leak would remain for the much longer lease TTL.
-    await vi.waitFor(async () => {
-      expect(
-        await db
-          .select()
-          .from(chatEndpointLeases)
-          .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
-      ).toHaveLength(0);
-    });
-    await competingService.shutdown();
-    await service.shutdown();
+    // The drain includes wake receipts and lease release. The competing sweep
+    // may legitimately reconcile another fixture company, so scope the calls.
+    const calls = wakeup.mock.calls.filter(
+      (call) => call[0] === fixture.assignedAgentId,
+    );
+    expect(calls).toHaveLength(8);
+    expect(calls.map((call) => call[1]?.payload?.wakeCommentId)).toEqual(
+      comments.map((comment) => comment.id),
+    );
+    expect(
+      await db
+        .select()
+        .from(chatEndpointLeases)
+        .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
+    ).toHaveLength(0);
   });
 
   it("stops a conversation drain after its lease renewal fails", async () => {
@@ -17270,6 +17278,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const deferred: Array<() => void> = [];
     const wakeup = vi.fn(async () => ({ accepted: true }));
     const service = chatChannelService(db, {
+      idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true",
       deferWebhookProcessing: true,
       fetch: fakeTelegramFetch() as typeof globalThis.fetch,
       heartbeat: { wakeup: receiptBackedWakeup(wakeup) },
@@ -17405,6 +17414,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const deferred: Array<() => void> = [];
     const wakeup = vi.fn(async () => ({ accepted: true }));
     const service = chatChannelService(db, {
+      idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true",
       deferWebhookProcessing: true,
       fetch: fakeTelegramFetch() as typeof globalThis.fetch,
       heartbeat: { wakeup: receiptBackedWakeup(wakeup) },
@@ -22175,6 +22185,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   it("returns a retryable webhook failure when the delivery insert fails before durable receipt", async () => {
     const fixture = await seedCompany();
     const service = chatChannelService(db, {
+      idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true",
       deferWebhookProcessing: true,
       fetch: fakeSlackFetch("U-BOT-DURABILITY") as typeof globalThis.fetch,
       heartbeat: {
@@ -22702,6 +22713,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const deferred: Array<() => void> = [];
     const wakeup = vi.fn(async () => ({ accepted: true }));
     const service = chatChannelService(db, {
+      idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true",
       deferWebhookProcessing: true,
       fetch: fakeSlackFetch("U-BOT-PAUSE") as typeof globalThis.fetch,
       heartbeat: { wakeup: receiptBackedWakeup(wakeup) },
@@ -29748,9 +29760,36 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "Ask a Paperclip admin to create a private identity link for this account or enable isolated guest execution, then start a new task.",
       ),
     });
+
+    // The same projector must re-read lineage on the next call. A rejected
+    // binding from the previous page cannot remain cached after authorization
+    // changes, and concurrent projections must keep their pagination local.
+    const changedRun = resolverRejectedRuns[0];
+    const authorizedContext = {
+      ...changedRun.contextSnapshot,
+      endpointId: endpoint.id,
+    };
+    await db.update(heartbeatRuns).set({ contextSnapshot: authorizedContext })
+      .where(eq(heartbeatRuns.id, changedRun.id));
+    const concurrent = await Promise.all([
+      enqueueChatRunMilestones(db, { since: new Date("2026-09-05T14:00:00.000Z"), limit: 1 }),
+      enqueueChatRunMilestones(db, { since: new Date("2026-09-05T14:00:00.000Z"), limit: 2 }),
+    ]);
+    expect(concurrent.reduce((sum, count) => sum + count, 0)).toBe(1);
+
+    // Revoking that lineage must also invalidate the prior successful result.
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: changedRun.contextSnapshot,
+      status: "failed",
+      errorCode: "low_trust_isolation_unavailable",
+    }).where(eq(heartbeatRuns.id, changedRun.id));
+    expect(await enqueueChatRunMilestones(db, {
+      since: new Date("2026-09-05T14:00:00.000Z"), limit: 1,
+    })).toBe(0);
+
   });
 
-  async function publicationLaneFixture(count: number) {
+  async function publicationLaneFixture(count: number, idleOptimizations = process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true") {
     const fixture = await seedCompany();
     const storage = createStorageService();
     const runtime = new FakeChatSdkRuntime();
@@ -29760,6 +29799,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       )(input, init);
     const { service } = createService(runtime, providerFetch as typeof fetch, {
       storage: storage.storage,
+      idleOptimizations,
     });
     const lanes = [];
     for (let index = 0; index < count; index += 1) {
@@ -39030,6 +39070,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const previousFetch = globalThis.fetch;
     globalThis.fetch = telegramFetch;
     const service = chatChannelService(db, {
+      idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true",
       fetch: telegramFetch,
       heartbeat: {
         wakeup: receiptBackedWakeup(vi.fn(async () => ({ accepted: true }))),
@@ -51788,6 +51829,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const previousFetch = globalThis.fetch;
     globalThis.fetch = telegramFetch;
     const service = chatChannelService(db, {
+      idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true",
       fetch: telegramFetch,
       heartbeat: { wakeup: receiptBackedWakeup(wakeup) },
       publicBaseUrl: "https://paperclip.example",
@@ -67783,7 +67825,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   async function teamsFileAuthorityFixture(
-    settings: { linkedRecipient?: boolean; separateSponsor?: boolean } = {},
+    settings: { linkedRecipient?: boolean; separateSponsor?: boolean; idleOptimizations?: boolean } = {},
   ) {
     const { installTeamsFileConsentHook } =
       await import("../services/chat-teams-file-consent.js");
@@ -67870,6 +67912,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
     const cancelRun = vi.fn(async () => ({ status: "cancelled" }));
     const service = chatChannelService(db, {
+      idleOptimizations: settings.idleOptimizations ?? (process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true"),
       fetch: async () =>
         Response.json({ access_token: "synthetic-teams-access" }),
       runtime: runtime as unknown as ChatSdkRuntime,
@@ -69954,6 +69997,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const attachment = await context.createFile();
         await context.service.shutdown();
         coldService = chatChannelService(db, {
+          idleOptimizations: process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS === "true",
           fetch: async () =>
             Response.json({ access_token: "synthetic-cold-access" }),
           runtime: coldRuntime as unknown as ChatSdkRuntime,
@@ -72278,4 +72322,110 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     );
   });
+  it("joins an in-flight publisher after its durable outbox is emptied", async () => {
+    type Executable = { execute: (...parameters: unknown[]) => Promise<unknown> };
+    const session = (db as unknown as { session: { prepareQuery: (...args: unknown[]) => Executable } }).session;
+    const original = session.prepareQuery.bind(session);
+    let emptyCandidatePasses = 0;
+    const observer = vi.spyOn(session, "prepareQuery").mockImplementation((...args) => {
+      const prepared = original(...args);
+      const query = args[0] as { sql: string };
+      if (query.sql.includes('"earlier_chat_publications"')) {
+        const execute = prepared.execute.bind(prepared);
+        prepared.execute = async (...parameters) => {
+          const result = await execute(...parameters);
+          if (Array.isArray(result) && result.length === 0) emptyCandidatePasses += 1;
+          return result;
+        };
+      }
+      return prepared;
+    });
+    // CI exercises the optimized guard; the local matrix explicitly selects both modes.
+    const fixture = await publicationLaneFixture(1, process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS !== "false");
+    const { service, lanes, enqueue } = fixture;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let entered = false;
+    lanes[0]!.providerRuntime.postHook = async () => { entered = true; await held; };
+    let drain: Promise<number> | undefined;
+    try {
+      await enqueue(0, "Held publication");
+      await service.schedulePendingPublications(1);
+      await vi.waitFor(() => expect(entered).toBe(true));
+      await db.delete(chatActions).where(eq(chatActions.companyId, fixture.companyId));
+      await db.delete(chatPublications).where(eq(chatPublications.companyId, fixture.companyId));
+      emptyCandidatePasses = 0;
+      let settled = false;
+      drain = service.processPendingPublications().then((count) => { settled = true; return count; });
+      await vi.waitFor(() => expect(emptyCandidatePasses).toBeGreaterThan(0));
+      expect(settled).toBe(false);
+      release();
+      await drain;
+      expect(settled).toBe(true);
+    } finally {
+      release();
+      await drain;
+      observer.mockRestore();
+      await fixture.cleanup();
+    }
+  });
+
+  it("cleans an expired Teams cooldown after its durable outbox is emptied", async () => {
+    const optimized = process.env.PAPERCLIP_TEST_CHAT_IDLE_OPTIMIZATIONS !== "false";
+    type Executable = { execute: (...parameters: unknown[]) => Promise<unknown> };
+    const session = (db as unknown as { session: { prepareQuery: (...args: unknown[]) => Executable } }).session;
+    const original = session.prepareQuery.bind(session);
+    let injectFailure = false;
+    let failedCredentialInsert = false;
+    let presenceChecks = 0;
+    const observer = vi.spyOn(session, "prepareQuery").mockImplementation((...args) => {
+      const prepared = original(...args);
+      const query = args[0] as { sql: string; params: unknown[] };
+      const execute = prepared.execute.bind(prepared);
+      prepared.execute = async (...parameters) => {
+        if (args[2] === "chat_publication_work_presence") presenceChecks += 1;
+        if (injectFailure && query.sql.startsWith('insert into "chat_endpoint_leases"') && query.params.includes("credentials")) {
+          injectFailure = false;
+          failedCredentialInsert = true;
+          throw new Error("Injected credential lease write failure");
+        }
+        return execute(...parameters);
+      };
+      return prepared;
+    });
+    const context = await teamsFileAuthorityFixture({ idleOptimizations: optimized });
+    try {
+      const attachment = await context.createFile();
+      const [publication] = await db.insert(chatPublications).values({
+        companyId: context.fixture.companyId,
+        endpointId: context.endpoint.id,
+        conversationId: context.conversation.id,
+        issueId: context.issue.id,
+        idempotencyKey: `cooldown:${randomUUID()}`,
+        payload: { text: "File recovery", attachmentIds: [attachment.id] },
+        state: "pending",
+      }).returning();
+      injectFailure = true;
+      expect(await context.service.processPendingPublications()).toBe(1);
+      expect(failedCredentialInsert).toBe(true);
+      expect(await context.service.processPendingPublications()).toBe(0);
+      expect((await db.select().from(chatPublications).where(eq(chatPublications.id, publication!.id)))[0].state).toBe("pending");
+      await db.delete(chatActions).where(eq(chatActions.companyId, context.fixture.companyId));
+      await db.delete(chatPublications).where(eq(chatPublications.companyId, context.fixture.companyId));
+      const before = presenceChecks;
+      expect(await context.service.processPendingPublications()).toBe(0);
+      expect(presenceChecks).toBe(before);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 30_001);
+      expect(await context.service.processPendingPublications()).toBe(0);
+      expect(presenceChecks).toBe(before);
+      expect(await context.service.processPendingPublications()).toBe(0);
+      expect(presenceChecks).toBe(before + (optimized ? 1 : 0));
+    } finally {
+      vi.useRealTimers();
+      observer.mockRestore();
+      await retirePublicationFixture(context.service, context.endpoint.id);
+    }
+  });
+
 });
