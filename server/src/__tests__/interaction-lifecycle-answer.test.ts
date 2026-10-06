@@ -28,6 +28,71 @@ function fixture(config: { status?: string; issueStatus?: string; insertError?: 
 }
 const invoke = (f: ReturnType<typeof fixture>, input: any = { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }] }, actor: any = { userId: "user-1" }) => (service as any).answerQuestionsInTransaction(f.tx, { id: "issue-1", companyId: "company-1" }, "card-1", input, actor);
 describe("dark supplied canonical question answer recording", () => {
+  it("routes canonical owned opt-in through pre-read transaction boundary", async () => {
+    const f = fixture(); f.release();
+    const root: any = { select: () => { throw new Error("root-read"); }, transaction: async (callback: any) => {
+      f.events.push("owned-tx"); return callback(f.tx);
+    } };
+    const row = await service.issueThreadInteractionService(root).answerQuestions(
+      { id: "issue-1", companyId: "company-1" }, "card-1",
+      { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }] },
+      { userId: "user-1" }, {}, undefined, { lifecycleFence: true },
+    );
+    expect(row.status).toBe("answered");
+    expect(f.events[0]).toBe("owned-tx"); expect(f.events[1]).toBe("fence");
+    expect(f.deliveries).toHaveLength(1);
+  });
+  it.each(["beforeResolveInTransaction", "afterResolveInTransaction"])("denies canonical owned opt-in hook %s before effects", async hook => {
+    const f = fixture(); const transaction = vi.fn();
+    await expect(service.issueThreadInteractionService({ transaction } as any).answerQuestions(
+      { id: "issue-1", companyId: "company-1" }, "card-1", { answers: [] }, {},
+      { [hook]: vi.fn() }, undefined, { lifecycleFence: true },
+    )).rejects.toMatchObject({ status: 422 });
+    expect(transaction).not.toHaveBeenCalled(); expect(f.events).toEqual([]);
+  });
+  it("denies canonical owned opt-in on an explicit supplied tx before effects", async () => {
+    const f = fixture(); const transaction = vi.fn();
+    await expect(service.issueThreadInteractionService({ transaction } as any).answerQuestions(
+      { id: "issue-1", companyId: "company-1" }, "card-1", { answers: [] }, {}, {}, f.tx, { lifecycleFence: true },
+    )).rejects.toMatchObject({ status: 422 });
+    expect(transaction).not.toHaveBeenCalled(); expect(f.events).toEqual([]);
+  });
+  it.each([undefined, false])("preserves canonical ordinary opt-in=%s read/owned-write/touch order", async lifecycleFence => {
+    const f = fixture(); f.release();
+    const root: any = { ...f.tx,
+      transaction: async (callback: any) => { f.events.push("ordinary-tx"); return callback(f.tx); },
+      update: (table: any) => { expect(table).toBe(issues); return { set: () => ({ where: async () => { f.events.push("touch"); } }) }; },
+    };
+    const args: any[] = [{ id: "issue-1", companyId: "company-1" }, "card-1", { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }] }, { userId: "user-1" }];
+    if (lifecycleFence === false) args.push({}, undefined, { lifecycleFence: false });
+    const row = await (service.issueThreadInteractionService(root).answerQuestions as any)(...args);
+    expect(row.status).toBe("answered");
+    expect(f.events).toEqual(["card-read", "ordinary-tx", "card-write", "delivery-write", "touch"]);
+  });
+  it("captures canonical opt-in routing and audience before deferred startup", async () => {
+    const f = fixture(); let start!: () => void;
+    const startup = new Promise<void>(r => { start = r; });
+    const root: any = { transaction: async (callback: any) => { f.events.push("owned-tx"); await startup; return callback(f.tx); } };
+    const issue = { id: "issue-1", companyId: "company-1" };
+    const restriction = Object.create({ policy: "not_creator", source: "issue_review", excludedActor: { type: "user", id: "user-1" } });
+    const actor = { userId: "user-1", resolverPolicyRestriction: restriction };
+    const pending = service.issueThreadInteractionService(root).answerQuestions(issue, "card-1", { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }] }, actor, {}, undefined, { lifecycleFence: true });
+    const rejected = expect(pending).rejects.toMatchObject({ status: 403 });
+    try {
+      issue.id = "other-issue"; issue.companyId = "other-company"; restriction.policy = "anyone";
+      start(); f.release(); await rejected;
+      expect(f.card.status).toBe("pending"); expect(f.deliveries).toEqual([]);
+      expect(f.queries[0].params).toEqual(["issue-1", "company-1"]);
+    } finally { start(); f.release(); await Promise.allSettled([pending]); }
+  });
+  it("propagates canonical opt-in outer rejection without receipt (not rollback)", async () => {
+    const f = fixture(); f.release(); const error = new Error("outer-commit");
+    const root: any = { transaction: async (callback: any) => { await callback(f.tx); throw error; } };
+    await expect(service.issueThreadInteractionService(root).answerQuestions(
+      { id: "issue-1", companyId: "company-1" }, "card-1", { answers: [{ questionId: "q1", optionIds: [], otherText: "Before" }] }, { userId: "user-1" }, {}, undefined, { lifecycleFence: true },
+    )).rejects.toBe(error);
+    expect(f.card.status).toBe("answered"); expect(f.deliveries).toHaveLength(1);
+  });
   it("starts owned answer before reads and captures input before deferred transaction startup", async () => {
     const f = fixture(); let start!: () => void; let commit!: () => void;
     const startup = new Promise<void>(r => { start = r; });
