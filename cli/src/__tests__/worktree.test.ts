@@ -1674,7 +1674,19 @@ describe("worktree helpers", () => {
       }
       const sourceDbClient = createDb(sourceDb.connectionString);
       await migrate(drizzle(sourceDbClient.$client), { migrationsFolder: priorMigrations });
-      await seedValidWorktreeSource(sourceDb.connectionString);
+      const seed = await seedValidWorktreeSource(sourceDb.connectionString);
+      // An older filtered JavaScript backup retained event IDs but lost the
+      // identity generator. The pending migration must repair that schema.
+      const legacyAgentId = randomUUID();
+      await sourceDbClient.$client`
+        INSERT INTO agents (id, company_id, name, status)
+        VALUES (${legacyAgentId}, ${seed.companyId}, 'Legacy paused agent', 'paused')
+      `;
+      await sourceDbClient.$client`
+        INSERT INTO resource_lifecycle_events (company_id, resource_type, resource_id, action)
+        VALUES (${seed.companyId}, 'agent', ${legacyAgentId}, 'pause')
+      `;
+      await sourceDbClient.$client.unsafe('ALTER TABLE resource_lifecycle_events ALTER COLUMN id DROP IDENTITY');
       await sourceDbClient.$client.unsafe(`
         WITH pair AS (
           SELECT
@@ -1787,6 +1799,16 @@ describe("worktree helpers", () => {
       );
       const seededUsers = await targetDb.select().from(authUsers);
       expect(seededUsers.some((row) => row.email === "existing@paperclip.ing")).toBe(true);
+      const restoredEvents = await targetDb.$client`
+        SELECT id, action FROM resource_lifecycle_events WHERE resource_id = ${legacyAgentId} ORDER BY id
+      `;
+      expect(restoredEvents.map(row => row.action)).toEqual(["pause", "create"]);
+      expect(Number(restoredEvents[1].id)).toBeGreaterThan(Number(restoredEvents[0].id));
+      const [identity] = await targetDb.$client`
+        SELECT is_identity FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'resource_lifecycle_events' AND column_name = 'id'
+      `;
+      expect(identity.is_identity).toBe("YES");
     },
   );
 

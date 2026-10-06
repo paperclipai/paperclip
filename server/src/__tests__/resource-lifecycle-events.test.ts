@@ -352,6 +352,7 @@ describePostgres("Resource lifecycle events", () => {
 
   it("keeps delivery unavailable when the baseline migration fails", async () => {
     await db.insert(agents).values({ companyId, name: "Legacy paused", status: "paused" });
+    await db.execute(sql`ALTER TABLE resource_lifecycle_events ALTER COLUMN id DROP IDENTITY`);
     await db.execute(sql`DROP TABLE plugin_lifecycle_acknowledgments`);
     await db.execute(sql`DROP INDEX resource_lifecycle_events_resource_order_idx`);
     const applyDeliveryMigration = () => db.transaction(async tx => {
@@ -362,12 +363,14 @@ describePostgres("Resource lifecycle events", () => {
     });
     await db.execute(sql`ALTER TABLE resource_lifecycle_events ADD CONSTRAINT fixture_reject_baseline CHECK (action <> 'pause') NOT VALID`);
     try {
-      await expect(applyDeliveryMigration()).rejects.toThrow();
+      await expect(applyDeliveryMigration()).rejects.toMatchObject({ cause: { constraint_name: "fixture_reject_baseline" } });
       expect(await events()).toEqual([]);
+      expect((await db.execute(sql`SELECT is_identity FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'resource_lifecycle_events' AND column_name = 'id'`))[0]).toMatchObject({ is_identity: "NO" });
       expect((await db.execute(sql`SELECT to_regclass('public.plugin_lifecycle_acknowledgments') AS relation`))[0]).toMatchObject({ relation: null });
     } finally {
       await db.execute(sql`ALTER TABLE resource_lifecycle_events DROP CONSTRAINT fixture_reject_baseline`);
       await applyDeliveryMigration();
+      expect((await db.execute(sql`SELECT is_identity FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'resource_lifecycle_events' AND column_name = 'id'`))[0]).toMatchObject({ is_identity: "YES" });
     }
   });
 

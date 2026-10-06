@@ -11,6 +11,19 @@ ALTER TABLE "plugin_lifecycle_acknowledgments" ADD CONSTRAINT "plugin_lifecycle_
 ALTER TABLE "plugin_lifecycle_acknowledgments" ADD CONSTRAINT "plugin_lifecycle_acknowledgments_event_id_resource_lifecycle_events_id_fk" FOREIGN KEY ("event_id") REFERENCES "public"."resource_lifecycle_events"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "plugin_lifecycle_acknowledgments_event_idx" ON "plugin_lifecycle_acknowledgments" USING btree ("event_id");--> statement-breakpoint
 CREATE INDEX "resource_lifecycle_events_resource_order_idx" ON "resource_lifecycle_events" USING btree ("company_id","resource_type","resource_id","id");--> statement-breakpoint
+-- Older JavaScript backups lost identity metadata. Repair before seeding records.
+DO $$
+DECLARE next_id bigint;
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'resource_lifecycle_events'
+      AND column_name = 'id' AND is_identity = 'NO' AND column_default IS NULL
+  ) THEN
+    SELECT COALESCE(MAX("id"), 0) + 1 INTO next_id FROM "resource_lifecycle_events";
+    EXECUTE format('ALTER TABLE "resource_lifecycle_events" ALTER COLUMN "id" ADD GENERATED ALWAYS AS IDENTITY (START WITH %s)', next_id);
+  END IF;
+END $$;--> statement-breakpoint
 -- Seed a one-time current-state baseline before plugins can consume the journal.
 INSERT INTO "resource_lifecycle_events" ("company_id", "resource_type", "resource_id", "action")
 SELECT "company_id", 'agent', "id", 'create'

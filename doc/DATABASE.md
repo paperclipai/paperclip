@@ -533,6 +533,9 @@ all projects, including archived projects. Pending hires stay behind approval.
 Paused and terminated agents receive missing final status intents. A partial
 journal ending at pause receives resume when the current agent is running.
 Existing records remain intact, and rerunning the baseline does not duplicate it.
+The migration also repairs the journal ID generator in older JavaScript restores
+that lost identity metadata, starting above existing IDs. New JavaScript backups
+preserve identity generation, sequence options, and sequence progress.
 Resource writes wait for the migration transaction to commit. These records
 represent current desired state, not reconstructed historical transitions.
 There is no later or runtime journal backfill. Plugins use `ctx.events.listLifecycle(companyId, limit?, afterId?)` and
