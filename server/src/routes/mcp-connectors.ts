@@ -8,7 +8,8 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
-import { forbidden, unauthorized } from "../errors.js";
+import { forbidden, tooManyRequests, unauthorized } from "../errors.js";
+import { createInviteRateLimiter, type InviteRateLimiter } from "../services/invite-rate-limit.js";
 import { accessService, logActivity } from "../services/index.js";
 import { mcpConnectorService } from "../services/mcp-connectors.js";
 import type { McpConnectorHub } from "../services/mcp-connector-hub.js";
@@ -26,8 +27,11 @@ function bearerToken(req: Request): string | null {
  * Token and credential values appear only in these responses, never in
  * activity details or logs.
  */
-export function mcpConnectorRoutes(db: Db, options: { hub?: McpConnectorHub } = {}) {
+export function mcpConnectorRoutes(db: Db, options: { hub?: McpConnectorHub; enrollRateLimiter?: InviteRateLimiter } = {}) {
   const router = Router();
+  // The enroll route is unauthenticated and does a DB write per well-formed
+  // token, so bound attempts per client IP (req.ip honors TRUST_PROXY).
+  const enrollRateLimiter = options.enrollRateLimiter ?? createInviteRateLimiter();
   const connectors = mcpConnectorService(db, { hub: options.hub });
   const access = accessService(db);
 
@@ -108,7 +112,12 @@ export function mcpConnectorRoutes(db: Db, options: { hub?: McpConnectorHub } = 
     res.json(connector);
   });
 
-  router.post(MCP_CONNECTOR_ENROLL_PATH.replace(/^\/api/, ""), validate(enrollMcpConnectorSchema), async (req, res) => {
+  router.post(MCP_CONNECTOR_ENROLL_PATH.replace(/^\/api/, ""), (req, res, next) => {
+    const result = enrollRateLimiter.consume(req.ip || req.socket?.remoteAddress || "unknown");
+    if (result.allowed) return next();
+    res.setHeader("Retry-After", String(result.retryAfterSeconds));
+    next(tooManyRequests("Too many enrollment attempts", { retryAfterSeconds: result.retryAfterSeconds }));
+  }, validate(enrollMcpConnectorSchema), async (req, res) => {
     const result = await connectors.enroll(req.body.token, req.body.version);
     await logActivity(db, {
       companyId: result.companyId,
