@@ -38,7 +38,7 @@ export const publicMcpEventDefinitions = names.map((name, index) => ({
   }).strict()),
 }));
 
-export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDispatch, options: { fetch?: EventFetch; now?: () => number; cloudOrigin?: string } = {}) {
+export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDispatch, options: { fetch?: EventFetch; now?: () => number; cloudOrigin?: string; isBackgroundWorkEnabled?: () => boolean } = {}) {
   const fetcher = options.fetch ?? eventFetch;
   const now = options.now ?? Date.now;
   const cloudOrigin = options.cloudOrigin ?? process.env.PAPERCLIP_CLOUD_API_ORIGIN;
@@ -257,7 +257,8 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
   }
   let running: Promise<void> | null = null;
   const tick = () => running ?? (running = (async () => {
-    if (!await oauth.isEnabled()) return;
+    // The experimental setting is stored in SQL; check warm standby first.
+    if (options.isBackgroundWorkEnabled?.() === false || !await oauth.isEnabled()) return;
     await db.delete(admissions).where(lte(admissions.expiresAt, new Date(now())));
     await db.delete(subscriptions).where(lt(subscriptions.expiresAt, new Date(now() - 7 * 24 * hour)));
     const active = await db.select().from(subscriptions).where(and(isNull(subscriptions.stoppedAt), gt(subscriptions.expiresAt, new Date(now())))).orderBy(asc(subscriptions.scannedAt)).limit(20);

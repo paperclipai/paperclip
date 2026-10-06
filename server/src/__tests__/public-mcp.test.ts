@@ -18,6 +18,7 @@ import * as assignmentWakeups from "../services/issue-assignment-wakeup.js";
 import { assertCompanyAccess } from "../routes/authz.js";
 import { actorMiddleware } from "../middleware/auth.js";
 import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
+import { cloudWarmStandbyMiddleware } from "../middleware/cloud-warm-standby.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 import { createPublicMcpEvents, publicMcpEventDefinitions } from "../services/public-mcp/events.js";
@@ -54,6 +55,45 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true });
   }, 90000);
   afterAll(async () => { await temp?.cleanup(); vi.unstubAllEnvs(); });
+
+  it("keeps public MCP and discovery out of SQL and SPA fallback until Cloud claim", async () => {
+    let standby = true;
+    const app = express();
+    const ui = express.Router();
+    ui.get(/.*/, (_req, res) => res.type("html").send("Paperclip UI"));
+    app.use(cloudWarmStandbyMiddleware(() => standby, express.Router(), ui));
+    app.use(publicMcpIngressRoutes(oauth, vi.fn()));
+    const select = vi.spyOn(db, "select");
+    try {
+      for (const path of [
+        "/mcp/setup", "/mcp/setup.md", "/mcp/paperclip", "/mcp/oauth/authorize",
+        "/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp/paperclip",
+        "/.well-known/oauth-authorization-server",
+      ]) {
+        for (const method of ["get", "head"] as const) {
+          expect((await request(app)[method](path).set("authorization", "Bearer unclaimed")).status).toBe(503);
+        }
+      }
+      for (const path of ["/mcp/paperclip", "/mcp/oauth/register", "/mcp/oauth/device_authorization", "/mcp/oauth/token", "/mcp/oauth/revoke"]) {
+        const response = await request(app).post(path).send({});
+        expect(response.status).toBe(503);
+        expect(response.body).toEqual({ error: "workspace_unclaimed" });
+      }
+      // Consent routes still serve the UI shell without resolving a session.
+      expect((await request(app).get("/mcp-connect/request")).status).toBe(200);
+      expect((await request(app).get("/mcp-device")).status).toBe(200);
+      expect(select).not.toHaveBeenCalled();
+      standby = false;
+      const metadata = await request(app).get("/.well-known/oauth-protected-resource/mcp/paperclip");
+      expect(metadata.status).toBe(200);
+      expect(metadata.body.resource).toBe(config.resource);
+      expect(select).toHaveBeenCalled();
+      expect((await request(app).get("/mcp/setup.md")).status).toBe(200);
+      expect((await request(app).post("/mcp/paperclip")).status).toBe(401);
+    } finally {
+      select.mockRestore();
+    }
+  });
 
   async function fixture(role = "member", write = true) {
     const userId = randomUUID();

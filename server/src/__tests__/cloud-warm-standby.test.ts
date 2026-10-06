@@ -7,6 +7,8 @@ import { cloudWarmStandbyMiddleware, cloudWarmStandbyServerOptions } from "../mi
 import { healthRoutes } from "../routes/health.js";
 import { emailChannelService } from "../services/email-channels.js";
 import { createPluginJobScheduler } from "../services/plugin-job-scheduler.js";
+import { createPublicMcpEvents } from "../services/public-mcp/events.js";
+import type { PublicMcpOAuth } from "../services/public-mcp/oauth.js";
 
 const healthOptions = {
   deploymentMode: "authenticated" as const,
@@ -95,6 +97,26 @@ describe("unclaimed Cloud background work", () => {
       expect(authenticate).toHaveBeenCalledOnce();
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("MCP event timers do not read the persisted setting until claim", async () => {
+    vi.useFakeTimers();
+    let standby = true;
+    const isEnabled = vi.fn().mockResolvedValue(false);
+    const events = createPublicMcpEvents({} as Db, { isEnabled } as PublicMcpOAuth, vi.fn(), {
+      isBackgroundWorkEnabled: () => !standby,
+    });
+    try {
+      events.start();
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      await events.tick();
+      expect(isEnabled).not.toHaveBeenCalled();
+      standby = false;
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(isEnabled).toHaveBeenCalledOnce();
+    } finally {
+      await events.stop();
     }
   });
 

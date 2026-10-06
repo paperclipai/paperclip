@@ -579,12 +579,12 @@ export async function createApp(
   catch { logger.warn("Assistant connections require an HTTPS public URL (HTTP loopback is allowed for development)."); }
   const publicMcpOAuth = mcpConfig ? createPublicMcpOAuth(db, mcpConfig) : null;
   const publicMcpIngress = Router();
-  app.use(publicMcpIngress);
 
   app.use(cloudRuntimeIdentityMiddleware(db));
   // A signed claim above commits identity before any normal request can seed
   // company data. Unclaimed probes bypass session resolution as well as SQL.
   app.use(cloudWarmStandbyMiddleware(isWarmStandby, health, staticUi));
+  app.use(publicMcpIngress);
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an
   // agent API key. Every request revalidates the active heartbeat row.
@@ -986,7 +986,9 @@ export async function createApp(
   let publicMcpEvents: PublicMcpEvents | null = null;
   if (publicMcpOAuth) {
     const dispatch = createMcpApiDispatch(api);
-    publicMcpEvents = createPublicMcpEvents(db, publicMcpOAuth, dispatch);
+    publicMcpEvents = createPublicMcpEvents(db, publicMcpOAuth, dispatch, {
+      isBackgroundWorkEnabled: () => !isWarmStandby(),
+    });
     publicMcpEvents.start();
     publicMcpIngress.use(publicMcpIngressRoutes(publicMcpOAuth, createPublicMcpExecutor(db, publicMcpOAuth, dispatch), publicMcpEvents));
     api.use(publicMcpManagementRoutes(publicMcpOAuth));

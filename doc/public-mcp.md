@@ -38,6 +38,12 @@ token again; normal API endpoints do not accept these OAuth tokens. Public
 installation requires a reachable HTTPS deployment. Private self-hosted
 instances require a directly reachable endpoint; no managed relay is included.
 
+Unclaimed Cloud warm-standby instances return `503 workspace_unclaimed` for MCP
+setup, discovery and protocol requests without reading the database. The event
+poller also stays idle until the instance is claimed. After claim, both resume
+without a restart and remain subject to the experimental setting and normal
+authorization.
+
 ## Start from Connections
 
 Inside your organization, open **Connectors → Assistant Connection (MCP) → Set up**.
