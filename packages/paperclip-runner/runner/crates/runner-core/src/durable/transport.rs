@@ -2068,18 +2068,31 @@ mod tests {
 
     #[test]
     fn listener_accepts_distinct_ports_and_retains_port_on_warm_attachment() {
-        // Reserve distinct available ports before transferring them to Runner.
-        let reservations = [
-            TcpListener::bind("0.0.0.0:0").unwrap(),
-            TcpListener::bind("0.0.0.0:0").unwrap(),
-        ];
-        let ports = reservations.map(|listener| listener.local_addr().unwrap().port());
-        let mut endpoints = ports.map(|port| {
-            RunnerTransportEndpoint::new(
-                &format!("listen://0.0.0.0:{port}/api/runner/v1/connect/run_1"),
-                "run_1",
-            )
-            .unwrap()
+        let mut endpoints = [0, 1].map(|_| {
+            for _ in 0..10 {
+                let reservation = TcpListener::bind("0.0.0.0:0").unwrap();
+                let port = reservation.local_addr().unwrap().port();
+                drop(reservation);
+                match RunnerTransportEndpoint::new(
+                    &format!("listen://0.0.0.0:{port}/api/runner/v1/connect/run_1"),
+                    "run_1",
+                ) {
+                    Ok(endpoint) => return endpoint,
+                    Err(error) => match TcpListener::bind(("0.0.0.0", port)) {
+                        Err(bind_error) if bind_error.kind() == std::io::ErrorKind::AddrInUse => {
+                            continue;
+                        }
+                        _ => panic!("{error}"),
+                    },
+                }
+            }
+            panic!("could not acquire an available Runner port");
+        });
+        let ports = endpoints.each_ref().map(|endpoint| match endpoint {
+            RunnerTransportEndpoint::Listen { listener, .. } => {
+                listener.local_addr().unwrap().port()
+            }
+            _ => panic!("expected listener"),
         });
         endpoints[0]
             .rotate(
