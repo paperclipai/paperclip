@@ -3321,6 +3321,14 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
 const heartbeatRunProcessGroupIdColumn =
   heartbeatRuns.processGroupId ?? sql<number | null>`NULL`.as("processGroupId");
 
+export const HEARTBEAT_RUN_LIST_DEFAULT_LIMIT = 200;
+export const HEARTBEAT_RUN_LIST_MAX_LIMIT = 1000;
+
+export function boundHeartbeatRunListLimit(limit?: number): number {
+  if (!Number.isFinite(limit)) return HEARTBEAT_RUN_LIST_DEFAULT_LIMIT;
+  return Math.max(1, Math.min(HEARTBEAT_RUN_LIST_MAX_LIMIT, Math.trunc(limit as number)));
+}
+
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
   responsibleUserId: heartbeatRuns.responsibleUserId,
@@ -30051,7 +30059,7 @@ export function heartbeatService(
           )
           .orderBy(desc(heartbeatRuns.createdAt));
 
-        return limit ? await query.limit(limit) : await query;
+        return await query.limit(boundHeartbeatRunListLimit(limit));
       });
       return rows.map((row) => {
         const {

@@ -3,7 +3,10 @@ import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
-import { heartbeatService } from "../services/heartbeat.js";
+import {
+  HEARTBEAT_RUN_LIST_DEFAULT_LIMIT,
+  heartbeatService,
+} from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
 import { getAccessibleResource } from "../routes/authz.js";
 
@@ -91,7 +94,7 @@ describe("heartbeat list connection recovery", () => {
     expect(test.attempts).toHaveLength(3);
     for (const attempt of test.attempts) {
       expect(attempt.params).toEqual(options.agent ? [companyId, agentId] : [companyId]);
-      expect(attempt.limit).toBe(options.limit);
+      expect(attempt.limit).toBe(options.limit ?? HEARTBEAT_RUN_LIST_DEFAULT_LIMIT);
       expect(attempt.order).toEqual(['"heartbeat_runs"."created_at" desc']);
       expect("resultSummary" in attempt.fields).toBe(!options.summary && options.encoding === "UTF8");
       expect(attempt.fields).toEqual(test.attempts[0].fields);
