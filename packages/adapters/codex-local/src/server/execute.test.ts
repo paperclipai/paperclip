@@ -89,6 +89,7 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
 
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     if (savedCodexHomeEnv === undefined) {
       delete process.env.CODEX_HOME;
     } else {
@@ -190,11 +191,16 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
   }
 
   it("keeps assigned API and tool credentials in the identity-enabled CLI shell", async () => {
+    vi.stubEnv("DATABASE_URL", "postgres://operator:host-password@host/private");
+    vi.stubEnv("HOST_DATABASE_PASSWORD", "host-password");
     const { commandArgs } = await runTeardown({ sandboxAuth: "{}", hostAuth: "{}", withIdentity: true });
     const policy = commandArgs.find(arg => arg.startsWith("shell_environment_policy.include_only="));
-    expect(JSON.parse(policy!.slice(policy!.indexOf("=") + 1))).toEqual(expect.arrayContaining([
+    const keys = JSON.parse(policy!.slice(policy!.indexOf("=") + 1));
+    expect(keys).toEqual(expect.arrayContaining([
       "PAPERCLIP_API_KEY", "MY_SERVICE_TOKEN", "PAPERCLIP_AGENT_PRIVATE_KEY",
     ]));
+    expect(keys).not.toContain("DATABASE_URL");
+    expect(keys).not.toContain("HOST_DATABASE_PASSWORD");
     expect(commandArgs.join(" ")).not.toContain("assigned-run-token");
     expect(commandArgs.join(" ")).not.toContain("assigned-tool-token");
   });
