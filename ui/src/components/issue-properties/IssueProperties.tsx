@@ -300,7 +300,9 @@ export function IssueProperties({
   const { data: paneTabWorkProducts, isError: workProductsError, refetch: refetchWorkProducts } = useQuery({
     queryKey: queryKeys.issues.workProducts(issue.id),
     queryFn: () => issuesApi.listWorkProducts(issue.id, {
-      refreshPullRequests: queryClient.getQueryData(queryKeys.issues.workProducts(issue.id)) !== undefined,
+      // The thread may cache by identifier while this panel uses the UUID.
+      // Refresh on first open as well as subsequent panel visits.
+      refreshPullRequests: true,
     }),
   });
   const pullRequests = useMemo(() => getIssuePullRequests(paneTabWorkProducts), [paneTabWorkProducts]);
