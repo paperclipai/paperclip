@@ -1904,7 +1904,16 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         assertReadableOriginFilter(params.originKind);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        const limit = parseWindowValue(params.limit);
+        // issues.list pages in SQL (limit/offset); windowing its result again
+        // would apply the offset twice and empty every page after the first.
+        const page = (await issues.list(companyId, {
+          ...(params as any),
+          limit: limit ?? undefined,
+          offset: parseWindowValue(params.offset) ?? undefined,
+        })) as Issue[];
+        // Keep service validation even when the caller requests an empty page.
+        return limit === 0 ? [] : page;
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
