@@ -10,6 +10,10 @@ import {
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { aiConnectionService } from "./ai-connections.js";
+import {
+  provisionManagedHomeKeychain,
+  releaseManagedHomeKeychain,
+} from "./managed-home-keychain.js";
 import { secretService } from "./secrets.js";
 import { decideCodexAuthMerge } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -273,6 +277,7 @@ export async function prepareManagedAiRuntime(
     );
     const providerHome = path.join(home, "provider");
     await mkdir(providerHome, { mode: 0o700 });
+    await provisionManagedHomeKeychain(home);
     const env: Record<string, unknown> = {
       ...stripAiAuthBindings(input.config.env),
       ...Object.fromEntries(AI_AUTH_ENV_KEYS.map((key) => [key, ""])),
@@ -392,12 +397,18 @@ export async function prepareManagedAiRuntime(
               });
           }
         } finally {
-          if (home) await rm(home, { recursive: true, force: true });
+          if (home) {
+            await releaseManagedHomeKeychain(home);
+            await rm(home, { recursive: true, force: true });
+          }
         }
       },
     };
   } catch (error) {
-    if (home) await rm(home, { recursive: true, force: true });
+    if (home) {
+      await releaseManagedHomeKeychain(home);
+      await rm(home, { recursive: true, force: true });
+    }
     throw error;
   }
 }
