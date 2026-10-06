@@ -40,6 +40,7 @@ import { actorMiddleware } from "../middleware/auth.js";
 import { isSecretSensitiveHttpRequest } from "../middleware/http-log-policy.js";
 import { setupMcpConnectorWebSocketServer } from "../realtime/mcp-connector-ws.js";
 import { mcpConnectorRoutes } from "../routes/mcp-connectors.js";
+import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
 import { McpConnectorHub } from "../services/mcp-connector-hub.js";
 import { mcpConnectorService } from "../services/mcp-connectors.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -349,6 +350,18 @@ describeEmbeddedPostgres("outbound MCP connector", () => {
 
     expect(isSecretSensitiveHttpRequest("POST", MCP_CONNECTOR_ENROLL_PATH)).toBe(true);
     expect(isSecretSensitiveHttpRequest("POST", MCP_CONNECTOR_ROTATE_PATH)).toBe(true);
+  });
+
+  it("rate-limits unauthenticated enrollment attempts per client before touching the database", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/api", mcpConnectorRoutes(db, { hub, enrollRateLimiter: createInviteRateLimiter({ maxRequests: 2 }) }));
+    app.use(errorHandler);
+    const token = "pcmce_" + "a".repeat(40);
+    await request(app).post(MCP_CONNECTOR_ENROLL_PATH).send({ token }).expect(401);
+    await request(app).post(MCP_CONNECTOR_ENROLL_PATH).send({ token }).expect(401);
+    const limited = await request(app).post(MCP_CONNECTOR_ENROLL_PATH).send({ token }).expect(429);
+    expect(limited.headers["retry-after"]).toBeDefined();
   });
 
   it("runs health checks and catalog refresh over the connector while the SSRF guard still refuses the same upstream", async () => {
