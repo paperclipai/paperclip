@@ -101,8 +101,55 @@ adapter and production native-session executor. It incurs normal provider usage:
 node cli/node_modules/tsx/dist/cli.mjs server/scripts/verify-agent-commentary-live.ts
 ```
 
-Both paths passed on 2026-10-06. Each persisted one complaint and one suggestion
+To run the same checks on real Daytona sandboxes, install the standalone
+provider's dependencies, provide its API key and an immutable image reference,
+and specify a Linux amd64 runner built from this checkout:
+
+```sh
+pnpm --dir packages/plugins/sandbox-providers/daytona install --frozen-lockfile
+PAPERCLIP_LIVE_ENVIRONMENT=daytona \
+PAPERCLIP_LIVE_DAYTONA_ENV_FILE=/path/to/private.env \
+PAPERCLIP_LIVE_LINUX_RUNNER=/path/to/linux-amd64/paperclip-runnerd \
+PAPERCLIP_LIVE_EVIDENCE_PATH=/tmp/commentary-evidence.json \
+node cli/node_modules/tsx/dist/cli.mjs server/scripts/verify-agent-commentary-live.ts
+```
+
+The private env file needs only `DAYTONA_API_KEY` and
+`PAPERCLIP_E2E_DAYTONA_IMAGE` (`...@sha256:...`). Alternatively, export those
+variables directly. A positional `legacy` or `native` argument selects one path.
+For a current Linux runner, add an export stage to a temporary copy of the root
+Dockerfile and build it with `--platform linux/amd64 --target commentary-runner-export
+--output type=local,dest=/tmp/commentary-runner-linux`:
+
+```dockerfile
+FROM scratch AS commentary-runner-export
+COPY --from=runner-build /app/packages/paperclip-runner/runner/target/release/paperclip-runnerd /paperclip-runnerd
+```
+
+The smoke calls the production Daytona provider hooks for creation, execution,
+file transfer, private ingress, and confirmed deletion. Legacy feedback crosses
+the sandbox queue callback bridge. Native feedback crosses the runner's private
+WebSocket and live tool authority. The current Linux runner is staged and
+verified independently of the base image. Fixture setup creates authority;
+the real agent submits all feedback. This is a focused feedback transport smoke,
+not a full Runner E2E catalog qualification or browser onboarding test.
+
+Both paths passed locally and on Daytona on 2026-10-06. Each persisted one complaint and one suggestion
 with company, agent, run, and task attribution; each then wrote the continuation
 marker. Both exited zero, left task status unchanged, created no task comments,
 and recorded two content-free activity entries. The script emits the attributed
-row IDs and timestamps as evidence and deletes its temporary data and credentials.
+row IDs and timestamps as evidence, optionally saves a JSON report, and deletes
+its temporary data, credentials, and remote sandboxes. Remote reports are emitted
+only after confirmed sandbox deletion.
+
+The Daytona verification used base image
+`ghcr.io/paperclipai/paperclip-daytona-runner@sha256:b81a86d5242088f9d832666a411f09da7438d92e99f9962ccf88ebe439cd3b32`
+and the Linux runner built from `abf47b5953d14aa7a8dbf2941460b5df8a4d66c3`
+(binary SHA-256 `c794141152ae2e2986da0df14b01a54e4448949e06ec4031c83bad8a9fff8bac`).
+
+| Environment | Runner | Complaint row | Suggestion row | Submitted at (UTC) |
+| --- | --- | --- | --- | --- |
+| Local | Legacy Codex | `59413a00-1de2-4bb1-bcc6-9c4b54c64aa6` | `3db2364d-3e15-4f47-846f-875d3902999d` | 20:35:10 |
+| Local | Native Codex | `5da22b5f-41df-4de5-8ba0-d9345ab01267` | `2d5abe17-dd41-403c-a5ee-4729f2d58921` | 20:35:26–20:35:27 |
+| Daytona | Legacy Codex | `27c9d0aa-8477-409f-9da0-e8ffa48dee50` | `209681c9-d1e9-4ce1-999e-48fa07692389` | 20:33:07–20:33:09 |
+| Daytona | Native Codex | `6eb001bb-4bcf-43f7-8717-f662f53dc7c3` | `77c383d8-a997-49e5-a33e-25c70e15c0b2` | 20:31:54 |
