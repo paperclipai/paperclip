@@ -92,8 +92,8 @@ agent UUID with the target agent's ID:
 ```
 
 Complete the returned sign-in command, then send the same intent to
-`POST /api/companies/:companyId/ai-connections/local`. Add `localSessionId` from the
-attempt response. The example session UUID below must be replaced with that value:
+`POST /api/companies/:companyId/ai-connections/local`. Set `localSessionId` to the
+attempt response's `sessionId`. Replace the example session UUID below with that value:
 
 ```json
 {
