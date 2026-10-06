@@ -60,14 +60,18 @@ afterEach(() => {
 
 describe("composer assignee picker", () => {
   it.each([
+    { mobile: false, view: "settings" as const },
     { mobile: false, view: "models" as const },
     { mobile: false, view: "agents" as const },
+    { mobile: true, view: "settings" as const },
     { mobile: true, view: "models" as const },
     { mobile: true, view: "agents" as const },
   ])("allows wheel and touch scrolling in a nested $view picker (mobile: $mobile)", async ({ mobile, view }) => {
     render(vi.fn(), vi.fn(), false, { mobile, initialOpen: true, initialView: view }, true);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    const list = document.querySelector<HTMLElement>(`[role="listbox"][aria-label="${view === "models" ? "Models" : "Assignees"}"]`)!;
+    const list = document.querySelector<HTMLElement>(view === "settings"
+      ? '[data-testid="composer-run-settings-view"]'
+      : `[role="listbox"][aria-label="${view === "models" ? "Models" : "Assignees"}"]`)!;
     expect(list).not.toBeNull();
     list.style.overflowY = "auto";
     Object.defineProperties(list, {

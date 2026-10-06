@@ -207,7 +207,7 @@ export function ComposerRunSettingsPicker({
     </> : null}
   </div>;
 
-  const body = view === "settings" ? <div className="p-3">
+  const body = view === "settings" ? <div className="min-h-0 overflow-y-auto overscroll-contain touch-pan-y p-3" data-testid="composer-run-settings-view">
     <div className="flex items-center gap-2">
       <button type="button" aria-label="Choose assignee" onClick={() => setView("agents")}
         className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">

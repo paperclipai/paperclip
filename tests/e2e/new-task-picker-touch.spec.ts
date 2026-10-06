@@ -101,7 +101,16 @@ test("new-task assignee, model, and project sheets scroll by touch and retain th
     const control = (await picker.getByRole("button", { name: "Choose exact model" }).boundingBox())!;
     return control.width / sheet.width;
   }).toBeGreaterThan(0.8);
+  // Short screens must also let a finger reach the settings below the fold.
+  const effort = picker.getByRole("slider", { name: "Effort" });
+  const effortBeforeScroll = await effort.inputValue();
+  await page.setViewportSize({ width: 390, height: 200 });
+  await swipeToLastOption(page, picker, picker.getByTestId("composer-run-settings-view"), effort);
+  await expect(effort).toHaveValue(effortBeforeScroll);
+  await page.screenshot({ path: testInfo.outputPath("settings-after-touch-scroll.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Choose exact model" }).tap();
+  await page.screenshot({ path: testInfo.outputPath("model-before-keyboard.png") });
   // A reduced viewport exercises the space available when a phone keyboard opens.
   await page.setViewportSize({ width: 390, height: 430 });
   const lastModel = await swipeToLastOption(page, picker);
