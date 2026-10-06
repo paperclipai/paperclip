@@ -1,5 +1,7 @@
 import { getTableName } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 import { publishActivity } from "../services/activity-log.js";
 const sink = vi.hoisted(() => ({ live: [] as any[] }));
@@ -15,6 +17,8 @@ vi.mock("../telemetry.js", () => ({ getTelemetryClient: () => null }));
 function fixture() {
   sink.live.length = 0;
   const events: string[] = []; const publications: any[] = [];
+  const native: any = { run: null, marker: null, predicates: [] };
+  const dialect = new PgDialect();
   let row: any = { id: "issue-1", companyId: "company-1", status: "in_progress", title: "Offline", parentId: null, projectId: null, goalId: null, originKind: "manual", assigneeAgentId: "agent-1", assigneeUserId: null, statusVersion: 1 };
   const card: any = { id: "card-1", companyId: "company-1", issueId: "issue-1", kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Offline" }, result: null };
   function query(rows: any[]) {
@@ -28,11 +32,21 @@ function fixture() {
       if (name === "issues") return query([{ ...row }]);
       if (name === "issue_thread_interactions") return query(card.status === "pending" ? [{ ...card }] : []);
       if (name === "companies") return query([{ defaultResponsibleUserId: "user-1" }]);
+      if (name === "heartbeat_runs") {
+        const q = query(native.run ? [{ ...native.run }] : []);
+        q.where = (predicate: any) => { native.predicates.push(dialect.sqlToQuery(predicate)); return q; };
+        return q;
+      }
       if (["goals", "projects", "issue_labels", "labels", "issue_watchdogs"].includes(name)) return query([]);
       throw new Error(`unknown-read:${name}`);
     } }),
-    update: (table: any) => ({ set: (patch: any) => ({ where: () => {
+    update: (table: any) => ({ set: (patch: any) => ({ where: (predicate: any) => {
       const name = getTableName(table); events.push(`write:${name}`);
+      if (name === "heartbeat_runs") {
+        native.marker = dialect.sqlToQuery(patch.contextSnapshot);
+        native.predicates.push(dialect.sqlToQuery(predicate));
+        return query([{ id: native.run.id }]);
+      }
       if (name === "issues") { row = { ...row, ...patch }; return query([{ ...row }]); }
       if (name === "tool_action_requests") return query([]);
       if (name === "issue_thread_interactions") { Object.assign(card, patch); return query([{ ...card }]); }
@@ -47,9 +61,60 @@ function fixture() {
     transaction: async (cb: any) => { events.push("begin"); const result = await cb(tx); events.push("outer-resolve"); return result; },
   };
   const run = (owned: boolean, fence = true) => issueService(root).update("issue-1", { status: "done", companyGuard: "company-1" }, owned ? root : tx, owned ? undefined : publications, [], { lifecycleFence: fence });
-  return { root, tx, events, publications, run, card };
+  return { root, tx, events, publications, run, card, native };
+}
+function nativeFixture() {
+  const f = fixture();
+  Object.assign(f.card, { kind: "ask_user_questions", sourceRunId: "run-1", idempotencyKey: "paperclip-runner-question:run-1:request-1", payload: { ...questionSetToAskUserQuestionsPayload({ schema: "paperclip.question_set.v1", questions: [{ id: "q1", prompt: "Offline question", answerMode: "text", required: true }] }), runtimeRequestId: "request-1" } });
+  f.native.run = { id: "run-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1", runtimeMode: "native", status: "running" };
+  return f;
 }
 describe("dark canonical terminal expiry supplied integration", () => {
+  it.each([undefined, null, {}, "queue"])("rejects missing or malformed native action queue before effects: %s", async queue => {
+    const f = nativeFixture();
+    await expect(issueService(f.root).update("issue-1", { status: "done", companyGuard: "company-1" }, f.tx, f.publications, queue as any, { lifecycleFence: true })).rejects.toMatchObject({ status: 422 });
+    expect(f.events).toEqual([]); expect(f.card.status).toBe("pending");
+    expect(f.native.marker).toBeNull(); expect(sink.live).toEqual([]);
+  });
+  it.each(["done", "cancelled"])("records actual native marker and retains caller queues for %s without executing cancellation", async status => {
+    const f = nativeFixture(); const sentinel: any = { type: "caller-sentinel" }; const actions: any[] = [sentinel];
+    await issueService(f.root).update("issue-1", { status, companyGuard: "company-1" }, f.tx, f.publications, actions, { lifecycleFence: true });
+    expect(actions[0]).toBe(sentinel);
+    expect(actions.slice(1)).toEqual([{ type: "cancel_native_question_run", runId: "run-1", issueId: "issue-1", issueStatus: status }]);
+    expect(f.native.predicates.map((p: any) => p.params)).toEqual([
+      ["run-1", "company-1", "issue-1", "native"],
+      ["run-1", "company-1", "issue-1", "native", "queued", "running"],
+    ]);
+    expect(f.native.marker.sql).toContain("jsonb_set");
+    expect(f.native.marker.params[0]).toBe("nativeQuestionCancellation");
+    expect(JSON.parse(f.native.marker.params[1])).toMatchObject({ version: 1, issueId: "issue-1", kind: "issue_terminal", issueStatus: status });
+    expect(f.events.indexOf("write:heartbeat_runs")).toBeGreaterThan(f.events.indexOf("write:issue_thread_interactions"));
+    expect(f.card.status).toBe("expired"); expect(f.publications).toHaveLength(1); expect(sink.live).toEqual([]);
+  });
+  it.each(["succeeded", "cancelled"])("does not queue cancellation for synthetic non-live native run %s", async status => {
+    const f = nativeFixture(); f.native.run.status = status; const actions: any[] = [];
+    await issueService(f.root).update("issue-1", { status: "done", companyGuard: "company-1" }, f.tx, f.publications, actions, { lifecycleFence: true });
+    expect(actions).toEqual([]); expect(f.native.marker).toBeNull(); expect(sink.live).toEqual([]);
+  });
+  it("does not reinterpret invalid request binding as native cancellation", async () => {
+    const f = nativeFixture(); f.card.payload.runtimeRequestId = "other-request"; const actions: any[] = [];
+    await issueService(f.root).update("issue-1", { status: "done", companyGuard: "company-1" }, f.tx, f.publications, actions, { lifecycleFence: true });
+    expect(actions).toEqual([]); expect(f.native.predicates).toEqual([]); expect(f.native.marker).toBeNull();
+  });
+  it("propagates native marker storage rejection without an action or live publication", async () => {
+    const f = nativeFixture(); const error = new Error("marker-denied"); const update = f.tx.update; const actions: any[] = [];
+    f.tx.update = (table: any) => { if (getTableName(table) === "heartbeat_runs") throw error; return update(table); };
+    await expect(issueService(f.root).update("issue-1", { status: "done", companyGuard: "company-1" }, f.tx, f.publications, actions, { lifecycleFence: true })).rejects.toBe(error);
+    expect(actions).toEqual([]); expect(f.publications).toEqual([]); expect(sink.live).toEqual([]);
+    expect(f.card.status).toBe("expired"); // eager recorder, NOT rollback
+  });
+  it.each(["done", "cancelled"])("rejects supplied %s without caller action queue before effects", async status => {
+    const f = fixture();
+    await expect(issueService(f.root).update("issue-1", { status, companyGuard: "company-1" }, f.tx, f.publications, undefined, { lifecycleFence: true }))
+      .rejects.toMatchObject({ status: 422 });
+    expect(f.events).toEqual([]); expect(f.card.status).toBe("pending");
+    expect(f.publications).toEqual([]); expect(sink.live).toEqual([]);
+  });
   it.each(["done", "cancelled"])("rejects supplied %s without caller activity queue before any effects", async status => {
     const f = fixture();
     await expect(issueService(f.root).update("issue-1", { status, companyGuard: "company-1" }, f.tx, undefined, [], { lifecycleFence: true }))

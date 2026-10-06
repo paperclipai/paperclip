@@ -10686,6 +10686,13 @@ export function issueService(db: Db) {
         // transaction caller. Reject before the first fence/read/write instead.
         throw unprocessable("Lifecycle-fenced terminal updates in an external transaction require a post-commit activity queue");
       }
+      if (options.lifecycleFence && !ownsTransaction
+        && (data.status === "done" || data.status === "cancelled")
+        && !Array.isArray(postCommitActions)) {
+        // Native cancellation is discovered only after expiry. A supplied
+        // caller must own its action queue before any terminal effects begin.
+        throw unprocessable("Lifecycle-fenced terminal updates in an external transaction require a post-commit action queue");
+      }
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications =
         postCommitActivityPublications ?? ownedActivityPublications;

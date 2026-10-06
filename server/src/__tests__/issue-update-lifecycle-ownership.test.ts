@@ -65,7 +65,7 @@ function fixture() {
   };
   return { root, tx, run: (owned: boolean, fence: boolean, publications?: any[]) =>
     issueService(root).update("issue-1", { status: "done", actorUserId: "user-1", companyGuard: "company-1" },
-      owned ? root : tx, publications, undefined, { lifecycleFence: fence }) };
+      owned ? root : tx, publications, !owned && fence ? [] : undefined, { lifecycleFence: fence }) };
 }
 
 function expectOwnedPublication() {
