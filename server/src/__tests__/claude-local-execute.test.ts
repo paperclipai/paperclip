@@ -1362,6 +1362,117 @@ describe("claude execute", () => {
     }
   });
 
+  it("mounts skill sources read-only in the workspace sandbox so bundle links resolve", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-sandbox-skills-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    const bwrapPath = path.join(root, "bwrap");
+    const capturePath = path.join(root, "capture.json");
+    const bwrapCapturePath = path.join(root, "bwrap.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeClaudeCommand(commandPath);
+    // Records the bwrap argv, then runs the confined command without confinement.
+    await fs.writeFile(bwrapPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const argv = process.argv.slice(2);
+fs.writeFileSync(process.env.PAPERCLIP_TEST_BWRAP_CAPTURE, JSON.stringify(argv));
+const sep = argv.indexOf("--");
+const r = require("node:child_process").spawnSync(argv[sep + 1], argv.slice(sep + 2), { stdio: "inherit" });
+process.exit(r.status ?? 1);
+`, "utf8");
+    await fs.chmod(bwrapPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+
+    try {
+      await execute({
+        runId: "run-sandbox-skills",
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          filesystemScope: "workspace",
+          filesystemSandboxCommand: bwrapPath,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath, PAPERCLIP_TEST_BWRAP_CAPTURE: bwrapCapturePath },
+          promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipSkillSync: { desiredSkills: ["paperclip"] },
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as { addDir: string };
+      const bwrapArgs = JSON.parse(await fs.readFile(bwrapCapturePath, "utf8")) as string[];
+      const link = path.join(capture.addDir, ".claude", "skills", "paperclip");
+      const source = path.resolve(path.dirname(link), await fs.readlink(link));
+      const bind = bwrapArgs.findIndex((arg, i) => arg === "--ro-bind" && bwrapArgs[i + 1] === source);
+      expect(bind).toBeGreaterThanOrEqual(0);
+      expect(bwrapArgs[bind + 2]).toBe(source);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))("keeps bundle skill links readable inside a real bwrap sandbox", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-real-bwrap-"));
+    const workspace = path.join(root, "workspace");
+    // Own directory: the sandbox mounts the command's directory, which must not expose the test root.
+    const commandPath = path.join(root, "bin", "claude");
+    const seenPath = path.join(workspace, "seen.txt");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(path.dirname(commandPath), { recursive: true });
+    // Plain sh so the fake runs inside the confined root without a node mount.
+    await fs.writeFile(commandPath, `#!/bin/sh
+while [ $# -gt 0 ]; do [ "$1" = "--add-dir" ] && dir="$2"; shift; done
+[ -n "$dir" ] && cat "$dir/.claude/skills/paperclip/SKILL.md" > ${JSON.stringify(seenPath)} 2>&1
+exit 0
+`, "utf8");
+    await fs.chmod(commandPath, 0o755);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+
+    try {
+      await execute({
+        runId: "run-real-bwrap-skills",
+        agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          filesystemScope: "workspace",
+          filesystemSandboxCommand: process.env.PAPERCLIP_TEST_BWRAP,
+          promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipSkillSync: { desiredSkills: ["paperclip"] },
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(await fs.readFile(seenPath, "utf8")).toMatch(/^---\n/);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("starts a fresh Claude session when the stable prompt bundle changes", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-reset-"));
     const workspace = path.join(root, "workspace");
