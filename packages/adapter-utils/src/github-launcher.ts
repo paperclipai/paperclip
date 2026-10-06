@@ -10,14 +10,59 @@ const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
-const executable = originalPath.map(p => path.join(p, program)).find(p => {
-  try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
-});
-if (!['git', 'gh'].includes(program) || !executable) {
+if (!['git', 'gh'].includes(program)) {
   process.stderr.write('Paperclip: requested GitHub command is not installed.\n');
   process.exit(127);
 }
+// NOP-20: resolve the real binary deterministically instead of trusting a
+// plain PATH scan. A scan can pick the macOS /usr/bin/git xcrun shim, which
+// dies with a dyld "missing compatible architecture" error whenever Command
+// Line Tools is broken or half-installed, killing the credential fallback.
+// Prefer real binary locations, then PATH entries, and trust a candidate
+// only after it actually executes on this host.
+const executableCandidates = [];
+{
+  const seen = new Set();
+  const pushCandidate = (candidate) => {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (!fs.statSync(candidate).isFile()) return;
+      const real = fs.realpathSync(candidate);
+      if (seen.has(real)) return;
+      seen.add(real);
+      executableCandidates.push(candidate);
+    } catch { return; }
+  };
+  if (process.platform === 'darwin') {
+    const home = os.homedir();
+    for (const dir of ['/opt/homebrew/bin', '/usr/local/bin', home + '/.local/bin', home + '/homebrew/bin'])
+      pushCandidate(path.join(dir, program));
+  }
+  for (const dir of originalPath) pushCandidate(path.join(dir, program));
+}
+async function resolveExecutable(candidates) {
+  const tried = [];
+  for (const candidate of candidates) {
+    const probeResult = await new Promise((resolve) => {
+      let stderrText = '';
+      const probe = spawn(candidate, ['--version'], { stdio: ['ignore', 'ignore', 'pipe'], timeout: 5000 });
+      probe.stderr.on('data', (chunk) => { if (stderrText.length < 400) stderrText += String(chunk); });
+      probe.once('error', (error) => { resolve('error: ' + String((error && error.message) || error)); });
+      probe.once('exit', (code) => {
+        if (code === 0) { resolve(true); return; }
+        const detail = stderrText.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 200);
+        resolve('exit ' + code + (detail ? ': ' + detail : ''));
+      });
+    });
+    if (probeResult === true) return candidate;
+    tried.push(candidate + ' (' + probeResult + ')');
+  }
+  process.stderr.write('Paperclip: no usable ' + program + ' executable found: wrapper=' + process.argv[1] + '; tried: ' + tried.join('; ') + '\n');
+  return null;
+}
 async function main() {
+  const executable = await resolveExecutable(executableCandidates);
+  if (!executable) { process.exitCode = 127; return; }
   let env = { ...process.env };
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
@@ -109,8 +154,13 @@ async function main() {
   env.GIT_SSH_COMMAND = 'ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=none -o BatchMode=yes';
   const child = spawn(executable, process.argv.slice(2), { env, stdio: 'inherit' });
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
-  child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
-  child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });
+  child.once('error', (error) => { process.stderr.write('Paperclip: GitHub command could not start: wrapper=' + process.argv[1] + ', resolved=' + executable + ', error=' + String((error && error.message) || error) + '.\n'); process.exitCode = 1; });
+  // NOP-20: a fallback failure must carry wrapper-level context (wrapper path,
+  // resolved binary, exit code) instead of surfacing only the raw child error.
+  child.once('exit', (code, signal) => {
+    process.exitCode = code === null ? 128 : code;
+    if (code !== 0) process.stderr.write('Paperclip: GitHub command failed: wrapper=' + process.argv[1] + ', resolved=' + executable + (code === null ? ', signal=' + String(signal) : ', exit=' + code) + '.\n');
+  });
 }
 main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
 `;
