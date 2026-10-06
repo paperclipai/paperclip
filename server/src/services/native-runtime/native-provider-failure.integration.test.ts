@@ -21,9 +21,12 @@ import { collectRunFailureDiagnostics } from "../run-failure-diagnostics.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { readPersistedNativeModelRejection } from "./native-provider-failure-evidence.js";
 import { heartbeatService } from "../heartbeat.js";
-import { getNativeReviewAssignment } from "./native-review-participant.js";
+import { claimNativeReviewExecutionLock, getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { commitNativeStatusDecision, NativeStatusRaceError } from "./status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "./status-arbiter.js";
+import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
+import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 
 describe("native completed failure diagnostics", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -74,11 +77,12 @@ describe("native completed failure diagnostics", () => {
         await db.insert(statusDecisions).values({ id: decisionId, companyId, issueId, runId: sourceRunId, assessmentId, decisionVersion: 1, policyVersion: "fixture", fromStatus: "in_progress", toStatus: "in_review", reasonCode: "explicit_review", decisionJson: { projectedStatusVersion: reviewIssue.statusVersion }, decisionDigest: decisionId, applicationState: "applied" });
         await db.update(issues).set({ lastStatusDecisionId: decisionId }).where(eq(issues.id, issueId));
         await db.insert(issueThreadInteractions).values({ id: interactionId, companyId, issueId, kind: "request_confirmation", sourceRunId, addresseeAgentId: agentId, createdByAgentId: workerId,
+          continuationPolicy: "wake_assignee",
           status: scenario === "resolved-review" ? "accepted" : "pending",
           ...(scenario === "resolved-review" ? { resolvedByRunId: runId, resolvedByAgentId: agentId } : {}),
           payload: { version: 1, prompt: "Review the completed work.", target: { type: "custom", key: "native_completion_review", revisionId: decisionId } },
         });
-        const contextSnapshot = { issueId, nativeReviewInteractionId: interactionId, nativeReviewDecisionId: decisionId };
+        const contextSnapshot = { issueId, wakeReason: "native_completion_review", nativeReviewInteractionId: interactionId, nativeReviewDecisionId: decisionId };
         await db.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, runId));
         if (scenario === "superseded-review") await db.update(issues).set({ lastStatusDecisionId: null }).where(eq(issues.id, issueId));
         const review = await getNativeReviewAssignment(db, { companyId, issueId, agentId, contextSnapshot, allowResolvedByRunId: runId });
@@ -193,7 +197,7 @@ describe("native completed failure diagnostics", () => {
         const [finalRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
         expect(finalRun).toMatchObject({ status: "failed", errorCode: "native_provider_model_rejected", error: NATIVE_MODEL_REJECTION_MESSAGE });
         const [finalIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
-        expect(finalIssue.status).toBe(reviewAuthorityEnded ? "in_review" : ownerChanged ? "in_progress" : "blocked");
+        expect(finalIssue.status).toBe(scenario.endsWith("-review") ? "in_review" : ownerChanged ? "in_progress" : "blocked");
         const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
         expect(decisions).toHaveLength(1);
         expect(decisions[0].reasonCode).toBe(reviewAuthorityEnded ? "native_review_action_finished" : ownerChanged ? "run_failed_partial_evidence_preserved" : "native_provider_model_rejected");
@@ -201,6 +205,49 @@ describe("native completed failure diagnostics", () => {
         expect(wakes.filter(wake => wake.payload?.issueId === issueId)).toHaveLength(ownerChanged ? 1 : 0);
         if (!ownerChanged) expect(await heartbeatService(db).dispatchPendingNativeStatusWakeups({ companyId })).toEqual({ scanned: 0, dispatched: 0, recovered: 0, deferred: 0 });
         expect(provider.execute).toHaveBeenCalledTimes(1);
+        if (scenario === "pending-review") {
+          const reviewContext = readNativeReviewAssignmentContext(finalRun.contextSnapshot)!;
+          expect(finalIssue).toMatchObject({ lastStatusDecisionId: reviewContext.nativeReviewDecisionId, executionRunId: null, checkoutRunId: null });
+          const originalReview = await getNativeReviewAssignment(db, { companyId, issueId, agentId, contextSnapshot: reviewContext });
+          expect(originalReview?.interaction.status).toBe("pending");
+          expect(finalIssue.statusVersion).toBe(originalReview!.sourceDecision.decisionJson.projectedStatusVersion);
+          expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+
+          // Exercise the real release and periodic recovery lanes, rather than
+          // assuming that absence of a finalizer wake prevents later retries.
+          const unexpected = vi.fn(async () => { throw new Error("Unexpected automatic recovery"); });
+          const release = createReleaseIssueExecution({
+            issueLock: createPostgresWakeQueueAdapter(db, { resolveResponsibleUserId: unexpected, getRoutineEnv: unexpected, resolveSessionBeforeForWakeup: unexpected }),
+            recovery: { escalateStrandedAssignedIssue: unexpected, escalateStrandedRecoveryIssueInPlace: unexpected },
+          });
+          expect((await release({ companyId, runId, now: new Date() })).outcome.kind).toBe("released");
+          await heartbeatService(db).reconcileStrandedAssignedIssues();
+          expect(unexpected).not.toHaveBeenCalled();
+          expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+          expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).filter(wake => wake.payload?.issueId === issueId)).toHaveLength(0);
+          const [afterRecovery] = await db.select().from(issues).where(eq(issues.id, issueId));
+          expect(afterRecovery).toMatchObject({ status: "in_review", statusVersion: finalIssue.statusVersion, lastStatusDecisionId: finalIssue.lastStatusDecisionId });
+
+          // The operator repairs configuration and explicitly retries the
+          // assigned reviewer. No review rebinding or status reset is needed.
+          await db.update(agents).set({ adapterConfig: { provider: "codex", model: "repaired-model" } }).where(eq(agents.id, agentId));
+          const retryRunId = randomUUID();
+          await db.insert(heartbeatRuns).values({ id: retryRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: issueId,
+            contextSnapshot: { issueId, wakeReason: "native_completion_review", ...reviewContext },
+          });
+          expect(await claimNativeReviewExecutionLock(db, { companyId, issueId, agentId, runId: retryRunId, contextSnapshot: reviewContext, agentNameKey: "reviewer", claimedAt: new Date() })).toBe(true);
+          expect(await getNativeReviewAssignment(db, { companyId, issueId, agentId, contextSnapshot: reviewContext, actingRunId: retryRunId, issueExecutionRunId: retryRunId })).not.toBeNull();
+          await issueThreadInteractionService(db).acceptInteraction(
+            { id: issueId, companyId, projectId: null, goalId: null, status: "in_review" },
+            reviewContext.nativeReviewInteractionId, {}, { agentId, runId: retryRunId },
+          );
+          const [resolved] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, reviewContext.nativeReviewInteractionId));
+          expect(resolved).toMatchObject({ status: "accepted", resolvedByAgentId: agentId, resolvedByRunId: retryRunId });
+          expect(await db.select().from(issues).where(eq(issues.id, issueId))).toMatchObject([{ status: "done", assigneeAgentId: workerId }]);
+          expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).toEqual(acceptedBefore);
+          expect(provider.execute).toHaveBeenCalledTimes(1);
+          await db.update(agents).set({ adapterConfig: { provider: "codex", model } }).where(eq(agents.id, agentId));
+        }
       } else if (scenario === "unknown-error") {
         // A lookalike diagnostic flag does not alter unknown failed-result policy.
         await db.update(heartbeatRuns).set({ resultJson: { nativeProviderFailure: NATIVE_MODEL_REJECTION_DIAGNOSTIC } }).where(eq(heartbeatRuns.id, runId));

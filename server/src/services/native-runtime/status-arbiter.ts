@@ -151,6 +151,20 @@ export function arbitrateNativeStatus(input: {
   }
   if (input.providerModelRejected && input.terminalState === "failed" &&
       input.nativeReviewOutcome !== "stale" && input.nativeReviewOutcome !== "resolved") {
+    if (input.nativeReviewOutcome === "pending") {
+      // The pending review is bound to the worker's status decision and
+      // version. Preserve that authority so an explicit retry after a
+      // configuration repair can resolve the same review. In particular,
+      // do not create the normal unresolved-review recovery action.
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "preserve",
+        toStatus: input.priorIssueStatus,
+        reasonCode: "native_provider_model_rejected",
+        unblockDescriptor: null,
+        effects: [{ kind: "release_checkout" }],
+      };
+    }
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "blocked",
