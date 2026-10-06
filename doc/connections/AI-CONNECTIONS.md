@@ -237,6 +237,17 @@ repairs the connection. Unsupported providers and failures that could not create
 a card retain their existing recovery path. Tool permission errors and provider quota failures do not
 request model authentication.
 
+Pre-dispatch `configuration_incomplete` failures also show this card when every
+missing binding is a personal `user_secret_ref` for the same compatible AI
+provider. This includes a teammate who has no value for an onboarding
+`ANTHROPIC_API_KEY` definition. The card asks that person to connect their own
+account. It does not use another teammate's secret. Mixed gaps, company secrets,
+and unrelated tool credentials keep the existing operator recovery path.
+After explicit, validated adoption, the durable delivery reopens only the
+blocked task whose latest failure and active configuration recovery still match
+the card. A newer failure, reassignment, manual hold, or restricted external chat
+does not resume through an old card.
+
 An attributed managed credential is marked as needing reauthorization only if
 its stored generation still matches the failed run. Late failures cannot
 invalidate a refreshed or reconnected credential. Repair preserves the selected

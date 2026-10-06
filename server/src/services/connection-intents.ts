@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { aiConnectionBindingSchema, aiConnectionRouterBindingSchema } from "@paperclipai/shared";
-import { aiBindingForAuthRecovery, isAiAuthenticationFailure } from "./ai-auth-failure.js";
+import { aiBindingForAuthRecovery, isAiAuthenticationFailure, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import { and, eq, desc, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -162,6 +162,7 @@ export function connectionIntentService(db: Db) {
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         errorCode: heartbeatRuns.errorCode,
+        resultJson: heartbeatRuns.resultJson,
         responsibleUserId: heartbeatRuns.responsibleUserId,
         activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
@@ -176,7 +177,7 @@ export function connectionIntentService(db: Db) {
       || run.agentId !== claims.sub
       || (!run.activeIdentityContextId && run.responsibleUserId !== claims.responsible_user_id)
     ) throw forbidden("Runtime tool token does not match its heartbeat run");
-    if (failedAuthRun ? run.status !== "failed" || !isAiAuthenticationFailure(run.errorCode) : run.status !== "running") {
+    if (failedAuthRun ? run.status !== "failed" || !isAiAuthenticationRepairable(run) : run.status !== "running") {
       throw forbidden("Runtime tool token is no longer active");
     }
     if (run.activeIdentityContextId && !failedAuthRun) {
@@ -854,8 +855,8 @@ export function connectionIntentService(db: Db) {
         eq(heartbeatRuns.agentId, payload.requestingAgentId),
       ));
       const [agent] = await db.select().from(agents).where(and(eq(agents.id, payload.requestingAgentId), eq(agents.companyId, loaded.issue.companyId)));
-      if (source?.status === "failed" && isAiAuthenticationFailure(source.errorCode) && !source.contextSnapshot?.aiConnection && agent && !agent.runtimeConfig.aiConnection) {
-        managed = await managedAgent(loaded.issue.companyId, agent.id, app.slug, { fallback: aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig) });
+      if (source?.status === "failed" && isAiAuthenticationRepairable(source) && !source.contextSnapshot?.aiConnection && agent && !agent.runtimeConfig.aiConnection) {
+        managed = await managedAgent(loaded.issue.companyId, agent.id, app.slug, { fallback: aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig, source) });
       }
     }
     if (payload.purpose === "ai" && !managed) throw conflict("The agent’s AI configuration changed. Start a new execution.");
@@ -1165,7 +1166,7 @@ export function connectionIntentService(db: Db) {
     // Controller-only entry point. Runtime tokens still require a running run.
     requestForRunAuthFailure: async (runId: string) => {
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-      if (!run || run.status !== "failed" || !isAiAuthenticationFailure(run.errorCode) || !run.responsibleUserId) return null;
+      if (!run || run.status !== "failed" || !isAiAuthenticationRepairable(run) || !run.responsibleUserId) return null;
       const context = await loadRunContext({ sub: run.agentId, company_id: run.companyId, run_id: run.id, responsible_user_id: run.responsibleUserId }, true);
       const [latest] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, run.companyId),
@@ -1178,7 +1179,7 @@ export function connectionIntentService(db: Db) {
       const router = aiConnectionRouterBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
       const selected = router ? record(run.contextSnapshot?.aiRouterSelection) : null;
       const managed = router && selected ? await managedAgent(run.companyId, run.agentId, String(record(selected.binding)?.provider), { sourceRunId: run.id }) : null;
-      const binding = router ? managed?.binding : saved ?? aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig);
+      const binding = router ? managed?.binding : saved ?? aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig, run);
       if (!binding) return null;
       const attribution = record(run.contextSnapshot?.aiConnection);
       if (attribution && attribution.provider !== binding.provider) return null;

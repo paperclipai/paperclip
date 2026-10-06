@@ -19,6 +19,7 @@ import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "../services
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
+import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
 import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import express from "express";
 import request from "supertest";
@@ -378,6 +379,73 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(heartbeatRuns).values({ companyId, agentId: id, status: "succeeded", responsibleUserId: "alice", contextSnapshot: { issueId }, createdAt: new Date(Date.now() + 1000) });
     expect(await intents.requestForRunAuthFailure(runId)).toBeNull();
   });
+
+  it("repairs a teammate's missing onboarding key with their own inline AI connection", async () => {
+    const userId = `new-teammate-${randomUUID()}`;
+    const id = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const vault = secretService(db);
+    const definition = await vault.createUserSecretDefinition(companyId, {
+      key: `ANTHROPIC_API_KEY.${randomUUID()}`, name: "ANTHROPIC_API_KEY for onboarding",
+    }, { userId: "alice" });
+    const ownerSecret = await vault.createCurrentUserSecretValue(companyId, "alice", {
+      definitionId: definition.id, value: "fixture-original-owner-key",
+    }, { userId: "alice" });
+    const adapterConfig = { env: { ANTHROPIC_API_KEY: {
+      type: "user_secret_ref", key: definition.key, version: "latest", required: true,
+    } } };
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const [agent] = await db.insert(agents).values({ id, companyId, name: "Chief of Staff", adapterType: "claude_local", adapterConfig }).returning();
+    await vault.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: id }, adapterConfig.env);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Chat with Chief of Staff", status: "blocked", assigneeAgentId: id, responsibleUserId: userId });
+    const failure = await resolveExecutionRunAdapterConfig({
+      companyId, agentId: id, adapterType: "claude_local", issueId,
+      responsibleUserId: userId, executionRunConfig: adapterConfig, projectEnv: null, secretsSvc: vault,
+    }).catch(error => error);
+    expect(failure).toMatchObject({ code: "configuration_incomplete", resultJson: {
+      configurationIncomplete: { reason: "secret_binding_missing", missingBindings: [
+        expect.objectContaining({ bindingType: "user_secret_ref", envKey: "ANTHROPIC_API_KEY", errorCode: "user_secret_missing", responsibleUserId: userId }),
+      ] },
+    } });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed",
+      errorCode: failure.code, resultJson: failure.resultJson, responsibleUserId: userId, contextSnapshot: { issueId } });
+    await issueRecoveryActionService(db).upsertSourceScoped({ companyId, sourceIssueId: issueId,
+      kind: "configuration_validation", cause: "configuration_incomplete", fingerprint: `missing-key:${issueId}`,
+      nextAction: "Connect your AI account", ownerType: "board", evidence: { latestRunId: runId } });
+    const intents = connectionIntentService(db);
+    const card = await intents.requestForRunAuthFailure(runId);
+    expect(card).toMatchObject({ service: "anthropic", state: "needs_user_action" });
+    expect((await intents.setupOptions(card!.interactionId!))).toMatchObject({
+      aiConnectionRequiresAdoption: true, aiConnection: { provider: "anthropic", mode: "responsible_user" },
+      interaction: { addresseeUserId: userId, sourceRunId: runId },
+    });
+    expect((await intents.requestForRunAuthFailure(runId))?.interactionId).toBe(card!.interactionId);
+    expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toBeUndefined();
+
+    const account = await create(userId, "Teammate's Claude");
+    const setup = await intents.setupOptions(card!.interactionId!);
+    await intents.complete(card!.interactionId!, account.connectionId, userId, {
+      validatedAdoption: { agentUpdatedAt: agent.updatedAt, binding: setup.aiConnection! },
+    });
+    const wakeup = vi.fn(async (_agentId, opts) => {
+      await db.insert(agentWakeupRequests).values({ companyId, agentId: id, source: "automation", status: "queued", idempotencyKey: opts.idempotencyKey });
+      return null;
+    });
+    const delivery = connectionIntentDeliveryService(db, { wakeup } as never);
+    await delivery.deliver(card!.interactionId!);
+    await delivery.deliver(card!.interactionId!);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("in_progress");
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    expect(wakeup).toHaveBeenCalledWith(id, expect.objectContaining({ contextSnapshot: expect.objectContaining({ forceFreshSession: true }) }));
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, issueId)).toBeNull();
+    expect((await db.select().from(companySecrets).where(eq(companySecrets.id, ownerSecret.id)))[0]).toMatchObject({ ownerUserId: "alice", latestVersion: 1, status: "active" });
+    const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: id, responsibleUserId: userId, adapterType: "claude_local", binding: setup.aiConnection!, config: adapterConfig });
+    try {
+      expect(runtime.config.env).toMatchObject({ ANTHROPIC_API_KEY: "fixture-Teammate's Claude" });
+      expect(runtime.attribution.grantId).toBe(account.grantId);
+    } finally { await runtime.cleanup(); }
+  }, 30000);
   it.each([
     ["anthropic", "claude_local", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
     ["openai", "codex_local", "CODEX_HOME", "OPENAI_API_KEY"],
@@ -1022,6 +1090,13 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(agents).values({ id, companyId, name: "Runner adoption", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } });
     const account = await service.save(companyId, "alice", { provider: "openai", method: "api_key", ownership: "personal", name: "Runner adoption account", apiKey: "fixture-adoption-key", agentIds: inline ? [] : [id], allAgents: false }, "fixture-adoption-key");
     await service.setDefault(companyId, "alice", account.grantId);
+    const tryDeliver = vi.fn(async (interactionId: string) => {
+      // Dispatch observes committed adoption, never a partially saved choice.
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0].status).toBe("accepted");
+      expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toMatchObject({ mode: "responsible_user" });
+    });
+    const deliveryModule = await import("../services/connection-intent-delivery.js");
+    const delivery = vi.spyOn(deliveryModule, "connectionIntentDeliveryService").mockReturnValue({ tryDeliver } as never);
     let interactionId: string | undefined;
     if (inline) {
       const issueId = randomUUID();
@@ -1052,6 +1127,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       resolveTarget.mockResolvedValueOnce(null);
       const unavailable = await adopt();
       expect(unavailable.status, JSON.stringify(unavailable.body)).toBe(422);
+      expect(tryDeliver).not.toHaveBeenCalled();
       expect(probe).not.toHaveBeenCalled();
       expect(providerRequest).not.toHaveBeenCalled();
       expect((await db.select().from(agents).where(eq(agents.id, id)))[0].runtimeConfig.aiConnection).toBeUndefined();
@@ -1068,6 +1144,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         try {
           const failed = await adopt();
           expect(failed.status).toBe(500);
+          expect(tryDeliver).not.toHaveBeenCalled();
           await assertUnchanged();
         } finally {
           await db.execute(sql.raw("DROP TRIGGER reject_atomic_adoption ON issue_thread_interactions"));
@@ -1083,6 +1160,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         expect(saved.body.status).toBe("accepted");
         expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, account.connectionId))).toHaveLength(1);
         expect((await adopt()).status).toBe(200);
+        expect(tryDeliver).toHaveBeenCalledTimes(2);
+        expect(tryDeliver).toHaveBeenCalledWith(interactionId);
       }
       expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ companyId, environment: expect.objectContaining({ id: environment.id }) }));
       expect(probe).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target, config: expect.objectContaining({ provider: "codex", model: "gpt-5.6-sol", managedAiConnection: expect.any(Object) }) }));
@@ -1093,7 +1172,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(release).toHaveBeenCalledTimes(inline ? 3 : 2);
       expect(JSON.stringify(saved.body)).not.toContain("fixture-adoption-key");
     } finally {
-      providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
+      delivery.mockRestore(); providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
       await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
     }
   });
@@ -1141,8 +1220,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
 
 
 describe("AI connection recovery delivery", () => {
-  it.each(["restored", "newer failure", "different blocker", "revoked again", "closed task"])(
-    "continues only the repaired source failure: %s", async (scenario) => {
+  it.each(["ai_connection_unavailable", "secret_binding_missing"].flatMap(reason =>
+    ["restored", "newer failure", "different blocker", "revoked again", "closed task"].map(scenario => [reason, scenario]),
+  ))(
+    "continues only the repaired %s source failure: %s", async (reason, scenario) => {
       const userId = `recovery-${randomUUID()}`;
       const recoveringAgentId = randomUUID();
       const issueId = randomUUID();
@@ -1155,7 +1236,9 @@ describe("AI connection recovery delivery", () => {
       const pending = await intents.request({ sub: recoveringAgentId, company_id: companyId, run_id: failedRunId, responsible_user_id: userId }, "anthropic", { purpose: "ai" });
       const account = await create(userId, `Recovered ${scenario}`);
       expect((await intents.setupOptions(pending.interactionId!)).existingConnections.map(connection => connection.id)).toEqual([account.connectionId]);
-      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "configuration_incomplete", resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable" } } }).where(eq(heartbeatRuns.id, failedRunId));
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "configuration_incomplete", resultJson: { configurationIncomplete: { reason,
+        ...(reason === "secret_binding_missing" ? { missingBindings: [{ bindingType: "user_secret_ref", envKey: "ANTHROPIC_API_KEY", configPath: "env.ANTHROPIC_API_KEY", errorCode: "user_secret_missing" }] } : {}),
+      } } }).where(eq(heartbeatRuns.id, failedRunId));
       await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
       await issueRecoveryActionService(db).upsertSourceScoped({ companyId, sourceIssueId: issueId, kind: "configuration_validation", cause: "configuration_incomplete", fingerprint: `ai:${issueId}`, nextAction: "Reconnect", ownerType: "board", evidence: { latestRunId: failedRunId } });
       await intents.complete(pending.interactionId!, account.connectionId, userId);

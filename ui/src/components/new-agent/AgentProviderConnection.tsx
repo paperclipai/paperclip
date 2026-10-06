@@ -87,7 +87,8 @@ export function AgentProviderConnection({
   };
   const [methodChoice, setMethod] = useState<"subscription" | "api" | null>(managedAccount?.initialMethod === "api_key" ? "api" : managedAccount ? "subscription" : null);
   const [advanced, setAdvanced] = useState(false);
-  const [opened, setOpened] = useState(Boolean(advancedConnection));
+  // Connections already selected the provider before showing this step.
+  const [opened, setOpened] = useState(Boolean(advancedConnection || managedAccount));
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [loginPhase, setLoginPhase] = useState<"preparing" | "ready" | "waiting" | "connecting">("preparing");
   const phaseBeforeSubmit = useRef<"ready" | "waiting">("ready");

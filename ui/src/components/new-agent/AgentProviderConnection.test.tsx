@@ -228,7 +228,6 @@ describe("AgentProviderConnection reuse", () => {
       intent, initialMethod: "api_key", fixedMethod: false, onComplete,
       nameForMethod: method => defaultAiConnectionName("dotta", provider, method),
     });
-    openProvider();
     expect(host.querySelector('input[type="password"]')).not.toBeNull();
     click("Use subscription instead");
     const subscription = mocks.loginPanel.mock.calls.at(-1)![0].aiConnection;

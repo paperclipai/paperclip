@@ -37,6 +37,8 @@ outcome. See [the implementation contract](SPEC-implementation.md#124-connection
 Model authentication failures also surface a provider-specific Connections card
 on the task immediately after failure. Users can reconnect inline and resume;
 legacy agents keep their authentication until an explicit, validated adoption.
+Missing personal AI credentials found before a run starts use the same card.
+The responsible user connects their own account inside the task and continues.
 See [AI Connections](connections/AI-CONNECTIONS.md).
 
 AI connections also expose an on-demand, credential-scoped usage probe. It

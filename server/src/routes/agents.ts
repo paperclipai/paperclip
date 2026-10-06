@@ -2,6 +2,7 @@ import { aiRoutingHarness } from "@paperclipai/shared";
 import { agentIdentityService } from "../services/agent-identity.js";
 import { aiConnectionRouterService, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { completeConnectionIntentSchema } from "@paperclipai/shared";
 import { agentFileStore, agentFileTokenFromHash } from "../services/agent-file-store.js";
 import { pipeline } from "node:stream/promises";
@@ -5536,6 +5537,7 @@ export function agentRoutes(
     if (!userId || loaded.interaction.addresseeUserId !== userId) throw forbidden("Only the addressed user can adopt this connection");
     const connectionId = req.body.connectionId as string;
     if (loaded.interaction.status === "accepted" && loaded.interaction.result?.connectionId === connectionId) {
+      await connectionIntentDeliveryService(db, heartbeat).tryDeliver(interactionId);
       res.json(loaded.interaction);
       return;
     }
@@ -5546,9 +5548,13 @@ export function agentRoutes(
     // The binding, install, audit, and card resolution commit together below.
     const validatedConnection = await validateManagedAgentBinding(req, agent.companyId, agent.id, agent.adapterType, agent.adapterConfig, setup.aiConnection, agent.defaultEnvironmentId, true, true);
     if (validatedConnection?.connectionId !== connectionId) throw conflict("This is no longer the selected account. Reload the task and try again.");
-    res.json(await intents.complete(interactionId, connectionId, userId, {
+    const completed = await intents.complete(interactionId, connectionId, userId, {
       validatedAdoption: { agentUpdatedAt: agent.updatedAt, binding: setup.aiConnection },
-    }));
+    });
+    // Dispatch the committed continuation now. The persisted delivery remains
+    // available to the sweeper if this process exits or dispatch is deferred.
+    await connectionIntentDeliveryService(db, heartbeat).tryDeliver(interactionId);
+    res.json(completed);
   });
 
   router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {

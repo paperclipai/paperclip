@@ -1753,6 +1753,13 @@ Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
 methods, lifecycle, runtime enforcement, and migration details.
 
+Missing personal AI credentials detected before adapter dispatch also produce
+the inline connection card. Every missing binding must belong to the same
+compatible AI provider. The responsible user connects their own account and
+explicitly adopts Connections; another user's onboarding key is never reused.
+Acceptance resumes only the matching configuration-blocked task through durable
+continuation delivery. Unrelated configuration gaps retain operator recovery.
+
 The selected AI connection supports an on-demand usage probe through the common
 connection service, independent of legacy/native execution. The board usage
 endpoint rechecks company membership and the credential's human audience before
