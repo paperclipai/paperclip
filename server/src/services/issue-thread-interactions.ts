@@ -4906,9 +4906,29 @@ export function issueThreadInteractionService(
       interactionId: string,
       input: WithdrawIssueThreadInteraction,
       actor: InteractionActor,
-      mutationOptions: InteractionResolutionMutationOptions = {},
+      mutationOptions: InteractionResolutionMutationOptions & { lifecycleFence?: boolean } = {},
       suppliedLifecycle?: { tx: LifecycleTransaction; postCommitPublications: ActivityPublication[] },
     ) => {
+      if (mutationOptions.lifecycleFence && !suppliedLifecycle) {
+        // Requires the actual root DB: do not wrap an existing transaction under older locks.
+        const capturedIssue = { id: issue.id, companyId: issue.companyId };
+        const capturedInput = { reason: input.reason };
+        const capturedActor = { agentId: actor.agentId, runId: actor.runId, userId: actor.userId, systemId: actor.systemId };
+        if (!capturedIssue.companyId) throw unprocessable("Lifecycle withdrawal requires companyId");
+        if (Object.keys(mutationOptions).some(key => key !== "lifecycleFence")) {
+          throw unprocessable("Lifecycle withdrawal does not support arbitrary resolution hooks");
+        }
+        withdrawIssueThreadInteractionSchema.parse(capturedInput);
+        const publications: ActivityPublication[] = [];
+        const withdrawn = await db.transaction(tx => withdrawInteractionInTransaction(
+          tx, capturedIssue, interactionId, capturedInput, capturedActor,
+          { postCommitPublications: publications },
+        ));
+        for (const publication of publications) publishActivity(publication);
+        await touchIssue(db, capturedIssue.id);
+        await emitInteractionResolvedTelemetry(db, withdrawn);
+        return withdrawn;
+      }
       const suppliedTx = suppliedLifecycle?.tx;
       const postCommitPublications = suppliedLifecycle?.postCommitPublications;
       if (suppliedTx) {
