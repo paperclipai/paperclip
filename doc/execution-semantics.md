@@ -452,6 +452,23 @@ Workspace incoherence feeds into the same non-terminal liveness and stranded ass
 
 For runtime-created `git_worktree` execution workspaces, branch coherence is part of workspace coherence. The persisted execution workspace branch is the recorded branch for future dispatch. Reusing that workspace must verify that the worktree is still registered and that `HEAD` is on the recorded branch. Successful run finalization must perform the same check before recording `workspace_finalize=succeeded`. If the run switched to a publishing/PR branch without updating the execution workspace record, finalization may auto-restore the recorded branch only when the worktree is clean, still registered, and the recorded branch points at the current `HEAD`; the repair is recorded as a workspace operation before the successful finalize row. If that safe repair cannot be proven, finalization records a failed workspace finalize and the run fails with bounded evidence for the expected and actual branch. A branch change is sanctioned when a control-plane path updates the execution workspace record before finalization, when publishing work happens in a separate worktree and the managed issue worktree remains on its recorded branch, or when the finalizer performs this clean same-commit restoration.
 
+Sandbox Git restore uses the host branch and commit captured before staging.
+If that identity is unchanged, a rebased or amended sandbox history with shared
+ancestry replaces the starting tip instead of being merged with it. The ref
+update checks the expected old commit; a concurrent change retries through the
+normal history integration path. Git holds the HEAD and applicable branch locks
+while restore verifies the attached/detached branch identity and commits the ref
+transaction. A checkout during integration cannot redirect that write.
+The directory merge still preserves host-only
+file changes under its existing rules. A changed host branch requires recovery.
+An intentional reset to an ancestor exports a full Git bundle so restore keeps
+the actual sandbox tip; an empty delta is reserved for an unchanged tip.
+Unrelated sandbox history keeps the existing history-preserving graft only when
+the recorded host has not advanced; it must not replace concurrent host work.
+Warm sandbox reuse must match the current host Git tip and branch as well as the
+file snapshot and saved stamp, including managed nested repositories. A history
+or branch mismatch restages the host before the next run begins.
+
 ### Workspace scan failures before provider startup
 
 Repository discovery distinguishes an ordinary folder from a failed Git read.

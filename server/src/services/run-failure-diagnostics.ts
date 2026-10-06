@@ -175,6 +175,8 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       if (diagnostic.step) execution.workspaceRestoreStep = diagnostic.step;
       if (diagnostic.httpStatus !== undefined) execution.workspaceRestoreHttpStatus = diagnostic.httpStatus;
       if (diagnostic.exitCode !== undefined) execution.workspaceRestoreExitCode = diagnostic.exitCode;
+      if (diagnostic.gitCommand) execution.workspaceRestoreGitCommand = diagnostic.gitCommand;
+      if (diagnostic.gitFailureKind) execution.workspaceRestoreGitFailureKind = diagnostic.gitFailureKind;
     }
   }
   const adapter = scalars(options.adapterErrorMeta, [

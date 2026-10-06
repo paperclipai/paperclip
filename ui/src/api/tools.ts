@@ -158,6 +158,7 @@ export interface CreateToolConnectionInput {
 }
 
 export interface UpdateToolConnectionInput {
+  agentInstructions?: import("@paperclipai/shared").ConnectionAgentInstructions | null;
   name?: string;
   status?: ToolConnection["status"];
   config?: Record<string, unknown>;
@@ -322,6 +323,7 @@ export const toolsApi = {
     enabledCatalogEntryIds: string[];
     askFirstCatalogEntryIds: string[];
     reviewedCatalogEntryIds?: string[];
+    agentInstructions?: import("@paperclipai/shared").ConnectionAgentInstructions | null;
     access: "all_agents" | { agentIds: string[] };
   }) =>
     api.post<FinishToolAppResult>(

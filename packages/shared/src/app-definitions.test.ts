@@ -1027,6 +1027,7 @@ describe("AppDefinition catalog", () => {
     ).sort();
     expect(required).toEqual([
       "clickhouse:mcp-oauth:serviceId",
+      "honcho:mcp-api-key:workspaceId",
       "shopify:storefront-mcp:storeDomain",
       "shopify:ucp-commerce:storeDomain",
       "supabase:mcp-api-key:projectRef",

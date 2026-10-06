@@ -7,6 +7,7 @@ import { mergeComposerRunSettings, type ComposerRunSettings } from "@/components
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
+import { trackRecentProject } from "@/lib/recent-projects";
 import { Settings as ChatSettings } from "lucide-react";
 import { agentDetailHref } from "./agent-detail-navigation";
 import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
@@ -4161,7 +4162,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       changes: _changes,
       blockedByIssueIds: _blockedByIssueIds,
       ...nextIssue
-    }) => {
+    }, data) => {
+      if (Object.prototype.hasOwnProperty.call(data, "projectId")) {
+        trackRecentProject(nextIssue.projectId ?? "", nextIssue.companyId);
+      }
       const issueRefs = new Set<string>([issueId!, nextIssue.id]);
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
       mergeIssueResponseIntoCaches(issueRefs, nextIssue);

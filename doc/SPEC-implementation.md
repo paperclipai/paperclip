@@ -1914,3 +1914,15 @@ company and credential authorization, atomically records task/agent affinity and
 a pool cursor, and persists concrete native recovery evidence. The full contract
 is in [AI-CONNECTION-ROUTERS.md](connections/AI-CONNECTION-ROUTERS.md). Disabled
 routing cannot allocate new tasks; already admitted native runs remain recoverable.
+
+### Connection instructions
+
+Connections can store optional, versioned agent instructions independently of
+provider and transport. Catalog templates control editor visibility; saved
+settings and runtime delivery also support connections without a template.
+The server includes instructions only when the connection and at least one
+action are available to the run's agent and responsible identity. An immutable
+per-turn snapshot participates in session compatibility, so subsequent turns
+remove stale instructions after edits or access revocation. See
+[Connection instructions](connections/CONNECTION-INSTRUCTIONS.md) for contracts,
+UI conventions, custom adapter integration, and initial memory templates.

@@ -514,9 +514,21 @@ Nested steps retain the most specific failing operation. Error codes come from
 the restore diagnostic allowlist, with unrecognized codes reported as `unknown`;
 HTTP statuses are integers from 400 through 599 and process exit codes are
 integers from 1 through 255. These fields accompany a known restore failure code
-only. They omit error messages, commands, paths, process output, and arbitrary
+only. They omit error messages, raw command lines, paths, process output, and arbitrary
 cause data. Git error wrappers preserve only these safe codes and numbers for
-diagnostics, without adding the original error as a cause. This does not change
+diagnostics, without adding the original error as a cause.
+For `git_integration`, optional `workspaceRestoreGitCommand` identifies the fixed
+command family: `rev_parse`, `symbolic_ref`, `merge_base`, `merge_tree`,
+`commit_tree`, `update_ref`, or `log`. `workspaceRestoreGitFailureKind` is
+`merge_conflict`, `invalid_object`, `ref_conflict`, `permission_denied`, or
+`unknown`. A merge conflict requires an uninterrupted `merge-tree --write-tree`
+exit of 1 with a completed tree ID in stdout; exit 1 alone is ambiguous.
+Object and ref classifications require recognized Git diagnostics;
+permission denial requires an OS `EACCES` or `EPERM` code. Unrecognized or
+localized messages remain `unknown`. Up to 16 KiB of stderr is inspected only
+in memory; no arguments, stderr, paths, repository URLs, filenames, or ref names
+enter these fields. Handled probes and successful retries emit no diagnostic.
+This does not change
 restore behavior, retries, timeouts, or recovery policy.
 
 A caught directory-merge lock timeout also records `restoreLockOwnerState`

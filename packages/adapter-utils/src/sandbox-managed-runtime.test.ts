@@ -838,6 +838,93 @@ describe("sandbox managed runtime", () => {
     },
   );
 
+  it("restores a sandbox rebase without merging it with unchanged host history", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-rebase-"));
+    cleanupDirs.push(rootDir);
+    const host = path.join(rootDir, "host");
+    const remote = path.join(rootDir, "remote");
+    await mkdir(host);
+    await git(host, ["init"]);
+    await git(host, ["checkout", "-b", "work"]);
+    await git(host, ["config", "user.name", "Paperclip Test"]);
+    await git(host, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(host, "pins.txt"), "base\n");
+    await writeFile(path.join(host, "notes.txt"), "original notes\n");
+    await git(host, ["add", "."]);
+    await git(host, ["commit", "-m", "base"]);
+    const base = await git(host, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(host, "pins.txt"), "feature\n");
+    await git(host, ["commit", "-am", "feature"]);
+    const startingHead = await git(host, ["rev-parse", "HEAD"]);
+    await git(host, ["checkout", "-b", "upstream", base]);
+    await writeFile(path.join(host, "pins.txt"), "upstream\n");
+    await git(host, ["commit", "-am", "upstream"]);
+    await git(host, ["checkout", "work"]);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "rebase", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client: makeFilesystemClient(),
+      workspaceLocalDir: host,
+    });
+    await git(remote, ["config", "user.name", "Paperclip Test"]);
+    await git(remote, ["config", "user.email", "test@paperclip.dev"]);
+    await git(remote, ["fetch", "--unshallow", host, "+refs/heads/*:refs/remotes/source/*"]);
+    await expect(git(remote, ["rebase", "refs/remotes/source/upstream"])).rejects.toMatchObject({ code: 1 });
+    await writeFile(path.join(remote, "pins.txt"), "resolved pins\n");
+    await git(remote, ["add", "pins.txt"]);
+    await git(remote, ["-c", "core.editor=true", "rebase", "--continue"]);
+    const rebasedHead = await git(remote, ["rev-parse", "HEAD"]);
+    expect(rebasedHead).not.toBe(startingHead);
+    await writeFile(path.join(host, "notes.txt"), "host edits during the run\n");
+    await writeFile(path.join(host, "local-only.txt"), "local file\n");
+    await writeFile(path.join(remote, "output.txt"), "sandbox output\n");
+
+    await prepared.restoreWorkspace();
+
+    expect(await git(host, ["rev-parse", "HEAD"])).toBe(rebasedHead);
+    expect(await git(host, ["symbolic-ref", "--short", "HEAD"])).toBe("work");
+    expect(await readFile(path.join(host, "pins.txt"), "utf8")).toBe("resolved pins\n");
+    expect(await readFile(path.join(host, "notes.txt"), "utf8")).toBe("host edits during the run\n");
+    expect(await readFile(path.join(host, "local-only.txt"), "utf8")).toBe("local file\n");
+    expect(await readFile(path.join(host, "output.txt"), "utf8")).toBe("sandbox output\n");
+    expect(await git(host, ["diff", "--cached", "--name-only"])).toBe("");
+  });
+
+  it("restores a sandbox reset to an ancestor with the matching clean working tree", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-reset-"));
+    cleanupDirs.push(rootDir);
+    const host = path.join(rootDir, "host");
+    const remote = path.join(rootDir, "remote");
+    await mkdir(host);
+    await git(host, ["init"]);
+    await git(host, ["checkout", "-b", "work"]);
+    await git(host, ["config", "user.name", "Paperclip Test"]);
+    await git(host, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(host, "tracked.txt"), "original\n");
+    await git(host, ["add", "."]);
+    await git(host, ["commit", "-m", "original"]);
+    const ancestor = await git(host, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(host, "tracked.txt"), "change to discard\n");
+    await git(host, ["commit", "-am", "later change"]);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "reset", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client: makeFilesystemClient(),
+      workspaceLocalDir: host,
+    });
+    await git(remote, ["fetch", "--unshallow", host, "work"]);
+    await git(remote, ["reset", "--hard", ancestor]);
+
+    await prepared.restoreWorkspace();
+
+    expect(await git(host, ["rev-parse", "HEAD"])).toBe(ancestor);
+    expect(await git(host, ["symbolic-ref", "--short", "HEAD"])).toBe("work");
+    expect(await readFile(path.join(host, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(await git(host, ["status", "--porcelain"])).toBe("");
+  });
+
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-git-"));
     cleanupDirs.push(rootDir);

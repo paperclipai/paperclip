@@ -2824,3 +2824,5 @@ export * from "./github-skill-repository.js";
 
 export { aiConnectionRouterSlug, aiConnectionRouterAppDefinition, aiConnectionRouterPluginKey } from "./ai-connection-router.js";
 export { isAppAggregator, aggregatorManagementUrl, aggregatorAppsSyncSchema, aggregatorAppsRefreshSchema, arcadeDiscoverySetupSchema, type AggregatorAppSnapshot, type AggregatorAppsResponse, type ArcadeDiscoverySetupInput } from "./aggregator-apps.js";
+
+export * from "./connection-instructions.js";

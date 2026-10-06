@@ -377,6 +377,45 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     return root;
   }
 
+  it("keeps Honcho setup blocked until the provider workspace is supplied", async () => {
+    const honcho = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "honcho")!;
+    experimentalMock.mockResolvedValue({ enableMemoryConnectors: true });
+    listGalleryMock.mockResolvedValue({ apps: [honcho] });
+    await render(undefined, false, <ConnectionSetupFlow serviceSlug="honcho" />);
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    const workspace = container.querySelector<HTMLInputElement>('input[aria-label="Honcho workspace"]')!;
+    expect(workspace.compareDocumentPosition(key) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.textContent).toContain(honcho.agentInstructions!.text);
+    expect(container.querySelector('[aria-label="Agent instructions"] [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+    await act(async () => setInputValue(key, "test-honcho-key"));
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+    await act(async () => buttonByText("Connect")?.click());
+    expect(connectAppMock).not.toHaveBeenCalled();
+    await act(async () => setInputValue(workspace, "paperclip-acme"));
+    expect(buttonByText("Connect")?.disabled).toBe(false);
+    await act(async () => buttonByText("Connect")?.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledOnce();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      configValues: { workspaceId: "paperclip-acme" },
+      agentInstructions: expect.objectContaining({ enabled: true, text: honcho.agentInstructions!.text }),
+    }));
+  });
+
+  it.each([false, true])("shows optional instructions on the Notion OAuth screen only when supplied (%s)", async (provided) => {
+    const template = { id: "notion.test", version: 1, text: "Look up published decisions in Notion before proposing changes." };
+    listGalleryMock.mockResolvedValue({ apps: [{ ...NOTION, agentInstructions: provided ? template : undefined }] });
+    await render(undefined, false, <ConnectionSetupFlow serviceSlug="notion" />);
+    expect(buttonByText("Continue to Notion")).toBeDefined();
+    const toggle = container.querySelector('[aria-label="Agent instructions"] [role="switch"]');
+    expect(container.textContent?.includes("Tell agents to use Notion")).toBe(provided);
+    if (provided) {
+      expect(toggle?.getAttribute("aria-checked")).toBe("true");
+      expect(container.textContent).toContain(template.text);
+    } else expect(toggle).toBeNull();
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
   it.each(["zapier", "arcade", "composio", "executor"])("inline aggregator %s collects the endpoint and completes only for the requester", async (provider) => {
     const onComplete = vi.fn();
     const popup = vi.spyOn(window, "open").mockReturnValue(null);

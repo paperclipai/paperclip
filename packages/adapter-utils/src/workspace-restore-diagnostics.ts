@@ -7,12 +7,22 @@ const RESTORE_STEPS = new Set([
   "directory_merge", "git_integration", "index_reset", "git_ref_cleanup", "asset_restore",
 ] as const);
 export type WorkspaceRestoreStep = typeof RESTORE_STEPS extends Set<infer T> ? T : never;
+const GIT_COMMANDS = new Set([
+  "rev_parse", "symbolic_ref", "merge_base", "merge_tree", "commit_tree", "update_ref", "log",
+] as const);
+export type WorkspaceRestoreGitCommand = typeof GIT_COMMANDS extends Set<infer T> ? T : never;
+const GIT_FAILURE_KINDS = new Set([
+  "merge_conflict", "invalid_object", "ref_conflict", "permission_denied", "unknown",
+] as const);
+type GitFailureKind = typeof GIT_FAILURE_KINDS extends Set<infer T> ? T : never;
 export interface WorkspaceRestoreDiagnostic {
   phase: RestorePhase;
   step?: WorkspaceRestoreStep;
   errorCode: string;
   httpStatus?: number;
   exitCode?: number;
+  gitCommand?: WorkspaceRestoreGitCommand;
+  gitFailureKind?: GitFailureKind;
 }
 const ERROR_CODES = new Set([
   "ENOENT", "EACCES", "EPERM", "ENOSPC", "EIO", "EXDEV", "ENOTDIR", "EISDIR",
@@ -23,7 +33,12 @@ type ErrorDiagnostic = Pick<WorkspaceRestoreDiagnostic, "errorCode" | "httpStatu
 interface DiagnosticScope {
   active: boolean;
   sequence: number;
-  failures: Map<unknown, { sequence: number; step: WorkspaceRestoreStep }>;
+  failures: Map<unknown, {
+    sequence: number;
+    step?: WorkspaceRestoreStep;
+    gitCommand?: WorkspaceRestoreGitCommand;
+    gitFailureKind?: GitFailureKind;
+  }>;
 }
 const activeDiagnostic = new AsyncLocalStorage<DiagnosticScope>();
 // Never attach a raw cause to an error just to retain a numeric Git exit code.
@@ -43,6 +58,47 @@ function readField(value: Record<string, unknown>, key: string): unknown {
 function boundedInteger(value: unknown, minimum: number, maximum: number): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value >= minimum && value <= maximum
     ? value : undefined;
+}
+
+/** Inspect bounded stderr only in memory; never persist Git text or arguments. */
+function gitFailureKind(command: WorkspaceRestoreGitCommand, error: unknown): GitFailureKind {
+  if (!error || typeof error !== "object") return "unknown";
+  const value = error as Record<string, unknown>;
+  const code = readField(value, "code");
+  if (code === "EACCES" || code === "EPERM") return "permission_denied";
+  if (readField(value, "killed") || readField(value, "signal")) return "unknown";
+  const stderr = readField(value, "stderr");
+  const text = typeof stderr === "string" ? stderr.slice(0, 16 * 1024) : "";
+  if (command === "update_ref" && /cannot lock ref '[^'\r\n]+': is at [a-f0-9]{40,64} but expected [a-f0-9]{40,64}(?:\s|$)/m.test(text)) {
+    return "ref_conflict";
+  }
+  if (/^fatal: (?:bad object |Not a valid object name |not a valid object name |Not a valid commit name )/m.test(text)
+      || (command === "merge_tree" && /^merge-tree: [a-f0-9]{40,64} - not something we can merge\s*$/m.test(text))) {
+    return "invalid_object";
+  }
+  // merge-tree --write-tree prints the merged tree before reporting conflicts.
+  // Exit 1 alone is insufficient: some Git versions also use it for bad objects.
+  const stdout = readField(value, "stdout");
+  if (command === "merge_tree" && code === 1 && typeof stdout === "string"
+      && /^(?:[a-f0-9]{40}|[a-f0-9]{64})\r?\n/.test(stdout.slice(0, 66))) return "merge_conflict";
+  return "unknown";
+}
+
+/** Annotate the original thrown error in its restore scope; never change it. */
+export async function withWorkspaceRestoreGitCommand<T>(command: WorkspaceRestoreGitCommand, operation: () => Promise<T>): Promise<T> {
+  const scope = activeDiagnostic.getStore();
+  if (!scope?.active || !GIT_COMMANDS.has(command)) return await operation();
+  const started = scope.sequence;
+  try {
+    return await operation();
+  } catch (error) {
+    // A ref transaction can fail in its nested branch-identity probe. Retain
+    // that more specific command, while later retries get fresh attribution.
+    if (scope.active && (scope.failures.get(error)?.sequence ?? -1) <= started) scope.failures.set(error, {
+      sequence: ++scope.sequence, gitCommand: command, gitFailureKind: gitFailureKind(command, error),
+    });
+    throw error;
+  }
 }
 
 /** Only fixed codes and bounded numbers may enter the company-readable run log. */
@@ -91,6 +147,10 @@ export function sanitizeWorkspaceRestoreDiagnostic(value: unknown): WorkspaceRes
   const code = readField(record, "errorCode");
   const httpStatus = boundedInteger(readField(record, "httpStatus"), 400, 599);
   const exitCode = boundedInteger(readField(record, "exitCode"), 1, 255);
+  const gitCommand = readField(record, "gitCommand");
+  const gitFailureKind = readField(record, "gitFailureKind");
+  const hasGitCommand = phase === "workspace" && step === "git_integration"
+    && typeof gitCommand === "string" && GIT_COMMANDS.has(gitCommand as WorkspaceRestoreGitCommand);
   return {
     phase,
     ...(typeof step === "string" && RESTORE_STEPS.has(step as WorkspaceRestoreStep)
@@ -98,6 +158,11 @@ export function sanitizeWorkspaceRestoreDiagnostic(value: unknown): WorkspaceRes
     errorCode: typeof code === "string" && ERROR_CODES.has(code) ? code : "unknown",
     ...(httpStatus !== undefined ? { httpStatus } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(hasGitCommand ? {
+      gitCommand: gitCommand as WorkspaceRestoreGitCommand,
+      gitFailureKind: typeof gitFailureKind === "string" && GIT_FAILURE_KINDS.has(gitFailureKind as GitFailureKind)
+        ? gitFailureKind as GitFailureKind : "unknown",
+    } : {}),
   };
 }
 
@@ -116,7 +181,10 @@ export function recordWorkspaceRestoreDiagnostic(error: unknown, diagnostic: Wor
   }
   const scope = activeDiagnostic.getStore();
   if (scope?.active) {
-    if (safe?.step) scope.failures.set(error, { sequence: ++scope.sequence, step: safe.step });
+    if (safe?.step) scope.failures.set(error, {
+      sequence: ++scope.sequence, step: safe.step,
+      ...(safe.gitCommand ? { gitCommand: safe.gitCommand, gitFailureKind: safe.gitFailureKind } : {}),
+    });
     else scope.failures.delete(error);
   }
 }
@@ -131,8 +199,13 @@ export async function withWorkspaceRestoreStep<T>(step: WorkspaceRestoreStep, op
   } catch (error) {
     // A nested step owns its failure. A caught/retried error may be thrown again
     // by a later step, so identity alone cannot identify the current failure.
-    if (scope.active && (scope.failures.get(error)?.sequence ?? -1) <= started) {
-      scope.failures.set(error, { sequence: ++scope.sequence, step });
+    if (scope.active) {
+      const failure = scope.failures.get(error);
+      if (failure && failure.sequence > started) {
+        failure.step ??= step;
+      } else {
+        scope.failures.set(error, { sequence: ++scope.sequence, step });
+      }
     }
     throw error;
   }
@@ -154,10 +227,14 @@ export async function withWorkspaceRestoreDiagnostics<T>(
     try {
       return await operation();
     } catch (error) {
-      const step = scope.failures.get(error)?.step;
-      const fields = { phase, ...(step ? { step } : {}), ...diagnostic(error) };
+      const failure = scope.failures.get(error);
+      const step = failure?.step;
+      const fields = { phase, ...(step ? { step } : {}), ...diagnostic(error),
+        ...(phase === "workspace" && step === "git_integration" && failure?.gitCommand
+          ? { gitCommand: failure.gitCommand, gitFailureKind: failure.gitFailureKind } : {}),
+      };
       recordWorkspaceRestoreDiagnostic(error, fields);
-      if (parent?.active && step) parent.failures.set(error, { sequence: ++parent.sequence, step });
+      if (parent?.active && step) parent.failures.set(error, { ...failure, sequence: ++parent.sequence, step });
       try {
         onDiagnostic?.({ ...fields });
       } catch { /* Diagnostic consumers cannot replace a restore failure. */ }

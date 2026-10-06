@@ -17,7 +17,7 @@ export function StepHeader({
 }: {
   title?: string;
   headingRef?: Ref<HTMLHeadingElement>;
-  subtitle: string;
+  subtitle?: string;
   step: string;
   activeIndex: number;
   labels: string[];
@@ -41,7 +41,7 @@ export function StepHeader({
             <h1 ref={headingRef} tabIndex={headingRef ? -1 : undefined} className="text-2xl font-bold tracking-tight outline-none">
               {title ?? (appIdentity ? `Connect ${appIdentity.name}` : "Connect your own MCP server")}
             </h1>
-            <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
+            {subtitle && <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>}
             {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} className="mt-2" /> : null}
           </div>
         </div>

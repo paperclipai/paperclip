@@ -6,6 +6,7 @@ import {
   preserveWorkspaceRestoreErrorDiagnostic,
   withWorkspaceRestoreDiagnostics,
   withWorkspaceRestoreStep,
+  withWorkspaceRestoreGitCommand,
 } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 
@@ -232,17 +233,20 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
     const source = Object.assign(new Error("private-restore-Git command failed in /private-restore-workspace", {
       cause: new Error("private-restore-provider cause"),
     }), {
-      code: 1, statusCode: 503, stdout: "private-restore-file contents", stderr: "private-restore-Git output",
+      code: 1, statusCode: 503, stdout: "a".repeat(40) + "\nprivate-restore-file contents", stderr: "private-restore-Git output",
       command: "private-restore-command", path: "/private-restore-workspace", response: { body: "private-restore-response" },
     });
-    const wrapper = preserveWorkspaceRestoreErrorDiagnostic(new Error("private-restore-Git wrapper"), source);
+    const wrapper = new Error("private-restore-Git wrapper");
     expect(wrapper).not.toHaveProperty("cause");
     const logs: string[] = [];
     const restore = createWorkspaceRestoreTeardown({
       stagedRuntime: {
         restoreWorkspace: (onProgress) => withWorkspaceRestoreDiagnostics("workspace", () =>
           withWorkspaceRestoreStep("directory_merge", () =>
-            withWorkspaceRestoreStep("git_integration", async () => { throw wrapper; })), onProgress),
+            withWorkspaceRestoreStep("git_integration", async () => {
+              try { await withWorkspaceRestoreGitCommand("merge_tree", async () => { throw source; }); }
+              catch (error) { throw preserveWorkspaceRestoreErrorDiagnostic(wrapper, error); }
+            })), onProgress),
       },
       onLog: async (_stream, line) => { logs.push(line); },
       startMessage: "Restoring workspace\n",
@@ -251,7 +255,8 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
     const outcome = await restore();
     expect(outcome).toEqual({
       ok: false, code: "restore_failed",
-      diagnostic: { phase: "workspace", step: "git_integration", errorCode: "unknown", httpStatus: 503, exitCode: 1 },
+      diagnostic: { phase: "workspace", step: "git_integration", errorCode: "unknown", httpStatus: 503, exitCode: 1,
+        gitCommand: "merge_tree", gitFailureKind: "merge_conflict" },
     });
     if (outcome.ok) throw new Error("Expected the restore fixture to fail");
     expect(JSON.stringify({ outcome, logs })).not.toContain("private-restore-");
@@ -279,6 +284,7 @@ describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", 
       workspaceRestoreFailure: "restore_failed", workspaceRestorePhase: "workspace",
       workspaceRestoreStep: "git_integration", workspaceRestoreErrorCode: "unknown",
       workspaceRestoreHttpStatus: 503, workspaceRestoreExitCode: 1,
+      workspaceRestoreGitCommand: "merge_tree", workspaceRestoreGitFailureKind: "merge_conflict",
     } } });
     expect((restoreEvent?.exception as { values: unknown[] }).values).toHaveLength(1);
     expect(JSON.stringify(events)).not.toContain("private-restore-");

@@ -35,7 +35,7 @@ function PoolComposer({ scenario }: { scenario: Scenario }) {
     <p className="text-sm">Choose settings for the next turn. The task keeps its account and harness.</p>
     <ComposerRunSettingsPicker companyId={companyId} assigneeValue={`agent:${agentId}`} currentAssigneeValue={`agent:${agentId}`}
       options={[{ id: `agent:${agentId}`, label: agent.name }]} agents={new Map([[agentId, agent]])}
-      settings={settings} onSettingsChange={setSettings} onAssigneeChange={() => setSettings({ model: null, effort: null, fast: false })}
+      settings={settings} onSettingsChange={(next) => setSettings(next ?? { model: null, effort: null, fast: false })} onAssigneeChange={() => setSettings({ model: null, effort: null, fast: false })}
       modelOptionsOverride={models} mobile={scenario === "mobile"} initialOpen={scenario !== "overview"}
       initialView={scenario === "models" || scenario === "mobile" ? "models" : "settings"} />
   </div>;

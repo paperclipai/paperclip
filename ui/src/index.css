@@ -1808,7 +1808,7 @@ select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="
   align-items: center;
   gap: 0.25rem;
   margin: 0 0.1rem;
-  padding: 0 0.625rem;
+  padding: 2px 0.625rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.75rem;
@@ -1847,17 +1847,12 @@ a.paperclip-mention-chip[data-mention-kind="project"]::before {
 
 .paperclip-mdxeditor-content a.paperclip-mention-chip[data-mention-kind="agent"]::before,
 a.paperclip-mention-chip[data-mention-kind="agent"]::before {
-  width: 0.75rem;
-  height: 0.75rem;
-  background-color: currentColor;
-  -webkit-mask-image: var(--paperclip-mention-icon-mask);
-  mask-image: var(--paperclip-mention-icon-mask);
-  -webkit-mask-position: center;
-  mask-position: center;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  -webkit-mask-size: contain;
-  mask-size: contain;
+  width: 1rem;
+  height: 1rem;
+  background-image: var(--paperclip-mention-avatar-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
 }
 
 .paperclip-mdxeditor-content ul,
@@ -2404,7 +2399,7 @@ span.paperclip-project-mention-chip {
   align-items: center;
   gap: 0.25rem;
   margin: 0 0.1rem;
-  padding: 0 0.625rem;
+  padding: 2px 0.625rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.75rem;
@@ -3163,7 +3158,9 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
     position: absolute;
     inset: 0;
     background: var(--mobile-entity-picker-backdrop);
-    pointer-events: none;
+    /* Hit the popper wrapper so Radix dismisses this sheet, while the parent
+       task dialog recognizes the tap as belonging to its nested picker. */
+    pointer-events: auto;
   }
 
   [data-mobile-entity-picker] {

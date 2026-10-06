@@ -1,5 +1,5 @@
 {
-  "id": "cc4edf41-43b2-47a8-bf3e-2dedc3fb3780",
+  "id": "ed75c75c-748b-4420-8a68-ec5b34394e75",
   "prevId": "a6c67322-9605-4234-b05d-b3585e943e42",
   "version": "7",
   "dialect": "postgresql",
@@ -2901,362 +2901,6 @@
           "value": "\"ai_connection_defaults\".\"method\" in ('subscription','api_key')"
         }
       },
-      "isRLSEnabled": false
-    },
-    "public.ai_connection_pools": {
-      "name": "ai_connection_pools",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "plugin_key": {
-          "name": "plugin_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "config": {
-          "name": "config",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "revision": {
-          "name": "revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "ai_connection_pools_id_tool_connections_id_fk": {
-          "name": "ai_connection_pools_id_tool_connections_id_fk",
-          "tableFrom": "ai_connection_pools",
-          "tableTo": "tool_connections",
-          "columnsFrom": [
-            "id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_connection_pools_company_id_companies_id_fk": {
-          "name": "ai_connection_pools_company_id_companies_id_fk",
-          "tableFrom": "ai_connection_pools",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_connection_pools_company_connection_fk": {
-          "name": "ai_connection_pools_company_connection_fk",
-          "tableFrom": "ai_connection_pools",
-          "tableTo": "tool_connections",
-          "columnsFrom": [
-            "company_id",
-            "id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "ai_connection_pools_company_id_uq": {
-          "name": "ai_connection_pools_company_id_uq",
-          "nullsNotDistinct": false,
-          "columns": [
-            "company_id",
-            "id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.ai_connection_router_cursors": {
-      "name": "ai_connection_router_cursors",
-      "schema": "",
-      "columns": {
-        "pool_id": {
-          "name": "pool_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "last_member_id": {
-          "name": "last_member_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "ai_connection_router_cursors_pool_id_ai_connection_pools_id_fk": {
-          "name": "ai_connection_router_cursors_pool_id_ai_connection_pools_id_fk",
-          "tableFrom": "ai_connection_router_cursors",
-          "tableTo": "ai_connection_pools",
-          "columnsFrom": [
-            "pool_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_connection_router_cursors_company_id_companies_id_fk": {
-          "name": "ai_connection_router_cursors_company_id_companies_id_fk",
-          "tableFrom": "ai_connection_router_cursors",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_connection_router_cursors_company_pool_fk": {
-          "name": "ai_connection_router_cursors_company_pool_fk",
-          "tableFrom": "ai_connection_router_cursors",
-          "tableTo": "ai_connection_pools",
-          "columnsFrom": [
-            "company_id",
-            "pool_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.ai_connection_task_pins": {
-      "name": "ai_connection_task_pins",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pool_id": {
-          "name": "pool_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_key": {
-          "name": "task_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "selection": {
-          "name": "selection",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "member": {
-          "name": "member",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "ai_connection_task_pins_affinity_uq": {
-          "name": "ai_connection_task_pins_affinity_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "pool_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "task_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "ai_connection_task_pins_company_id_companies_id_fk": {
-          "name": "ai_connection_task_pins_company_id_companies_id_fk",
-          "tableFrom": "ai_connection_task_pins",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_connection_task_pins_pool_id_ai_connection_pools_id_fk": {
-          "name": "ai_connection_task_pins_pool_id_ai_connection_pools_id_fk",
-          "tableFrom": "ai_connection_task_pins",
-          "tableTo": "ai_connection_pools",
-          "columnsFrom": [
-            "pool_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_connection_task_pins_agent_id_agents_id_fk": {
-          "name": "ai_connection_task_pins_agent_id_agents_id_fk",
-          "tableFrom": "ai_connection_task_pins",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_connection_task_pins_company_pool_fk": {
-          "name": "ai_connection_task_pins_company_pool_fk",
-          "tableFrom": "ai_connection_task_pins",
-          "tableTo": "ai_connection_pools",
-          "columnsFrom": [
-            "company_id",
-            "pool_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_connection_task_pins_company_agent_fk": {
-          "name": "ai_connection_task_pins_company_agent_fk",
-          "tableFrom": "ai_connection_task_pins",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "company_id",
-            "agent_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.ai_provider_defaults": {
@@ -12702,13 +12346,6 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
-        },
-        "ai_session_epoch": {
-          "name": "ai_session_epoch",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
         },
         "latest_version": {
           "name": "latest_version",
@@ -39277,6 +38914,140 @@
         "remote_agent_profiles_qualified_revision_check": {
           "name": "remote_agent_profiles_qualified_revision_check",
           "value": "(\"remote_agent_profiles\".\"qualified_at\" IS NULL AND \"remote_agent_profiles\".\"qualified_revision\" IS NULL) OR (\"remote_agent_profiles\".\"qualified_at\" IS NOT NULL AND \"remote_agent_profiles\".\"qualification\" <> '{}'::jsonb AND \"remote_agent_profiles\".\"qualified_revision\" ~ '^sha256:[0-9a-f]{64}$')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.resource_lifecycle_events": {
+      "name": "resource_lifecycle_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigint",
+          "primaryKey": true,
+          "notNull": true,
+          "identity": {
+            "type": "always",
+            "name": "resource_lifecycle_events_id_seq",
+            "schema": "public",
+            "increment": "1",
+            "startWith": "1",
+            "minValue": "1",
+            "maxValue": "9223372036854775807",
+            "cache": "1",
+            "cycle": false
+          }
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resource_type": {
+          "name": "resource_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resource_id": {
+          "name": "resource_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "resource_lifecycle_events_creation_idx": {
+          "name": "resource_lifecycle_events_creation_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "resource_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "resource_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"resource_lifecycle_events\".\"action\" = 'create'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "resource_lifecycle_events_company_idx": {
+          "name": "resource_lifecycle_events_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "resource_lifecycle_events_company_id_companies_id_fk": {
+          "name": "resource_lifecycle_events_company_id_companies_id_fk",
+          "tableFrom": "resource_lifecycle_events",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "resource_lifecycle_events_resource_type_check": {
+          "name": "resource_lifecycle_events_resource_type_check",
+          "value": "\"resource_lifecycle_events\".\"resource_type\" IN ('agent', 'project')"
+        },
+        "resource_lifecycle_events_action_check": {
+          "name": "resource_lifecycle_events_action_check",
+          "value": "\"resource_lifecycle_events\".\"action\" = 'create' OR (\"resource_lifecycle_events\".\"resource_type\" = 'agent' AND \"resource_lifecycle_events\".\"action\" IN ('pause', 'resume', 'terminate'))"
         }
       },
       "isRLSEnabled": false

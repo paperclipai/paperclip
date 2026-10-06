@@ -60,6 +60,7 @@ describe("run failure diagnostics", () => {
       workspaceRestoreFailure: "restore_failed",
       workspaceRestoreDiagnostic: {
         phase: "workspace", step: "git_integration", errorCode: "unknown", httpStatus: 503, exitCode: 1,
+        gitCommand: "merge_tree", gitFailureKind: "merge_conflict",
         message: "private command failed", path: "/private/workspace", stdout: "private file contents",
         cause: { code: "EIO", message: "private nested cause" },
       },
@@ -68,9 +69,23 @@ describe("run failure diagnostics", () => {
       workspaceRestoreFailure: "restore_failed", workspaceRestorePhase: "workspace",
       workspaceRestoreStep: "git_integration", workspaceRestoreErrorCode: "unknown",
       workspaceRestoreHttpStatus: 503, workspaceRestoreExitCode: 1,
+      workspaceRestoreGitCommand: "merge_tree", workspaceRestoreGitFailureKind: "merge_conflict",
     });
     expect(JSON.stringify(result)).not.toContain("private");
     expect(result.exceptions).toEqual([]);
+  });
+
+  it.each([
+    { phase: "asset", step: "git_integration", gitCommand: "merge_tree", gitFailureKind: "merge_conflict" },
+    { phase: "workspace", step: "git_import", gitCommand: "merge_tree", gitFailureKind: "merge_conflict" },
+    { phase: "workspace", step: "git_integration", gitCommand: "private-command", gitFailureKind: "private-output" },
+  ])("omits unrelated or unrecognized persisted Git labels (%j)", (diagnostic) => {
+    const result = collectRunFailureDiagnostics(run({ resultJson: {
+      workspaceRestoreFailure: "restore_failed", workspaceRestoreDiagnostic: diagnostic,
+    } }), {});
+    expect(result.execution).not.toHaveProperty("workspaceRestoreGitCommand");
+    expect(result.execution).not.toHaveProperty("workspaceRestoreGitFailureKind");
+    expect(JSON.stringify(result)).not.toContain("private-");
   });
 
   it("requires a known restore failure before reading its diagnostic", () => {

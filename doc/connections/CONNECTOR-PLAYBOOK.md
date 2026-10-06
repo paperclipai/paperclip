@@ -122,6 +122,7 @@ read/write proof separately and never describe metadata discovery as live proof.
 - [Current access defaults](#current-default-access-policy)
 - [Golden-path agent tutorial](#golden-path-agent-tutorial)
 - [Connection UX and user journeys](#connection-ux-and-user-journeys)
+- [Optional agent instructions](#optional-agent-instructions)
 - [Chat and email connector UX](./CHAT-CONNECTOR-UX.md)
 - [Production validation evidence](#step-9-align-with-production-validation)
 - [AppDefinition field reference](#appdefinition-field-reference)
@@ -147,6 +148,59 @@ A complete connector proposal produces:
   denied/quarantined call when the method declares one, revoke, and audit
   evidence.
 
+## Optional agent instructions
+
+Some connections need standing guidance: tools tell an agent what it *can* do,
+while a short paragraph explains when it should use them. Memory is the first
+use case. See [Connection instructions](CONNECTION-INSTRUCTIONS.md) for the
+generic catalog metadata, saved settings, API, runtime, and integration contracts.
+**Design explorations → Connections → Agent instructions** in Storybook uses
+production components with mocked APIs.
+
+When adding a template:
+
+- Show the section only when the connector explicitly provides a nonempty
+  instruction template. Use **Agent instructions** and the checkbox
+  **Tell agents to use {provider}**, with the exact paragraph visible. No template
+  means no instructions UI, including no blank editor.
+  Keep setup in the existing flow and its single footer; add no required test or
+  extra wizard step. Use the current shared access defaults/disclosure.
+- Use a reviewed, versioned provider-specific suggestion. Explain when to recall,
+  when to save, the allowed context, and what to do if a call fails. Prefer one
+  short paragraph over a full skill or a pasted tool catalog. Avoid unsupported
+  promises about hooks, automatic transcript capture, or private memory.
+- Default provided instructions on for every participating connector. Let users
+  edit, **Reset to default** after changes, or disable guidance while retaining
+  tools. Show a compact amber notice when off. Reconnect and catalog refresh
+  preserve explicit opt-outs and custom text. Omit suggestion attribution badges
+  and routine lifecycle/storage helper copy.
+- Edit in an optional **Agent instructions** section of the existing **Permissions**
+  page, between agent access and Actions. Use the actual connection page shell,
+  credential form, and footers in review stories; include a baseline story for
+  comparison rather than constructing parallel page chrome. Show recipients
+  from current assignments and a read-only, source-linked copy on the agent.
+  Keep action controls and tests in the existing **Permissions** screen.
+- Resolve runtime guidance with the same company, agent, task, responsible-user,
+  and grant checks used for tools. Compose a revisioned block alongside agent
+  instructions; never permanently edit AGENTS.md or shared harness home files.
+  Verify fresh and resumed turns, removal, revoked access, and unsupported adapters.
+- Keep required provider settings, such as Honcho workspace, expanded near the
+  top of setup and configuration, above instructions. Put validation beside the
+  field and block completion while required values are missing. Memory stays an
+  ordinary connection; do not add a default-memory chooser or agent preference.
+  Keep provider binding identifiers separate from editable prose. Agent IDs,
+  tags, and query filters alone are not access-control boundaries. Any promised
+  isolation needs server enforcement across all relevant tool paths.
+- Treat MCP initialization instructions as external provider content. Review
+  them as template source; do not silently inject arbitrary remote text or let
+  a provider update overwrite an operator's instructions. Guidance never grants
+  additional tool permissions.
+- Prove both delivery and behavior: deterministic assignment/resume checks, then
+  a bounded save → **fresh session** recall with synthetic data through the real
+  run gateway. Record exact model/template/catalog versions, tool receipts,
+  costs, ingestion timeout, and cleanup. Discovery and a model's “saved” reply
+  do not prove memory works. See the linked plan for the minimal matrix.
+
 ## Use This Document As The Checklist
 
 An agent implementing a connection should be able to begin with only a provider
@@ -158,7 +212,7 @@ The shortest valid implementation usually changes these files:
 
 ```text
 scripts/ingest-app-definitions.mjs                # human-authored definition source
-packages/shared/src/app-definitions/<slug>.json  # generated definition
+packages/shared/src/app-definitions/<slug>.json  # definition with app-owned instruction template
 packages/shared/src/app-definitions.generated.ts # generated registry
 ui/public/brands/apps/<slug>.svg                  # official, sanitized mark
 ui/public/brands/apps/manifest.json               # runtime branding paths
@@ -708,7 +762,13 @@ definitions and visible manifest entries to match exactly.
 
 ### Phase 5: Author the definition at the durable source
 
-The checked-in provider JSON files are generated. Do not edit one and stop.
+Transport/auth fields in the checked-in provider JSON files are generated. Do
+not edit those fields and stop. Optional `agentInstructions: { id, version, text }`
+templates are authored directly in each app's JSON definition, alongside its
+supporting `docsUrl`. Ingestion validates and preserves that field; edit or
+remove it there, and increment its version when changing the default. There is
+no central instruction-template registry. See
+[Connection instructions](./CONNECTION-INSTRUCTIONS.md) for the runtime contract.
 
 1. Add or update the provider in `scripts/ingest-app-definitions.mjs`.
 2. Update `packages/shared/src/self-serve-mcp-research.json` when it belongs to

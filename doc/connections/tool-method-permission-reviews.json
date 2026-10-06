@@ -1105,8 +1105,7 @@
         "https://honcho.dev/docs/v3/guides/integrations/mcp"
       ],
       "reviewedAt": "2026-09-30",
-      "liveProof": "not-run",
-      "keyPermissions": "Create peers/sessions and save memory under the API key project. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "liveProof": "not-run"
     },
     {
       "app": "hugging-face",

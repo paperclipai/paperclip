@@ -42,6 +42,7 @@ import {
   createIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
 import { getRecentTasksStorageKey, readRecentTasks } from "../lib/recent-tasks";
+import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
 import { ApiError } from "../api/client";
 import type { issuesApi } from "../api/issues";
 
@@ -1429,6 +1430,34 @@ describe("IssueDetail", () => {
     localStorage.clear();
     sessionStorage.clear();
     vi.restoreAllMocks();
+  });
+
+  it.each(["new-project", null])("remembers project %s only after its task update succeeds", async (projectId) => {
+    const issue = createIssue({ projectId: "original-project" });
+    trackRecentProject("original-project", issue.companyId);
+    const failedUpdate = createDeferred<Issue>();
+    const successfulUpdate = createDeferred<Issue>();
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.update.mockClear();
+    mockIssuesApi.update.mockReturnValueOnce(failedUpdate.promise).mockReturnValueOnce(successfulUpdate.promise);
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>));
+    let properties!: { onUpdate: (data: Record<string, unknown>) => void };
+    await waitForAssertion(() => {
+      properties = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props;
+      expect(properties?.onUpdate).toBeTypeOf("function");
+    });
+    await act(async () => properties.onUpdate({ projectId }));
+    await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalledTimes(1));
+    expect(getLastProjectId(issue.companyId)).toBe("original-project");
+    await act(async () => failedUpdate.reject(new Error("Project save failed")));
+    await waitForAssertion(() => expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Task update failed" })));
+    expect(getLastProjectId(issue.companyId)).toBe("original-project");
+    await act(async () => properties.onUpdate({ projectId }));
+    await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalledTimes(2));
+    expect(getLastProjectId(issue.companyId)).toBe("original-project");
+    await act(async () => successfulUpdate.resolve({ ...issue, projectId }));
+    await waitForAssertion(() => expect(getLastProjectId(issue.companyId)).toBe(projectId ?? ""));
+    expect(getLastProjectId("company-2")).toBeUndefined();
   });
 
   it("keeps an existing conversation on its agent-addressed route", async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyWorkspaceRestoreFailure, withWorkspaceRestore } from "./workspace-restore-result.js";
 import type { AdapterExecutionResult } from "./types.js";
-import { withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep } from "./workspace-restore-diagnostics.js";
+import { withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep, withWorkspaceRestoreGitCommand } from "./workspace-restore-diagnostics.js";
 
 const completed: AdapterExecutionResult = {
   exitCode: 0, signal: null, timedOut: false,
@@ -21,6 +21,22 @@ describe("workspace restore settlement", () => {
       executionBeforeRestore: { exitCode: 0, timedOut: false, errorCode: null },
     });
     expect(JSON.stringify(result)).not.toContain("private-restore-");
+  });
+
+  it("persists only bounded Git evidence without replacing the completed model result", async () => {
+    const error = Object.assign(new Error("private-git-command /private/workspace"), {
+      code: 1, stdout: "a".repeat(40) + "\nprivate-git-file contents", stderr: "private-git-refs",
+    });
+    const result = await withWorkspaceRestore(async () => completed, () => withWorkspaceRestoreDiagnostics("workspace", () =>
+      withWorkspaceRestoreStep("git_integration", () => withWorkspaceRestoreGitCommand("merge_tree", async () => { throw error; }))));
+    expect(result).toMatchObject({
+      errorCode: "workspace_restore_failed", exitCode: completed.exitCode, summary: completed.summary, usage: completed.usage,
+      resultJson: { requestId: "request", workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreDiagnostic: { phase: "workspace", step: "git_integration", errorCode: "unknown", exitCode: 1,
+          gitCommand: "merge_tree", gitFailureKind: "merge_conflict" },
+        executionBeforeRestore: { exitCode: 0, timedOut: false, errorCode: null } },
+    });
+    expect(JSON.stringify(result)).not.toContain("private-git-");
   });
 
   it("retains the completed result and safe member while excluding the unsafe target", async () => {

@@ -103,6 +103,12 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+**Composer → New task** includes agent/user/project/task mentions, skill and
+routine slash commands, and populated rich chips on desktop and mobile. Agent
+mentions use the same avatars in suggestions, inserted chips, and the mocked
+creation receipt. The creation stories preserve the original Markdown references;
+they do not create real tasks or run agents.
+
 Use **Components → Agent setup prompt** to review the shared setup handoff:
 hover/focus logo motion, one-click copying with a prompt preview, animated
 confirmation, and manual-copy recovery. Opening the preview copies immediately;
@@ -145,6 +151,41 @@ try a regular task question: dismiss it, reload, reopen its compact feed entry,
 and submit the preserved draft. The composer has no question pending badge.
 The demo uses real thread/form components with fixture response callbacks.
 The Agent Chat stories share the same component fixture.
+
+Use **Composer → New task** to review task creation through the production
+`TaskChatComposer`. The editor, file menu, work modes, assignee/model picker,
+and send control are shared with task chat. An inset bar above the composer uses
+the queued-message container and holds Project on the left. Its searchable picker
+shows project colors. Worktrees sits beside Project when the selected project has
+isolation enabled. Choose a new worktree, reuse an eligible worktree from that
+project, or keep the shared project workspace. Reuse carries the worktree's source
+checkout, including a non-primary checkout. Changing projects clears the
+previous worktree choice. Switching from reuse to a new worktree or the project
+workspace restores the project default checkout. Task creation uses the selected company and has
+no separate heading or settings control.
+Fresh tasks start with an empty request and the last task assignee chosen in that
+company, including a human. If that assignee is unavailable, the CEO is the
+default, or the first eligible agent when the company has no CEO. Explicit launch
+assignees and saved drafts keep their selection. Selecting an assignee never
+inserts a mention. Clicking the assignee opens its searchable list directly;
+model and effort have a separate trigger and appear only for agents whose
+harness supports those settings.
+Fresh tasks also keep the company's last project (including No project); launch
+context and saved drafts take precedence. New projects receive a random palette
+color and become the remembered project. The shared composer remembers the last
+effort within the company and applies it only when the selected model supports
+that level. Explicit task overrides and drafts take precedence. Default model
+labels show the configured or known adapter model, otherwise simply Default.
+Claude defaults supplied by the server's host environment remain Default unless
+the agent explicitly configures the model. Project edits on an existing task
+become the remembered project only after the task update succeeds.
+Clicking or tapping outside either selector dismisses it and preserves the task
+draft and selections. Mobile sheets return focus to the trigger without reopening.
+Stories cover empty and prefilled drafts, remembered, human, and unassigned
+selections, the direct assignee picker, sub-tasks, planning, files, saving,
+retryable failures, creation, light theme, and mobile, plus worktree reuse,
+loading, empty, error, and isolation-disabled states. Story submissions use local
+fixtures and never start an agent.
 
 Use **Composer → Model and effort picker** to review harness-specific model
 choices. Codex uses the curated adapter catalog unless the instance declares
