@@ -518,6 +518,82 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     expect(allowedChild.body.parentId).toBe(watchedChildId);
   });
 
+  it("does not serialize a source child behind the reusable watchdog issue (no self-block 422)", async () => {
+    const companyId = await seedCompany();
+    const watchdogAgentId = await seedAgent(companyId, { name: "Serialize Watchdog" });
+    const watchedRootId = await seedIssue(companyId, {
+      title: "Watched root",
+      identifier: "WDOG-ROOT",
+      issueNumber: 1,
+    });
+    const watchdogIssueId = await seedIssue(companyId, {
+      title: "Reusable watchdog issue",
+      parentId: watchedRootId,
+      assigneeAgentId: watchdogAgentId,
+      originKind: "task_watchdog",
+      originId: watchedRootId,
+      status: "in_progress",
+    });
+    const runId = await seedWatchdogRun({
+      companyId,
+      watchdogAgentId,
+      watchedIssueId: watchedRootId,
+      watchdogIssueId,
+    });
+    const app = createApp(companyId, {
+      type: "agent",
+      agentId: watchdogAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${watchedRootId}/children`)
+      .send({ title: "Founder follow-up child" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.parentId).toBe(watchedRootId);
+
+    const [created] = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, res.body.id)));
+    expect(created.status).not.toBe("blocked");
+
+    const blockedByWatchdog = await db
+      .select({ issueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, res.body.id),
+          eq(issueRelations.issueId, watchdogIssueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(blockedByWatchdog).toHaveLength(0);
+
+    const watchdogBlocksChild = await db
+      .select({ issueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, watchdogIssueId),
+          eq(issueRelations.issueId, res.body.id),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(watchdogBlocksChild).toHaveLength(1);
+
+    const [watchdogIssue] = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, watchdogIssueId)));
+    expect(watchdogIssue.status).toBe("blocked");
+  });
+
   it("routes watchdog-discovered product bugs outside the watched source tree with evidence links", async () => {
     const companyId = await seedCompany();
     const watchdogAgentId = await seedAgent(companyId, { name: "Product Bug Watchdog" });
