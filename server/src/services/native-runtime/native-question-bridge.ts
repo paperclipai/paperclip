@@ -323,9 +323,18 @@ export function registerNativeQuestionCommandTarget(target: NativeQuestionComman
 }
 
 export async function nativeQuestionRunToCancel(
-  db: Db,
+  db: Pick<Db, "select"> & Partial<Pick<Db, "transaction">>,
   interaction: NativeQuestionAuthorizationIdentity,
+  options: { lifecycleFence?: boolean } = {},
 ): Promise<string | null> {
+  if (options.lifecycleFence) {
+    // Dark owning entry: callers must provide the actual root, before locks.
+    // A transaction method is only a structural check, not root authority.
+    const identity = captureNativeQuestionAuthorizationIdentity(interaction);
+    if (!identity.companyId) throw unprocessable("Lifecycle native cancellation lookup requires companyId");
+    if (typeof db.transaction !== "function") throw unprocessable("Lifecycle native cancellation lookup requires a root-owned transaction");
+    return db.transaction((tx) => nativeQuestionRunToCancelInTransaction(tx, identity));
+  }
   const run = await authorizedNativeRun(db, interaction);
   return run && ["queued", "running"].includes(run.status) ? run.id : null;
 }

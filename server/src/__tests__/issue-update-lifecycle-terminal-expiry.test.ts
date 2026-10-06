@@ -71,6 +71,67 @@ function nativeFixture() {
   return f;
 }
 describe("dark canonical terminal expiry supplied integration", () => {
+  it("starts opt-in owned native lookup before domain reads without marker writes", async () => {
+    const f = nativeFixture();
+    await expect(nativeQuestionRunToCancel(f.root, f.card, { lifecycleFence: true })).resolves.toBe("run-1");
+    expect(f.events).toEqual(["begin", "fence", "read:heartbeat_runs", "outer-resolve"]);
+    expect(f.native.marker).toBeNull(); expect(sink.live).toEqual([]);
+  });
+  it("captures owned native lookup identity before deferred transaction startup", async () => {
+    const f = nativeFixture(); let release!: () => void; let entered!: () => void;
+    const barrier = new Promise<void>(r => { release = r; }); const signal = new Promise<void>(r => { entered = r; });
+    f.root.transaction = async (cb: any) => { f.events.push("begin"); entered(); await barrier; const value = await cb(f.tx); f.events.push("outer-resolve"); return value; };
+    const operation = nativeQuestionRunToCancel(f.root, f.card, { lifecycleFence: true });
+    try {
+      expect(await Promise.race([signal.then(() => "begin"), operation.then(() => "settled", () => "rejected")])).toBe("begin");
+      expect(f.events).toEqual(["begin"]);
+      Object.assign(f.card, { companyId: "other-company", issueId: "other-issue", sourceRunId: "other-run", idempotencyKey: "bad" });
+      f.card.payload.runtimeRequestId = "mutated"; f.card.payload.questionSet = null;
+    } finally { release(); }
+    expect(await operation).toBe("run-1");
+    expect(f.native.predicates[0].params).toEqual(["run-1", "company-1", "issue-1", "native"]);
+    expect(f.native.marker).toBeNull(); expect(sink.live).toEqual([]);
+  });
+  it("denies owned native lookup without company or transaction before effects", async () => {
+    const f = nativeFixture(); f.card.companyId = "";
+    await expect(nativeQuestionRunToCancel(f.root, f.card, { lifecycleFence: true })).rejects.toMatchObject({ status: 422 });
+    f.card.companyId = "company-1";
+    await expect(nativeQuestionRunToCancel({ select: f.tx.select }, f.card, { lifecycleFence: true })).rejects.toMatchObject({ status: 422 });
+    expect(f.events).toEqual([]); expect(f.native.marker).toBeNull();
+  });
+  it.each([undefined, false])("preserves ordinary native lookup omitted/false flag=%s", async lifecycleFence => {
+    const f = nativeFixture();
+    const result = lifecycleFence === undefined
+      ? nativeQuestionRunToCancel(f.tx, f.card)
+      : nativeQuestionRunToCancel(f.tx, f.card, { lifecycleFence });
+    expect(await result).toBe("run-1");
+    expect(f.events).toEqual(["read:heartbeat_runs"]); expect(f.native.marker).toBeNull();
+  });
+  it("owned native lookup awaits outer result without returning an authority receipt", async () => {
+    const f = nativeFixture(); let release!: () => void; let entered!: () => void; let settled = false;
+    const barrier = new Promise<void>(r => { release = r; }); const signal = new Promise<void>(r => { entered = r; });
+    f.root.transaction = async (cb: any) => { f.events.push("begin"); const value = await cb(f.tx); entered(); await barrier; return value; };
+    const operation = nativeQuestionRunToCancel(f.root, f.card, { lifecycleFence: true });
+    operation.then(() => { settled = true; }, () => { settled = true; });
+    try { await signal; expect(settled).toBe(false); expect(f.events).toEqual(["begin", "fence", "read:heartbeat_runs"]); }
+    finally { release(); }
+    expect(await operation).toBe("run-1"); expect(f.native.marker).toBeNull();
+  });
+  it.each(["fence", "read", "outer"])("propagates owned native lookup %s rejection without writes", async stage => {
+    const f = nativeFixture(); const error = new Error(`owned-lookup-${stage}`);
+    if (stage === "fence") f.tx.execute = async () => { throw error; };
+    if (stage === "read") f.tx.select = () => { throw error; };
+    if (stage === "outer") f.root.transaction = async (cb: any) => { f.events.push("begin"); await cb(f.tx); throw error; };
+    await expect(nativeQuestionRunToCancel(f.root, f.card, { lifecycleFence: true })).rejects.toBe(error);
+    expect(f.events).toEqual(stage === "fence" ? ["begin"] : ["begin", "fence", ...(stage === "outer" ? ["read:heartbeat_runs"] : [])]);
+    expect(f.native.marker).toBeNull(); expect(sink.live).toEqual([]);
+  });
+  it.each(["queued", "cancelled"])("owned native lookup preserves result for %s", async status => {
+    const f = nativeFixture(); f.native.run.status = status;
+    expect(await nativeQuestionRunToCancel(f.root, f.card, { lifecycleFence: true })).toBe(status === "queued" ? "run-1" : null);
+    expect(f.events).toEqual(["begin", "fence", "read:heartbeat_runs", "outer-resolve"]);
+    expect(f.native.marker).toBeNull();
+  });
   it("starts opt-in owned native marker transaction before any domain read", async () => {
     const f = nativeFixture();
     await expect(requestNativeQuestionRunCancellation(f.root, f.card, { kind: "issue_terminal", issueStatus: "done" }, { lifecycleFence: true })).resolves.toBe("run-1");
