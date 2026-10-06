@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   collectKnownSecretEnvValues,
@@ -60,25 +61,42 @@ describe("collectKnownSecretEnvValues", () => {
     expect(out).not.toContain("bedrock-bearer-token-abcdefgh");
   });
 
-  // The server's credential-bearing managed-connection keys
-  // (server/src/services/ai-connection-runtime.ts: the session-identity
-  // masking list plus AI_AUTH_ENV_KEYS) must stay covered here. Additions on
-  // the server side fail loudly here instead of leaking into run logs.
+  // Derived from the server's source of truth so server-side credential
+  // additions fail loudly here instead of leaking into run logs:
+  // server/src/services/ai-connection-runtime.ts, the session-identity
+  // masking list plus AI_AUTH_ENV_KEYS. Credential-pattern names are matched
+  // by suffix (routing config such as URLs, model/home paths and feature
+  // flags is intentionally excluded); the two AWS names that break the
+  // pattern are pinned explicitly.
   it("covers every managed-connection credential name", () => {
-    for (const name of [
-      "ANTHROPIC_API_KEY",
-      "ANTHROPIC_AUTH_TOKEN",
-      "CLAUDE_CODE_OAUTH_TOKEN",
-      "OPENAI_API_KEY",
-      "CODEX_API_KEY",
-      "OPENROUTER_API_KEY",
-      "XAI_API_KEY",
-      "GROK_API_KEY",
-      "OPENCODE_AUTH_JSON",
-      "OPENCODE_CONFIG_CONTENT",
-      "PAPERCLIP_AI_PROVIDER_KEY",
-    ]) {
-      expect(KNOWN_SECRET_ENV_VAR_NAMES).toContain(name);
+    const serverSource = readFileSync(
+      new URL(
+        "../../../server/src/services/ai-connection-runtime.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const maskingList = serverSource.match(
+      /if \(managed\?\.sessionIdentity\) \{\s*for \(const key of \[([^\]]+)\]\)/,
+    );
+    expect(maskingList, "server session-identity masking list not found").not.toBeNull();
+    const authKeysBlock = serverSource.match(
+      /export const AI_AUTH_ENV_KEYS = \[([\s\S]+?)\] as const/,
+    );
+    expect(authKeysBlock, "AI_AUTH_ENV_KEYS not found").not.toBeNull();
+    const quotedNames = (block: string): string[] =>
+      [...block.matchAll(/"([A-Z0-9_]+)"/g)].map((match) => match[1]);
+    const isCredentialName = (name: string): boolean =>
+      /(KEY|TOKEN|SECRET|AUTH_JSON|CONFIG_CONTENT)$/.test(name);
+    const expected = new Set<string>([
+      ...quotedNames(maskingList![1]),
+      ...quotedNames(authKeysBlock![1]).filter(isCredentialName),
+      "AWS_ACCESS_KEY_ID",
+      "AWS_BEARER_TOKEN_BEDROCK",
+    ]);
+    expect([...expected].length).toBeGreaterThan(0);
+    for (const name of expected) {
+      expect(KNOWN_SECRET_ENV_VAR_NAMES, name).toContain(name);
     }
     const values = collectKnownSecretEnvValues({
       PAPERCLIP_AI_PROVIDER_KEY: "managed-gateway-key-abcdefghij",
