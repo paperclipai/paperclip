@@ -193,11 +193,15 @@ vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
 vi.mock("../adapters/adapter-display-registry", () => ({
   getAdapterDisplay: (type: string) => ({
     type,
-    // Mirrors the real registry, where these two and only these two are
-    // `recommended`. A blanket `false` used to be harmless because every adapter
-    // then sat in the "Advanced settings" disclosure and was reachable anyway;
-    // with the step down to a tile row built from this flag, it made that row
-    // empty in every test and hid the surface under it.
+    // Mirrors the recommended set for this suite's own fixture list, which is
+    // Claude Code and Codex. The real registry marks OpenCode recommended too;
+    // that pairing is covered against the real registry in
+    // `OnboardingWizard.adapters.test.tsx`, so keeping it out here holds this
+    // suite's tile row to the two sources it actually seeds. A blanket `false`
+    // used to be harmless because every adapter then sat in the "Advanced
+    // settings" disclosure and was reachable anyway; with the step down to a tile
+    // row built from this flag, it made that row empty in every test and hid the
+    // surface under it.
     recommended: type === "claude_local" || type === "codex_local",
     label: type,
     description: "",
@@ -2074,7 +2078,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const labels = [...document.body.querySelectorAll("button[aria-checked]")].map(
         (tile) => tile.textContent ?? "",
       );
-      expect(labels.length, "both recommended sources should render").toBe(2);
+      expect(labels.length, "both fixture sources should render").toBe(2);
       expect(labels.some((l) => l.includes("Claude"))).toBe(true);
       expect(labels.some((l) => l.includes("OpenAI"))).toBe(true);
       // The negative half is the one that fails on the unwired version: the

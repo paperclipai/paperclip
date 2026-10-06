@@ -37,12 +37,12 @@ import { Stepper } from "./Stepper";
  */
 
 /**
- * The two sources the step offers, matching the shipped step's own list.
+ * The sources the step offers, matching the shipped step's own list.
  *
- * Claude Code and Codex are the only adapters the display registry marks
- * `recommended`, and the real step builds its row from exactly that filter — so
- * a third tile here would be a design the wizard could never render. OpenCode
- * was drawn at one point and is deliberately gone.
+ * The shipped step builds its row from the adapters the display registry marks
+ * `recommended`, so this list follows that flag: Claude Code, Codex, and
+ * OpenCode. A tile here that the real step cannot render would show reviewers a
+ * design that does not ship, so the two lists stay in step.
  */
 const MODEL_SOURCES: ModelSource[] = [
   {
@@ -54,6 +54,11 @@ const MODEL_SOURCES: ModelSource[] = [
     id: "codex_local",
     label: "Codex",
     icon: <img src="/brands/codex-color.svg" alt="" className="size-full" />,
+  },
+  {
+    id: "opencode_local",
+    label: "OpenCode",
+    icon: <img src="/brands/opencode-logo-light-square.svg" alt="" className="size-full" />,
   },
 ];
 

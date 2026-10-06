@@ -70,18 +70,14 @@ vi.mock("../adapters", () => ({
   getUIAdapter: () => ({ buildAdapterConfig: () => ({}) }),
 }));
 vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
-vi.mock("../adapters/adapter-display-registry", () => ({
-  getAdapterDisplay: (type: string) => ({
-    type,
-    recommended: false,
-    label: type,
-    description: "",
-    icon: () => null,
-  }),
-  getAdapterLabel: (type: string) => type,
-  getAdapterLabels: () => ({}) as Record<string, string>,
-  isKnownAdapterType: () => true,
-}));
+// The real display registry, not a stub. `recommended` is what puts a tile in
+// the onboarding source row, so a stub that hardcodes `recommended: false` would
+// let a change to the real recommendation ship with a green test.
+// The display registry is deliberately NOT mocked here. `recommended` is what
+// puts a tile in the onboarding source row, and a stub that hardcoded
+// `recommended: false` would let a change to the real recommendation ship with a
+// green test. `OnboardingWizard.test.tsx` keeps its own two-source fixture for
+// the tests that are about tile labels rather than about the recommendation set.
 vi.mock("../adapters/use-disabled-adapters", () => ({
   useDisabledAdaptersSync: () => mockAdapterRegistry.disabled,
   useAdapterRegistryLoaded: () => mockAdapterRegistry.loaded,
@@ -172,6 +168,36 @@ describe("OnboardingWizard adapter selection", () => {
       window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
     );
     expect(saved.adapterType).toBe("codex_local");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("offers OpenCode in the recommended model source row", async () => {
+    // The connect step renders `recommendedAdapters` as its source tiles, so
+    // this asserts the real registry puts OpenCode in that row, not in the
+    // "more adapters" list below it.
+    mockAdapterRegistry.list = [
+      { type: "claude_local" },
+      { type: "codex_local" },
+      { type: "opencode_local" },
+      { type: "gemini_local" },
+    ];
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({ step: 4, adapterType: "claude_local" }),
+    );
+
+    const { root } = await mount();
+
+    const recommendedRow = document.body.querySelector('[aria-label="Model source"]');
+    expect(recommendedRow).not.toBeNull();
+    const recommendedLabels = [...(recommendedRow?.querySelectorAll("button") ?? [])].map(
+      (button) => button.textContent?.trim(),
+    );
+    expect(recommendedLabels.some((label) => label?.includes("OpenCode"))).toBe(true);
+    expect(recommendedLabels.some((label) => label?.includes("Gemini"))).toBe(false);
 
     await act(async () => {
       root.unmount();
