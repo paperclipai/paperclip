@@ -598,7 +598,7 @@ export type ResourceLifecycleEvent = {
   createdAt: string;
 } & (
   | { resourceType: "agent"; action: "create" | "pause" | "resume" | "terminate" }
-  | { resourceType: "project"; action: "create" | "update" }
+  | { resourceType: "project"; action: "create" | "update" | "archive" }
 );
 
 /**

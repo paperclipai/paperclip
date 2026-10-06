@@ -527,11 +527,13 @@ retains events, so consumers must revalidate existence and eligibility and load
 current authorized repository data. A termination hook does not authorize
 provider cleanup without the plugin's own authorization and retention policy.
 
-Migration `0303_modern_mathemanic.sql` seeds a one-time current-state baseline before
+Migration `0308_harsh_jetstream.sql` seeds a one-time current-state baseline before
 plugin delivery is available. It records creation for existing hired agents and
 all projects, including archived projects. Pending hires stay behind approval.
 Paused and terminated agents receive missing final status intents. A partial
 journal ending at pause receives resume when the current agent is running.
+Archived projects receive missing archive intents. A partial journal ending at
+archive receives update when the current project is active.
 Existing records remain intact, and rerunning the baseline does not duplicate it.
 The migration also repairs the journal ID generator in older JavaScript restores
 that lost identity metadata, starting above existing IDs. New JavaScript backups

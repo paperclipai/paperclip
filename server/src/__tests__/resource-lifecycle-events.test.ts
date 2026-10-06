@@ -301,7 +301,7 @@ describePostgres("Resource lifecycle events", () => {
   });
 
   const backfillBaseline = () => db.transaction(async tx => {
-    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0303_modern_mathemanic.sql", import.meta.url), "utf8");
+    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0308_harsh_jetstream.sql", import.meta.url), "utf8");
     const lock = migration.split("--> statement-breakpoint")[0];
     const baseline = migration.slice(migration.indexOf("-- Seed a one-time current-state baseline"));
     for (const statement of [lock, ...baseline.split("--> statement-breakpoint")]) {
@@ -319,6 +319,8 @@ describePostgres("Resource lifecycle events", () => {
       { companyId, name: "Partial resume", status: "idle" },
     ]).returning();
     const [archived] = await db.insert(projects).values({ companyId, name: "Archived baseline", archivedAt: new Date(0) }).returning();
+    const [restored] = await db.insert(projects).values({ companyId, name: "Restored baseline" }).returning();
+    await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "project", resourceId: restored.id, action: "archive" });
     const existing = await createAgent();
     const [earlyPause] = await db.insert(resourceLifecycleEvents).values([
       { companyId, resourceType: "agent", resourceId: partial.id, action: "pause" },
@@ -335,7 +337,8 @@ describePostgres("Resource lifecycle events", () => {
     expect(actions(pending.id)).toEqual([]);
     expect(actions(partial.id)).toEqual(["pause", "create"]);
     expect(actions(resumed.id)).toEqual(["pause", "create", "resume"]);
-    expect(actions(archived.id)).toEqual(["create"]);
+    expect(actions(archived.id)).toEqual(["create", "archive"]);
+    expect(actions(restored.id)).toEqual(["archive", "create", "update"]);
     expect(actions(existing.id)).toEqual(["create"]);
     expect(baseline.find(e => e.id === deleted.id)).toEqual(deleted);
     const plugin = await createPlugin();
@@ -346,6 +349,12 @@ describePostgres("Resource lifecycle events", () => {
     await expect(inbox.acknowledge(companyId, String(earlyPause.id))).rejects.toMatchObject({ status: 409 });
     await inbox.acknowledge(companyId, creation.id);
     expect((await inbox.list(companyId)).find(e => e.resourceId === partial.id)).toMatchObject({ id: String(earlyPause.id), action: "pause" });
+    const projectCreate = (await inbox.list(companyId)).find(e => e.resourceId === archived.id)!;
+    await inbox.acknowledge(companyId, projectCreate.id);
+    const archive = (await inbox.list(companyId)).find(e => e.resourceId === archived.id)!;
+    expect(archive.action).toBe("archive");
+    await inbox.acknowledge(companyId, archive.id);
+    expect((await inbox.list(companyId)).find(e => e.resourceId === archived.id)).toBeUndefined();
     await backfillBaseline();
     expect((await events()).sort((a, b) => a.id - b.id)).toEqual(baseline);
   });
@@ -356,7 +365,7 @@ describePostgres("Resource lifecycle events", () => {
     await db.execute(sql`DROP TABLE plugin_lifecycle_acknowledgments`);
     await db.execute(sql`DROP INDEX resource_lifecycle_events_resource_order_idx`);
     const applyDeliveryMigration = () => db.transaction(async tx => {
-      const migration = readFileSync(new URL("../../../packages/db/src/migrations/0303_modern_mathemanic.sql", import.meta.url), "utf8");
+      const migration = readFileSync(new URL("../../../packages/db/src/migrations/0308_harsh_jetstream.sql", import.meta.url), "utf8");
       for (const statement of migration.split("--> statement-breakpoint")) {
         if (statement.trim()) await tx.execute(sql.raw(statement));
       }

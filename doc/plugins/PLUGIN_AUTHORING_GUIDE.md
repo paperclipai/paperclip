@@ -38,9 +38,9 @@ company configuration. Calls inside a host-issued invocation must match its comp
 
 An event has `id`, `companyId`, `resourceType`, `resourceId`, `action`, and
 `createdAt`. Agent actions are `create`, `pause`, `resume`, and `terminate`;
-project actions are `create` and `update`. Pending hires produce creation after
-approval. Project updates include repository/workspace mutations, but archive-only
-changes produce no hook. Provider cleanup and retention policy belong to the plugin.
+project actions are `create`, `update`, and `archive`. Pending hires produce creation
+after approval. Project updates include repository/workspace mutations and restoring
+an archived project. Provider cleanup and retention policy belong to the plugin.
 
 Reads return at most one pending event per resource (default 50, maximum 100).
 Creation is delivered before other events for that resource, even when its
@@ -52,6 +52,8 @@ and is not a global sequence cursor. The delivery migration seeds existing hired
 agents and all projects once, including archived projects. Pending hires require
 approval; paused and terminated agents retain their current status intents.
 This baseline represents current desired state, not reconstructed history.
+The baseline includes archive for existing archived projects and update for restored projects whose
+journal still ends at archive. Archiving does not authorize provider cleanup.
 After that migration, capture stays forward-only; no later journal backfill runs.
 
 Delivery is at least once: concurrent reads or a crash after a provider operation

@@ -52,3 +52,22 @@ WHERE a."status" NOT IN ('pending_approval', 'paused', 'terminated')
        WHERE e."company_id" = a."company_id" AND e."resource_type" = 'agent'
          AND e."resource_id" = a."id" AND e."action" <> 'create'
        ORDER BY e."id" DESC LIMIT 1) = 'pause';
+--> statement-breakpoint
+-- Preserve project archive state, including resources created before capture.
+INSERT INTO "resource_lifecycle_events" ("company_id", "resource_type", "resource_id", "action")
+SELECT p."company_id", 'project', p."id", 'archive'
+FROM "projects" p
+WHERE p."archived_at" IS NOT NULL
+  AND (SELECT e."action" FROM "resource_lifecycle_events" e
+       WHERE e."company_id" = p."company_id" AND e."resource_type" = 'project'
+         AND e."resource_id" = p."id" AND e."action" <> 'create'
+       ORDER BY e."id" DESC LIMIT 1) IS DISTINCT FROM 'archive';--> statement-breakpoint
+-- A partial journal may end at archive even though the project was restored.
+INSERT INTO "resource_lifecycle_events" ("company_id", "resource_type", "resource_id", "action")
+SELECT p."company_id", 'project', p."id", 'update'
+FROM "projects" p
+WHERE p."archived_at" IS NULL
+  AND (SELECT e."action" FROM "resource_lifecycle_events" e
+       WHERE e."company_id" = p."company_id" AND e."resource_type" = 'project'
+         AND e."resource_id" = p."id" AND e."action" <> 'create'
+       ORDER BY e."id" DESC LIMIT 1) = 'archive';

@@ -8,6 +8,17 @@ const manifest: PaperclipPluginManifestV1 = {
 };
 
 describe("Lifecycle inbox test harness", () => {
+  it("delivers project creation, archive, and restore in order", async () => {
+    const harness = createTestHarness({ manifest });
+    const event: ResourceLifecycleEvent = { id: "1", companyId: "a", resourceType: "project", resourceId: "project", action: "create", createdAt: new Date(0).toISOString() };
+    harness.seed({ lifecycleEvents: [event, { ...event, id: "2", action: "archive" }, { ...event, id: "3", action: "update" }] });
+    for (const action of ["create", "archive", "update"]) {
+      const [next] = await harness.ctx.events.listLifecycle("a");
+      expect(next.action).toBe(action);
+      await harness.ctx.events.acknowledgeLifecycle("a", next.id);
+    }
+    expect(await harness.ctx.events.listLifecycle("a")).toEqual([]);
+  });
   it("lets a plugin exercise retries, acknowledgment order, and company scope", async () => {
     const harness = createTestHarness({ manifest });
     const event: ResourceLifecycleEvent = { id: "1", companyId: "a", resourceType: "agent", resourceId: "agent", action: "create", createdAt: new Date(0).toISOString() };
