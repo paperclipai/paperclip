@@ -973,7 +973,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   const permittedNotInstalledConnections = permittedConnections
     .filter(
       (connection) =>
-        (connection.transport === "mcp_remote" ||
+        (connection.transport === "mcp_remote" || connection.transport === "connector" ||
           connection.transport === "local_stdio" || connection.transport === "plugin" || isBrowserUseConnection(connection) || restConnectorFor(connection)) &&
         !allInstalledConnectionIds.has(connection.id),
     )
@@ -1005,7 +1005,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         !isToolConnectionAttentionHealth(connection.healthStatus)) &&
       // Keep this transport list equal to the native runtime assignment
       // digest in native-runtime/runtime-context.ts.
-      (connection.transport === "mcp_remote" ||
+      (connection.transport === "mcp_remote" || connection.transport === "connector" ||
         connection.transport === "local_stdio" || connection.transport === "plugin" || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
   );
   const assignedConnectionIds = new Set(

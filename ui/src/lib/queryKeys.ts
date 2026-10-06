@@ -100,6 +100,7 @@ export const queryKeys = {
     gateways: (companyId: string) => ["tools", "gateways", companyId] as const,
     connectionProfileConfiguration: (companyId: string, connectionId: string) =>
       ["tools", companyId, "profiles", "connection-configuration", connectionId] as const,
+    mcpConnectors: (companyId: string) => ["tools", companyId, "mcp-connectors"] as const,
     profiles: (companyId: string) => ["tools", companyId, "profiles"] as const,
     profileNewTools: (profileId: string) =>
       ["tools", "profiles", profileId, "new-tools"] as const,

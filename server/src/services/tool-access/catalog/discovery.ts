@@ -95,6 +95,7 @@ type DiscoveryDependencies = {
   vercelConnect: VercelConnectClient | null;
   setupPolicy: ConnectionSetupPolicy;
   requestRemoteHttpEndpoint: ToolRemoteHttp["requestRemoteHttpEndpoint"];
+  requestConnector(connection: typeof toolConnections.$inferSelect, init: RequestInit): Promise<Response>;
   resolveOAuthGrantSecret: OAuthCredentialStore["resolveOAuthGrantSecret"];
   discoverOAuthEndpoints: ReturnType<typeof createOAuthDiscovery>["discoverOAuthEndpoints"];
   localTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]>;
@@ -114,7 +115,7 @@ export function forgetRemoteToolListCache(connectionId: string) {
 const MAX_SKILL_LIST_PAGES = 50;
 const MAX_LISTED_SKILLS = 5_000;
 
-export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, credentials, vercel, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools }: DiscoveryDependencies) {
+export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, credentials, vercel, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, requestConnector, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools }: DiscoveryDependencies) {
   const { vaultGrantForConnection, resolveCredentialHeaders, resolvedRemoteEndpoint } = credentials;
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercel;
   const { assertConnectorConnectionSetupEnabled } = setupPolicy;
@@ -209,7 +210,9 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     // PAP-17098 closed for the OAuth endpoints.
     let listRequestId = "paperclip-catalog-refresh";
     let sessionHeaders = headers;
-    const sendRemote = (init: RequestInit) => withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), init));
+    const sendRemote = connection.transport === "connector"
+      ? (init: RequestInit) => requestConnector(connection, init)
+      : (init: RequestInit) => withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), init));
     const sendToolsList = (requestHeaders: Record<string, string>, cursor?: string) => {
       sessionHeaders = requestHeaders;
       return sendRemote(mcpHttpRequestInit(requestHeaders, { id: listRequestId, method: "tools/list", params: cursor ? { cursor } : {} }, {
@@ -427,6 +430,13 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         throw unprocessable(
           "Slack MCP access is disabled for this app. Ask the Slack app owner to enable MCP access, then refresh this connection.",
           { code: "slack_mcp_access_disabled", setupUrl: connectionSetupUrl(connection) },
+        );
+      }
+      if (connection.transport === "connector" && (response.status === 401 || response.status === 403)) {
+        // OAuth discovery would fetch provider metadata from this server, which cannot reach a private network.
+        throw unprocessable(
+          "The upstream MCP server behind the connector rejected the request. Add its credential headers to this connection or to the connector config.",
+          { code: "connector_upstream_unauthorized", status: response.status },
         );
       }
       const authenticate = response.headers.get("www-authenticate") ?? "";
@@ -692,7 +702,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         throw error;
       }
     }
-    if (connection.transport === "mcp_remote")
+    if (connection.transport === "mcp_remote" || connection.transport === "connector")
       return remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices, listOptions);
     if (connection.transport !== "local_stdio") {
       throw unsupportedToolConnectionTransport();

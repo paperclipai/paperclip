@@ -147,7 +147,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         }
       } else if (isAgentMailConnection(connection)) {
         await validateAgentMailConnection(connection);
-      } else if (connection.transport === "mcp_remote") {
+      } else if (connection.transport === "mcp_remote" || connection.transport === "connector") {
         const canProbeWithoutAuthorization =
           options.allowUnauthenticatedProbe === true &&
           connection.status === "draft" &&
@@ -190,7 +190,9 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
             ? "AgentMail API key is connected."
             : connection.transport === "local_stdio"
               ? "Approved stdio template is ready."
-              : "Remote MCP server responded to tools/list.",
+              : connection.transport === "connector"
+                ? "MCP connector upstream responded to tools/list."
+                : "Remote MCP server responded to tools/list.",
       );
       const runtimeSlot = await ensureRuntimeSlot(updated);
       await audit({

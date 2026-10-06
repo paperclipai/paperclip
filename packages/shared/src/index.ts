@@ -369,6 +369,7 @@ export * from "./google-workspace-connectors.js";
 export * from "./google-sign-in-deployment.js";
 export * from "./github-connectors.js";
 export * from "./asana-connectors.js";
+export * from "./mcp-connectors.js";
 export {
   BLOCKED_MCP_PROVIDERS,
   SELF_SERVE_MCP_CANDIDATES,

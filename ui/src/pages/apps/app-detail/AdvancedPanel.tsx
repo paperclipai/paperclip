@@ -631,6 +631,7 @@ export function connectionAddress(connection: ToolConnection): string {
   const value = config.url ?? config.endpoint ?? config.remoteUrl;
   if (typeof value === "string" && value.trim().length > 0) return redactUrlSecrets(value);
   if (connection.transport === "local_stdio") return "Local command";
+  if (connection.transport === "connector" && typeof config.upstream === "string") return `Connector upstream: ${config.upstream}`;
   return "Not set";
 }
 

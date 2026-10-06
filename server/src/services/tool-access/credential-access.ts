@@ -1,4 +1,5 @@
 import { connectionActorUserId } from "./actor.js";
+import { connectorEndpointLabel } from "../mcp-connector-hub.js";
 import { AwsMcpCredentialError, isAwsMcpConnection, resolveAwsMcpAuthorization, sharedAwsMcpCredentialMinter, type AwsMcpClients } from "../connectors/aws/mcp-credentials.js";
 import { workloadIdentityService } from "../workload-identity.js";
 import type { ActorInfo } from "./types.js";
@@ -327,6 +328,8 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
   ): Promise<string> {
+    // The connector owns the upstream URL; this label only scopes caches and audit.
+    if (connection.transport === "connector") return connectorEndpointLabel(connection.config);
     const publicEndpoint = remoteEndpoint(connection.config);
     const ref = connection.credentialRefs.find(
       (candidate) => candidate.placement === "url",
