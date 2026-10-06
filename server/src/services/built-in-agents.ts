@@ -17,6 +17,7 @@ import { agentInstructionRevisionService } from "./agent-instruction-revisions.j
 import type { AuthorizationActor } from "./authorization.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import { agentService } from "./agents.js";
+import { defaultAiConnectionForHire } from "./agent-ai-connection-default.js";
 import { approvalService } from "./approvals.js";
 import {
   readBuiltInAgentMarker,
@@ -422,6 +423,9 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     defaultAdapterConfig: {
       model: "claude-haiku-4-5",
     },
+    defaultRuntimeConfig: {
+      aiConnection: { mode: "responsible_user", provider: "anthropic", method: "subscription" },
+    },
     defaultBudgetMonthlyCents: 0,
     bundle: {
       stockVersion: "2026-08-02",
@@ -810,6 +814,28 @@ export function builtInAgentService(db: Db) {
   const instructionsSvc = agentInstructionsService(db);
   const skillSvc = companySkillService(db);
   const routineSvc = routineService(db);
+
+  async function runtimeConfigForBuiltIn(
+    definition: BuiltInAgentDefinition,
+    setup: BuiltInAgentProvisionInput,
+    managerId: string | null,
+    existing: Record<string, unknown> = {},
+  ) {
+    const runtimeConfig = { ...(definition.defaultRuntimeConfig ?? {}), ...existing };
+    if (existing.aiConnection !== undefined) return runtimeConfig;
+    const manager = managerId ? await agentSvc.getById(managerId) : null;
+    const managerRuntime = manager?.runtimeConfig as Record<string, unknown> | undefined;
+    const binding = defaultAiConnectionForHire(
+      setup.adapterType ?? defaultAdapterType(definition),
+      setup.adapterConfig ?? definition.defaultAdapterConfig ?? {},
+      managerRuntime?.aiConnection ?? definition.defaultRuntimeConfig?.aiConnection,
+    );
+    // The stock Summarizer selects the responsible user's provider default.
+    // The hire policy resolves custom harnesses and explicit child auth first.
+    if (binding) runtimeConfig.aiConnection = binding;
+    else delete runtimeConfig.aiConnection;
+    return runtimeConfig;
+  }
 
   async function findSingleRootManager(companyId: string) {
     const roots = await db
@@ -1767,6 +1793,13 @@ export function builtInAgentService(db: Db) {
         const reportsTo = await findSingleRootManager(companyId);
         if (reportsTo) patch.reportsTo = reportsTo;
       }
+      if (!existingPendingApproval && existing.runtimeConfig?.aiConnection === undefined) {
+        const runtimeConfig = await runtimeConfigForBuiltIn(definition, {
+          adapterType: patch.adapterType ?? existing.adapterType,
+          adapterConfig: patch.adapterConfig ?? existing.adapterConfig,
+        }, patch.reportsTo ?? existing.reportsTo, existing.runtimeConfig);
+        if (runtimeConfig.aiConnection !== undefined) patch.runtimeConfig = runtimeConfig;
+      }
       const updated = await agentSvc.update(existing.id, patch, {
         allowBuiltInAgentMetadata: true,
         recordRevision: { source: "built-in-agent:ensure" },
@@ -1794,7 +1827,7 @@ export function builtInAgentService(db: Db) {
         pausedAt: definition.defaultStatus === "paused" ? new Date() : null,
         reportsTo,
         metadata: builtInMetadata(definition),
-        runtimeConfig: definition.defaultRuntimeConfig ?? {},
+        runtimeConfig: await runtimeConfigForBuiltIn(definition, resolvedInput, reportsTo),
         permissions: definition.defaultPermissions ?? {},
         spentMonthlyCents: 0,
         lastHeartbeatAt: null,
@@ -1895,7 +1928,7 @@ export function builtInAgentService(db: Db) {
         status: "pending_approval",
         reportsTo,
         metadata: builtInMetadata(definition),
-        runtimeConfig: definition.defaultRuntimeConfig ?? {},
+        runtimeConfig: await runtimeConfigForBuiltIn(definition, input, reportsTo),
         permissions: definition.defaultPermissions ?? {},
         spentMonthlyCents: 0,
         lastHeartbeatAt: null,

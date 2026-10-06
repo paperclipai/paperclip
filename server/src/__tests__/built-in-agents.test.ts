@@ -189,7 +189,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       defaultAdapterType: "claude_local",
       defaultAdapterConfig: { model: "claude-haiku-4-5" },
     });
-    expect(summarizer?.defaultRuntimeConfig).toBeUndefined();
+    expect(summarizer?.defaultRuntimeConfig).toEqual({ aiConnection: { mode: "responsible_user", provider: "anthropic", method: "subscription" } });
     expect(() => validateBuiltInAgentDefinitions([
       {
         key: "briefs",
@@ -1293,6 +1293,41 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(grantKeys).not.toContain("tasks:assign");
     expect(grantKeys).not.toContain("agents:configure");
     expect(grantKeys).not.toContain("skills:create");
+  });
+
+  it("carries the manager's managed AI choice through built-in hire approval", async () => {
+    const companyId = await seedCompany();
+    const connection = { mode: "responsible_user", provider: "anthropic", method: "subscription" };
+    await agentService(db).create(companyId, { name: "CEO", role: "ceo", status: "idle", adapterType: "claude_local", adapterConfig: { model: "claude-haiku-4-5" }, runtimeConfig: { aiConnection: connection }, permissions: {} });
+    const result = await builtInAgentService(db).provision(companyId, "summarizer");
+    expect(result.state.agent?.runtimeConfig.aiConnection).toEqual(connection);
+    expect(result.approval?.payload.runtimeConfig).toMatchObject({ aiConnection: connection });
+    await approvalService(db).approve(result.approval!.id, "responsible-user");
+    const approved = await builtInAgentService(db).get(companyId, "summarizer");
+    expect(approved.agent?.runtimeConfig.aiConnection).toEqual(connection);
+  });
+
+  it("uses the child's compatible provider and preserves an explicitly configured built-in connection", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    await agentService(db).create(companyId, { name: "CEO", role: "ceo", status: "idle", adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" }, runtimeConfig: { aiConnection: { mode: "responsible_user", provider: "openai", method: "subscription" } }, permissions: {} });
+    const service = builtInAgentService(db);
+    const created = await service.ensure(companyId, "summarizer");
+    expect(created.agent?.runtimeConfig.aiConnection).toMatchObject({ mode: "responsible_user", provider: "anthropic" });
+    const chosen = { mode: "responsible_user", provider: "anthropic", method: "subscription" };
+    await agentService(db).update(created.agentId!, { runtimeConfig: { aiConnection: chosen, heartbeat: { enabled: false } } });
+    const reconciled = await service.ensure(companyId, "summarizer");
+    expect(reconciled.agent?.runtimeConfig.aiConnection).toEqual(chosen);
+    expect(reconciled.agent?.runtimeConfig.heartbeat).toEqual({ enabled: false });
+  });
+
+  it("sets a provider default without a managed parent and respects explicit child credentials", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const service = builtInAgentService(db);
+    const standard = await service.ensure(companyId, "summarizer");
+    expect(standard.agent?.runtimeConfig.aiConnection).toMatchObject({ mode: "responsible_user", provider: "anthropic" });
+    const otherCompany = await seedCompany({ requireApproval: false });
+    const explicit = await service.ensure(otherCompany, "summarizer", { adapterType: "claude_local", adapterConfig: { model: "claude-haiku-4-5", env: { ANTHROPIC_API_KEY: "configured-reference" } } });
+    expect(explicit.agent?.runtimeConfig.aiConnection).toBeUndefined();
   });
 
   it("materializes the Summarizer bundle paused on Claude Haiku with a disabled routine", async () => {
