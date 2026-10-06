@@ -7,7 +7,8 @@ vi.mock("../services/instance-settings.ts", () => ({ instanceSettingsService: ()
 vi.mock("../services/chat-completion-delivery.js", () => ({ recordChatCompletion: async () => undefined }));
 vi.mock("../services/status-card-finalization.js", () => ({ finalizeStatusCardsForStalledGeneration: async () => undefined }));
 vi.mock("../services/summary-slot-finalization.js", () => ({ finalizeSummarySlotsForTerminalIssue: async () => undefined }));
-vi.mock("../services/issue-thread-interactions.js", () => ({ issueThreadInteractionService: () => ({ expirePendingInteractionsForTerminalIssue: async () => [] }) }));
+// Unrelated terminal persistence explicitly mocked in this ownership-only suite.
+vi.mock("../services/issue-thread-interactions.js", () => ({ expirePendingInteractionsForTerminalIssueInTransaction: async () => [], issueThreadInteractionService: () => ({ expirePendingInteractionsForTerminalIssue: async () => [] }) }));
 vi.mock("../services/activity-log.js", () => ({
   logActivity: async () => undefined,
   persistActivity: async () => { activity.events.push("persist"); return { publication: { marker: "archive" } }; },

@@ -11176,14 +11176,18 @@ export function issueService(db: Db) {
             // that never touch the HTTP routes, so pending interaction cards
             // cannot outlive their issue. Dynamic import breaks the module
             // cycle (issue-thread-interactions.js imports issueService).
-            const { issueThreadInteractionService } =
-              await import("./issue-thread-interactions.js");
-            const expiredInteractions = await issueThreadInteractionService(
-              tx,
-            ).expirePendingInteractionsForTerminalIssue(updated, {
+            const interactions = await import("./issue-thread-interactions.js");
+            const terminalActor = {
               agentId: actorAgentId ?? null,
               userId: actorUserId ?? null,
-            });
+            };
+            // Re-enter only after dark preparation acquired the company fence
+            // before reads/row locks. The canonical root owns queue/commit/flush.
+            const expiredInteractions = options.lifecycleFence
+              ? await interactions.expirePendingInteractionsForTerminalIssueInTransaction(
+                  tx, updated, terminalActor, { postCommitPublications: activityPublications },
+                )
+              : await interactions.issueThreadInteractionService(tx).expirePendingInteractionsForTerminalIssue(updated, terminalActor);
             const {
               nativeQuestionCancellationIdentity,
               requestNativeQuestionRunCancellation,
@@ -11233,7 +11237,7 @@ export function issueService(db: Db) {
                   source: "issue.status_transition.issue_closed",
                   result: interaction.result ?? null,
                 },
-              });
+              }, options.lifecycleFence ? activityPublications : undefined);
             }
           }
           // A status-card generation task that goes done/cancelled/blocked stops

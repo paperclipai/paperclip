@@ -12,7 +12,8 @@ vi.mock("../services/instance-settings.ts", () => ({
 vi.mock("../services/chat-completion-delivery.js", () => ({ recordChatCompletion: async () => undefined }));
 vi.mock("../services/status-card-finalization.js", () => ({ finalizeStatusCardsForStalledGeneration: async () => undefined }));
 vi.mock("../services/summary-slot-finalization.js", () => ({ finalizeSummarySlotsForTerminalIssue: async () => undefined }));
-vi.mock("../services/issue-thread-interactions.js", () => ({ issueThreadInteractionService: () => ({ expirePendingInteractionsForTerminalIssue: async () => [] }) }));
+// Terminal persistence is unrelated to this restoration recorder, not integration evidence.
+vi.mock("../services/issue-thread-interactions.js", () => ({ expirePendingInteractionsForTerminalIssueInTransaction: async () => [], issueThreadInteractionService: () => ({ expirePendingInteractionsForTerminalIssue: async () => [] }) }));
 
 // No SQL, DB, server or adapter. Distinct root/tx identities expose accidental
 // transaction ownership; actual readiness/update run over synthetic projected
