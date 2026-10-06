@@ -343,9 +343,15 @@ export async function reapSetupTokenLeases(
         adapterType: record.adapterType,
       });
       released += 1;
-    } catch {
+    } catch (error) {
       failed += 1;
-      log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
+      // Log the cause. The lease release error carries no secret — it is a
+      // sandbox/provider-level failure, never the login URL, the browser code,
+      // or the token — so surfacing it costs an operator nothing while a
+      // swallowed cause costs them the ability to diagnose a permanently
+      // retryable lease.
+      const reason = error instanceof Error ? error.message : String(error);
+      log(`[paperclip] Setup-token reaper: a lease release failed; it stays retryable. Cause: ${reason}`);
     }
   }
   return { released, failed };
