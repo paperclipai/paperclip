@@ -7,6 +7,19 @@ const run = (overrides: Partial<Run> = {}) => ({ resultJson: null, ...overrides 
 const collect = (error: unknown) => collectRunFailureDiagnostics(run(), { error });
 
 describe("run failure diagnostics", () => {
+  it("exports only the closed native model/auth rejection vocabulary", () => {
+    const diagnostic = { provider: "codex", category: "model_auth_incompatible", status: 400, authMode: "chatgpt" };
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      nativeProviderFailure: { ...diagnostic, model: "private-model", response: "private-provider-response", prompt: "private-prompt" },
+    } }), {}));
+    expect(result.provider).toEqual(diagnostic);
+    expect(JSON.stringify(result)).not.toContain("private");
+    for (const value of [null, [], { ...diagnostic, category: "private-category" },
+      Object.defineProperty({}, "provider", { get() { throw new Error("private"); } })]) {
+      expect(collectRunFailureDiagnostics(run({ resultJson: { nativeProviderFailure: value } }), {}).provider).toEqual({});
+    }
+  });
+
   it("selects bounded lock-owner evidence from a caught timeout cause", () => {
     const error = new Error("outer", { cause: Object.assign(new Error("lock timeout"), {
       code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT",

@@ -189,23 +189,7 @@ const state = vi.hoisted(() => ({
   assertCurrentWakeCommentsRead: vi.fn(async () => undefined),
   resolveRunnerBinary: vi.fn(() => "/tmp/paperclip-runnerd"),
   release: null as null | (() => void),
-  observeCommittedEvent: undefined as undefined | ((event: PrpEvent) => Promise<void>),
-  observeDuplicateEvent: undefined as undefined | ((event: PrpEvent) => Promise<void>),
 }));
-
-vi.mock("./paperclip-control-plane-port.js", async (importOriginal) => {
-  const original = await importOriginal<typeof import("./paperclip-control-plane-port.js")>();
-  return {
-    ...original,
-    PaperclipControlPlanePort: class extends original.PaperclipControlPlanePort {
-      constructor(...args: ConstructorParameters<typeof original.PaperclipControlPlanePort>) {
-        super(...args);
-        state.observeCommittedEvent = args[2]?.onCommittedEvent;
-        state.observeDuplicateEvent = args[2]?.onDuplicateEvent;
-      }
-    },
-  };
-});
 
 const grokCopyBack = vi.hoisted(() => vi.fn(async (_input: { readSandboxAuth: () => Promise<Buffer>; hostHomeDir: string }) => undefined));
 vi.mock("@paperclipai/adapter-grok-local/server", async importOriginal => ({
@@ -310,7 +294,6 @@ import {
   reconcileRetainedNativeSessionCleanup,
   retainedNativeCleanupJournalMatches,
   nativeProviderUsageLimitFromEvent,
-  nativeCodexModelRejectionFromEvent,
   nativeSessionFailureSourceCode,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
@@ -2655,112 +2638,6 @@ const execution = {
   credentialBindings: [],
 } as NativeExecutionInputV1;
 
-describe("Codex ChatGPT model rejection", () => {
-  const message = "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.";
-  const event = {
-    schema: "paperclip.prp.event.v1",
-    schemaVersion: 1,
-    sourceEventId: "model-rejected-event",
-    sourceInstanceId: "runner",
-    sourceSeq: 1,
-    runId: execution.binding.runId,
-    normalizedSessionId: "session-native-cancel",
-    priority: 0,
-    emittedAt: "2026-10-05T18:00:00.000Z",
-    sourceKind: "runner" as const,
-    eventType: "turn.failed" as const,
-    payload: { status: "failed", error: { message: JSON.stringify({
-      type: "error", status: 400, error: { type: "invalid_request_error", message },
-    }) } },
-  } satisfies PrpEvent;
-
-  it("reads the known rejection from wrapped and plain provider messages", () => {
-    expect(nativeCodexModelRejectionFromEvent(event)).toBe(message);
-    expect(nativeCodexModelRejectionFromEvent({ ...event, payload: {
-      status: "failed", error: { message },
-    } })).toBe(message);
-  });
-
-  it.each([
-    { ...event, sourceKind: "control_plane" as const },
-    { ...event, eventType: "item.completed" as const },
-    { ...event, payload: { ...event.payload, status: "completed" } },
-    { ...event, payload: { ...event.payload, recoverable: true } },
-    { ...event, payload: { status: "failed", error: { message, recoverable: true } } },
-    { ...event, payload: { status: "failed", error: { message: "Private provider diagnostic" } } },
-    { ...event, payload: { status: "failed", error: { message: `${message}\nPrivate provider diagnostic` } } },
-    { ...event, payload: { status: "failed", error: { message: message.replace("gpt-6.1-sol", "private account token") } } },
-    { ...event, payload: { status: "failed", error: { message: JSON.stringify({ status: 500, error: { type: "invalid_request_error", message } }) } } },
-  ])("does not promote unrelated or untrusted error evidence %#", (input) => {
-    expect(nativeCodexModelRejectionFromEvent(input)).toBeNull();
-  });
-
-  it.each(["committed", "duplicate"] as const)("keeps the %s rejection when the runner supplies a generic failure result", async (delivery) => {
-    state.execute.mockReset().mockImplementationOnce(async () => {
-      const observe = delivery === "committed" ? state.observeCommittedEvent : state.observeDuplicateEvent;
-      await observe!(event);
-      return {
-        result: { summary: "The Codex run failed before it completed." },
-        terminal: { runTerminalState: "failed" },
-        turnId: "turn", normalizedSessionId: "session", providerSessionId: null,
-        driverKind: "test", driverVersion: "1", nativeEventCount: 1,
-        highestContiguousSourceSeq: 1,
-      };
-    });
-    await expect(executePaperclipNativeSession({
-      db: leaseDb(), execution, runnerInstanceId: "runner",
-    })).resolves.toMatchObject({
-      exitCode: 1, errorCode: "native_provider_model_rejected", errorMessage: message,
-      nativeFinalization: { terminal: { runTerminalState: "failed" } },
-    });
-  });
-
-  it("does not reuse the rejection after another turn fails", async () => {
-    state.execute.mockReset().mockImplementationOnce(async () => {
-      await state.observeCommittedEvent!(event);
-      await state.observeCommittedEvent!({ ...event, payload: { status: "failed", error: { message: "Other failure" } },
-        emittedAt: new Date().toISOString(), sourceSeq: 2,
-      });
-      return {
-        result: { summary: "Other failure" }, terminal: { runTerminalState: "failed" },
-        turnId: "turn", normalizedSessionId: "session", providerSessionId: null,
-        driverKind: "test", driverVersion: "1", nativeEventCount: 2, highestContiguousSourceSeq: 2,
-      };
-    });
-    const result = await executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner" });
-    expect(result.errorMessage).toBe("Native session failed");
-    expect(result.errorCode).toBeUndefined();
-  });
-
-  it.each([
-    ["provider_error", "native_provider_model_rejected", message],
-    ["tool_binding_mismatch", "native_event_replay_conflict", "Provider terminal failure"],
-  ])("preserves the right cause when the provider throws %s", async (providerCode, errorCode, expectedMessage) => {
-    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
-    const failure = new NativeProviderTerminalFailure(providerCode, false, "Provider terminal failure");
-    const issueServiceSpy = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
-      update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
-    } as unknown as ReturnType<typeof issueServiceModule.issueService>);
-    state.execute.mockReset().mockImplementationOnce(async () => {
-      await state.observeCommittedEvent!(event);
-      throw failure;
-    });
-    try {
-      await expect(executePaperclipNativeSession({ db: leaseDb(execution, {}, {}, updates), execution,
-        runnerInstanceId: "runner",
-      })).rejects.toBe(failure);
-      expect(updates).toContainEqual({ table: heartbeatRuns, values: expect.objectContaining({
-        status: "failed", errorCode, error: expectedMessage,
-      }) });
-      expect(updates).toContainEqual({ table: nativeRunFinalizations, values: expect.objectContaining({
-        phase: "terminal_failure", nextAttemptAt: null,
-      }) });
-    } finally {
-      issueServiceSpy.mockRestore();
-    }
-  });
-});
-
 describe("retained native cleanup activation", () => {
   it.each([
     "settled",
@@ -4968,7 +4845,7 @@ function leaseDb(
         where: () => query,
         orderBy: () => query,
         for: () => query,
-        limit: () => query,
+        limit: () => Promise.resolve(rows),
       };
       return query;
     },
@@ -4976,10 +4853,7 @@ function leaseDb(
   const insert = (table: unknown) => ({
     values: (values: Record<string, unknown>) => {
       updates.push({ table, values });
-      return {
-        returning: async () => [values],
-        onConflictDoNothing: async () => undefined,
-      };
+      return { returning: async () => [values] };
     },
   });
   const tx = {

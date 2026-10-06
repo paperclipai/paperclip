@@ -2060,7 +2060,8 @@ export function authorizationService(db: Db | DbTransaction) {
         // implicit default-open policy remains responsible-user-only so an
         // absent row never becomes a company-wide cross-user grant.
         const grant = await findGrant(companyId, "agent", actorAgentId, "inbox:manage");
-        if (grant && (await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
+        if (grant && grant.scope?.responsibleUserOnly !== true &&
+            (await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
           return allow({
             action: input.action,
             reason: "allow_explicit_grant",

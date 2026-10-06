@@ -28,6 +28,7 @@ beforeAll(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), "paperclip-hire-ai-"));
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "hire-ai");
+  vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
   database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");
   db = createDb(database.connectionString);
 }, 90_000);
@@ -310,15 +311,15 @@ describe("agent-created hires use managed AI connections", () => {
       ["ANTHROPIC_API_KEY", ""],
       ["CLAUDE_CONFIG_DIR", "/tmp/child-claude-home"],
       ["ANTHROPIC_BASE_URL", "https://example.invalid"],
-    ])(`${endpoint}: preserves an explicit child auth setting %s=%s`, async (key, value) => {
+    ])(`${endpoint}: rejects an agent-supplied local environment setting %s=%s`, async (key, value) => {
       const f = await fixture("anthropic");
-      const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
+      const response = await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
         name: "Explicit auth", role: "engineer", adapterType: f.adapterType,
         adapterConfig: { env: { [key]: value } },
-      }));
-      expect(agent.runtimeConfig.aiConnection).toBeUndefined();
-      const [saved] = await db.select().from(agents).where(eq(agents.id, agent.id));
-      expect((saved.adapterConfig.env as Record<string, unknown>)[key]).toEqual({ type: "plain", value });
+      });
+      expect(response.status).toBe(403);
+      expect(response.body.error).toContain("host-executed local adapter settings");
+      expect(await db.select().from(agents).where(eq(agents.companyId, f.companyId))).toHaveLength(1);
     });
   }
 
@@ -366,13 +367,17 @@ describe("agent-created hires use managed AI connections", () => {
       ["openai", "paperclip_runner", { provider: "acpx", acpxAgent: "claude" }, "OPENAI_API_KEY"],
     ] as const)(`${endpoint}: ignores the %s auth key for a different provider in %s`, async (provider, adapterType, config, key) => {
       const f = await fixture(provider);
-      const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
+      const response = await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
         name: "Cross-provider config", role: "engineer", adapterType,
         adapterConfig: { ...config, env: { [key]: "leftover-parent-setting" } },
-      }));
-      expect(agent.runtimeConfig.aiConnection).toMatchObject({
-        provider: provider === "anthropic" ? "openai" : "anthropic", mode: "responsible_user",
       });
+      if (adapterType.endsWith("_local")) {
+        expect(response.status).toBe(403);
+        expect(response.body.error).toContain("host-executed local adapter settings");
+        return;
+      }
+      const agent = hired(response);
+      expect(agent.runtimeConfig.aiConnection).toMatchObject({ provider: provider === "anthropic" ? "openai" : "anthropic", mode: "responsible_user" });
     });
   }
 
@@ -465,7 +470,9 @@ describe("agent-created hires use managed AI connections", () => {
 describe("hired agents sharing a subscription", () => {
   it.each(["openai", "anthropic"] as const)("runs the %s child alongside a live parent and inherits its connection", async (provider) => {
     const f = await fixture(provider, "subscription");
-    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { cwd: home, engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
+    // Host working directories are configured by an operator, not an agent key.
+    await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: home } }).where(eq(agents.id, agent.id));
     const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Subscription child task", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
     const parentRuntime = await prepareManagedAiRuntime(db, { companyId: f.companyId, agentId: f.agentId, responsibleUserId: f.userId, adapterType: f.adapterType, binding: f.binding, config: { cwd: home } });
     const execute = vi.fn(async () => {

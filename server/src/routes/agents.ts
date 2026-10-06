@@ -15,6 +15,7 @@ import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { canRetryStoppedRun } from "../services/cancelled-native-startup.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type NativeReviewAssignmentContext } from "../services/native-runtime/native-review-participant.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
 import { selectDashboardRunIds } from "../services/dashboard-run-selection.js";
@@ -2913,6 +2914,69 @@ export function agentRoutes(
     );
   }
 
+  function assertNoAgentProcessAdapterMutation(req: Request, adapterType: string, mutatesConfiguration: boolean) {
+    if (req.actor.type !== "agent" || adapterType !== "process" || !mutatesConfiguration) return;
+    throw forbidden("Agent keys cannot configure host-executed process adapters.");
+  }
+
+  const LOCAL_ADAPTER_HOST_COMMAND_KEYS = [
+    "command",
+    "hermesCommand",
+    "args",
+    "extraArgs",
+    "cwd",
+    "env",
+    "filesystemSandboxCommand",
+  ] as const;
+
+  const LOCAL_ADAPTER_CREDENTIAL_ENV_KEYS: Record<string, readonly string[]> = {
+    ...INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS,
+    gemini_local: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    kimi_local: ["KIMI_MODEL_API_KEY"],
+    opencode_local: ["PAPERCLIP_OPENCODE_PROVIDERS", "OPENCODE_AUTH_JSON"],
+  };
+  const POOL_AUTH_OVERRIDE_ENV_KEYS = [
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "PAPERCLIP_OPENCODE_PROVIDERS", "OPENCODE_AUTH_JSON",
+  ] as const;
+
+  async function callerUsesAiConnectionPool(req: Request, companyId: string): Promise<boolean> {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+    const caller = await svc.getById(req.actor.agentId);
+    if (!caller || caller.companyId !== companyId) return false;
+    return asRecord(asRecord(caller.runtimeConfig)?.aiConnection)?.mode === "router";
+  }
+
+  function containsOnlyLocalAdapterCredentialRefs(
+    adapterType: string,
+    env: unknown,
+    allowPlainCredentials: boolean,
+  ): boolean {
+    const envRecord = asRecord(env);
+    if (!envRecord) return false;
+    const allowedKeys = LOCAL_ADAPTER_CREDENTIAL_ENV_KEYS[adapterType] ?? [];
+    return Object.entries(envRecord).every(([key, value]) =>
+      (allowedKeys.includes(key) && isInheritableCredentialReference(value)) ||
+      (allowPlainCredentials && POOL_AUTH_OVERRIDE_ENV_KEYS.includes(key as typeof POOL_AUTH_OVERRIDE_ENV_KEYS[number]) && asEnvBindingString(value) !== null),
+    );
+  }
+
+  function assertNoAgentLocalAdapterHostCommandMutation(
+    req: Request,
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+    allowPlainCredentials = false,
+  ) {
+    if (req.actor.type !== "agent" || !adapterType.endsWith("_local")) return;
+    const changedKeys = LOCAL_ADAPTER_HOST_COMMAND_KEYS.filter((key) =>
+      adapterConfig[key] !== undefined &&
+      (key !== "env" || !containsOnlyLocalAdapterCredentialRefs(adapterType, adapterConfig.env, allowPlainCredentials)),
+    );
+    if (changedKeys.length === 0) return;
+    throw forbidden(
+      `Agent keys cannot configure host-executed local adapter settings (${changedKeys.join(", ")}).`,
+    );
+  }
+
   function summarizeAgentUpdateDetails(patch: Record<string, unknown>) {
     const changedTopLevelKeys = Object.keys(patch).sort();
     const details: Record<string, unknown> = { changedTopLevelKeys };
@@ -4418,6 +4482,13 @@ export function agentRoutes(
       await assertSelectableAdapterType(rollbackAdapterType);
     }
     const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
+    assertNoAgentAdapterConfigMutation(req, rollbackAdapterConfig);
+    assertNoAgentLocalAdapterHostCommandMutation(req, rollbackAdapterType, rollbackAdapterConfig);
+    assertNoAgentProcessAdapterMutation(
+      req,
+      rollbackAdapterType,
+      true,
+    );
     assertExternalInstructionsAdmin(req, existing);
     assertExternalInstructionsAdmin(req, {
       ...existing,
@@ -4580,6 +4651,8 @@ export function agentRoutes(
       rawHireAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
+    assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType, rawHireAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
+    assertNoAgentProcessAdapterMutation(req, hireInput.adapterType, Object.keys(rawHireAdapterConfig).length > 0);
     const hiredAgentId = randomUUID();
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,
@@ -4889,6 +4962,8 @@ export function agentRoutes(
       rawCreateAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
+    assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType, rawCreateAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
+    assertNoAgentProcessAdapterMutation(req, createInput.adapterType, Object.keys(rawCreateAdapterConfig).length > 0);
     const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -5527,6 +5602,7 @@ export function agentRoutes(
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
+    assertNoAgentProcessAdapterMutation(req, requestedAdapterType, touchesAdapterConfiguration);
     if (touchesAdapterConfiguration) {
       assertExternalInstructionsAdmin(req, existing);
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
@@ -5573,6 +5649,13 @@ export function agentRoutes(
       }
       if (requestedAdapterType === "paperclip_runner") {
         rawEffectiveAdapterConfig = normalizePaperclipRunnerAdapterConfig(requestedAdapterType, rawEffectiveAdapterConfig);
+      }
+      if (changingAdapterType || requestedAdapterConfig) {
+        assertNoAgentLocalAdapterHostCommandMutation(
+          req,
+          requestedAdapterType,
+          changingAdapterType ? rawEffectiveAdapterConfig : (requestedAdapterConfig ?? {}),
+        );
       }
       const existingRunnerProvider =
         existing.adapterType === "paperclip_runner"
@@ -6036,6 +6119,7 @@ export function agentRoutes(
 
     let wakePayload = req.body.payload ?? null;
     let retryConversationContext: Record<string, unknown> = {};
+    let retryNativeReviewContext: NativeReviewAssignmentContext | null = null;
     if (req.body.failedRunId) {
       assertBoard(req);
       if (
@@ -6089,7 +6173,22 @@ export function agentRoutes(
           },
         });
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
-        if (issue.assigneeAgentId !== agent.id) throw conflict("The task is no longer assigned to this agent.");
+        const savedReviewContext = readNativeReviewAssignmentContext(failedContext);
+        if (failedRun.runtimeMode === "native" && failedRun.status === "failed" &&
+            failedRun.errorCode === "native_provider_model_rejected" &&
+            failedRun.nativeIssueId === issue.id && savedReviewContext) {
+          const review = await getNativeReviewAssignment(db, {
+            companyId: agent.companyId, issueId: issue.id, agentId: agent.id,
+            contextSnapshot: savedReviewContext,
+          });
+          if (review?.interaction.status !== "pending") {
+            throw conflict("The failed run's review is no longer current.");
+          }
+          retryNativeReviewContext = savedReviewContext;
+        }
+        if (issue.assigneeAgentId !== agent.id && !retryNativeReviewContext) {
+          throw conflict("The task is no longer assigned to this agent.");
+        }
         if (issue.conversationAgentId) {
           // Agent Chat has no task description to replay. Recover the exact
           // request from the selected server-owned run, never caller markers.
@@ -6196,6 +6295,9 @@ export function agentRoutes(
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot: {
         ...retryConversationContext,
+        // Only the selected server-owned run can carry review authority into
+        // an exact retry. Dispatch revalidates the current review assignment.
+        ...retryNativeReviewContext,
         triggeredBy: req.actor.type,
         originIdentityContextId: req.actor.identityContextId ?? null,
         responsibleUserId: req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : req.actor.userId ?? null,

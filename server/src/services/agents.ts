@@ -17,6 +17,7 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -38,8 +39,8 @@ import {
   syncAgentAdapterEnvBindings,
 } from "./agent-secret-bindings.js";
 import { logActivity } from "./activity-log.js";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope, normalizeAgentPermissions, permissionsImplyLowTrust } from "./agent-permissions.js";
 import { recordAgentStatusEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
-import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
   assertClaudeOAuthBindingInvariant,
@@ -944,6 +945,20 @@ export function agentService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0]);
+        // New standard agents receive the standard direct grants at activation.
+        // Low-trust and bundled agents keep their explicit, narrower grants.
+        if (created.status !== "pending_approval" && !permissionsImplyLowTrust(normalizedPermissions) &&
+            !readBuiltInAgentMarker(created.metadata)) {
+          await tx.insert(principalPermissionGrants).values(
+            NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+              companyId,
+              principalType: "agent" as const,
+              principalId: created.id,
+              permissionKey,
+              scope: newStandardAgentGrantScope(permissionKey, created.id),
+            })),
+          ).onConflictDoNothing();
+        }
         if (options?.aiConnectionInstall) {
           const install = options.aiConnectionInstall;
           const connectionIds = [...new Set([install.connectionId, ...(install.memberConnectionIds ?? [])])];
@@ -1084,6 +1099,11 @@ export function agentService(db: Db) {
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+        await tx.delete(principalPermissionGrants).where(and(
+          eq(principalPermissionGrants.companyId, existing.companyId),
+          eq(principalPermissionGrants.principalType, "agent"),
+          eq(principalPermissionGrants.principalId, id),
+        ));
         const deleted = await tx
           .delete(agents)
           .where(eq(agents.id, id))
@@ -1151,6 +1171,17 @@ export function agentService(db: Db) {
           });
         }
         await syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
+        if (!permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
+          await tx.insert(principalPermissionGrants).values(
+            NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+              companyId: updated.companyId,
+              principalType: "agent" as const,
+              principalId: updated.id,
+              permissionKey,
+              scope: newStandardAgentGrantScope(permissionKey, updated.id),
+            })),
+          ).onConflictDoNothing();
+        }
         await recordResourceCreationEvent(txDb, existing.companyId, "agent", updated.id);
         const agent = await agentService(txDb).getById(updated.id);
         if (!agent) {

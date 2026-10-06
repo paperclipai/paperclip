@@ -500,7 +500,7 @@ export function activityService(db: Db) {
       const [exhaustionRows, leaseRows, executionByRunId, [savedPlan]] = await Promise.all([
         exhaustionRowsQuery,
         leaseRowsQuery,
-        executionProjectionsForRuns(db, companyId, runIds),
+        executionProjectionsForRuns(db, companyId, runIds, new Date(), { retryDatabaseReads: true }),
         savedPlanQuery,
       ]);
       const retryExhaustedReasonByRunId = new Map<string, string>();

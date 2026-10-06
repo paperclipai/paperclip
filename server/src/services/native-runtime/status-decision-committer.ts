@@ -24,6 +24,7 @@ import {
   type NativeStatusEffect,
 } from "./status-arbiter.js";
 import { nativeSha256 } from "./canonical.js";
+import { getNativeReviewAssignment, type NativeReviewAssignmentContext } from "./native-review-participant.js";
 import {
   readNativeBoardResponseWaitSource,
   readNativeBoardResponseWaitOrigin,
@@ -1535,6 +1536,7 @@ export async function commitNativeStatusDecision(input: {
   preMaterializedEffects?: NativeMaterializedStatusEffect[];
   supersedesCommittedDecisionId?: string;
   requireExternalChatResponseWaitAuthorization?: { agentId: string };
+  requireModelRejectionOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
   requireBoardResponseWaitSource?: NativeBoardResponseWaitSource;
   requireBoardResponseWaitOrigin?: NativeBoardResponseWaitOrigin;
   reviewResponsePresentation?: {
@@ -1547,6 +1549,9 @@ export async function commitNativeStatusDecision(input: {
     throw new Error("native_status_reason_code_required");
   }
   const reasonCode = input.decision.reasonCode;
+  if (reasonCode === "native_provider_model_rejected" && !input.requireModelRejectionOwner) {
+    throw new Error("native_model_rejection_owner_required");
+  }
   const publications: ActivityPublication[] = [];
   const terminalRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
   const committed = await input.db.transaction(async (tx) => {
@@ -1615,6 +1620,20 @@ export async function commitNativeStatusDecision(input: {
       issue.lastStatusDecisionId !== input.priorDecisionId
     ) {
       throw new NativeStatusRaceError();
+    }
+    if (input.requireModelRejectionOwner) {
+      const owner = input.requireModelRejectionOwner;
+      // A successor can claim execution without changing statusVersion. Keep
+      // this new blocking authority behind the same locked issue snapshot.
+      if (issue.executionRunId && issue.executionRunId !== input.runId) throw new NativeStatusRaceError();
+      if (owner.reviewContext) {
+        const review = await getNativeReviewAssignment(tx as unknown as Db, {
+          companyId: input.companyId, issueId: input.issueId, agentId: owner.agentId, contextSnapshot: owner.reviewContext,
+        });
+        if (review?.interaction.status !== "pending") throw new NativeStatusRaceError();
+      } else if (issue.assigneeAgentId !== owner.agentId || issue.assigneeUserId) {
+        throw new NativeStatusRaceError();
+      }
     }
     if (input.requireExternalChatResponseWaitAuthorization) {
       let authorization;
