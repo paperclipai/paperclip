@@ -55,9 +55,6 @@ function registerModuleMocks() {
   vi.doMock("node:child_process", async () => vi.importActual("node:child_process"));
   vi.doMock("../adapters/plugin-loader.js", () => mockPluginLoader);
   vi.doMock("../services/adapter-plugin-store.js", () => mockAdapterPluginStore);
-  vi.doMock("../routes/adapters.js", async () => vi.importActual("../routes/adapters.js"));
-  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
-  vi.doMock("../middleware/index.js", async () => vi.importActual("../middleware/index.js"));
 }
 
 function createApp(
@@ -105,11 +102,12 @@ describe("adapter routes", () => {
     mockPluginLoader.getUiParserSource.mockResolvedValue(null);
     mockPluginLoader.getOrExtractUiParserSource.mockResolvedValue(null);
     mockPluginLoader.reloadExternalAdapter.mockResolvedValue(null);
-    const [registry, routes, middleware] = await Promise.all([
-      vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
-      import("../routes/adapters.js"),
-      import("../middleware/index.js"),
-    ]);
+    // Load the route and error handler through one module cache after reset.
+    // Concurrent importActual mock factories can split HttpError identity,
+    // turning an expected authorization denial into an unhandled 500.
+    const registry = await import("../adapters/registry.js");
+    const routes = await import("../routes/adapters.js");
+    const middleware = await import("../middleware/index.js");
     registerServerAdapter = registry.registerServerAdapter;
     unregisterServerAdapter = registry.unregisterServerAdapter;
     findServerAdapter = registry.findServerAdapter;
