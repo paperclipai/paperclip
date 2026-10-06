@@ -1,4 +1,5 @@
 import { registerEmailCommands } from "./commands/client/email.js";
+import { registerMcpCommands } from "./commands/mcp.js";
 import { Command } from "commander";
 import { warnIfUnsupportedNodeVersion } from "@paperclipai/shared/node-version";
 import { onboard } from "./commands/onboard.js";
@@ -276,6 +277,7 @@ auth
   .action(bootstrapCeoInvite);
 
 registerClientAuthCommands(auth);
+registerMcpCommands(program);
 
 async function main(): Promise<void> {
   warnIfUnsupportedNodeVersion(process.versions.node, (message) => console.warn(message));

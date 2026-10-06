@@ -696,7 +696,7 @@ describe("pi remote execution", () => {
     expect(userPrompt).toBe("CUSTOM POLICY run-custom-policy");
   });
 
-  it("keeps the resumed default execution contract in the system carrier only", async () => {
+  it("keeps resumed default identity and connection guidance in the system carrier", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-resumed-policy-"));
     cleanupDirs.push(rootDir);
     const sessionPath = path.join(rootDir, "session.jsonl");
@@ -726,11 +726,13 @@ describe("pi remote execution", () => {
     const args = call?.[2] ?? [];
     const systemPrompt = args[args.indexOf("--append-system-prompt") + 1] ?? "";
     const userPrompt = args.at(-1) ?? "";
-    expect(systemPrompt).toContain("Execution contract:");
+    expect(systemPrompt).toContain("You are agent agent-1 (Pi Builder).");
+    expect(systemPrompt).toContain("Connection tools:");
+    expect(systemPrompt).not.toContain("Execution contract:");
     expect(userPrompt).not.toContain("Execution contract:");
   });
 
-  it("keeps the default contract in system input when custom prompt uses loaded instructions", async () => {
+  it("keeps default identity in system input when custom prompt uses loaded instructions", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-instructions-policy-"));
     cleanupDirs.push(rootDir);
     const sessionPath = path.join(rootDir, "session.jsonl");
@@ -769,7 +771,9 @@ describe("pi remote execution", () => {
     const systemPrompt = args[args.indexOf("--append-system-prompt") + 1] ?? "";
     const userPrompt = args.at(-1) ?? "";
     expect(systemPrompt).toContain("Loaded instructions for this run.");
-    expect(systemPrompt).toContain("Execution contract:");
+    expect(systemPrompt).toContain("You are agent agent-1 (Pi Builder).");
+    expect(systemPrompt).toContain("Connection tools:");
+    expect(systemPrompt).not.toContain("Execution contract:");
     expect(userPrompt).not.toContain("CUSTOM POLICY run-instructions-policy");
     expect(userPrompt).not.toContain("Execution contract:");
   });

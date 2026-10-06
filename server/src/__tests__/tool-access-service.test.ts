@@ -2411,6 +2411,57 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
+  it("persists generic instructions through PATCH with configuration permissions and company isolation", async () => {
+    const company = await createCompany(db);
+    const other = await createCompany(db);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const settings = { enabled: true, text: "Use the release handbook and cite the checklist." };
+    const app = createRouteApp(db);
+    const endpoint = `/api/tool-connections/${connection.id}`;
+    await request(app).patch(endpoint).send({ agentInstructions: settings }).expect(200);
+    expect((await request(app).get(endpoint).expect(200)).body.agentInstructions).toEqual(settings);
+    await request(app).patch(endpoint).send({ agentInstructions: { ...settings, text: " " } }).expect(400);
+    await request(app).patch(endpoint).send({ agentInstructions: { ...settings, enabled: false } }).expect(200);
+    expect((await request(app).get(endpoint).expect(200)).body.agentInstructions).toEqual({ ...settings, enabled: false });
+    const viewer = `viewer-${randomUUID()}`;
+    await grantBoardUser(db, company.id, viewer, [], "viewer");
+    await request(createRouteApp(db, boardSessionActor(company.id, "viewer", viewer))).patch(endpoint).send({ agentInstructions: settings }).expect(403);
+    await request(createRouteApp(db, boardSessionActor(other.id, "owner"))).patch(endpoint).send({ agentInstructions: settings }).expect(404);
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, connection.id));
+    expect(events.some(event => event.details?.agentInstructionsChanged === true)).toBe(true);
+  });
+
+  it("persists supplied defaults, retains them on catalog refresh, and requires Honcho workspace at setup", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "search", annotations: { readOnlyHint: true }, inputSchema: { type: "object", properties: { workspace_id: { type: "string" } } } }]);
+    await expect(service.connectGalleryApp(company.id, { galleryKey: "honcho", credentialValues: { "credentials.authorization": "honcho-fixture-key" } })).rejects.toMatchObject({ status: 400 });
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "honcho", credentialValues: { "credentials.authorization": "honcho-fixture-key" }, configValues: { workspaceId: "fixture-workspace" } });
+    const template = getConnectableAppDefinition("honcho")!.agentInstructions!;
+    expect(connected.connection.agentInstructions).toEqual({ enabled: true, text: template.text, template: { id: template.id, version: template.version } });
+    await service.updateConnection(connected.connectionId, { agentInstructions: { enabled: false, text: "Keep this custom guidance." } });
+    await service.refreshCatalog(connected.connectionId);
+    expect((await service.getConnection(connected.connectionId)).agentInstructions).toEqual({ enabled: false, text: "Keep this custom guidance." });
+  });
+
+  it("preserves custom instructions and opt-outs through OAuth draft recovery and reconnect", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board" };
+    const settings = { enabled: false, text: "Look up the current decision before editing it." };
+    const input = { galleryKey: "google-chat", connectionMethodKey: "customer-read-oauth", grantKind: "user" as const, oauthClient: { clientId: "instructions-client", clientSecret: "instructions-secret" }, agentInstructions: settings };
+    const initial = await service.connectGalleryApp(company.id, input, actor);
+    const { agentInstructions: _settings, ...retained } = input;
+    const resumed = await service.connectGalleryApp(company.id, { ...retained, resumeConnectionId: initial.connectionId }, actor);
+    expect(resumed.connection.agentInstructions).toEqual(settings);
+    const started = await service.startOAuth(company.id, resumed.connectionId, { redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor });
+    expect(started.authorizationUrl).toBeTruthy();
+    expect((await service.getConnection(initial.connectionId)).agentInstructions).toEqual(settings);
+    await db.update(toolConnections).set({ status: "active", enabled: true }).where(eq(toolConnections.id, initial.connectionId));
+    const reconnected = await service.connectGalleryApp(company.id, { ...retained, reconnectConnectionId: initial.connectionId }, actor);
+    expect(reconnected.connection.agentInstructions).toEqual(settings);
+  });
+
   it.each(["read", "write"])("requests only reduced Chat scopes for customer-owned %s OAuth, including reconnect", async (capability) => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -2441,7 +2492,7 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
-  it.each(["airtable", "beehiiv", "miro", "netlify", "sentry", "supabase", "todoist", "ticktick", "hugging-face"])(
+  it.each(["airtable", "beehiiv", "miro", "neon", "netlify", "sentry", "supabase", "todoist", "ticktick", "hugging-face"])(
     "requests the reviewed read/write scopes for %s without adopting advertised admin scopes",
     async (slug) => {
       const company = await createCompany(db);
@@ -5122,9 +5173,18 @@ describeEmbeddedPostgres("tool access service", () => {
         "github-code-review-bot",
         "youcom",
         "enterpret",
+        "openrouter",
+        "bedrock",
+        "responses-api",
+        "messages-api",
+        "chat-completions-api",
+        "local",
       ]),
     );
-    expect(res.body.apps).toHaveLength(59);
+    expect(res.body.apps).toHaveLength(66);
+    for (const slug of ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
+      expect(res.body.apps.find((app: { slug: string }) => app.slug === slug).tags).toContain("model-provider");
+    }
     expect(
       res.body.apps.find((app: { slug: string }) => app.slug === "gmail")
         .ownershipAvailability,
@@ -6244,6 +6304,52 @@ describeEmbeddedPostgres("tool access service", () => {
         state: restartedStateRow!.state,
         actor,
       }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("projects Neon's optional project pin and read-only mode into the hosted server URL", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+
+    const pinned = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "neon",
+        connectionMethodKey: "mcp-oauth",
+        name: "Neon pinned",
+        configValues: { projectId: "shy-sun-12345678", readOnly: true },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(pinned.connection.config).toMatchObject({
+      url: "https://mcp.neon.tech/mcp?projectId=shy-sun-12345678&readonly=true",
+      sourceTemplateKey: "neon",
+      connectionMethodKey: "mcp-oauth",
+      methodConfig: { projectId: "shy-sun-12345678", readOnly: true },
+    });
+
+    // The default path sends Neon's own defaults: no pin, no readonly flag.
+    const unpinned = await service.connectGalleryApp(
+      company.id,
+      { galleryKey: "neon", connectionMethodKey: "mcp-oauth", name: "Neon unpinned" },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(unpinned.connection.config).toMatchObject({
+      url: "https://mcp.neon.tech/mcp",
+      methodConfig: { readOnly: false },
+    });
+
+    await expect(
+      service.connectGalleryApp(
+        company.id,
+        {
+          galleryKey: "neon",
+          connectionMethodKey: "mcp-oauth",
+          name: "Neon invalid",
+          configValues: { projectId: "Shy Sun!" },
+        },
+        { actorType: "user", actorId: "board" },
+      ),
     ).rejects.toMatchObject({ status: 400 });
   });
 

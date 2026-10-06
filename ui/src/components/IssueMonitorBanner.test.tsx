@@ -158,6 +158,21 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     flushSync(() => root.unmount());
   });
 
+  it("explains pool exhaustion and retained account affinity on both waiting surfaces", () => {
+    const issue = {
+      status: "in_progress", scheduledRetry: { status: "scheduled_retry", scheduledRetryReason: "ai_connection_pool_wait", scheduledRetryAt: new Date(NOW.getTime() + 60_000).toISOString(), scheduledRetryAttempt: 1 },
+    } as Issue;
+    const root = createRoot(container);
+    flushSync(() => root.render(<><IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} /><IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} /></>));
+    expect(container.textContent).toContain("Pool exhausted");
+    expect(container.textContent).toContain("Usage recheck in 1m");
+    expect(container.textContent).toContain("Tasks with a selected account keep it while waiting.");
+    expect(container.textContent).toContain("Work resumes when usage permits.");
+    expect(container.textContent).not.toContain("Attempt 1");
+    expect(container.querySelector("button")).not.toBeNull();
+    flushSync(() => root.unmount());
+  });
+
   it("renders the banner with a working Check now button while waiting", () => {
     const onCheckNow = vi.fn();
     expect(hasVisibleMonitorSurface(issueWithMonitor(new Date(NOW.getTime() + 2 * 60 * 60_000).toISOString()))).toBe(true);

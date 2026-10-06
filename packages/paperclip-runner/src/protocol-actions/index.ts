@@ -5,6 +5,7 @@ import { getAgentInstructionHistoryAction } from "./get-agent-instruction-histor
 import { restoreAgentInstructionsAction } from "./restore-agent-instructions.js";
 import { reassignTaskAction } from "./reassign-task.js";
 import { createSkillAction } from "./create-skill.js";
+import { updateSkillAction } from "./update-skill.js";
 import { createProjectAction } from "./create-project.js";
 import { listProjectRepositoriesAction } from "./list-project-repositories.js";
 import { searchApiAction } from "./search-api.js";
@@ -61,6 +62,7 @@ export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
   restoreAgentInstructionsAction,
 
   createSkillAction,
+  updateSkillAction,
   createProjectAction,
   listProjectRepositoriesAction,
   searchApiAction,

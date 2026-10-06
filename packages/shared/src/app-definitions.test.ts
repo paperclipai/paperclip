@@ -26,7 +26,8 @@ import {
   SELF_SERVE_MCP_CANDIDATES,
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
-import { appDefinitionsSchema } from "./validators/app-definition.js";
+import { aiConnectionRouterAppDefinition } from "./ai-connection-router.js";
+import { appDefinitionSchema, appDefinitionsSchema } from "./validators/app-definition.js";
 
 const googleScope = (scope: string) =>
   `https://www.googleapis.com/auth/${scope}`;
@@ -233,6 +234,15 @@ describe("AppDefinition catalog", () => {
 
   it("validates all Wave 1 definitions", () =>
     expect(() => appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
+  it("lists model providers as regular tagged catalog entries", () => {
+    const slugs = ["openai", "anthropic", "openrouter", "xai", "google", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
+    expect(APP_STORE_DEFINITIONS.filter(app => app.tags?.includes("model-provider")).map(app => app.slug).sort()).toEqual(slugs.sort());
+    for (const slug of slugs) {
+      const app = APP_STORE_DEFINITIONS.find(app => app.slug === slug)!;
+      expect(app.methods.some(method => method.purpose === "ai" && method.transport === "runtime_auth")).toBe(true);
+    }
+  });
+
   it("contains every established provider plus the reviewed self-serve catalog", () => {
     expect(APP_DEFINITIONS.map((app) => app.slug)).toEqual(
       expect.arrayContaining([
@@ -263,7 +273,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(49);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(50);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -427,15 +437,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 52 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 53 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(52);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(53);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 52);
+    ).toHaveProperty("size", 53);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -807,7 +817,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(59);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(66);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1017,6 +1027,81 @@ describe("AppDefinition catalog", () => {
       expect(method.guidanceMd).toContain("optional advanced controls");
     }
   });
+  it("connects Neon's hosted server with optional project pinning and read-only mode", () => {
+    const neon = APP_DEFINITIONS.find((app) => app.slug === "neon")!;
+    expect(neon).toMatchObject({
+      name: "Neon",
+      categories: ["data"],
+      urlPatterns: ["https://mcp.neon.tech/*"],
+      docsUrl: "https://neon.com/docs/ai/neon-mcp-server",
+      redirectConstraints: "https-or-loopback-http",
+      branding: { logoUrl: "/brands/apps/neon.png" },
+    });
+    expect(neon.branding.darkLogoUrl).toBeUndefined();
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "neon")).toBe(true);
+    expect(neon.methods.map((candidate) => candidate.key)).toEqual([
+      "mcp-oauth",
+      "mcp-api-key",
+    ]);
+    const [oauth, apiKey] = neon.methods;
+    expect(oauth).toMatchObject({
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S4",
+      requiredResourceFilters: ["project"],
+      defaults: {
+        serverUrl: "https://mcp.neon.tech/mcp",
+        scopesHint: ["read", "write"],
+      },
+    });
+    expect(apiKey).toMatchObject({
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      defaults: { serverUrl: "https://mcp.neon.tech/mcp" },
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+      consoleLinks: {
+        keys: "https://console.neon.tech/app/settings/api-keys",
+      },
+    });
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({
+        key: "authorization",
+        type: "password",
+        secret: true,
+        required: true,
+      }),
+    ]);
+    for (const method of neon.methods) {
+      // Nothing is required on the default path: both narrowing controls are
+      // optional and folded under Advanced, and the provider enforces them.
+      expect(method.tenantFields?.map((field) => field.key)).toEqual([
+        "projectId",
+        "readOnly",
+      ]);
+      expect(method.tenantFields?.every((field) => field.advanced && !field.required)).toBe(true);
+      expect(method.tenantFields?.[0]).toMatchObject({
+        type: "text",
+        validation: { pattern: "^[a-z0-9-]+$", maxLength: 64 },
+        transport: { location: "query", name: "projectId" },
+      });
+      expect(method.tenantFields?.[1]).toMatchObject({
+        type: "checkbox",
+        defaultValue: false,
+        transport: {
+          location: "query",
+          name: "readonly",
+          format: "boolean",
+          omitFalse: true,
+        },
+      });
+      expect(method.warnings?.length).toBe(2);
+    }
+  });
   it("requires only reviewed provider or safety-boundary configuration on the default path", () => {
     const required = APP_DEFINITIONS.flatMap((app) =>
       app.methods.flatMap((method) =>
@@ -1030,6 +1115,7 @@ describe("AppDefinition catalog", () => {
     ).sort();
     expect(required).toEqual([
       "clickhouse:mcp-oauth:serviceId",
+      "honcho:mcp-api-key:workspaceId",
       "shopify:storefront-mcp:storeDomain",
       "shopify:ucp-commerce:storeDomain",
       "supabase:mcp-api-key:projectRef",
@@ -1142,4 +1228,13 @@ describe("tool method permission review", () => {
     expect(APP_DEFINITIONS.find((app) => app.slug === "hugging-face")!.methods[0]!.defaults!.scopesHint)
       .toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]);
   });
+});
+
+it("validates native pool catalog entries without inventing an authentication method", () => {
+  const entry = aiConnectionRouterAppDefinition("example.pool", { name: "AI connection pool", description: "Use saved connections" });
+  expect(appDefinitionSchema.parse(entry)).toEqual(entry);
+  expect(entry.methods).toEqual([]);
+  expect(appDefinitionSchema.safeParse({ ...entry, aiConnectionRouter: undefined }).success).toBe(false);
+  expect(appDefinitionSchema.safeParse({ ...entry, methods: APP_STORE_DEFINITIONS[0]!.methods }).success).toBe(false);
+  expect(appDefinitionSchema.safeParse({ ...entry, categories: ["developer"] }).success).toBe(false);
 });

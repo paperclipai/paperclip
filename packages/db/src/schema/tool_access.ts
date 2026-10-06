@@ -16,6 +16,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type {
+  ConnectionAgentInstructions,
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
   McpConnectionCredentialRef,
@@ -129,6 +130,7 @@ export const toolConnections = pgTable(
     credentialPolicy: text("credential_policy").$type<ToolConnectionCredentialPolicy>().notNull().default("shared"),
     status: text("status").$type<ToolConnectionStatus>().notNull().default("draft"),
     enabled: boolean("enabled").notNull().default(false),
+    agentInstructions: jsonb("agent_instructions").$type<ConnectionAgentInstructions>(),
     config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
     transportConfig: jsonb("transport_config").$type<Record<string, unknown>>().notNull().default({}),
     credentialRefs: jsonb("credential_refs").$type<McpConnectionCredentialRef[]>().notNull().default([]),
@@ -563,6 +565,7 @@ export const toolMcpGatewayTokens = pgTable(
   },
   (table) => [
     uniqueIndex("tool_mcp_gateway_tokens_token_hash_uq").on(table.tokenHash),
+    index("tool_mcp_gateway_tokens_expiry_idx").on(table.expiresAt, table.id),
     index("tool_mcp_gateway_tokens_gateway_idx").on(table.companyId, table.gatewayId),
     index("tool_mcp_gateway_tokens_subject_idx").on(table.companyId, table.subjectType, table.subjectId),
     index("tool_mcp_gateway_tokens_company_expires_idx").on(table.companyId, table.expiresAt),

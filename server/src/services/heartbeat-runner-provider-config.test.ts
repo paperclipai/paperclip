@@ -84,6 +84,15 @@ describe("Paperclip Runner native provider configuration", () => {
       });
   });
 
+  it("keeps the connection's authoritative model namespace in durable input", () => {
+    const projected = projectPaperclipRunnerTaskConfig("opencode_server",
+      { provider: "opencode", model: "openai/gpt-5.4" },
+      { provider: "codex", model: "team-alias" },
+      "paperclip/team-alias");
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "opencode_server", adapterConfig: projected }))
+      .toMatchObject({ provider: "opencode", model: "paperclip/team-alias" });
+  });
+
   it("requires persisted Claude recovery to use the qualified identity and current profile secret", () => {
     const stored = {
       id: "00000000-0000-4000-8000-000000000001",

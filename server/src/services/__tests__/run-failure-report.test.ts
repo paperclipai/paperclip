@@ -261,6 +261,25 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     expect(mockCaptureRunFailure).not.toHaveBeenCalled();
   });
+  it.each(["provider", "unknown"])("reports an unexpected started cancellation from %s", async source => {
+    await seedCompanyAndAgent();
+    const run = buildRun({ status: "cancelled", startedAt: new Date(0), finishedAt: new Date(1000),
+      resultJson: { cancellation: { source, expected: false, initiator: { type: "provider", id: "private-actor" },
+        reason: "private-reason", recordedAt: new Date(1000).toISOString() } } });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    expect(mockCaptureRunFailure.mock.calls[0][0]).toMatchObject({ runStatus: "cancelled",
+      diagnostics: { execution: { cancellationSource: source, cancellationExpected: false } } });
+    expect(JSON.stringify(mockCaptureRunFailure.mock.calls)).not.toMatch(/private-actor|private-reason/);
+  });
+  it("does not report an operator's Stop as a failure", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ status: "cancelled", startedAt: new Date(0), resultJson: {
+      cancellation: { source: "operator", expected: true, initiator: { type: "user", id: "board" },
+        reason: "Stop", recordedAt: new Date().toISOString() },
+    } }));
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
 
   it("sends agents.adapterType from the loaded agent row", async () => {
     await seedCompanyAndAgent({ adapterType: "claude_managed" });

@@ -10,6 +10,7 @@ import {
   type RunFailureReportOptions,
 } from "./run-failure-diagnostics.js";
 import { logger } from "../middleware/logger.js";
+import { isUnexpectedRunCancellation } from "./run-cancellation.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -30,7 +31,7 @@ const pendingRunFailureReports = new Set<Promise<void>>();
 const PENDING_REPORT_DRAIN_TIMEOUT_MS = 5_000;
 
 function isRunFailureStatus(status: string): status is RunFailureStatus {
-  return status === "failed" || status === "timed_out";
+  return status === "failed" || status === "timed_out" || status === "cancelled";
 }
 
 function readTaskId(run: HeartbeatRun): string | null {
@@ -41,7 +42,7 @@ function readTaskId(run: HeartbeatRun): string | null {
 
 /**
  * Report a terminal run failure to Sentry. Returns at once for any status
- * other than `failed` and `timed_out`. Never throws — a Sentry failure or a
+ * other than failures and unexpected started cancellations. Never throws — a Sentry failure or a
  * database read failure must not change the caller's control flow.
  *
  * Call this beside the caller's own terminal-status write, with
@@ -52,6 +53,7 @@ function readTaskId(run: HeartbeatRun): string | null {
  */
 export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureReportOptions = {}): Promise<void> {
   if (!isRunFailureStatus(run.status)) return Promise.resolve();
+  if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
   const runStatus = run.status;
   const report = captureTerminalRunFailure(db, run, runStatus, options);
   pendingRunFailureReports.add(report);

@@ -812,6 +812,25 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 }),
             );
         }
+        "warning"
+            if params.get("classification").and_then(Value::as_str)
+                == Some("unrelated_information") =>
+        {
+            push(
+                &mut events,
+                "harness.diagnostic",
+                EventPriority::P1,
+                json!({
+                    "code": "codex_unrelated_information",
+                    "classification": "unrelated_information",
+                    "providerMethod": params.get("providerMethod").and_then(Value::as_str).map(|value| bounded_text(value, 160)),
+                    "expectedThreadId": params.get("expectedThreadId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                    "receivedThreadId": params.get("receivedThreadId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                    "expectedTurnId": params.get("expectedTurnId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                    "receivedTurnId": params.get("receivedTurnId").and_then(Value::as_str).map(|value| bounded_text(value, 256)),
+                }),
+            )
+        }
         "error" | "warning" | "deprecationNotice" | "configWarning" => push(
             &mut events,
             "provider.notice.recorded",
@@ -909,6 +928,18 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     },
                     "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS)),
                 });
+                // Preserve only actual terminal invocation identity in the compatibility
+                // projection. Arguments, arbitrary tool names and result bodies stay omitted.
+                if item_type == "tool_call" {
+                    if let Some(name @ ("paperclip_finish" | "paperclip_block")) =
+                        provider_item.get("name").and_then(Value::as_str)
+                    {
+                        payload
+                            .as_object_mut()
+                            .expect("item payload is an object")
+                            .insert("item".to_owned(), json!({ "name": name }));
+                    }
+                }
                 if !provider_phase.is_empty() {
                     payload
                         .as_object_mut()
@@ -1422,6 +1453,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unrelated_information_retains_only_bounded_run_log_diagnostics() {
+        let events = normalize_codex_notification(
+            "warning",
+            &json!({
+                "classification": "unrelated_information",
+                "message": "ignored unrelated provider information",
+                "providerMethod": "account/updated",
+                "expectedThreadId": "root",
+                "receivedThreadId": "x".repeat(300),
+                "expectedTurnId": "turn-1",
+                "receivedTurnId": null,
+                "accessToken": "not-for-the-log",
+                "planType": "private-account-data",
+            }),
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "harness.diagnostic");
+        assert_eq!(events[0].priority, EventPriority::P1);
+        assert_eq!(
+            events[0].payload,
+            json!({
+                "code": "codex_unrelated_information",
+                "classification": "unrelated_information",
+                "providerMethod": "account/updated",
+                "expectedThreadId": "root",
+                "receivedThreadId": format!("{}…[truncated]", "x".repeat(244)),
+                "expectedTurnId": "turn-1",
+                "receivedTurnId": null,
+            })
+        );
+        let unicode_events = normalize_codex_notification(
+            "warning",
+            &json!({
+                "classification": "unrelated_information",
+                "expectedThreadId": "token=not-for-the-log",
+                "receivedThreadId": "😀".repeat(300),
+            }),
+        );
+        assert_eq!(
+            unicode_events[0].payload["expectedThreadId"],
+            "token=[REDACTED]"
+        );
+        assert_eq!(
+            unicode_events[0].payload["receivedThreadId"],
+            format!("{}…[truncated]", "😀".repeat(244))
+        );
+        assert_eq!(unicode_events[0].payload["receivedTurnId"], Value::Null);
+        // Authoritative errors must retain their failure meaning.
+        assert_eq!(
+            normalize_codex_notification(
+                "error",
+                &json!({
+                    "classification": "unrelated_information",
+                    "message": "Provider connection failed",
+                })
+            )[0]
+            .event_type,
+            "provider.notice.recorded"
+        );
+    }
+
+    #[test]
     fn preserves_codex_notice_text_from_current_and_legacy_payloads() {
         for method in ["configWarning", "deprecationNotice", "warning"] {
             for (params, expected) in [
@@ -1477,6 +1570,40 @@ mod tests {
             assert_eq!(events[0].payload["transport"], "dynamic");
             assert_eq!(events[0].payload["executionId"], "finish-1");
             assert!(events[0].event_type.starts_with("tool.execution."));
+            assert!(!events[0].payload.to_string().contains("not-for-the-log"));
+        }
+    }
+
+    #[test]
+    fn preserves_closed_compatibility_terminal_tool_identity() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../../tests/runner-e2e/fixtures/native-completion/terminal-tool-carrier.json"
+        )))
+        .unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let events = normalize_codex_notification("item/started", &case["providerInput"]);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event_type, "item.started");
+            assert_eq!(events[0].payload, case["normalizedPayload"]);
+            assert!(!events[0].payload.to_string().contains("not-for-the-log"));
+        }
+        for (item_type, name) in [
+            ("tool_call", Some("write_document")),
+            ("tool_call", Some("mcp.paperclip_finish")),
+            ("tool_call", None),
+            ("agentMessage", Some("paperclip_finish")),
+            ("tool_result", Some("paperclip_block")),
+        ] {
+            let events = normalize_codex_notification(
+                "item/completed",
+                &json!({ "item": {
+                    "id": "terminal-call", "type": item_type, "name": name,
+                    "status": "completed", "arguments": {"secret": "not-for-the-log"},
+                    "result": {"secret": "not-for-the-log"}
+                }}),
+            );
+            assert_eq!(events[0].payload.get("item"), None);
             assert!(!events[0].payload.to_string().contains("not-for-the-log"));
         }
     }

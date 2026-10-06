@@ -11,6 +11,7 @@ import {
   buildRoutineMentionHref,
   buildSkillMentionHref,
   buildUserMentionHref,
+  appearanceForPalette,
 } from "@paperclipai/shared";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
@@ -51,7 +52,7 @@ vi.mock("../api/issues", () => ({
 
 // Defaults to null (no provider) so the existing suite exercises the permissive
 // path unchanged. Gating tests override the return value per-case.
-const mockUseOptionalCompany = vi.hoisted(() => vi.fn<() => { companies: Array<{ issuePrefix: string }> } | null>(() => null));
+const mockUseOptionalCompany = vi.hoisted(() => vi.fn<() => { companies: Array<{ issuePrefix: string }>; selectedCompanyId?: string } | null>(() => null));
 
 vi.mock("../context/CompanyContext", () => ({
   useOptionalCompany: mockUseOptionalCompany,
@@ -63,7 +64,7 @@ afterEach(() => {
 
 function renderMarkdown(
   children: string,
-  seededIssues: Array<{ identifier: string; status: string; title?: string }> = [],
+  seededIssues: Array<{ identifier: string; status: string; title?: string; cacheKey?: string }> = [],
   props: Partial<ComponentProps<typeof MarkdownBody>> = {},
 ) {
   const queryClient = new QueryClient({
@@ -75,7 +76,7 @@ function renderMarkdown(
   });
 
   for (const issue of seededIssues) {
-    queryClient.setQueryData(queryKeys.issues.detail(issue.identifier), {
+    queryClient.setQueryData(queryKeys.issues.detail(issue.cacheKey ?? issue.identifier), {
       id: issue.identifier,
       identifier: issue.identifier,
       status: issue.status,
@@ -93,6 +94,17 @@ function renderMarkdown(
 }
 
 describe("MarkdownBody", () => {
+  it("preserves a saved document anchor in an explicit task link", () => {
+    // Hover/focus can resolve the issue to its plain identifier. Both the old
+    // fragment-bearing cache key and the corrected plain key model that load.
+    const html = renderMarkdown("[Saved document](/PAP/issues/PAP-1271#document-output)", [
+      { identifier: "PAP-1271", status: "done" },
+      { identifier: "PAP-1271", status: "done", cacheKey: "PAP-1271#document-output" },
+    ], { linkIssueReferences: true });
+    expect(html).toContain('href="/issues/PAP-1271#document-output"');
+    expect(html).not.toContain("PAP-1271%23document-output");
+  });
+
   it("renders markdown images without a resolver", () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
@@ -162,7 +174,8 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-mention-kind="user"');
     expect(html).toContain('href="/agents/agent-123"');
     expect(html).toContain('data-mention-kind="agent"');
-    expect(html).toContain("--paperclip-mention-icon-mask");
+    expect(html).toContain("--paperclip-mention-avatar-image");
+    expect(html).not.toContain("--paperclip-mention-icon-mask");
     expect(html).toContain('href="/projects/project-456"');
     expect(html).toContain('data-mention-kind="project"');
     expect(html).toContain("--paperclip-mention-project-color:#336699");
@@ -178,6 +191,23 @@ describe("MarkdownBody", () => {
     expect(html).toContain('<a href="" rel="noreferrer"');
     expect(html).toContain(">click me</a>");
     expect(html).not.toContain("javascript:");
+  });
+
+  it("uses the current company agent appearance for an old saved mention", () => {
+    mockUseOptionalCompany.mockReturnValue({ companies: [{ issuePrefix: "PAP" }], selectedCompanyId: "company-1" });
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.agents.list("company-1"), [
+      { id: "agent-123", appearance: appearanceForPalette("electric-grove") },
+    ]);
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={client}>
+        <ThemeProvider>
+          <MarkdownBody>{`[@CodexCoder](${buildAgentMentionHref("agent-123", "code")})`}</MarkdownBody>
+        </ThemeProvider>
+      </QueryClientProvider>,
+    );
+    expect(html).toContain("/cap-v1/electric-grove/rest.png");
+    expect(html).not.toContain("mention-icon-mask");
   });
 
   it("renders raw HTML tags as escaped text", () => {

@@ -2,6 +2,33 @@ import { describe, expect, it } from "vitest";
 import { paperclipRunnerUIAdapter } from "./index";
 
 describe("paperclip runner transcript projection", () => {
+  it("omits unrelated provider diagnostics and legacy notices from streaming chat", () => {
+    const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
+    const event = (eventType: string, payload: Record<string, unknown>) => parse(JSON.stringify({
+      type: "paperclip.prp.event",
+      event: { eventType, payload },
+    }), "2026-10-02T12:00:00.000Z");
+    const legacyNotice = {
+      schema: "paperclip.provider.notice.v1",
+      severity: "warning",
+      category: "warning",
+      summary: "ignored unrelated provider information",
+      userActionable: true,
+    };
+    expect(event("harness.diagnostic", { code: "codex_unrelated_information" })).toEqual([]);
+    expect(event("provider.notice.recorded", legacyNotice)).toEqual([]);
+    expect(event("provider.notice.recorded", { ...legacyNotice, summary: "Repository is not trusted" }))
+      .toEqual([expect.objectContaining({ family: "provider_notice" })]);
+    expect(event("provider.notice.recorded", { ...legacyNotice, severity: "error" }))
+      .toEqual([expect.objectContaining({ family: "provider_notice" })]);
+    expect(event("provider.notice.recorded", { ...legacyNotice, category: "configWarning" }))
+      .toEqual([expect.objectContaining({ family: "provider_notice" })]);
+    expect(event("harness.diagnostic", { code: "provider_identity_failure", message: "Thread mismatch" }))
+      .toEqual([expect.objectContaining({ kind: "system", text: "Runner: Thread mismatch" })]);
+    expect(event("item.completed", { kind: "agentMessage", channel: "final", text: "Here is the answer." }))
+      .toEqual([expect.objectContaining({ kind: "assistant", text: "Here is the answer." })]);
+  });
+
   it("renders committed PRP semantic tool items with the existing chat parts", () => {
     const started = paperclipRunnerUIAdapter.parseStdoutLine(JSON.stringify({
       type: "paperclip.prp.event",

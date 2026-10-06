@@ -13,7 +13,7 @@ import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 import { normalizeIssueExecutionPolicy } from "../issue-execution-policy.js";
 import { buildLowTrustSourceTrust } from "../source-trust.js";
 import { handoffPlanContext } from "./handoff-plan-context.js";
-import { callCreateSkillTool } from "../skill-tools.js";
+import { callCreateSkillTool, callUpdateSkillTool } from "../skill-tools.js";
 import { callProjectTool } from "../project-tools.js";
 import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from "../connector-runtime.js";
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
@@ -48,6 +48,7 @@ import {
   agentWakeupRequests,
   chatEndpoints,
   chatConversations,
+  companies,
   documentRevisions,
   heartbeatRuns,
   issueApprovals,
@@ -97,7 +98,7 @@ const IMPLEMENTED_OPERATIONS = new Set([
   "search_api", "call_api", "hire_agent",
   "get_task_context", "get_task_history", "search_tasks", "report_progress", "set_task_title",
   "request_human_input",
-  "create_skill", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
+  "create_skill", "update_skill", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
   "list_documents", "read_document", "list_document_revisions", "write_document",
   "list_agents", "get_agent", "list_approvals", "get_approval", "get_approval_context",
 ]);
@@ -131,9 +132,9 @@ type Binding = {
   syncIssueExternalObjects?: (issueId: string) => Promise<void>;
   stopTaskForReassignment?: (target: { companyId: string; issueId: string; agentId: string; runId: string | null }) => Promise<void>;
   enqueueWakeup?: (agentId: string, options: {
-    source: "assignment";
+    source: "assignment" | "automation";
     triggerDetail: "system";
-    reason: "issue_assigned";
+    reason: "issue_assigned" | "issue_commented";
     payload: Record<string, unknown>;
     idempotencyKey: string;
     requestedByActorType: "agent";
@@ -303,7 +304,7 @@ export class PaperclipRunnerToolAuthority {
         return connections.search(claims, input.query, { retryProviderChoice: input.retryProviderChoice });
       }
       const input = connectionRequestInputSchema.parse(call.arguments);
-      const result = await connections.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService });
+      const result = await connections.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService, connectionId: input.connectionId, toolNames: input.toolNames });
       if (result.state === "ready" && this.binding.pinnedMcpDigest && this.binding.enqueueWakeup) {
         const current = await resolveNativeRuntimeMcpSnapshot({ db: this.db, agent: { id: this.binding.agentId, companyId: this.binding.companyId }, runId: this.binding.runId });
         if (current.digest !== this.binding.pinnedMcpDigest) {
@@ -313,14 +314,14 @@ export class PaperclipRunnerToolAuthority {
             notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
           )).limit(1);
           if (!(await delivered()).length) try { await this.binding.enqueueWakeup(this.binding.agentId, {
-            source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+            source: "automation", triggerDetail: "system", reason: "issue_commented",
             payload: { issueId: this.binding.issueId, mutation: "connection_tools_refreshed" },
             idempotencyKey,
             issueStateGuard: { statuses: ["in_progress", "in_review"], assigneeAgentId: this.binding.agentId },
             requestedByActorType: "agent", requestedByActorId: this.binding.agentId,
-            contextSnapshot: { issueId: this.binding.issueId, taskId: this.binding.issueId, forceFreshSession: true, wakeReason: "issue_assigned", source: "connection_tools.refreshed" },
+            contextSnapshot: { issueId: this.binding.issueId, taskId: this.binding.issueId, refreshTools: true, wakeReason: "issue_commented", source: "connection_tools.refreshed" },
           }); } catch (error) { if (!(await delivered()).length) throw error; }
-          return { ...result, instruction: "Access is already authorized. A fresh continuation with updated tools is queued. Finish independent work, then yield. Do not request authorization again." };
+          return { ...result, instruction: "Access is already authorized. A continuation with updated tools is queued. Finish independent work, then yield. Do not request authorization again." };
         }
       }
       return result;
@@ -413,6 +414,12 @@ export class PaperclipRunnerToolAuthority {
         const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, context.actor.adapterType, this.binding.runId, context.run.responsibleUserId);
         if (!apiUrl || !token) throw new Error("Skill tool authentication is unavailable");
         return callCreateSkillTool({ arguments: input, apiUrl, token, companyId: this.binding.companyId });
+      }
+      case "update_skill": {
+        const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
+        const token = createLocalAgentJwt(this.binding.agentId, this.binding.companyId, context.actor.adapterType, this.binding.runId, context.run.responsibleUserId);
+        if (!apiUrl || !token) throw new Error("Skill tool authentication is unavailable");
+        return callUpdateSkillTool({ arguments: input, apiUrl, token, companyId: this.binding.companyId });
       }
       case "create_project":
       case "list_project_repositories":
@@ -922,10 +929,15 @@ export class PaperclipRunnerToolAuthority {
         },
       });
       publication = activity.publication;
+      const [target] = await tx.select({ identifier: issues.identifier, issuePrefix: companies.issuePrefix })
+        .from(issues).innerJoin(companies, eq(companies.id, issues.companyId))
+        .where(and(eq(issues.id, this.binding.issueId), eq(issues.companyId, this.binding.companyId)));
+      if (!target) throw new Error("paperclip_runner_document_task_not_found");
       return {
         disposition: "applied",
         created: write.created,
         document: write.document,
+        documentHref: `/${encodeURIComponent(target.issuePrefix)}/issues/${encodeURIComponent(target.identifier ?? this.binding.issueId)}#document-${encodeURIComponent(write.document.key)}`,
       };
     });
     if (publication) publishActivity(publication);

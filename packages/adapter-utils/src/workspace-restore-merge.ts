@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createWorkspaceManifest, WorkspaceManifestMap, workspacePathMatcher, type PathManifest, type WorkspacePaths, type WorkspaceManifestWriter } from "./workspace-manifest.js";
 import { shouldExcludePath } from "./exclude-patterns.js";
 import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
+import type { WorkspaceRestoreDiagnostic } from "./workspace-restore-diagnostics.js";
 
 export type SnapshotEntry =
   | { kind: "dir" }
@@ -206,6 +207,7 @@ const LOCK_DIAGNOSTIC_READ_TIMEOUT_MS = 100;
 const activeDirectoryMergeLocks = new Set<string>();
 const MAX_LOCK_DIAGNOSTIC_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export type DirectoryMergeLockOperation =
+  | "agent_directory_prepare"
   | "agent_directory_release"
   | "agent_directory_collect"
   | "agent_directory_checkpoint"
@@ -291,7 +293,7 @@ export type WorkspaceRestoreFailureCode =
  */
 export type WorkspaceRestoreOutcome =
   | { readonly ok: true }
-  | { readonly ok: false; readonly code: WorkspaceRestoreFailureCode };
+  | { readonly ok: false; readonly code: WorkspaceRestoreFailureCode; readonly diagnostic?: WorkspaceRestoreDiagnostic };
 
 /**
  * Classifies a caught workspace-restore error into one allowlisted code. Maps
@@ -340,9 +342,9 @@ export function describeWorkspaceRestoreFailure(code: WorkspaceRestoreFailureCod
   }
 }
 
-async function acquireDirectoryMergeLock(lockDir: string, operation?: DirectoryMergeLockOperation): Promise<() => Promise<void>> {
+async function acquireDirectoryMergeLock(lockDir: string, operation?: DirectoryMergeLockOperation, waitMs: number = LOCK_WAIT_MS): Promise<() => Promise<void>> {
   const startedAt = performance.now();
-  const deadline = Date.now() + LOCK_WAIT_MS;
+  const deadline = Date.now() + waitMs;
   const databasePath = `${lockDir}.sqlite`;
   const ownerPath = `${lockDir}.owner.json`;
   async function waitForLock(diagnosticOwnerPath: string) {
@@ -495,13 +497,16 @@ export async function withDirectoryMergeLock<T>(
   fn: (canonicalTargetDir: string) => Promise<T>,
   env: NodeJS.ProcessEnv = process.env,
   diagnosticOperation?: DirectoryMergeLockOperation,
+  // Test seam only: overrides how long acquisition waits before it reports a
+  // timeout. Production callers must omit this and keep the real budget.
+  waitMs: number = LOCK_WAIT_MS,
 ): Promise<T> {
   // Canonicalize before we hash or lock: a retargeted symlink must not let the
   // lock protect one directory while the caller mutates another.
   const canonicalTargetDir = await fs.realpath(targetDir);
   const lockRoot = await resolveDirectoryMergeLockRoot(env);
   const lockKey = createHash("sha256").update(canonicalTargetDir).digest("hex");
-  const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation);
+  const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation, waitMs);
   try {
     return await fn(canonicalTargetDir);
   } finally {

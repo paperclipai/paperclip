@@ -20,6 +20,7 @@ import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
 import type { AuthorizationActor } from "./authorization.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
+import { logger } from "../middleware/logger.js";
 
 const execFile = promisify(execFileCallback);
 type Copy = typeof copies.$inferSelect;
@@ -71,6 +72,21 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     return { type: "agent", companyId: row.companyId, agentId: row.agentId, runId: row.runId, onBehalfOfUserId: row.responsibleUserId };
   }
   const directories = agentDirectoryWorkingCopyService(db, get, patch, options.environmentRuntime);
+  async function recoverDirectoryCleanup(row: Copy, cleanup: () => Promise<unknown>) {
+    // Reserve a later retry before I/O, including lock waits. A blocked owner
+    // must not occupy every sweep or prevent other copies from being reclaimed.
+    try {
+      await patch(row, { nextAttemptAt: new Date(Date.now() + 30_000) });
+      await cleanup();
+    }
+    catch (error) {
+      try { await patch(row, { nextAttemptAt: new Date(Date.now() + 30_000) }); }
+      catch (retryError) {
+        logger.warn({ err: retryError, runId: row.runId }, "Agent file cleanup retry could not be scheduled");
+      }
+      logger.warn({ err: error, runId: row.runId }, "Agent file cleanup deferred; save receipt unchanged");
+    }
+  }
   async function prepare(input: { companyId: string; agentId: string; runId: string; target?: AdapterExecutionTarget | null; cwd: string; legacy?: boolean; warm?: boolean; reuseRunId?: string; onWarmHandoff?: (copy: Copy) => void }) {
     const existing = await get(input.companyId, input.runId);
     if (isAgentDirectoryCopy(existing) || (!existing && !input.legacy)) return directories.prepare(input);
@@ -288,7 +304,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
       or(sql`${copies.receipt} ? 'baseline'`, sql`${copies.receipt}->>'cleanupPending' = 'true'`),
       or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())),
     )).orderBy(asc(copies.updatedAt)).limit(20);
-    for (const row of cleanup) await directories.release(row);
+    for (const row of cleanup) await recoverDirectoryCleanup(row, () => directories.release(row));
     return pending.length;
   }
 
@@ -298,13 +314,18 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
   async function recoverStopped() {
     const pending = await db.select({ copy: copies, runtimeMode: heartbeatRuns.runtimeMode }).from(copies)
       .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, copies.companyId), eq(heartbeatRuns.id, copies.runId)))
-      .where(and(or(inArray(copies.state, ["prepared", "pending_collection", "warm_saved"]),
+      .where(and(or(and(or(inArray(copies.state, ["prepared", "pending_collection", "warm_saved"]),
           and(eq(copies.state, "preparing"), sql`${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'`)),
+          lte(copies.attempts, MAX_COLLECTION_ATTEMPTS - 1)),
+        and(eq(copies.state, "unavailable"), isNull(copies.processStoppedAt),
+          sql`${copies.location} like 'remote:%'`,
+          sql`${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'`)),
         inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]),
-        or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())),
-        lte(copies.attempts, MAX_COLLECTION_ATTEMPTS - 1))).orderBy(asc(copies.updatedAt)).limit(20);
+        or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())))).orderBy(asc(copies.updatedAt)).limit(20);
     for (const { copy: row, runtimeMode } of pending) {
-      if (row.state === "preparing" && isAgentDirectoryCopy(row)) {
+      if (row.state === "unavailable" && isAgentDirectoryCopy(row)) {
+        await recoverDirectoryCleanup(row, () => directories.recoverUnavailable(row));
+      } else if (row.state === "preparing" && isAgentDirectoryCopy(row)) {
         // A provider cannot launch until preparation records "prepared". With
         // the owning run terminal, this is an interrupted staging copy only.
         await directories.release(await patch(row, { state: "unavailable", processStoppedAt: new Date(),

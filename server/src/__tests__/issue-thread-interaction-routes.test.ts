@@ -308,7 +308,7 @@ async function resolveMockInteraction(
   return interaction;
 }
 
-describe.sequential("issue thread interaction routes", () => {
+describe("issue thread interaction routes", () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
@@ -611,6 +611,23 @@ describe.sequential("issue thread interaction routes", () => {
       }),
     );
   }, 10_000);
+
+  it("normalizes a canonical-only mixed question form at the HTTP boundary", async () => {
+    const questionSet = { schema: "paperclip.question_set.v1", questions: [
+      { id: "repo", prompt: "Repository URL?", required: true, answerMode: "text" },
+      { id: "scope", prompt: "Review scope?", required: true, answerMode: "single_select", options: [{ id: "all", label: "All changes" }, { id: "selected", label: "Selected changes" }] },
+    ] };
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({ kind: "ask_user_questions", payload: { version: 1, questionSet } });
+    expect(res.status).toBe(201);
+    expect(mockInteractionService.create).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      payload: expect.objectContaining({ questionSet, questions: [
+        expect.objectContaining({ id: "repo", options: [{ id: "paperclip_text_answer", label: "Type an answer", freeText: true }] }),
+        expect.objectContaining({ id: "scope", options: questionSet.questions[1].options }),
+      ] }),
+    }), expect.anything());
+  });
 
   it("does not run historical-comment catch-up or queue recovery from the interaction read path", async () => {
     mockIssueService.getById.mockResolvedValue(createIssue({

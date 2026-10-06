@@ -14,6 +14,33 @@ session and issue-thread surfaces, a public browser/React SDK, a standalone
 adapter demo, and a deterministic mock control plane. None of these surfaces
 imports or starts Paperclip's server, UI, CLI, or production database.
 
+Connection continuations inspect the harness descriptor's optional
+`toolRefreshOnResume` capability. Native Codex, Claude Managed Agents, AgentCore,
+OpenCode, and qualified Claude/Codex/Grok ACPX profiles expose it; unqualified
+harnesses leave it false or absent. Changing tools can replace a provider process while retaining
+the provider conversation. Company, agent, task, workspace, model, instruction,
+and skill compatibility still gate recovery. An MCP-only assignment change can
+resume only when the selected harness explicitly supports refreshing tools.
+
+When recovery needs a fresh conversation, the server supplies a deterministic
+handoff through a lazy history loader at the fresh attempt boundary.
+It includes the original request, recent messages, resolved interaction
+summaries, agent replies, and document excerpts, with source identities and
+retrieval instructions. Reads and excerpts are bounded; the handoff has a
+24,000-byte ceiling and explicit truncation/omission markers. Conversation
+reset boundaries, deleted messages, source quarantine, and secret redaction
+apply before model submission. Successful recovery does not fetch or replay the
+handoff.
+Legacy adapters advertise `supportsToolRefreshOnResume` for their selected
+harness: Claude and Codex CLI/ACP, Grok CLI, Gemini/Kimi CLI/ACP, and
+Cursor/OpenCode/Pi CLI. CLI adapters using environment tool delivery start each
+invocation with current endpoints and credentials, including resumed turns. ACP reloads
+current MCP bindings, including run-scoped credentials, while preserving the
+conversation; an unqualified/custom harness retains its restart fence.
+Legacy fresh attempts receive the same bounded handoff, including resume-failure
+fallbacks. Provider
+authentication repairs retain their existing fresh-session recovery behavior.
+
 ## Public package surfaces
 
 - `@paperclipai/paperclip-runner` — production contracts, clients/backends,
@@ -139,7 +166,25 @@ tool, input, permission, and terminal events require the exact active binding.
 A package-local payload boundary decodes events only after that scope check. It
 validates control identities, terminal status, question sets, and the admitted
 runtime event types and bounded fields. It redacts diagnostic and retained
-event values again before they can enter provider state.
+event values again before they can enter provider state. Authoritative semantic
+tool arguments are validated for transport bounds and forwarded unchanged,
+including credential-bearing document and instruction content. The provider
+harness owns credential policy; redaction of logs and audit previews must not
+reject or rewrite execution arguments. Diagnostic detection requires explicit
+credential fields/assignments or recognizable key, Bearer, JWT, or PEM formats,
+not ordinary prose such as "credential handling" or dotted filenames.
+
+Human question tools accept one complete `payload.questionSet` for text and
+choice questions. The control plane generates legacy `questions` entries with
+stable free-text option IDs. Legacy callers remain supported. Calls that supply
+both forms must describe the same complete form; partial forms remain invalid.
+The native recovery bridge uses the same projection for answer delivery.
+
+The server validates canonical answer constraints before persistence. Regex
+matching runs in isolated workers with a one-second deadline and at most four
+active workers. A timeout or capacity error leaves the question pending. The
+ordinary and native answer paths both await this validation before persistence.
+Saved native answer delivery does not repeat regex matching.
 
 Validated ACPX runtime events normalize into the same provider-neutral activity
 families as the direct Codex transport. Reasoning contents stay private. Tool

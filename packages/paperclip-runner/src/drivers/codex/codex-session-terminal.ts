@@ -1,4 +1,5 @@
 import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
+import { isNativeRestartInterruption } from "../../contracts/native-session-backend.js";
 import type { PrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import { boundedCodexPayload as boundedPayload, isRetainableCodexPayload } from "./codex-boundaries.js";
 import type { CodexSessionState } from "./codex-session-state.js";
@@ -168,6 +169,13 @@ export function mapTerminalTurn(
       { turnId },
     );
     finalize(state, status);
+    if (status === "failed" && isNativeRestartInterruption(turn.error) && state.result === null &&
+        !state.dispositionOnlyRecoveryConsumed) {
+      // Orchestration may use the paid restart attempt for one same-thread
+      // continuation. Its accepted turn id uses the existing durable marker.
+      state.terminal = false;
+      state.dispositionOnlyRecoveryAvailable = true;
+    }
   }
 
 function terminalFingerprint(

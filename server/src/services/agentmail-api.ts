@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { Webhook } from "svix";
-import type { EmailEnvelope } from "@paperclipai/shared";
+import type { EmailAddressCheckResult, EmailEnvelope } from "@paperclipai/shared";
 
 const strings = z.array(z.string());
 export const agentmailMessageSchema = z.object({
@@ -284,6 +284,18 @@ export function agentmailApi(apiKey: string, fetchImpl: typeof fetch = fetch) {
     request,
     whoami: () => request<AgentmailScope>("/auth/me"),
     getInbox: (id: string) => request<AgentmailInbox>(inboxPath(id)),
+    checkAddress: async (address: string): Promise<EmailAddressCheckResult> => {
+      // Do not GET a speculative inbox ID. Live AgentMail caches missing inbox
+      // lookups, so checking a free name can make key creation return 404 after
+      // the inbox is created. Listing avoids priming that negative lookup.
+      const { inboxes } = await request<{ inboxes: AgentmailInbox[] }>("/inboxes?limit=100");
+      // An absent entry can be outside this page or credential's scope. Only
+      // creation is authoritative; never claim an unlisted address is free.
+      return {
+        address,
+        status: inboxes.some(inbox => inbox.inbox_id.toLowerCase() === address.toLowerCase()) ? "taken" : "unknown",
+      };
+    },
     listInboxes: () =>
       request<{ inboxes: AgentmailInbox[] }>("/inboxes?limit=100"),
     listDomains: () =>

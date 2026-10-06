@@ -164,7 +164,7 @@ describe("cursor_cloud execute", () => {
     expect(result.exitCode).toBe(0);
     const prompt = String(sdkAgent.send.mock.calls[0]?.[0]);
     expect(prompt).toContain(directive);
-    expect(prompt).toContain(custom ? "Do the work for" : "Continue your Paperclip conversation");
+    expect(prompt).toContain(custom ? "Do the work for" : "You are agent agent-1");
     expect(prompt).not.toContain("Execution contract:");
     expect(prompt).not.toContain("Create child issues");
   });
@@ -178,6 +178,9 @@ describe("cursor_cloud execute", () => {
     expect(result.exitCode).toBe(0);
     const prompt = String(sdkAgent.send.mock.calls[0]?.[0]);
     expect(prompt).toContain("## Owned assignment");
+    expect(prompt).toContain("You are agent agent-1 (Cursor Cloud Agent).");
+    expect(prompt).toContain("Connection tools:");
+    expect(prompt).not.toContain("Execution contract:");
     expect(prompt.indexOf("Append the same ledger entry.")).toBeLessThan(prompt.indexOf("Change the final scope to the launch checklist."));
     expect(prompt.split("Append the same ledger entry.")).toHaveLength(3);
   });

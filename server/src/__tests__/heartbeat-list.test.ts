@@ -288,6 +288,12 @@ describeEmbeddedPostgres("heartbeat list", () => {
           privateSyncMetadata: oversizedNestedPayload,
         },
         workspaceRestoreFailure: "restore_unsafe_archive",
+        cancellation: { source: "provider", expected: false, initiator: { type: "provider" },
+          reason: "Provider cancelled execution ".repeat(50), recordedAt: "2026-10-02T15:00:00.000Z",
+          privateMetadata: oversizedNestedPayload },
+        acpToolInventoryComplete: true,
+        acpPendingToolCount: 0,
+        errorFamily: "configuration",
         finalResponseRecorded: true,
         executionBeforeRestore: { errorCode: "model_error", exitCode: 2, timedOut: false },
       },
@@ -312,6 +318,11 @@ describeEmbeddedPostgres("heartbeat list", () => {
         storageWarning: "Agent storage is full. Runs can continue.".repeat(50).slice(0, 1024),
       },
       workspaceRestoreFailure: "restore_unsafe_archive",
+      cancellation: { source: "provider", expected: false, initiator: { type: "provider" },
+        reason: "Provider cancelled execution ".repeat(50).slice(0, 512), recordedAt: "2026-10-02T15:00:00.000Z" },
+      acpToolInventoryComplete: true,
+      acpPendingToolCount: 0,
+      errorFamily: "configuration",
       finalResponseRecorded: true,
       executionBeforeRestore: { errorCode: "model_error", exitCode: 2, timedOut: false },
     });
@@ -319,6 +330,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
     expect((result?.stdout as string).length).toBeLessThan(oversizedStdout.length);
     expect(result).not.toHaveProperty("nestedHuge");
     expect(result?.instructionSave).not.toHaveProperty("privateSyncMetadata");
+    expect(result?.cancellation).not.toHaveProperty("privateMetadata");
     expect(result?.terminalSessionFailure).not.toHaveProperty("privateMetadata");
     const diagnostic = result?.terminalSessionFailure as { details: string };
     expect(diagnostic.details).toContain("[truncated for run retrieval; full text in run error/transcript]");

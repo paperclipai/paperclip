@@ -61,11 +61,11 @@ export default defineConfig({
     headless: true,
     actionTimeout: 30_000,
     navigationTimeout: 30_000,
-    screenshot: "only-on-failure",
-    trace: "retain-on-failure",
+    screenshot: process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "only-on-failure",
+    trace: process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "retain-on-failure",
     // A developer-supplied system Chromium keeps the local smoke loop
     // installation-free; CI's managed browser retains failure video as usual.
-    video: chromiumExecutable ? "off" : "retain-on-failure",
+    video: chromiumExecutable || process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "retain-on-failure",
   },
   webServer: {
     // Do not put an env object here: Playwright serializes webServer config in

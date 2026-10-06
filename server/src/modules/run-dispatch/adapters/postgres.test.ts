@@ -191,16 +191,19 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     });
   }
 
-  it.each(["executionRunId", "checkoutRunId"] as const)("suppresses delayed native replacement after another run acquires %s", async (lock) => {
+  it.each([
+    ["executionRunId", "native_safe_replacement"], ["checkoutRunId", "native_safe_replacement"],
+    ["executionRunId", "native_provider_overloaded"], ["checkoutRunId", "native_provider_overloaded"],
+  ] as const)("suppresses delayed retry after another run acquires %s (%s)", async (lock, retryReason) => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
-    const contextSnapshot = { issueId, wakeReason: "native_safe_replacement", retryReason: "native_safe_replacement", forceFreshSession: true };
+    const contextSnapshot = { issueId, wakeReason: retryReason, retryReason, forceFreshSession: true };
     const replacementId = await seedRun({ companyId, agentId, status: "scheduled_retry", contextSnapshot });
     const competingId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
     await db.update(issues).set({ [lock]: competingId }).where(eq(issues.id, issueId));
     const adapter = createPostgresRunDispatchAdapter(db);
-    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: "native_safe_replacement", now: new Date() }))
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: retryReason, now: new Date() }))
       .toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
     await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, replacementId));
     expect(await adapter.cancelStaleQueuedRun({ companyId, runId: replacementId, expectedStatus: "queued", now: new Date() }))
@@ -218,15 +221,15 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, competingId)))[0]?.status).toBe("running");
   });
 
-  it("does not dispatch a replacement when the task becomes blocked after scheduling", async () => {
+  it.each(["native_safe_replacement", "native_provider_overloaded"])("does not dispatch %s when the task becomes blocked after scheduling", async retryReason => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
-    const contextSnapshot = { issueId, wakeReason: "native_safe_replacement", retryReason: "native_safe_replacement", forceFreshSession: true };
+    const contextSnapshot = { issueId, wakeReason: retryReason, retryReason: retryReason, forceFreshSession: true };
     const replacementId = await seedRun({ companyId, agentId, status: "scheduled_retry", contextSnapshot });
     await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
     const adapter = createPostgresRunDispatchAdapter(db);
-    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: "native_safe_replacement", now: new Date() }))
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: retryReason, now: new Date() }))
       .toMatchObject({ allowed: false, errorCode: "issue_blocked" });
     await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, replacementId));
     expect(await adapter.cancelStaleQueuedRun({ companyId, runId: replacementId, expectedStatus: "queued", now: new Date() }))

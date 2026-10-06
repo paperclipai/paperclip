@@ -64,6 +64,7 @@ import {
   AgentProviderConnection,
   type ProviderConnection,
 } from "./AgentProviderConnection";
+import { adapterCuratesModelOrder } from "../../lib/model-utils";
 
 const controlClass =
   "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring";
@@ -845,7 +846,7 @@ function Setup({
                             </div>
                           ) : (
                             <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
-                              onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />
+                              onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest(); }} />
                           )
                         )}
                         {models.error && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
@@ -883,6 +884,7 @@ function Setup({
                                 required={multiProvider}
                                 creatable
                                 groupByProvider={multiProvider}
+                                preserveOrder={adapterCuratesModelOrder(brandType)}
                               />
                             )}
                             {efforts.length > 0 && (

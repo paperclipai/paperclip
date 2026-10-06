@@ -81,6 +81,16 @@ export function buildMonitorSurfaceCopy(
 
   const eta = formatMonitorEta(derived.nextCheckAt, now); // "in 2h 12m" | "due now" | "overdue by 18m"
   const absolute = formatMonitorAbsolute(derived.nextCheckAt, {}, now); // local time, e.g. "Today, 4:08 PM"
+  if (derived.source === "scheduled-retry" && scheduledRetryReason === "ai_connection_pool_wait") {
+    return {
+      bannerTitle: "Pool exhausted",
+      stripTitle: "Pool exhausted",
+      bannerMeta: [`Usage recheck ${eta} · ${absolute} (your time)`, "Tasks with a selected account keep it while waiting. Work resumes when usage permits."],
+      stripMeta: [`Usage recheck ${eta} · ${absolute}`, "Tasks with a selected account keep it while waiting."],
+      tone: "info",
+    };
+  }
+
   const isScheduledRetryOnly = derived.source === "scheduled-retry";
 
   let bannerTitle: string;

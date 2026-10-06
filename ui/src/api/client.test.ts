@@ -4,6 +4,7 @@ import {
   tenantSessionRecovery,
 } from "@/lib/tenant-session-recovery";
 import { __inflightGetCount, api, detachInflightGet } from "./client";
+import { toolsApi } from "./tools";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -197,5 +198,22 @@ describe("per-caller abort semantics", () => {
       name: "AbortError",
     });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("managed-account request isolation", () => {
+  it("does not share a previous viewing user's pending account response", async () => {
+    const previous = deferred<Response>();
+    const current = deferred<Response>();
+    fetchMock.mockReturnValueOnce(previous.promise).mockReturnValueOnce(current.promise);
+    const previousUser = toolsApi.listAggregatorApps("shared-gateway");
+    const currentUser = toolsApi.listAggregatorApps("shared-gateway");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([, options]) => options.cache === "no-store")).toBe(true);
+    current.resolve(jsonResponse({ apps: ["current-user-account"] }));
+    previous.resolve(jsonResponse({ apps: ["previous-user-account"] }));
+    expect(await currentUser).toEqual({ apps: ["current-user-account"] });
+    expect(await previousUser).toEqual({ apps: ["previous-user-account"] });
   });
 });

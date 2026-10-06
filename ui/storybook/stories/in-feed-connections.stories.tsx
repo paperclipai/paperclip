@@ -8,6 +8,8 @@ import { ConnectionIntentInteractionBody } from "@/features/connections/Connecti
 import { ConnectionSetupFlow, ConnectionSetupCompletionScreen, AccessStep, OAuthConnectStateScreen, type OAuthConnectPhase } from "@/features/connections/ConnectionSetupFlow";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import { TaskChatInteractionCard } from "@/components/task-chat/TaskChatInteractionCard";
+import { storybookAgentMap, storybookAgents } from "../fixtures/paperclipData";
 import { useNavigate } from "@/lib/router";
 import {
   pendingConnectionIntentInteraction as pending,
@@ -17,6 +19,8 @@ import {
   declinedConnectionIntentInteraction as declined,
   expiredConnectionIntentInteraction as expired,
   supersededConnectionIntentInteraction as superseded,
+  pendingConnectionAccessInteraction as accessPending,
+  grantedConnectionAccessInteraction as accessGranted,
 } from "@/fixtures/issueThreadInteractionFixtures";
 
 const notion = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
@@ -31,7 +35,7 @@ const connection = {
   createdByAgentId: null, createdByUserId: "user-board", createdAt: new Date("2026-09-07"), updatedAt: new Date("2026-09-07"),
 } satisfies ToolConnection;
 
-type Scenario = { ai?: boolean; missingAiAccount?: "anthropic" | "openai"; ownerOnly?: boolean; checking?: boolean; count?: number; loading?: boolean; loadError?: boolean; completeError?: boolean; submitting?: boolean; denied?: boolean };
+type Scenario = { email?: boolean; access?: boolean; ai?: boolean; missingAiAccount?: "anthropic" | "openai"; ownerOnly?: boolean; checking?: boolean; count?: number; loading?: boolean; loadError?: boolean; completeError?: boolean; submitting?: boolean; denied?: boolean };
 const meta: Meta = {
   title: "Connections/In-task connections",
   parameters: { layout: "padded" },
@@ -45,7 +49,7 @@ const meta: Meta = {
     channel.on("unhandledErrorsWhilePlaying", reportPlayError);
     const original = window.fetch;
     const scenario = (parameters.connectionScenario ?? {}) as Scenario;
-    let current = structuredClone(scenario.missingAiAccount ? missingAiInteraction(scenario.missingAiAccount) : scenario.ai ? aiPending : pending);
+    let current = structuredClone(scenario.access ? accessPending : scenario.email ? emailPending : scenario.missingAiAccount ? missingAiInteraction(scenario.missingAiAccount) : scenario.ai ? aiPending : pending);
     window.fetch = async (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
       if (scenario.missingAiAccount) {
@@ -65,24 +69,37 @@ const meta: Meta = {
         apps: CONNECTABLE_APP_DEFINITIONS.filter((app) => ["notion", "github", "posthog", "zapier"].includes(app.slug)),
         capabilities: { canCreateOrganizationGrant: true, canSetCompanyInstall: true },
       });
+      if (scenario.email && url.pathname.endsWith("/email/connections") && init?.method === "POST") {
+        return scenario.completeError
+          ? Response.json({ error: "This key could not be verified. Check it and try again." }, { status: 422 })
+          : Response.json({ id: connection.id });
+      }
+      if (scenario.email && url.pathname.endsWith("/email/inboxes") && init?.method === "POST") {
+        return Response.json({ connectionId: connection.id });
+      }
       if (scenario.ai && url.pathname.endsWith("/ai-connections") && init?.method === "POST") return scenario.completeError
         ? Response.json({ error: "This key could not be verified. Check it and try again." }, { status: 422 })
         : Response.json({ connectionId: aiAccount.id, grantId: aiAccount.grantId });
       if (url.pathname.endsWith("/agents")) return Response.json([{ id: pending.payload.requestingAgentId, companyId: pending.companyId, name: pending.payload.requestingAgentName, status: "active", adapterType: "paperclip_runner", role: "researcher" }]);
+      if (scenario.access && url.pathname === `/api/agents/${accessPending.payload.requestingAgentId}`) return Response.json({
+        ...storybookAgents[0], id: accessPending.payload.requestingAgentId, name: accessPending.payload.requestingAgentName,
+      });
       if (url.pathname.startsWith("/api/connection-intents/")) {
         if (url.pathname.endsWith("setup-options")) {
           if (scenario.loading) return new Promise<Response>(() => {});
           if (scenario.loadError) return Response.json({ error: "Connection options are temporarily unavailable. Try again." }, { status: 503 });
           return Response.json({ version: 1, interaction: current, requestedAgentId: pending.payload.requestingAgentId,
-            service: { service: "notion", name: "Notion", state: "available", methods: [] },
+            service: { service: current.payload.serviceSlug, name: current.payload.serviceName, state: "available", methods: [] },
+            ...(scenario.access ? { canGrantAccess: true } : {}),
             ...(scenario.ai ? { aiConnection: { provider: scenario.missingAiAccount ?? "openrouter", method: "api_key", mode: "responsible_user" }, ...(scenario.missingAiAccount ? {} : { aiRepair: { connection: aiAccount, canReconnect: !scenario.ownerOnly } }) } : {}),
+            ...(scenario.email ? { emailSetup: { credentialConnectionId: null, readyConnectionId: null } } : {}),
             existingConnections: Array.from({ length: scenario.count ?? 0 }, (_, i) => ({ ...connection, id: `${connection.id.slice(0, -1)}${i}`, name: i ? "Team Notion workspace" : connection.name })),
           });
         }
         if (scenario.submitting) return new Promise<Response>(() => {});
         if (scenario.completeError || scenario.denied) return Response.json({ error: scenario.denied ? "You no longer have permission to share this connection." : "Connection has no permitted tools. Review action permissions and try again." }, { status: scenario.denied ? 403 : 409 });
-        if (url.pathname.endsWith("decline")) current = { ...declined, id: pending.id };
-        else if (url.pathname.endsWith("complete")) current = { ...connected, id: pending.id, payload: current.payload };
+        if (url.pathname.endsWith("decline")) current = { ...declined, id: current.id, payload: current.payload };
+        else if (url.pathname.endsWith("complete")) current = { ...connected, id: current.id, payload: current.payload };
         else if (url.pathname.endsWith("phase")) current = { ...current, payload: { ...current.payload, phase: "needs_retry" } };
         return Response.json(current);
       }
@@ -101,6 +118,11 @@ type Story = StoryObj<typeof meta>;
 
 function Card({ interaction = pending, otherUser = false }: { interaction?: ConnectionIntentInteraction; otherUser?: boolean }) {
   const { data } = useQuery({ queryKey: ["issues", "interactions", interaction.id], initialData: [interaction], enabled: false, queryFn: async () => [interaction] });
+  if (interaction.payload.accessRequest) return <TaskChatInteractionCard
+    item={{ id: `interaction:${interaction.id}`, kind: "interaction", interaction: data[0]! }}
+    agentMap={storybookAgentMap}
+    currentUserId={otherUser ? "another-user" : pending.addresseeUserId}
+  />;
   return <ConnectionIntentInteractionBody interaction={data[0]!} currentUserId={otherUser ? "another-user" : pending.addresseeUserId} addresseeLabel="Alex" />;
 }
 function Host({ children }: { children: React.ReactNode }) {
@@ -118,7 +140,35 @@ const reuse: Story["play"] = async (context) => {
   await userEvent.click(await within(document.body).findByRole("button", { name: /My Notion workspace/ }));
 };
 
+const emailPending: ConnectionIntentInteraction = {
+  ...pending,
+  payload: { ...pending.payload, serviceSlug: "agentmail", serviceName: "AgentMail",
+    serviceLogoUrl: "/brands/agentmail.svg", purpose: "channel" },
+};
+export const AgentMailInline = card(emailPending, { email: true });
+export const AgentMailNarrow: Story = {
+  ...AgentMailInline, globals: { viewport: { value: "mobile1", isRotated: false } },
+};
+const enterEmailKey: Story["play"] = async ({ canvasElement }) => {
+  const canvas = within(canvasElement);
+  await userEvent.type(await canvas.findByLabelText("API key"), "storybook-fixture-key");
+  await userEvent.click(canvas.getByRole("button", { name: "Connect AgentMail" }));
+};
+export const AgentMailConnected: Story = {
+  ...AgentMailInline,
+  play: async context => {
+    await enterEmailKey!(context);
+    await expect(await within(context.canvasElement).findByText("AgentMail connected")).toBeVisible();
+  },
+};
+export const AgentMailInvalidKey: Story = {
+  ...card(emailPending, { email: true, completeError: true }), play: enterEmailKey,
+};
 export const NewConnection = card();
+export const AgentAccess = card(accessPending, { access: true });
+export const AgentAccessGranted = card(accessGranted, { access: true });
+export const AgentAccessDeclined = card({ ...accessPending, status: "rejected", result: { version: 1, outcome: "declined" } }, { access: true });
+export const AgentAccessNarrow: Story = { ...AgentAccess, globals: { viewport: { value: "mobile1", isRotated: false } } };
 export const EligibleReuse = card(pending, { count: 1 });
 export const Authorizing = card(authorizing);
 export const RetryRequired = card(retry);

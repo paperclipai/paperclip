@@ -55,6 +55,21 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
   return headers;
 }
 
+async function discoveryRequest<T>(req: Request, res: Response, work: (signal: AbortSignal) => Promise<T>) {
+  const controller = new AbortController();
+  const aborted = () => controller.abort();
+  const closed = () => { if (!res.writableEnded) controller.abort(); };
+  req.once("aborted", aborted);
+  res.once("close", closed);
+  if (req.aborted || res.destroyed) controller.abort();
+  try {
+    return await work(controller.signal);
+  } finally {
+    req.removeListener("aborted", aborted);
+    res.removeListener("close", closed);
+  }
+}
+
 async function handleMcpGatewayProtocol(
   req: Request,
   res: Response,
@@ -96,11 +111,12 @@ async function handleMcpGatewayProtocol(
       return;
     }
     if (body.method === "tools/list") {
-      const tools = await toolGateway.listToolsForNamedGateway({
+      const tools = await discoveryRequest(req, res, (signal) => toolGateway.listToolsForNamedGateway({
         ...locator,
         bearerToken: token,
         callerHeaders: headers,
-      });
+        signal,
+      }));
       res.json({
         jsonrpc: "2.0",
         id,
@@ -202,6 +218,7 @@ async function handleMcpGatewayProtocol(
     }
     res.status(404).json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
   } catch (err) {
+    if (res.destroyed) return;
     if (err instanceof ToolGatewayHttpError) {
       const id = (req.body as { id?: unknown } | undefined)?.id ?? null;
       // Provider tool failures are MCP tool results, not successful calls or
@@ -227,12 +244,8 @@ async function handleMcpGatewayProtocol(
 
 export function mcpGatewayProtocolRoutes(toolGateway: ToolGatewayService) {
   const router = Router();
-  router.get("/mcp/gateways/:gatewayPublicId", async (req, res) => {
-    res.json({
-      transport: "streamable_http",
-      endpoint: `/mcp/gateways/${req.params.gatewayPublicId}`,
-      authentication: "bearer",
-    });
+  router.get("/mcp/gateways/:gatewayPublicId", async (_req, res) => {
+    res.set("Allow", "POST").status(405).end();
   });
   router.post("/mcp/gateways/:gatewayPublicId", async (req, res) => {
     await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayPublicId: req.params.gatewayPublicId });
@@ -312,6 +325,7 @@ function outcomeCondition(outcome: string) {
 }
 
 function sendGatewayError(res: import("express").Response, err: unknown) {
+  if (res.destroyed) return;
   if (err instanceof ToolGatewayHttpError) {
     res.status(err.status).json({
       error: err.message,
@@ -450,12 +464,8 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   });
 
-  router.get("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
-    res.json({
-      transport: "streamable_http",
-      endpoint: `/api/tool-gateway/gateways/${req.params.gatewayId}/mcp`,
-      authentication: "bearer",
-    });
+  router.get("/tool-gateway/gateways/:gatewayId/mcp", async (_req, res) => {
+    res.set("Allow", "POST").status(405).end();
   });
 
   router.post("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
@@ -551,7 +561,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         res.status(401).json({ error: "Tool gateway session token is required" });
         return;
       }
-      const tools = await toolGateway.listToolsForSession(token);
+      const tools = await discoveryRequest(req, res, (signal) => toolGateway.listToolsForSession(token, { signal }));
       res.json(tools);
     } catch (err) {
       sendGatewayError(res, err);

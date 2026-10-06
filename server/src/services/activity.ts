@@ -403,6 +403,9 @@ export function activityService(db: Db) {
           invocationSource: heartbeatRuns.invocationSource,
           responsibleUserId: heartbeatRuns.responsibleUserId,
           errorCode: heartbeatRuns.errorCode,
+          error: sql<string | null>`case when ${heartbeatRuns.status} = 'failed'
+            and ${heartbeatRuns.errorCode} = 'native_provider_model_rejected'
+            then left(${heartbeatRuns.error}, 2000) else null end`,
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson,
           logBytes: heartbeatRuns.logBytes,
@@ -497,7 +500,7 @@ export function activityService(db: Db) {
       const [exhaustionRows, leaseRows, executionByRunId, [savedPlan]] = await Promise.all([
         exhaustionRowsQuery,
         leaseRowsQuery,
-        executionProjectionsForRuns(db, companyId, runIds),
+        executionProjectionsForRuns(db, companyId, runIds, new Date(), { retryDatabaseReads: true }),
         savedPlanQuery,
       ]);
       const retryExhaustedReasonByRunId = new Map<string, string>();

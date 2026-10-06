@@ -82,7 +82,7 @@ test("renders standard assignment wake with task authority and no backlog discov
   expect(prompt).toContain("Paperclip task context:");
   expect(prompt).toContain("Add focused unit tests for assignment wake and custom prompt rendering.");
   expect(prompt).toContain("The harness already checked out this issue for the current run.");
-  expect(prompt).toContain("clear final disposition");
+  expect(prompt).not.toContain("clear final disposition");
   expect(prompt).not.toContain("check for unassigned issues");
   expect(prompt).not.toContain("status=backlog");
 });
@@ -130,8 +130,8 @@ test("renders scoped planning wake authority before the Hermes default workflow"
   expect(prompt).toContain("- checkout: already claimed by the harness for this run");
   expect(prompt).toContain("The harness already checked out this issue for the current run.");
   expect(prompt).toContain("Issue description:\n```text\nUse the wake payload as runtime authority.\n```");
-  expect(prompt).toContain("clear final disposition");
-  expect(prompt).toContain("keep `in_progress` only when a live continuation path exists");
+  expect(prompt).not.toContain("clear final disposition");
+  expect(prompt).not.toContain("keep `in_progress` only when a live continuation path exists");
   expect(prompt).not.toContain("check for unassigned issues");
   expect(prompt).not.toContain("status=backlog");
 });

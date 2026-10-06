@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -19,6 +19,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { truncateTablesWithDeadlockRetry } from "./helpers/truncate-with-deadlock-retry.js";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
@@ -43,29 +44,6 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-function errorHasPostgresCode(error: unknown, code: string): boolean {
-  let current: unknown = error;
-  for (let depth = 0; depth < 4; depth += 1) {
-    if (!current || typeof current !== "object") return false;
-    const record = current as { code?: unknown; cause?: unknown };
-    if (record.code === code) return true;
-    current = record.cause;
-  }
-  return false;
-}
-
-async function truncateCompaniesWithDeadlockRetry(db: ReturnType<typeof createDb>) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
-      return;
-    } catch (error) {
-      if (!errorHasPostgresCode(error, "40P01") || attempt === 4) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
-    }
-  }
-}
-
 describeEmbeddedPostgres("active-run output watchdog", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
@@ -77,7 +55,10 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
   afterEach(async () => {
     mockedAppendHeartbeatRunEvent.mockClear();
-    await truncateCompaniesWithDeadlockRetry(db);
+    await truncateTablesWithDeadlockRetry(db, `TRUNCATE TABLE "companies" CASCADE`, {
+      attempts: 5,
+      delayMs: (attempt) => 50 * (attempt + 1),
+    });
   });
 
   afterAll(async () => {
@@ -229,6 +210,27 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(coder?.status).toBe("running");
     expect(manager?.status).toBe("idle");
   }
+
+  it("warns after five silent minutes and escalates after fifteen without changing active work", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const seeded = await seedRunningRun({ now, ageMs: 0 });
+    const summaryAt = (elapsedMs: number) => buildSummary(seeded.runId, new Date(now.getTime() + elapsedMs));
+    await expect(summaryAt(5 * 60_000 - 1)).resolves.toMatchObject({ level: "ok" });
+    await expect(summaryAt(5 * 60_000)).resolves.toMatchObject({ level: "suspicious" });
+    await expect(summaryAt(15 * 60_000 - 1)).resolves.toMatchObject({ level: "suspicious" });
+    await expect(summaryAt(15 * 60_000)).resolves.toMatchObject({ level: "critical" });
+    const { recovery, enqueueWakeup } = createRecovery();
+    await recovery.scanSilentActiveRuns({ now: new Date(now.getTime() + 35 * 60_000), companyId: seeded.companyId });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run?.status).toBe("running");
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    await expectNoReviewArtifacts(seeded);
+
+    // Fresh output clears the warning even on a long-running task.
+    await db.update(heartbeatRuns).set({ lastOutputAt: new Date(now.getTime() + 35 * 60_000) })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+    await expect(summaryAt(36 * 60_000)).resolves.toMatchObject({ level: "ok" });
+  });
 
   it.each(["stale_active_run_evaluation", "issue_productivity_review"])("keeps blocked and %s sources artifact-free", async (originKind) => {
     const now = new Date("2026-04-22T20:00:00.000Z");

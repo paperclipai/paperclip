@@ -95,6 +95,15 @@ welcome and every control envelope against the authenticated connection,
 runner, environment lease, run, normalized session, turn, item, protocol,
 lease ID, expiry, and revocation metadata before applying an ACK or command.
 
+Semantic input integrity uses SHA-256 of the complete transmitted input's
+canonical JSON, with UTF-16 object-key order and JavaScript number formatting.
+The controller checks this proof after authentication and exact run/session/
+turn/item correlation, before committing, dispatching, or acknowledging the
+input. Receipt redaction has a separate digest; a redacted digest cannot stand
+in for wire integrity, including when only a protected field changes. A failed
+integrity proof keeps the existing operator-required recovery fence. Updating
+the verifier does not clear a previously failed run or replay its work.
+
 The daemon captures and removes the bootstrap environment variable before it
 parses arguments or starts child work. Secret buffers are overwritten when they
 are dropped. It resolves the destination once before sending a bearer value and

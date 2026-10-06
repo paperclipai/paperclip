@@ -1,6 +1,11 @@
 /** Provider-neutral semantic completion tools and their strict model-facing schemas. */
 export const PRP_COMPLETION_TOOL_NAME = "paperclip_finish" as const;
 export const PRP_BLOCK_TOOL_NAME = "paperclip_block" as const;
+/** Native Runner guidance; legacy adapters use their own skill/API completion paths. */
+export const PRP_COMPLETION_TOOL_DESCRIPTION =
+  "Report completed work (done), work requiring review (needs_review), or an explicit wait for the next response (yielded with response_wake). Use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome; do not claim completion while gated. Explain any required approval with its supplied link and action, then write the final response and end the turn without further tool calls.";
+export const PRP_BLOCK_TOOL_DESCRIPTION =
+  "Report work that cannot continue because of a concrete blocker. Identify the blocker, its owner, and the action needed to unblock it; use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome, explain the blocker and any required action in the final response, and end the turn without further tool calls.";
 export const PRP_SEMANTIC_TOOL_NAMES = [
   PRP_COMPLETION_TOOL_NAME,
   PRP_BLOCK_TOOL_NAME,
@@ -268,7 +273,10 @@ const providerVerificationCompatibilitySchema = {
       detail: { type: "string" },
       result: { type: "string" },
       cwd: { type: "string" },
-      artifactRef: { type: "string", minLength: 1 },
+      artifactRef: {
+        type: ["string", "null"],
+        description: "Reference to a real verification artifact. Omit or use null when no artifact exists; empty values are normalized away.",
+      },
     },
   },
 } as const;
@@ -355,15 +363,23 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
     reportedWorkDisposition: { enum: ["done", "needs_review", "yielded", "completed"] },
     verification: providerVerificationCompatibilitySchema,
     attentionRequests: providerAttentionCompatibilitySchema,
-    continuation: responseWakeContinuationSchema,
+    // Responses-compatible gateways can require every declared property in
+    // tool calls. Give non-yielding results an explicit absence value instead
+    // of forcing callers to invent a response-wake continuation.
+    continuation: {
+      ...responseWakeContinuationSchema,
+      type: ["object", "null"],
+      description:
+        "Use null or omit this field for done, completed, or needs_review. Only yielded requires a response-wake object with kind, summary, and idempotencyKey.",
+    },
   },
   // Keep the provider-facing root a concrete object. Codex code-mode renders a
   // root allOf containing only an if/then constraint as `args: unknown`, hiding
   // every required field from the model. This equivalent direct conditional
   // preserves validation without obscuring the object-shaped tool signature.
   if: { properties: { reportedWorkDisposition: { const: "yielded" } }, required: ["reportedWorkDisposition"] },
-  then: { required: ["continuation"] },
-  else: { not: { required: ["continuation"] } },
+  then: { required: ["continuation"], properties: { continuation: { type: "object" } } },
+  else: { properties: { continuation: { type: "null" } } },
 } as const;
 
 export const PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA = {

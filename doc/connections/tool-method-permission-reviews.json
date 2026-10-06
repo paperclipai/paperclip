@@ -1140,8 +1140,7 @@
         "https://honcho.dev/docs/v3/guides/integrations/mcp"
       ],
       "reviewedAt": "2026-09-30",
-      "liveProof": "not-run",
-      "keyPermissions": "Create peers/sessions and save memory under the API key project. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
+      "liveProof": "not-run"
     },
     {
       "app": "hugging-face",
@@ -1402,6 +1401,42 @@
       ],
       "reviewedAt": "2026-09-30",
       "liveProof": "not-run"
+    },
+    {
+      "app": "neon",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "read",
+        "write"
+      ],
+      "capability": "write",
+      "supportedActions": "Create, describe and delete projects and branches; manage computes, roles, databases and snapshots; run SQL and apply schema changes; configure Neon Auth and the Data API; read logs. Optional project pinning and read-only mode narrow the hosted server.",
+      "evidence": [
+        "https://neon.com/docs/ai/neon-mcp-server",
+        "https://mcp.neon.tech/.well-known/oauth-protected-resource/mcp",
+        "https://mcp.neon.tech/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-02",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "neon",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Create, describe and delete projects and branches; manage computes, roles, databases and snapshots; run SQL and apply schema changes; configure Neon Auth and the Data API; read logs. Optional project pinning and read-only mode narrow the hosted server.",
+      "evidence": [
+        "https://neon.com/docs/ai/neon-mcp-server",
+        "https://neon.com/docs/manage/api-keys",
+        "https://mcp.neon.tech/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-10-02",
+      "liveProof": "not-run",
+      "keyPermissions": "Project, branch, compute, snapshot, SQL and schema changes within the key\u2019s reach. A project-scoped key limits access to one project with Editor rights; personal and organization keys reach every project they can access. Paperclip cannot increase an existing key\u2019s permissions."
     },
     {
       "app": "notion",

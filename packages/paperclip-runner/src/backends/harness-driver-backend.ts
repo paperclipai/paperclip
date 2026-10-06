@@ -673,6 +673,7 @@ class HarnessNativeSession implements NativeSession {
     // The provider has no active turn to interrupt yet. Do not launch work
     // whose events cancellation would suppress and leave the owner waiting.
     if (this.#explicitlyCancelled) throw new Error("native_session_cancelled");
+    this.#terminal = null;
     try {
       const started = await this.#session.startTurn(input);
       this.#assertProtocolIntegrity();

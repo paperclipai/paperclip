@@ -166,6 +166,35 @@ describe("runtime context materialization", () => {
     expect(config).not.toContain("unassigned");
   });
 
+  it("preserves a managed provider while excluding ambient auth, hooks, and tool configuration", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-routing-home-"));
+    roots.push(root);
+    const source = join(root, "source");
+    const target = join(root, "isolated");
+    await mkdir(source);
+    await writeFile(join(source, "auth.json"), '{"OPENAI_API_KEY":"unrelated-key"}');
+    await writeFile(join(source, "config.toml"), `model_provider = "paperclip"
+[model_providers.paperclip]
+name = "Selected connection"
+base_url = "https://openrouter.ai/api/v1"
+wire_api = "responses"
+requires_openai_auth = false
+env_key = "PAPERCLIP_AI_PROVIDER_KEY"
+[features]
+shell_snapshot = true
+[mcp_servers.unassigned]
+command = "untrusted-command"
+`);
+    await prepareIsolatedCodexHome({ context: null, codexHome: target, sourceCodexHome: source, apiKey: "also-unrelated" });
+    const config = await readFile(join(target, "config.toml"), "utf8");
+    expect(config).toContain('model_provider = "paperclip"');
+    expect(config).toContain('base_url = "https://openrouter.ai/api/v1"');
+    expect(config).toContain('env_key = "PAPERCLIP_AI_PROVIDER_KEY"');
+    expect(config).toContain("shell_snapshot = false");
+    expect(config).not.toMatch(/unrelated|untrusted|unassigned/);
+    await expect(stat(join(target, "auth.json"))).rejects.toThrow();
+  });
+
   it("rejects repeated assignments without changing the current assignment", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-repeat-"));
     roots.push(root);
