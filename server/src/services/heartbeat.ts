@@ -17578,26 +17578,32 @@ export function heartbeatService(
       )).for("update") : [];
       const ownsIssue = owner?.assigneeAgentId === run.agentId &&
         context.wakeReason !== "source_scoped_recovery_action";
-      if (ownsIssue && run.scheduledRetryReason === "native_safe_replacement" &&
+      if (ownsIssue && ["native_safe_replacement", "native_provider_overloaded"].includes(run.scheduledRetryReason ?? "") &&
           owner.checkoutRunId && owner.checkoutRunId !== run.id) {
         return { ownsIssue, blocked: true };
       }
-      if (ownsIssue && owner.executionRunId && owner.executionRunId !== run.id) {
+      if (run.scheduledRetryReason === "native_provider_overloaded" && owner?.executionRunId &&
+          owner.executionRunId !== run.id && owner.executionRunId !== run.retryOfRunId) {
+        return { ownsIssue, blocked: true };
+      }
+      const previousRunId = run.scheduledRetryReason === "native_provider_overloaded"
+        ? run.retryOfRunId : ownsIssue ? owner?.executionRunId : null;
+      if (previousRunId && previousRunId !== run.id) {
         const [previous] = await tx.select({ status: heartbeatRuns.status })
           .from(heartbeatRuns).where(and(
-            eq(heartbeatRuns.id, owner.executionRunId),
+            eq(heartbeatRuns.id, previousRunId),
             eq(heartbeatRuns.companyId, run.companyId),
           ));
         // A terminal result can precede workspace/lease cleanup on this or
         // another controller. Local absence alone is not a release receipt.
         if (!isHeartbeatRunTerminalStatus(previous?.status) ||
-            liveRunExecutions.has(owner.executionRunId)) {
+            liveRunExecutions.has(previousRunId)) {
           return { ownsIssue, blocked: true };
         }
         const [pendingLease] = await tx.select({ id: environmentLeases.id })
           .from(environmentLeases).where(and(
             eq(environmentLeases.companyId, run.companyId),
-            eq(environmentLeases.heartbeatRunId, owner.executionRunId),
+            eq(environmentLeases.heartbeatRunId, previousRunId),
             or(and(isNull(environmentLeases.releasedAt),
                 // Warm release deliberately retains the sandbox. Its successful
                 // receipt settles the old run without destroying the resource.
@@ -17611,7 +17617,7 @@ export function heartbeatService(
           phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner,
         }).from(nativeRunFinalizations).where(and(
           eq(nativeRunFinalizations.companyId, run.companyId),
-          eq(nativeRunFinalizations.runId, owner.executionRunId),
+          eq(nativeRunFinalizations.runId, previousRunId),
         ));
         if (pendingLease || (finalization && (finalization.leaseOwner ||
             !["committed", "applied", "terminal_failure"].includes(finalization.phase)))) {
@@ -17961,6 +17967,10 @@ export function heartbeatService(
             updatedAt: claimedAt,
           };
           if (nativeReviewContext) {
+            if (run.scheduledRetryReason === "native_provider_overloaded") {
+              const predecessor = await lockIssueExecutionClaim(tx);
+              if (predecessor.blocked) return null;
+            }
             return claimQueuedNativeReviewRun(tx, {
               run, claimedAt, claimValues,
               agentNameKey: normalizeAgentNameKey(agent.name),
@@ -18028,7 +18038,7 @@ export function heartbeatService(
             // Mention/context runs can touch an issue, but only the current assignee
             // owns the issue execution lock shown as the active run.
             eq(issues.assigneeAgentId, claimed.agentId),
-            claimed.scheduledRetryReason === "native_safe_replacement"
+            ["native_safe_replacement", "native_provider_overloaded"].includes(claimed.scheduledRetryReason ?? "")
               ? or(
                   isNull(issues.checkoutRunId),
                   eq(issues.checkoutRunId, claimed.id),
@@ -22896,7 +22906,7 @@ export function heartbeatService(
         if (
           !issueId ||
           (!isResolvedInteractionContinuationWakeContext(context) &&
-            run.scheduledRetryReason !== "native_safe_replacement")
+            !["native_safe_replacement", "native_provider_overloaded"].includes(run.scheduledRetryReason ?? ""))
         ) {
           return { dispatched: true, resultPromise: dispatch(() => {}) };
         }

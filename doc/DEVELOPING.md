@@ -197,6 +197,10 @@ the task shows **Model unavailable**, the provider's account restriction, and
 guidance to choose a supported model or clear the task's model override before
 retrying. The run retains this reason even when the runner saves a generic
 failure result.
+When a committed Codex terminal reports `serverOverloaded`, the task displays
+the model capacity error and **Model at capacity** on its scheduled retry card.
+Automatic retries wait one and two minutes, then stop. Use
+**Tasks → Model capacity retry** in Storybook to inspect the waiting state.
 Claude Code uses model-specific effort levels; Haiku has no effort slider.
 Grok uses its adapter's reasoning levels, including for its default model.
 Kimi shows effort only when its agent uses the CLI engine, including with its

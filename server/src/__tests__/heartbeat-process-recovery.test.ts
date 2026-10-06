@@ -14310,7 +14310,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await commitNativeStatusDecision({ db, companyId: fixture.companyId, issueId: fixture.issueId, runId: fixture.runId,
       assessmentId: coordinator!.assessmentId!, priorStatus: issue!.status, priorStatusVersion: issue!.statusVersion,
       priorDecisionId: issue!.lastStatusDecisionId,
-      decision: { policyVersion: "phase6-v8", statusAction: "in_progress", toStatus: "in_progress",
+      decision: { policyVersion: "phase6-v9", statusAction: "in_progress", toStatus: "in_progress",
         reasonCode: "board_response_waiting", unblockDescriptor: null, effects: [] },
       requireBoardResponseWaitSource: source!.source, requireBoardResponseWaitOrigin: origin!,
     });
@@ -14934,7 +14934,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         priorStatusVersion: issue!.statusVersion,
         priorDecisionId: issue!.lastStatusDecisionId,
         decision: {
-          policyVersion: "phase6-v8",
+          policyVersion: "phase6-v9",
           statusAction: reasonCode === "prior_status_preserved_no_live_path" ? "preserve" : "in_progress",
           toStatus: "in_progress",
           reasonCode,

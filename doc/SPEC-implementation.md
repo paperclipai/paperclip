@@ -1946,3 +1946,13 @@ per-turn snapshot participates in session compatibility, so subsequent turns
 remove stale instructions after edits or access revocation. See
 [Connection instructions](connections/CONNECTION-INSTRUCTIONS.md) for contracts,
 UI conventions, custom adapter integration, and initial memory templates.
+
+### Native provider capacity retry
+
+Committed, run-bound Codex `serverOverloaded` terminal failures display the model
+capacity error directly and schedule at most two automatic retries, after one
+and two minutes. Retries share the execution failure budget, retain task history,
+and honor current ownership, review, governance, pause, dependency, budget, and
+cleanup gates. Restart or duplicate finalization must not create another
+successor. Permanent model/auth incompatibility and usage-limit exhaustion retain
+their existing operator recovery requirements.

@@ -469,6 +469,28 @@ Warm sandbox reuse must match the current host Git tip and branch as well as the
 file snapshot and saved stamp, including managed nested repositories. A history
 or branch mismatch restages the host before the next run begins.
 
+### Native provider model capacity
+
+A committed Codex `turn.failed` event with `codexErrorInfo: serverOverloaded`,
+bound to the failed terminal turn and pinned execution identity, surfaces
+“Selected model is at capacity. Please try a different model.” directly.
+Paperclip preserves the accepted result and task history, then atomically records
+a durable automatic retry with its status decision. The first retry waits one
+minute; the second waits two minutes. Both spend the existing failure-retry
+budget. Exhaustion requires an explicit retry or a model change.
+
+Retries use a fresh provider session and the normal task context, without an
+automatic model switch. Consumed wake input and continuation receipts stay on
+the failed run; `retryOfRunId` supplies task history without lending the new run
+its predecessor's resume authority. Finalization replay and restart reuse the
+same successor.
+Scheduling preserves pending review authority and respects task holds; promotion,
+claim, and dispatch recheck ownership, dependencies, governance, pause, budget,
+and execution locks. Claim also waits for the predecessor's provider execution,
+workspace finalization, and environment cleanup to settle. Model incompatibility,
+usage-limit exhaustion, unknown failures, and unbound diagnostic text do not
+qualify as capacity failures.
+
 ### Workspace scan failures before provider startup
 
 Repository discovery distinguishes an ordinary folder from a failed Git read.

@@ -74,6 +74,8 @@ export type EmailActor = {
 type Endpoint = typeof chatEndpoints.$inferSelect;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export interface EmailChannelOptions {
+  /** Suppress periodic database work while an unclaimed Cloud app stands by. */
+  isBackgroundWorkEnabled?: () => boolean;
   heartbeat: Pick<ReturnType<typeof heartbeatService>, "wakeup">;
   storage?: StorageService;
   publicBaseUrl?: string;
@@ -2041,6 +2043,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       await Promise.all(items.slice(i, i + 4).map(work));
   }
   async function tick() {
+    if (options.isBackgroundWorkEnabled?.() === false) return;
     if (activeTick) return activeTick;
     activeTick = runTick();
     try {

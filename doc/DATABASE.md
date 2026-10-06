@@ -247,6 +247,38 @@ public identity, and the existing unique singleton-key index makes concurrent
 or later attempts to replace it fail closed. The server loads the row before
 constructing URL-dependent runtime services on every boot.
 
+### Unclaimed Cloud warm standby
+
+`PAPERCLIP_CLOUD_WARM_STANDBY=1` is an opt-in control-plane marker for an
+unclaimed warm application. It requires Cloud configuration, a stack identity,
+and runtime identity verification keys. After restoring the durable identity,
+startup checks once for company data. Existing companies or a persisted claim
+keep the application fully active. A failed database check fails startup.
+
+An empty unclaimed application keeps its HTTP server and sandbox plugins ready,
+but skips recurring database work: chat/email delivery, plugin jobs, browser
+cleanup, feedback export, import cleanup, execution reconciliation, heartbeat
+schedules, and automatic backups. Startup migrations, plugin installation, and
+other one-time preparation still run. Normal anonymous health probes return
+`warmStandby: true` without SQL or session lookups. This is application liveness,
+not a current database connectivity check. Other API requests and WebSocket upgrades return 503 until
+the signed claim succeeds. Page and asset requests serve only the static UI
+router, bypassing session, bearer-key, tenant, and other dynamic handlers.
+
+The existing signed claim on `GET /api/health` writes the identity durably before
+normal requests and polling resume. No polling discovers claims and no process
+restart is required. Timers resume on their next normal tick; request-driven
+work can proceed immediately. Claim failure leaves standby intact. A restart
+restores the claim even if provider environment alignment has not completed.
+Deleting a claimed workspace's last company never puts it back into standby.
+
+Deploy support before enabling the marker. Validate idle database transactions
+and health probes, claim/bootstrap latency, recurring work after claim, and a
+restart with stale provider variables on an isolated warm application first.
+Rollback by setting the marker to `0` and restarting. No schema changes are
+required. This mechanism does not sleep claimed workspaces or replace a durable
+scheduler for their background work.
+
 ## Resource membership tables
 
 Paperclip stores current-user sidebar membership state in:
