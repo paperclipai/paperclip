@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { eq } from "drizzle-orm";
+import { z } from "zod";
 import { issues, type Db } from "@paperclipai/db";
 import {
   browserUseControlSchema,
@@ -15,10 +16,19 @@ import {
 } from "./authz.js";
 import { browserUseService } from "../services/browser-use.js";
 
+const issueIdSchema = z.string().uuid();
+
 export function browserUseRoutes(db: Db, service = browserUseService(db)) {
   const router = Router();
   router.use("/issues/:issueId/browsers", async (req, res, next) => {
     assertBoard(req);
+    if (
+      req.params.issueId !== req.params.issueId.trim() ||
+      !issueIdSchema.safeParse(req.params.issueId).success
+    ) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
     const [issue] = await db
       .select({ companyId: issues.companyId })
       .from(issues)
