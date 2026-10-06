@@ -104,6 +104,23 @@ export function scopedLiveRunsPadTarget(queryKey: readonly unknown[]): number {
 }
 
 /**
+ * Whether a scoped live-runs list is the one-card-per-task list
+ * (`distinctTasks=true`). The dashboard panel keys it with
+ * `dedupeLinkedTasks: true`. The server builds that list from one
+ * representative run per task, live runs first, and fills it with finished
+ * runs up to `limit` regardless of `minCount`.
+ */
+export function scopedLiveRunsDistinctTasks(queryKey: readonly unknown[]): boolean {
+  return queryKey.some(
+    (part) =>
+      !!part &&
+      typeof part === "object" &&
+      !Array.isArray(part) &&
+      (part as { dedupeLinkedTasks?: unknown }).dedupeLinkedTasks === true,
+  );
+}
+
+/**
  * Apply a terminal run event to a scoped live-runs list the same way the server
  * builds it. The server returns live (queued/running) runs first, and adds
  * recently finished runs after them only while the live count is below the
@@ -111,6 +128,9 @@ export function scopedLiveRunsPadTarget(queryKey: readonly unknown[]): number {
  * - if the remaining live runs still fill the pad target, remove the run;
  * - otherwise keep it, mark it terminal, and move it into the finished section
  *   (newest `createdAt` first), so a finished card never sits ahead of a live one.
+ * A one-card-per-task list (`distinctTasks`) is padded by task cards, not by
+ * run count. There the run is removed only when another live run in the list
+ * already represents its task, and is otherwise kept as that task's card.
  * Returns the same reference when nothing changed.
  */
 export function settleTerminalRunInScopedList(
@@ -119,11 +139,16 @@ export function settleTerminalRunInScopedList(
   status: string,
   finishedAt: string | null,
   padTarget: number,
+  distinctTasks = false,
 ): LiveRunForIssue[] | undefined {
-  if (!runs || !runs.some((run) => run.id === runId)) return runs;
+  const target = runs?.find((run) => run.id === runId);
+  if (!runs || !target) return runs;
   const marked = markRunTerminalInList(runs, runId, status, finishedAt) ?? runs;
   const live = marked.filter(isLiveRun);
-  if (live.length >= padTarget) return removeRunFromList(runs, runId);
+  const superseded = distinctTasks
+    ? !!target.issueId && live.some((run) => run.issueId === target.issueId)
+    : live.length >= padTarget;
+  if (superseded) return removeRunFromList(runs, runId);
   const finished = marked
     .filter((run) => !isLiveRun(run))
     .sort((a, b) => createdAtMs(b) - createdAtMs(a));

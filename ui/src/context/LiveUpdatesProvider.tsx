@@ -21,6 +21,7 @@ import {
 import {
   patchRunStatusInList,
   removeRunFromList,
+  scopedLiveRunsDistinctTasks,
   scopedLiveRunsPadTarget,
   settleTerminalRunInScopedList,
 } from "../lib/live-runs-cache";
@@ -1210,6 +1211,7 @@ function applyRunLifecycleToCompanyLiveRuns(
       scopedLists,
     )) {
       const padTarget = scopedLiveRunsPadTarget(queryKey);
+      const distinctTasks = scopedLiveRunsDistinctTasks(queryKey);
       queryClient.setQueryData(
         queryKey,
         (current: LiveRunForIssue[] | undefined) =>
@@ -1219,6 +1221,7 @@ function applyRunLifecycleToCompanyLiveRuns(
             status,
             finishedAt,
             padTarget,
+            distinctTasks,
           ),
       );
     }

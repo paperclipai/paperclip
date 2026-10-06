@@ -4,6 +4,7 @@ import {
   markRunTerminalInList,
   patchRunStatusInList,
   removeRunFromList,
+  scopedLiveRunsDistinctTasks,
   scopedLiveRunsPadTarget,
   settleTerminalRunInScopedList,
 } from "./live-runs-cache";
@@ -108,6 +109,14 @@ describe("scopedLiveRunsPadTarget", () => {
   });
 });
 
+describe("scopedLiveRunsDistinctTasks", () => {
+  it("is true only for a key with dedupeLinkedTasks: true", () => {
+    expect(scopedLiveRunsDistinctTasks(["live-runs", "c1", "dashboard", { minRunCount: 4, dedupeLinkedTasks: true }])).toBe(true);
+    expect(scopedLiveRunsDistinctTasks(["live-runs", "c1", "dashboard-live", { minRunCount: 4, dedupeLinkedTasks: false }])).toBe(false);
+    expect(scopedLiveRunsDistinctTasks(["live-runs", "c1", "agents-page"])).toBe(false);
+  });
+});
+
 describe("settleTerminalRunInScopedList", () => {
   const at = (r: LiveRunForIssue, createdAt: string) => ({ ...r, createdAt });
   const FINISHED = "2026-07-24T10:00:00.000Z";
@@ -141,6 +150,32 @@ describe("settleTerminalRunInScopedList", () => {
       ["a", "succeeded"],
       ["old", "succeeded"],
     ]);
+  });
+
+  it("keeps a distinct-task card even when the live runs fill the pad target", () => {
+    const onTask = (r: LiveRunForIssue, issueId: string) => ({ ...r, issueId });
+    // Five live runs across four tasks: t2 has two runs. t1's only run finishes.
+    const list = [
+      onTask(run("a", "running"), "t1"),
+      onTask(run("b", "running"), "t2"),
+      onTask(run("b2", "running"), "t2"),
+      onTask(run("c", "running"), "t3"),
+      onTask(run("d", "running"), "t4"),
+    ];
+    const next = settleTerminalRunInScopedList(list, "a", "succeeded", FINISHED, 4, true);
+    expect(next?.map((r) => [r.id, r.status])).toEqual([
+      ["b", "running"],
+      ["b2", "running"],
+      ["c", "running"],
+      ["d", "running"],
+      ["a", "succeeded"],
+    ]);
+  });
+
+  it("removes a distinct-task run when another live run represents its task", () => {
+    const onTask = (r: LiveRunForIssue, issueId: string) => ({ ...r, issueId });
+    const list = [onTask(run("a", "running"), "t1"), onTask(run("a2", "queued"), "t1")];
+    expect(settleTerminalRunInScopedList(list, "a", "failed", null, 4, true)).toEqual([list[1]]);
   });
 
   it("returns the same reference when the run is absent or already settled", () => {
