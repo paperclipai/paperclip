@@ -4649,6 +4649,25 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/projects/{id}/cost-events",
+  tags: ["projects", "costs"],
+  summary: "Read workspace-mirrored cost events for a project",
+  description:
+    "Returns the lines appended to <project-cwd>/.changes/<YYYY-MM-DD>/cost-events.ndjson. " +
+    "Each line is the raw ndjson record. Use `since` (e.g. `1h`, `30m`, `2026-10-01T00:00:00Z`) and `until` to scope the time window.",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({
+      since: z.string().optional(),
+      until: z.string().optional(),
+      limit: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/projects/{id}/workspaces",
   tags: ["projects"],

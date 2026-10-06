@@ -43,7 +43,12 @@ describe("operations parity commands", () => {
   });
 
   it("wraps cost, finance, and budget endpoints", async () => {
-    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.includes(`/api/projects/${PROJECT_ID}`) && !url.includes("/cost-events") && !url.includes("/workspaces")) {
+        return Promise.resolve(jsonResponse({ id: PROJECT_ID }));
+      }
+      return Promise.resolve(jsonResponse());
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     await run(["cost", "summary", "--company-id", COMPANY_ID]);
@@ -51,6 +56,7 @@ describe("operations parity commands", () => {
     await run(["cost", "by-project", "--company-id", COMPANY_ID]);
     await run(["cost", "issue", ISSUE_ID]);
     await run(["cost", "event:create", "--company-id", COMPANY_ID, "--payload-json", "{}"]);
+    await run(["cost", "tail", PROJECT_ID, "--company-id", COMPANY_ID, "--since", "1h"]);
     await run(["finance", "event:create", "--company-id", COMPANY_ID, "--payload-json", "{}"]);
     await run(["finance", "summary", "--company-id", COMPANY_ID]);
     await run(["budget", "overview", "--company-id", COMPANY_ID]);
@@ -65,6 +71,8 @@ describe("operations parity commands", () => {
       ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/costs/by-project`],
       ["GET", `http://localhost:3100/api/issues/${ISSUE_ID}/cost-summary`],
       ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/cost-events`],
+      ["GET", `http://localhost:3100/api/projects/${PROJECT_ID}?companyId=${COMPANY_ID}`],
+      ["GET", `http://localhost:3100/api/projects/${PROJECT_ID}/cost-events?since=1h&limit=500`],
       ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/finance-events`],
       ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/costs/finance-summary`],
       ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/budgets/overview`],

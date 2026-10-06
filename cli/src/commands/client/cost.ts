@@ -54,6 +54,67 @@ export function registerCostCommands(program: Command): void {
 
   addCompanyPostJson(cost, "event:create", "Record a cost event", "cost-events");
 
+  addCommonClientOptions(
+    cost
+      .command("tail")
+      .description(
+        "Read cost events from the workspace-relative mirror file (<cwd>/.changes/<YYYY-MM-DD>/cost-events.ndjson)",
+      )
+      .argument("<project>", "Project ID or shortname")
+      .option("-C, --company-id <id>", "Company ID (for shortname lookup)")
+      .option("--since <duration>", "Show events newer than this (e.g. 1h, 30m, 7d, 2026-10-01)", "1h")
+      .option("--until <duration>", "Upper bound; defaults to now")
+      .option("--limit <n>", "Maximum number of events to print", "500")
+      .action(
+        async (
+          projectRef: string,
+          opts: BaseClientOptions & {
+            companyId?: string;
+            since?: string;
+            until?: string;
+            limit?: string;
+          },
+        ) => {
+          try {
+            const ctx = resolveCommandContext(opts, { requireCompany: true });
+            const project = await ctx.api.get<{ id: string } | null>(
+              apiPath`/api/projects/${projectRef}` +
+                (ctx.companyId ? `?companyId=${encodeURIComponent(ctx.companyId)}` : ""),
+            );
+            if (!project || !project.id) {
+              throw new Error(`Project not found: ${projectRef}`);
+            }
+            const params = new URLSearchParams();
+            if (opts.since) params.set("since", opts.since);
+            if (opts.until) params.set("until", opts.until);
+            if (opts.limit) params.set("limit", opts.limit);
+            const query = params.toString();
+            const result = (await ctx.api.get(
+              `${apiPath`/api/projects/${project.id}/cost-events`}${query ? `?${query}` : ""}`,
+            )) as { projectId: string; cwd: string | null; events: string[] };
+            if (ctx.json) {
+              printOutput(result, { json: true });
+              return;
+            }
+            if (!result.cwd) {
+              console.error(`No primary workspace cwd for project ${result.projectId}; nothing to tail.`);
+              return;
+            }
+            if (result.events.length === 0) {
+              console.log(`(no cost events in ${result.cwd}/.changes since ${opts.since ?? "1h"})`);
+              return;
+            }
+            for (const line of result.events) {
+              process.stdout.write(`${line}\n`);
+            }
+          } catch (err) {
+            handleCommandError(err);
+          }
+        },
+      ),
+    { includeCompany: false },
+  );
+
   const finance = program.command("finance").description("Finance event and summary operations");
   addCompanyPostJson(finance, "event:create", "Record a finance event", "finance-events");
   addCompanyGet(finance, "events", "List finance events", "costs/finance-events");
