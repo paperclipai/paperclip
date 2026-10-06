@@ -9,7 +9,7 @@ vi.mock("../services/live-events.js", () => ({ publishLiveEvent: (e: any) => sin
 vi.mock("../services/instance-settings.js", () => ({ instanceSettingsService: () => ({ getGeneral: async () => ({ censorUsernameInLogs: false }) }) }));
 vi.mock("../telemetry.js", () => ({ getTelemetryClient: () => null }));
 vi.mock("../services/chat-interaction-publications.js", () => ({ enqueueTerminalIssueInteractionChatPublications: async (_tx: any, row: any) => { sink.chats.push(row.id); } }));
-function fixture(config: { lost?: boolean; laterError?: Error; activityError?: Error } = {}) {
+function fixture(config: { lost?: boolean; laterError?: Error; activityError?: Error; status?: string; missingIssue?: boolean } = {}) {
   sink.live.length = 0; sink.chats.length = 0;
   const queued: ActivityPublication[] = []; const patches: any[] = []; const queries: any[] = [];
   const row: any = { id: "interaction-1", issueId: "issue-1", companyId: "company-1", kind: "request_confirmation", status: "pending", result: null,
@@ -20,7 +20,7 @@ function fixture(config: { lost?: boolean; laterError?: Error; activityError?: E
     execute: async () => {},
     select: () => ({ from: (table: any) => ({ where: (q: any) => {
       queries.push(new PgDialect().sqlToQuery(q));
-      if (getTableName(table) === "issues") return { for: async () => [{ id: "issue-1", companyId: "company-1", status: "done" }] };
+      if (getTableName(table) === "issues") return { for: async () => config.missingIssue ? [] : [{ id: "issue-1", companyId: "company-1", status: config.status ?? "done" }] };
       expect(getTableName(table)).toBe("issue_thread_interactions"); return Promise.resolve(rows);
     } }) }),
     update: (table: any) => ({ set: (patch: any) => ({ where: (q: any) => {
@@ -72,8 +72,77 @@ describe("supplied terminal expiry caller-owned activity publication", () => {
     const f = fixture(); await expect((expirePendingInteractionsForTerminalIssueInTransaction as any)(f.tx, { id: "issue-1", companyId: "company-1" }, { userId: "user-1" })).rejects.toMatchObject({ status: 422 });
     expect(f.queries).toEqual([]); expect(f.patches).toEqual([]);
   });
-  it("retains ordinary inherited eager timing independently", async () => {
-    const f = fixture({ lost: true }); const rows = await issueThreadInteractionService(f.root).expirePendingInteractionsForTerminalIssue({ id: "issue-1", companyId: "company-1", status: "done" }, { userId: "user-1" });
+  it("owned opt-in waits for outer commit before publishing actual linked-secret activity", async () => {
+    const f = fixture(); let entered!: () => void; let commit!: () => void;
+    const barrier = new Promise<void>(r => { commit = r; });
+    const callbackDone = new Promise<void>(r => { entered = r; });
+    f.root.transaction = async (cb: any) => { const rows = await cb(f.tx); entered(); await barrier; return rows; };
+    const operation = (issueThreadInteractionService(f.root).expirePendingInteractionsForTerminalIssue as any)(
+      { id: "issue-1", companyId: "company-1", status: "done" }, { userId: "user-1" }, { lifecycleFence: true },
+    );
+    try {
+      expect(await Promise.race([callbackDone.then(() => "callback"), operation.then(() => "settled", () => "rejected")])).toBe("callback");
+      expect(sink.live).toEqual([]);
+    } finally { commit(); await operation; }
+    expect((await operation)[0].status).toBe("expired");
+    expect(sink.live).toHaveLength(1); expect(f.queued).toEqual([]);
+  });
+  it("owned opt-in discards publications when outer commit rejects", async () => {
+    const f = fixture(); const error = new Error("commit-rejected");
+    f.root.transaction = async (cb: any) => { await cb(f.tx); throw error; };
+    await expect((issueThreadInteractionService(f.root).expirePendingInteractionsForTerminalIssue as any)(
+      { id: "issue-1", companyId: "company-1", status: "done" }, { userId: "user-1" }, { lifecycleFence: true },
+    )).rejects.toBe(error);
+    expect(sink.live).toEqual([]); expect(f.patches.some(p => p.name === "activity_log")).toBe(true);
+    // Eager recording rows remain; rejection is not database rollback evidence.
+  });
+  it("owned opt-in captures routing and actor before deferred startup and ignores caller status", async () => {
+    const f = fixture(); let start!: () => void;
+    const startup = new Promise<void>(r => { start = r; });
+    f.root.select = () => { throw new Error("root-read"); };
+    f.root.transaction = async (cb: any) => { await startup; return cb(f.tx); };
+    const input = { id: "issue-1", companyId: "company-1", status: "blocked" }; const actor = { userId: "user-1" };
+    const operation = (issueThreadInteractionService(f.root).expirePendingInteractionsForTerminalIssue as any)(input, actor, { lifecycleFence: true });
+    input.id = "retargeted"; input.companyId = "other-company"; actor.userId = "other-user"; start();
+    expect((await operation)[0].status).toBe("expired");
+    expect(f.queries[0].params).toEqual(["issue-1", "company-1"]);
+    expect(sink.live[0].payload.actorId).toBe("user-1");
+  });
+  it.each(["blocked", "in_progress"])("owned opt-in authoritative %s veto has no activity or touch", async status => {
+    const f = fixture({ status });
+    const rows = await (issueThreadInteractionService(f.root).expirePendingInteractionsForTerminalIssue as any)(
+      { id: "issue-1", companyId: "company-1", status: "done" }, { userId: "user-1" }, { lifecycleFence: true },
+    );
+    expect(rows).toEqual([]); expect(f.patches).toEqual([]); expect(sink.live).toEqual([]);
+  });
+  it("owned opt-in propagates later row failure without publishing earlier activity", async () => {
+    const error = new Error("later-row"); const f = fixture({ laterError: error });
+    await expect((issueThreadInteractionService(f.root).expirePendingInteractionsForTerminalIssue as any)(
+      { id: "issue-1", companyId: "company-1", status: "done" }, { userId: "user-1" }, { lifecycleFence: true },
+    )).rejects.toBe(error); expect(sink.live).toEqual([]);
+    expect(f.patches.filter(p => p.name === "issues")).toEqual([]);
+  });
+  it("owned opt-in rejects missing company before transaction startup", async () => {
+    const f = fixture(); f.root.transaction = () => { throw new Error("unexpected-startup"); };
+    await expect((issueThreadInteractionService(f.root).expirePendingInteractionsForTerminalIssue as any)(
+      { id: "issue-1", companyId: "", status: "done" }, {}, { lifecycleFence: true },
+    )).rejects.toMatchObject({ status: 422 }); expect(f.queries).toEqual([]);
+  });
+  it("owned opt-in fence rejection precedes all domain reads and effects", async () => {
+    const error = new Error("fence-rejected"); const f = fixture(); f.tx.execute = async () => { throw error; };
+    await expect((issueThreadInteractionService(f.root).expirePendingInteractionsForTerminalIssue as any)(
+      { id: "issue-1", companyId: "company-1", status: "done" }, { userId: "user-1" }, { lifecycleFence: true },
+    )).rejects.toBe(error); expect(f.queries).toEqual([]); expect(f.patches).toEqual([]); expect(sink.live).toEqual([]);
+  });
+  it("owned opt-in post-commit touch failure does not reinterpret successful commit", async () => {
+    const f = fixture(); const error = new Error("touch-rejected");
+    f.root.update = () => { throw error; };
+    await expect((issueThreadInteractionService(f.root).expirePendingInteractionsForTerminalIssue as any)(
+      { id: "issue-1", companyId: "company-1", status: "done" }, { userId: "user-1" }, { lifecycleFence: true },
+    )).rejects.toBe(error); expect(sink.live).toHaveLength(1);
+  });
+  it.each([undefined, false])("retains ordinary inherited eager timing independently opt-in=%s", async lifecycleFence => {
+    const f = fixture({ lost: true }); const rows = await issueThreadInteractionService(f.root).expirePendingInteractionsForTerminalIssue({ id: "issue-1", companyId: "company-1", status: "done" }, { userId: "user-1" }, { lifecycleFence });
     expect(rows).toEqual([]); expect(sink.live).toHaveLength(1); expect(f.queued).toEqual([]);
   });
 });

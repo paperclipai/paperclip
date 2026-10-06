@@ -4819,7 +4819,31 @@ export function issueThreadInteractionService(
     expirePendingInteractionsForTerminalIssue: async (
       issue: { id: string; companyId: string; status: string },
       actor: InteractionActor = {},
+      options: { lifecycleFence?: boolean } = {},
     ) => {
+      if (options.lifecycleFence) {
+        const capturedIssue = { id: issue.id, companyId: issue.companyId };
+        const capturedActor = { agentId: actor.agentId, userId: actor.userId, systemId: actor.systemId };
+        if (!capturedIssue.companyId) throw unprocessable("Lifecycle terminal expiry requires companyId");
+        // Fresh queue is private to this outer transaction. Never flush on a
+        // callback or commit rejection, nor accept caller-owned pending entries.
+        const publications: ActivityPublication[] = [];
+        let expired: IssueThreadInteraction[];
+        try {
+          expired = await db.transaction((tx) => expirePendingInteractionsForTerminalIssueInTransaction(
+            tx, capturedIssue, capturedActor, { postCommitPublications: publications },
+          ));
+        } catch (error) {
+          publications.length = 0;
+          throw error;
+        }
+        for (const publication of publications.splice(0)) publishActivity(publication);
+        if (expired.length > 0) {
+          await touchIssue(db, capturedIssue.id);
+          await emitResolvedInteractionsTelemetry(db, expired);
+        }
+        return expired;
+      }
       if (!isTerminalIssueStatus(issue.status)) return [];
       const rows = await db
         .select()
