@@ -36,7 +36,7 @@ describe("capability semantic conformance vectors", () => {
       "document-create": { outcome: "allowed" },
       "document-stale-revision": { outcome: "denied", code: "document_revision_conflict" },
       "continuation-request": { outcome: "allowed" },
-      "terminal-with-dependency": { outcome: "allowed" },
+      "terminal-with-dependency": { outcome: "denied", code: "semantic_rule_violation" },
       "terminal-finish": { outcome: "allowed" },
     });
     expect(report.rows.find((row) => row.vectorId === "progress-duplicate-retry")?.observation)
@@ -48,8 +48,11 @@ describe("capability semantic conformance vectors", () => {
       });
     expect(report.rows.find((row) => row.vectorId === "terminal-finish")?.observation.state)
       .toMatchObject({ task: { status: "done" } });
-    expect(report.rows.find((row) => row.vectorId === "terminal-with-dependency")?.observation.state)
-      .toMatchObject({ task: { status: "done" }, dependencies: [expect.any(String)] });
+    expect(report.rows.find((row) => row.vectorId === "terminal-with-dependency")?.observation)
+      .toMatchObject({
+        state: { task: { status: "in_progress" }, dependencies: [expect.any(String)], comments: [] },
+        effects: [], audit: [],
+      });
     expect(report.rows.every((row) => row.observation.receipt?.operationReceiptPresent === true))
       .toBe(true);
     expect(report.rows.find((row) => row.vectorId === "document-stale-revision")?.observation.receipt)

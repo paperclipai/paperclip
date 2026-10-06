@@ -1,6 +1,10 @@
+import { reconcileReviewDependencyHolds } from "../services/review-dependency-hold.js";
+import { eq } from "drizzle-orm";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agentWakeupRequests,
   agents,
   approvals,
@@ -9,6 +13,7 @@ import {
   heartbeatRuns,
   issueApprovals,
   issueRecoveryActions,
+  issueRelations,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -45,8 +50,10 @@ describeEmbeddedPostgres("issue review attention", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(agents);
+    await db.delete(activityLog);
     await db.delete(companies);
   });
 
@@ -98,6 +105,143 @@ describeEmbeddedPostgres("issue review attention", () => {
     });
     return id;
   }
+
+  it.each(["in_review", "in_progress"])("records approval while awaiting blockers from %s and completes after the last blocker resolves", async (status) => {
+    const { companyId, agentId } = await seed();
+    const stageId = randomUUID();
+    const participant = { type: "agent" as const, agentId, userId: null };
+    const policy = normalizeIssueExecutionPolicy({ mode: "normal", stages: [
+      { id: stageId, type: "review", participants: [participant] },
+    ] });
+    const issueId = await insertReview({ companyId, agentId, identifier: "RVA-101", executionPolicy: policy,
+      executionState: { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review",
+        currentParticipant: participant, returnAssignee: null, reviewRequest: null, completedStageIds: [],
+        lastDecisionId: null, lastDecisionOutcome: null } });
+    await db.update(issues).set({ status }).where(eq(issues.id, issueId));
+    const blockerIds = [randomUUID(), randomUUID()];
+    await db.insert(issues).values(blockerIds.map((id, index) => ({ id, companyId, title: `Prerequisite ${index}`,
+      identifier: `RVA-${102 + index}`, status: "backlog" })));
+    await db.insert(issueRelations).values(blockerIds.map((id) => ({ companyId, issueId: id,
+      relatedIssueId: issueId, type: "blocks" })));
+    const issue = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+    const transition = applyIssueExecutionPolicyTransition({ issue, policy, requestedStatus: "done",
+      actor: { agentId, userId: null }, requestedAssigneePatch: {}, allowBoardOverride: false, commentBody: "Approved after review" });
+    expect(transition.decision?.outcome).toBe("approved");
+    const held = await svc.update(issueId, { status: "done", ...transition.patch });
+    expect(held?.status).toBe(status);
+    expect(held?.completedAt).toBeNull();
+    expect(held?.executionState).toMatchObject({ status: "completed", completedStageIds: [stageId],
+      dependencyHold: { unresolvedBlockerIssueIds: expect.arrayContaining(blockerIds) } });
+    const attention = (await svc.listReviewAttention(companyId, [{ id: issueId, companyId, status: "in_review" }])).get(issueId);
+    expect(attention).toMatchObject({ state: "covered" });
+    expect(attention?.reason).toContain("RVA-102");
+    expect(attention?.reason).toContain("RVA-103");
+    await svc.update(blockerIds[0], { status: "done" });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe(status);
+    await svc.update(blockerIds[1], { status: "done" });
+    const completed = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+    expect(completed.status).toBe("done");
+    expect(completed.executionState).toMatchObject({ status: "completed", dependencyHold: null });
+  });
+
+  async function seedApprovedHold(companyId: string, agentId: string, blockerId: string, index: number) {
+    const stageId = randomUUID();
+    return insertReview({ companyId, agentId, identifier: `RVA-${200 + index}`,
+      executionPolicy: normalizeIssueExecutionPolicy({ stages: [{ id: stageId, type: "review",
+        participants: [{ type: "agent", agentId }] }] }),
+      executionState: { status: "completed", currentStageId: null, currentStageIndex: null,
+        currentStageType: null, currentParticipant: null, returnAssignee: null,
+        completedStageIds: [stageId], lastDecisionId: randomUUID(), lastDecisionOutcome: "approved",
+        dependencyHold: { heldAt: new Date().toISOString(), unresolvedBlockerIssueIds: [blockerId] } },
+    });
+  }
+
+  it.each(["active", "resolved"])("preserves a %s execution reconciliation hold after blockers resolve", async (status) => {
+    const { companyId, agentId } = await seed();
+    const blockerId = await insertReview({ companyId, agentId, identifier: "RVA-199" });
+    const issueId = await seedApprovedHold(companyId, agentId, blockerId, 0);
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "execution_reconciliation", cause: "legacy_execution_requires_reconciliation", status,
+      fingerprint: randomUUID(), nextAction: "Reconcile the stopped execution",
+      evidence: status === "resolved" ? { automaticRecovery: { replay: "blocked" } } : {},
+    });
+    await svc.update(blockerId, { status: "done" });
+    expect((await svc.getById(issueId))?.status).toBe("in_review");
+    await db.delete(issueRecoveryActions);
+    expect(await reconcileReviewDependencyHolds(db, { companyId, blockerIssueId: blockerId })).toEqual([issueId]);
+    expect((await svc.getById(issueId))?.status).toBe("done");
+  });
+
+  it("reconciles all 101 approved dependents in a targeted pass", async () => {
+    const { companyId, agentId } = await seed();
+    const blockerId = await insertReview({ companyId, agentId, identifier: "RVA-199" });
+    const ids: string[] = [];
+    for (let index = 0; index < 101; index++) ids.push(await seedApprovedHold(companyId, agentId, blockerId, index));
+    await db.insert(issueRelations).values(ids.map((id) => ({ companyId, issueId: blockerId, relatedIssueId: id, type: "blocks" })));
+    // Directly settle the prerequisite so this assertion observes exactly one targeted pass.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
+    expect(await reconcileReviewDependencyHolds(db, { companyId, blockerIssueId: blockerId })).toHaveLength(101);
+    expect((await db.select().from(issues)).filter((row) => ids.includes(row.id) && row.status === "done")).toHaveLength(101);
+  });
+
+  it("preflights proposed blocker sets without editing stored relations", async () => {
+    const { companyId, agentId } = await seed();
+    const issueId = await insertReview({ companyId, agentId, identifier: "RVA-400" });
+    const blockerId = await insertReview({ companyId, agentId, identifier: "RVA-401" });
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, blockerId));
+    expect(await svc.getDependencyReadiness(issueId, db, [blockerId])).toMatchObject({
+      isDependencyReady: false, unresolvedBlockerIssueIds: [blockerId],
+    });
+    expect(await svc.getDependencyReadiness(issueId)).toMatchObject({ isDependencyReady: true });
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+    expect(await svc.getDependencyReadiness(issueId, db, [])).toMatchObject({ isDependencyReady: true });
+    expect(await svc.getDependencyReadiness(issueId)).toMatchObject({ isDependencyReady: false });
+  });
+
+  it.each(["missing", "cross-company", "self", "cycle"])("rejects %s proposed blockers during approval preflight", async (kind) => {
+    const { companyId, agentId } = await seed();
+    const issueId = await insertReview({ companyId, agentId, identifier: "RVA-410" });
+    let blockerId = randomUUID();
+    if (kind === "cross-company") {
+      const otherCompanyId = randomUUID();
+      await db.insert(companies).values({ id: otherCompanyId, name: "Other company", issuePrefix: "OTHER" });
+      await db.insert(issues).values({ id: blockerId, companyId: otherCompanyId, title: "Private blocker", status: "done" });
+    } else if (kind === "self") {
+      blockerId = issueId;
+    } else if (kind === "cycle") {
+      await db.insert(issues).values({ id: blockerId, companyId, title: "Dependent", status: "done" });
+      await db.insert(issueRelations).values({ companyId, issueId, relatedIssueId: blockerId, type: "blocks" });
+    }
+    const before = await svc.getById(issueId);
+    await expect(svc.getDependencyReadiness(issueId, db, [blockerId])).rejects.toThrow(
+      kind === "self" ? "Issue cannot be blocked by itself"
+        : kind === "cycle" ? "Blocking relations cannot contain cycles"
+        : "Blocked-by issues must belong to the same company",
+    );
+    expect(await svc.getById(issueId)).toEqual(before);
+    expect(await svc.getDependencyReadiness(issueId)).toMatchObject({ isDependencyReady: true });
+  });
+
+  it("accepts duplicate valid proposed blockers without mutating relations", async () => {
+    const { companyId, agentId } = await seed();
+    const issueId = await insertReview({ companyId, agentId, identifier: "RVA-420" });
+    const blockerId = randomUUID();
+    await db.insert(issues).values({ id: blockerId, companyId, title: "Complete", status: "done" });
+    expect(await svc.getDependencyReadiness(issueId, db, [blockerId, blockerId])).toMatchObject({
+      isDependencyReady: true, blockerIssueIds: [blockerId],
+    });
+    expect(await svc.getDependencyReadiness(issueId)).toMatchObject({ blockerIssueIds: [] });
+  });
+
+  it("refuses a builder completing an issue with unresolved blockers", async () => {
+    const { companyId, agentId } = await seed();
+    const issueId = await insertReview({ companyId, agentId, identifier: "RVA-104" });
+    const blockerId = randomUUID();
+    await db.insert(issues).values({ id: blockerId, companyId, title: "Unfinished prerequisite", status: "todo" });
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+    await expect(svc.update(issueId, { status: "done" })).rejects.toThrow("Issue is blocked by unresolved blockers");
+  });
 
   it("surfaces a pathless agent-owned review as stalled and a queued recovery as covered", async () => {
     const { companyId, agentId } = await seed();

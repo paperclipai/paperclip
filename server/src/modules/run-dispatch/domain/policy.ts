@@ -97,6 +97,7 @@ export type ScheduledRetryFacts = {
   issueCheckoutRunId?: string | null;
 
   isNonAssigneeWorkspaceBusyRetry: boolean;
+  isCurrentStageParticipant?: boolean;
   reviewParticipant: ReviewParticipantFacts;
   activePauseHold: PauseHoldFacts | null;
   dependenciesBlocked: DependencyBlockFacts | null;
@@ -108,6 +109,7 @@ export type ScheduledRetryFacts = {
 };
 
 export type QueuedRunStalenessErrorCode =
+  | "issue_comment_already_answered"
   | "execution_reconciliation_required"
   | "issue_dependencies_blocked"
   | "issue_not_found"
@@ -129,6 +131,7 @@ export type StalenessDecision =
     };
 
 export type QueuedRunFacts = {
+  answeredAutomationCommentWake?: boolean;
   /** Rechecked for automatic native replacements immediately before dispatch. */
   dependenciesBlocked?: DependencyBlockFacts | null;
   runId: string;
@@ -162,6 +165,7 @@ export type QueuedRunFacts = {
   wakeReason: string | null;
   retryReason: string | null;
 
+  isCurrentStageParticipant?: boolean;
   reviewParticipant: ReviewParticipantFacts;
 };
 
@@ -462,7 +466,7 @@ export function decideScheduledRetryGate(
     };
   }
 
-  if (facts.dependenciesBlocked) {
+  if (facts.dependenciesBlocked && !facts.isCurrentStageParticipant) {
     return {
       allowed: false,
       reason: "Scheduled retry suppressed because issue dependencies are still blocked",
@@ -505,6 +509,12 @@ export function decideQueuedRunStaleness(
       reason: "Cancelled because the target issue no longer exists",
       details: { issueId: facts.issueId },
     };
+  }
+
+  if (facts.answeredAutomationCommentWake) {
+    return { stale: true, errorCode: "issue_comment_already_answered",
+      reason: "Cancelled because the automation comments were already delivered to a run that replied",
+      details: { issueId: facts.issueId } };
   }
 
   if (facts.isResolvedInteractionContinuation || facts.isConnectionContinuation) {
@@ -586,7 +596,7 @@ export function decideQueuedRunStaleness(
     };
   }
 
-  if (facts.retryReasonKind === "native_safe_replacement" && facts.dependenciesBlocked) {
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.dependenciesBlocked && !facts.isCurrentStageParticipant) {
     return { stale: true, errorCode: "issue_dependencies_blocked",
       reason: "Cancelled because issue dependencies became blocked before replacement dispatch",
       details: { issueId: facts.issueId,

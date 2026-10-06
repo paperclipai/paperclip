@@ -1,3 +1,4 @@
+import { reconcileReviewDependencyHolds } from "../review-dependency-hold.js";
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
@@ -5537,6 +5538,7 @@ export function recoveryService(
   async function reconcileResolvedDependencyWakeBackstop(
     opts?: ResolvedDependencyWakeBackstopOptions,
   ) {
+    await reconcileReviewDependencyHolds(db, { companyId: opts?.companyId, blockerIssueId: opts?.blockerIssueId });
     const result = {
       checked: 0,
       healed: 0,
