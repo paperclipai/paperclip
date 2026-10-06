@@ -542,6 +542,19 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await current(agent.id)).lifecycleState).toBe("terminated");
   });
 
+  it("stops waiting on a conversation turn cancelled before dispatch", async () => {
+    const agent = await hire();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id,
+      status: "cancelled", errorCode: "cancelled", invocationSource: "on_demand",
+      runtimeMode: "legacy", runtimeModeResolvedAt: new Date(), executionStage: "preparing",
+      runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
+      controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(0),
+      startedAt: new Date(), finishedAt: new Date() }).returning();
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+    await db.update(heartbeatRuns).set({ executionStage: "dispatching" }).where(eq(heartbeatRuns.id, run.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+  });
+
   it("does not cancel a reporting agent when its manager pauses", async () => {
     const parent = await hire();
     const [child] = await db.insert(agents).values({ companyId, name: "Report", reportsTo: parent.id,

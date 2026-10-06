@@ -1781,6 +1781,78 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     },
   );
 
+  async function seedLegacyConversationCancelledBeforeDispatch(fence = true) {
+    const f = await seedHistoricalCancelledPreparation();
+    await db.update(heartbeatRuns).set({ errorCode: "cancelled",
+      runtimeModeResolvedAt: fence ? null : new Date("2026-09-11T10:00:01Z"),
+      runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
+      resultJson: fence
+        ? { stopReason: "cancelled", cancelledByActorType: "user",
+          startupCancellation: { beforeNativeSelection: false, requestedAt: "2026-09-11T10:00:00Z" } }
+        : { stopReason: "cancelled", cancelledByActorType: "user" },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    return f;
+  }
+
+  it.each([true, false].flatMap(fence => ["message", "retry"].map(kind => ({ fence, kind }))))(
+    "recovers a conversation turn cancelled before dispatch through an explicit $kind (fence: $fence)", async ({ fence, kind }) => {
+      const f = await seedLegacyConversationCancelledBeforeDispatch(fence);
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+      expect(await admit(f, true)).toBeNull();
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+      const successor = await heartbeatService(db).wakeup(f.agentId, {
+        source: "on_demand", triggerDetail: "manual", reason: kind === "retry" ? "retry_failed_run" : "issue_commented",
+        ...(kind === "retry" ? { failedRunId: f.sourceRunId } : {}), requestedByActorType: "user", requestedByActorId: "board",
+        payload: { issueId: f.issueId, ...(kind === "message" ? { commentId: f.commentId } : {}) },
+        contextSnapshot: { issueId: f.issueId, ...(kind === "message" ? { wakeCommentId: f.commentId } : {}) },
+      });
+      expect(successor).toMatchObject({ status: "queued", contextSnapshot: kind === "retry"
+        ? { forceFreshSession: true, previousRunId: f.sourceRunId }
+        : { wakeCommentId: f.commentId } });
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+      expect(source).toMatchObject({ status: "cancelled", runtimeMode: "legacy", executionStage: "preparing" });
+    },
+  );
+
+  it.each([true, false].flatMap(fence => ["dispatching", "no_stage", "native_mode", "process_adapter", "runner_adapter",
+    "no_adapter", "missing_boot", "current_boot", "missing_lease", "live_lease", "session", "launch", "invoked", "coordinator",
+    "cleanup", "remote",
+  ].map(kind => ({ fence, kind }))))(
+    "holds a conversation turn cancelled before dispatch with contradictory or incomplete $kind evidence (fence: $fence)", async ({ fence, kind }) => {
+      const f = await seedLegacyConversationCancelledBeforeDispatch(fence);
+      const patch = kind === "dispatching" ? { executionStage: "dispatching" }
+        : kind === "no_stage" ? { executionStage: null }
+        : kind === "native_mode" ? { runtimeMode: "native" as const }
+        : kind === "process_adapter" ? { runnerProfileJson: { adapterDispatch: { adapterType: "process" } } }
+        : kind === "runner_adapter" ? { runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } }
+        : kind === "no_adapter" ? { runnerProfileJson: null }
+        : kind === "missing_boot" ? { controllerBootId: null }
+        : kind === "current_boot" ? { controllerBootId: legacyControllerBootId }
+        : kind === "missing_lease" ? { controllerLeaseExpiresAt: null }
+        : kind === "live_lease" ? { controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }
+        : kind === "session" ? { sessionIdAfter: randomUUID() } : {};
+      if (Object.keys(patch).length) await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "launch" || kind === "invoked") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
+        agentId: f.agentId, runId: f.sourceRunId, seq: 1,
+        eventType: kind === "launch" ? PROCESS_START_REQUESTED : "adapter.invoke", payload: { adapterType: "codex_local" } });
+      if (kind === "coordinator") {
+        await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId }).where(eq(heartbeatRuns.id, f.sourceRunId));
+        await db.insert(nativeRunFinalizations).values({ companyId: f.companyId,
+          runId: f.sourceRunId, issueId: f.issueId, phase: "observed", attempt: 0 });
+      }
+      if (kind === "cleanup" || kind === "remote") await db.insert(environmentLeases).values({ companyId: f.companyId,
+        heartbeatRunId: f.sourceRunId, provider: kind === "remote" ? "daytona" : "local",
+        providerLeaseId: kind === "remote" ? "unverified" : null, leasePolicy: "ephemeral",
+        status: "pending_cleanup", cleanupStatus: "failed" });
+      const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+      expect(blocker).not.toBeNull();
+      expect(blocker?.canRetry ?? false).toBe(false);
+      if (kind !== "native_mode") expect(await admit(f)).toBeNull();
+      await db.delete(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.sourceRunId));
+    },
+  );
+
   it.each(["attempt", "generation", "controller", "lease", "process", "launch", "provider", "cleanup", "remote", "preparing", "closed", "reassigned"])(
     "retains cancellation safeguards with %s evidence", async kind => {
       const f = await seedCancelledStartup();

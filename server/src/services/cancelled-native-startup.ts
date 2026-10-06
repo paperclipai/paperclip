@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { and, eq, gt, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueTreeHolds, issueTreeHoldMembers, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
-import { claimedAdapterType } from "./conversation-continuation.js";
+import { claimedAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
@@ -267,8 +267,13 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
     run.runnerProfileJson?.nativeExecutionInput == null && run.runnerProfileJson?.nativeWorkspaceSync == null &&
     run.runnerProfileJson?.remoteWorkspace == null && run.resultJson?.workspaceRestoreFailure == null &&
     !hasRequiredWorkspaceRecovery(run.resultJson));
+  const legacyBeforeDispatch = run.runtimeMode === "legacy" &&
+    run.executionStage === "preparing" && !run.nativeIssueId && !run.nativeSessionId && !coordinator &&
+    isConversationAdapter(claimedAdapterType(run) ?? "") &&
+    Boolean(run.controllerBootId && run.controllerBootId !== legacyControllerBootId &&
+      run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt <= new Date());
   const unclaimedWorkspaceRetry = !coordinator && await isCancelledUnclaimedWorkspaceWaitRetry(db, run);
-  const beforeSelection = beforeDispatch || unclaimedWorkspaceRetry || historicalBeforeSelection || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
+  const beforeSelection = beforeDispatch || unclaimedWorkspaceRetry || historicalBeforeSelection || legacyBeforeDispatch || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
     !run.nativeSessionId && !coordinator && claimedAdapterType(run) === "paperclip_runner" &&
     cancellation?.beforeNativeSelection === true;
   const neverClaimed = run.runtimeMode === "native" && coordinator &&
@@ -283,7 +288,7 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   ));
-  if ((!settled && leases.length === 0 && !historicalBeforeSelection) || leases.some(lease =>
+  if ((!settled && leases.length === 0 && !historicalBeforeSelection && !legacyBeforeDispatch) || leases.some(lease =>
     lease.metadata?.pendingCleanupInFlight === true || (lease.provider === "local"
       ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
       : !hasRemoteTerminationReceipt(lease)))) return false;
