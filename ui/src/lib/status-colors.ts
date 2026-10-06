@@ -5,6 +5,8 @@
  * agent status dots, etc.) should import from here so colors stay consistent.
  */
 
+import type { ProjectStatus } from "@paperclipai/shared";
+
 // ---------------------------------------------------------------------------
 // Issue status colors
 // ---------------------------------------------------------------------------
@@ -136,6 +138,27 @@ export const statusBadge: Record<string, string> = {
 };
 
 export const statusBadgeDefault = "bg-muted text-muted-foreground";
+
+// ---------------------------------------------------------------------------
+// Project status colors
+//
+// The generic `statusBadge` map covers some of these names, but `backlog`,
+// `planned`, and `cancelled` all collapse to the same muted recipe there, so
+// the five project statuses would not read as distinct in a picker list.
+// Projects get a dedicated map built from the brand chip families: `backlog`
+// stays inert gray, `planned` rides the amber "queued" family, `in_progress`
+// is the liveness blue, `completed` is green, and `cancelled` is red so it
+// never reads as backlog. Shared names (`planned`, `cancelled`) keep their
+// generic-map recipes for goals and issues; only project chips change.
+// ---------------------------------------------------------------------------
+
+export const projectStatusBadge: Record<ProjectStatus, string> = {
+  backlog: `border ${brandChipBadge.gray}`,
+  planned: `border ${brandChipBadge.amber}`,
+  in_progress: `border ${brandChipBadge.blue}`,
+  completed: `border ${brandChipBadge.green}`,
+  cancelled: `border ${brandChipBadge.red}`,
+};
 
 // ---------------------------------------------------------------------------
 // Agent status — brand state system (PAP-75)
