@@ -60,6 +60,79 @@ or rotate the saved value. The connection is tested before the agent is created;
 being listed does not guarantee that a provider still accepts the credential.
 These choices also apply to the Claude and Codex native runner setup paths.
 
+### Connecting a subscription through the API
+
+The sign-in API saves an account and its requested agent installs. It does not
+install the account for every agent by default. If you omit `allAgents` and
+`agentIds`, they default to `false` and `[]`. The account is saved with no installs,
+so a later agent binding can fail with `This connection is not permitted for this agent`.
+
+Choose the install targets when you start the local sign-in:
+
+- Set `agentIds` to the existing agents that will use this account.
+- Set `allAgents: true` to create a company install. This requires a connection
+  manager: a local operator, instance administrator, organization owner or admin,
+  or a user with `tools:manage_connections` permission.
+- A user without that permission can select specific agents only when they can
+  update each agent's configuration. Viewers cannot create connections.
+
+For example, send this body to
+`POST /api/companies/:companyId/ai-connections/local/attempts`. Replace the example
+agent UUID with the target agent's ID:
+
+```json
+{
+  "provider": "anthropic",
+  "method": "subscription",
+  "name": "Claude subscription",
+  "ownership": "personal",
+  "agentIds": ["11111111-1111-4111-8111-111111111111"],
+  "allAgents": false
+}
+```
+
+Complete the returned sign-in command, then send the same intent to
+`POST /api/companies/:companyId/ai-connections/local`. Add `localSessionId` from the
+attempt response. The example session UUID below must be replaced with that value:
+
+```json
+{
+  "provider": "anthropic",
+  "method": "subscription",
+  "name": "Claude subscription",
+  "ownership": "personal",
+  "agentIds": ["11111111-1111-4111-8111-111111111111"],
+  "allAgents": false,
+  "localSessionId": "22222222-2222-4222-8222-222222222222"
+}
+```
+
+Keep the provider, method, ownership, connection ID, and install targets identical
+between the two requests. The server checks the completion against the saved intent.
+Local sign-in must be available on the server. Do not send a provider credential
+in these request bodies.
+
+Check `GET /api/tool-connections/:connectionId/installs` after completion. If an
+existing account has no installs, an operator with the required access can set the desired targets
+with `PUT /api/tool-connections/:connectionId/installs`. This example enables the
+account for one agent:
+
+```json
+{
+  "installs": [
+    {
+      "targetType": "agent",
+      "targetId": "11111111-1111-4111-8111-111111111111"
+    }
+  ]
+}
+```
+
+The PUT replaces the install list. Keep any existing entries that must remain.
+Reconnecting an account preserves its installs; changing `allAgents` in a
+reconnect request does not change those installs. Agent installs and human access
+are separate checks. An install does not share a personal credential with another user.
+
 ## Agent Hiring via Governance
 
 Agents can request to hire subordinates. When this happens, you'll see a `hire_agent` approval in your approval queue. Review the proposed agent config and approve or reject.
