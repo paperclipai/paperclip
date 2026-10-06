@@ -1608,8 +1608,10 @@ function StreamlinedIssuesList({
     && !isLoading
     && (hasMoreRenderedRows || (hasMoreIssues && !isLoadingMoreIssues));
 
+  const canAutomaticallyLoadMoreIssues = canLoadMoreIssues && !error;
+
   useEffect(() => {
-    if (!canLoadMoreIssues) return;
+    if (!canAutomaticallyLoadMoreIssues) return;
     let animationFrameId: number | null = null;
     const scrollContainer = findIssuesScrollContainer(rootRef.current);
     const scrollTarget: Window | HTMLElement = scrollContainer ?? window;
@@ -1641,7 +1643,7 @@ function StreamlinedIssuesList({
       window.removeEventListener("resize", handleResize);
       if (animationFrameId !== null) window.cancelAnimationFrame(animationFrameId);
     };
-  }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
+  }, [canAutomaticallyLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
 
   const newIssueDefaults = useCallback((group?: { key: string; items: Issue[] }) => {
     const groupKey = group?.key;
@@ -2020,10 +2022,12 @@ function StreamlinedIssuesList({
       {!isLoading && !externalObjectFilterLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message={hasMoreIssues || isLoadingMoreIssues
-            ? "Loading more tasks to check the current filters..."
-            : "No tasks match the current filters or search."}
-          action={createActionLabel}
+          message={error && hasMoreIssues
+            ? "More tasks could not be loaded. Use Load more tasks to try again."
+            : hasMoreIssues || isLoadingMoreIssues
+              ? "Loading more tasks to check the current filters..."
+              : "No tasks match the current filters or search."}
+          action={hasMoreIssues || isLoadingMoreIssues ? undefined : createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
       )}

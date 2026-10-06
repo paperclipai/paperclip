@@ -1703,6 +1703,35 @@ describe("IssuesList", () => {
     act(() => { root.unmount(); });
   });
 
+  it("stops automatic page requests after an error and lets the button retry", async () => {
+    const requests = vi.fn();
+    setDocumentScrollMetrics({ innerHeight: 600, scrollY: 0, scrollHeight: 100 });
+    function FailingPages() {
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState<Error | null>(null);
+      return <IssuesList issues={[]} agents={[]} projects={[]} viewStateKey="paperclip:test-page-errors"
+        hasMoreIssues isLoadingMoreIssues={loading} error={error}
+        onLoadMoreIssues={() => {
+          requests(); setLoading(true);
+          setTimeout(() => { setError(new Error("Page request failed")); setLoading(false); }, 0);
+        }} onUpdateIssue={() => undefined} />;
+    }
+    const { root } = renderWithQueryClient(<FailingPages />, container);
+    await waitForAssertion(() => { expect(container.textContent).toContain("Page request failed"); }, 100);
+    await flushAnimationFrame();
+    await flush();
+    expect(requests).toHaveBeenCalledTimes(1);
+    act(() => {
+      const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Load more tasks")!;
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForAssertion(() => { expect(requests).toHaveBeenCalledTimes(2); });
+    await flushAnimationFrame();
+    await flush();
+    expect(requests).toHaveBeenCalledTimes(2);
+    act(() => { root.unmount(); });
+  });
+
   it("requests more server issues after scrolling past the rendered rows", async () => {
     const visibleIssues = Array.from({ length: 100 }, (_, index) =>
       createIssue({
