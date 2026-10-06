@@ -2606,6 +2606,44 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: true, reason: "allow_explicit_grant" });
   });
 
+  it("keeps a default inbox grant within the responsible user's policy", async () => {
+    const company = await createCompany(db, "InboxDefaultScoped");
+    const actorAgent = await createAgent(db, company.id);
+    const responsibleUserId = await createUser(db);
+    const disabledUserId = await createUser(db);
+    const disallowedUserId = await createUser(db);
+    await db.insert(companyMemberships).values(
+      [responsibleUserId, disabledUserId, disallowedUserId].map((principalId) => ({
+        companyId: company.id,
+        principalType: "user" as const,
+        principalId,
+        status: "active" as const,
+        membershipRole: "operator" as const,
+      })),
+    );
+    await db.insert(userInboxAgentPolicies).values([
+      { companyId: company.id, userId: disabledUserId, mode: "disabled" },
+      { companyId: company.id, userId: disallowedUserId, mode: "allowlist", allowedAgentIds: [] },
+    ]);
+    await grantAgentPermission(db, company.id, actorAgent.id, "inbox:manage", { responsibleUserOnly: true });
+    const decideFor = (userId: string) => authorizationService(db).decide({
+      actor: {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt" as const,
+      },
+      action: "inbox:manage" as const,
+      resource: { type: "company" as const, companyId: company.id },
+      scope: { userId },
+    });
+
+    await expect(decideFor(responsibleUserId)).resolves.toMatchObject({ allowed: true, reason: "allow_self" });
+    await expect(decideFor(disabledUserId)).resolves.toMatchObject({ allowed: false, reason: "inbox_management_disabled" });
+    await expect(decideFor(disallowedUserId)).resolves.toMatchObject({ allowed: false, reason: "inbox_agent_not_allowed" });
+  });
+
   it("enforces user-scoped cross-user inbox grants", async () => {
     const company = await createCompany(db, "InboxCrossUserScoped");
     const actorAgent = await createAgent(db, company.id);

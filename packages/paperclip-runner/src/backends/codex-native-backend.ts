@@ -72,7 +72,7 @@ function transportDriverIdentity(input: NativeExecutionInput): {
       return {
         kind: "opencode_server",
         displayName: "OpenCode server",
-        version: "1.18.32",
+        version: "1.18.34",
       };
     case "claude_managed":
       return {
@@ -140,7 +140,6 @@ function createTransportBackedNativeSessionBackend(
         ]
       : []),
     ...nativeTaskConstraints(input),
-    "Return one semantic completion result.",
   ];
 
   return new HarnessDriverBackend(

@@ -3684,6 +3684,17 @@ export function IssueThreadInteractionCard({
     creatorLabel: createdByLabel,
     addresseeLabel,
   });
+  if (interaction.kind === "connection_intent" && interaction.payload.accessRequest) {
+    return (
+      <div id={`interaction-${interaction.id}`}>
+        <ConnectionIntentInteractionBody
+          interaction={interaction}
+          currentUserId={currentUserId}
+          addresseeLabel={addresseeLabel ?? "the addressed person"}
+        />
+      </div>
+    );
+  }
   if (isToolAction && interaction.kind === "request_confirmation" && toolActionState) {
     return (
       <InteractionAudienceContext.Provider value={audience}>

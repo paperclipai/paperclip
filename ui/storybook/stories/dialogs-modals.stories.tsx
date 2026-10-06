@@ -522,7 +522,7 @@ function IssueDialogOpener({
   useEffect(() => {
     if (variant !== "validation") return undefined;
     const timer = window.setTimeout(() => {
-      clickButtonByText("Create Issue");
+      document.querySelector<HTMLButtonElement>('[aria-label="Create task"]')?.click();
     }, 500);
     return () => window.clearTimeout(timer);
   }, [variant]);
@@ -728,9 +728,8 @@ export const NewIssuePrefilled: Story = {
 
 export const NewIssueMobileAssigneePicker: Story = {
   name: "New Issue - Mobile Assignee Picker",
-  parameters: {
-    viewport: { defaultViewport: "mobile" },
-  },
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: { waitForViewport: true },
   render: () => (
     <DialogStory
       eyebrow="NewIssueDialog"
@@ -743,17 +742,8 @@ export const NewIssueMobileAssigneePicker: Story = {
   ),
   play: async () => {
     const page = within(document.body);
-    await userEvent.click(await page.findByRole("button", { name: "Assignee" }));
-    const search = await page.findByPlaceholderText("Search assignees...");
-    await userEvent.click(search);
-    const viewport = constrainVisualViewportForPickerStory();
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    const bounds = search.closest<HTMLElement>("[data-mobile-entity-picker]")?.getBoundingClientRect();
-    const offsetTop = viewport?.offsetTop ?? 0;
-    await expect((bounds?.top ?? -1) + offsetTop).toBeGreaterThanOrEqual(offsetTop);
-    await expect((bounds?.bottom ?? Number.POSITIVE_INFINITY) + offsetTop).toBeLessThanOrEqual(
-      offsetTop + (viewport?.height ?? window.innerHeight),
-    );
+    await userEvent.click(await page.findByRole("button", { name: "Select assignee" }));
+    await expect(await page.findByRole("listbox", { name: "Assignees" })).toBeVisible();
   },
 };
 

@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { rehydrateRunnerdItemNotification } from "../../packages/paperclip-runner/src/live/runnerd-codex-transport.js";
-import { gradeNativeCompletion, type NativeCompletionObservation } from "./native-completion-scoring.js";
+import { gradeNativeCompletion as gradeLegacyNativeCompletion, gradeNativeCompletionFinalAnswer as gradeNativeCompletion, type NativeCompletionObservation } from "./native-completion-scoring.js";
 type Row = Record<string, unknown>;
 function sample(blocked = true, compatibility = false): NativeCompletionObservation {
-  const body = blocked ? "Deployment remains blocked until access is granted. Release Owner must Grant deployment access. BLOCKED_probe" : "Saved the requested document.";
+  const body = blocked ? "Deployment remains blocked until access is granted. Release Owner must Grant deployment access. BLOCKED_probe" : "Saved [the requested document](/RUN/issues/RUN-1#document-output).";
   const result = { reportedWorkDisposition: blocked ? "blocked" : "done", ...(blocked ? { blocker: { owner: { name: "Release Owner" }, unblockAction: "Grant deployment access", scope: "task_wide" } } : {}) };
   const event = (seq: number, eventType: string, payload: Row, sourceKind = "runner"): Row => ({ seq, eventType, protocolSchemaVersion: 1,
     sourceEventId: `event${seq}`, sourceInstanceId: sourceKind, sourceSeq: seq,
@@ -15,6 +15,8 @@ function sample(blocked = true, compatibility = false): NativeCompletionObservat
     issue: { id: "issue", companyId: "company", assigneeAgentId: "agent", status: result.reportedWorkDisposition },
     runs: [{ id: "run", nativeIssueId: "issue", companyId: "company", agentId: "agent", status: "succeeded", runtimeMode: "native", resultJson: { nativeResult: result } }],
     comments: [{ createdByRunId: "run", authorAgentId: "agent", body }],
+    documentLinkContext: { appOrigin: "https://paperclip.example", issuePrefix: "RUN", issueIdentifier: "RUN-1",
+      documents: blocked ? [] : [{ key: "output", latestRevisionId: "revision", latestRevisionNumber: 1 }] },
     initial: { issueIds: [], agentIds: ["agent"] }, state: { issueIds: ["issue"], agentIds: ["agent"], documentCount: blocked ? 0 : 1, interactionCount: 0 }, workspaceChanged: false,
     events: [compatibility ? event(1, "item.started", { kind: "tool_call", item: { type: "tool_call", id: "tool", name: tool } }) : event(1, "tool.execution.started", { name: tool, executionId: "tool" }), event(2, "run.result.proposed", result),
       compatibility ? event(3, "item.completed", { kind: "tool_result", item: { type: "tool_result", status: "completed", id: "tool" } }) : event(3, "tool.execution.completed", { name: tool, status: "completed", executionId: "tool" }),
@@ -24,6 +26,36 @@ function sample(blocked = true, compatibility = false): NativeCompletionObservat
 }
 function payload(input: NativeCompletionObservation, index: number): Row { return ((input.events[index]!.payload as Row).prpEvent as Row).payload as Row; }
 describe("native completion independent oracle", () => {
+  it("keeps legacy completion verdicts separate from final-answer diagnostics", () => {
+    const value = sample(false);
+    const text = "Saved the requested document.";
+    (payload(value, 3).item as Row).text = text; value.comments[0]!.body = text;
+    expect(gradeLegacyNativeCompletion(value)).toMatchObject({ schema: "paperclip.native-completion-observation.v2", passed: true });
+    expect(gradeNativeCompletion(value)).toMatchObject({ schema: "paperclip.native-completion-observation.v3", passed: false });
+    expect(gradeLegacyNativeCompletion(value).checks.some(check => check.id === "saved-document-final-link")).toBe(false);
+  });
+
+  it("rejects a correct structured blocker whose visible reply only labels it blocked and repeats the action", () => {
+    const value = sample();
+    const text = "The whole task is blocked. Owner: Release Owner.\n\nUnblock action: Grant deployment access\n\nBLOCKED_probe";
+    (payload(value, 3).item as Row).text = text; value.comments[0]!.body = text;
+    const grade = gradeNativeCompletion(value);
+    expect(grade.checks.find(check => check.id === "visible-blocker-content")?.passed).toBe(true);
+    expect(grade.checks.find(check => check.id === "exact-blocker")?.passed).toBe(true);
+    expect(grade.checks.find(check => check.id === "visible-blocker-reason")?.passed).toBe(false);
+    expect(grade.passed).toBe(false);
+  });
+  it.each(["missing-link", "wrong-document", "wrong-reply-run", "missing-link-context", "missing-revision"])("rejects a saved document with %s in the final", scenario => {
+    const value = sample(false);
+    if (scenario === "missing-link" || scenario === "wrong-document") {
+      const text = scenario === "missing-link" ? "Saved the requested document." : "Saved [document](/RUN/issues/RUN-1#document-other).";
+      (payload(value, 3).item as Row).text = text; value.comments[0]!.body = text;
+    }
+    if (scenario === "wrong-reply-run") value.comments[0]!.createdByRunId = "other";
+    if (scenario === "missing-link-context") delete value.documentLinkContext;
+    if (scenario === "missing-revision") value.documentLinkContext!.documents = [{ key: "output", latestRevisionNumber: 1 }];
+    expect(gradeNativeCompletion(value).passed).toBe(false);
+  });
   it.each([[true, false], [true, true], [false, false], [false, true]])("accepts disposition %s compatibility %s with final before late control-plane acceptance", (blocked, compatibility) => expect(gradeNativeCompletion(sample(blocked, compatibility)).passed).toBe(true));
   it.each(["paperclip_finish", "paperclip_block"])("carries normalized %s identity through rehydration into the exact-call oracle", name => {
     // The Rust normalization calibration asserts these exact fixture bytes.

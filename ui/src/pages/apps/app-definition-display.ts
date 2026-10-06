@@ -1,3 +1,4 @@
+import { aiConnectionRouterSlug, aiConnectionRouterPluginKey } from "@paperclipai/shared";
 import type { AppDefinition, ToolApplication, ToolConnection } from "@paperclipai/shared";
 
 export type AppGalleryDisplayEntry = AppDefinition & {
@@ -34,6 +35,8 @@ export function appApplicationSourceSlug(application: ToolApplication | null | u
   if (typeof source === "string" && source.trim()) return source.trim();
   const key = application.applicationKey?.trim();
   if (!key) return null;
+  const router = key.match(/^plugin:(.+):ai-router$/);
+  if (router) return aiConnectionRouterSlug(router[1]);
   const galleryPrefix = "app-gallery:";
   if (key.startsWith(galleryPrefix)) {
     const slug = key.slice(galleryPrefix.length).split(":")[0] || null;
@@ -47,6 +50,8 @@ export function appApplicationSourceSlug(application: ToolApplication | null | u
 
 export function appConnectionSourceSlug(connection: ToolConnection | null | undefined): string | null {
   if (!connection) return null;
+  const router = aiConnectionRouterPluginKey(connection);
+  if (router) return aiConnectionRouterSlug(router);
   const source = connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey;
   return typeof source === "string" && source.trim() ? source.trim() : null;
 }

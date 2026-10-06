@@ -73,7 +73,7 @@ function idleStream<T>(): TypedEventStream<T> {
     async () => close(),
   );
 }
-describe.sequential("iMessage Photon channel control plane", () => {
+describe("iMessage Photon channel control plane", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   let secrets: string;

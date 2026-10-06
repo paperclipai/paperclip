@@ -23,6 +23,8 @@ import {
   NativeSessionCloseUnrecoverableError,
   NativeSessionCleanupQuarantinedError,
   NativeSessionProtocolIntegrityError,
+  isNativeRestartInterruption,
+  nativeRestartInterruptedTurnId,
 } from "./contracts/native-session-backend.js";
 import {
   validatePrpStructuredRunResult,
@@ -184,6 +186,8 @@ export interface NativeSessionGoalControl {
 }
 
 export interface ExecuteNativeSessionOptions {
+  /** The control plane proved the old local runner stopped and charged a recovery attempt. */
+  resumeInterruptedTurn?: boolean;
   /** Read bounded task history only after recovery requires a fresh conversation. */
   getFreshSessionHandoff?: () => Promise<string | null>;
   /** Durable launch intent, after cleanup admission and before provider calls. */
@@ -865,6 +869,7 @@ async function consumeTurn(
     requestId: string;
   },
   initialGoal?: HarnessThreadGoal | null,
+  resumeInterruptedTurn?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const appendAbort = new AbortController();
@@ -1174,6 +1179,8 @@ async function consumeTurn(
       }
       if (isTurnTerminal(event)) {
         if (providerFailure) throw providerFailure;
+        if (semanticResultProposal === null && governedResult === null &&
+            inputTimers.size === 0 && await resumeInterruptedTurn?.(event, appendAbort.signal)) continue;
         return {
           event,
           eventCount,
@@ -1871,6 +1878,12 @@ export async function executeNativeSession(
     previousProviderSessionId: string | null;
   } | null = null;
   let reconciledRecoveryCheckpoint: PersistedNativeSession | null = null;
+  const checkpointedInterruption = persistedSession && nativeRestartInterruptedTurnId(persistedSession);
+  if (checkpointedInterruption && persistedSession) {
+    // The turn failed because its process vanished; the conversation is still
+    // usable. Keep its terminal fingerprint so replay cannot execute it twice.
+    persistedSession = { ...persistedSession, terminal: null };
+  }
   await options.onSessionAdmission?.();
   if (options.existingSession) {
     if (options.existingSession.attachRun === undefined) {
@@ -2157,6 +2170,42 @@ export async function executeNativeSession(
       await persistCheckpoint(snapshot, signal);
     };
     const recoveredSnapshot = await session.snapshot();
+    const restartContinuation = () => ({
+      message: { role: "user" as const, text: JSON.stringify({
+        schema: "paperclip.native-continuation.v1",
+        events: [
+          "Paperclip restarted and restored this same conversation. The previous turn was interrupted.",
+          "Continue the current user request from the recorded progress and preserved workspace.",
+          "Reconcile any unfinished tool or command before proceeding: inspect its current state and recorded outcomes.",
+          "Do not repeat completed work or blindly rerun an action whose outcome is unknown. If an external action cannot be reconciled, report the specific blocker.",
+        ].join("\n"),
+        completion: {
+          revision: input.completionContract.contract.revision,
+          criterionIds: input.completionContract.contract.criteria.map(criterion => criterion.id),
+        },
+      }) },
+      continuation: true as const,
+      requestedCollaborationMode: "executionMode" in input ? input.executionMode : "default" as const,
+    });
+    let restartContinuationStarted = false;
+    const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
+      if (restartContinuationStarted || !recovered || !options.resumeInterruptedTurn ||
+          input.provider.kind !== "codex" || options.sessionGoalControl || options.resumeSessionGoalHeartbeat ||
+          recoveredSnapshot.goal || persistedSession?.semanticResult || persistedSession?.pendingRuntimeRequests?.length ||
+          event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error) ||
+          event.turnId !== persistedSession?.activeTurnId) return false;
+      const snapshot = await session.snapshot();
+      signal.throwIfAborted();
+      if (nativeRestartInterruptedTurnId(snapshot) !== event.turnId || snapshot.pendingRuntimeRequests?.length) return false;
+      restartContinuationStarted = true;
+      // Persist the old terminal before launching. Recovery inspects provider
+      // history to adopt an accepted continuation if its checkpoint was lost.
+      await persistCheckpoint(snapshot, signal);
+      signal.throwIfAborted();
+      await session.startTurn(restartContinuation());
+      await checkpoint(signal);
+      return true;
+    };
     const recoveredActiveTurnId = recovered
       ? (recoveredSnapshot.activeTurnId ?? null)
       : (persistedSession?.activeTurnId ?? null);
@@ -2294,6 +2343,7 @@ export async function executeNativeSession(
                   }
                 : undefined,
               recoveredSnapshot.goal,
+              resumeInterruptedTurn,
             )
           : Promise.resolve({
               event: recoveryTerminal,
@@ -2332,6 +2382,10 @@ export async function executeNativeSession(
             if (!session.goal) throw new Error("native_session_goal_unavailable");
             await session.goal({ action: "get", requestId });
           }
+          await checkpoint();
+        } else if (shouldStartFreshTurn && recovered && checkpointedInterruption) {
+          restartContinuationStarted = true;
+          await session.startTurn(restartContinuation());
           await checkpoint();
         } else if (shouldStartFreshTurn) {
           let modelEnvelope = recovered

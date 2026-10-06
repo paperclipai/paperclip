@@ -983,8 +983,15 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         )[0],
       ).toMatchObject({ eventCursor: 9, eventsDrained: 1, accountedCents: 15 });
     });
-    it("protects interactive viewer routes from agent, other-company and read-only access", async () => {
+    it.each(["task", "saved chat"])("protects %s browser routes from agent, other-company and read-only access", async (kind) => {
       const f = await fixture();
+      if (kind === "saved chat") {
+        await db.update(issues).set({
+          conversationAgentId: f.agent.id,
+          conversationUserId: actor.actorId,
+          conversationState: "active",
+        }).where(eq(issues.id, f.issue.id));
+      }
       await f.service.execute(
         f.binding,
         f.grant,
@@ -1021,11 +1028,19 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       });
       app.use(browserUseRoutes(db, f.service));
       app.use(errorHandler);
+      const listPath = `/issues/${f.issue.id}/browsers`;
+      const listed = await http(app).get(listPath);
+      expect(listed.status).toBe(200);
+      expect(listed.body).toMatchObject([{ id: browser.id, issueId: f.issue.id }]);
+      const missing = await http(app).get(`/issues/${randomUUID()}/browsers`);
+      expect(missing.status).toBe(404);
+      expect(missing.body).toEqual({ error: "Task not found" });
       const path = `/issues/${f.issue.id}/browsers/${browser.id}/viewer`;
       const ok = await http(app).get(path);
       expect(ok.status).toBe(200);
       expect(ok.headers["cache-control"]).toBe("no-store");
       expect(ok.headers["referrer-policy"]).toBe("no-referrer");
+      const controlPath = path.replace("/viewer", "/control");
       const presencePath = path.replace("/viewer", "/presence");
       expect((await http(app).post(presencePath)).status).toBe(200);
       const resizePath = path.replace("/viewer", "/viewport");
@@ -1065,7 +1080,10 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         (await http(app).post(resizePath).send({ preset: "custom", width: 1 }))
           .status,
       ).toBe(400);
+      expect((await http(app).post(controlPath).send({ action: "cancel" })).status).toBe(200);
       mode = "agent";
+      expect((await http(app).get(listPath)).status).toBe(403);
+      expect((await http(app).post(controlPath).send({ action: "keep_open" })).status).toBe(403);
       expect((await http(app).post(presencePath)).status).toBe(403);
       expect(
         (await http(app).post(`${resizePath}/release`).send({ viewerId }))
@@ -1076,6 +1094,10 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       ).toBe(403);
       expect((await http(app).get(path)).status).toBe(403);
       mode = "other-company";
+      const inaccessible = await http(app).get(listPath);
+      expect(inaccessible.status).toBe(missing.status);
+      expect(inaccessible.body).toEqual(missing.body);
+      expect((await http(app).post(controlPath).send({ action: "keep_open" })).status).toBe(404);
       expect((await http(app).post(presencePath)).status).toBe(404);
       expect(
         (await http(app).post(`${resizePath}/release`).send({ viewerId }))
@@ -1091,6 +1113,8 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         .set({ membershipRole: "viewer" })
         .where(eq(companyMemberships.companyId, f.company.id));
       expect((await http(app).get(path)).status).toBe(403);
+      expect((await http(app).get(listPath)).body).toEqual([]);
+      expect((await http(app).post(controlPath).send({ action: "keep_open" })).status).toBe(403);
       expect((await http(app).post(presencePath)).status).toBe(403);
       expect(
         (await http(app).post(resizePath).send({ preset: "phone" })).status,

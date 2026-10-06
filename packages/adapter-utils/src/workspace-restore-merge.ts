@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createWorkspaceManifest, WorkspaceManifestMap, workspacePathMatcher, type PathManifest, type WorkspacePaths, type WorkspaceManifestWriter } from "./workspace-manifest.js";
 import { shouldExcludePath } from "./exclude-patterns.js";
 import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
+import type { WorkspaceRestoreDiagnostic } from "./workspace-restore-diagnostics.js";
 
 export type SnapshotEntry =
   | { kind: "dir" }
@@ -292,7 +293,7 @@ export type WorkspaceRestoreFailureCode =
  */
 export type WorkspaceRestoreOutcome =
   | { readonly ok: true }
-  | { readonly ok: false; readonly code: WorkspaceRestoreFailureCode };
+  | { readonly ok: false; readonly code: WorkspaceRestoreFailureCode; readonly diagnostic?: WorkspaceRestoreDiagnostic };
 
 /**
  * Classifies a caught workspace-restore error into one allowlisted code. Maps

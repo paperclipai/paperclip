@@ -90,7 +90,7 @@ async function createApp(actor: any, db: any = {} as any) {
   return app;
 }
 
-describe.sequential("cli auth routes", () => {
+describe("cli auth routes", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");

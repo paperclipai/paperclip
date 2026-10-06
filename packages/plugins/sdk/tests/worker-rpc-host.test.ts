@@ -1115,3 +1115,25 @@ describe("worker duplex channel dispatch", () => {
     }
   });
 });
+
+
+describe("AI connection router RPC", () => {
+  it("advertises and calls only an implemented routing hook", async () => {
+    const input = new PassThrough(), output = new PassThrough();
+    const reader = createInterface({ input: output });
+    const request = { companyId: "company", taskKey: "task", candidates: [], memberOrder: [] };
+    let received: unknown;
+    const plugin = definePlugin({ async setup() {}, onRouteAiConnection(params) { received = params; return { kind: "selected", memberId: "authorized-member" }; } });
+    const worker = startWorkerRpcHost({ plugin, stdin: input, stdout: output });
+    let sequence = 0;
+    const pending = new Map<string, (value: unknown) => void>();
+    reader.on("line", line => { const response = parseMessage(line); if (isJsonRpcResponse(response)) { pending.get(String(response.id))?.(response); pending.delete(String(response.id)); } });
+    const call = (method: string, params: unknown) => new Promise<JsonRpcResponse>(resolve => { const id = String(++sequence); pending.set(id, value => resolve(value as JsonRpcResponse)); input.write(serializeMessage(createRequest(method, params, id))); });
+    try {
+      const initialized = await call("initialize", { manifest: { id: "fixture.router", apiVersion: 1, version: "1.0.0", displayName: "Router", description: "Fixture", author: "Tests", categories: ["connector"], capabilities: ["ai.connections.route"], entrypoints: {} }, config: {}, databaseNamespace: null });
+      expect((initialized as { result: { supportedMethods: string[] } }).result.supportedMethods).toContain("routeAiConnection");
+      expect((await call("routeAiConnection", request) as { result: unknown }).result).toEqual({ kind: "selected", memberId: "authorized-member" });
+      expect(received).toEqual(request);
+    } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
+  });
+});

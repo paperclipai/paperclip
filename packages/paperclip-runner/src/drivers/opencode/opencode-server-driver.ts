@@ -73,7 +73,7 @@ import { nativeMcpLaunchBinding } from "../native-mcp.js";
 import { materializeNativeRuntimeSkills } from "../runtime-context-materializer.js";
 
 export const OPENCODE_SERVER_DRIVER_KIND = "opencode_server" as const;
-export const QUALIFIED_OPENCODE_VERSION = "1.18.32" as const;
+export const QUALIFIED_OPENCODE_VERSION = "1.18.34" as const;
 export const QUALIFIED_OPENCODE_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 
@@ -84,6 +84,13 @@ type DynamicToolHandler = (call: {
   turnId: string;
   arguments: unknown;
 }) => Promise<unknown>;
+
+export type OpenCodeCompletionFeedback = (result: PrpStructuredRunResult, call: {
+  tool: string;
+  callId: string;
+  threadId: string;
+  turnId: string;
+}) => Promise<string>;
 
 export interface OpenCodeServerDriverOptions {
   model: string;
@@ -105,6 +112,7 @@ export interface OpenCodeServerDriverOptions {
   environment?: NodeJS.ProcessEnv;
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
   dynamicToolHandler?: DynamicToolHandler;
+  completionFeedback?: OpenCodeCompletionFeedback;
   onSpawn?: (meta: {
     pid: number;
     processGroupId: number | null;
@@ -344,6 +352,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
             this.#options.systemInstructions ??
             CODEX_SKILLLESS_BASE_INSTRUCTIONS,
           dynamicToolHandler: this.#options.dynamicToolHandler,
+          completionFeedback: this.#options.completionFeedback,
           snapshot,
           now: this.#options.now ?? (() => new Date()),
         });
@@ -380,6 +389,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   readonly #taskEnvelope: CodexTaskEnvelope;
   readonly #systemInstructions: string;
   readonly #dynamicToolHandler?: DynamicToolHandler;
+  readonly #completionFeedback?: OpenCodeCompletionFeedback;
   readonly #now: () => Date;
   readonly #events = new AsyncQueue<PrpEvent>();
   readonly #transcript: PrpEvent[] = [];
@@ -434,6 +444,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   readonly #conversationMode: "task" | "prepared";
   #sendFullContext: boolean;
   #closed = false;
+  #completionSettlement: Promise<void> | null = null;
   #abort = new AbortController();
 
   constructor(input: {
@@ -449,6 +460,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     taskEnvelope: CodexTaskEnvelope;
     systemInstructions: string;
     dynamicToolHandler?: DynamicToolHandler;
+    completionFeedback?: OpenCodeCompletionFeedback;
     snapshot: PersistedHarnessSession | null;
     now: () => Date;
   }) {
@@ -465,6 +477,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#taskEnvelope = input.taskEnvelope;
     this.#systemInstructions = input.systemInstructions;
     this.#dynamicToolHandler = input.dynamicToolHandler;
+    this.#completionFeedback = input.completionFeedback;
     this.#now = input.now;
     this.#sendFullContext = input.snapshot === null && this.#conversationMode !== "prepared";
     this.#sourceSequence = input.snapshot?.lastSourceSequence ?? 0;
@@ -613,6 +626,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 
   async interrupt(input: { turnId?: string; reason?: string }): Promise<void> {
+    await this.#completionSettlement;
     if (
       input.turnId &&
       this.#activeTurnId &&
@@ -863,6 +877,10 @@ class OpenCodeHarnessSession implements HarnessSession {
 
   async close(): Promise<void> {
     if (this.#closed) return;
+    // A controller response is authoritative. Settle its tool result before
+    // closing the provider or the event stream, rather than reject after acceptance.
+    await this.#completionSettlement;
+    if (this.#closed) return;
     this.#closed = true;
     this.#abort.abort();
     // Settle whatever is still pending, including a request whose turn
@@ -930,7 +948,10 @@ class OpenCodeHarnessSession implements HarnessSession {
       { turnId, itemId: call.callId },
     );
     if (tool === PRP_COMPLETION_TOOL_NAME || tool === PRP_BLOCK_TOOL_NAME) {
+      let settle: (() => void) | undefined;
       try {
+        if (this.#closed || this.#completionSettlement)
+          throw new Error("A completion is already settling or the session is closed");
         const validation = validatePrpStructuredRunResult(call.arguments);
         if (!validation.ok) throw new Error("Invalid semantic result");
         if (
@@ -960,6 +981,18 @@ class OpenCodeHarnessSession implements HarnessSession {
         const fingerprint = canonicalJson(validation.result);
         if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
           throw new Error("A different semantic result was already committed");
+        this.#completionSettlement = new Promise<void>(resolve => { settle = resolve; });
+        // Wait for the bound controller before committing or resolving the
+        // provider call. A rejection remains repairable in this same turn.
+        const feedback = this.#completionFeedback
+          ? await this.#completionFeedback(validation.result, {
+              tool, callId: call.callId, threadId: this.#providerSessionId, turnId,
+            })
+          : "Semantic completion accepted.";
+        if (typeof feedback !== "string" || !feedback.trim())
+          throw new Error("Completion feedback omitted its response text");
+        if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
+          throw new Error("A different semantic result was already committed");
         if (!this.#resultFingerprint) {
           this.#result = structuredClone(validation.result);
           this.#resultFingerprint = fingerprint;
@@ -979,12 +1012,12 @@ class OpenCodeHarnessSession implements HarnessSession {
               type: "tool_result",
               id: call.callId,
               tool_use_id: call.callId,
-              result: "Semantic completion accepted.",
+              result: feedback,
             },
           },
           { turnId, itemId: call.callId },
         );
-        return { accepted: true };
+        return { accepted: true, feedback };
       } catch (error) {
         // A rejected semantic call still completes its tool activity item.
         // Otherwise a later question can appear to have an in-flight tool.
@@ -994,6 +1027,11 @@ class OpenCodeHarnessSession implements HarnessSession {
             is_error: true, error: error instanceof Error ? error.message : String(error) },
         }, { turnId, itemId: call.callId });
         throw error;
+      } finally {
+        if (settle) {
+          this.#completionSettlement = null;
+          settle();
+        }
       }
     }
     if (!this.#dynamicToolHandler)
@@ -1278,6 +1316,16 @@ class OpenCodeHarnessSession implements HarnessSession {
             }
             throw error;
           }
+          const type = text(record(event).type);
+          const properties = record(record(event).properties);
+          if (type === "session.idle" || type === "session.error"
+            || (type === "session.status" && text(record(record(event).properties).status && record(record(record(event).properties).status).type) === "idle")) {
+            // Do not seal the turn while its bound controller is deciding a
+            // finishing call. Acceptance/rejection and the tool result must
+            // precede the provider's terminal event.
+            await this.#completionSettlement;
+            if (this.#closed) return;
+          }
           this.#mapProviderEvent(event, frameId);
         }
         throw new Error(
@@ -1287,6 +1335,8 @@ class OpenCodeHarnessSession implements HarnessSession {
         if (this.#closed || this.#abort.signal.aborted) return;
         attempts += 1;
         if (attempts > 3) {
+          await this.#completionSettlement;
+          if (this.#closed) return;
           this.#emit("harness.diagnostic", {
             code: "opencode_sse_failed",
             message: redact(String(error), this.#runtime.sensitiveValues),

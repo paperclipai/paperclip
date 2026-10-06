@@ -19,6 +19,7 @@ export type RunRetryStateSummary = {
 };
 
 const RETRY_REASON_LABELS: Record<string, string> = {
+  ai_connection_pool_wait: "Waiting for pool usage to recover",
   transient_failure: "Transient failure",
   missing_issue_comment: "Missing task comment",
   process_lost: "Process lost",
@@ -65,7 +66,7 @@ export function describeRunRetryState(run: RetryAwareRun): RunRetryStateSummary 
   if (run.status === "scheduled_retry") {
     return {
       kind: "scheduled",
-      badgeLabel: isMaxTurnContinuation ? "Continuation scheduled" : "Retry scheduled",
+      badgeLabel: run.scheduledRetryReason === "ai_connection_pool_wait" ? "Pool exhausted" : isMaxTurnContinuation ? "Continuation scheduled" : "Retry scheduled",
       tone: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300",
       detail: joinFragments([attemptLabel, reasonLabel]),
       secondary: dueAt

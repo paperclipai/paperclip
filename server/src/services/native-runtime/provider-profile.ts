@@ -15,7 +15,7 @@ import {
 } from "../provider-profile-qualification.js";
 import { resolveAcpxQualification, type AcpxQualificationCandidate } from "./acpx-qualification.js";
 
-export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.32" as const;
+export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.34" as const;
 export const DEFAULT_OPENCODE_RUNNER_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 export const CLAUDE_MANAGED_BETA_VERSION = "managed-agents-2026-04-01" as const;

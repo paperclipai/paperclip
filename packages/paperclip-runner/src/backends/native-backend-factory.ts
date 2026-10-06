@@ -67,6 +67,7 @@ export function createNativeSessionBackend(
       );
     }
     return createOpenCodeNativeSessionBackend(input, {
+      completionFeedback: options.completionFeedback,
       runtimeDirectory: options.opencodeRuntimeDirectory,
       environment: options.opencodeEnvironment,
       command: options.opencodeCommand,

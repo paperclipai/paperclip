@@ -88,7 +88,7 @@ function createApp(actor: Record<string, unknown> = {
   return app;
 }
 
-describe.sequential("execution workspace routes", () => {
+describe("execution workspace routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue({

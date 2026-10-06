@@ -830,6 +830,7 @@ describe("PaperclipRunnerToolAuthority", () => {
       disposition: "applied",
       created: true,
       document: { key: "plan", body },
+      documentHref: "/RNT/issues/RNT-1#document-plan",
     });
     expect(
       await db
