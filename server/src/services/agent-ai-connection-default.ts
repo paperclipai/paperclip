@@ -1,8 +1,9 @@
 import {
   AI_PROVIDERS,
-  aiConnectionBindingSchema,
+  aiRuntimeConnectionBindingSchema,
   isAiConnectionCompatible,
   type AiConnectionBinding,
+  type AiRuntimeConnectionBinding,
   type AiProvider,
 } from "@paperclipai/shared";
 
@@ -20,15 +21,24 @@ export function defaultAiConnectionForHire(
   adapterType: string,
   config: Record<string, unknown>,
   managerBinding: unknown,
-): AiConnectionBinding | undefined {
+): AiRuntimeConnectionBinding | undefined {
   const compatible = (binding: AiConnectionBinding) =>
     isAiConnectionCompatible(binding, adapterType, config.model, config.provider, config.acpxAgent);
-  const inherited = aiConnectionBindingSchema.safeParse(managerBinding);
+  const inherited = aiRuntimeConnectionBindingSchema.safeParse(managerBinding);
   // Unmanaged parents keep their existing login and credential-reference paths.
   if (!inherited.success) return undefined;
   const env = config.env && typeof config.env === "object" ? config.env as Record<string, unknown> : {};
+  const hasChildAuth = (provider: AiProvider) =>
+    PROVIDER_AUTH_ENV_KEYS[provider].some((key) => env[key] !== undefined);
   const withChildAuthPrecedence = (binding: AiConnectionBinding) =>
-    PROVIDER_AUTH_ENV_KEYS[binding.provider].some((key) => env[key] !== undefined) ? undefined : binding;
+    hasChildAuth(binding.provider) ? undefined : binding;
+  if (inherited.data.mode === "router") {
+    // The host validates pool membership, access and harness compatibility for
+    // the new agent. Never silently replace an incompatible pool with local auth.
+    const childProvider = AI_PROVIDERS.find((provider) =>
+      compatible({ provider, method: "api_key", mode: "responsible_user" }));
+    return childProvider && hasChildAuth(childProvider) ? undefined : inherited.data;
+  }
   if (inherited.data.mode !== "delegated" && compatible(inherited.data)) {
     return withChildAuthPrecedence(inherited.data);
   }

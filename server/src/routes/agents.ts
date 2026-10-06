@@ -2600,7 +2600,7 @@ export function agentRoutes(
     const parent = await svc.getById(req.actor.agentId);
     if (!parent || parent.companyId !== companyId || parent.adapterType !== adapterType) return noInheritance;
     // Managed parents must not pass stale legacy credential references to hires.
-    if (aiConnectionBindingSchema.safeParse(parent.runtimeConfig.aiConnection).success) return noInheritance;
+    if (aiRuntimeConnectionBindingSchema.safeParse(parent.runtimeConfig.aiConnection).success) return noInheritance;
     const parentEnv = asRecord(asRecord(parent.adapterConfig)?.env);
     if (!parentEnv) return noInheritance;
 

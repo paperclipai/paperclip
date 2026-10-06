@@ -81,6 +81,55 @@ async function poolFixture(f: Awaited<ReturnType<typeof fixture>>, extraMembers:
 }
 
 describe("agent-created hires use managed AI connections", () => {
+  it.each(["agent-hires", "agents"])("%s inherits a manager's pool without copying legacy credentials", async (endpoint) => {
+    const f = await fixture("openai");
+    const p = await poolFixture(f);
+    const secret = await secretService(db).create(f.companyId, {
+      name: "Stale manager credential", provider: "local_encrypted", value: "fixture-legacy-key",
+    });
+    await db.update(agents).set({
+      runtimeConfig: { aiConnection: p.binding },
+      adapterConfig: { env: { OPENAI_API_KEY: { type: "secret_ref", secretId: secret.id } } },
+    }).where(eq(agents.id, f.agentId));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/${endpoint}`).send({
+      name: "Inherited pool teammate", role: "engineer", adapterType: f.adapterType,
+    }));
+    expect(agent.runtimeConfig.aiConnection).toEqual(p.binding);
+    expect(agent.adapterConfig.env?.OPENAI_API_KEY).toBeUndefined();
+    const installs = await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.companyId, f.companyId), eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, agent.id)));
+    expect(installs.map(i => i.connectionId).sort()).toEqual([p.pool.id, f.account.connectionId].sort());
+  });
+
+  it("keeps an inherited pool when copying the caller's native runtime settings", async () => {
+    const f = await fixture("openai");
+    const p = await poolFixture(f);
+    await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol", lifecycleMode: "per_turn" }, runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({
+      name: "Native pool teammate", role: "engineer", adapterType: "paperclip_runner", inheritRuntimeFrom: "caller",
+    }));
+    expect(agent.runtimeConfig.aiConnection).toEqual(p.binding);
+    expect(agent.adapterConfig).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", lifecycleMode: "per_turn" });
+  });
+
+  it("rejects an inherited pool with no compatible harness instead of dropping its binding", async () => {
+    const f = await fixture("openai");
+    const p = await poolFixture(f);
+    await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
+    const response = await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Incompatible teammate", role: "engineer", adapterType: "claude_local" });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error).toContain("no compatible harness");
+    expect(await db.select().from(agents).where(eq(agents.companyId, f.companyId))).toHaveLength(1);
+  });
+
+  it.each(["OPENAI_API_KEY", "ANTHROPIC_API_KEY"])("pool inheritance honors only the child's own provider auth override (%s)", async (key) => {
+    const f = await fixture("openai");
+    const p = await poolFixture(f);
+    await db.update(agents).set({ runtimeConfig: { aiConnection: p.binding } }).where(eq(agents.id, f.agentId));
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Explicit auth teammate", role: "engineer", adapterType: f.adapterType, adapterConfig: { env: { [key]: "fixture-explicit-key" } } }));
+    expect(agent.runtimeConfig.aiConnection).toEqual(key === "OPENAI_API_KEY" ? undefined : p.binding);
+    expect(agent.adapterConfig.env[key]).toEqual({ type: "plain", value: "fixture-explicit-key" });
+  });
+
   it.each(["agent-hires", "agents"])("%s installs authorized pool members atomically with the new agent", async (endpoint) => {
     const f = await fixture("openai");
     const p = await poolFixture(f);
