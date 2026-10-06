@@ -544,7 +544,7 @@ for each plugin and event; plugin and event deletion cascade acknowledgments.
 Reads return creation first, then the earliest unacknowledged transition for each resource, up to 100
 resources. Acknowledging a later event is rejected. Reads never consume work, so
 crashes, retries, and restarts cannot lose a hook; concurrent reads can repeat an
-event. There is no global cursor or backfill scan. Consumers must serialize their
+event. There is no global cursor or runtime backfill scan. Consumers must serialize their
 processing and make provider operations idempotent before acknowledging success.
 Retention and provider integration remain separate work.
 
