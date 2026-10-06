@@ -68,7 +68,8 @@ function resolveRetention(configPath?: string): DatabaseBackupRetentionPolicy {
   const fromConfig = configPath ? readRawLegacyDays(configPath) : null;
   const envRaw = process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS?.trim();
   const fromEnv = envRaw ? asPositiveInt(Number(envRaw)) : null;
-  const legacyDays = fromConfig ?? fromEnv;
+  // Environment override wins over the file value (former precedence).
+  const legacyDays = fromEnv ?? fromConfig;
   if (legacyDays == null) {
     return { hourlyHours: 48, dailyDays: 14, weeklyWeeks: 4, monthlyMonths: 6 };
   }

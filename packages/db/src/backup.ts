@@ -42,7 +42,8 @@ function resolveRetention(config: PartialConfig | null): DatabaseBackupRetention
       ? Number(process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS)
       : null,
   );
-  const legacyDays = fromConfig ?? fromEnv;
+  // Environment override wins over the file value (former precedence).
+  const legacyDays = fromEnv ?? fromConfig;
   if (legacyDays == null) return ONE_OFF_BASE_RETENTION;
   // Preserve the legacy window without narrowing: the widest daily base (14)
   // already covers any legacy window the monthly tier does not extend.
