@@ -533,6 +533,7 @@ function invalidateVisibleIssueRunQueries(
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProducts(issueRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProductPullRequestRefresh(issueRef) });
       queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", issueRef] });
     }
   }

@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
+import { pullRequestNeedsReview } from "@/lib/issue-pull-requests";
+import { __liveUpdatesTestUtils } from "@/context/LiveUpdatesProvider";
 import { useIssueWorkProducts } from "./useIssueWorkProducts";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -124,4 +126,25 @@ it("does not show an old task's provider response after navigating", async () =>
   await waitFor(() => expect(observed.data?.[0].id).toBe("another-artifact"));
   await act(async () => requests[0].resolve([{ ...original, metadata: { state: "merged" } }]));
   expect(observed.data?.map((row) => row.id)).toEqual(["another-artifact"]);
+});
+
+it.each(["merged", "closed"])("refreshes GitHub after a run finishes with unchanged saved rows (%s)", async (state) => {
+  client.setQueryData(queryKeys.issues.detail("PAP-42"), {
+    id: issueId, identifier: "PAP-42", assigneeAgentId: "agent", executionRunId: "run",
+  });
+  await render();
+  await waitFor(() => expect(requests).toHaveLength(1));
+  await act(async () => requests[0].resolve([{ ...saved[0], metadata: { state: "open" } }]));
+  await waitFor(() => expect(observed.data?.[0].metadata?.state).toBe("open"));
+  expect(pullRequestNeedsReview(observed.data![0])).toBe(true);
+
+  await act(async () => {
+    __liveUpdatesTestUtils.invalidateVisibleIssueRunQueries(client, "/PAP/issues/PAP-42", {
+      runId: "run", agentId: "agent", status: "succeeded",
+    }, { isForegrounded: true });
+  });
+  await waitFor(() => expect(requests).toHaveLength(2));
+  await act(async () => requests[1].resolve([{ ...saved[0], metadata: { state } }]));
+  await waitFor(() => expect(pullRequestNeedsReview(observed.data![0])).toBe(false));
+  expect(observed.data?.[0].metadata?.state).toBe(state);
 });
