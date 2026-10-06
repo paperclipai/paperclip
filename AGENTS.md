@@ -152,11 +152,9 @@ Notes:
 
 ## 7. Verification Before Hand-off
 
-Use [feature-map/README.md](feature-map/README.md) to identify affected user
-entry points and their verification recipes. Update the matching recipe when a
-journey changes. Classify new UI page modules in `feature-map/coverage.json`,
-either with a recipe or an explicit gap, and run `pnpm check:feature-map`.
-The map records coverage scope, not proof that a live journey passed.
+[feature-map/README.md](feature-map/README.md) is an optional reference for user
+entry points, verification recipes, and coverage gaps. The map records coverage
+scope, not proof that a live journey passed.
 
 Default local/agent test path:
 

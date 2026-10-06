@@ -460,12 +460,10 @@ npx paperclipai allowed-hostname dotta-macbook-pro
 
 ## Test Commands
 
-Start from the [feature map](../feature-map/README.md) to find user entry points,
-targeted tests, manual verification recipes, and explicit coverage gaps. When a
-change adds or alters a journey, update its recipe and UI coverage inventory.
-Run `pnpm check:feature-map` to catch stale links, missing test references, and
-unclassified page modules. The existing PR quality-script test lane enforces the
-same check; it does not claim that the documented journeys were driven live.
+The [feature map](../feature-map/README.md) is an optional reference for user
+entry points, targeted tests, manual verification recipes, and coverage gaps.
+Its page inventory is a source snapshot. The documented journeys have separate
+verification steps and do not run automatically from the map.
 
 Use the cheap local default unless you are specifically working on browser flows:
 

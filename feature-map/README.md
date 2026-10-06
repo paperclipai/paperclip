@@ -141,7 +141,7 @@ labs. Every product area now links to concrete recipes. **Partial** means the
 area still has the named variant or workflow gaps; **unmapped** is reserved for
 an area with no recipe. These statuses describe documentation, not runtime health.
 
-The page inventory is a drift alarm, not the feature taxonomy. The map also
+The page inventory is a source snapshot dated 2026-10-05. The map also
 includes entry points hosted inside other modules (pipeline Review Queue and
 Learnings, task documents, onboarding), CLI-only operations, and operator work.
 The team recipe explicitly distinguishes the current CLI/API path from catalog
@@ -151,32 +151,18 @@ and the [CLI registry](../cli/src/index.ts) when changing reachability.
 Remaining depth includes complete provider/auth/attachment matrices, every
 harness/model/environment capability combination, third-party plugin features,
 and every role/error/mobile/legacy-shell permutation. The recipes name relevant
-gaps instead of equating source presence with a working user journey. Add new
-capabilities to this index even when they do not add a page file.
+gaps instead of equating source presence with a working user journey. The index
+can include capabilities that do not add a page file.
 
-## Keeping the map current
+## Maintaining the reference
 
-```sh
-pnpm check:feature-map
-node --test .github/scripts/tests/feature-map.test.mjs
-```
+The map is documentation only. It adds no CI checks, automatic journey execution,
+or required inventory updates for future pull requests.
 
-The checker uses only Node's standard library. The second command also runs in
-the existing PR workflow's quality-script test glob, including UI-only and
-documentation PRs. It checks:
-
-- Every feature recipe is linked from this index, with no stale feature links.
-- Recipes contain a description and the four sections below, in order.
-- Stable entry-point IDs have matching driving recipes, automated evidence
-  descriptions, and manual instructions or explicit gaps.
-- Local Markdown links and repository test references exist.
-- Every page module has exactly one inventory entry; removed paths, missing
-  recipes, empty gap explanations, and unclassified new files fail.
-
-When a PR changes a journey, update its entry points, recipe, and coverage gaps
-in that PR. When it adds a page module, either map it or add an explicit gap to
-the inventory. The gate checks structure and references; reviewers must still
-check that the described behavior and tests match. No scheduled upkeep is enabled.
+When maintaining a recipe, compare its entry points and expected results with
+the current source. Check that linked tests still exercise the stated behavior
+and that local references still exist. Refresh the inventory snapshot when it
+helps explain the current product. Maintenance is optional and review-based.
 
 Each recipe starts with an H1 and a user-visible description, then exactly:
 
