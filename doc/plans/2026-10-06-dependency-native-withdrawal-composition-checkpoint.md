@@ -1,0 +1,17 @@
+# Dark native withdrawal composition checkpoint
+
+SOURCE/MOCK only. No production caller, provider cancellation, rollout or parent acceptance.
+
+The supplied entry withdrawInteractionWithNativeCancellationInTransaction invokes the actual root-first withdrawal and then the actual native cancellation marker on the same transaction. It returns the canonical cancelled interaction plus a nullable nativeRunId. Marker identity comes from the locked canonical interaction row, not caller question payload or an eligibility snapshot from another transaction.
+
+Ordering for the recorded board-user question path: company fence, issue UPDATE lock, actor guard, interaction UPDATE lock, withdrawal write, reentrant same-company fence, native run UPDATE lock, marker write. Confirmation linked-tool ordering remains in the canonical participant. This is not a common graph/gateway/native lock-order proof. Do not mechanically insert it in the current route afterResolve callback under earlier locks.
+
+The caller owns the root transaction and transaction-local ActivityPublication queue. Discard on callback/commit rejection. Only after successful actual commit may the caller flush publications and perform the cancellation action from nativeRunId. This module neither flushes nor invokes heartbeat/provider cancellation. A null receipt preserves canonical eligibility semantics for missing/terminal/non-native source runs; it is not proof the provider stopped.
+
+Verification: server cwd; env -u PAPERCLIP_API_KEY -u DATABASE_URL -u FORGEJO_TOKEN TMPDIR=/Users/rpridal/.hermes/profiles/paperclip-infra/cache/scratch /opt/homebrew/bin/node ../node_modules/vitest/vitest.mjs run --config vitest.config.ts src/__tests__/interaction-lifecycle-withdraw-native.test.ts --pool=forks --maxWorkers=1 --testTimeout=15000. Missing-entry RED: 1 FAIL (1.55s). First implementation: 1 PASS (4.28s). Expanded four relevant files: 120 PASS (8.06s), including 12 new composition controls. Interim unknown tool-query and incorrect actor result-field assertions were fixture errors, corrected explicitly, not product RED.
+
+Programmatically selected and deduplicated 31 explicit participant files: 766 PASS, exit 0, 35.67s. Selection patterns: approval-comments-lookup, approval-lifecycle-*, issue-approval-lifecycle-*, issue-update-lifecycle-* (excluding tiny forwarding terminal.test alias), issue-dependency-restoration*, issue-tree-lifecycle-*, issue-tree-control-service-unit, interaction-lifecycle-*, interaction-terminal-activity-publication. approvals-service was not in this selection. These totals are this run's measured selection, not inherited 760+12 arithmetic.
+
+Actual withdrawal/native helpers and schema projection executed with synthetic SQL/rows; settings/chat/telemetry mocked. Actor-run, linked-secret/OAuth composition and multiple-card lifecycles are not end-to-end executed. Marker rejection leaves eagerly recorded cancelled card: propagation, NOT rollback. No actual SQL filtering/isolation/authenticated authority/concurrency/commit/rollback proof. No DB/server/listener/adapter/typecheck/build/full gates; original ordinary writer/route defects not replayed or repaired. No mutation-sensitivity probe of the new composition yet.
+
+Restoration remains UNWIRED. Remaining common participants, native ledger/effects/legacy intents, production wiring, queue admission/orphan expiry/15min acceptance and fresh-head rebase validation still required. Existing human-only disposable PostgreSQL test-scope question remains separate from code/mock work and merge/deploy approval.
