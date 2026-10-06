@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-08-11T15:05:34.526Z",
+  "generatedAt": "2026-09-22T13:43:15.805Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -592,6 +592,65 @@
         }
       ],
       "contentHash": "sha256:429f94df398a0697042b5bbe4755b1ff1a230aa5f41d99118ad37493ac65d21c"
+    },
+    {
+      "id": "paperclipai:optional:research:glasser",
+      "key": "paperclipai/optional/research/glasser",
+      "kind": "optional",
+      "category": "research",
+      "slug": "glasser",
+      "name": "glasser",
+      "description": "Find and call 1,000+ paid data endpoints with one key: person and company enrichment, people and company search, web, news, maps, scholar and shopping search, SEO, social media, US property data, scraping. Search, inspect the price, run, pay per call. Runs through the glasser CLI or its MCP server.",
+      "path": "catalog/optional/research/glasser",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "researcher",
+        "marketer",
+        "sales",
+        "analyst",
+        "engineer",
+        "product-manager",
+        "founder"
+      ],
+      "requires": [
+        "node"
+      ],
+      "tags": [
+        "data",
+        "research",
+        "enrichment",
+        "people-search",
+        "company-data",
+        "web-search",
+        "seo",
+        "social-media",
+        "property-data",
+        "scraping",
+        "mcp",
+        "glasser"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 19188,
+          "sha256": "1df70616b236e14096e6e1a41ab253276e76bc57eaa9418b6776f8fd67566d09"
+        }
+      ],
+      "contentHash": "sha256:458bc41ad21d3548f9f4a59034b33cee9d892d6d1abde9bb5ffe67c56f52dd11",
+      "source": {
+        "type": "github",
+        "hostname": "github.com",
+        "owner": "glasser-ai",
+        "repo": "skills",
+        "ref": "v0.2.0",
+        "commit": "66331e70939d04d26ae66f33881c34ee2433dc19",
+        "path": "skills/glasser",
+        "url": "https://github.com/glasser-ai/skills/tree/v0.2.0/skills/glasser"
+      }
     },
     {
       "id": "paperclipai:optional:research:last30days",
