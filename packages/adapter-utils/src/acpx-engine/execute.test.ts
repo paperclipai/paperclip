@@ -168,6 +168,7 @@ function buildRuntime(
 async function runExecutor(
   config: Record<string, unknown>,
   options: {
+    runId?: string;
     context?: Record<string, unknown>;
     runtime?: Record<string, unknown>;
     executionTransport?: Record<string, unknown>;
@@ -200,7 +201,7 @@ async function runExecutor(
   });
 
   const result = await execute({
-    runId: "run-1",
+    runId: options.runId ?? "run-1",
     agent: {
       id: "agent-1",
       companyId: "company-1",
@@ -1905,6 +1906,61 @@ describe("shared ACPX engine runtime behavior", () => {
     const changed = await withScratch(path.join(root, "run-3"), "/custom/tmp-2");
     expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
     expect(changed.result.sessionParams?.configFingerprint).not.toBe(first.result.sessionParams?.configFingerprint);
+  });
+
+  it("keeps managed GitHub launchers and rotated credentials out of session identity", async () => {
+    const root = await makeTempRoot();
+    const config = { agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
+    async function launch(runId: string, userPath = "/usr/bin:/bin", authenticationMode = "managed") {
+      const directory = path.join(os.tmpdir(), "paperclip-github-runtime", runId);
+      return runExecutor({ ...config, env: {
+        PATH: `${directory}:${userPath}`, ZDOTDIR: directory,
+        BASH_ENV: path.join(directory, ".bashrc"), GH_CONFIG_DIR: path.join(directory, "gh-config"),
+        PAPERCLIP_GITHUB_LAUNCHER_DIR: directory, PAPERCLIP_GITHUB_BROKER_URL: "https://paperclip.test",
+        PAPERCLIP_GITHUB_BROKER_TOKEN: `broker-${runId}`, GH_TOKEN: `token-${runId}`,
+        GITHUB_TOKEN: `github-${runId}`, GH_ENTERPRISE_TOKEN: `enterprise-${runId}`,
+        GITHUB_ENTERPRISE_TOKEN: `enterprise-github-${runId}`, PAPERCLIP_GIT_TOKEN: `git-${runId}`,
+        SSH_AUTH_SOCK: `/tmp/agent-${runId}.sock`,
+      } }, { runId, context: { taskId: "issue-1", githubAuthenticationMode: authenticationMode } });
+    }
+    const first = await launch("run-one");
+    const second = await launch("run-two");
+    const changed = await launch("run-three", "/usr/bin:/custom/bin");
+    expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
+    expect(changed.result.sessionParams?.configFingerprint).not.toBe(first.result.sessionParams?.configFingerprint);
+    const env = (second.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+    expect(env.PAPERCLIP_GITHUB_BROKER_TOKEN).toBe("broker-run-two");
+    expect(env.PATH).toContain("/run-two:");
+    expect(env.GH_TOKEN).toBe("token-run-two");
+    const hostOne = await launch("host-one", undefined, "host");
+    const hostTwo = await launch("host-two", undefined, "host");
+    expect(hostTwo.result.sessionParams?.configFingerprint).not.toBe(hostOne.result.sessionParams?.configFingerprint);
+  });
+
+  it("retains configured GitHub tokens and custom launcher directories in session identity", async () => {
+    const root = await makeTempRoot();
+    const config = { agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
+    for (const context of [{ taskId: "issue-1" }, { taskId: "issue-1", githubAuthenticationMode: "managed" }]) {
+      const first = await runExecutor({ ...config, env: { GH_TOKEN: "configured-one", PAPERCLIP_GITHUB_LAUNCHER_DIR: "/custom/launchers" } }, { context });
+      const second = await runExecutor({ ...config, env: { GH_TOKEN: "configured-two", PAPERCLIP_GITHUB_LAUNCHER_DIR: "/custom/launchers" } }, { context });
+      expect(second.result.sessionParams?.configFingerprint).not.toBe(first.result.sessionParams?.configFingerprint);
+    }
+  });
+
+  it("keeps remote managed GitHub launcher rotation out of session identity", async () => {
+    const root = await makeTempRoot();
+    const remoteCwd = "/workspace/remote";
+    const config = { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
+    const launch = (runId: string) => {
+      const directory = `${remoteCwd}/.paperclip-runtime/github/${runId}`;
+      return runExecutor({ ...config, env: { PATH: `${directory}:/usr/bin`, PAPERCLIP_GITHUB_LAUNCHER_DIR: directory, PAPERCLIP_GITHUB_BROKER_TOKEN: runId } }, {
+        runId, context: { taskId: "issue-1", githubAuthenticationMode: "managed" },
+        executionTarget: { kind: "remote", transport: "ssh", remoteCwd },
+      });
+    };
+    const first = await launch("remote-one");
+    const second = await launch("remote-two");
+    expect(second.result.sessionParams?.configFingerprint).toBe(first.result.sessionParams?.configFingerprint);
   });
 
   it("busts the session fingerprint when a stable configured PAPERCLIP_* value rotates", async () => {
