@@ -40,6 +40,29 @@ describe("plugin HTTP loopback origins", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it("rejects a public DNS answer for an allowed localhost origin", async () => {
+    const allowed = pluginHttpLoopbackOrigins("http://localhost:8795");
+    await expect(validateAndResolveFetchUrl("http://localhost:8795/write", allowed,
+      async () => [{ address: "93.184.216.34", family: 4 }]))
+      .rejects.toThrow("private/reserved ranges");
+  });
+
+  it("pins the loopback answer when localhost has mixed DNS answers", async () => {
+    const allowed = pluginHttpLoopbackOrigins("http://localhost:8795");
+    const target = await validateAndResolveFetchUrl("http://localhost:8795/write", allowed,
+      async () => [{ address: "93.184.216.34", family: 4 }, { address: "127.0.0.1", family: 4 }]);
+    expect(target.resolvedAddress).toBe("127.0.0.1");
+  });
+
+  it("allows only the listed IPv6 loopback origin", async () => {
+    const allowed = pluginHttpLoopbackOrigins("http://[::1]:8795");
+    const loopback = async () => [{ address: "::1", family: 6 }];
+    const target = await validateAndResolveFetchUrl("http://[::1]:8795/write", allowed, loopback);
+    expect(target.resolvedAddress).toBe("::1");
+    await expect(validateAndResolveFetchUrl("http://[::1]:8796/write", allowed, loopback))
+      .rejects.toThrow("private/reserved ranges");
+  });
+
   it("never opts private networks or metadata addresses into plugin HTTP", async () => {
     const allowed = new Set(["http://10.0.0.1:8795", "http://169.254.169.254"]);
     await expect(validateAndResolveFetchUrl("http://10.0.0.1:8795/", allowed))

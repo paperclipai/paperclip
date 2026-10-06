@@ -181,7 +181,9 @@ interface ValidatedFetchTarget {
 }
 
 export async function validateAndResolveFetchUrl(urlString: string,
-  loopbackOrigins = pluginHttpLoopbackOrigins()): Promise<ValidatedFetchTarget> {
+  loopbackOrigins = pluginHttpLoopbackOrigins(),
+  lookupAddresses: (hostname: string) => Promise<Array<{ address: string; family: number }>> =
+    (hostname) => dnsLookup(hostname, { all: true })): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -205,7 +207,7 @@ export async function validateAndResolveFetchUrl(urlString: string,
 
   // Race the DNS lookup against a timeout to prevent indefinite hangs
   // when DNS is misconfigured or unresponsive.
-  const dnsPromise = dnsLookup(originalHostname, { all: true });
+  const dnsPromise = lookupAddresses(originalHostname);
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(
       () => reject(new Error(`DNS lookup timed out after ${DNS_LOOKUP_TIMEOUT_MS}ms for ${originalHostname}`)),
