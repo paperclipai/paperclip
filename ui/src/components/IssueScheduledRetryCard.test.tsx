@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
+import { i18n } from "@/i18n";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,6 +45,24 @@ const baseRetry: IssueScheduledRetry = {
   error: "Upstream provider rate limited",
   errorCode: "rate_limited",
 };
+
+it("localizes workspace waiting without retrying or rewriting the scheduled record", async () => {
+  const retry = { ...baseRetry, scheduledRetryReason: "workspace_busy" };
+  const original = JSON.stringify(retry);
+  renderWithProviders(<IssueScheduledRetryCard issueId="issue-1" scheduledRetry={retry} />);
+  try {
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(container.textContent).toContain(language === "ru" ? "Ожидание рабочей области" : "Waiting for workspace");
+      expect(container.textContent).toContain(i18n.t("sep14Runtime.workspaceBusy"));
+      expect(container.querySelector("button")).toBeNull();
+    }
+    expect(retryNowMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(retry)).toBe(original);
+  } finally {
+    await act(async () => { await i18n.changeLanguage("en"); });
+  }
+});
 
 function buildRetryResponse(outcome: IssueRetryNowOutcome) {
   return {

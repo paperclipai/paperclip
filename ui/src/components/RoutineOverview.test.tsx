@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import type { RoutineDetail, RoutineRunSummary } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { RoutineDetailContext, type RoutineDetailContextValue } from "./routine-sections/context";
 import {
   RoutineOverview,
@@ -139,7 +140,8 @@ describe("RoutineOverview", () => {
   let container: HTMLDivElement;
   let root: Root;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     issueRowRender.mockClear();
     vi.spyOn(Date, "now").mockReturnValue(new Date("2026-08-31T17:00:00.000Z").getTime());
     container = document.createElement("div");
@@ -147,10 +149,11 @@ describe("RoutineOverview", () => {
     root = createRoot(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   it("summarizes enabled schedules and their next run", () => {
@@ -170,6 +173,18 @@ describe("RoutineOverview", () => {
     expect(summarizeRoutineSchedule([{ ...routine.triggers[0]!, kind: "webhook", enabled: true }])).toEqual({
       label: "1 active webhook", detail: "Runs on incoming requests", nextRunAt: null,
     });
+  });
+
+  it.each([
+    [1, "1 активный вебхук"],
+    [2, "2 активных вебхука"],
+    [5, "5 активных вебхуков"],
+    [21, "21 активный вебхук"],
+  ])("inflects %i active webhook triggers without changing their stored kind", async (count, expected) => {
+    await i18n.changeLanguage("ru");
+    const triggers = Array.from({ length: count }, () => ({ ...routine.triggers[0]!, kind: "webhook" as const, enabled: true }));
+    expect(summarizeRoutineSchedule(triggers).label).toBe(expected);
+    expect(triggers.every(trigger => trigger.kind === "webhook")).toBe(true);
   });
 
   it("adapts compact run tasks to the canonical task presentation", () => {

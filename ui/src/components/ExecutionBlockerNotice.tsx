@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation, t } from "@/i18n";
 import type { ExecutionBlocker } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { activityApi } from "../api/activity";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "./ui/button";
 import { Link } from "../lib/router";
+import { executionRecoveryText } from "../lib/recovery-display";
 
 export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried }: {
   companyId: string;
@@ -12,6 +14,7 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
   blocker: ExecutionBlocker;
   onRetried: () => void;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data: runs, error: runsError } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
@@ -33,24 +36,24 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
     },
   });
   return (
-    <div role="status" aria-label="Task recovery" className="mx-(--sz-execution-blocker-inline) my-(--sz-execution-blocker-block) flex flex-wrap items-center justify-between execution-blocker-notice border border-border bg-muted text-foreground">
+    <div role="status" aria-label={t("sep13Recovery.label")} className="mx-(--sz-execution-blocker-inline) my-(--sz-execution-blocker-block) flex flex-wrap items-center justify-between execution-blocker-notice border border-border bg-muted text-foreground">
       <div className="min-w-0 flex-1 break-words">
-        <p>{modelRejected ? "Model unavailable." : "Recovery needed."}{blocker.runError ? ` ${blocker.runError}` : ""}</p>
-        {modelRejected && <p>Choose a supported model or clear the task's model override, then retry.</p>}
-        <p>{blocker.nextAction}</p>
+        <p>{modelRejected ? t("oct6Beta.copy007") : t("oct5Core.recoveryNeeded")}{blocker.runError ? ` ${executionRecoveryText(blocker.runError)}` : ""}</p>
+        {modelRejected && <p>{t("oct6Beta.copy008")}</p>}
+        <p>{executionRecoveryText(blocker.nextAction)}</p>
         {Boolean(blocker.savedMessageCount) && (
-          <p>{blocker.savedMessageCount} saved {blocker.savedMessageCount === 1 ? "message is" : "messages are"} waiting for recovery.</p>
+          <p>{t("oct5Core.savedMessages", { count: blocker.savedMessageCount })}</p>
         )}
       </div>
       {blocker.agentId && blocker.runId && (
         <Button variant="outline" size="sm" asChild>
-          <Link to={`/agents/${blocker.agentId}/runs/${blocker.runId}`}>Inspect run</Link>
+          <Link to={`/agents/${blocker.agentId}/runs/${blocker.runId}`}>{t("localizationAgents.ui73_Inspect_run")}</Link>
         </Button>
       )}
       {(!requiresInspection || blocker.canRetry) && blocker.agentId && blocker.runId &&
         ((blocker.cause === "legacy_execution_requires_reconciliation" && failedRun) || blocker.canContinue || blocker.canRetry) && (
         <Button variant="outline" size="sm" disabled={retry.isPending} onClick={() => retry.mutate()}>
-          {retry.isPending ? "Starting…" : blocker.canContinue ? "Continue" : "Retry"}
+          {retry.isPending ? t("oct5Core.starting") : blocker.canContinue ? t("oct5Core.continue") : t("sep12Screens.retry")}
         </Button>
       )}
       {retry.isError && (

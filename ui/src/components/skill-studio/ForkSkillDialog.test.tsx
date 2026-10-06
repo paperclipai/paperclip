@@ -12,6 +12,7 @@ import type {
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ForkSkillDialog } from "./ForkSkillDialog";
+import { i18n } from "@/i18n";
 
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockCompanySkillsApi = vi.hoisted(() => ({
@@ -198,10 +199,32 @@ beforeEach(() => {
 
 afterEach(() => {
   teardown();
+  void i18n.changeLanguage("en");
   vi.clearAllMocks();
 });
 
 describe("ForkSkillDialog", () => {
+  it("switches labels live without resetting the reassignment choice", async () => {
+    const agents = [makeAgent({ id: "a1" })];
+    mockCompanySkillsApi.forkPrecheck.mockResolvedValue(
+      makePrecheck({ agentUsageCount: 1, usedByAgents: agents }),
+    );
+    await renderNode(
+      <ForkSkillDialog companyId="company-1" skill={makeSkill({ usedByAgents: agents, attachedAgentCount: 1 })} open onOpenChange={() => {}} />,
+    );
+    const toggle = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-label="Switch these agents to the copy"]',
+    );
+    expect(toggle).toBeTruthy();
+    await click(toggle!);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flush();
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(toggle?.getAttribute("aria-label")).toBe("Переключить этих агентов на копию");
+    expect(document.body.textContent).toContain("Создать копию");
+  });
+
   it("shows the agent count prominently and forks with reassignment ON by default", async () => {
     const agents = [makeAgent({ id: "a1", name: "Reviewer" }), makeAgent({ id: "a2", name: "Planner" })];
     mockCompanySkillsApi.forkPrecheck.mockResolvedValue(

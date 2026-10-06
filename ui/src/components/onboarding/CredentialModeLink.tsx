@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { AnimatePresence, motion } from "motion/react";
 
 import { cn } from "../../lib/utils";
@@ -18,8 +19,8 @@ import { LINK_LABEL_FADE_IN, LINK_LABEL_FADE_OUT } from "./onboarding-motion";
  */
 
 const LINK_LABEL: Record<CredentialMode, string> = {
-  subscription: "Use subscription instead",
-  api: "Use API key instead",
+  get subscription() { return t("localizationOnboarding.useSubscription"); },
+  get api() { return t("localizationOnboarding.useApiKey"); },
 };
 const NATIVE_MODES: CredentialMode[] = ["subscription", "api"];
 
@@ -35,6 +36,7 @@ export function CredentialModeLink({
   mode: CredentialMode;
   onChange: (next: CredentialMode) => void;
 }) {
+  useTranslation();
   return <ModeLink destination={OTHER_MODE[mode]} onClick={() => onChange(OTHER_MODE[mode])} modes={NATIVE_MODES} />;
 }
 
@@ -43,6 +45,7 @@ function ModeLink({ destination, onClick, modes }: {
   onClick: () => void;
   modes: CredentialMode[];
 }) {
+  useTranslation();
   return (
     <button
       type="button"

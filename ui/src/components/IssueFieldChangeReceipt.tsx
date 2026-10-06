@@ -1,8 +1,10 @@
+import { useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { ArrowRight, ShieldCheck } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
 import {
-  issueAuthorizationReasonLabel,
-  readIssueChangeReceipt,
+  issueAuthorizationReasonLabelDisplay as issueAuthorizationReasonLabel,
+  readIssueChangeReceiptDisplay as readIssueChangeReceipt,
 } from "../lib/issue-change-receipt";
 import { cn } from "../lib/utils";
 
@@ -30,6 +32,7 @@ export function IssueFieldChangeReceipt({
   resolveUserLabel?: (userId: string) => string | null | undefined;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const rows = readIssueChangeReceipt(event.details, { resolveAgentLabel, resolveUserLabel });
   const reason = issueAuthorizationReasonLabel(
     typeof event.details?.authorizationReason === "string"
@@ -66,7 +69,7 @@ export function IssueFieldChangeReceipt({
                     rather than implying the whole value is shown. */}
                 {row.truncated ? (
                   <span className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-                    preview
+                    {t("localizationIssuePanels.receiptPreview")}
                   </span>
                 ) : null}
               </dd>
@@ -85,11 +88,11 @@ export function IssueFieldChangeReceipt({
           />
           {responsibleUserName ? (
             <>
-              for <span className="text-foreground">{responsibleUserName}</span>
+              <Trans i18nKey="localizationIssuePanels.receiptResponsible" values={{ name: responsibleUserName }} components={{ user: <span className="text-foreground" /> }} />
               {" · "}
             </>
           ) : null}
-          authorized by {reason}
+          {t("localizationIssuePanels.receiptAuthorized", { reason })}
         </p>
       ) : null}
     </div>

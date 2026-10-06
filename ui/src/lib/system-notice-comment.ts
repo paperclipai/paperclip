@@ -1,3 +1,4 @@
+import { t, i18n } from "@/i18n";
 import type {
   IssueCommentMetadata,
   IssueCommentMetadataRow,
@@ -9,6 +10,136 @@ import type {
   SystemNoticeProps,
   SystemNoticeTone,
 } from "../components/SystemNotice";
+
+
+
+// Display projection only. Recognition, deduplication keys, and stored metadata
+// retain the original strings produced by the server.
+const NOTICE_DISPLAY_KEYS: Record<string, string> = {
+  "iMessage Photon sender": "communityPhoton.senderMetadata",
+  "Reply to message": "communityPhoton.replyToMessage",
+  "Reply part": "communityPhoton.replyPart",
+  "Name": "communityPhoton.senderName",
+  "Provider ID": "communityPhoton.providerId",
+  "Authority": "communityPhoton.authority",
+  "System notice": "localizationTaskRuntime.ui_System_notice_1j94h34",
+  "System warning": "localizationTaskRuntime.ui_System_warning_8kjbgo",
+  "System alert": "localizationTaskRuntime.ui_System_alert_nsduvm",
+  "System update": "localizationTaskRuntime.ui_System_update_a520s5",
+  "Task paused — Claude needs re-authentication": "localizationTaskRuntime.ui_Task_paused_Claude_needs_re_authentication_12kau6h",
+  "Task paused — a secret/config binding is missing": "localizationTaskRuntime.ui_Task_paused_a_secret_config_binding_is_missing_1i7npgt",
+  "Task paused — workspace problem": "localizationTaskRuntime.ui_Task_paused_workspace_problem_jyzuac",
+  "Task paused — waiting on a recovery owner": "localizationTaskRuntime.ui_Task_paused_waiting_on_a_recovery_owner_vb5ter",
+  "No live execution path": "localizationTaskRuntime.ui_No_live_execution_path_ocr24d",
+  "Workspace validation failed": "localizationTaskRuntime.ui_Workspace_validation_failed_1ak9xwe",
+  "Workspace scan timed out": "stable916Dynamic.workspaceScanTimedOut",
+  "Workspace scan queue is full": "stable916Dynamic.workspaceScanQueueFull",
+  "Workspace scan exceeded its limit": "stable916Dynamic.workspaceScanLimitExceeded",
+  "Workspace scan failed": "stable916Dynamic.workspaceScanFailed",
+  "Workspace scan was cancelled": "stable916Dynamic.workspaceScanCancelled",
+  "Configuration incomplete": "localizationTaskRuntime.ui_Configuration_incomplete_an1vbj",
+  "AI connection needs attention": "sep13QueueMetadata.aiConnectionNeedsAttention",
+  "Review recovery stalled": "localizationTaskRuntime.ui_Review_recovery_stalled_3ewqnf",
+  "Automatic recovery blocked": "localizationTaskRuntime.ui_Automatic_recovery_blocked_1eunv7z",
+  "Error: usage limit reached": "localizationTaskRuntime.ui_Error_usage_limit_reached_mzg8db",
+  "Error: not logged in to Claude": "localizationTaskRuntime.ui_Error_not_logged_in_to_Claude_f0d3ug",
+  "Error: agent login required": "localizationTaskRuntime.ui_Error_agent_login_required_1klt4bm",
+  "Continuation failed": "localizationTaskRuntime.ui_Continuation_failed_3mtcyf",
+  "Recovery: recovery attempt failed — remains blocked": "localizationTaskRuntime.ui_Recovery_recovery_attempt_failed_remains_blocked_wepuy6",
+  "Recovery: waiting on dependencies — moved to blocked": "localizationTaskRuntime.ui_Recovery_waiting_on_dependencies_moved_to_blocked_124m2yj",
+  "Recovery": "localizationTaskRuntime.ui_Recovery_bx9hye",
+  "Run evidence": "localizationTaskRuntime.ui_Run_evidence_1rsf2vj",
+  "Detail": "localizationTaskRuntime.ui_Detail_ei31dg",
+  "Code": "localizationTaskRuntime.ui_Code_xoaiok",
+  "Task": "localizationTaskRuntime.ui_Task_x0051o",
+  "Agent": "localizationTaskRuntime.ui_Agent_1w5o8jq",
+  "Run": "localizationTaskRuntime.ui_Run_137u7vu",
+  "Recovery action": "localizationTaskRuntime.ui_Recovery_action_14o4sg",
+  "Recovery owner": "localizationTaskRuntime.ui_Recovery_owner_yll8q5",
+  "Next action": "localizationTaskRuntime.ui_Next_action_107tu5e",
+  "Source run": "localizationTaskRuntime.ui_Source_run_lzyuvx",
+  "Failure code": "localizationTaskRuntime.ui_Failure_code_1tobl5m",
+  "Failure summary": "localizationTaskRuntime.ui_Failure_summary_1suev25",
+  "Cause": "localizationTaskRuntime.ui_Cause_vbnqgw",
+  "Previous status": "localizationTaskRuntime.ui_Previous_status_leypve",
+  "Latest run": "localizationTaskRuntime.ui_Latest_run_243xn7",
+  "Blocking issues": "localizationTaskRuntime.ui_Blocking_issues_tt6fce",
+  "Board decision required": "localizationTaskRuntime.ui_Board_decision_required_1kwnj60",
+  "The recovery owner should either restore a live execution path or record the manual resolution on the source issue": "localizationTaskRuntime.ui_The_recovery_owner_should_either_restore_a_live_execution_path_or_dr2smj",
+};
+
+// Exact Next action values emitted by recovery/stranded-notice.ts. These are
+// presentation instructions, not arbitrary run errors or comment bodies.
+const WORKSPACE_SCAN_NEXT_ACTION_KEYS: Record<string, string> = {
+  "Check repository access and server load, then retry the task.": "stable916Dynamic.workspaceScanTimeoutAction",
+  "Check server load and the workspace scan queue, then retry the task.": "stable916Dynamic.workspaceScanQueueAction",
+  "Check the repository size and workspace scan output limit before retrying the task.": "stable916Dynamic.workspaceScanLimitAction",
+  "Inspect the failed run and check repository access and integrity before retrying the task.": "stable916Dynamic.workspaceScanFailureAction",
+  "Inspect why workspace preparation was cancelled before retrying the task.": "stable916Dynamic.workspaceScanCancelledAction",
+};
+
+const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
+  workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },
+  workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "Check server load and the workspace scan queue, then retry the task." },
+  workspace_git_scan_output_limit: { title: "Workspace scan exceeded its limit", nextAction: "Check the repository size and workspace scan output limit before retrying the task." },
+  workspace_git_scan_failed: { title: "Workspace scan failed", nextAction: "Inspect the failed run and check repository access and integrity before retrying the task." },
+  workspace_git_scan_cancelled: { title: "Workspace scan was cancelled", nextAction: "Inspect why workspace preparation was cancelled before retrying the task." },
+};
+
+/** Project only a complete server-authored recovery notice; keep stored/copy text raw. */
+export function systemNoticeBodyDisplay(input: {
+  body: string;
+  authorType: string | null | undefined;
+  presentation?: IssueCommentPresentation | null;
+  metadata?: IssueCommentMetadata | null;
+}): string {
+  if (input.authorType !== "system" || input.presentation?.kind !== "system_notice"
+    || input.metadata?.version !== 1 || !input.metadata.sourceRunId) return input.body;
+  const rows = input.metadata.sections.flatMap((section) => section.rows);
+  const failure = rows.find((row) => row.type === "key_value" && row.label === "Failure code");
+  if (failure?.type !== "key_value" || !Object.hasOwn(WORKSPACE_SCAN_NOTICES, failure.value)) return input.body;
+  const notice = WORKSPACE_SCAN_NOTICES[failure.value];
+  if (input.presentation.title !== notice.title
+    || !rows.some((row) => row.type === "key_value" && row.label === "Next action" && row.value === notice.nextAction)
+    || input.body !== `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${notice.nextAction}`) return input.body;
+  return t("stable916Dynamic.workspaceScanBody", {
+    nextAction: t(WORKSPACE_SCAN_NEXT_ACTION_KEYS[notice.nextAction]),
+  });
+}
+
+export function systemNoticeMetadataLabelDisplay(value: string): string {
+  const key = Object.hasOwn(NOTICE_DISPLAY_KEYS, value) ? NOTICE_DISPLAY_KEYS[value] : undefined;
+  return key ? t(key) : value;
+}
+
+export const systemNoticeTitleDisplay = systemNoticeMetadataLabelDisplay;
+
+export function systemNoticeRunStatusDisplay(value: string): string {
+  return i18n.resolvedLanguage?.startsWith("en") ? value : t(`status.${value}`, { defaultValue: value });
+}
+
+export function systemNoticeMetadataValueDisplay(row: SystemNoticeMetadataRow): string {
+  if (row.kind !== "text") return "";
+  if (row.label === "Authority" && row.value === "Linked Paperclip user") return t("communityPhoton.linkedUser");
+  if (row.label === "Authority" && row.value === "Sponsored external guest (restricted)") return t("communityPhoton.sponsoredGuest");
+  if (row.label === "Previous status") return systemNoticeRunStatusDisplay(row.value);
+  if (row.label === "Recovery owner" && row.value === "board") return t("localizationTaskRuntime.ui_Board_1hpelzf");
+  if (row.label === "Next action" && row.value === "Reconnect the selected AI account or choose an available connection, then continue the task.") {
+    return t("sep13QueueMetadata.aiConnectionNextAction");
+  }
+  if (row.label === "Next action" && Object.hasOwn(WORKSPACE_SCAN_NEXT_ACTION_KEYS, row.value)) {
+    return t(WORKSPACE_SCAN_NEXT_ACTION_KEYS[row.value]);
+  }
+  const values: Record<string, string> = {
+    "Board decision required": "localizationTaskRuntime.ui_Board_decision_required_1kwnj60",
+    "The recovery owner should either restore a live execution path or record the manual resolution on the source issue": "localizationTaskRuntime.ui_The_recovery_owner_should_either_restore_a_live_execution_path_or_dr2smj",
+    "Inspect the evidence, then retry the original owner, explicitly reassign, repair the execution path, or record an intentional resolution": "localizationTaskRuntime.ui_Inspect_the_evidence_then_retry_the_original_owner_explicitly_rea_2xqsex",
+  };
+  // Translate only the known system-authored instructions, never arbitrary
+  // failure text, issue titles, names, IDs, or user-provided metadata values.
+  return (row.label === "Next action" || row.label === "Recovery owner") && Object.hasOwn(values, row.value)
+    ? t(values[row.value]) : row.value;
+}
 
 const TONE_LABEL: Record<SystemNoticeTone, string> = {
   neutral: "System notice",

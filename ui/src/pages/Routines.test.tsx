@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { FolderListResult, Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Routines, buildRoutineGroups, buildRoutineSections, sortRoutines } from "./Routines";
+import { i18n } from "@/i18n";
 
 let currentSearch = "";
 
@@ -607,6 +608,26 @@ describe("Routines page", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("updates the production page heading without refetching or translating routine records", async () => {
+    const routine = createRoutine({ title: "Original English routine", id: "raw-routine" });
+    routinesListMock.mockResolvedValue([routine]); issuesListMock.mockResolvedValue([]);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    try {
+      await act(async () => { await i18n.changeLanguage("en"); root.render(<QueryClientProvider client={client}><Routines /></QueryClientProvider>); await flush(); });
+      await vi.waitFor(() => expect(container.textContent).toContain("Original English routine"));
+      const heading = container.querySelector("h1")!;
+      const calls = routinesListMock.mock.calls.length; const before = JSON.stringify(routine);
+      for (const [locale, title] of [["en", "Routines"], ["ru", "Регламенты"], ["en", "Routines"]] as const) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(container.querySelector("h1")).toBe(heading); expect(heading.textContent).toBe(title);
+        expect(container.textContent).toContain("Original English routine");
+        expect(JSON.stringify(routine)).toBe(before); expect(routinesListMock).toHaveBeenCalledTimes(calls);
+        expect(navigateMock).not.toHaveBeenCalled();
+      }
+    } finally { await act(async () => root.unmount()); client.clear(); await i18n.changeLanguage("en"); }
   });
 
   it("defaults the routines list to folder mode with inline folder sections", async () => {

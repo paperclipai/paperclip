@@ -1,3 +1,13 @@
+import { t, useTranslation } from "@/i18n";
+import { formatNumber } from "./utils";
+
+/** Cached preview failures keep their presentation in the current UI language. */
+class ArtifactPreviewError extends Error {
+  constructor(key: string) {
+    super(t(key));
+    Object.defineProperty(this, "message", { configurable: true, get: () => t(key) });
+  }
+}
 /** Optional producer metadata must never become invented facts in an artifact card. */
 export function artifactText(
   metadata: Record<string, unknown> | null,
@@ -42,9 +52,10 @@ export function artifactPreviewUrl(value: string): string {
 
 export function artifactFileSize(bytes: number | null): string {
   if (bytes === null) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024) return t("localizationIssueDetail.bytes", { size: formatNumber(bytes) });
+  const options = { minimumFractionDigits: 1, maximumFractionDigits: 1 };
+  if (bytes < 1024 * 1024) return t("localizationIssueDetail.kilobytes", { size: formatNumber(bytes / 1024, options) });
+  return t("localizationIssueDetail.megabytes", { size: formatNumber(bytes / (1024 * 1024), options) });
 }
 
 export const CSV_PREVIEW_MAX_BYTES = 1024 * 1024;
@@ -54,9 +65,7 @@ const CSV_PREVIEW_MAX_COLUMNS = 50;
 /** RFC 4180 quoting, CRLF, embedded newlines, and a UTF-8 BOM; bounded for the UI. */
 export function parseArtifactCsv(text: string) {
   if (new TextEncoder().encode(text).length > CSV_PREVIEW_MAX_BYTES)
-    throw new Error(
-      "CSV is too large to preview. Download the file to view it.",
-    );
+    throw new ArtifactPreviewError("oct5Core.s0214");
   const records: string[][] = [];
   let row: string[] = [],
     field = "",
@@ -65,9 +74,7 @@ export function parseArtifactCsv(text: string) {
   const endField = () => {
     row.push(field);
     if (row.length > CSV_PREVIEW_MAX_COLUMNS)
-      throw new Error(
-        "CSV has too many columns to preview. Download the file to view it.",
-      );
+      throw new ArtifactPreviewError("oct5Core.s0285");
     field = "";
     closedQuote = false;
   };
@@ -94,16 +101,12 @@ export function parseArtifactCsv(text: string) {
       quoted = true;
     } else {
       if (closedQuote || char === '"')
-        throw new Error(
-          "CSV could not be previewed. Download the file to view it.",
-        );
+        throw new ArtifactPreviewError("oct5Core.s0286");
       field += char;
     }
   }
   if (quoted)
-    throw new Error(
-      "CSV could not be previewed. Download the file to view it.",
-    );
+    throw new ArtifactPreviewError("oct5Core.s0286");
   if (field || row.length || closedQuote) {
     endField();
     records.push(row);
@@ -121,25 +124,21 @@ export async function loadArtifactCsv(
   signal?: AbortSignal,
 ) {
   if (!/^\/api\/attachments\/[a-zA-Z0-9-]+\/content$/.test(contentPath))
-    throw new Error(
-      "CSV preview is unavailable. Download the file to view it.",
-    );
+    throw new ArtifactPreviewError("oct5Core.s0215");
   const response = await fetch(contentPath, {
     credentials: "same-origin",
     redirect: "error",
     signal,
   });
   if (!response.ok)
-    throw new Error("CSV could not be loaded. Try again or download the file.");
+    throw new ArtifactPreviewError("oct5Core.s0287");
   if (Number(response.headers.get("content-length")) > CSV_PREVIEW_MAX_BYTES) {
     await response.body?.cancel();
-    throw new Error(
-      "CSV is too large to preview. Download the file to view it.",
-    );
+    throw new ArtifactPreviewError("oct5Core.s0214");
   }
   const reader = response.body?.getReader();
   if (!reader)
-    throw new Error("CSV could not be loaded. Try again or download the file.");
+    throw new ArtifactPreviewError("oct5Core.s0287");
   const decoder = new TextDecoder();
   let text = "",
     size = 0;
@@ -150,9 +149,7 @@ export async function loadArtifactCsv(
       size += value.byteLength;
       if (size > CSV_PREVIEW_MAX_BYTES) {
         await reader.cancel();
-        throw new Error(
-          "CSV is too large to preview. Download the file to view it.",
-        );
+        throw new ArtifactPreviewError("oct5Core.s0214");
       }
       text += decoder.decode(value, { stream: true });
     }

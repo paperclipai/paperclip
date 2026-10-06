@@ -1,5 +1,7 @@
+import { useTranslation } from "@/i18n";
 import { AlertTriangle } from "lucide-react";
 export function EmailSafetyNotice() {
+  const { t } = useTranslation();
   return (
     <div
       role="note"
@@ -9,15 +11,13 @@ export function EmailSafetyNotice() {
         <AlertTriangle className="size-4 shrink-0 text-(--status-agent-paused)" />
         <div className="space-y-1">
           <p className="text-sm font-medium">
-            Anyone can email an unrestricted inbox
+            {t("sep12Connections.unrestrictedInbox")}
           </p>
           <p className="text-sm text-muted-foreground">
-            Incoming email can create tasks and trigger agent work. Set up an
-            allowlist in AgentMail to limit who can contact this inbox.
+            {t("sep12Connections.allowlistAdvice")}
           </p>
           <p className="text-xs text-muted-foreground">
-            Paperclip does not verify sender restrictions. AgentMail controls
-            new messages and replies separately; check both lists.
+            {t("sep12Connections.senderRestrictionsNotice")}
           </p>
         </div>
       </div>
@@ -28,7 +28,7 @@ export function EmailSafetyNotice() {
           rel="noreferrer"
           className="underline underline-offset-4"
         >
-          Open AgentMail ↗
+          {t("sep12Connections.openAgentMail")}
         </a>
         <a
           href="https://docs.agentmail.to/knowledge-base/allowlists-blocklists"
@@ -36,7 +36,7 @@ export function EmailSafetyNotice() {
           rel="noreferrer"
           className="text-muted-foreground underline underline-offset-4"
         >
-          Set up allowlists ↗
+          {t("sep12Connections.setUpAllowlists")}
         </a>
       </div>
     </div>

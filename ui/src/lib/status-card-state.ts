@@ -1,3 +1,4 @@
+import { t, i18n } from "@/i18n";
 import type { StatusCard, StatusCardRefreshPolicy } from "@paperclipai/shared";
 
 /**
@@ -52,60 +53,60 @@ export const STATUS_CARD_LIFECYCLE_PRESENTATION: Record<
   StatusCardLifecyclePresentation
 > = {
   compiling: {
-    label: "Setting up",
+    get label() { return t("localizationStatusCards.settingUp200"); },
     dotClassName: "bg-cyan-400 animate-pulse",
-    description: "Just created; setting up and generating the first summary.",
+    get description() { return t("localizationStatusCards.justCreatedSettingUpAndGeneratingTheFirstSummary201"); },
     dashedBorder: true,
     keepsLastSummary: false,
   },
   fresh: {
-    label: "Fresh",
+    get label() { return t("localizationStatusCards.fresh202"); },
     dotClassName: "bg-emerald-400",
-    description: "Summary reflects all known changes; nothing pending.",
+    get description() { return t("localizationStatusCards.summaryReflectsAllKnownChangesNothingPending203"); },
     dashedBorder: false,
     keepsLastSummary: true,
   },
   stale: {
-    label: "Stale",
+    get label() { return t("status.stale"); },
     dotClassName: "bg-amber-400",
-    description: "Changes are pending since the last update.",
+    get description() { return t("localizationStatusCards.changesArePendingSinceTheLastUpdate205"); },
     dashedBorder: false,
     keepsLastSummary: true,
   },
   updating: {
     // Blue (distinct from fresh-emerald and compiling-cyan) so an in-flight
     // update never reads as "fresh" on a glance-scan of the board.
-    label: "Updating",
+    get label() { return t("localizationStatusCards.updating206"); },
     dotClassName: "bg-blue-500 animate-pulse",
-    description: "An update is streaming in now.",
+    get description() { return t("localizationStatusCards.anUpdateIsStreamingInNow207"); },
     dashedBorder: false,
     keepsLastSummary: true,
   },
   error: {
-    label: "Error",
+    get label() { return t("status.error"); },
     dotClassName: "bg-red-500",
-    description: "The last run failed; the last good summary stays visible.",
+    get description() { return t("localizationStatusCards.theLastRunFailedTheLastGoodSummaryStaysVisible209"); },
     dashedBorder: false,
     keepsLastSummary: true,
   },
   paused_budget: {
-    label: "Paused — budget",
+    get label() { return t("localizationStatusCards.pausedBudget210"); },
     dotClassName: "bg-orange-400",
-    description: "The daily token cap was hit; auto-updates are suspended.",
+    get description() { return t("localizationStatusCards.theDailyTokenCapWasHitAutoUpdatesAreSuspended211"); },
     dashedBorder: false,
     keepsLastSummary: true,
   },
   paused_hours: {
-    label: "Paused — hours",
+    get label() { return t("localizationStatusCards.pausedHours212"); },
     dotClassName: "bg-orange-400",
-    description: "Outside active hours; changes batch into one update at window open.",
+    get description() { return t("localizationStatusCards.outsideActiveHoursChangesBatchIntoOneUpdateAtWindowOpen213"); },
     dashedBorder: false,
     keepsLastSummary: true,
   },
   archived: {
-    label: "Archived",
+    get label() { return t("status.archived"); },
     dotClassName: "bg-muted-foreground/50",
-    description: "No auto-updates and no watches. Restore to start watching again.",
+    get description() { return t("localizationStatusCards.noAutoUpdatesAndNoWatchesRestoreToStartWatchingAgain215"); },
     dashedBorder: false,
     keepsLastSummary: true,
   },
@@ -113,31 +114,32 @@ export const STATUS_CARD_LIFECYCLE_PRESENTATION: Record<
 
 /** Compact token count, e.g. `1.1k`, `950`, `12.4k`. */
 export function formatTokens(tokens: number): string {
-  if (tokens < 1000) return `${tokens}`;
-  return `${(tokens / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  const number = new Intl.NumberFormat(i18n.resolvedLanguage, { useGrouping: false, maximumFractionDigits: 1 }).format(tokens < 1000 ? tokens : tokens / 1000);
+  return tokens < 1000 ? number : t("localizationStatusCards.thousands", { number });
 }
 
 /** US-dollar cost from integer cents, e.g. `$0.09`, `$1.20`. Sub-cent → `<$0.01`. */
 export function formatUsdFromCents(cents: number): string {
-  if (cents <= 0) return "$0.00";
-  if (cents < 1) return "<$0.01";
-  return `$${(cents / 100).toFixed(2)}`;
+  const format = (value: number) => new Intl.NumberFormat(i18n.resolvedLanguage, { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+  if (cents <= 0) return format(0);
+  if (cents < 1) return `<${format(0.01)}`;
+  return format(cents / 100);
 }
 
 /** A one-line, human summary of a card's refresh policy for chips and footers. */
 export function describeRefreshPolicy(policy: StatusCardRefreshPolicy): string {
   switch (policy.mode) {
     case "manual":
-      return "manual";
+      return t("localizationStatusCards.manualPolicy");
     case "interval":
       return policy.intervalMinutes
-        ? `every ${policy.intervalMinutes}m if changed`
-        : "on a schedule if changed";
+        ? t("localizationStatusCards.scheduledChange", { count: policy.intervalMinutes })
+        : t("localizationStatusCards.onAScheduleIfChanged219");
     case "reactive": {
       const debounce = policy.debounceSeconds ?? 60;
-      return `on change (${debounce}s)`;
+      return t("localizationStatusCards.reactiveChange", { count: debounce });
     }
     default:
-      return "manual";
+      return t("localizationStatusCards.manualPolicy");
   }
 }

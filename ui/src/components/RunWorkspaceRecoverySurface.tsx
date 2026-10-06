@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { HeartbeatRun } from "@paperclipai/shared";
@@ -16,6 +17,12 @@ import {
   canBoardManageRuntime,
   readRecoveryReconcileWorkspaceId,
 } from "../lib/recovery-reconcile";
+
+function recoverySurfaceErrorDisplay(message: string): string {
+  if (message === "Task is not loaded yet.") return t("localizationIssueChrome.taskNotLoaded");
+  if (message === "No recovery action to resolve.") return t("localizationIssueChrome.noRecovery");
+  return message;
+}
 
 /** The run errorCode Paperclip stamps when it declines a run over a git workspace it can't validate. */
 export const WORKSPACE_VALIDATION_RUN_ERROR_CODE = "workspace_validation_failed";
@@ -52,6 +59,7 @@ function readRunIssueId(run: HeartbeatRun): string | null {
  * a live `workspace_validation` recovery action.
  */
 export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -103,21 +111,21 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
       pushToast(
         variables.mode === "quarantine_restore"
           ? {
-              title: "Workspace repaired",
-              body: "Dirty changes were quarantined onto a rescue branch and the recorded branch restored; the task will resume.",
+              title: t("localizationIssueChrome.workspaceRepaired"),
+              body: t("localizationIssueChrome.workspaceRepairBody"),
               tone: "success",
             }
           : {
-              title: "Workspace branch reconciled",
-              body: "The recorded branch now matches the live branch; the task will resume.",
+              title: t("localizationIssueChrome.workspaceReconciled"),
+              body: t("localizationIssueChrome.workspaceReconciledBody"),
               tone: "success",
             },
       );
     },
     onError: (err) => {
       pushToast({
-        title: "Reconcile failed",
-        body: err instanceof Error ? err.message : "Unable to reconcile the workspace branch.",
+        title: t("localizationIssueChrome.reconcileFailed"),
+        body: err instanceof Error ? recoverySurfaceErrorDisplay(err.message) : t("localizationIssueChrome.reconcileFailedBody"),
         tone: "error",
       });
     },
@@ -158,10 +166,10 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
     onSuccess: (created) => {
       invalidate();
       pushToast({
-        title: "Isolated re-issue created",
+        title: t("localizationIssueChrome.isolatedCreated"),
         body: created.identifier
-          ? `${created.identifier} will run on a fresh isolated workspace.`
-          : "A fresh isolated re-issue was created.",
+          ? t("localizationIssueChrome.isolatedCreatedNamed", { identifier: created.identifier })
+          : t("localizationIssueChrome.isolatedCreatedBody"),
         tone: "success",
       });
       if (created.identifier) {
@@ -170,8 +178,8 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
     },
     onError: (err) => {
       pushToast({
-        title: "Re-issue failed",
-        body: err instanceof Error ? err.message : "Unable to create an isolated re-issue.",
+        title: t("localizationIssueChrome.isolatedFailed"),
+        body: err instanceof Error ? recoverySurfaceErrorDisplay(err.message) : t("localizationIssueChrome.isolatedFailedBody"),
         tone: "error",
       });
     },
@@ -194,8 +202,8 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
     },
     onError: (err) => {
       pushToast({
-        title: "Recovery resolution failed",
-        body: err instanceof Error ? err.message : "Unable to resolve recovery action",
+        title: t("localizationIssueChrome.resolveFailed"),
+        body: err instanceof Error ? recoverySurfaceErrorDisplay(err.message) : t("localizationIssueChrome.resolveFailedBody"),
         tone: "error",
       });
     },
@@ -255,7 +263,7 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
   return (
     <div className="space-y-2" data-testid="run-workspace-recovery-surface">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-muted-foreground">Workspace recovery</span>
+        <span className="text-xs font-medium text-muted-foreground">{t("localizationIssueChrome.workspaceRecovery")}</span>
         {issue?.identifier ? (
           <a
             href={`/issues/${issue.identifier}`}

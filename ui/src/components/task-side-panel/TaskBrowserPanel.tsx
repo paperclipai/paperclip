@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type BrowserUseControl, type TaskBrowser } from "@paperclipai/shared";
@@ -20,6 +21,7 @@ export function TaskBrowserPanel({
   active?: boolean;
   onOpenActiveBrowser?: () => void;
 }) {
+  useTranslation();
   const cache = useQueryClient();
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +75,7 @@ export function TaskBrowserPanel({
           if (!disposed) {
             setUrl(null);
             setError(
-              "The live view disconnected. Use Reconnect view in Browser options to try again.",
+              "oct5Core.s0181",
             );
           }
         });
@@ -153,26 +155,26 @@ export function TaskBrowserPanel({
     onSuccess: () => {
       void cache.invalidateQueries({ queryKey: ["task-browsers", issueId] });
     },
-    onError: () => setError("The browser action failed. Try again."),
+    onError: () => setError("oct5Core.s0182"),
   });
   const message = accessError
-    ? "You no longer have access to this browser."
-    : (browser?.error ?? error);
+    ? t("oct5Core.s0183")
+    : (browser?.error ?? (error ? t(error) : null));
   const heading = accessError
-    ? "Browser access unavailable"
+    ? t("oct5Core.s0184")
     : browser?.status === "starting"
-      ? "Starting browser…"
+      ? t("oct5Core.s0185")
       : browser?.status === "stopping"
-        ? "Closing browser…"
+        ? t("oct5Core.s0186")
         : browser?.status === "closed"
-          ? "Browser closed"
+          ? t("oct5Core.s0187")
           : browser?.status === "failed"
-            ? "Browser could not start"
+            ? t("oct5Core.s0188")
             : error
-              ? "Live view disconnected"
+              ? t("oct5Core.s0189")
               : viewable
-                ? "Connecting to browser…"
-                : "No browser open";
+                ? t("oct5Core.s0190")
+                : t("oct5Core.s0191");
   const waiting =
     !message &&
     (browser?.status === "starting" ||
@@ -185,7 +187,7 @@ export function TaskBrowserPanel({
           <iframe
             ref={frameRef}
             key={refresh}
-            title="Live Browser Use browser"
+            title={t("oct5Core.s0192")}
             src={url}
             onLoad={() => setViewerLoad("loaded")}
             referrerPolicy="no-referrer"
@@ -203,23 +205,22 @@ export function TaskBrowserPanel({
                     className="size-5 animate-spin text-muted-foreground motion-reduce:animate-none"
                     aria-hidden="true"
                   />
-                  <p className="text-sm">Connecting to browser…</p>
+                  <p className="text-sm">{t("oct5Core.s0190")}</p>
                 </>
               ) : (
                 <>
                   <p className="text-sm font-medium">
-                    The live view did not load
+                    {t("oct5Core.s0193")}
                   </p>
                   <p className="max-w-sm text-sm text-muted-foreground">
-                    Reconnect the view or open this task in another browser. The
-                    remote browser is still running.
+                    {t("oct5Core.s0194")}
                   </p>
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={reconnect}
                   >
-                    Reconnect view
+                    {t("oct5Core.s0175")}
                   </Button>
                 </>
               )}
@@ -248,20 +249,20 @@ export function TaskBrowserPanel({
               {message ??
                 (browser?.status === "closed"
                   ? onOpenActiveBrowser
-                    ? "Another browser is still open on this task."
-                    : "Send a task message to ask the agent to open another browser."
+                    ? t("oct5Core.s0195")
+                    : t("oct5Core.s0196")
                   : browser?.status === "starting"
-                    ? "The live view will appear here when it is ready."
+                    ? t("oct5Core.s0197")
                     : browser?.status === "stopping"
-                      ? "Waiting for Browser Use to confirm shutdown."
+                      ? t("oct5Core.s0198")
                       : !viewable
-                        ? "Ask the agent to browse a website in a task message."
+                        ? t("oct5Core.s0199")
                         : null)}
             </p>
           </div>
           {browser?.status === "closed" && !accessError && onOpenActiveBrowser && (
             <Button variant="outline" size="sm" onClick={onOpenActiveBrowser}>
-              Open active browser
+              {t("oct5Core.s0200")}
             </Button>
           )}
         </div>
@@ -273,8 +274,7 @@ export function TaskBrowserPanel({
       )}
       {viewable && presenceError && (
         <p role="alert" className="px-3 py-2 text-xs text-destructive">
-          Could not keep this browser open. Check your connection before the
-          timer runs out.
+          {t("oct5Core.s0201")}
         </p>
       )}
       {viewable && viewport.error && (

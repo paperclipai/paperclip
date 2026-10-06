@@ -4,6 +4,7 @@ import { act, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
 import {
   reorderQueuedMessageEntries,
@@ -60,9 +61,10 @@ describe("TaskChatQueuedMessages", () => {
     root = createRoot(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => root.unmount());
     container.remove();
+    await i18n.changeLanguage("en");
   });
 
   function render(
@@ -392,5 +394,79 @@ describe("TaskChatQueuedMessages", () => {
         '[data-testid="task-chat-queued-message-comment-1"]',
       ),
     ).toBeNull();
+  });
+
+  it("retranslates a stopped queue's wait without changing messages or sending them", async () => {
+    const onInterrupt = vi.fn();
+    const props = render({ queue: { ...queue, protocol: "legacy", targetRunId: null,
+      executionWait: { reason: "remote_cleanup", message: "Waiting for the previous environment to stop. Your message will start automatically." } }, onInterrupt });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]');
+    for (const locale of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBe(row);
+      expect(row?.textContent).toContain("First queued message");
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.title)
+        .toBe(locale === "ru" ? "Отправить сообщения из очереди сейчас" : "Send queued messages now");
+      const message = container.querySelector('[role="status"]')?.textContent;
+      expect(message).toBe(locale === "en"
+        ? "Waiting for the previous environment to stop. Your message will start automatically."
+        : i18n.t("sep13QueueMetadata.remoteCleanup"));
+      expect(onInterrupt).not.toHaveBeenCalled();
+      expect(props.onSteer).not.toHaveBeenCalled();
+      expect(props.onDiscard).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps the optimistically sent queue absent across locale changes without repeating the action", async () => {
+    const acknowledgement = deferred<void>();
+    const onInterrupt = vi.fn().mockReturnValue(acknowledgement.promise);
+    const originalQueue = JSON.stringify(queue);
+    const props = render({ queue: { ...queue, protocol: "legacy", steeringDisposition: "unsupported" }, onInterrupt });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]');
+    const interrupt = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')!;
+    await act(async () => interrupt.click());
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(container.contains(row)).toBe(false);
+    expect(container.querySelector('[data-testid="task-chat-queued-interrupt-comment-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+    await act(async () => { acknowledgement.resolve(); await acknowledgement.promise; });
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
+      expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+      expect(row?.textContent).toContain("First queued message");
+      expect(JSON.stringify(queue)).toBe(originalQueue);
+      expect(onInterrupt).toHaveBeenCalledTimes(1);
+      expect(props.onReorder).not.toHaveBeenCalled();
+      expect(props.onSteer).not.toHaveBeenCalled();
+      expect(props.onDiscard).not.toHaveBeenCalled();
+    }
+  });
+
+  it("retranslates a retained discard announcement without replaying the action or rebuilding unaffected rows", async () => {
+    const acknowledgement = deferred<void>();
+    const onDiscard = vi.fn().mockReturnValue(acknowledgement.promise);
+    const originalQueue = JSON.stringify(queue);
+    const props = render({ onDiscard });
+    const unaffected = container.querySelector('[data-testid="task-chat-queued-message-comment-2"]');
+    const discard = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-discard-comment-1"]')!;
+    await act(async () => discard.click());
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(discard.disabled).toBe(true);
+    expect(container.querySelector(".sr-only")?.textContent).toBe("Сообщение удаляется из очереди.");
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-2"]')).toBe(unaffected);
+    await act(async () => { acknowledgement.resolve(); await acknowledgement.promise; });
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
+      expect(container.querySelector('[data-testid="task-chat-queued-message-comment-2"]')).toBe(unaffected);
+      expect(container.querySelector(".sr-only")?.textContent).toBe(language === "ru"
+        ? "Сообщение удалено из очереди." : "Queued message discarded.");
+      expect(unaffected?.textContent).toContain("Second queued message");
+      expect(JSON.stringify(queue)).toBe(originalQueue);
+      expect(onDiscard).toHaveBeenCalledExactlyOnceWith("comment-1", "rev-1");
+      expect(props.onReorder).not.toHaveBeenCalled();
+      expect(props.onSteer).not.toHaveBeenCalled();
+    }
   });
 });

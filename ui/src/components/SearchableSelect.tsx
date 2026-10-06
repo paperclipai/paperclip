@@ -13,6 +13,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { fuzzyTextMatchesQuery, normalizeSearchText, scoreFuzzyTextFields } from "@/lib/searchable-select";
 import { cn } from "@/lib/utils";
 import { useMobileEntityPickerViewportStyle } from "@/hooks/useMobileEntityPickerViewportStyle";
+import { useTranslation } from "@/i18n";
 
 export interface SearchableSelectOption<TValue extends string = string> {
   key: string;
@@ -98,9 +99,9 @@ export function SearchableSelect<
   groups,
   onValueChange,
   placeholder,
-  searchPlaceholder = "Search...",
-  emptyMessage = "No options found.",
-  loadingMessage = "Loading...",
+  searchPlaceholder,
+  emptyMessage,
+  loadingMessage,
   loading = false,
   disabled = false,
   className,
@@ -121,6 +122,10 @@ export function SearchableSelect<
   listFooter,
   createItem,
 }: SearchableSelectProps<TValue, TOption>) {
+  const { t } = useTranslation();
+  searchPlaceholder ??= t("sep28Core.searchPlaceholder");
+  emptyMessage ??= t("sep28Core.noOptions");
+  loadingMessage ??= t("sep28Core.loading");
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const mobileViewportStyle = useMobileEntityPickerViewportStyle();
@@ -272,7 +277,7 @@ export function SearchableSelect<
           <button
             type="button"
             className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="Close selector"
+            aria-label={t("sep28Core.closeSelector")}
             onClick={() => closePopover({ suppressTriggerFocus: true })}
           >
             <X className="size-5" />

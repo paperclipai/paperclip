@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+import { taskChatToolActivityLabel } from "./task-chat-display";
 import {
   AlertTriangle,
   BookOpen,
@@ -174,6 +176,27 @@ export function protocolActivityPresentation(item: TaskChatProtocolItem): TaskCh
     case "run_terminal":
       return null;
   }
+}
+
+/** Display-only projection: provider metadata labels stay raw for classification. */
+export function protocolActivityDisplayPresentation(item: TaskChatProtocolItem): TaskChatActivityPresentation | null {
+  const presentation = protocolActivityPresentation(item);
+  if (!presentation) return null;
+  const fileCount = item.surface === "workspace_change" ? item.totals.files || item.files.length : 0;
+  const technicalName = item.surface === "provider_activity" && item.family === "tool_execution" ? providerDetail(item, "Name") : undefined;
+  return {
+    ...presentation,
+    runningLabel: taskChatToolActivityLabel(presentation.runningLabel, technicalName),
+    completedLabel: taskChatToolActivityLabel(presentation.completedLabel, technicalName),
+    failedLabel: presentation.failedLabel ? taskChatToolActivityLabel(presentation.failedLabel, technicalName) : undefined,
+    interruptedLabel: presentation.interruptedLabel ? taskChatToolActivityLabel(presentation.interruptedLabel, technicalName) : undefined,
+    detail: fileCount > 0 ? t("localizationTaskRuntime.fileCount", { count: fileCount }) : presentation.detail,
+  };
+}
+
+export function protocolActivityDisplayLabel(item: TaskChatProtocolItem, presentation: TaskChatActivityPresentation): string {
+  const technicalName = item.surface === "provider_activity" && item.family === "tool_execution" ? providerDetail(item, "Name") : undefined;
+  return taskChatToolActivityLabel(protocolActivityLabel(item, presentation), technicalName);
 }
 
 export function protocolActivityIsRunning(item: TaskChatProtocolItem): boolean {

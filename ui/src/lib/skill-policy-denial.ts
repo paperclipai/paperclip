@@ -16,6 +16,7 @@
  * toast it); the UI renders a persistent banner only for B and C.
  */
 
+import { t } from "@/i18n";
 import { ApiError } from "../api/client";
 
 /** Machine-readable error codes the server attaches to skill mutation failures. */
@@ -58,34 +59,47 @@ export interface SkillDenial {
   remediation: string;
 }
 
-const DEFAULT_POLICY_REMEDIATION =
-  "An organization administrator can change the skill policy to allow this.";
-const DEFAULT_ADMIN_REMEDIATION =
-  "This requires organization administration access. Ask an administrator to make this change.";
+const actionTranslationKeys: Record<string, string> = {
+  "Importing skills": "localizationSkills.importingSkills304",
+  "Импорт навыков": "localizationSkills.importingSkills304",
+  "Scanning projects for skills": "localizationSkills.scanningProjectsForSkills313",
+  "Поиск навыков в проектах": "localizationSkills.scanningProjectsForSkills313",
+  "Creating a skill": "localizationSkills.creatingASkill319",
+  "Создание навыка": "localizationSkills.creatingASkill319",
+  "Updating this skill": "localizationSkills.updatingThisSkill333",
+  "Обновление навыка": "localizationSkills.updatingThisSkill333",
+  "Installing this skill": "localizationSkills.installingThisSkill342",
+  "Установка навыка": "localizationSkills.installingThisSkill342",
+  "Removing this skill": "localizationSkills.removingThisSkill376",
+  "Удаление навыка": "localizationSkills.removingThisSkill376"
+};
+
+const defaultPolicyRemediation = () => t("localizationSkills.policyRemediation");
+const defaultAdminRemediation = () => t("localizationSkills.adminRemediation");
 
 /** Human-readable titles for the platform-invariant codes (State C). */
-const PLATFORM_TITLES: Record<string, string> = {
-  skill_authentication_required: "Sign in to manage skills.",
-  skill_company_boundary_denied: "This skill belongs to another organization.",
-  skill_workspace_boundary_denied: "This skill source is outside an allowed workspace.",
-  skill_source_validation_failed: "This skill source failed validation.",
-  skill_unsafe_content_blocked: "This skill contains unsafe content.",
-  skill_secret_handling_blocked: "This skill exposes a secret value.",
-  skill_actor_restricted: "This action isn't available for the current actor.",
-};
+const platformTitles = (): Record<string, string> => ({
+  skill_authentication_required: t("localizationSkills.skillSignIn"),
+  skill_company_boundary_denied: t("localizationSkills.skillOtherOrganization"),
+  skill_workspace_boundary_denied: t("localizationSkills.skillOutsideWorkspace"),
+  skill_source_validation_failed: t("localizationSkills.skillInvalidSource"),
+  skill_unsafe_content_blocked: t("localizationSkills.skillUnsafeContent"),
+  skill_secret_handling_blocked: t("localizationSkills.skillExposedSecret"),
+  skill_actor_restricted: t("localizationSkills.skillActorRestricted"),
+});
 
 /** Default remediation copy per platform-invariant code — framed as a fix, never a grant. */
-const PLATFORM_REMEDIATIONS: Record<string, string> = {
-  skill_authentication_required: "Sign in and try again.",
-  skill_company_boundary_denied: "Open the skill from the organization that owns it.",
+const platformRemediations = (): Record<string, string> => ({
+  skill_authentication_required: t("localizationSkills.signInRetry"),
+  skill_company_boundary_denied: t("localizationSkills.openOwningOrganization"),
   skill_workspace_boundary_denied:
-    "Import from a configured Paperclip workspace or the organization managed-skill directory.",
-  skill_source_validation_failed: "Fix the flagged source and retry.",
+    t("localizationSkills.importAllowedWorkspace"),
+  skill_source_validation_failed: t("localizationSkills.fixSourceRetry"),
   skill_unsafe_content_blocked:
-    "Remove the fetch-and-execute or unsafe pattern before saving.",
-  skill_secret_handling_blocked: "Remove the secret value before saving.",
-  skill_actor_restricted: "Retry from an account with access to this action.",
-};
+    t("localizationSkills.removeUnsafePattern"),
+  skill_secret_handling_blocked: t("localizationSkills.removeSecretBeforeSave"),
+  skill_actor_restricted: t("localizationSkills.retryAuthorizedAccount"),
+});
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
@@ -118,15 +132,19 @@ export function classifySkillDenial(
     || reason === "explicit_rule"
     || reason === "policy_default";
   if (isPolicyDenial) {
-    const title = actionLabel
-      ? `${actionLabel} is restricted by your organization policy.`
-      : "This action is restricted by your organization policy.";
     return {
       state: "policy",
       code,
       reason,
-      title,
-      remediation: remediation ?? DEFAULT_POLICY_REMEDIATION,
+      get title() {
+        const action = actionLabel && actionTranslationKeys[actionLabel]
+          ? t(actionTranslationKeys[actionLabel])
+          : actionLabel;
+        return action
+          ? t("localizationSkills.policyRestrictedNamedAction", { action })
+          : t("localizationSkills.policyRestrictedAction");
+      },
+      get remediation() { return remediation ?? defaultPolicyRemediation(); },
     };
   }
 
@@ -136,8 +154,8 @@ export function classifySkillDenial(
       state: "platform_admin",
       code,
       reason,
-      title: "This change needs administration access.",
-      remediation: remediation ?? DEFAULT_ADMIN_REMEDIATION,
+      get title() { return t("localizationSkills.changeNeedsAdmin"); },
+      get remediation() { return remediation ?? defaultAdminRemediation(); },
     };
   }
 
@@ -150,11 +168,14 @@ export function classifySkillDenial(
       state: "platform",
       code,
       reason,
-      title: (code && PLATFORM_TITLES[code]) ?? "This action is blocked by a platform safety rule.",
-      remediation:
-        remediation
-        ?? (code && PLATFORM_REMEDIATIONS[code])
-        ?? "Fix the flagged issue and try again.",
+      get title() {
+        return (code && platformTitles()[code]) ?? t("localizationSkills.platformSafetyBlocked");
+      },
+      get remediation() {
+        return remediation
+          ?? (code && platformRemediations()[code])
+          ?? t("localizationSkills.fixIssueRetry");
+      },
     };
   }
 

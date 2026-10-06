@@ -1,3 +1,4 @@
+import type { ChatUiError } from "@/pages/apps/chat/chat-copy";
 import type { ToolCatalogEntry } from "@paperclipai/shared";
 
 export type ToolPermission = "allowed" | "ask_first" | "off";
@@ -23,7 +24,7 @@ export interface RemoteMcpSetupState {
   agentIds: string[];
   permissions: Record<string, ToolPermission>;
   tools: RemoteMcpTool[];
-  notice: string | null;
+  notice: ChatUiError | null;
   refreshing: boolean;
 }
 

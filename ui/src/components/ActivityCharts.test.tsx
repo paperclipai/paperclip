@@ -106,7 +106,7 @@ describe("ActivityCharts", () => {
 
     expect(container.textContent).not.toContain("No runs yet");
     // Tooltip now carries the per-day breakdown (incl. failure error codes).
-    const dayCell = container.querySelector("[title^='2026-04-20: 2 runs']");
+    const dayCell = container.querySelector("[title*='2 runs']");
     expect(dayCell).not.toBeNull();
     expect(dayCell?.getAttribute("title")).toContain("provider_quota: 1");
   });

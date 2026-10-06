@@ -16,6 +16,7 @@ import { RemoteMcpDesignExample } from "@/features/connections/remote-mcp/Remote
 import { AgentConversationSidebar } from "@/components/AgentConversationSidebar";
 import { AgentChatPicker } from "@/components/AgentChatPicker";
 import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProjectCreatedCard";
+import { useTranslation } from "@/i18n";
 import { TextAttachmentPreview } from "@/components/task-side-panel/TaskAttachmentPanel";
 import { AnnouncementCard } from "@/components/AnnouncementCard";
 import { announcementPreview, announcementAnimationPreview, announcementAnimationPreviewSrc } from "@/lib/announcement-preview";
@@ -475,11 +476,12 @@ function TaskPendingInputExample() {
 }
 
 function AgentChatPickerExample() {
+  const { t } = useTranslation();
   const [state, setState] = useState<"closed" | "empty" | "loading" | "error">("closed");
   return <div className="flex flex-wrap gap-2">
-    <Button variant="outline" onClick={() => setState("empty")}>Empty picker</Button>
-    <Button variant="outline" onClick={() => setState("loading")}>Loading picker</Button>
-    <Button variant="outline" onClick={() => setState("error")}>Failed picker</Button>
+    <Button variant="outline" onClick={() => setState("empty")}>{t("stable916Shell.emptyPicker")}</Button>
+    <Button variant="outline" onClick={() => setState("loading")}>{t("stable916Shell.loadingPicker")}</Button>
+    <Button variant="outline" onClick={() => setState("error")}>{t("stable916Shell.failedPicker")}</Button>
     <AgentChatPicker agents={[]} open={state !== "closed"} onOpenChange={(open) => { if (!open) setState("closed"); }} onSelect={() => {}}
       loading={state === "loading"} error={state === "error" ? new Error("Unavailable") : null} onRetry={() => setState("empty")} />
   </div>;
@@ -495,6 +497,7 @@ function ComposerActionsExample() {
 }
 
 export function DesignGuide() {
+  const { t } = useTranslation();
   const [agentmailDemoKey, setAgentmailDemoKey] = useState("");
   const [wizardStep, setWizardStep] = useState(0);
   const [status, setStatus] = useState("todo");
@@ -567,7 +570,7 @@ export function DesignGuide() {
         </div>
       </Section>
 
-      <Section title="Announcements">
+      <Section title={t("stable916Shell.announcementsHeading")}>
         <div className="grid gap-4 md:grid-cols-2">
           <AnnouncementCard announcement={announcementAnimationPreview} imageSrc="/announcement-preview.svg" animationSrc={announcementAnimationPreviewSrc} onDismiss={() => {}} />
           <AnnouncementCard announcement={announcementPreview} imageSrc="/announcement-preview.svg" onDismiss={() => {}} />
@@ -659,7 +662,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TYPOGRAPHY                                                   */}
       {/* ============================================================ */}
-      <Section title="Runner activity">
+      <Section title={t("sep12Screens.designRunnerActivity")}>
         <TaskChatRunnerActivityGroup item={{ id: "design-runner-activity", kind: "activity_phase", active: true, summary: "", interstitial: { id: "design-runner-commentary", kind: "message", author: "agent", text: "I’ll inspect the activity feed and check the layout.", interstitial: true }, items: [
           { id: "design-runner-read", kind: "tool", name: "read", target: "TaskChatRunnerTurn.tsx", status: "completed", detail: "Found the activity groups." },
           { id: "design-runner-check", kind: "tool", name: "exec_command", target: "pnpm check:token-gates", status: "in_progress" },
@@ -1242,7 +1245,7 @@ export function DesignGuide() {
       {/*  CARDS                                                        */}
       {/* ============================================================ */}
       <Section title="Cards">
-        <SubSection title="Dashboard agent runs">
+        <SubSection title={t("sep12Screens.designDashboardRuns")}>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {["running", "queued", "succeeded", "failed", "timed_out", "cancelled", "interrupted"].map((status) => (
               <AgentRunCard
@@ -1257,7 +1260,7 @@ export function DesignGuide() {
               />
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">The dashboard and Live runs page use the same compact cards. In-progress task icons animate across the app, including between runs, to represent task workflow status. Live indicators report active execution. Open a run to view its status and transcript.</p>
+          <p className="text-xs text-muted-foreground">{t("sep12Screens.designDashboardRunsDescription")}</p>
         </SubSection>
         <SubSection title="Standard Card">
           <Card>
@@ -1711,7 +1714,7 @@ export function DesignGuide() {
             <SetupWizardFooter onSaveExit={() => setWizardStep(0)}><Button onClick={() => setWizardStep((wizardStep + 1) % 3)}>Continue</Button></SetupWizardFooter>
           </div>
         </SubSection>
-        <SubSection title="Agent chat picker">
+        <SubSection title={t("stable916Shell.agentChatPicker")}>
           <AgentChatPickerExample />
           <SubSection title="Agent conversation sidebar">
             <div className="flex flex-wrap gap-4">
@@ -1723,9 +1726,7 @@ export function DesignGuide() {
         </SubSection>
         <SubSection title="Sidebar nav items">
           <p className="text-sm text-muted-foreground">
-            Layout accepts sidebarSections to compose additional SidebarSection groups inside the shared sidebar.
-            Use SidebarNavItem for each row, with sibling action buttons for starring or menus.
-            The Chats section shows starred agents, the earliest-created agent when unstarred, then four recent agents without duplicates. Compose and star controls share a vertical column. Compose appears on hover or keyboard focus and remains visible on touch; starred icons remain visible. The picker searches all company agents by name or role without a subtitle, count, continuation labels, or footer. Task breadcrumbs support leading identity and trailing actions beside the label, including single-item task headers; see the Agent chat Storybook.
+            {t("stable916Shell.designSidebarDescription")}
           </p>
           <Card className="block w-60 p-3 space-y-0.5">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
@@ -2237,8 +2238,8 @@ export function DesignGuide() {
         <EnvironmentVariablesEditorShowcase />
       </Section>
 
-      <Section title="Tasks created from a task">
-        <SubSection title="Subtasks and created work are independent">
+      <Section title={t("sep12Screens.designCreatedTasks")}>
+        <SubSection title={t("sep12Screens.designIndependentSubtasks")}>
           <div className="max-w-xl">
             <TaskDetailTasksPanel
               subtasks={[DESIGN_GUIDE_TASK]}
@@ -2250,7 +2251,7 @@ export function DesignGuide() {
             />
           </div>
         </SubSection>
-        <SubSection title="Empty, loading and failed">
+        <SubSection title={t("sep12Screens.designTaskStates")}>
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} />
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} isLoading />
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} hasError onRetry={() => {}} />
@@ -2271,10 +2272,7 @@ export function DesignGuide() {
 
       <Section title="Execution recovery">
         <p className="text-sm text-muted-foreground">
-          Recovery runs in the background. Task lists keep their ordinary status without
-          execution badges. Active transcript headers keep saying Working during automatic
-          recovery. Recovery decisions and attempts belong in the run log;
-          there is no execution status card or reconciliation form.
+          {t("sep12Screens.designRecoveryDescription")}
         </p>
       </Section>
 

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type {
@@ -28,10 +29,12 @@ export async function fetchIssueExternalObjectSummariesInBatches(
 }
 
 /**
- * Browser-side mention-source label. Keep in sync with the shared formatter
- * without coupling this hook to the server-only URL canonicalization helpers.
+ * Raw server phrase used only to recognize host-generated source labels before
+ * translating them. Keep in sync with the shared formatter without coupling
+ * this hook to the server-only URL canonicalization helpers. Unmatched custom
+ * source labels are not translated.
  */
-function formatMentionSourceLabel(mention: ExternalObjectMention): string {
+function rawMentionSourceLabel(mention: ExternalObjectMention): string {
   switch (mention.sourceKind) {
     case "title":
       return "Title";
@@ -47,6 +50,22 @@ function formatMentionSourceLabel(mention: ExternalObjectMention): string {
       return "Plugin";
     default:
       return "Source";
+  }
+}
+
+function formatMentionSourceLabel(mention: ExternalObjectMention): string {
+  switch (mention.sourceKind) {
+    case "title": return t("localizationExternalChrome.source_title");
+    case "description": return t("localizationExternalChrome.source_description");
+    case "comment": return t("localizationExternalChrome.source_comment");
+    case "plugin": return t("localizationExternalChrome.source_plugin");
+    case "document": return mention.documentKey
+      ? t("localizationExternalChrome.sourceDocumentKey", { key: mention.documentKey })
+      : t("localizationExternalChrome.source_document");
+    case "property": return mention.propertyKey
+      ? t("localizationExternalChrome.sourcePropertyKey", { key: mention.propertyKey })
+      : t("localizationExternalChrome.source_property");
+    default: return t("localizationExternalChrome.source_default");
   }
 }
 
@@ -86,6 +105,7 @@ function useExternalObjectsFeature() {
  * surface reads from the same query result.
  */
 export function useIssueExternalObjects(issueId: string | null | undefined): IssueExternalObjectsResult {
+  const { t } = useTranslation();
   const externalObjectsFeature = useExternalObjectsFeature();
   const enabled = externalObjectsFeature.isEnabled && Boolean(issueId);
   const query = useQuery({
@@ -101,8 +121,9 @@ export function useIssueExternalObjects(issueId: string | null | undefined): Iss
       .filter((entry): entry is ExternalObjectMentionGroup => Boolean(entry.object))
       .map((entry) => {
         const object = entry.object!;
+        const ownSourceLabels = new Map(entry.mentions.map((mention) => [rawMentionSourceLabel(mention), formatMentionSourceLabel(mention)]));
         const sourceLabels = entry.sourceLabels && entry.sourceLabels.length > 0
-          ? entry.sourceLabels
+          ? entry.sourceLabels.map((label) => ownSourceLabels.get(label) ?? label)
           : Array.from(new Set(entry.mentions.map(formatMentionSourceLabel)));
         return {
           group: entry,
@@ -122,11 +143,12 @@ export function useIssueExternalObjects(issueId: string | null | undefined): Iss
           },
         };
       });
-  }, [query.data]);
+  }, [query.data, t]);
 
   const markdownReferences = useMemo<MarkdownExternalReferenceMap>(() => {
     const result: MarkdownExternalReferenceMap = {};
-    for (const { group } of groups) {
+    // Locale changes affect source labels, not link renderer identity or provider data.
+    for (const group of query.data ?? []) {
       const object = group.object;
       if (!object) continue;
       // Index by the object's canonical URL.
@@ -166,7 +188,7 @@ export function useIssueExternalObjects(issueId: string | null | undefined): Iss
       }
     }
     return result;
-  }, [groups]);
+  }, [query.data]);
 
   const refetch = useCallback(() => {
     void query.refetch();

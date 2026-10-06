@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
+import { i18n } from "@/i18n";
 
 import { createRoot as createReactRoot, type Root } from "react-dom/client";
+import { act as reactAct } from "react";
 import { flushSync } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -10,6 +12,7 @@ import type {
   RemoteSecretImportPreviewResult,
   SecretProviderConfigDiscoveryPreviewResult,
   SecretProviderDescriptor,
+  SecretProposalView,
   UserSecretCoverageSummary,
   UserSecretDefinition,
 } from "@paperclipai/shared";
@@ -64,6 +67,7 @@ const mockAgentsApi = vi.hoisted(() => ({
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
+const mockSidebar = vi.hoisted(() => ({ isMobile: false }));
 
 vi.mock("../api/secrets", () => ({
   secretsApi: mockSecretsApi,
@@ -95,9 +99,7 @@ vi.mock("../context/ToastContext", () => ({
 }));
 
 vi.mock("../context/SidebarContext", () => ({
-  useSidebar: () => ({
-    isMobile: false,
-  }),
+  useSidebar: () => mockSidebar,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -365,6 +367,7 @@ describe("Secrets page layout", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    mockSidebar.isMobile = false;
     container = document.createElement("div");
     document.body.appendChild(container);
 
@@ -395,6 +398,122 @@ describe("Secrets page layout", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it.each([0, 2])("localizes the actual mobile proposals option without changing its raw value (%i pending)", async (count) => {
+    mockSidebar.isMobile = true;
+    const proposals: SecretProposalView[] = Array.from({ length: count }, (_, index) => ({
+      id: `proposal-${index}`,
+      companyId: "company-1",
+      kind: "secret",
+      status: "pending",
+      justification: "Agent-authored request",
+      proposedName: `NEW_SECRET_${index}`,
+      proposedKey: `new_secret_${index}`,
+      proposedDescription: null,
+      valueFingerprintSha256: null,
+      valueLength: 20,
+      secretId: null,
+      secretName: null,
+      secretProposalId: null,
+      secretProposalName: null,
+      targetType: null,
+      target: null,
+      configPath: null,
+      proposedBy: { id: "agent-1", name: "Requester", icon: null },
+      originIssue: null,
+      originRunId: "run-1",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      createdAt: "2026-09-08T00:00:00.000Z",
+      resolvedByUserId: null,
+      resolvedAt: null,
+      resolutionReason: null,
+      createdSecretId: null,
+      appliedBindingConfigPath: null,
+      viewerCanApprove: true,
+      approveBlockReason: null,
+    }));
+    mockSecretsApi.listProposals.mockResolvedValue(proposals);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await reactAct(async () => {
+        await i18n.changeLanguage("en");
+        root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Secrets /></QueryClientProvider></MemoryRouter>);
+      });
+      await reactAct(flushReact);
+      const select = container.querySelector('select:has(option[value="proposals"])') as HTMLSelectElement;
+      const proposalsOption = () => select.querySelector('option[value="proposals"]') as HTMLOptionElement;
+      for (const [locale, label, section] of [["en", "Proposals", "Page section"], ["ru", "Предложения", "Раздел страницы"], ["en", "Proposals", "Page section"]]) {
+        await reactAct(async () => { await i18n.changeLanguage(locale); });
+        await reactAct(flushReact);
+        expect(select.getAttribute("aria-label")).toBe(section);
+        expect(proposalsOption().textContent).toBe(count > 0 ? `${label} ${count}` : label);
+        expect(proposalsOption().value).toBe("proposals");
+        expect(select.value).toBe("secrets");
+      }
+      await reactAct(async () => { setSelectValue(select, "proposals"); });
+      await reactAct(flushReact);
+      expect(select.value).toBe("proposals");
+      if (count > 0) expect(container.textContent).toContain("NEW_SECRET_0");
+      expect(mockSecretsApi.listProposals).toHaveBeenCalledWith("company-1", "pending");
+      expect(mockSecretsApi.approveProposal).not.toHaveBeenCalled();
+      expect(mockSecretsApi.rejectProposal).not.toHaveBeenCalled();
+    } finally {
+      await reactAct(async () => { root.unmount(); await i18n.changeLanguage("en"); });
+      queryClient.clear();
+    }
+  });
+
+  it("localizes the built-in provider indicator live while preserving user vault names", async () => {
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    mockSecretsApi.providers.mockResolvedValue([{ ...providers[0], label: "Local encrypted (default)" }]);
+    mockSecretsApi.list.mockResolvedValue([
+      makeCompanySecret(),
+      makeCompanySecret({ id: "secret-custom-vault", name: "Local encrypted (default)", key: "custom_vault", providerConfigId: "vault-local" }),
+    ]);
+    mockSecretsApi.providerConfigs.mockResolvedValue([{ ...providerConfigs[0], displayName: "Local encrypted (default)" }]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await reactAct(async () => {
+        await i18n.changeLanguage("en");
+        root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Secrets /></QueryClientProvider></MemoryRouter>);
+      });
+      await reactAct(flushReact);
+      expect(container.textContent).toContain("OPENAI_API_KEY");
+      const indicator = [...container.querySelectorAll("[data-slot='tooltip-trigger']")].find(
+        (element) => element.getAttribute("aria-label") === "Paperclip-managed · Local encrypted (default)\nVault: Deployment default",
+      );
+      expect(indicator).toBeDefined();
+      await reactAct(async () => {
+        indicator!.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerType: "mouse" }));
+      });
+      await reactAct(flushReact);
+      for (const [locale, custody, provider, vaultPrefix, defaultVault] of [
+        ["en", "Paperclip-managed", "Local encrypted (default)", "Vault", "Deployment default"],
+        ["ru", "Под управлением Paperclip", "Локальное хранилище с шифрованием (по умолчанию)", "Хранилище", "Настройки развёртывания по умолчанию"],
+        ["en", "Paperclip-managed", "Local encrypted (default)", "Vault", "Deployment default"],
+      ]) {
+        await reactAct(async () => { await i18n.changeLanguage(locale); });
+        await reactAct(flushReact);
+        const labels = [...container.querySelectorAll("[aria-label]")].map((element) => element.getAttribute("aria-label"));
+        expect(labels).toContain(`${custody} · ${provider}\n${vaultPrefix}: ${defaultVault}`);
+        expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(`${custody} · ${provider}\n${vaultPrefix}: ${defaultVault}`);
+        expect(labels).toContain(`${custody} · ${provider}\n${vaultPrefix}: Local encrypted (default)`);
+        expect(container.textContent).toContain("Local encrypted (default)");
+      }
+      expect(mockSecretsApi.update).not.toHaveBeenCalled();
+      expect(mockSecretsApi.updateProviderConfig).not.toHaveBeenCalled();
+    } finally {
+      await reactAct(async () => { root.unmount(); await i18n.changeLanguage("en"); });
+      queryClient.clear();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("uses the shared search/filter/tab affordances and keeps vault sections quiet", async () => {

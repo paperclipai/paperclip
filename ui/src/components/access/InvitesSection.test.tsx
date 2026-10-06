@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InvitesSection } from "./InvitesSection";
 import { queryKeys } from "@/lib/queryKeys";
+import { setLocale } from "@/i18n";
 
 const listInvitesMock = vi.hoisted(() => vi.fn());
 const createCompanyInviteMock = vi.hoisted(() => vi.fn());
@@ -82,6 +83,7 @@ describe("InvitesSection", () => {
   });
 
   beforeEach(() => {
+    setLocale("en");
     container = document.createElement("div");
     document.body.appendChild(container);
 
@@ -116,6 +118,7 @@ describe("InvitesSection", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    setLocale("en");
   });
 
   it("renders a human-only invite flow and keeps invite history in a table", async () => {
@@ -184,6 +187,18 @@ describe("InvitesSection", () => {
     const buttons = Array.from(container.querySelectorAll("button"));
     const createButton = buttons.find((button) => button.textContent === "Create invite");
     const revokeButton = buttons.find((button) => button.textContent === "Revoke");
+
+    const requestsBeforeLanguageChange = listInvitesMock.mock.calls.length;
+    await act(async () => setLocale("ru"));
+    expect(container.textContent).toContain("Пригласить пользователя");
+    expect(container.textContent).toContain("Действует");
+    expect(container.textContent).toContain("Board User 25");
+    expect(container.querySelector('input[value="viewer"]')).toHaveProperty("checked", true);
+    expect(listInvitesMock).toHaveBeenCalledTimes(requestsBeforeLanguageChange);
+    expect(createCompanyInviteMock).not.toHaveBeenCalled();
+    expect(revokeInviteMock).not.toHaveBeenCalled();
+    await act(async () => setLocale("en"));
+    expect(createButton?.textContent).toBe("Create invite");
 
     expect(createButton).toBeTruthy();
     expect(revokeButton).toBeTruthy();

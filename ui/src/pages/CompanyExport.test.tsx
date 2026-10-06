@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ExportFidelityReport } from "@paperclipai/shared/portability-fidelity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { CompanyExport, resolveExportPreviewImageSrc } from "./CompanyExport";
 
 const mockCompaniesApi = vi.hoisted(() => ({
@@ -198,6 +199,7 @@ describe("CompanyExport", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   async function renderPage() {
@@ -504,5 +506,88 @@ describe("CompanyExport", () => {
 
     expect(mockCompaniesApi.exportFidelity).toHaveBeenCalledWith("company-1");
     expect(container.textContent).not.toContain("Not included in this export");
+  });
+
+  it("retranslates only known fidelity warnings without changing export data, selection, requests, or README content", async () => {
+    const costMessage = "7 cost events are not included in the export bundle.";
+    const activityMessage = "214 activity log entries are not included in the export bundle.";
+    const customMessage = "Provider diagnostic: raw_id/API_PATH must remain unchanged.";
+    const report = buildFidelityReport([
+      { code: "cost_history_not_exported", severity: "warning", message: costMessage },
+      { code: "activity_history_not_exported", severity: "warning", message: activityMessage },
+      { code: "custom_warning", severity: "warning", message: costMessage },
+      { code: "bundle_incompatible", severity: "blocker", message: customMessage },
+    ]);
+    const readme = `# User README\n${costMessage}\n${activityMessage}\nRaw_name/API_PATH`;
+    const preview = buildRichExportPreviewResult();
+    preview.files["README.md"] = readme;
+    const rawPreviewWarning = "User-authored export warning: " + costMessage;
+    const previewWithWarning = {
+      ...preview,
+      manifest: {
+        ...preview.manifest,
+        company: { ...preview.manifest.company, description: readme },
+      },
+      warnings: [rawPreviewWarning],
+    };
+    const reportBefore = JSON.stringify(report);
+    const previewBefore = JSON.stringify(previewWithWarning);
+    mockCompaniesApi.exportFidelity.mockResolvedValue(report);
+    mockCompaniesApi.exportPreview.mockResolvedValue(previewWithWarning);
+
+    await renderPage();
+    await clickElement(categoryInput("projects"));
+    await clickElement(container.querySelector<HTMLElement>('[data-file-tree-path="README.md"]')!);
+    // Stable regenerates README from the selected manifest; its body is export data, not UI copy.
+    const previewText = () => Array.from(container.querySelectorAll("div")).find((element) =>
+      element.textContent?.startsWith("# Paperclip\n"),
+    )?.textContent;
+    const readmeBefore = previewText();
+    expect(readmeBefore).toContain(readme);
+    expect(readmeBefore).toContain("## What's Inside");
+    const previewCallsBefore = mockCompaniesApi.exportPreview.mock.calls.length;
+
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      const heading = Array.from(container.querySelectorAll("h3")).find((element) =>
+        element.textContent === i18n.t("localizationProjects.ui_Not_included_in_this_export"),
+      );
+      expect(heading).toBeDefined();
+      const rows = Array.from(heading!.parentElement!.querySelectorAll(":scope > div"));
+      expect(rows.map((row) => row.textContent)).toEqual([
+        language === "ru" ? "В пакет экспорта не включено 7 записей о расходах." : costMessage,
+        language === "ru" ? "В пакет экспорта не включено 214 записей журнала активности." : activityMessage,
+        costMessage,
+        customMessage,
+      ]);
+      expect(rows[3]?.className).toContain("text-destructive");
+      expect(previewText()).toBe(readmeBefore);
+      expect(container.textContent).toContain(rawPreviewWarning);
+      expect(categoryInput("projects").checked).toBe(false);
+      expect(categoryInput("tasks").checked).toBe(false);
+      expect(mockCompaniesApi.exportFidelity.mock.calls).toEqual([["company-1"]]);
+      expect(mockCompaniesApi.exportPreview).toHaveBeenCalledTimes(previewCallsBefore);
+      expect(mockCompaniesApi.exportBundle).not.toHaveBeenCalled();
+      expect(mockAgentsApi.list).toHaveBeenCalledTimes(1);
+      expect(mockProjectsApi.list).toHaveBeenCalledTimes(1);
+      expect(mockAuthApi.getSession).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(report)).toBe(reportBefore);
+      expect(JSON.stringify(previewWithWarning)).toBe(previewBefore);
+    }
+  });
+
+  it("keeps arbitrary export errors raw even when they contain a known fidelity template", async () => {
+    const rawError = "7 cost events are not included in the export bundle.";
+    mockCompaniesApi.exportPreview.mockRejectedValue(new Error(rawError));
+    await renderPage();
+
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.textContent).toContain(rawError);
+      expect(container.textContent).not.toContain("В пакет экспорта не включено 7 записей о расходах.");
+      expect(mockCompaniesApi.exportPreview).toHaveBeenCalledTimes(1);
+    }
   });
 });

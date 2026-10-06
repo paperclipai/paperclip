@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MembershipAction } from "./MembershipAction";
+import { i18n } from "@/i18n";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -36,6 +37,7 @@ describe("MembershipAction", () => {
     }
     container.remove();
     document.body.innerHTML = "";
+    await i18n.changeLanguage("en");
   });
 
   async function renderAction(element: ReactNode) {
@@ -117,5 +119,21 @@ describe("MembershipAction", () => {
     expect(button().getAttribute("aria-busy")).toBe("true");
     expect(button().disabled).toBe(true);
     expect(button().textContent).toContain("Joining...");
+  });
+
+  it.each(["joined", "left"] as const)("switches %s display text without changing the membership action", async (state) => {
+    const onJoin = vi.fn(), onLeave = vi.fn();
+    await renderAction(<MembershipAction state={state} resourceName="Raw project" onJoin={onJoin} onLeave={onLeave} />);
+    const originalButton = button();
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(button()).toBe(originalButton);
+    expect(button().textContent).toContain(state === "left" ? "Показать" : "Скрыть");
+    expect(button().getAttribute("aria-label")).toContain("«Raw project»");
+    expect(onJoin).not.toHaveBeenCalled();
+    expect(onLeave).not.toHaveBeenCalled();
+    await act(async () => { button().click(); });
+    expect(state === "left" ? onJoin : onLeave).toHaveBeenCalledTimes(1);
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(button().getAttribute("aria-label")).toBe(`${state === "left" ? "Join" : "Leave"} Raw project`);
   });
 });

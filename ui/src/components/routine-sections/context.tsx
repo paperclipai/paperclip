@@ -80,6 +80,8 @@ export function createDefaultNewTrigger(): NewTriggerDraft {
 
 export type SecretMessage = {
   title: string;
+  titleKey?: string;
+  titleCount?: number;
   entries: Array<{ webhookUrl: string; webhookSecret: string }>;
 };
 

@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentProviderConnection } from "./AgentProviderConnection";
 import { defaultAiConnectionName } from "../ai-connections/model";
 import { ApiError } from "@/api/client";
+import { i18n } from "@/i18n";
 const mocks = vi.hoisted(() => ({
+  health: vi.fn(),
   auth: vi.fn(),
   login: vi.fn(),
   personal: vi.fn(),
@@ -23,6 +25,7 @@ const managedApi = vi.hoisted(() => ({
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
 }));
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
+vi.mock("@/api/health", () => ({ healthApi: { get: mocks.health } }));
 vi.mock("@/api/agents", () => ({
   agentsApi: {
     getAdapterAuthSignal: mocks.auth,
@@ -43,6 +46,7 @@ afterEach(() => {
   host?.remove();
   client?.clear();
   vi.resetAllMocks();
+  void i18n.changeLanguage("en");
 });
 async function mount(
   adapterType: "claude_local" | "codex_local" | "grok_local" = "claude_local",
@@ -57,6 +61,7 @@ async function mount(
   localAiLoginSupported = true,
   advancedConnection?: Parameters<typeof AgentProviderConnection>[0]["advancedConnection"],
 ) {
+  await i18n.changeLanguage("en");
   const key =
     adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
   mocks.auth.mockResolvedValue({
@@ -151,6 +156,56 @@ function openProvider() {
   );
 }
 describe("AgentProviderConnection reuse", () => {
+  it.each(["claude_local", "codex_local"] as const)("retranslates a health failure en/ru/en without attempting local login: %s", async (adapterType) => {
+    const onComplete = vi.fn();
+    const intent = { provider: adapterType === "claude_local" ? "anthropic" as const : "openai" as const, method: "subscription" as const, name: "User-owned account", ownership: "personal" as const, agentIds: ["agent-1"], allAgents: false };
+    const original = structuredClone(intent);
+    await mount(adapterType, false, false, false, false, false, { intent, onComplete }, true, "authenticated", false);
+    openProvider();
+    mocks.health.mockRejectedValue(new Error("Health provider diagnostics"));
+    await client.refetchQueries({ queryKey: ["health"] });
+    await vi.waitFor(() => expect(host.querySelector('[role="alert"]')).not.toBeNull());
+    for (const locale of ["en", "ru", "en"]) {
+      flushSync(() => { void i18n.changeLanguage(locale); });
+      expect(host.querySelector('[role="alert"]')?.textContent).toBe(locale === "ru"
+        ? "Не удалось подготовить сеанс входа. Перезагрузите страницу, чтобы повторить попытку."
+        : "Could not prepare sign-in. Reload this page to try again.");
+      expect(host.querySelector("code")).toBeNull();
+      expect(mocks.health).toHaveBeenCalledTimes(1);
+      expect(managedApi.startLocalLogin).not.toHaveBeenCalled();
+      expect(managedApi.checkLocalLogin).not.toHaveBeenCalled();
+      expect(managedApi.connectLocal).not.toHaveBeenCalled();
+      expect(onComplete).not.toHaveBeenCalled();
+      expect(intent).toEqual(original);
+    }
+  });
+  it.each(["missing-session", "result-error"] as const)("retranslates %s without retrying login or mutating its intent", async (failure) => {
+    const onComplete = vi.fn();
+    const intent = { provider: "openai" as const, method: "subscription" as const, name: "My <OpenAI> account", ownership: "personal" as const, agentIds: ["agent-1"], allAgents: false };
+    const original = structuredClone(intent);
+    await mount("codex_local", false, true, false, false, false, { intent, onComplete });
+    openProvider();
+    if (failure === "result-error") managedApi.loginResult.mockRejectedValueOnce(new Error("Provider failed"));
+    flushSync(() => mocks.loginPanel.mock.calls.at(-1)![0].onConnected(failure === "missing-session" ? undefined : "raw-session"));
+    await vi.waitFor(() => expect(host.querySelector('[role="alert"]')).toBeTruthy());
+    try {
+      for (const locale of ["en", "ru", "en"]) {
+        flushSync(() => { void i18n.changeLanguage(locale); });
+        expect(host.querySelector('[role="alert"]')?.textContent).toBe(locale === "ru"
+          ? failure === "missing-session" ? "После входа не удалось получить сохранённое подключение. Повторите попытку." : "Не удалось получить сохранённое подключение. Вернитесь назад и повторите попытку."
+          : failure === "missing-session" ? "The login did not return a saved connection. Try again." : "Could not retrieve the saved connection. Go back and retry.");
+        expect(managedApi.loginResult).toHaveBeenCalledTimes(failure === "missing-session" ? 0 : 1);
+        expect(managedApi.create).not.toHaveBeenCalled();
+        expect(managedApi.connectLocal).not.toHaveBeenCalled();
+        expect(onComplete).not.toHaveBeenCalled();
+        expect(intent).toEqual(original);
+        expect(mocks.loginPanel.mock.calls.at(-1)![0].aiConnection).toEqual(original);
+      }
+    } finally {
+      flushSync(() => { void i18n.changeLanguage("en"); });
+    }
+  });
+
   it("keeps all three connection tiles visible while switching forms", async () => {
     await mount("codex_local", false, true, true, true, false, undefined, false, "local_trusted", true, {
       content: <div>Advanced connection picker</div>,
@@ -296,6 +351,12 @@ describe("AgentProviderConnection reuse", () => {
     openProvider();
     expect(host.textContent).toContain("This environment does not support browser sign-in");
     expect(host.textContent).not.toContain("Run this in a terminal");
+    for (const locale of ["ru", "en"]) {
+      flushSync(() => { void i18n.changeLanguage(locale); });
+      expect(host.textContent).toContain(locale === "ru" ? "Эта среда не поддерживает вход через браузер" : "This environment does not support browser sign-in");
+      expect(host.querySelector("code")).toBeNull();
+      expect(managedApi.checkLocalLogin).not.toHaveBeenCalled();
+    }
     expect(managedApi.startLocalLogin).not.toHaveBeenCalled();
     click("Connect");
     expect(managedApi.connectLocal).not.toHaveBeenCalled();
@@ -311,6 +372,19 @@ describe("AgentProviderConnection reuse", () => {
     expect(host.textContent).not.toMatch(/CLAUDE_CONFIG_DIR|CODEX_HOME|Run this in a terminal/);
     expect(managedApi.startLocalLogin).toHaveBeenCalledWith("c1", intent);
     expect(managedApi.checkLocalLogin).toHaveBeenCalledWith("c1", { ...intent, localSessionId: "local-attempt" });
+    const original = structuredClone(intent);
+    const checks = managedApi.checkLocalLogin.mock.calls.length;
+    for (const locale of ["ru", "en"]) {
+      flushSync(() => { void i18n.changeLanguage(locale); });
+      expect(host.querySelector("code")).toBeNull();
+      expect(host.textContent).toContain(locale === "ru" ? "выполнен" : "is signed in");
+      expect(managedApi.startLocalLogin).toHaveBeenCalledTimes(1);
+      expect(managedApi.checkLocalLogin).toHaveBeenCalledTimes(checks);
+      expect(managedApi.cancelLocalLogin).not.toHaveBeenCalled();
+      expect(managedApi.connectLocal).not.toHaveBeenCalled();
+      expect(onComplete).not.toHaveBeenCalled();
+      expect(intent).toEqual(original);
+    }
     click("Connect");
     await vi.waitFor(() => expect(onComplete).toHaveBeenCalled());
     expect(managedApi.connectLocal).toHaveBeenCalledWith("c1", { ...intent, localSessionId: "local-attempt" });

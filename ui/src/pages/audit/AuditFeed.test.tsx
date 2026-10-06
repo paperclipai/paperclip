@@ -1,3 +1,4 @@
+import { i18n } from "@/i18n";
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
@@ -89,6 +90,7 @@ describe("AuditFeed", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    void i18n.changeLanguage("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null, accessTier: "full" });
@@ -103,6 +105,7 @@ describe("AuditFeed", () => {
     container.remove();
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    void i18n.changeLanguage("en");
   });
 
   async function render(
@@ -615,4 +618,20 @@ describe("AuditFeed", () => {
     expect(revokeUrl).toHaveBeenCalledWith("blob:mock");
     expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ tone: "success" }));
   });
+  it("updates the mounted feed in Russian and preserves names, identifiers, and stored action IDs", async () => {
+    await render();
+    expect(container.textContent).toContain("commented on");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    expect(container.textContent).toContain("Активность");
+    expect(container.textContent).toContain("Fable: добавление комментария — PAP-1");
+    expect(container.textContent).toContain("От имени: Dotta");
+    expect(container.textContent).toContain("issue.comment_added");
+    expect(container.textContent).toContain("Looks good to me");
+    expect(container.textContent).not.toContain("commented on");
+    await act(async () => { await i18n.changeLanguage("en"); });
+    await flushReact();
+    expect(container.textContent).toContain("commented on");
+  });
+
 });

@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
-import type { CompanySecret } from "@paperclipai/shared";
+import { afterEach, describe, expect, it } from "vitest";
+import type { AiManagedConnectionSummary, CompanySecret } from "@paperclipai/shared";
+import { i18n } from "@/i18n";
 import type { MyUserSecretEntry } from "../api/secrets";
 import {
   savedProviderKeys,
   savedCodexSubscriptions,
+  savedManagedProviderAccounts,
 } from "./saved-provider-credentials";
+
+afterEach(async () => { await i18n.changeLanguage("en"); });
 const secret = (overrides = {}) =>
   ({
     id: "s1",
@@ -92,4 +96,41 @@ it("lists only active company Codex account connections", () => {
       binding: { type: "secret_ref", secretId: "s1", version: "latest" },
     },
   ]);
+});
+
+it("retranslates eligible managed account labels without changing account names or bindings", async () => {
+  const personalAccount = {
+    id: "personal-account", grantId: "personal-grant", companyId: "c1", provider: "openai",
+    method: "subscription", name: "My <OpenAI> subscription", ownership: "personal",
+    ownerUserId: "user-1", status: "connected", isDefault: true,
+  } as AiManagedConnectionSummary;
+  const sharedAccount = {
+    ...personalAccount, id: "shared-account", grantId: "shared-grant", name: "Team API key",
+    ownership: "shared", method: "api_key", isDefault: false,
+  } as AiManagedConnectionSummary;
+  const accounts = [
+    personalAccount, sharedAccount,
+    { ...personalAccount, isDefault: false },
+    { ...personalAccount, ownerUserId: "other-user" },
+    { ...personalAccount, companyId: "other-company" },
+    { ...personalAccount, provider: "anthropic" },
+    { ...personalAccount, status: "revoked" },
+  ] as AiManagedConnectionSummary[];
+  const original = structuredClone(accounts);
+  for (const locale of ["en", "ru", "en"]) {
+    await i18n.changeLanguage(locale);
+    expect(savedManagedProviderAccounts("c1", "openai", "user-1", accounts)).toEqual([
+      {
+        id: "ai:personal-grant",
+        label: locale === "ru" ? "My <OpenAI> subscription (ваш аккаунт по умолчанию)" : "My <OpenAI> subscription (Your default)",
+        aiConnection: { provider: "openai", method: "subscription", mode: "responsible_user" },
+      },
+      {
+        id: "ai:shared-grant",
+        label: locale === "ru" ? "Team API key (общий аккаунт организации)" : "Team API key (Company shared)",
+        aiConnection: { provider: "openai", method: "api_key", mode: "shared", connectionId: "shared-account", grantId: "shared-grant" },
+      },
+    ]);
+    expect(accounts).toEqual(original);
+  }
 });

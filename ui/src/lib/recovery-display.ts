@@ -1,4 +1,31 @@
 import type { IssueRecoveryAction, IssueRecoveryActionKind } from "@paperclipai/shared";
+import { t } from "@/i18n";
+// Project only complete built-in notices; provider diagnostics and user text stay raw.
+const EXECUTION_RECOVERY_TEXT: Readonly<Record<string, string>> = {
+  "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated.": "oct5Core.recoveryPreserved",
+  "This chat connection was removed. Inspect the stopped run and create a new task to continue the work.": "oct5Core.recoveryChatRemoved",
+  "This chat connection is unavailable. Restore access in Apps or create a new task to continue the work.": "oct5Core.recoveryChatUnavailable",
+  "Send a new chat message to continue this conversation.": "oct5Core.recoveryChatContinue",
+  "Workspace repair required. Verify safe staging or repair before continuing. Saved work and approval decisions remain in force.": "oct5Core.recoveryWorkspace",
+  "Verify safe workspace staging or repair, then reconcile the stopped run before continuing. Saved work and approval decisions remain in force.": "oct5Core.recoveryLegacyWorkspace",
+  "Inspect the stopped provider and recorded actions, then reconcile their outcomes before continuing. This adapter has not established a safe resume checkpoint.": "oct5Core.recoveryLegacyProvider",
+  "Recovery closed because the task's owner, execution, or status changed. No work was replayed.": "oct5Core.recoveryClosed",
+  "Try again or send a new message to continue once the previous execution has stopped.": "oct5Core.recoveryRetrySuffix",
+  "Inspect the run before sending a new message to request continuation.": "oct5Core.recoveryInspectSuffix",
+  "Waiting for review; this continuation never started.": "oct5Core.recoveryReviewWait",
+  "Execution was cancelled; its source was not recorded.": "oct5Core.recoveryCancelledUnknown",
+};
+export function executionRecoveryText(value: string): string {
+  if (Object.hasOwn(EXECUTION_RECOVERY_TEXT, value)) return t(EXECUTION_RECOVERY_TEXT[value]);
+  for (const suffix of ["Try again or send a new message to continue once the previous execution has stopped.", "Inspect the run before sending a new message to request continuation."]) {
+    if (!value.endsWith(` ${suffix}`)) continue;
+    const base = value.slice(0, -suffix.length - 1);
+    if (Object.hasOwn(EXECUTION_RECOVERY_TEXT, base)) {
+      return `${t(EXECUTION_RECOVERY_TEXT[base])} ${t(EXECUTION_RECOVERY_TEXT[suffix])}`;
+    }
+  }
+  return value;
+}
 import { Eye, OctagonAlert, RefreshCw, TriangleAlert } from "lucide-react";
 import {
   readRecoveryRetryLineage,
@@ -23,23 +50,23 @@ export const RECOVERY_CHIP_DEFAULT_TONE: Record<
     className:
       "border-amber-500/60 bg-amber-500/15 text-amber-700 dark:text-amber-300",
     icon: TriangleAlert,
-    label: "Recovery needed",
+    get label() { return t("localizationCommon.recovery.needed"); },
   },
   in_progress: {
     className:
       "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300",
     icon: RefreshCw,
-    label: "Recovery in progress",
+    get label() { return t("localizationCommon.recovery.inProgress"); },
   },
   observe_only: {
     className: "border-border bg-muted text-muted-foreground",
     icon: Eye,
-    label: "Observing active run",
+    get label() { return t("localizationCommon.recovery.observing"); },
   },
   escalated: {
     className: "border-red-500/60 bg-red-500/15 text-red-700 dark:text-red-300",
     icon: OctagonAlert,
-    label: "Recovery escalated",
+    get label() { return t("localizationCommon.recovery.escalated"); },
   },
 };
 
@@ -119,7 +146,7 @@ export function recoveryChipLabel(
   lineage?: RecoveryRetryLineage | null,
 ): string {
   if (kind === "workspace_validation" && state === "needed") {
-    return "Workspace recovery needed";
+    return t("localizationCommon.recovery.workspaceNeeded");
   }
   if (
     state === "in_progress" &&
@@ -127,7 +154,7 @@ export function recoveryChipLabel(
     lineage.maxAttempts !== null &&
     lineage.attempt > 0
   ) {
-    return `Recovery in progress · ${Math.min(lineage.attempt, lineage.maxAttempts)}/${lineage.maxAttempts}`;
+    return t("localizationCommon.recovery.progress", { attempt: Math.min(lineage.attempt, lineage.maxAttempts), maxAttempts: lineage.maxAttempts });
   }
   return RECOVERY_CHIP_DEFAULT_TONE[state].label;
 }

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { Activity, LayoutGrid, KeyRound, Wrench, Boxes } from "lucide-react";
 
 /**
@@ -6,11 +7,11 @@ import { Activity, LayoutGrid, KeyRound, Wrench, Boxes } from "lucide-react";
  * Advanced. Raw protocol / JSON / transport details live under Advanced.
  */
 export const GATEWAY_TABS = [
-  { key: "overview", label: "Overview", icon: LayoutGrid },
-  { key: "apps", label: "Apps & tools", icon: Boxes },
-  { key: "tokens", label: "Tokens", icon: KeyRound },
-  { key: "activity", label: "Activity", icon: Activity },
-  { key: "advanced", label: "Advanced", icon: Wrench },
+  { key: "overview", get label() { return t("pages.costs.tabOverview"); }, icon: LayoutGrid },
+  { key: "apps", get label() { return t("localizationActivity.appsTools"); }, icon: Boxes },
+  { key: "tokens", get label() { return t("pages.userProfile.tokens"); }, icon: KeyRound },
+  { key: "activity", get label() { return t("pages.apps.tabs.activity"); }, icon: Activity },
+  { key: "advanced", get label() { return t("pages.apps.tabs.advanced"); }, icon: Wrench },
 ] as const;
 
 export type GatewayTabKey = (typeof GATEWAY_TABS)[number]["key"];
@@ -24,5 +25,5 @@ export function isGatewayTabKey(value: string | undefined): value is GatewayTabK
 }
 
 export function gatewayTabLabel(tabKey: GatewayTabKey): string {
-  return GATEWAY_TABS.find((tab) => tab.key === tabKey)?.label ?? "Overview";
+  return GATEWAY_TABS.find((tab) => tab.key === tabKey)?.label ?? t("pages.costs.tabOverview");
 }

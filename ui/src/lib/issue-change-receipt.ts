@@ -1,3 +1,7 @@
+import { i18n, t } from "@/i18n";
+import { entityStatusLabel, entityPriorityLabel } from "@/lib/entity-labels";
+import { isIssueWorkMode, workModeMetaFor } from "@/lib/work-mode-meta";
+import { formatDateTime } from "@/lib/utils";
 import type { IssueChangeReceiptEntry } from "@paperclipai/shared";
 import { formatReviewPolicyValue } from "./review-policy";
 
@@ -187,4 +191,82 @@ export function issueAuthorizationReasonLabel(reason: string | null | undefined)
   const trimmed = reason?.trim();
   if (!trimmed) return null;
   return AUTHORIZATION_REASON_LABELS[trimmed] ?? trimmed.replace(/_/g, " ");
+}
+
+// Display adapters deliberately reuse the raw receipt parser/order; field codes
+// and saved previews must never become locale-dependent.
+export function issueChangeFieldLabelDisplay(field: string): string {
+  const keys: Record<string, string> = {
+    "assigneeAgentId": "localizationIssuePanels.field_assigneeAgentId",
+    "assigneeUserId": "localizationIssuePanels.field_assigneeUserId",
+    "responsibleUserId": "localizationIssuePanels.field_responsibleUserId",
+    "blockedByIssueIds": "localizationIssuePanels.field_blockedByIssueIds",
+    "labelIds": "localizationIssuePanels.field_labelIds",
+    "parentId": "localizationIssuePanels.field_parentId",
+    "projectId": "localizationIssuePanels.field_projectId",
+    "goalId": "localizationIssuePanels.field_goalId",
+    "workMode": "localizationIssuePanels.field_workMode",
+    "reviewPolicy": "localizationIssuePanels.field_reviewPolicy",
+    "billingCode": "localizationIssuePanels.field_billingCode",
+    "checkoutRunId": "localizationIssuePanels.field_checkoutRunId",
+    "executionRunId": "localizationIssuePanels.field_executionRunId",
+    "hiddenAt": "localizationIssuePanels.field_hiddenAt",
+    "startedAt": "localizationIssuePanels.field_startedAt",
+    "completedAt": "localizationIssuePanels.field_completedAt",
+    "cancelledAt": "localizationIssuePanels.field_cancelledAt",
+    "requestDepth": "localizationIssuePanels.field_requestDepth",
+    "sourceTrust": "localizationIssuePanels.field_sourceTrust",
+    "executionPolicy": "localizationIssuePanels.field_executionPolicy",
+    "executionWorkspaceId": "localizationIssuePanels.field_executionWorkspaceId",
+    "projectWorkspaceId": "localizationIssuePanels.field_projectWorkspaceId",
+    "title": "localizationIssuePanels.field_title",
+    "description": "localizationIssuePanels.field_description",
+    "status": "localizationIssuePanels.field_status",
+    "priority": "localizationIssuePanels.field_priority",
+  };
+  return keys[field] ? t(keys[field]) : issueChangeFieldLabel(field);
+}
+
+export function formatIssueChangeValueDisplay(value: unknown, options: Parameters<typeof formatIssueChangeValue>[1] = {}): string {
+  const raw = formatIssueChangeValue(value, options);
+  if (i18n.resolvedLanguage === "en" || options.field === "reviewPolicy") return raw;
+  if (value === null || value === undefined || (typeof value === "string" && !value.trim()) || (Array.isArray(value) && !value.length)) return t("localizationIssuePanels.valueNone");
+  if (typeof value === "boolean") return t(value ? "localizationIssuePanels.valueYes" : "localizationIssuePanels.valueNo");
+  if (Array.isArray(value)) {
+    return value.length > 3 || value.some((entry) => typeof entry !== "string")
+      ? t("localizationIssuePanels.valueItems", { count: value.length })
+      : raw;
+  }
+  if (value instanceof Date) return formatDateTime(value);
+  if (typeof value === "string") {
+    if (isIsoTimestamp(value.trim())) return formatDateTime(value.trim());
+    if (options.field === "status") return entityStatusLabel(value);
+    if (options.field === "priority") return entityPriorityLabel(value);
+    if (options.field === "workMode" && isIssueWorkMode(value)) return workModeMetaFor(value).label;
+    return raw;
+  }
+  return typeof value === "number" ? raw : t("localizationIssuePanels.valueUpdated");
+}
+
+export function readIssueChangeReceiptDisplay(
+  details: Record<string, unknown> | null | undefined,
+  options: Parameters<typeof formatIssueChangeValue>[1] = {},
+): IssueChangeReceiptRow[] {
+  return readIssueChangeReceipt(details, options).map((row) => {
+    const entry = (details!.changes as Record<string, IssueChangeReceiptEntry>)[row.field];
+    return {
+      ...row,
+      label: issueChangeFieldLabelDisplay(row.field),
+      from: formatIssueChangeValueDisplay(entry.from, { ...options, field: row.field }),
+      to: formatIssueChangeValueDisplay(entry.to, { ...options, field: row.field }),
+    };
+  });
+}
+
+export function issueAuthorizationReasonLabelDisplay(reason: string | null | undefined): string | null {
+  const trimmed = reason?.trim();
+  if (!trimmed) return null;
+  return Object.hasOwn(AUTHORIZATION_REASON_LABELS, trimmed)
+    ? t(`localizationIssuePanels.authorization_${trimmed}`)
+    : issueAuthorizationReasonLabel(reason);
 }

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { ReactNode } from "react";
 import { Check, ChevronRight, Loader2 } from "lucide-react";
 
@@ -9,6 +10,7 @@ export function ConnectionChoiceList({ choices, selectedId, pendingId, disabled,
   disabled?: boolean;
   onSelect: (id: string) => void;
 }) {
+  useTranslation();
   return <div className="space-y-2">
     {choices.map((choice) => <button
       key={choice.id}

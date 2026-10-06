@@ -4,6 +4,7 @@ import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatComposer, type ChatComposerProps } from "./ChatComposer";
+import { setLocale } from "@/i18n";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -37,12 +38,14 @@ describe("ChatComposer", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    setLocale("en");
     container = document.createElement("div");
     document.body.appendChild(container);
   });
 
   afterEach(() => {
     container.remove();
+    setLocale("en");
   });
 
   function input() {
@@ -66,6 +69,32 @@ describe("ChatComposer", () => {
     // No formatting toolbar — there is exactly one button (send) when bare.
     expect(container.querySelectorAll("button").length).toBe(1);
     act(() => root.unmount());
+  });
+
+  it("preserves the draft, filenames, provider errors and Enter behavior while localizing chrome", async () => {
+    const onSubmit = vi.fn();
+    const onAttachFiles = vi.fn();
+    const root = createRoot(container);
+    await act(async () => root.render(<Harness initial="My draft / команда" onSubmit={onSubmit} onAttachFiles={onAttachFiles} submitKey="enter" attachments={[
+      { id: "a", name: "raw-name.pdf", size: 1572864, status: "attached" },
+      { id: "b", name: "failure.txt", status: "error", error: "Raw provider error: E123" },
+    ]} />));
+    await act(async () => setLocale("ru"));
+    expect(input().value).toBe("My draft / команда");
+    expect(input().placeholder).toBe("Сообщение…");
+    expect(container.textContent).toContain("raw-name.pdf");
+    expect(container.textContent).toContain("1,5 МБ");
+    expect(container.textContent).toContain("Прикреплено");
+    expect(container.textContent).toContain("Raw provider error: E123");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onAttachFiles).not.toHaveBeenCalled();
+    await act(async () => input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await act(async () => setLocale("en"));
+    expect(input().value).toBe("My draft / команда");
+    expect(container.textContent).toContain("1.5 MB");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
   });
 
   it("shows the attach affordance when onAttachFiles is provided", () => {

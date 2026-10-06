@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import { act } from "react";
+import { i18n } from "@/i18n";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TranscriptEntry } from "@/adapters";
@@ -90,6 +92,34 @@ describe("TaskChatLiveTail", () => {
     expect(container.textContent).toContain("+1 −1");
     expect(container.textContent).not.toContain("const x = 1;");
     expect(container.querySelector('[data-testid="task-chat-runner-activity-detail"]')).not.toBeNull();
+  });
+
+  it("keeps legacy runner activity and raw tool details mounted across languages", async () => {
+    const entries: TranscriptEntry[] = [
+      { kind: "assistant", ts: TS, text: "Raw agent progress stays unchanged." },
+      { kind: "tool_call", ts: TS, name: "Read", toolUseId: "raw-tool-id", input: { file_path: "src/OriginalFile.ts" } },
+      { kind: "tool_result", ts: TS, toolUseId: "raw-tool-id", content: "Raw tool output {{value}}", isError: false },
+    ];
+    const items = parse(entries);
+    const original = JSON.stringify({ entries, items });
+    render(items);
+    expandFirstDetail();
+    const detail = container.querySelector('[data-testid="task-chat-runner-activity-detail"]');
+    expect(detail).not.toBeNull();
+    try {
+      for (const language of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(toggle().getAttribute("aria-expanded")).toBe("true");
+        expect(container.querySelector('[data-testid="task-chat-runner-activity-detail"]')).toBe(detail);
+        expect(container.textContent).toContain(language === "ru" ? "Файл прочитан" : "Read a file");
+        expect(container.textContent).toContain("src/OriginalFile.ts");
+        expect(container.textContent).toContain("Raw agent progress stays unchanged.");
+        expect(container.textContent).toContain("Raw tool output {{value}}");
+        expect(JSON.stringify({ entries, items })).toBe(original);
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
   });
 
   it("drops the debug plumbing kinds RunTranscriptView surfaced", () => {

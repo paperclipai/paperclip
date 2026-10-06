@@ -4,6 +4,7 @@ import { createElement, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { RunnerInspector } from "./RunnerInspector";
 
 const accessMock = vi.hoisted(() => vi.fn());
@@ -131,6 +132,7 @@ describe("RunnerInspector", () => {
     container.remove();
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    void i18n.changeLanguage("en");
   });
 
   it("keeps canonical inspection available when raw capture was disabled", async () => {
@@ -225,6 +227,18 @@ describe("RunnerInspector", () => {
 
     expect(container.textContent).toContain("Withheld paths: authorization");
     expect(container.textContent).not.toContain("rawBase64");
+    const traceCalls = traceMock.mock.calls.length;
+    flushSync(() => { void i18n.changeLanguage("ru"); });
+    expect(container.textContent).toContain("Скрытые пути: authorization");
+    expect(container.textContent).toContain("Кадры провайдера");
+    expect(container.textContent).toContain("item/completed");
+    expect(container.textContent).toContain("[withheld]");
+    expect(revealMock).not.toHaveBeenCalled();
+    expect(downloadMock).not.toHaveBeenCalled();
+    expect(deleteMock).not.toHaveBeenCalled();
+    expect(traceMock.mock.calls.length).toBe(traceCalls);
+    flushSync(() => { void i18n.changeLanguage("en"); });
+    expect(container.textContent).toContain("Withheld paths: authorization");
     const reveal = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Reveal exact frame"),
     );

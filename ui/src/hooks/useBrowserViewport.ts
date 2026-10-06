@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import {
   useCallback,
   useEffect,
@@ -44,6 +45,7 @@ export function useBrowserViewport({
   active: boolean;
   frameRef: RefObject<HTMLIFrameElement | null>;
 }) {
+  useTranslation();
   const [viewerId] = useState(() => crypto.randomUUID());
   const [state, setState] = useState<BrowserUseViewportState>({
     preset: "fit",
@@ -134,7 +136,7 @@ export function useBrowserViewport({
                 desiredMode = stateRef.current.preset;
                 pending = null;
                 setError(
-                  "Browser size could not be changed. Choose a size in Browser options to try again.",
+                  "oct5Core.viewportError",
                 );
               }
             } finally {
@@ -246,7 +248,7 @@ export function useBrowserViewport({
 
   return {
     state,
-    error,
+    error: error ? t(error) : null,
     resizing,
     viewerId,
     version,

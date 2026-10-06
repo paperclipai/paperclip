@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ApiError } from "../api/client";
+import { i18n } from "../i18n";
 import {
   classifySkillDenial,
   SKILL_PLATFORM_INVARIANT_CODES,
@@ -13,6 +14,25 @@ function apiError(status: number, body: unknown): ApiError {
 }
 
 describe("classifySkillDenial", () => {
+  it("updates a captured denial when the UI language changes without changing its policy state", async () => {
+    await i18n.changeLanguage("en");
+    const denial = classifySkillDenial(
+      apiError(403, { code: SKILL_POLICY_DENIAL_CODE, reason: "explicit_rule" }),
+      "Installing this skill",
+    );
+    const englishTitle = denial?.title;
+    try {
+      await i18n.changeLanguage("ru");
+      expect(denial?.title).toContain("Установка навыка");
+      expect(denial?.title).not.toBe(englishTitle);
+      expect(denial?.remediation).toMatch(/[А-Яа-яЁё]/);
+      expect(denial?.state).toBe("policy");
+      expect(denial?.code).toBe(SKILL_POLICY_DENIAL_CODE);
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
   it("returns null for non-ApiError inputs (State A / unexpected)", () => {
     expect(classifySkillDenial(new Error("boom"))).toBeNull();
     expect(classifySkillDenial(null)).toBeNull();

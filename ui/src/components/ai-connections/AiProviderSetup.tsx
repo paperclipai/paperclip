@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Network, Monitor } from "lucide-react";
@@ -29,37 +30,37 @@ const providers = [
   {
     id: "openai",
     name: "OpenAI",
-    description: "ChatGPT subscription or API key",
+    get description() { return t("oct6Beta.copy081"); },
   },
   {
     id: "anthropic",
     name: "Anthropic",
-    description: "Claude subscription or API key",
+    get description() { return t("oct6Beta.copy082"); },
   },
-  { id: "google", name: "Google", description: "Gemini API key" },
-  { id: "xai", name: "xAI", description: "Grok subscription or API key" },
+  { id: "google", name: "Google", get description() { return t("oct6Beta.copy083"); } },
+  { id: "xai", name: "xAI", get description() { return t("oct6Beta.copy084"); } },
   {
     id: "openrouter",
     name: "OpenRouter",
-    description: "Models through one API key",
+    get description() { return t("oct6Beta.copy085"); },
     advanced: true,
   },
   {
     id: "bedrock",
     name: "Amazon Bedrock",
-    description: "Bedrock API key and AWS region",
+    get description() { return t("oct6Beta.copy086"); },
     advanced: true,
   },
   {
     id: "gateway",
-    name: "Custom gateway",
-    description: "Emissary or another compatible endpoint",
+    get name() { return t("oct6Beta.copy087"); },
+    get description() { return t("oct6Beta.copy089"); },
     advanced: true,
   },
   {
     id: "local",
-    name: "Local endpoint",
-    description: "A model server in the agent’s environment",
+    get name() { return t("oct6Beta.copy090"); },
+    get description() { return t("oct6Beta.copy091"); },
     advanced: true,
   },
 ] as const;
@@ -90,6 +91,7 @@ export function AiProviderSetup({
     binding: Exclude<AiConnectionBinding, { mode: "responsible_user" }>,
   ) => void;
 }) {
+  useTranslation();
   const [provider, setProvider] = useState<ProviderChoice | undefined>(
     reconnect
       ? reconnect.routing?.kind === "gateway" ||
@@ -131,7 +133,7 @@ export function AiProviderSetup({
     queryKey: ["agents", companyId, "provider-access"],
     queryFn: () => agentsApi.list(companyId),
   });
-  const label = providerLabel ?? providers.find((p) => p.id === provider)?.name ?? "provider";
+  const label = providerLabel ?? providers.find((p) => p.id === provider)?.name ?? t("oct6Beta.providerFallback");
   const advanced = reconnect ? Boolean(reconnect.routing) : ["openrouter", "bedrock", "gateway", "local"].includes(provider ?? "");
   const nativeProvider: AiProvider =
     provider === "bedrock"
@@ -143,17 +145,7 @@ export function AiProviderSetup({
         : (provider ?? "openai");
   const name =
     reconnect?.name ??
-    `${ownership === "personal" ? "My" : "Company"} ${
-      provider === "gateway" && baseUrl
-        ? (() => {
-            try {
-              return new URL(baseUrl).hostname;
-            } catch {
-              return label;
-            }
-          })()
-        : label
-    }`;
+    t(ownership === "personal" ? "oct6Beta.personalAccountName" : "oct6Beta.companyAccountName", { provider: provider === "gateway" && baseUrl ? (() => { try { return new URL(baseUrl).hostname; } catch { return label; } })() : label });
   const complete = (result: {
     connectionId: string;
     grantId: string;
@@ -237,16 +229,15 @@ export function AiProviderSetup({
   );
   const modelSettings = (
     <label className="block space-y-2 text-xs text-muted-foreground">
-      Model IDs (comma separated)
+      {t("oct6Beta.copy092")}
       <Input
-        aria-label="Model IDs"
+        aria-label={t("oct6Beta.copy093")}
         value={models}
         onChange={(e) => setModels(e.target.value)}
         disabled={Boolean(reconnect)}
       />
       <span className="block">
-        Use the provider’s model ID or your gateway’s alias. You can
-        also enter one on the agent.
+        {t("oct6Beta.copy094")}
       </span>
     </label>
   );
@@ -266,35 +257,35 @@ export function AiProviderSetup({
       installAgentIds={agentIds}
       setInstallAgentIds={setAgentIds}
       disabled={save.isPending}
-      notice={!canManageConnections ? ["Only a connection manager can share this credential with everyone or give every agent access."] : undefined}
+      notice={!canManageConnections ? [t("oct6Beta.copy095")] : undefined}
     />
   ) : undefined;
   const cancel = () => reconnect || initialProvider ? onCancel() : setStep("provider");
-  if (!reconnect && accounts.isPending) return <p role="status">Loading connection permissions…</p>;
-  if (!reconnect && accounts.isError) return <p role="alert">Could not load connection permissions. <Button type="button" variant="ghost" onClick={() => void accounts.refetch()}>Retry</Button></p>;
+  if (!reconnect && accounts.isPending) return <p role="status">{t("oct6Beta.copy096")}</p>;
+  if (!reconnect && accounts.isError) return <p role="alert">{t("oct6Beta.copy097")} <Button type="button" variant="ghost" onClick={() => void accounts.refetch()}>{t("oct5Core.s0281")}</Button></p>;
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6" onSubmit={(event) => event.stopPropagation()}>
       <div className="space-y-2">
         <h2 className="text-xl font-semibold">
           {step === "provider"
-            ? "Connect a model provider"
-            : `${reconnect ? "Reconnect" : "Connect"} ${label}`}
+            ? t("oct6Beta.copy098")
+            : `${reconnect ? t("sep13Connections.reconnect") : t("sep13Connections.connect")} ${label}`}
         </h2>
       </div>
-      {agents.isError && <p role="alert" className="text-sm text-destructive">Could not load agents. <Button type="button" variant="ghost" onClick={() => void agents.refetch()}>Retry</Button></p>}
+      {agents.isError && <p role="alert" className="text-sm text-destructive">{t("oct6Beta.copy099")} <Button type="button" variant="ghost" onClick={() => void agents.refetch()}>{t("oct5Core.s0281")}</Button></p>}
       {step === "provider" ? (
         <>
           {advancedOnly ? choices(true) : <>
           {choices(false)}
           <details>
             <summary className="cursor-pointer text-sm text-muted-foreground">
-              Advanced providers
+              {t("oct6Beta.copy034")}
             </summary>
             <div className="pt-4">{choices(true)}</div>
           </details>
           </>}
           <Button type="button" variant="ghost" onClick={onCancel}>
-            Cancel
+            {t("oct5Core.s0345")}
           </Button>
         </>
       ) : !advanced ? (
@@ -326,9 +317,9 @@ export function AiProviderSetup({
           {(provider === "gateway" || provider === "local") && (
             <>
               <label className="block space-y-2 text-xs text-muted-foreground">
-                Provider URL
+                {t("oct6Beta.copy100")}
                 <Input
-                  aria-label="Provider URL"
+                  aria-label={t("oct6Beta.copy100")}
                   placeholder={
                     provider === "local"
                       ? "http://localhost:11434/v1"
@@ -340,7 +331,7 @@ export function AiProviderSetup({
                 />
               </label>
               <label className="block space-y-2 text-xs text-muted-foreground">
-                API format
+                {t("oct6Beta.copy101")}
                 <Select
                   value={protocol}
                   onValueChange={(v) => {
@@ -350,7 +341,7 @@ export function AiProviderSetup({
                   }}
                   disabled={Boolean(reconnect) || Boolean(initialProtocol)}
                 >
-                  <SelectTrigger aria-label="API format" className="w-full">
+                  <SelectTrigger aria-label={t("oct6Beta.copy101")} className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -370,9 +361,9 @@ export function AiProviderSetup({
           )}
           {provider === "bedrock" && (
             <label className="block space-y-2 text-xs text-muted-foreground">
-              AWS region
+              {t("pages.secrets.vault.fields.awsRegion")}
               <Input
-                aria-label="AWS region"
+                aria-label={t("pages.secrets.vault.fields.awsRegion")}
                 value={region}
                 onChange={(e) => setRegion(e.target.value)}
                 disabled={Boolean(reconnect)}
@@ -381,29 +372,29 @@ export function AiProviderSetup({
           )}
           {provider !== "openrouter" && (
             <label className="block space-y-2 text-xs text-muted-foreground">
-              Authentication
+              {t("localizationApps.authentication264")}
               <Select
                 value={auth}
                 onValueChange={(v) => setAuth(v as typeof auth)}
                 disabled={Boolean(reconnect)}
               >
-                <SelectTrigger aria-label="Authentication" className="w-full">
+                <SelectTrigger aria-label={t("localizationApps.authentication264")} className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="bearer">
                     {provider === "bedrock"
-                      ? "Bedrock API key"
-                      : "Bearer token"}
+                      ? t("oct6Beta.copy102")
+                      : t("sep28Routines.signingBearer")}
                   </SelectItem>
                   {provider !== "bedrock" && (
                     <>
                       {protocol === "messages" && (
                         <SelectItem value="api_key">
-                          API key · x-api-key
+                          {t("oct6Beta.copy103")}
                         </SelectItem>
                       )}
-                      <SelectItem value="none">No authentication</SelectItem>
+                      <SelectItem value="none">{t("sep28Routines.signingNone")}</SelectItem>
                     </>
                   )}
                 </SelectContent>
@@ -413,9 +404,9 @@ export function AiProviderSetup({
           {
             auth !== "none" && (
               <label className="block space-y-2 text-xs text-muted-foreground">
-                API key
+                {t("sep13Connections.apiKey")}
                 <Input
-                  aria-label="API key"
+                  aria-label={t("sep13Connections.apiKey")}
                   type="password"
                   autoComplete="new-password"
                   value={apiKey}
@@ -424,15 +415,14 @@ export function AiProviderSetup({
               </label>
             )
           }
-          {reconnect && <details><summary className="cursor-pointer text-sm text-muted-foreground">Model settings</summary>{modelSettings}</details>}
+          {reconnect && <details><summary className="cursor-pointer text-sm text-muted-foreground">{t("oct6Beta.copy104")}</summary>{modelSettings}</details>}
           <p className="text-xs text-muted-foreground">
-            Test the connection with your chosen model in the agent’s execution
-            environment after connecting.
+            {t("oct6Beta.copy105")}
           </p>
           {save.error && (
             <p role="alert" className="text-sm text-destructive">
               {save.error instanceof Error && save.error.name === "ZodError"
-                ? "Check the URL, API format, and authentication fields."
+                ? t("oct6Beta.copy106")
                 : save.error.message}
             </p>
           )}
@@ -444,7 +434,7 @@ export function AiProviderSetup({
               onClick={cancel}
               disabled={save.isPending}
             >
-              Back
+              {t("oct5Core.s0344")}
             </Button>
             <Button
               type="submit"
@@ -455,10 +445,10 @@ export function AiProviderSetup({
               }
             >
               {save.isPending
-                ? "Connecting…"
+                ? t("sep13Connections.connecting")
                 : reconnect
-                  ? "Reconnect"
-                  : "Connect"}
+                  ? t("sep13Connections.reconnect")
+                  : t("sep13Connections.connect")}
             </Button>
           </div>
         </form>

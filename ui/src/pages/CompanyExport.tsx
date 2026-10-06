@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation } from "@/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type {
@@ -38,6 +39,7 @@ import {
 import { useAgentOrder } from "../hooks/useAgentOrder";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { buildPortableSidebarOrder } from "../lib/company-portability-sidebar";
+import { companyExportFidelityWarningDisplay } from "../lib/company-export-fidelity-display";
 import { getPortableFileDataUrl, getPortableFileText, isPortableImageFile } from "../lib/portable-files";
 import {
   Download,
@@ -365,6 +367,7 @@ function FrontmatterCard({
   data: FrontmatterData;
   onSkillClick?: (skill: string) => void;
 }) {
+  useTranslation();
   return (
     <div className="rounded-md border border-border bg-accent/20 px-4 py-3 mb-4">
       <dl className="grid grid-cols-(--gtc-5) gap-x-4 gap-y-1.5 text-sm">
@@ -537,9 +540,10 @@ function ExportPreviewPane({
   orgChartPreviewUrl?: string;
   onSkillClick?: (skill: string) => void;
 }) {
+  const { t } = useTranslation();
   if (!selectedFile || content === null) {
     return (
-      <EmptyState icon={Package} message="Select a file to preview its contents." />
+      <EmptyState icon={Package} message={t("localizationProjects.ui_Select_a_file_to_preview_its_contents_")} />
     );
   }
 
@@ -575,9 +579,7 @@ function ExportPreviewPane({
             <code>{textContent}</code>
           </pre>
         ) : (
-          <div className="rounded-lg border border-border bg-accent/10 px-4 py-3 text-sm text-muted-foreground">
-            Binary asset preview is not available for this file type.
-          </div>
+          <div className="rounded-lg border border-border bg-accent/10 px-4 py-3 text-sm text-muted-foreground">{t("localizationProjects.ui_Binary_asset_preview_is_not_available_for_this_file_type_")}</div>
         )}
       </div>
     </div>
@@ -622,10 +624,11 @@ function isAbortError(error: unknown): boolean {
 }
 
 function previewErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Failed to load export data.";
+  return error instanceof Error ? error.message : t("localizationProjects.error_Failed_to_load_export_data_");
 }
 
 export function CompanyExport() {
+  const { t } = useTranslation();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -733,11 +736,11 @@ export function CompanyExport() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Export" },
+      { label: selectedCompany?.name ?? t("localizationProjects.ui_Organization"), href: "/dashboard" },
+      { get ["label"]() { return t("localizationProjects.ui_Settings"); }, href: "/company/settings" },
+      { get ["label"]() { return t("localizationProjects.ui_Export"); } },
     ]);
-  }, [selectedCompany?.name, setBreadcrumbs]);
+  }, [selectedCompany?.name, setBreadcrumbs, t]);
 
   const exportPreviewMutation = useMutation({
     mutationFn: ({ includeIssues: withIssues, includeSkills, signal }: ExportPreviewMutationInput) =>
@@ -776,7 +779,7 @@ export function CompanyExport() {
       if (request.requestId !== previewRequestIdRef.current || isAbortError(err)) return;
       pushToast({
         tone: "error",
-        title: "Export failed",
+        get ["title"]() { return t("localizationProjects.ui_Export_failed"); },
         body: previewErrorMessage(err),
       });
     },
@@ -810,15 +813,15 @@ export function CompanyExport() {
       downloadZip(result, resultCheckedFiles, result.files);
       pushToast({
         tone: "success",
-        title: "Export downloaded",
-        body: `${resultCheckedFiles.size} file${resultCheckedFiles.size === 1 ? "" : "s"} exported as ${result.rootPath}.zip`,
+        get ["title"]() { return t("localizationProjects.ui_Export_downloaded"); },
+        body: t("localizationProjects.downloadedFiles", { count: resultCheckedFiles.size, archive: `${result.rootPath}.zip` }),
       });
     },
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Export failed",
-        body: err instanceof Error ? err.message : "Failed to build export package.",
+        get ["title"]() { return t("localizationProjects.ui_Export_failed"); },
+        body: err instanceof Error ? err.message : t("localizationProjects.error_Failed_to_build_export_package_"),
       });
     },
   });
@@ -1024,7 +1027,7 @@ export function CompanyExport() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Package} message="Select an organization to export." />;
+    return <EmptyState icon={Package} message={t("localizationProjects.ui_Select_an_organization_to_export_")} />;
   }
 
   if (exportPreviewMutation.isPending && !exportData) {
@@ -1035,9 +1038,9 @@ export function CompanyExport() {
     return (
       <EmptyState
         icon={Package}
-        title="Export preview cancelled"
-        message="The preview request was cancelled. Your export settings are unchanged."
-        action="Retry preview"
+        title={t("localizationProjects.ui_Export_preview_cancelled")}
+        message={t("localizationProjects.ui_The_preview_request_was_cancelled_Your_export_settings_are_unchanged_")}
+        action={t("localizationIssueDetail.ui_Retry_preview")}
         onAction={startPreviewRequest}
         hideActionIcon
       />
@@ -1048,10 +1051,10 @@ export function CompanyExport() {
     return (
       <EmptyState
         icon={Package}
-        title="Export preview failed"
+        title={t("localizationProjects.ui_Export_preview_failed")}
         message={previewErrorMessage(exportPreviewMutation.error)}
-        description="Retry the preview. You do not need to reload this page."
-        action="Retry preview"
+        description={t("localizationProjects.ui_Retry_the_preview_You_do_not_need_to_reload_this_page_")}
+        action={t("localizationIssueDetail.ui_Retry_preview")}
         onAction={startPreviewRequest}
         hideActionIcon
       />
@@ -1062,9 +1065,9 @@ export function CompanyExport() {
     return (
       <EmptyState
         icon={Package}
-        title="Export preview unavailable"
-        message="No export preview is loaded."
-        action="Load preview"
+        title={t("localizationProjects.ui_Export_preview_unavailable")}
+        message={t("localizationProjects.ui_No_export_preview_is_loaded_")}
+        action={t("localizationProjects.loadPreview")}
         onAction={startPreviewRequest}
         hideActionIcon
       />
@@ -1084,15 +1087,15 @@ export function CompanyExport() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-4 text-sm">
             <span className="font-medium">
-              {selectedCompany?.name ?? "Organization"} export
+              {t("localizationProjects.organizationExport", { name: selectedCompany?.name ?? t("localizationProjects.ui_Organization") })}
             </span>
             <span className="text-muted-foreground">
-              Exporting {selectedCount.toLocaleString()} of {totalFiles.toLocaleString()} file{totalFiles === 1 ? "" : "s"}
+              {t("localizationProjects.exportingFiles", { selected: selectedCount.toLocaleString(i18n.resolvedLanguage), total: totalFiles.toLocaleString(i18n.resolvedLanguage) })}
               {selectedCount > 0 && ` (~${formatBytes(estimatedZipBytes)})`}
             </span>
             {warnings.length > 0 && (
               <span className="text-amber-500">
-                {warnings.length} warning{warnings.length === 1 ? "" : "s"}
+                {t("localizationProjects.warnings", { count: warnings.length })}
               </span>
             )}
           </div>
@@ -1109,8 +1112,8 @@ export function CompanyExport() {
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
-              ? "Building export..."
-              : `Export ${selectedCount.toLocaleString()} file${selectedCount === 1 ? "" : "s"}`}
+              ? t("localizationProjects.ui_Building_export_")
+              : t("localizationProjects.exportFiles", { count: selectedCount })}
           </Button>
         </div>
       </div>
@@ -1127,7 +1130,7 @@ export function CompanyExport() {
       {/* Export fidelity: data the bundle will not carry */}
       {fidelityReport && fidelityReport.warnings.length > 0 && (
         <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-          <h3 className="mb-1.5 text-xs font-medium">Not included in this export</h3>
+          <h3 className="mb-1.5 text-xs font-medium">{t("localizationProjects.ui_Not_included_in_this_export")}</h3>
           {fidelityReport.warnings.map((warning) => (
             <div
               key={warning.code}
@@ -1136,7 +1139,7 @@ export function CompanyExport() {
                 warning.severity === "blocker" ? "font-medium text-destructive" : "text-amber-500",
               )}
             >
-              {warning.message}
+              {companyExportFidelityWarningDisplay(warning)}
             </div>
           ))}
         </div>
@@ -1146,11 +1149,11 @@ export function CompanyExport() {
       <div className="grid gap-4 xl:h-(--sz-calc-30) xl:grid-cols-(--gtc-25) xl:gap-0">
         <aside className="flex max-h-(--sz-24rem) flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h2 className="text-base font-semibold">Package files</h2>
+            <h2 className="text-base font-semibold">{t("localizationProjects.ui_Package_files")}</h2>
           </div>
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h3 className="mb-2 text-xs font-medium text-muted-foreground">What to include</h3>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5" role="group" aria-label="What to include">
+            <h3 className="mb-2 text-xs font-medium text-muted-foreground">{t("localizationProjects.ui_What_to_include")}</h3>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5" role="group" aria-label={t("localizationProjects.ui_What_to_include")}>
               {EXPORT_CATEGORY_ORDER.map((key) => {
                 const isAttachments = key === "attachments";
                 const disabled = isAttachments && !isAttachmentsCategoryEnabled(categories);
@@ -1167,7 +1170,7 @@ export function CompanyExport() {
                     )}
                     title={
                       disabled
-                        ? "Attachments travel with tasks and routines; re-enable one of them to include attachments."
+                        ? t("localizationProjects.ui_Attachments_travel_with_tasks_and_routines_re_enable_one_of_them_to_include_attachments_")
                         : undefined
                     }
                   >
@@ -1181,15 +1184,13 @@ export function CompanyExport() {
                     />
                     <span className="min-w-0 truncate">{EXPORT_CATEGORY_LABELS[key]}</span>
                     <span className="text-xs text-muted-foreground">
-                      {countLoaded ? count.toLocaleString() : "—"}
+                      {countLoaded ? count.toLocaleString(i18n.resolvedLanguage) : "—"}
                     </span>
                   </label>
                 );
               })}
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Task and routine history is opt-in because it can be large.
-            </p>
+            <p className="mt-2 text-xs text-muted-foreground">{t("localizationProjects.ui_Task_and_routine_history_is_opt_in_because_it_can_be_large_")}</p>
           </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
@@ -1198,7 +1199,7 @@ export function CompanyExport() {
                 type="text"
                 value={treeSearch}
                 onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Search files..."
+                placeholder={t("localizationProjects.ui_Search_files_")}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 data-page-search-target="true"
               />
@@ -1222,7 +1223,7 @@ export function CompanyExport() {
                   onClick={() => setTaskLimit((prev) => prev + TASKS_PAGE_SIZE)}
                   className="w-full rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent/30 hover:text-foreground transition-colors"
                 >
-                  Show more tasks ({visibleTaskChildren} of {totalTaskChildren})
+                  {t("localizationProjects.showMoreTasks", { visible: visibleTaskChildren, total: totalTaskChildren })}
                 </button>
               </div>
             )}
@@ -1247,15 +1248,11 @@ export function CompanyExport() {
               <div className="flex max-w-md flex-col items-center gap-3">
                 <LoaderCircle className="h-6 w-6 animate-spin text-muted-foreground" />
                 <div>
-                  <p className="text-sm font-medium">Updating export preview…</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Large task histories can take a minute. You can untick Tasks or cancel this update.
-                  </p>
+                  <p className="text-sm font-medium">{t("localizationProjects.ui_Updating_export_preview_")}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{t("localizationProjects.ui_Large_task_histories_can_take_a_minute_You_can_untick_Tasks_or_cancel_this_update_")}</p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={handleCancelPreview}>
-                  <X />
-                  Cancel update
-                </Button>
+                  <X />{t("localizationProjects.ui_Cancel_update")}</Button>
               </div>
             </div>
           ) : previewCancelled ? (
@@ -1265,15 +1262,11 @@ export function CompanyExport() {
             >
               <div className="flex max-w-md flex-col items-center gap-3">
                 <div>
-                  <p className="text-sm font-medium">Preview update cancelled</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    The previous preview remains available. Retry when you are ready.
-                  </p>
+                  <p className="text-sm font-medium">{t("localizationProjects.ui_Preview_update_cancelled")}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{t("localizationProjects.ui_The_previous_preview_remains_available_Retry_when_you_are_ready_")}</p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={startPreviewRequest}>
-                  <RotateCcw />
-                  Retry preview
-                </Button>
+                  <RotateCcw />{t("localizationIssueDetail.ui_Retry_preview")}</Button>
               </div>
             </div>
           ) : exportPreviewMutation.isError ? (
@@ -1284,15 +1277,13 @@ export function CompanyExport() {
             >
               <div className="flex max-w-md flex-col items-center gap-3">
                 <div>
-                  <p className="text-sm font-medium text-destructive">Export preview failed</p>
+                  <p className="text-sm font-medium text-destructive">{t("localizationProjects.ui_Export_preview_failed")}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {previewErrorMessage(exportPreviewMutation.error)}
                   </p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={startPreviewRequest}>
-                  <RotateCcw />
-                  Retry preview
-                </Button>
+                  <RotateCcw />{t("localizationIssueDetail.ui_Retry_preview")}</Button>
               </div>
             </div>
           ) : null}

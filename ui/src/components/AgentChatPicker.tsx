@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useTranslation, t } from "@/i18n";
 import type { Agent } from "@paperclipai/shared";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
@@ -18,12 +19,13 @@ export interface AgentChatPickerProps {
 }
 
 export function AgentChatPicker({ open, onOpenChange, ...props }: AgentChatPickerProps) {
+  const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent aria-describedby={undefined} className="gap-0 overflow-hidden p-0 sm:max-w-md">
         <div className="px-4 pt-4 pb-3">
-          <DialogTitle>Chat with an agent</DialogTitle>
-          {props.existingChatAgentIds && <p className="mt-2 text-sm text-muted-foreground">One conversation per agent. Pick up where you left off.</p>}
+          <DialogTitle>{t("stable916Shell.chatWithAgent")}</DialogTitle>
+          {props.existingChatAgentIds && <p className="mt-2 text-sm text-muted-foreground">{t("oct5Core.oneConversation")}</p>}
         </div>
         {/* The dialog unmounts its content on close, so each search starts empty. */}
         <AgentChatPickerResults key={String(open)} {...props} onComplete={() => onOpenChange(false)} />
@@ -39,9 +41,10 @@ function AgentChatPickerResults({ agents, onSelect, onComplete, loading, error, 
     mounted.current = true;
     return () => { mounted.current = false; selection.current?.abort(); };
   }, []);
+  const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const [openingId, setOpeningId] = useState<string | null>(null);
-  const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [selectionError, setSelectionError] = useState<{ message: string } | { key: string } | null>(null);
   async function selectAgent(agent: Agent) {
     if (openingId) return;
     setOpeningId(agent.id);
@@ -52,7 +55,7 @@ function AgentChatPickerResults({ agents, onSelect, onComplete, loading, error, 
       await onSelect(agent, request.signal);
       if (mounted.current) onComplete();
     } catch (error) {
-      setSelectionError(error instanceof Error ? error.message : "Couldn’t open chat. Try again.");
+      setSelectionError(error instanceof Error ? { message: error.message } : { key: "oct5Core.s0209" });
     } finally {
       setOpeningId(null);
     }
@@ -60,29 +63,29 @@ function AgentChatPickerResults({ agents, onSelect, onComplete, loading, error, 
   return (
     <Command>
       <CommandInput
-        aria-label="Search agents by name or role"
-        placeholder="Search by name or role…"
+        aria-label={t("stable916Shell.searchAgentsLabel")}
+        placeholder={t("stable916Shell.searchAgentsPlaceholder")}
         value={search}
         onValueChange={setSearch}
       />
-      {selectionError && <p role="alert" className="px-4 py-3 text-sm text-destructive">{selectionError}</p>}
-      {openingId && <p role="status" className="sr-only">Opening conversation…</p>}
+      {selectionError && <p role="alert" className="px-4 py-3 text-sm text-destructive">{"key" in selectionError ? t(selectionError.key) : selectionError.message === "Choose an agent from this company." ? t("oct5Core.chooseCompanyAgent") : selectionError.message}</p>}
+      {openingId && <p role="status" className="sr-only">{t("oct5Core.s0405")}</p>}
       {error ? (
         <div role="alert" className="flex flex-col items-start gap-2 p-4 text-sm">
-          <p>Couldn’t load agents. Try again.</p>
-          {onRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}
+          <p>{t("stable916Shell.loadAgentsError")}</p>
+          {onRetry && <Button variant="outline" size="sm" onClick={onRetry}>{t("stable916Shell.retry")}</Button>}
         </div>
       ) : loading ? (
-        <p role="status" className="p-4 text-sm text-muted-foreground">Loading agents…</p>
+        <p role="status" className="p-4 text-sm text-muted-foreground">{t("stable916Shell.loadingAgents")}</p>
       ) : (
         <CommandList>
           <CommandEmpty>
             <div className="flex flex-col items-center gap-2 px-4">
-              <span>{agents.length ? `No agents match “${search}”` : "No agents yet."}</span>
+              <span>{agents.length ? t("stable916Shell.noMatchingAgents", { search }) : t("stable916Shell.noAgents")}</span>
               {agents.length ? <>
-                <span className="text-xs text-muted-foreground">Try another name or role.</span>
-                <Button variant="ghost" size="sm" onClick={() => setSearch("")}>Clear search</Button>
-              </> : <span className="text-xs text-muted-foreground">Create an agent from the Agents page to start chatting.</span>}
+                <span className="text-xs text-muted-foreground">{t("stable916Shell.tryAnotherAgent")}</span>
+                <Button variant="ghost" size="sm" onClick={() => setSearch("")}>{t("stable916Shell.clearSearch")}</Button>
+              </> : <span className="text-xs text-muted-foreground">{t("stable916Shell.createAgentToChat")}</span>}
             </div>
           </CommandEmpty>
           <CommandGroup>
@@ -100,10 +103,10 @@ function AgentChatPickerResults({ agents, onSelect, onComplete, loading, error, 
                   <span className="truncate font-medium">{agent.name}</span>
                   <span className="truncate text-xs text-muted-foreground">{agent.title ?? agent.role}</span>
                 </span>
-                {existingChatAgentIds && <span className="shrink-0 text-xs text-muted-foreground">{existingChatAgentIds.includes(agent.id) ? "Open chat" : "New chat"}</span>}
-                {agent.status === "paused" && <span className="text-xs text-(--status-agent-paused)">Paused</span>}
-                {agent.status === "terminated" && <span className="text-xs text-muted-foreground">Terminated</span>}
-                {agent.status === "pending_approval" && <span className="text-xs text-muted-foreground">Awaiting approval</span>}
+                {existingChatAgentIds && <span className="shrink-0 text-xs text-muted-foreground">{existingChatAgentIds.includes(agent.id) ? t("oct5Core.openChat") : t("oct5Core.newChat")}</span>}
+                {agent.status === "paused" && <span className="text-xs text-(--status-agent-paused)">{t("stable916Shell.paused")}</span>}
+                {agent.status === "terminated" && <span className="text-xs text-muted-foreground">{t("stable916Shell.terminated")}</span>}
+                {agent.status === "pending_approval" && <span className="text-xs text-muted-foreground">{t("stable916Shell.awaitingApproval")}</span>}
               </CommandItem>
             ))}
           </CommandGroup>

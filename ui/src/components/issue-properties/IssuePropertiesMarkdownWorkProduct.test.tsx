@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import { i18n } from "@/i18n";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { within } from "storybook/test";
 import type { Issue, IssueAttachment, IssueDocument, IssueWorkProduct } from "@paperclipai/shared";
 import { artifactReviewDocumentKey } from "@paperclipai/shared";
 import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
@@ -373,8 +375,7 @@ describe("markdown work product review row", () => {
 
   it("keeps non-markdown work products on the download row", async () => {
     const contentPath = `/api/attachments/${ATTACHMENT_ID}/content`;
-    mockIssuesApi.listWorkProducts.mockResolvedValue([
-      makeMarkdownWorkProduct({
+    const workProduct = makeMarkdownWorkProduct({
         metadata: {
           attachmentId: ATTACHMENT_ID,
           contentType: "application/pdf",
@@ -384,8 +385,8 @@ describe("markdown work product review row", () => {
           downloadPath: `${contentPath}?download=1`,
           originalFilename: "report.pdf",
         },
-      }),
-    ]);
+      });
+    mockIssuesApi.listWorkProducts.mockResolvedValue([workProduct]);
     await renderTab();
 
     await waitForAssertion(() => {
@@ -396,6 +397,23 @@ describe("markdown work product review row", () => {
       expect(link?.getAttribute("href")).toBe(`${contentPath}?download=1`);
     });
     expect(container.querySelector("button[aria-expanded]")).toBeNull();
+    const source = JSON.stringify(workProduct);
+    const row = container.querySelector("article");
+    const link = row?.querySelector("a[download]");
+    expect(row).not.toBeNull();
+    expect(link).not.toBeNull();
+    try {
+      for (const language of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(container.querySelector("article")).toBe(row);
+        expect(row?.querySelector("a[download]")).toBe(link);
+        expect(within(row!).getByRole("link", { name: language === "ru" ? "Скачать файл" : "Download file" })).toBe(link);
+        expect(link?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+        expect(JSON.stringify(workProduct)).toBe(source);
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
   });
 
   it.each(["image/png", "application/octet-stream"])("renders %s media tiles without duplicates or user uploads", async (contentType) => {

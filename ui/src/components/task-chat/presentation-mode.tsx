@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { createContext, useContext, type ReactNode } from "react";
 
 export type TaskChatPresentationMode = "production" | "streamlined";
@@ -13,6 +14,7 @@ export function TaskChatPresentationProvider({
   mode: TaskChatPresentationMode;
   children: ReactNode;
 }) {
+  useTranslation();
   return (
     <TaskChatPresentationContext.Provider value={mode}>
       {children}

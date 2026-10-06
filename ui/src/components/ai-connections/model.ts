@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 /** Redacted presentation contracts shared with the production API. */
 import type { AiProvider, AiAuthMethod, AiManagedConnectionSummary, AiConnectionBinding } from "@paperclipai/shared";
 export type { AiProvider, AiAuthMethod, AiConnectionBinding } from "@paperclipai/shared";
@@ -10,18 +11,18 @@ export const AI_PROVIDERS: Record<
   google: { name: "Google", logo: "/brands/apps/google.svg" },
   anthropic: {
     name: "Claude",
-    subscriptionName: "Claude subscription",
+    get subscriptionName() { return t("sep13Connections.claudeSubscription"); },
     logo: "/brands/claude-color.svg",
   },
   openai: {
     name: "OpenAI",
-    subscriptionName: "ChatGPT subscription",
+    get subscriptionName() { return t("sep13Connections.chatgptSubscription"); },
     logo: "/brands/codex-color.svg",
   },
   openrouter: { name: "OpenRouter", logo: "/brands/apps/openrouter.svg" },
   xai: {
     name: "Grok",
-    subscriptionName: "Grok subscription",
+    get subscriptionName() { return t("sep13Connections.grokSubscription"); },
     logo: "/brands/adapters/grok.svg",
   },
 };
@@ -35,25 +36,32 @@ export interface AiConnectionRequirement {
 }
 
 export const AI_CONNECTION_STATUS: Record<AiConnectionStatus, string> = {
-  connected: "Connected",
-  needs_attention: "Needs attention",
-  expired: "Expired",
-  revoked: "Revoked",
+  get connected() { return t("sep13Connections.status_connected"); },
+  get needs_attention() { return t("sep13Connections.status_needs_attention"); },
+  get expired() { return t("sep13Connections.status_expired"); },
+  get revoked() { return t("sep13Connections.status_revoked"); },
 };
 
 export function defaultAiConnectionName(ownerName: string | undefined, provider: AiProvider, method: AiAuthMethod) {
   const owner = ownerName?.trim();
-  const prefix = owner && owner !== "You" ? `${owner}'s` : "My";
+  if (method === "subscription" && AI_PROVIDERS[provider].subscriptionName) {
+    const providerName = provider === "openai" ? "ChatGPT" : AI_PROVIDERS[provider].name;
+    return owner && owner !== "You"
+      ? t("oct5Apps.namedSubscriptionAccount", { owner, provider: providerName })
+      : t("oct5Apps.mySubscriptionAccount", { provider: providerName });
+  }
   const providerName = method === "subscription"
     ? AI_PROVIDERS[provider].subscriptionName ?? AI_PROVIDERS[provider].name
     : `${AI_PROVIDERS[provider].name} API`;
-  return `${prefix} ${providerName} account`;
+  return owner && owner !== "You"
+    ? t("oct5Apps.namedAccount", { owner, provider: providerName })
+    : t("oct5Apps.myAccount", { provider: providerName });
 }
 
 export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {
   return method === "subscription"
-    ? (AI_PROVIDERS[provider].subscriptionName ?? "Subscription unavailable")
-    : "API key";
+    ? (AI_PROVIDERS[provider].subscriptionName ?? t("sep13Connections.subscriptionUnavailable"))
+    : t("sep13Connections.apiKey");
 }
 
 export function matchesAiRequirement(
@@ -84,12 +92,14 @@ export function personalAiDefault(
 
 export function aiConnectionProblem(connection?: AiConnectionSummary) {
   if (!connection)
-    return "No connection selected. Connect an account to continue.";
+    return t("sep13Connections.noSelection");
   return (
-    connection.unavailableReason ??
+    (connection.unavailableReason === "Reconnect with a separate sign-in to protect your existing terminal login."
+      ? t("sep13Connections.separateSignIn")
+      : connection.unavailableReason) ??
     (connection.status === "connected"
       ? null
-      : `${AI_CONNECTION_STATUS[connection.status]}. Reconnect this account to continue.`)
+      : t("sep13Connections.reconnectStatus", { status: AI_CONNECTION_STATUS[connection.status] }))
   );
 }
 
@@ -104,7 +114,7 @@ export function bindingProblem(
     binding.provider !== requirement.provider ||
     (binding.mode !== "responsible_user" && requirement.method !== undefined && binding.method !== requirement.method)
   )
-    return "Choose a connection compatible with this provider and sign-in method.";
+    return t("sep13Connections.incompatible");
   if (binding.mode === "responsible_user")
     return aiConnectionProblem(
       personalAiDefault(connections, requirement, userId),
@@ -117,14 +127,14 @@ export function bindingProblem(
       matchesAiRequirement(item, requirement),
   );
   if (!connection)
-    return "This connection is no longer available for this agent. Choose another connection.";
+    return t("sep13Connections.unavailableForAgent");
   if (binding.mode === "shared" && connection.ownership !== "shared")
-    return "Choose a company-shared connection.";
+    return t("sep13Connections.chooseShared");
   if (
     binding.mode === "delegated" &&
     (connection.ownership !== "personal" ||
       connection.ownerUserId !== userId)
   )
-    return "This credential is not shared with you. Choose a connection you can use.";
+    return t("sep13Connections.credentialNotShared");
   return aiConnectionProblem(connection);
 }

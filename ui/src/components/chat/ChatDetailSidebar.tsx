@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { chatEndpointsApi } from "@/api/chatEndpoints";
 import { queryKeys } from "@/lib/queryKeys";
@@ -18,6 +19,7 @@ export function ChatDetailSidebar({
   endpointId: string;
   NavItem?: typeof SidebarNavItem;
 }) {
+  const { t } = useTranslation();
   const endpoint = useQuery({
     queryKey: queryKeys.chatEndpoints.detail(endpointId),
     queryFn: () => chatEndpointsApi.get(endpointId),
@@ -26,7 +28,7 @@ export function ChatDetailSidebar({
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background">
       <nav
-        aria-label="Chat connection"
+        aria-label={t("sep28Chat.chatConnection")}
         data-slot="contextual-sidebar-nav"
         className={contextualSidebarStyles.nav}
       >
@@ -36,33 +38,33 @@ export function ChatDetailSidebar({
         >
           <NavItem
             to={`/apps/chat/${endpointId}/settings`}
-            label="Settings"
+            label={t("sep28Chat.settings")}
             icon={Settings}
             end
           />
           <NavItem
             to={`/apps/chat/${endpointId}/access`}
-            label="Access"
+            label={t("sep28Chat.access")}
             icon={Users}
             end
           />
           {endpoint.data?.provider === "github" && (
             <NavItem
               to={`/apps/chat/${endpointId}/reviews`}
-              label="Reviews"
+              label={t("sep28Chat.reviews")}
               icon={GitPullRequest}
               end
             />
           )}
           <NavItem
             to={`/apps/chat/${endpointId}/conversations`}
-            label="Conversations"
+            label={t("sep28Chat.conversations")}
             icon={MessageSquare}
             end
           />
           <NavItem
             to={`/apps/chat/${endpointId}/activity`}
-            label="Activity"
+            label={t("sep28Chat.activity")}
             icon={Activity}
             end
           />

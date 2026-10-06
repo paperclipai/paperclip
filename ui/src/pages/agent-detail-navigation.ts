@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { auditSectionHref, type AuditSection } from "./audit/audit-navigation";
 
 export type AgentDetailView =
@@ -20,28 +21,28 @@ export const AGENT_DETAIL_NAVIGATION: ReadonlyArray<{
   items: ReadonlyArray<{ value: AgentLocalDetailView; label: string }>;
 }> = [
   {
-    label: "Agent",
+    get label() { return t("localizationAgents.navigation_Agent"); },
     items: [
-      { value: "overview", label: "Overview" },
-      { value: "instructions", label: "Instructions" },
-      { value: "skills", label: "Skills" },
+      { value: "overview", get label() { return t("localizationAgents.navigation_Overview"); } },
+      { value: "instructions", get label() { return t("localizationAgents.navigation_Instructions"); } },
+      { value: "skills", get label() { return t("localizationAgents.navigation_Skills"); } },
     ],
   },
   {
-    label: "Runtime",
+    get label() { return t("localizationAgents.navigation_Runtime"); },
     items: [
-      { value: "runtime", label: "Harness / Runtime" },
-      { value: "secrets", label: "Secrets" },
-      { value: "tools", label: "Tools" },
-      { value: "channels", label: "Channels" },
+      { value: "runtime", get label() { return t("localizationAgents.navigation_Harness_Runtime"); } },
+      { value: "secrets", get label() { return t("pages.agentDetail.breadcrumbSecrets"); } },
+      { value: "tools", get label() { return t("pages.agentDetail.breadcrumbTools"); } },
+      { value: "channels", get label() { return t("agentSetup.channels"); } },
     ],
   },
   {
-    label: "Governance",
+    get label() { return t("localizationAgents.navigation_Governance"); },
     items: [
-      { value: "permissions", label: "Permissions / Trust" },
-      { value: "api-keys", label: "API Keys" },
-      { value: "revisions", label: "Revisions" },
+      { value: "permissions", get label() { return t("localizationAgents.navigation_Permissions_Trust"); } },
+      { value: "api-keys", get label() { return t("localizationAgents.navigation_API_Keys"); } },
+      { value: "revisions", get label() { return t("localizationAgents.navigation_Revisions"); } },
     ],
   },
 ] as const;

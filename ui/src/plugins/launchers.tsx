@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import {
   Component,
   createContext,
@@ -129,7 +130,7 @@ const PluginLauncherRuntimeContext = createContext<PluginLauncherRuntimeContextV
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
-  return "Unknown error";
+  return t("localizationActivityChrome.unknownError");
 }
 
 function buildLauncherHostContext(
@@ -289,6 +290,7 @@ function isPluginLauncherBounds(value: unknown): value is PluginLauncherBounds {
 export function usePluginLaunchers(
   filters: UsePluginLaunchersFilters,
 ): UsePluginLaunchersResult {
+  useTranslation();
   const queryEnabled = filters.enabled ?? true;
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.plugins.uiContributions,
@@ -397,6 +399,15 @@ type LauncherErrorBoundaryState = {
   hasError: boolean;
 };
 
+function LauncherRenderFailure({ name }: { name: string }) {
+  const { t } = useTranslation();
+  return (
+    <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+      {t("localizationActivityChrome.launcherRenderFailed", { name })}
+    </div>
+  );
+}
+
 class LauncherErrorBoundary extends Component<LauncherErrorBoundaryProps, LauncherErrorBoundaryState> {
   override state: LauncherErrorBoundaryState = { hasError: false };
 
@@ -416,9 +427,7 @@ class LauncherErrorBoundary extends Component<LauncherErrorBoundaryProps, Launch
   override render() {
     if (this.state.hasError) {
       return (
-        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-          {this.props.launcher.pluginDisplayName}: failed to render
-        </div>
+        <LauncherRenderFailure name={this.props.launcher.pluginDisplayName} />
       );
     }
     return this.props.children;
@@ -432,6 +441,7 @@ function LauncherRenderContent({
   instance: LauncherInstance;
   renderEnvironment: PluginRenderEnvironmentContext;
 }) {
+  const { t } = useTranslation();
   const component = instance.component;
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -456,7 +466,7 @@ function LauncherRenderContent({
 
     return (
       <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-        {instance.launcher.pluginDisplayName}: could not resolve launcher target "{instance.launcher.action.target}".
+        {t("localizationActivityChrome.launcherTargetUnresolved", { name: instance.launcher.pluginDisplayName, target: instance.launcher.action.target })}
       </div>
     );
   }
@@ -496,6 +506,7 @@ function LauncherModalShell({
   requestBounds: (key: string, request: PluginModalBoundsRequest) => Promise<void>;
   closeLauncher: (key: string, event: PluginRenderCloseEvent) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const contentRef = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
 
@@ -596,7 +607,7 @@ function LauncherModalShell({
             className="ml-auto"
             onClick={() => void closeLauncher(instance.key, { reason: "programmatic" })}
           >
-            Close
+            {t("localizationActivityChrome.close")}
           </Button>
         </div>
         <div
@@ -791,6 +802,7 @@ export function PluginLauncherOutlet({
   itemClassName,
   errorClassName,
 }: PluginLauncherOutletProps) {
+  const { t } = useTranslation();
   const { activateLauncher } = usePluginLauncherRuntime();
   const { launchers, contributionsByPluginId, errorMessage } = usePluginLaunchers({
     placementZones,
@@ -802,7 +814,7 @@ export function PluginLauncherOutlet({
   if (errorMessage) {
     return (
       <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
-        Plugin launchers unavailable: {errorMessage}
+        {t("localizationActivityChrome.launchersUnavailable", { error: errorMessage })}
       </div>
     );
   }

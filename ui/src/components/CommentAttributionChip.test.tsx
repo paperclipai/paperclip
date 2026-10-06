@@ -1,9 +1,12 @@
 // @vitest-environment node
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CommentAttributionChip, commentAttributionTooltip } from "./CommentAttributionChip";
+import { setLocale } from "@/i18n";
+
+afterEach(() => setLocale("en"));
 
 /** The chip uses the app's Radix tooltip, which requires an ancestor provider. */
 function render(node: React.ReactNode) {
@@ -44,6 +47,16 @@ describe("CommentAttributionChip", () => {
 });
 
 describe("commentAttributionTooltip", () => {
+  it("preserves the authority limitation and names in Russian", () => {
+    setLocale("ru");
+    const copy = commentAttributionTooltip("Fable", "Dotta");
+    expect(copy).toContain("Fable не назначен на эту задачу");
+    expect(copy).toContain("только в пределах прав пользователя Dotta");
+    const html = render(<CommentAttributionChip agentName="Fable" userName="Dotta" />);
+    expect(html).toContain('aria-label="Опубликовано от имени пользователя Dotta"');
+    expect(html).toContain("от имени Dotta");
+    expect(html).toContain('tabindex="0"');
+  });
   it("names both the agent and the user it acted for", () => {
     const copy = commentAttributionTooltip("Fable", "Dotta");
     expect(copy).toContain("Fable posted this on behalf of Dotta");

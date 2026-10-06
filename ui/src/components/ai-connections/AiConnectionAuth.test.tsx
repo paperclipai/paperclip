@@ -1,18 +1,21 @@
 // @vitest-environment jsdom
 import React from "react";
+import { i18n } from "@/i18n";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AiConnectionAuth,
   type AiConnectionAuthProps,
 } from "./AiConnectionAuth";
 
 let root: Root | undefined;
+beforeEach(async () => { await i18n.changeLanguage("en"); });
 afterEach(() => {
   if (root) flushSync(() => root?.unmount());
   root = undefined;
   document.body.innerHTML = "";
+  void i18n.changeLanguage("en");
 });
 function mount(overrides: Partial<AiConnectionAuthProps> = {}) {
   const props: AiConnectionAuthProps = {
@@ -88,4 +91,36 @@ describe("AI connection authentication presentation", () => {
     expect(container.querySelector("input")).toBeNull();
     expect(props.onStart).not.toHaveBeenCalled();
   });
+});
+
+it("retranslates an open auth form en/ru/en without resetting secrets or invoking actions", async () => {
+  const { container, props } = mount();
+  const input = container.querySelector("input")!;
+  typeInput(input, "not-a-real-key");
+  for (const [locale, title, placeholder] of [
+    ["ru", "Подключить OpenAI", "Введите ключ API"],
+    ["en", "Connect OpenAI", "Enter API key here"],
+  ]) {
+    flushSync(() => { void i18n.changeLanguage(locale); });
+    expect(container.querySelector("section")?.getAttribute("aria-label")).toBe(title);
+    expect(container.querySelector("h3")?.textContent).toBe(title);
+    expect(container.querySelector("input")).toBe(input);
+    expect(input.placeholder).toBe(placeholder);
+    expect(input.value).toBe("not-a-real-key");
+    expect(props.onStart).not.toHaveBeenCalled();
+    expect(props.onSubmit).not.toHaveBeenCalled();
+    expect(props.onCancel).not.toHaveBeenCalled();
+  }
+  flushSync(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+  expect(props.onSubmit).toHaveBeenCalledExactlyOnceWith("not-a-real-key");
+});
+
+it("keeps provider diagnostics and authentication URLs verbatim while switching locale", () => {
+  const { container, render, props } = mount({ method: "subscription", state: { phase: "error", message: "Provider diagnostic: EXTERNAL_401" } });
+  flushSync(() => { void i18n.changeLanguage("ru"); });
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Provider diagnostic: EXTERNAL_401");
+  render({ method: "subscription", state: { phase: "waiting", authorizationUrl: "https://example.test/auth?intent=canonical", code: "CODE-123" } });
+  expect(container.querySelector('a[href="https://example.test/auth?intent=canonical"]')).not.toBeNull();
+  expect(container.textContent).toContain("CODE-123");
+  expect(props.onStart).not.toHaveBeenCalled();
 });

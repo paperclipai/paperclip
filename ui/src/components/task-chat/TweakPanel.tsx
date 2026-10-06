@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { useCopyAction } from "@/lib/use-copy-action";
@@ -44,6 +45,7 @@ function saveSession(key: string, value: unknown) {
  * one file, one dev guard, trivial to strip out later.
  */
 export function TweakPanel() {
+  useTranslation();
   const [pos, setPos] = useState<{ x: number; y: number }>(() =>
     loadSession(POS_KEY, { x: 24, y: 24 }),
   );
@@ -124,7 +126,7 @@ export function TweakPanel() {
     for (const g of MOTION_TOKEN_GROUPS) map[g] = [];
     for (const t of MOTION_TOKENS) map[t.group].push(t);
     return map;
-  }, []);
+  }, [i18n.resolvedLanguage]);
 
   return (
     <div
@@ -139,14 +141,14 @@ export function TweakPanel() {
         onPointerUp={onHeaderPointerUp}
       >
         <GripHorizontal className="h-3.5 w-3.5 text-muted-foreground" />
-        <span>Motion tweak panel</span>
+        <span>{t("localizationTaskRuntime.ui_Motion_tweak_panel_1xperj1")}</span>
         <div className="ml-auto flex items-center gap-1">
-          <button type="button" title="Reset all" onClick={resetAll} className="rounded p-0.5 hover:bg-accent">
+          <button type="button" title={t("localizationTaskRuntime.ui_Reset_all_gpq4qb")} onClick={resetAll} className="rounded p-0.5 hover:bg-accent">
             <RotateCcw className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
-            title={minimized ? "Expand" : "Minimize"}
+            title={minimized ? t("localizationTaskRuntime.ui_Expand_1sbiubl") : t("localizationTaskRuntime.ui_Minimize_1uva1ct")}
             onClick={() => setMinimized((m) => !m)}
             className="rounded p-0.5 hover:bg-accent"
           >
@@ -210,7 +212,7 @@ export function TweakPanel() {
               className="flex flex-1 items-center justify-center gap-1 rounded border border-border px-2 py-1 text-xs hover:bg-accent"
             >
               <Copy className="h-3.5 w-3.5" />
-              Copy as @theme
+              {t("localizationTaskRuntime.ui_Copy_as_theme_gpe9m1")}
             </button>
           </div>
 
@@ -229,10 +231,10 @@ export function TweakPanel() {
               {/* Focusing the box copies it silently; say so, or the click looks inert. */}
               <p className="mt-1 text-(length:--text-nano) text-muted-foreground" aria-live="polite">
                 {exportCopy.copied
-                  ? "Copied to clipboard"
+                  ? t("sep28Chat.copiedToClipboard")
                   : exportCopy.failed
-                    ? "Copy failed — select the text and copy it manually"
-                    : "Click the box to copy"}
+                    ? t("sep28Chat.copyManually")
+                    : t("sep28Chat.clickToCopy")}
               </p>
             </>
           ) : null}

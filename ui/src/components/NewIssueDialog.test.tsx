@@ -161,7 +161,7 @@ vi.mock("../lib/assignees", () => ({
     assigneeAgentId?: string;
     assigneeUserId?: string;
   }) => assigneeAgentId ? `agent:${assigneeAgentId}` : assigneeUserId ? `user:${assigneeUserId}` : "",
-  currentUserAssigneeOption: (id: string | null) => id ? [{ id: `user:${id}`, label: "Me" }] : [],
+  currentUserAssigneeDisplayOptions: (id: string | null) => id ? [{ id: `user:${id}`, label: "Me" }] : [],
   parseAssigneeValue: (value: string) => ({
     assigneeAgentId: value.startsWith("agent:") ? value.slice("agent:".length) : null,
     assigneeUserId: value.startsWith("user:") ? value.slice("user:".length) : null,

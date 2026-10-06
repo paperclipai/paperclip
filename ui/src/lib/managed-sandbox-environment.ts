@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { Environment } from "@paperclipai/shared";
 
 /**
@@ -24,7 +25,7 @@ export function environmentDisplayLabel(
   environment: Pick<Environment, "name" | "driver" | "metadata">,
 ): string {
   if (isPlatformManagedEnvironment(environment)) return environment.name;
-  return `${environment.name} · ${environment.driver}`;
+  return `${environment.name} · ${t(`localizationOperations.driver_${environment.driver}`, { defaultValue: environment.driver })}`;
 }
 
 /**

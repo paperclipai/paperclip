@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
+import { act as reactAct } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InviteLandingPage } from "./InviteLanding";
+import { i18n } from "../i18n";
 import { queryKeys } from "../lib/queryKeys";
 
 const getInviteMock = vi.hoisted(() => vi.fn());
@@ -123,10 +125,141 @@ describe("InviteLandingPage", () => {
     setSelectedCompanyIdMock.mockReset();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  describe("organization-name grammar", () => {
+    const scenarios = [
+      { name: "account creation", keys: ["header.joinOrganization", "auth.createDescription"] },
+      { name: "agent request", keys: ["header.joinOrganization", "agentForm.description"] },
+      { name: "existing pending request", keys: ["pendingApproval.title"] },
+      { name: "new pending request", keys: ["pendingApproval.title"] },
+      { name: "granting access", keys: ["header.joinOrganization", "acceptance.grantingAccess"] },
+      { name: "existing member", keys: ["header.joinOrganization", "acceptance.alreadyBelongs"] },
+      { name: "manual acceptance", keys: ["header.joinOrganization", "acceptance.organizationDescription"] },
+    ];
+    const cases = ["en", "ru"].flatMap((locale) =>
+      [null, "АО «Вектор»"].flatMap((companyName) =>
+        scenarios.map((scenario) => ({ locale, companyName, ...scenario })),
+      ),
+    );
+
+    it.each(cases)("renders $name in $locale with companyName=$companyName", async ({ locale, companyName, name, keys }) => {
+      await i18n.changeLanguage(locale);
+      const signedIn = ["new pending request", "granting access", "existing member"].includes(name);
+      const agentInvite = ["agent request", "existing pending request"].includes(name);
+      getInviteMock.mockResolvedValue({
+        id: "invite-1",
+        companyId: "company-1",
+        companyName,
+        companyLogoUrl: null,
+        invitedByUserName: "Анна Петрова",
+        inviteType: "company_join",
+        allowedJoinTypes: agentInvite ? "agent" : "both",
+        humanRole: agentInvite ? null : "operator",
+        expiresAt: "2027-03-07T00:10:00.000Z",
+        inviteMessage: null,
+        ...(name === "existing pending request" ? {
+          joinRequestStatus: "pending_approval",
+          joinRequestType: "agent",
+        } : {}),
+      });
+      healthGetMock.mockResolvedValue({
+        status: "ok",
+        deploymentMode: name === "manual acceptance" ? "local_trusted" : "authenticated",
+      });
+      getSessionMock.mockResolvedValue(signedIn ? {
+        session: { id: "session-1", userId: "user-1" },
+        user: { id: "user-1", name: "Анна Петрова", email: "anna@example.test", image: null },
+      } : null);
+      listCompaniesMock.mockResolvedValue(name === "existing member"
+        ? [{ id: "company-1", name: "Registry name" }]
+        : []);
+      if (name === "granting access") {
+        acceptInviteMock.mockImplementation(() => new Promise(() => {}));
+      } else {
+        acceptInviteMock.mockResolvedValue({
+          id: "join-1",
+          companyId: "company-1",
+          requestType: "human",
+          status: "pending_approval",
+        });
+      }
+
+      const root = createRoot(container);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      try {
+        await reactAct(async () => {
+          root.render(
+            <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+              <QueryClientProvider client={queryClient}>
+                <Routes>
+                  <Route path="/invite/:token" element={<InviteLandingPage />} />
+                </Routes>
+              </QueryClientProvider>
+            </MemoryRouter>,
+          );
+        });
+        for (let step = 0; step < 4; step += 1) await reactAct(flushReact);
+
+        for (const key of keys) {
+          const messageKey = `pages.inviteLanding.${key}${companyName ? "" : "Unnamed"}`;
+          expect(i18n.exists(messageKey)).toBe(true);
+          expect(container.textContent).toContain(i18n.t(messageKey, { organization: companyName }));
+        }
+        expect(container.textContent).not.toMatch(/(?:к организации|в организацию|с организацией) эта организация/);
+        if (companyName) expect(container.textContent).toContain(companyName);
+        expect(container.textContent).toContain("Анна Петрова");
+        if (["new pending request", "granting access"].includes(name)) {
+          expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+        } else {
+          expect(acceptInviteMock).not.toHaveBeenCalled();
+        }
+      } finally {
+        await reactAct(async () => { root.unmount(); });
+        queryClient.clear();
+      }
+    });
+
+    it.each(["", " \t "])("treats a blank name (%j) as an unnamed organization", async (companyName) => {
+      await i18n.changeLanguage("ru");
+      getInviteMock.mockResolvedValue({
+        id: "invite-1",
+        companyId: "company-1",
+        companyName,
+        companyLogoUrl: null,
+        inviteType: "company_join",
+        allowedJoinTypes: "both",
+        humanRole: "operator",
+        expiresAt: "2027-03-07T00:10:00.000Z",
+      });
+      const root = createRoot(container);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      try {
+        await reactAct(async () => {
+          root.render(
+            <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+              <QueryClientProvider client={queryClient}>
+                <Routes>
+                  <Route path="/invite/:token" element={<InviteLandingPage />} />
+                </Routes>
+              </QueryClientProvider>
+            </MemoryRouter>,
+          );
+        });
+        await reactAct(flushReact);
+        await reactAct(flushReact);
+        expect(container.querySelector("h1")?.textContent).toBe("Присоединиться к этой организации Paperclip");
+        expect(container.textContent).toContain("принять приглашение в эту организацию Paperclip.");
+      } finally {
+        await reactAct(async () => { root.unmount(); });
+        queryClient.clear();
+      }
+    });
   });
 
   it("keeps agent-invite onboarding on legacy adapters", async () => {

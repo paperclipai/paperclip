@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 /**
  * @fileoverview Plugin UI slot system — dynamic loading, error isolation,
  * and rendering of plugin-contributed UI extensions.
@@ -154,7 +155,7 @@ function requiresEntityType(slotType: PluginUiSlotType): boolean {
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
-  return "Unknown error";
+  return t("localizationPlugins.unknownError");
 }
 
 /**
@@ -735,12 +736,17 @@ class PluginSlotErrorBoundary extends Component<PluginSlotErrorBoundaryProps, Pl
       if (this.props.fallback !== undefined) return this.props.fallback;
       return (
         <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", this.props.className)}>
-          {this.props.slot.pluginDisplayName}: failed to render
+          <PluginSlotRenderFailure pluginName={this.props.slot.pluginDisplayName} />
         </div>
       );
     }
     return this.props.children;
   }
+}
+
+function PluginSlotRenderFailure({ pluginName }: { pluginName: string }) {
+  const { t } = useTranslation();
+  return <>{t("localizationPlugins.renderFailed", { plugin: pluginName })}</>;
 }
 
 function PluginWebComponentMount({
@@ -916,6 +922,7 @@ export function PluginSlotOutlet({
   errorClassName,
   missingBehavior = "hidden",
 }: PluginSlotOutletProps) {
+  const { t } = useTranslation();
   const { slots, errorMessage } = usePluginSlots({
     slotTypes,
     entityType,
@@ -925,7 +932,7 @@ export function PluginSlotOutlet({
   if (errorMessage) {
     return (
       <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
-        Plugin extensions unavailable: {errorMessage}
+        {t("localizationPlugins.extensionsUnavailable", { message: errorMessage })}
       </div>
     );
   }

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { type ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -11,6 +11,8 @@ import type {
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectClientDialog } from "./ConnectClientDialog";
+import { i18n } from "@/i18n";
+import { toolsApi } from "@/api/tools";
 
 const copyTextMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
@@ -142,7 +144,8 @@ describe("ConnectClientDialog", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     vi.clearAllMocks();
     copyTextMock.mockResolvedValue(undefined);
     container = document.createElement("div");
@@ -150,9 +153,10 @@ describe("ConnectClientDialog", () => {
     root = createRoot(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => root.unmount());
     container.remove();
+    await i18n.changeLanguage("en");
   });
 
   it("copies a complete client snippet with the selected token and explains the gateway boundary", async () => {
@@ -186,5 +190,48 @@ describe("ConnectClientDialog", () => {
       `${window.location.origin}/api/tool-gateway/gateways/public-1/mcp`,
     ));
     expect(container.textContent).not.toContain("pcgw_FULL_SECRET");
+  });
+
+  it("translates the Authorization heading while preserving selected token IDs and copied HTTP syntax", async () => {
+    const persisted = storedToken();
+    const second = { ...persisted, id: "raw-token-2", name: "Raw second client", tokenPrefix: "pcgw_second" };
+    const model = { ...gateway(persisted), tokens: [persisted, second] };
+    const createdTokens = [
+      { ...persisted, token: "pcgw_FAKE_FIRST_TEST_TOKEN" },
+      { ...second, token: "pcgw_FAKE_SECOND_TEST_TOKEN" },
+    ];
+    const original = JSON.stringify({ model, createdTokens });
+    const onOpenChange = vi.fn();
+    const onTokenCreated = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ConnectClientDialog gateway={model} open onOpenChange={onOpenChange} createdTokens={createdTokens} onTokenCreated={onTokenCreated} />
+    </QueryClientProvider>));
+    const select = container.querySelector("select")!;
+    await act(async () => {
+      select.value = "raw-token-2";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const heading = [...container.querySelectorAll("span")].find((span) => span.textContent === "Authorization")!;
+    expect(heading).toBeDefined();
+    for (const [locale, title] of [["en", "Authorization"], ["ru", "Авторизация"], ["en", "Authorization"]] as const) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(heading.isConnected).toBe(true);
+      expect(heading.textContent).toBe(title);
+      expect(container.querySelector("select")).toBe(select);
+      expect(select.value).toBe("raw-token-2");
+      expect(select.selectedOptions[0].textContent).toBe("Raw second client");
+      expect(container.textContent).toContain('"Authorization": "Bearer ');
+      expect(container.textContent).not.toContain("pcgw_FAKE_SECOND_TEST_TOKEN");
+      expect(JSON.stringify({ model, createdTokens })).toBe(original);
+      expect(onOpenChange).not.toHaveBeenCalled();
+      expect(onTokenCreated).not.toHaveBeenCalled();
+      expect(toolsApi.createGatewayToken).not.toHaveBeenCalled();
+      expect(copyTextMock).not.toHaveBeenCalled();
+    }
+    const copyHeader = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Copy header")!;
+    await act(async () => copyHeader.click());
+    expect(copyTextMock).toHaveBeenCalledExactlyOnceWith("Authorization: Bearer pcgw_FAKE_SECOND_TEST_TOKEN");
+    client.clear();
   });
 });

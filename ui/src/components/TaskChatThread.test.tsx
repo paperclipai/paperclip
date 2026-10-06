@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
+import { taskThreadMarkerDetailDisplay, taskThreadErrorDisplay } from "./task-chat/task-chat-display";
 import type { ComponentProps, ReactElement } from "react";
 import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
 import { flushSync } from "react-dom";
@@ -134,13 +136,14 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   flushSync(() => root?.unmount());
   queryClient.clear();
   root = null;
   container.remove();
   localStorage.clear();
   vi.restoreAllMocks();
+  await act(async () => { await i18n.changeLanguage("en"); });
 });
 
 function render(ui: ReactElement) {
@@ -1000,6 +1003,110 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(marker?.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
   });
 
+  it.each([false, true])("localizes restore markers without changing saved evidence or response content (hasResponse: %s)", async (hasResponse) => {
+    planState.data = planDocument();
+    const onRetryFailedRun = vi.fn();
+    const rawResponse = "Workspace restore failed";
+    const comments = hasResponse ? [{
+      id: "restore-response", companyId: "company-1", issueId: "issue-1", authorType: "agent" as const,
+      authorAgentId: "agent-1", authorUserId: null, body: rawResponse, presentation: null, metadata: null,
+      runId: "restore-localized", createdAt: new Date("2026-09-28T10:00:01Z"), updatedAt: new Date("2026-09-28T10:00:01Z"),
+    }] : [];
+    const linkedRuns = [{
+      runId: "restore-localized", runtimeMode: "legacy" as const, status: "failed", errorCode: "workspace_restore_failed",
+      agentId: "agent-1", agentName: "Runner", adapterType: "grok_local",
+      createdAt: "2026-09-28T10:00:00Z", startedAt: "2026-09-28T10:00:00Z", finishedAt: "2026-09-28T10:00:02Z",
+      resultJson: { workspaceRestoreFailure: "restore_unsafe_archive", workspaceRestorePath: ".claude/skills/paperclip",
+        finalResponseRecorded: false, savedPlanRevisionId: "revision-3", rawDiagnostic: "RAW_error/code" },
+    }];
+    const original = JSON.stringify({ linkedRuns, comments });
+    render(<TaskChatThread issueId="issue-1" comments={comments} onAdd={async () => {}} issueStatus="blocked" linkedRuns={linkedRuns} onRetryFailedRun={onRetryFailedRun} />);
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]')!;
+    const toggle = marker.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+    flushSync(() => toggle.click());
+    const details = marker.querySelector('[data-testid="task-chat-collapsible-marker-details"]');
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(marker.textContent).toContain(language === "ru" ? "Не удалось восстановить рабочую область" : "Workspace restore failed");
+      expect(details?.textContent).toContain(language === "ru" ? "Сохранённый план доступен." : "The saved plan is available.");
+      expect(details?.textContent).toContain(language === "ru" ? "Затронутый путь: .claude/skills/paperclip." : "Affected path: .claude/skills/paperclip.");
+      expect(details?.textContent?.includes(language === "ru" ? "Итоговый ответ не записан." : "No final response was recorded.")).toBe(!hasResponse);
+      if (hasResponse) expect(container.textContent).toContain(rawResponse);
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      expect(marker.querySelector('[data-testid="task-chat-collapsible-marker-details"]')).toBe(details);
+      expect(marker.querySelector('a[href="/agents/agent-1/runs/restore-localized"]')).not.toBeNull();
+      expect(marker.querySelector('a[href="#document-plan"]')).not.toBeNull();
+      expect(marker.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+      expect(JSON.stringify({ linkedRuns, comments })).toBe(original);
+      expect(onRetryFailedRun).not.toHaveBeenCalled();
+    }
+  });
+
+  it("localizes new legacy failure details without changing raw codes, responses or retry targets", async () => {
+    const onRetryFailedRun = vi.fn();
+    const response = "The run was cancelled.";
+    const entries = [{ kind: "assistant", ts: "2026-09-28T10:00:01Z", text: response }];
+    transcriptState.transcriptByRun.set("legacy-localized-failure", entries);
+    const comments = [{
+      id: "legacy-response", companyId: "company-1", issueId: "issue-1", authorType: "agent" as const,
+      authorAgentId: "agent-1", authorUserId: null, body: response, presentation: null, metadata: null,
+      runId: "legacy-localized-failure", createdAt: new Date("2026-09-28T10:00:01Z"), updatedAt: new Date("2026-09-28T10:00:01Z"),
+    }];
+    const linkedRuns = [{
+      runId: "legacy-localized-failure", runtimeMode: "legacy" as const, status: "failed", errorCode: "RAW_error/code",
+      agentId: "agent-1", agentName: "Raw agent name", adapterType: "claude_local",
+      createdAt: "2026-09-28T10:00:00Z", startedAt: "2026-09-28T10:00:00Z", finishedAt: "2026-09-28T10:00:02Z",
+    }];
+    const original = JSON.stringify({ linkedRuns, entries, comments });
+    render(<TaskChatThread comments={comments} onAdd={async () => {}} linkedRuns={linkedRuns} onRetryFailedRun={onRetryFailedRun} />);
+    const retry = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]')!;
+    expect(retry).not.toBeNull();
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(container.textContent).toContain(language === "ru"
+        ? "Запуск завершился с ошибкой (RAW_error/code). Можно повторить отправку сообщения."
+        : "The run failed (RAW_error/code). You can retry this message now.");
+      expect(container.textContent).toContain(response);
+      expect(container.textContent).not.toMatch(/before returning an answer|до получения ответа/);
+      expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBe(retry);
+      expect(JSON.stringify({ linkedRuns, entries, comments })).toBe(original);
+      expect(onRetryFailedRun).not.toHaveBeenCalled();
+    }
+    await act(async () => { retry.click(); });
+    expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("legacy-localized-failure");
+  });
+
+  it.each(["cancelled", "interrupted", "timed_out", "failed"] as const)("localizes native %s without asserting that no answer was returned", async (status) => {
+    const entries = [{ kind: "assistant", ts: "2026-09-28T10:00:01Z", text: "Original progress: The run was cancelled.", channel: "progress" }];
+    nativeTranscriptState.transcriptByRun.set("native-localized-stop", entries);
+    const linkedRuns = [{
+      runId: "native-localized-stop", runtimeMode: "native" as const, status, errorCode: "RAW_error/code",
+      agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+      createdAt: "2026-09-28T10:00:00Z", startedAt: "2026-09-28T10:00:00Z", finishedAt: "2026-09-28T10:00:02Z",
+    }];
+    const original = JSON.stringify({ linkedRuns, entries });
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={linkedRuns} />);
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]')!;
+    const toggle = marker.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+    flushSync(() => toggle.click());
+    const details = marker.querySelector('[data-testid="task-chat-collapsible-marker-details"]');
+    const expected = {
+      cancelled: ["The run was cancelled.", "Запуск отменён."],
+      interrupted: ["The run was interrupted.", "Запуск прерван."],
+      timed_out: ["The runner timed out (RAW_error/code).", "Истекло время ожидания среды запуска (RAW_error/code)."],
+      failed: ["The runner stopped (RAW_error/code).", "Среда запуска остановилась (RAW_error/code)."],
+    };
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(details?.textContent).toContain(expected[status][language === "ru" ? 1 : 0]);
+      expect(details?.textContent).not.toMatch(/before returning|after returning|до получения|после получения/);
+      expect(container.textContent).toContain(entries[0].text);
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      expect(marker.querySelector('[data-testid="task-chat-collapsible-marker-details"]')).toBe(details);
+      expect(JSON.stringify({ linkedRuns, entries })).toBe(original);
+    }
+  });
+
   it("uses neutral wording for an unclassified historical legacy failure", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
       runId: "old-run", runtimeMode: "legacy", status: "failed", errorCode: "adapter_failed",
@@ -1805,19 +1912,31 @@ describe("TaskChatThread runtime transcript selection", () => {
     },
   );
 
-  it("shows an actionable approval-required reason for a stopped native run", () => {
-    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+  it("keeps native approval remediation expanded across languages without changing the run", async () => {
+    const linkedRuns: NonNullable<ComponentProps<typeof TaskChatThread>["linkedRuns"]> = [{
       runId: "approval-required", runtimeMode: "native", status: "failed",
       errorCode: "native_provider_approval_required",
       agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
       startedAt: "2026-09-14T15:00:00.000Z", createdAt: "2026-09-14T15:00:00.000Z",
       finishedAt: "2026-09-14T15:00:02.000Z",
-    }]} />);
+    }];
+    const original = JSON.stringify(linkedRuns);
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={linkedRuns} />);
     const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
     expect(marker?.textContent).toContain("Approval required");
     flushSync(() => marker!.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!.click());
     expect(container.textContent).toContain("Review the operation and update the agent's permission setting before retrying");
     expect(container.textContent).not.toContain("The runner stopped");
+    const detail = container.querySelector('[data-testid="task-chat-collapsible-marker-details"]');
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(marker?.textContent).toContain(language === "ru" ? "Требуется разрешение" : "Approval required");
+      expect(container.querySelector('[data-testid="task-chat-collapsible-marker-details"]')).toBe(detail);
+      expect(detail?.textContent).toContain(language === "ru"
+        ? "измените настройку разрешений агента перед повторной попыткой"
+        : "update the agent's permission setting before retrying");
+      expect(JSON.stringify(linkedRuns)).toBe(original);
+    }
   });
 
   it.each([
@@ -4194,16 +4313,32 @@ describe("TaskChatThread live transcript", () => {
     expect(tail2!.textContent).toContain("Waiting for transcript...");
   });
 
-  it("does not send a workspace bootstrap failure to connection settings", () => {
+  it("localizes workspace failures while preserving their retry target and source run", async () => {
     const run = { id: "workspace-prep", status: "running" as const, invocationSource: "issue", triggerDetail: null,
       startedAt: "2026-09-15T10:00:00Z", finishedAt: null, createdAt: "2026-09-15T10:00:00Z",
       agentId: "agent-1", agentName: "Worker", adapterType: "process" };
-    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} />);
-    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" linkedRuns={[
+    const retry = vi.fn(async () => {});
+    const linkedRuns = [
       { ...run, runId: run.id, status: "failed", errorCode: "workspace_git_scan_timeout", finishedAt: "2026-09-15T10:00:10Z" },
-    ]} />);
+    ];
+    const original = JSON.stringify(linkedRuns);
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} />);
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" linkedRuns={linkedRuns} onRetryFailedRun={retry} />);
     expect(container.textContent).toContain("Workspace setup failed before the agent started.");
     expect(container.textContent).not.toContain("Review the task’s connection");
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+    expect(button).not.toBeNull();
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(container.textContent).toContain(language === "ru"
+        ? "Не удалось подготовить рабочую область до запуска агента."
+        : "Workspace setup failed before the agent started.");
+      expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBe(button);
+      expect(JSON.stringify(linkedRuns)).toBe(original);
+      expect(retry).not.toHaveBeenCalled();
+    }
+    await act(async () => { button!.click(); });
+    expect(retry).toHaveBeenCalledExactlyOnceWith("workspace-prep");
   });
 
   it("renders in-flight output through TaskChatLiveTail, dropping the debug plumbing (PAP-463 C1)", () => {
@@ -4573,6 +4708,200 @@ describe("TaskChatThread live transcript", () => {
     // The pill has settled to its "Worked" state rather than flipping back to a
     // spinner while it waits for the reply comment.
     expect(container.textContent).toContain("Worked");
+  });
+});
+
+describe("TaskChatThread live localization invariants", () => {
+  async function locale(language: "ru" | "en") { await act(async () => { await i18n.changeLanguage(language); }); }
+
+  it.each([
+    [1, "called 1 tool", "вызван 1 инструмент"],
+    [2, "called 2 tools", "вызваны 2 инструмента"],
+    [5, "called 5 tools", "вызвано 5 инструментов"],
+    [21, "called 21 tools", "вызван 21 инструмент"],
+  ] as const)("refreshes %i live tool counts across en → ru → en without new entries or resetting the draft", async (count, englishTools, russianTools) => {
+    await locale("en");
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected localization fetch"));
+    const add = vi.fn();
+    const draftKey = "thread-live-count-draft";
+    localStorage.setItem(draftKey, "Keep original **live draft**");
+    const entries = [
+      { kind: "tool_call", ts: "2026-08-25T18:00:01Z", name: "bash", toolUseId: "command-raw-1", input: { command: "ls" } },
+      { kind: "tool_call", ts: "2026-08-25T18:00:02Z", name: "bash", toolUseId: "command-raw-2", input: { command: "pwd" } },
+      ...Array.from({ length: count }, (_, index) => ({
+        kind: "tool_call", ts: "2026-08-25T18:00:03Z", name: "read_file", toolUseId: `tool-raw-${index}`, input: { path: `src/raw-${index}.ts` },
+      })),
+    ];
+    const originalEntries = structuredClone(entries);
+    transcriptState.transcriptByRun.set("run-live-counts", entries);
+    render(<TaskChatThread comments={[]} onAdd={add} issueStatus="in_progress" draftKey={draftKey}
+      activeRun={{ id: "run-live-counts", runtimeMode: "legacy", status: "running", invocationSource: "issue", triggerDetail: null,
+        startedAt: "2026-08-25T18:00:00Z", finishedAt: null, createdAt: "2026-08-25T18:00:00Z", agentId: "agent-raw", agentName: "Original agent", adapterType: "codex_local" }}
+    />);
+    const pill = container.querySelector('[data-testid="task-chat-live-run-pill"]')!;
+    const tail = container.querySelector('[data-testid="task-chat-live-transcript"]')!;
+    const editor = container.querySelector('[data-testid="mock-editor"]')!;
+    const legacyRuns = transcriptHookRuns.legacy.at(-1);
+    const nativeRuns = transcriptHookRuns.native.at(-1);
+    expect(pill).toBeTruthy();
+    expect(tail).toBeTruthy();
+    expect(editor).toBeTruthy();
+    for (const language of ["en", "ru", "en"] as const) {
+      await locale(language);
+      const expected = language === "ru" ? `выполнены 2 команды, ${russianTools}` : `ran 2 commands, ${englishTools}`;
+      expect(pill.textContent).toContain(expected);
+      expect(pill.textContent).not.toContain(language === "ru" ? "called " : "вызван");
+      expect(container.querySelector('[data-testid="task-chat-live-run-pill"]')).toBe(pill);
+      expect(container.querySelector('[data-testid="task-chat-live-transcript"]')).toBe(tail);
+      expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+      expect(editor.textContent).toBe("Keep original **live draft**");
+      expect(localStorage.getItem(draftKey)).toBe("Keep original **live draft**");
+      expect(transcriptState.transcriptByRun.get("run-live-counts")).toBe(entries);
+      expect(entries).toEqual(originalEntries);
+      // The native-hook mock recreates its maps on render, so upstream's
+      // log-history filter may create a new outer array. Subscription identity
+      // is the unchanged run payload (useLiveRunTranscripts derives runsKey).
+      expect(transcriptHookRuns.legacy.at(-1)).toStrictEqual(legacyRuns);
+      expect(transcriptHookRuns.legacy.at(-1)?.length).toBe(legacyRuns?.length);
+      for (const [index, run] of (transcriptHookRuns.legacy.at(-1) ?? []).entries()) {
+        expect(run).toBe(legacyRuns?.[index]);
+      }
+      expect(transcriptHookRuns.native.at(-1)).toBe(nativeRuns);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(add).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps an open failed-run disclosure, draft and retry eligibility across ru → en → ru", async () => {
+    await locale("ru");
+    localStorage.setItem("thread-original-draft", "Keep original **draft**");
+    const transcript = [{ kind: "assistant", ts: "2026-08-25T18:00:01Z", text: "Original progress", channel: "progress" }];
+    nativeTranscriptState.transcriptByRun.set("run-raw", transcript);
+    const retry = vi.fn();
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked" draftKey="thread-original-draft" onRetryFailedRun={retry}
+      linkedRuns={[{ runId: "run-raw", runtimeMode: "native", status: "failed", errorCode: "raw_error_code", agentId: "agent-raw", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00Z", startedAt: "2026-08-25T18:00:00Z", finishedAt: "2026-08-25T18:00:02Z" }]}
+    />);
+    const toggle = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-collapsible-marker"] button[aria-expanded]')!;
+    await act(async () => { toggle.click(); });
+    const details = container.querySelector('[data-testid="task-chat-collapsible-marker-details"]')!;
+    const editor = container.querySelector('[data-testid="mock-editor"]')!;
+    expect(details.textContent).toContain("Среда запуска остановилась (raw_error_code).");
+    expect(details.textContent).not.toContain("до получения ответа");
+    await locale("en");
+    expect(details.textContent).toContain("The runner stopped (raw_error_code).");
+    expect(details.textContent).not.toContain("before returning an answer");
+    await locale("ru");
+    expect(container.querySelector('[data-testid="task-chat-collapsible-marker-details"]')).toBe(details);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+    expect(editor.textContent).toBe("Keep original **draft**");
+    expect(localStorage.getItem("thread-original-draft")).toBe("Keep original **draft**");
+    const retryButton = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]')!;
+    await act(async () => { retryButton.click(); });
+    expect(retry).toHaveBeenCalledWith("run-raw");
+    expect(nativeTranscriptState.transcriptByRun.get("run-raw")).toBe(transcript);
+  });
+
+  it("preserves pending form selection, user titles and raw answer IDs while translating built-in labels", async () => {
+    await locale("ru");
+    const originalInteraction = questionInteraction("question-raw", "Original question?", "2026-08-25T18:00:00Z");
+    if (originalInteraction.kind !== "ask_user_questions") throw new Error("Unexpected fixture kind");
+    const interaction = { ...originalInteraction, title: null, payload: { ...originalInteraction.payload, questions: originalInteraction.payload.questions.map((question) => ({ ...question, selectionMode: "multi" as const })) } };
+    const answer = vi.fn();
+    render(<TaskChatThread comments={[]} interactions={[interaction]} onAdd={async () => {}} onSubmitInteractionAnswers={answer} issueId="issue-raw" />);
+    const takeover = container.querySelector('[data-testid="task-chat-composer-takeover"]')!;
+    expect(takeover.getAttribute("aria-label")).toBe("Вопросы");
+    const option = [...takeover.querySelectorAll<HTMLButtonElement>('button[role="checkbox"]')].find((b) => b.textContent?.includes("Yes"))!;
+    await act(async () => { option.click(); });
+    expect(option.getAttribute("aria-checked")).toBe("true");
+    await locale("en");
+    expect(takeover.getAttribute("aria-label")).toBe("Questions");
+    await locale("ru");
+    expect(container.querySelector('[data-testid="task-chat-composer-takeover"]')).toBe(takeover);
+    expect(takeover.contains(option)).toBe(true);
+    expect(option.getAttribute("aria-checked")).toBe("true");
+    const skip = [...takeover.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Пропустить");
+    // Required questions have no skip action in the updated paginated form.
+    expect(skip).toBeUndefined();
+    expect(takeover.contains(option)).toBe(true);
+    expect(option.getAttribute("aria-checked")).toBe("true");
+    const submit = [...takeover.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.includes("Отправить ответы"));
+    expect(submit).toBeTruthy();
+    await act(async () => { submit!.click(); });
+    expect(answer).toHaveBeenCalledWith(interaction, [{ questionId: "question-raw-question", optionIds: ["yes"] }]);
+    expect(interaction.kind === "ask_user_questions" && interaction.payload.questions?.[0]?.options?.[0]?.id).toBe("yes");
+  });
+
+  it("localizes resource revisions and byte units without changing filenames, MIME types or links", async () => {
+    await locale("ru");
+    const document = { ...planDocument(), key: "custom-document", title: "Original document title", latestRevisionNumber: 21 };
+    const attachment = { id: "attachment-raw", originalFilename: null, contentType: "text/plain", byteSize: 1536, contentPath: "/api/raw/content", openPath: "/api/raw/open", createdByAgentId: "agent-raw", createdByUserId: null, issueCommentId: null, createdAt: new Date("2026-08-25T18:00:00Z") };
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} documents={[document]} attachments={[attachment as never]} />);
+    const doc = container.querySelector('[data-testid="task-chat-resource-document"]')!;
+    const file = container.querySelector('[data-testid="task-chat-resource-attachment"]')!;
+    const href = file.closest("a")!.getAttribute("href");
+    expect(doc.textContent).toContain("Документ · версия 21");
+    expect(file.textContent).toContain("text/plain · 1,5 КБ");
+    await locale("en");
+    expect(doc.textContent).toContain("Document · rev 21");
+    expect(file.textContent).toContain("text/plain · 1.5 KB");
+    await locale("ru");
+    expect(container.querySelector('[data-testid="task-chat-resource-document"]')).toBe(doc);
+    expect(container.querySelector('[data-testid="task-chat-resource-attachment"]')).toBe(file);
+    expect(file.closest("a")!.getAttribute("href")).toBe(href);
+    expect(doc.textContent).toContain("Original document title");
+    expect(document.key).toBe("custom-document");
+  });
+
+  it("preserves the exact queued run callback and pending disabled state", async () => {
+    await locale("ru");
+    const interrupt = vi.fn();
+    const comment = { ...createLongThreadComments()[0], queueState: "queued" as const, queueTargetRunId: "run-raw", body: "Original queued message" };
+    const props = { comments: [comment], onAdd: async () => {}, onInterruptQueued: interrupt };
+    render(<TaskChatThread {...props} />);
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Прервать")!;
+    await locale("en");
+    expect(button.textContent).toBe("Interrupt");
+    await locale("ru");
+    expect(container.contains(button)).toBe(true);
+    await act(async () => { button.click(); });
+    expect(interrupt).toHaveBeenCalledWith("run-raw");
+    render(<TaskChatThread {...props} interruptingQueuedRunId="run-raw" />);
+    const pending = [...container.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Прерываем…")!;
+    expect(pending.disabled).toBe(true);
+    await locale("en"); await locale("ru");
+    expect(pending.disabled).toBe(true);
+    expect(container.contains(pending)).toBe(true);
+    expect(comment.body).toBe("Original queued message");
+  });
+
+  it("covers complete before/after and retry messages with unknown raw fallbacks", async () => {
+    for (const language of ["ru", "en", "ru"] as const) {
+      await locale(language);
+      for (const action of ["cancelled", "interrupted"]) {
+        for (const boundary of ["before returning an answer", "after returning a final response"]) {
+          const raw = "The run was " + action + " " + boundary + ".";
+          const display = taskThreadMarkerDetailDisplay(raw);
+          expect(display).not.toContain("localizationTaskThread");
+          expect(language === "en" ? display === raw : display !== raw).toBe(true);
+        }
+      }
+      for (const action of ["timed out", "stopped"]) {
+        for (const boundary of ["before returning an answer", "after returning a final response"]) {
+          const raw = "The runner " + action + " " + boundary + " (raw_error_code).";
+          const display = taskThreadMarkerDetailDisplay(raw);
+          expect(display).toContain("raw_error_code");
+          expect(language === "en" ? display === raw : display !== raw).toBe(true);
+        }
+      }
+      expect(taskThreadMarkerDetailDisplay("Original provider diagnostic")).toBe("Original provider diagnostic");
+      expect(taskThreadErrorDisplay("Original network error")).toBe("Original network error");
+      expect(taskThreadErrorDisplay("Skipping this interaction is unavailable.")).toBe(language === "en" ? "Skipping this interaction is unavailable." : "Пропустить это взаимодействие нельзя.");
+      for (const count of [1, 2, 5, 21]) {
+        expect(i18n.t("localizationTaskThread.pendingInputs", { count })).not.toContain("localizationTaskThread");
+      }
+    }
   });
 });
 

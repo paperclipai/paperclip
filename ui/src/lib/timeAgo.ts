@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+
 const MINUTE = 60;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -9,23 +11,23 @@ export function timeAgo(date: Date | string): string {
   const then = new Date(date).getTime();
   const seconds = Math.round((now - then) / 1000);
 
-  if (seconds < MINUTE) return "just now";
+  if (seconds < MINUTE) return t("common.formatting.justNow");
   if (seconds < HOUR) {
     const m = Math.floor(seconds / MINUTE);
-    return `${m}m ago`;
+    return t("common.formatting.minutesAgo", { count: m });
   }
   if (seconds < DAY) {
     const h = Math.floor(seconds / HOUR);
-    return `${h}h ago`;
+    return t("common.formatting.hoursAgo", { count: h });
   }
   if (seconds < WEEK) {
     const d = Math.floor(seconds / DAY);
-    return `${d}d ago`;
+    return t("common.formatting.daysAgo", { count: d });
   }
   if (seconds < MONTH) {
     const w = Math.floor(seconds / WEEK);
-    return `${w}w ago`;
+    return t("common.formatting.weeksAgo", { count: w });
   }
   const mo = Math.floor(seconds / MONTH);
-  return `${mo}mo ago`;
+  return t("common.formatting.monthsAgo", { count: mo });
 }

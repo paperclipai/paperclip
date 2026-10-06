@@ -12,6 +12,8 @@ import {
   DocumentAnnotationsCountChip,
   IssueDocumentAnnotations,
 } from "./IssueDocumentAnnotations";
+import { act as reactAct } from "react";
+import { setLocale } from "@/i18n";
 
 const mockAnnotationsApi = vi.hoisted(() => {
   const api = {
@@ -335,6 +337,7 @@ describe("IssueDocumentAnnotations", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    setLocale("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.clearAllMocks();
@@ -343,6 +346,7 @@ describe("IssueDocumentAnnotations", () => {
   afterEach(async () => {
     await unmountActiveRoots();
     container.remove();
+    setLocale("en");
   });
 
   it("renders the open count chip and opens the panel on click", async () => {
@@ -379,6 +383,31 @@ describe("IssueDocumentAnnotations", () => {
     expect(anchor?.className).not.toContain("fixed");
     expect(anchor?.className).toContain("lg:block");
     expect(anchor?.querySelector(".sticky")).not.toBeNull();
+  });
+
+  it.each([
+    [1, "1 комментарий", "1 незакрытый комментарий"],
+    [2, "2 комментария", "2 незакрытых комментария"],
+    [5, "5 комментариев", "5 незакрытых комментариев"],
+    [21, "21 комментарий", "21 незакрытый комментарий"],
+    [22, "22 комментария", "22 незакрытых комментария"],
+    [25, "25 комментариев", "25 незакрытых комментариев"],
+  ])("localizes a document count (%i) without changing the target or selection", async (count, visible, accessible) => {
+    mockAnnotationsApi.list.mockResolvedValue(Array.from({ length: Number(count) }, (_, index) => makeThread({ id: `thread-${index}` })));
+    const root = createRoot(container);
+    const onToggle = vi.fn();
+    await reactAct(async () => root.render(<QueryClientProvider client={makeQueryClient()}><DocumentAnnotationsCountChip issueId="issue-1" docKey="plan" panelOpen={false} onToggle={onToggle} /></QueryClientProvider>));
+    await waitFor(() => expect(container.textContent).toContain(String(count)));
+    await reactAct(async () => setLocale("ru"));
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="document-annotation-count-plan"]')!;
+    expect(chip.textContent).toBe(visible);
+    expect(chip.getAttribute("aria-label")).toBe(`Открыть ${accessible} к документу plan`);
+    expect(chip.getAttribute("aria-expanded")).toBe("false");
+    expect(mockAnnotationsApi.list).toHaveBeenCalledWith("issue-1", "plan", { status: "all", includeComments: true });
+    expect(mockAnnotationsApi.create).not.toHaveBeenCalled();
+    expect(onToggle).not.toHaveBeenCalled();
+    await reactAct(async () => setLocale("en"));
+    expect(chip.textContent).toBe(`${count} ${count === 1 ? "comment" : "comments"}`);
   });
 
   it("stacks an inline panel below the document instead of floating over its host", async () => {

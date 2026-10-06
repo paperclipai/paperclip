@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentPermissions } from "@paperclipai/shared";
 import { TrustPresetSection } from "./TrustPresetSection";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { i18n, t } from "@/i18n";
+import { AGENT_DETAIL_NAVIGATION, agentDetailHref } from "../pages/agent-detail-navigation";
+import { getAdapterDisplay, getAdapterLabels } from "../adapters/adapter-display-registry";
+import { help } from "./agent-config-primitives";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -40,9 +44,36 @@ afterEach(() => {
   container?.remove();
   root = null;
   container = null;
+  void i18n.changeLanguage("en");
 });
 
 describe("TrustPresetSection", () => {
+  it("updates mounted Russian labels without changing permission values or adapter identifiers", () => {
+    const view = renderSection({ canCreateAgents: false, trustPreset: "standard" });
+    const labels = getAdapterLabels();
+    expect(view.text()).toContain("Trust preset");
+    flushSync(() => { void i18n.changeLanguage("ru"); });
+    expect(view.text()).toContain("Профиль доверия");
+    expect(container?.querySelector("select")?.value).toBe("standard");
+    expect(AGENT_DETAIL_NAVIGATION[0].items[1].label).toBe("Инструкции");
+    expect(agentDetailHref("agent-raw-id", "api-keys")).toBe("/agents/agent-raw-id/api-keys");
+    expect(labels.codex_local).toBe("Codex");
+    expect(labels.process).toBe("Процесс");
+    expect(getAdapterDisplay("codex_local").description).toBe("Инструментарий Codex CLI");
+    expect(help.promptTemplate).toContain("{{ agent.id }}");
+    flushSync(() => { void i18n.changeLanguage("en"); });
+    expect(view.text()).toContain("Trust preset");
+    expect(labels.process).toBe("Process");
+    expect(AGENT_DETAIL_NAVIGATION[0].items[1].label).toBe("Instructions");
+  });
+
+  it.each([[1, "проект"], [2, "проекта"], [5, "проектов"], [21, "проект"], [22, "проекта"], [25, "проектов"]])(
+    "uses Russian trust-boundary count forms for %i", (count, noun) => {
+      void i18n.changeLanguage("ru");
+      expect(t("localizationAgents.trustCount_project", { count })).toBe(`${count} ${noun}`);
+    },
+  );
+
   it("hides the CE boundary editor under Standard", () => {
     const view = renderSection({ canCreateAgents: false, trustPreset: "standard" });
 

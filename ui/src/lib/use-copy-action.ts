@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { copyTextToClipboard } from "./clipboard";
 import { useOptionalToastActions } from "../context/ToastContext";
+import { useTranslation } from "../i18n";
 
 export type CopyStatus = "idle" | "copied" | "failed";
 
@@ -74,11 +75,12 @@ export function useCopyAction(resetMs: number = RESET_MS) {
  * the success toast waits for the write to resolve.
  */
 export function useCopyToast() {
+  const { t } = useTranslation();
   const toastActions = useOptionalToastActions();
   const pushToast = toastActions?.pushToast;
 
   return useCallback(
-    async (text: string, copiedTitle = "Copied") => {
+    async (text: string, copiedTitle = t("localizationCommonTail.copied")) => {
       try {
         await copyTextToClipboard(text);
         pushToast?.({
@@ -89,14 +91,14 @@ export function useCopyToast() {
         return true;
       } catch {
         pushToast?.({
-          title: "Couldn’t copy to clipboard",
-          body: "Select and copy the value manually.",
+          title: t("sep28Core.copyFailed"),
+          body: t("chatUi.chatEndpointSetup.selectAndCopyTheValueManually"),
           tone: "error",
           dedupeKey: "copy-failed",
         });
         return false;
       }
     },
-    [pushToast],
+    [pushToast, t],
   );
 }

@@ -1,4 +1,5 @@
 import type { ActivityEvent, IssueWorkMode } from "@paperclipai/shared";
+import { t } from "@/i18n";
 import { isIssueWorkMode } from "@/lib/work-mode-meta";
 
 export interface IssueTimelineAssignee {
@@ -38,6 +39,14 @@ export interface IssueTimelineWorkspace {
 export function formatTimelineWorkspaceLabel(workspace: IssueTimelineWorkspace) {
   const fallbackId = workspace.executionWorkspaceId ?? workspace.projectWorkspaceId;
   return workspace.label ?? (fallbackId ? fallbackId.slice(0, 8) : "None");
+}
+
+/** Translate only the absent-workspace label, never a saved name or ID. */
+export function timelineWorkspaceLabelDisplay(workspace: IssueTimelineWorkspace) {
+  const fallbackId = workspace.executionWorkspaceId ?? workspace.projectWorkspaceId;
+  return workspace.label != null || fallbackId
+    ? formatTimelineWorkspaceLabel(workspace)
+    : t("workspaces.values.none");
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

@@ -1,3 +1,5 @@
+import { useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { useEffect, useState } from "react";
 import type { FeedbackDataSharingPreference, FeedbackVoteValue } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
@@ -30,6 +32,7 @@ export function OutputFeedbackButtons({
   rightSlot?: React.ReactNode;
   inline?: boolean;
 }) {
+  const { t } = useTranslation();
   const [pendingVote, setPendingVote] = useState<{
     vote: FeedbackVoteValue;
     reason?: string;
@@ -124,7 +127,7 @@ export function OutputFeedbackButtons({
           onClick={() => handleVote("up")}
         >
           <ThumbsUp className="mr-1.5 h-3.5 w-3.5" />
-          Helpful
+          {t("localizationIssueAux.ui_Helpful_x076el")}
         </Button>
         <Button
           type="button"
@@ -135,17 +138,18 @@ export function OutputFeedbackButtons({
           onClick={() => handleVote("down")}
         >
           <ThumbsDown className="mr-1.5 h-3.5 w-3.5" />
-          Needs work
+          {t("localizationIssueAux.ui_Needs_work_v7b92r")}
         </Button>
         {rightSlot ? <div className="ml-auto">{rightSlot}</div> : null}
       </div>
       {collectingDownvoteReason ? (
         <div className="mt-2 rounded-md border border-border/60 bg-accent/20 p-3">
-          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <div className="mb-2 text-sm font-medium">{t("localizationIssueAux.ui_What_could_have_been_better_1natcm5")}</div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
-            placeholder="Add a short note"
+            placeholder={t("localizationIssueAux.ui_Add_a_short_note_1ige8pr")}
+            aria-label={t("localizationIssueAux.ui_What_could_have_been_better_1natcm5")}
             className="min-h-20 resize-y bg-background"
             disabled={disabled || isSaving}
           />
@@ -161,7 +165,7 @@ export function OutputFeedbackButtons({
                 setDownvoteAllowSharing(undefined);
               }}
             >
-              Dismiss
+              {t("localizationIssueAux.ui_Dismiss_an1pf7")}
             </Button>
             <Button
               type="button"
@@ -174,7 +178,7 @@ export function OutputFeedbackButtons({
                 });
               }}
             >
-              {isSaving ? "Saving..." : "Save note"}
+              {isSaving ? t("localizationIssueAux.ui_Saving_8kfkb3") : t("localizationIssueAux.ui_Save_note_1f8pchg")}
             </Button>
           </div>
         </div>
@@ -191,24 +195,20 @@ export function OutputFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
+            <DialogTitle>{t("localizationIssueAux.ui_Save_your_feedback_sharing_preference_1ebw6en")}</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
-              answer becomes the default for future thumbs up and thumbs down votes.
+              {t("localizationIssueAux.ui_Choose_whether_voted_AI_outputs_can_be_shared_with_Paperclip_Labs_crke3y")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>
-              This vote is always saved locally.
+              {t("localizationIssueAux.ui_This_vote_is_always_saved_locally_kj9hq1")}
             </p>
             <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
-              this vote and future voted AI outputs. Choose{" "}
-              <span className="font-medium text-foreground">Don't allow</span> to keep this vote
-              and future votes local.
+              <Trans i18nKey="localizationIssueAux.sharingChoice" components={{ allow: <span className="font-medium text-foreground" />, deny: <span className="font-medium text-foreground" /> }} />
             </p>
             <p>
-              You can change this later in Settings &gt; General.
+              {t("localizationIssueAux.ui_You_can_change_this_later_in_Settings_General_1veml1c")}
             </p>
             {termsUrl ? (
               <a
@@ -217,7 +217,7 @@ export function OutputFeedbackButtons({
                 rel="noreferrer"
                 className="inline-flex text-sm text-foreground underline underline-offset-4"
               >
-                Read our terms of service
+                {t("localizationIssueAux.ui_Read_our_terms_of_service_10h7tky")}
               </a>
             ) : null}
           </div>
@@ -238,7 +238,7 @@ export function OutputFeedbackButtons({
                 );
               }}
             >
-              {isSaving ? "Saving..." : "Don't allow"}
+              {isSaving ? t("localizationIssueAux.ui_Saving_8kfkb3") : t("localizationIssueAux.ui_Don_t_allow_1u4gj3k")}
             </Button>
             <Button
               type="button"
@@ -258,7 +258,7 @@ export function OutputFeedbackButtons({
                 );
               }}
             >
-              {isSaving ? "Saving..." : "Always allow"}
+              {isSaving ? t("localizationIssueAux.ui_Saving_8kfkb3") : t("localizationIssueAux.ui_Always_allow_1vl0a6l")}
             </Button>
           </DialogFooter>
         </DialogContent>

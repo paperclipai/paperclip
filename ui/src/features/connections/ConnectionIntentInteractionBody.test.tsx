@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
 import { act as reactAct, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -198,7 +199,8 @@ function button(label: string) {
   ) as HTMLButtonElement | undefined;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage("en");
   sessionStorage.clear();
   emailCredentialsMock.mockReset().mockResolvedValue([]);
   emailListMock.mockReset().mockResolvedValue([]);
@@ -234,6 +236,7 @@ afterEach(async () => {
     .forEach((node) => node.remove());
   root = null;
   host = null;
+  await i18n.changeLanguage("en");
 });
 
 describe("ConnectionIntentInteractionBody states and audience", () => {
@@ -488,6 +491,35 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
 describe("AI repair inside the card", () => {
   const interaction: ConnectionIntentInteraction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload, purpose: "ai" } };
   const connection = { id: "selected-account", name: "My Codex account", provider: "openai", method: "api_key", ownership: "personal", ownerName: "Dotta", status: "revoked" };
+  it("retranslates inline repair without changing account identity or accepting the request", async () => {
+    setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiRepair: { connection, canReconnect: true } });
+    completeMock.mockResolvedValue({ ...interaction, status: "accepted" });
+    renderBody(interaction);
+    await flush();
+    await act(() => button("Fix connection")!.click());
+    for (const [locale, message, close] of [
+      ["ru", "Для выполнения задачи агенту нужно действующее подключение к ИИ.", "Закрыть настройку"],
+      ["en", "This task can’t run until the agent has a valid AI connection.", "Close setup"],
+    ]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(document.body.textContent).toContain(message);
+      expect(button(close)).toBeDefined();
+      expect(credentialRender.mock.lastCall![0]).toMatchObject({ connectionId: "selected-account", name: "My Codex account", initialMethod: "api_key", fixedMethod: false });
+      expect(completeMock).not.toHaveBeenCalled();
+      expect(setPhaseMock).not.toHaveBeenCalled();
+    }
+    await act(() => button("Reconnect selected account")!.click());
+    expect(completeMock).toHaveBeenCalledExactlyOnceWith(interaction.id, "selected-account");
+  });
+  it("retranslates the accepted AI outcome", async () => {
+    renderBody({ ...interaction, status: "accepted" });
+    expect(document.body.textContent).toContain("This agent can now use the connection.");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(document.body.textContent).toContain("Теперь агент может использовать это подключение.");
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(document.body.textContent).toContain("This agent can now use the connection.");
+    expect(completeMock).not.toHaveBeenCalled();
+});
   it.each(["openrouter", "bedrock", "gateway"] as const)("retains the selected %s route through task-card account repair", async kind => {
     const routing = kind === "bedrock"
       ? { kind, protocol: "bedrock", region: "us-east-1", auth: "bearer", models: [] }
@@ -526,10 +558,12 @@ describe("AI repair inside the card", () => {
   it.each(["anthropic", "openai"])("connects a missing %s default directly in the task", async (provider) => {
     setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiConnection: { provider, method: "api_key", mode: "responsible_user" } });
     completeMock.mockResolvedValue({ ...interaction, status: "accepted" });
-    renderBody(interaction); await flush();
+    renderBody(interaction);
     const providerName = provider === "anthropic" ? "Claude" : "OpenAI";
-    expect(document.body.textContent).toContain(`Connect your ${providerName} account`);
-    expect(document.body.textContent).toContain("needs your own AI connection");
+    await waitForAssertion(() => {
+      expect(document.body.textContent).toContain(`Connect your ${providerName} account`);
+      expect(document.body.textContent).toContain("needs your own AI connection");
+    });
     await act(() => button(`Connect ${providerName}`)!.click());
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(document.querySelector('[data-testid="shared-connection-setup"]')).toBeNull();
@@ -632,6 +666,32 @@ describe("AI repair inside the card", () => {
     expect(document.body.textContent).toContain("The task still needs a working AI connection");
     expect(document.body.textContent).not.toContain("can continue without it");
   });
+});
+
+it("retranslates inline AI repair en/ru/en and continues the exact selected account", async () => {
+  const interaction: ConnectionIntentInteraction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload, purpose: "ai" } };
+  const connection = { id: "canonical-selected-account", name: "User-owned Account", provider: "openai", method: "api_key", ownership: "personal", ownerName: "Board", status: "connected" };
+  setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [connection], aiRepair: { connection, canReconnect: true } });
+  completeMock.mockResolvedValue({ ...interaction, status: "accepted" });
+  renderBody(interaction);
+  await flush();
+  await act(() => button("Fix connection")!.click());
+  for (const [locale, title, action] of [
+    ["ru", "Требуется авторизация в Notion", "Продолжить задачу"],
+    ["en", "Notion authentication required", "Continue task"],
+  ]) {
+    await act(async () => { await i18n.changeLanguage(locale); });
+    expect(document.body.textContent).toContain(title);
+    expect(document.body.textContent).toContain("User-owned Account");
+    expect(button(action)).toBeDefined();
+    expect(document.querySelector('[data-testid="ai-connection-inline-repair"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="shared-ai-credentials"]')).toBeNull();
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(declineMock).not.toHaveBeenCalled();
+    expect(setPhaseMock).not.toHaveBeenCalled();
+  }
+  await act(() => button("Continue task")!.click());
+  expect(completeMock).toHaveBeenCalledExactlyOnceWith(interaction.id, "canonical-selected-account");
 });
 
 describe("AgentMail inline setup", () => {

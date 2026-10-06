@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useId, type ReactNode } from "react";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -23,10 +24,11 @@ export function RoutineTriggerCard({
   onRemove: () => void;
   children: ReactNode;
 }) {
+  useTranslation();
   const editorId = useId();
   return (
     <section
-      aria-label={`${kind === "schedule" ? "Schedule" : kind === "api" ? "API" : "Webhook"} trigger`}
+      aria-label={t(`sep28Routines.triggerLabel.${kind}`)}
       className="rounded-md border border-border"
     >
       <div className="flex flex-wrap items-center gap-3 p-4">
@@ -43,13 +45,13 @@ export function RoutineTriggerCard({
             aria-controls={editorId}
             onClick={onEdit}
           >
-            {editLabel ?? (expanded ? "Close" : `Edit ${kind}`)}
+            {editLabel ?? (expanded ? t("sep28Routines.close") : t(`sep28Routines.edit.${kind}`))}
           </Button>
           <Button
             variant="ghost"
             size="icon"
-            aria-label={`Remove ${kind}`}
-            title={`Remove ${kind}`}
+            aria-label={t(`sep28Routines.remove.${kind}`)}
+            title={t(`sep28Routines.remove.${kind}`)}
             onClick={onRemove}
           >
             <Trash2 className="h-3.5 w-3.5" />

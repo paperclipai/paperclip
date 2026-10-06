@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation } from "@/i18n";
 import { useMemo, useState } from "react";
 import { FileText } from "lucide-react";
 import {
@@ -9,9 +10,9 @@ import { ImageGalleryModal, type GalleryMediaItem } from "@/components/ImageGall
 import { cn } from "@/lib/utils";
 
 function humanBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size < 1024) return t("localizationActivityTail.bytes", { value: new Intl.NumberFormat(i18n.resolvedLanguage, { maximumSignificantDigits: 21 }).format(size) });
+  if (size < 1024 * 1024) return t("localizationActivityTail.kilobytes", { value: new Intl.NumberFormat(i18n.resolvedLanguage, { maximumFractionDigits: 0 }).format(size / 1024) });
+  return t("localizationActivityTail.megabytes", { value: new Intl.NumberFormat(i18n.resolvedLanguage, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(size / (1024 * 1024)) });
 }
 
 /**
@@ -21,6 +22,7 @@ function humanBytes(size: number): string {
  * variation-picker (out of scope).
  */
 export function CaseAttachmentsGallery({ attachments }: { attachments: CaseAttachmentRef[] }) {
+  const { t } = useTranslation();
   const [galleryIndex, setGalleryIndex] = useState<number | null>(null);
 
   // The lightbox only navigates across image attachments.
@@ -36,7 +38,7 @@ export function CaseAttachmentsGallery({ attachments }: { attachments: CaseAttac
   );
 
   if (attachments.length === 0) {
-    return <p className="text-xs text-muted-foreground">No attachments.</p>;
+    return <p className="text-xs text-muted-foreground">{t("localizationActivityTail.noAttachments")}</p>;
   }
 
   return (
@@ -44,7 +46,7 @@ export function CaseAttachmentsGallery({ attachments }: { attachments: CaseAttac
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4">
         {attachments.map((attachment) => {
           const isImage = isImageAttachment(attachment);
-          const filename = attachment.asset.originalFilename ?? "attachment";
+          const filename = attachment.asset.originalFilename ?? t("localizationActivityTail.attachment");
           const imageIdx = isImage ? imageItems.findIndex((i) => i.id === attachment.id) : -1;
           return (
             <button

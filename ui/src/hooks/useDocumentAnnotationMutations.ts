@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DocumentAnnotationComment, DocumentAnnotationThreadStatus, DocumentAnnotationThreadWithComments } from "@paperclipai/shared";
@@ -17,6 +18,7 @@ interface MutationOptions {
 }
 
 export function useDocumentAnnotationMutations(options: MutationOptions) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [mutationError, setMutationError] = useState<string | null>(null);
   const { data: session } = useQuery({
@@ -26,9 +28,9 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
   });
   const currentUser = useMemo(() => ({
     id: session?.user?.id ?? null,
-    name: session?.user?.name?.trim() || session?.user?.email?.trim() || "You",
+    name: session?.user?.name?.trim() || session?.user?.email?.trim() || t("localizationIssueAux.you"),
     image: session?.user?.image ?? null,
-  }), [session]);
+  }), [session, t]);
   const queryKey = useMemo(() => options.target.kind === "routine"
     ? queryKeys.routines.documentAnnotations(options.target.routineId, options.target.documentKey, "all")
     : options.target.kind === "case"
@@ -114,10 +116,23 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
     onSuccess: () => setMutationError(null),
     onSettled: invalidateAll,
   });
-  return { createThread, addReply, updateStatus, mutationError, currentUser };
+  return { createThread, addReply, updateStatus, mutationError: annotationMutationErrorDisplay(mutationError), currentUser };
 }
 
 function messageFor(error: unknown, fallback: string) { return error instanceof Error && error.message ? error.message : fallback; }
+
+/** Project only built-in errors; preserve server-provided diagnostics verbatim. */
+export function annotationMutationErrorDisplay(message: string | null): string | null {
+  if (!message) return message;
+  const keys: Record<string, string> = {
+    "No selection to anchor to.": "localizationIssueAux.annotationNoSelection",
+    "Document has no revision yet.": "localizationIssueAux.annotationNoRevision",
+    "Failed to create comment.": "localizationIssueAux.annotationCreateFailed",
+    "Failed to add reply.": "localizationIssueAux.annotationReplyFailed",
+    "Failed to update comment status.": "localizationIssueAux.annotationStatusFailed",
+  };
+  return keys[message] ? t(keys[message]) : message;
+}
 function optimisticId(prefix: string) { return `${prefix}-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`}`; }
 function buildOptimisticComment(body: string, threadId: string, target: DocumentAnnotationTarget, userId: string | null): DocumentAnnotationComment {
   const now = new Date();

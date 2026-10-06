@@ -4,6 +4,8 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StarToggle } from "./StarToggle";
+import { act as reactAct } from "react";
+import { setLocale } from "@/i18n";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -21,6 +23,7 @@ describe("StarToggle", () => {
   let root: ReturnType<typeof createRoot> | null;
 
   beforeEach(() => {
+    setLocale("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     root = null;
@@ -33,6 +36,7 @@ describe("StarToggle", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    setLocale("en");
   });
 
   async function render(node: React.ReactElement) {
@@ -56,6 +60,18 @@ describe("StarToggle", () => {
 
     await act(async () => { btn?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     expect(onToggle).toHaveBeenCalledWith(true);
+  });
+
+  it("translates the accessible action without touching the resource or state", async () => {
+    const onToggle = vi.fn();
+    await render(<StarToggle starred error resourceName="Raw Project / QA" onToggle={onToggle} />);
+    await reactAct(async () => setLocale("ru"));
+    expect(button()?.getAttribute("aria-label")).toBe("Убрать из избранного: Raw Project / QA");
+    expect(button()?.getAttribute("aria-pressed")).toBe("true");
+    expect(button()?.getAttribute("title")).toBe("Не удалось сохранить — повторить");
+    expect(onToggle).not.toHaveBeenCalled();
+    await reactAct(async () => button()!.click());
+    expect(onToggle).toHaveBeenCalledExactlyOnceWith(false);
   });
 
   it("labels and announces the starred state and toggles toward unstarred", async () => {

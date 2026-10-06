@@ -251,6 +251,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@paperclipai/shared";
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
+import { setLocale } from "../i18n";
 import { CONNECTED_HOLD_MS } from "./onboarding/onboarding-motion";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -443,6 +444,50 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       });
       await flushReact();
     }
+
+    it("switches languages without losing the organization or agent draft or creating twice", async () => {
+      const { root } = await openStepOne();
+      try {
+        await act(async () => setLocale("ru"));
+        expect(document.body.textContent).toContain("Шаг 1 из 4");
+        expect(document.body.querySelector('[aria-label="Назовите организацию"]')).not.toBeNull();
+        expect((document.body.querySelector("input") as HTMLInputElement).value).toBe("Initech");
+        expect(mockCompaniesApi.create).not.toHaveBeenCalled();
+
+        await clickByText((text) => text.startsWith("Продолжить"));
+        const agentField = document.body.querySelector("#onboarding-agent-name") as HTMLInputElement;
+        await act(async () => setControlledValue(agentField, "Reviewer QA"));
+        await act(async () => setLocale("en"));
+        expect(document.body.textContent).toContain("Create your first agent");
+        expect(agentField.value).toBe("Reviewer QA");
+        await act(async () => setLocale("ru"));
+        expect(document.body.textContent).toContain("Создайте первого агента");
+        expect(agentField.value).toBe("Reviewer QA");
+        expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+        expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        await act(async () => root.unmount());
+        await act(async () => setLocale("en"));
+      }
+    });
+
+    it("retranslates an existing error without retrying the failed operation", async () => {
+      mockCompaniesApi.create.mockRejectedValue({ unavailable: true });
+      const { root } = await openStepOne();
+      try {
+        await clickByText((text) => text.startsWith("Continue"));
+        expect(document.body.textContent).toContain("Failed to create organization");
+        await act(async () => setLocale("ru"));
+        expect(document.body.textContent).toContain("Не удалось создать организацию");
+        expect(document.body.textContent).not.toContain("Failed to create organization");
+        expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+        expect((document.body.querySelector("input") as HTMLInputElement).value).toBe("Initech");
+      } finally {
+        await act(async () => root.unmount());
+        await act(async () => setLocale("en"));
+      }
+    });
 
     it("creates the organization on Continue and lands on the agent step, no mission", async () => {
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
@@ -3303,10 +3348,23 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           await detected();
           expect(button("Connecting…").disabled).toBe(true);
           expect(document.body.textContent).not.toContain("Run this in a terminal");
+          await act(async () => setLocale("ru"));
+          expect(button("Подключение…").disabled).toBe(true);
+          expect(managedApi.connectLocal).toHaveBeenCalledTimes(1);
           await act(async () => saved({ connectionId: "local-connection", grantId: "local-grant" }));
           await settle();
+          expect(button("Проверка…").disabled).toBe(true);
+          expect(document.body.textContent).toContain("Проверка подключения…");
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+          await act(async () => setLocale("en"));
           expectTesting();
-        } finally { await act(async () => root.unmount()); }
+          expect(managedApi.connectLocal).toHaveBeenCalledTimes(1);
+          expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+          expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        } finally {
+          await act(async () => root.unmount());
+          await act(async () => setLocale("en"));
+        }
       });
 
       it.each(["back", "provider", "company", "unmount"] as const)("ignores verification completion after %s navigation", async navigation => {

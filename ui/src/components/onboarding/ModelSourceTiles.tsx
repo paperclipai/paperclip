@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useRef, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
@@ -33,9 +34,9 @@ export type ModelSource = {
 };
 
 const CREDENTIAL_TAG_LABEL: Record<ModelConnectionMode, string> = {
-  subscription: "Subscription",
-  api: "API key",
-  advanced: "Custom Gateway",
+  get subscription() { return t("localizationOnboarding.subscription"); },
+  get api() { return t("sep13Connections.apiKey"); },
+  get advanced() { return t("oct6Beta.copy088"); },
 };
 
 /**
@@ -48,6 +49,7 @@ const CREDENTIAL_TAG_LABEL: Record<ModelConnectionMode, string> = {
  * tile's padding and over the row below.
  */
 export function CredentialTag({ mode }: { mode: ModelConnectionMode }) {
+  const { t } = useTranslation();
   return (
     <span className="relative flex h-4 w-full items-center justify-center overflow-hidden text-(length:--text-micro) text-muted-foreground">
       <AnimatePresence initial={false} mode="sync">
@@ -80,6 +82,7 @@ function ModelSourceTile({
   buttonRef: (node: HTMLButtonElement | null) => void;
   settling: boolean;
 }) {
+  useTranslation();
   return (
     <button
       ref={buttonRef}
@@ -162,6 +165,7 @@ export function ModelSourceTiles({
    */
   settling?: boolean;
 }) {
+  useTranslation();
   const tiles = useRef(new Map<string, HTMLButtonElement>());
 
   /**

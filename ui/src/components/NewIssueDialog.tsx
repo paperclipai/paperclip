@@ -1,3 +1,4 @@
+import { t, i18n, useTranslation } from "@/i18n";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties, type DragEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -30,7 +31,7 @@ import { buildExecutionPolicy } from "../lib/issue-execution-policy";
 import { createUuid } from "../lib/uuid";
 import { isIssueWorkMode, nextWorkMode } from "../lib/work-mode-meta";
 import { useToastActions } from "../context/ToastContext";
-import { assigneeValueFromSelection, currentUserAssigneeOption, parseAssigneeValue } from "../lib/assignees";
+import { assigneeValueFromSelection, currentUserAssigneeDisplayOptions as currentUserAssigneeOption, parseAssigneeValue } from "../lib/assignees";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Paperclip, FileText, Flag, PauseCircle, ListTree, X, ShieldAlert, Folder, ChevronDown } from "lucide-react";
@@ -213,9 +214,10 @@ function createUniqueDocumentKey(baseKey: string, stagedFiles: StagedIssueFile[]
 }
 
 function formatFileSize(file: File) {
-  if (file.size < 1024) return `${file.size} B`;
-  if (file.size < 1024 * 1024) return `${(file.size / 1024).toFixed(1)} KB`;
-  return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
+  const unit = file.size < 1024 ? "bytes" : file.size < 1024 * 1024 ? "kilobytes" : "megabytes";
+  const value = file.size < 1024 ? file.size : file.size < 1024 * 1024 ? file.size / 1024 : file.size / (1024 * 1024);
+  const size = new Intl.NumberFormat(i18n.resolvedLanguage, { useGrouping: false, minimumFractionDigits: file.size < 1024 ? 0 : 1, maximumFractionDigits: file.size < 1024 ? 0 : 1 }).format(value);
+  return t(`localizationIssueDetail.${unit}`, { size });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -275,6 +277,7 @@ function isWorkModeEscapeShortcut(e: Pick<KeyboardEvent, "key" | "metaKey">) {
 }
 
 export function NewIssueDialog() {
+  const { t } = useTranslation();
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const visualViewportLayout = useVisualViewportLayout(newIssueOpen);
@@ -388,13 +391,13 @@ export function NewIssueDialog() {
     retry: false,
   });
 
-  const selectedAssignee = useMemo(() => parseAssigneeValue(assigneeValue), [assigneeValue]);
+  const selectedAssignee = useMemo(() => parseAssigneeValue(assigneeValue), [i18n.resolvedLanguage, assigneeValue]);
   const selectedAssigneeAgentId = selectedAssignee.assigneeAgentId;
   const selectedAssigneeUserId = selectedAssignee.assigneeUserId;
 
   const selectedAssigneeAgent = useMemo(
     () => (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId) ?? null,
-    [agents, selectedAssigneeAgentId],
+    [i18n.resolvedLanguage, agents, selectedAssigneeAgentId],
   );
   const assigneeAdapterType = selectedAssigneeAgent?.adapterType ?? null;
   const mentionOptions = useMemo<MentionOption[]>(() => {
@@ -404,7 +407,7 @@ export function NewIssueDialog() {
       members: companyMembers?.users,
       issues: mentionIssues,
     });
-  }, [agents, companyMembers?.users, orderedProjects, mentionIssues]);
+  }, [i18n.resolvedLanguage, agents, companyMembers?.users, orderedProjects, mentionIssues]);
 
   const createIssue = useMutation({
     mutationFn: async ({
@@ -450,18 +453,18 @@ export function NewIssueDialog() {
       const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
       const issueRef = issue.identifier ?? issue.id;
       const openIssueAction = prefix
-        ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
+        ? { label: t("oct6Beta.dynamic019", { v0: issueRef }), href: `/${prefix}/issues/${issueRef}` }
         : undefined;
       if (failures.length > 0) {
         pushToast({
-          title: `Created ${issueRef} with upload warnings`,
-          body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
+          title: t("localizationIssueLists.createdWithWarnings", { defaultValue: "Created {{issue}} with upload warnings", issue: issueRef }),
+          body: t("localizationIssueLists.stagedFilesFailed", { count: failures.length }),
           tone: "warn",
           action: openIssueAction,
         });
       } else {
         pushToast({
-          title: `Created ${issueRef}`,
+          title: t("oct6Beta.dynamic020", { v0: issueRef }),
           tone: "success",
           action: openIssueAction,
         });
@@ -887,13 +890,13 @@ export function NewIssueDialog() {
   }
 
   function handleFileDragEnter(evt: DragEvent<HTMLDivElement>) {
-    if (!evt.dataTransfer.types.includes("Files")) return;
+    if (!evt.dataTransfer.types.includes(t("localizationIssuePanels.ui_Files_1s4j38w"))) return;
     evt.preventDefault();
     setIsFileDragOver(true);
   }
 
   function handleFileDragOver(evt: DragEvent<HTMLDivElement>) {
-    if (!evt.dataTransfer.types.includes("Files")) return;
+    if (!evt.dataTransfer.types.includes(t("localizationIssuePanels.ui_Files_1s4j38w"))) return;
     evt.preventDefault();
     evt.dataTransfer.dropEffect = "copy";
     setIsFileDragOver(true);
@@ -949,7 +952,7 @@ export function NewIssueDialog() {
         searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
       })),
     ],
-    [agents, companyMembers?.users, currentUserId, recentAssigneeIds],
+    [i18n.resolvedLanguage, agents, companyMembers?.users, currentUserId, recentAssigneeIds],
   );
   // Resolve once after the directory loads, without resetting text typed while
   // the queries were in flight or replacing an explicit/restored assignee.
@@ -985,7 +988,7 @@ export function NewIssueDialog() {
         label: project.name,
         searchText: project.description ?? "",
       })),
-    [orderedProjects],
+    [i18n.resolvedLanguage, orderedProjects],
   );
   const stagedDocuments = stagedFiles.filter((file) => file.kind === "document");
   const stagedAttachments = stagedFiles.filter((file) => file.kind === "attachment");
@@ -1041,7 +1044,7 @@ export function NewIssueDialog() {
           }
         : {}),
     };
-  }, [visualViewportLayout]);
+  }, [i18n.resolvedLanguage, visualViewportLayout]);
   const entityPickerViewportStyle = useMemo<MobileEntityPickerViewportStyle>(() => {
     if (!visualViewportLayout) return {};
     return {
@@ -1109,7 +1112,7 @@ export function NewIssueDialog() {
           }
         }}
       >
-        <DialogTitle className="sr-only">{isSubIssueMode ? "New sub-task" : "New task"}</DialogTitle>
+        <DialogTitle className="sr-only">{isSubIssueMode ? t("pages.newIssueDialog.newSubtask") : t("localizationKeyboard.newTask")}</DialogTitle>
         <div
           ref={dialogBodyRef}
           className={cn("min-h-0 overflow-y-auto overscroll-contain", isFileDragOver && "bg-accent/20")}
@@ -1123,11 +1126,11 @@ export function NewIssueDialog() {
               workMode={workMode}
               onWorkModeChange={setWorkMode}
               disabled={createIssue.isPending || !effectiveCompanyId}
-              placeholder="Describe a task…"
+              placeholder={t("oct6Beta.copy012")}
               mobile={isMobile}
               mentions={mentionOptions}
               onImageUpload={async (file) => {
-                if (!effectiveCompanyId) throw new Error("No organization selected");
+                if (!effectiveCompanyId) throw new Error(t("localizationOrganizationChat.noOrganization"));
                 const asset = await assetsApi.uploadImage(effectiveCompanyId, file, "issues/drafts");
                 return asset.contentPath;
               }}
@@ -1156,7 +1159,7 @@ export function NewIssueDialog() {
                 value: description,
                 onChange: handleDescriptionChange,
                 onSubmit: handleSubmit,
-                submitLabel: isSubIssueMode ? "Create sub-task" : "Create task",
+                submitLabel: isSubIssueMode ? t("oct6Beta.copy013") : t("oct6Beta.copy014"),
                 canSubmitWithoutBody: Boolean(title.trim()),
                 onSelectFiles: stageFiles,
                 runSettings: composerSettings,
@@ -1166,7 +1169,7 @@ export function NewIssueDialog() {
                     <div className="mb-3 flex flex-col gap-2 text-xs">
                       {hasTitle ? (
                         <input
-                          aria-label="Task title"
+                          aria-label={t("localizationIssueLists.taskTitle")}
                           value={title}
                           disabled={createIssue.isPending}
                           className="w-full bg-transparent text-sm text-foreground outline-none"
@@ -1182,7 +1185,7 @@ export function NewIssueDialog() {
                           <div className="max-w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">
                             <div className="flex items-center gap-1.5">
                               <ListTree className="h-3.5 w-3.5 shrink-0" />
-                              <span className="shrink-0">Sub-task of</span>
+                              <span className="shrink-0">{t("localizationIssueLists.subtaskOf")}</span>
                               <span className="font-medium text-foreground">{parentIssueLabel}</span>
                             </div>
                             {newIssueDefaults.parentTitle ? (
@@ -1197,15 +1200,15 @@ export function NewIssueDialog() {
                   <>
                     {worktreeSelectionIncomplete && !worktreesLoading ? (
                       <p role="alert" className="mb-2 text-xs text-destructive">
-                        {worktreesError ? "Couldn't check the selected worktree. Retry in Worktrees or choose New worktree."
-                          : "The selected worktree is no longer available. Choose another worktree or start a new one."}
+                        {worktreesError ? t("oct6Beta.copy015")
+                          : t("oct6Beta.copy016")}
                       </p>
                     ) : null}
                     {stagedFiles.length > 0 ? (
                       <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-3">
                         {stagedDocuments.length > 0 ? (
                           <div className="space-y-2">
-                            <div className="text-xs font-medium text-muted-foreground">Documents</div>
+                            <div className="text-xs font-medium text-muted-foreground">{t("localizationTaskRuntime.ui_Documents_oz47lx")}</div>
                             <div className="space-y-2">
                               {stagedDocuments.map((file) => (
                                 <div
@@ -1235,7 +1238,7 @@ export function NewIssueDialog() {
                                     className="shrink-0 text-muted-foreground"
                                     onClick={() => removeStagedFile(file.id)}
                                     disabled={createIssue.isPending}
-                                    title="Remove document"
+                                    title={t("localizationIssueLists.removeDocument")}
                                   >
                                     <X className="h-3.5 w-3.5" />
                                   </Button>
@@ -1247,7 +1250,7 @@ export function NewIssueDialog() {
 
                         {stagedAttachments.length > 0 ? (
                           <div className="space-y-2">
-                            <div className="text-xs font-medium text-muted-foreground">Attachments</div>
+                            <div className="text-xs font-medium text-muted-foreground">{t("localizationIssueAux.ui_Attachments_8925gh")}</div>
                             <div className="space-y-2">
                               {stagedAttachments.map((file) => (
                                 <div
@@ -1269,7 +1272,7 @@ export function NewIssueDialog() {
                                     className="shrink-0 text-muted-foreground"
                                     onClick={() => removeStagedFile(file.id)}
                                     disabled={createIssue.isPending}
-                                    title="Remove attachment"
+                                    title={t("localizationIssueLists.removeAttachment")}
                                   >
                                     <X className="h-3.5 w-3.5" />
                                   </Button>
@@ -1287,10 +1290,7 @@ export function NewIssueDialog() {
                       >
                         <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
                         <span className="leading-snug">
-                          Assigning implies executable intent - leave status as{" "}
-                          <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will
-                          not be woken until status moves to <span className="font-medium">Todo</span> or{" "}
-                          <span className="font-medium">In Progress</span>.
+                          {t("localizationIssueLists.assignedBacklogWarning", { backlog: t("oct5Core.s0303"), todo: t("localizationExternalChrome.taskStatus_todo"), inProgress: t("localizationActivityChrome.inProgress") })}
                         </span>
                       </div>
                     ) : null}
@@ -1298,12 +1298,7 @@ export function NewIssueDialog() {
                     {selectedAssigneeAgent?.status === "paused" ? (
                       <div data-testid="new-issue-paused-assignee-note" className="mx-4 mb-2">
                         <InlineBanner tone="warning" icon={PauseCircle} compact>
-                          <span className="font-medium">{selectedAssigneeAgent.name}</span> is paused and will not start
-                          work on this task until it is resumed
-                          {selectedAssigneeAgent.pauseReason === "import"
-                            ? " — it arrived paused from an organization import"
-                            : ""}
-                          . You can resume it from the task page after creating the task.
+                          {t(selectedAssigneeAgent.pauseReason === "import" ? "localizationIssueLists.pausedImportedAgent" : "localizationIssueLists.pausedAgent", { name: selectedAssigneeAgent.name })}
                         </InlineBanner>
                       </div>
                     ) : null}
@@ -1315,8 +1310,7 @@ export function NewIssueDialog() {
                       >
                         <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
                         <span className="leading-snug">
-                          Low-trust review agent. It can only act inside its assigned review boundary; task, project, or
-                          run policy defines the concrete scope.
+                          {t("localizationIssueLists.lowTrustHelp")}
                         </span>
                       </div>
                     ) : null}
@@ -1324,8 +1318,7 @@ export function NewIssueDialog() {
                     {showParentWorkspaceWarning ? (
                       <div className="mb-2">
                         <InlineBanner tone="warning" compact>
-                          This sub-task will no longer use the parent task workspace
-                          {parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
+                          {t("oct6Beta.parentWorkspaceWarning", { workspace: parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : "" })}
                         </InlineBanner>
                       </div>
                     ) : null}
@@ -1341,17 +1334,17 @@ export function NewIssueDialog() {
                       value={projectId}
                       options={projectOptions}
                       recentOptionIds={recentProjectIds}
-                      placeholder="Project"
-                      mobileTitle="Select project"
+                      placeholder={t("sep12Screens.project")}
+                      mobileTitle={t("sep28Core.selectProject")}
                       modal
                       className="h-8 min-w-0 flex-1 gap-1.5 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-0 sm:max-w-64 sm:flex-none"
                       disabled={createIssue.isPending}
                       triggerDataSlot="new-issue-compact-control"
                       contentStyle={entityPickerViewportStyle}
-                      noneLabel="No project"
+                      noneLabel={t("sep12Screens.noProject")}
                       noneAtTop
-                      searchPlaceholder="Search projects..."
-                      emptyMessage="No projects found."
+                      searchPlaceholder={t("localizationOperations.ui_Search_projects_")}
+                      emptyMessage={t("localizationOperations.ui_No_projects_found_")}
                       onChange={handleProjectChange}
                       renderTriggerValue={(option) =>
                         option && currentProject ? (
@@ -1363,7 +1356,7 @@ export function NewIssueDialog() {
                         ) : (
                           <>
                             <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                            <span className="truncate text-muted-foreground">Project</span>
+                            <span className="truncate text-muted-foreground">{t("sep12Screens.project")}</span>
                             <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
                           </>
                         )

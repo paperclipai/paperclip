@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation } from "@/i18n";
 import { useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import {
@@ -44,6 +45,7 @@ function Identity({
   title,
   summary,
 }: Pick<ArtifactIdentity, "title" | "summary">) {
+  useTranslation();
   return (
     <div className="flex flex-col gap-2">
       <h2 className="break-words text-lg font-semibold leading-snug">
@@ -66,6 +68,7 @@ function Footer({
 }: Pick<ArtifactIdentity, "author" | "updatedAt" | "statusBadge"> & {
   action: ReactNode;
 }) {
+  useTranslation();
   return (
     <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-3">
       <span className="text-xs text-muted-foreground">
@@ -78,6 +81,7 @@ function Footer({
 }
 
 function Card({ children }: { children: ReactNode }) {
+  useTranslation();
   return (
     <article className="w-full overflow-hidden rounded-lg border border-border bg-card text-card-foreground">
       {children}
@@ -86,6 +90,7 @@ function Card({ children }: { children: ReactNode }) {
 }
 
 function SourceLink({ url, children }: { url: string; children: ReactNode }) {
+  useTranslation();
   return url ? (
     <Button variant="outline" size="sm" asChild>
       <a href={url} target="_blank" rel="noreferrer">
@@ -111,6 +116,7 @@ function Viewer({
   action: string;
   children: ReactNode;
 }) {
+  useTranslation();
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -135,21 +141,22 @@ interface DiffProps {
   filesChanged?: number | null;
 }
 function Diff({ additions, deletions, filesChanged }: DiffProps) {
+  useTranslation();
   return (
     <div className="flex flex-wrap gap-2 font-mono text-xs">
       {additions != null && (
         <span className="text-(--status-task-icon-done)">
-          +{additions.toLocaleString("en-US")}
+          +{additions.toLocaleString(i18n.resolvedLanguage)}
         </span>
       )}
       {deletions != null && (
         <span className="text-(--status-task-icon-blocked)">
-          −{deletions.toLocaleString("en-US")}
+          −{deletions.toLocaleString(i18n.resolvedLanguage)}
         </span>
       )}
       {filesChanged != null && (
         <span className="text-muted-foreground">
-          {filesChanged} {filesChanged === 1 ? "file" : "files"}
+          {t("oct5Core.files", { count: filesChanged })}
         </span>
       )}
     </div>
@@ -169,20 +176,21 @@ export interface PullRequestCardProps extends ArtifactIdentity, DiffProps {
 }
 
 const checksLabel = {
-  passed: "Checks passed",
-  pending: "Checks pending",
-  failed: "Checks failed",
-  unknown: "Checks not available",
+  get passed() { return t("oct5Core.s0218"); },
+  get pending() { return t("oct5Core.s0219"); },
+  get failed() { return t("oct5Core.s0220"); },
+  get unknown() { return t("oct5Core.s0221"); },
 };
 const stateLabel = {
-  open: "Open",
-  draft: "Draft",
-  merged: "Merged",
-  closed: "Closed",
-  unknown: "State unknown",
+  get open() { return t("oct5Core.s0222"); },
+  get draft() { return t("oct5Core.s0223"); },
+  get merged() { return t("oct5Core.s0224"); },
+  get closed() { return t("oct5Core.s0225"); },
+  get unknown() { return t("oct5Core.s0226"); },
 };
 
 export function PullRequestCard(props: PullRequestCardProps) {
+  useTranslation();
   const {
     number,
     repository,
@@ -211,7 +219,7 @@ export function PullRequestCard(props: PullRequestCardProps) {
       <div className="flex flex-col gap-4 p-5">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-2 text-xs text-muted-foreground">
-            <GitPullRequest className="size-4" /> Pull request{" "}
+            <GitPullRequest className="size-4" /> {t("oct5Core.s0227")}{" "}
             {number != null && <span className="font-mono">#{number}</span>}
           </span>
           <Badge
@@ -256,13 +264,13 @@ export function PullRequestCard(props: PullRequestCardProps) {
         )}
         {evidenceSource && (
           <p className="text-xs text-muted-foreground">
-            Source: {evidenceSource}
+            {t("oct5Core.s0228")} {evidenceSource}
           </p>
         )}
       </div>
       <Footer
         {...props}
-        action={<SourceLink url={url}>Open pull request</SourceLink>}
+        action={<SourceLink url={url}>{t("oct5Core.s0229")}</SourceLink>}
       />
     </Card>
   );
@@ -275,11 +283,12 @@ export interface CommitCardProps extends ArtifactIdentity, DiffProps {
   url: string;
 }
 export function CommitCard(props: CommitCardProps) {
+  useTranslation();
   return (
     <Card>
       <div className="flex flex-col gap-4 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <GitCommitHorizontal className="size-4" /> Commit{" "}
+          <GitCommitHorizontal className="size-4" /> {t("oct5Core.s0230")}{" "}
           <code title={props.sha}>{props.sha.slice(0, 8)}</code>
         </span>
         <Identity {...props} />
@@ -296,13 +305,14 @@ export function CommitCard(props: CommitCardProps) {
       </div>
       <Footer
         {...props}
-        action={<SourceLink url={props.url}>View commit</SourceLink>}
+        action={<SourceLink url={props.url}>{t("oct5Core.s0231")}</SourceLink>}
       />
     </Card>
   );
 }
 
 function Markdown({ body }: { body: string }) {
+  useTranslation();
   return (
     <div className="flex flex-col gap-3 text-sm leading-relaxed">
       <ReactMarkdown
@@ -343,7 +353,7 @@ function Markdown({ body }: { body: string }) {
                 rel="noreferrer"
                 className="underline underline-offset-4"
               >
-                {alt || "Open image"}
+                {alt || t("oct5Core.s0232")}
               </a>
             ) : (
               <span>{alt}</span>
@@ -376,6 +386,7 @@ export interface DocumentCardProps extends ArtifactIdentity {
   actions?: ReactNode;
 }
 export function DocumentCard(props: DocumentCardProps) {
+  useTranslation();
   return (
     <Card>
       {props.body && (
@@ -389,7 +400,7 @@ export function DocumentCard(props: DocumentCardProps) {
       <div className="flex flex-col gap-3 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
           <FileText className="size-4" /> Markdown
-          {props.revision != null && ` · revision ${props.revision}`}
+          {props.revision != null && t("oct5Core.artifactRevision", { revision: props.revision })}
         </span>
         <Identity {...props} />
         <span className="break-all font-mono text-xs text-muted-foreground">
@@ -408,13 +419,13 @@ export function DocumentCard(props: DocumentCardProps) {
                 aria-expanded={props.expanded}
                 onClick={props.onOpen}
               >
-                {props.expanded ? "Close document" : "Read document"}
+                {props.expanded ? t("oct5Core.s0233") : t("oct5Core.s0234")}
               </Button>
             ) : (
               <Viewer
                 title={props.title}
                 description={props.filename}
-                action="Read document"
+                action={t("oct5Core.s0234")}
               >
                 <Markdown body={props.body} />
               </Viewer>
@@ -435,6 +446,7 @@ export interface DataCardProps extends ArtifactIdentity {
   actions?: ReactNode;
 }
 function DataTable({ columns, rows }: Pick<DataCardProps, "columns" | "rows">) {
+  useTranslation();
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-xs">
@@ -463,12 +475,13 @@ function DataTable({ columns, rows }: Pick<DataCardProps, "columns" | "rows">) {
         </tbody>
       </table>
       {rows.length === 0 && (
-        <p className="p-4 text-xs text-muted-foreground">No rows</p>
+        <p className="p-4 text-xs text-muted-foreground">{t("oct5Core.s0235")}</p>
       )}
     </div>
   );
 }
 export function DataCard(props: DataCardProps) {
+  useTranslation();
   const csv = [props.columns, ...props.rows]
     .map((row) =>
       row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","),
@@ -481,10 +494,8 @@ export function DataCard(props: DataCardProps) {
       </div>
       <div className="flex flex-col gap-3 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Table2 className="size-4" /> CSV · {props.truncated ? "First " : ""}
-          {props.rows.length} {props.rows.length === 1 ? "row" : "rows"} ·{" "}
-          {props.columns.length}{" "}
-          {props.columns.length === 1 ? "column" : "columns"}
+          <Table2 className="size-4" /> CSV · {t(props.truncated ? "oct5Core.firstRows" : "oct5Core.rows", { count: props.rows.length })} ·{" "}
+          {t("oct5Core.columns", { count: props.columns.length })}
         </span>
         <Identity {...props} />
         <span className="break-all font-mono text-xs text-muted-foreground">
@@ -499,7 +510,7 @@ export function DataCard(props: DataCardProps) {
             <Viewer
               title={props.title}
               description={props.filename}
-              action="View data"
+              action={t("oct5Core.s0236")}
             >
               <DataTable {...props} />
               <Button asChild variant="outline" size="sm" className="w-fit">
@@ -510,7 +521,7 @@ export function DataCard(props: DataCardProps) {
                     `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`
                   }
                 >
-                  Download CSV
+                  {t("oct5Core.s0237")}
                 </a>
               </Button>
             </Viewer>
@@ -522,6 +533,7 @@ export function DataCard(props: DataCardProps) {
 }
 
 function ImageContent({ src, alt }: { src: string; alt: string }) {
+  useTranslation();
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   return src && failedUrl !== src ? (
     <img
@@ -534,7 +546,7 @@ function ImageContent({ src, alt }: { src: string; alt: string }) {
   ) : (
     <div className="flex aspect-video flex-col items-center justify-center gap-3 text-muted-foreground">
       <ImageIcon className="size-8" />
-      <span className="text-xs">No preview available</span>
+      <span className="text-xs">{t("oct5Core.s0238")}</span>
     </div>
   );
 }
@@ -548,6 +560,7 @@ export interface ImageCardProps extends ArtifactIdentity {
   onOpen?: () => void;
 }
 export function ImageCard(props: ImageCardProps) {
+  useTranslation();
   return (
     <Card>
       <div className="border-b border-border bg-muted/20">
@@ -555,7 +568,7 @@ export function ImageCard(props: ImageCardProps) {
       </div>
       <div className="flex flex-col gap-3 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <ImageIcon className="size-4" /> Image
+          <ImageIcon className="size-4" /> {t("oct5Core.s0239")}
           {props.width && props.height
             ? ` · ${props.width} × ${props.height}`
             : ""}
@@ -572,16 +585,16 @@ export function ImageCard(props: ImageCardProps) {
             <Button
               size="sm"
               variant="outline"
-              aria-label={`View image: ${props.title}`}
+              aria-label={t("oct5Core.viewImageTitle", { title: props.title })}
               onClick={props.onOpen}
             >
-              View image
+              {t("oct5Core.s0240")}
             </Button>
           ) : (
             <Viewer
               title={props.title}
               description={props.filename}
-              action="View image"
+              action={t("oct5Core.s0240")}
             >
               <ImageContent src={props.imageUrl} alt={props.alt} />
             </Viewer>
@@ -600,6 +613,7 @@ export interface VideoCardProps extends ArtifactIdentity {
   onOpen?: () => void;
 }
 export function VideoCard(props: VideoCardProps) {
+  useTranslation();
   return (
     <Card>
       <video
@@ -613,7 +627,7 @@ export function VideoCard(props: VideoCardProps) {
       />
       <div className="flex flex-col gap-3 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Film className="size-4" /> Video
+          <Film className="size-4" /> {t("oct5Core.s0241")}
           {props.duration && ` · ${props.duration}`}
         </span>
         <Identity {...props} />
@@ -628,13 +642,13 @@ export function VideoCard(props: VideoCardProps) {
             <Button
               size="sm"
               variant="outline"
-              aria-label={`Open video: ${props.title}`}
+              aria-label={t("oct5Core.openVideoTitle", { title: props.title })}
               onClick={props.onOpen}
             >
-              Open video
+              {t("oct5Core.s0242")}
             </Button>
           ) : (
-            <SourceLink url={props.videoUrl}>Open video</SourceLink>
+            <SourceLink url={props.videoUrl}>{t("oct5Core.s0242")}</SourceLink>
           )
         }
       />
@@ -648,6 +662,7 @@ export interface LinkPreviewCardProps extends ArtifactIdentity {
   imageAlt: string;
 }
 export function LinkPreviewCard(props: LinkPreviewCardProps) {
+  useTranslation();
   return (
     <Card>
       {props.imageUrl && (
@@ -657,7 +672,7 @@ export function LinkPreviewCard(props: LinkPreviewCardProps) {
       )}
       <div className="flex flex-col gap-4 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Globe className="size-4" /> Link preview
+          <Globe className="size-4" /> {t("oct5Core.s0243")}
         </span>
         <Identity {...props} />
         <span className="break-all font-mono text-xs text-muted-foreground">
@@ -666,7 +681,7 @@ export function LinkPreviewCard(props: LinkPreviewCardProps) {
       </div>
       <Footer
         {...props}
-        action={<SourceLink url={props.url}>Open link</SourceLink>}
+        action={<SourceLink url={props.url}>{t("oct5Core.s0244")}</SourceLink>}
       />
     </Card>
   );
@@ -682,11 +697,12 @@ export interface FileCardProps extends ArtifactIdentity {
   actions?: ReactNode;
 }
 export function FileCard(props: FileCardProps) {
+  useTranslation();
   return (
     <Card>
       <div className="flex flex-col gap-4 p-5">
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          <File className="size-4" /> File
+          <File className="size-4" /> {t("oct5Core.s0245")}
           {props.fileSize && ` · ${props.fileSize}`}
         </span>
         <Identity {...props} />
@@ -716,17 +732,17 @@ export function FileCard(props: FileCardProps) {
           <div className="flex flex-wrap items-center gap-2">
             {props.actions}
             {props.openUrl && (
-              <SourceLink url={props.openUrl}>Open file</SourceLink>
+              <SourceLink url={props.openUrl}>{t("oct5Core.s0246")}</SourceLink>
             )}
             {props.downloadUrl ? (
               <Button asChild size="sm" variant="outline">
                 <a href={props.downloadUrl} download={props.filename}>
-                  Download file
+                  {t("oct5Core.s0211")}
                 </a>
               </Button>
             ) : (
               <Button size="sm" variant="outline" disabled>
-                Download unavailable
+                {t("oct5Core.s0247")}
               </Button>
             )}
           </div>

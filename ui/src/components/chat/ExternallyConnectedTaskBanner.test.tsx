@@ -9,6 +9,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternallyConnectedTaskBanner } from "./ExternallyConnectedTaskBanner";
 import { boardSendDraftKey, readBoardSendDraft } from "./board-send-draft";
 import { ApiError } from "@/api/client";
+import { i18n, t } from "@/i18n";
+
+describe("publication batch English copy compatibility", () => {
+  it.each([
+    ["batchPublished", "published"],
+    ["batchAwaitingConsent", "awaiting consent"],
+    ["batchDeclined", "declined"],
+    ["batchExpired", "expired"],
+    ["batchCancelled", "cancelled"],
+  ])("preserves the source sentence for %s", async (key, label) => {
+    await i18n.changeLanguage("en");
+    for (const count of [0, 1, 2, 5, 21]) {
+      expect(t(`chatUi.${key}`, { count, formattedCount: String(count) })).toBe(`${count} ${label}`);
+    }
+  });
+});
 
 const mockChatEndpointsApi = vi.hoisted(() => ({
   getIssueBinding: vi.fn(),
@@ -153,6 +169,44 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
     flushSync(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("localizes Slack forwarding guidance without changing the draft or delivery identity", async () => {
+    mockChatEndpointsApi.publishBoardMessage.mockResolvedValue({
+      id: "publication-localized", state: "published", attempts: 1,
+    });
+    await renderBanner();
+    await act(() => findButton(container, "Send to channel").click());
+    const textarea = container.querySelector("textarea")!;
+    const externalLink = container.querySelector('a[href="https://example.slack.com/archives/channel-1"]');
+    await act(() => setTextareaValue(textarea, "Original draft /RAW {{value}}"));
+    try {
+      for (const language of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        await flushReact();
+        expect(container.querySelector("textarea")).toBe(textarea);
+        expect(textarea.value).toBe("Original draft /RAW {{value}}");
+        expect(container.querySelector('a[href="https://example.slack.com/archives/channel-1"]')).toBe(externalLink);
+        expect(container.textContent).toContain(language === "ru"
+          ? "#paperclip · Ваши сообщения в этом чате и ответы агента также публикуются в Slack."
+          : "#paperclip · Messages you send here and agent replies are also posted to Slack.");
+        expect(container.textContent).toContain(language === "ru"
+          ? "Сообщение публикуется в Slack с указанием вашего имени и запускает агента."
+          : "Your message is posted to Slack with your name and starts the agent.");
+        expect(mockChatEndpointsApi.publishBoardMessage).not.toHaveBeenCalled();
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+    await act(() => {
+      [...container.querySelectorAll("button")]
+        .filter((button) => button.textContent?.trim() === "Send to channel")
+        .at(-1)?.click();
+    });
+    await flushReact();
+    expect(mockChatEndpointsApi.publishBoardMessage).toHaveBeenCalledExactlyOnceWith(
+      "endpoint-1", "conversation-1", "Original draft /RAW {{value}}", expect.any(String), [],
+    );
   });
 
   it("only reports success and clears the draft after confirmed publication", async () => {

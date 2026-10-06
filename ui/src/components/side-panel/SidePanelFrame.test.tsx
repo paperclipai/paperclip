@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidePanelFrame, SidePanelToggleButton, SidePanelWindowControls } from "./SidePanelFrame";
+import { i18n } from "@/i18n";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -18,11 +19,30 @@ describe("side-panel shell controls", () => {
     root = createRoot(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     act(() => root.unmount());
     container.remove();
     document.documentElement.style.removeProperty("--motion-scrollbar-idle-delay");
     vi.useRealTimers();
+    await i18n.changeLanguage("en");
+  });
+
+  it("retranslates the default region label without remounting or replacing caller labels", async () => {
+    await act(async () => {
+      await i18n.changeLanguage("en");
+      root.render(<><SidePanelFrame><input defaultValue="Raw draft" /></SidePanelFrame><SidePanelFrame label="Side panel">Custom</SidePanelFrame></>);
+    });
+    const [generated, custom] = container.querySelectorAll("section");
+    const input = container.querySelector("input");
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(container.querySelector("section")).toBe(generated);
+      expect(generated.getAttribute("aria-label")).toBe(language === "ru" ? "Боковая панель" : "Side panel");
+      expect(custom.getAttribute("aria-label")).toBe("Side panel");
+      expect(container.querySelector("input")).toBe(input);
+      expect(input?.value).toBe("Raw draft");
+      expect(generated.getAttribute("data-open")).toBe("true");
+    }
   });
 
   it("exposes controlled presentation, visibility, maximize, and content layout state", async () => {

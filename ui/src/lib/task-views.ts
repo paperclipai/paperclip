@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { InboxTab } from "./inbox";
 
 /**
@@ -49,22 +50,22 @@ export interface TaskViewGroup {
 
 export const TASK_VIEW_GROUPS: TaskViewGroup[] = [
   {
-    label: "My work",
+    get label() { return t("oct5Core.myWork"); },
     views: [
-      { key: "mine", label: "Mine", surface: "inbox", inboxTab: "mine", hint: "Assigned to you or waiting on you" },
-      { key: "unread", label: "Unread", surface: "inbox", inboxTab: "unread", hint: "Tasks you touched with new activity" },
-      { key: "blocked", label: "Blocked", surface: "inbox", inboxTab: "blocked", hint: "Blocked tasks, grouped by blocker" },
-      { key: "recent", label: "Recent", surface: "inbox", inboxTab: "recent", hint: "Everything you touched lately" },
-      { key: "everything", label: "Everything", surface: "inbox", inboxTab: "all", hint: "Tasks, approvals, failed runs and join requests" },
+      { key: "mine", get label() { return t("oct5Core.s0288"); }, surface: "inbox", inboxTab: "mine", get hint() { return t("oct5Core.s0289"); } },
+      { key: "unread", get label() { return t("oct5Core.s0290"); }, surface: "inbox", inboxTab: "unread", get hint() { return t("oct5Core.s0291"); } },
+      { key: "blocked", get label() { return t("oct5Core.s0292"); }, surface: "inbox", inboxTab: "blocked", get hint() { return t("oct5Core.s0293"); } },
+      { key: "recent", get label() { return t("oct5Core.s0294"); }, surface: "inbox", inboxTab: "recent", get hint() { return t("oct5Core.s0295"); } },
+      { key: "everything", get label() { return t("oct5Core.s0296"); }, surface: "inbox", inboxTab: "all", get hint() { return t("oct5Core.s0297"); } },
     ],
   },
   {
-    label: "Organization",
+    get label() { return t("oct5Core.s0298"); },
     views: [
-      { key: "all", label: "All tasks", surface: "issues", statuses: [], hint: "Every task in the organization" },
-      { key: "active", label: "Active", surface: "issues", statuses: ["todo", "in_progress", "in_review", "blocked"], hint: "Open tasks, running or not" },
-      { key: "backlog", label: "Backlog", surface: "issues", statuses: ["backlog"], hint: "Not started yet" },
-      { key: "done", label: "Done", surface: "issues", statuses: ["done", "cancelled"], hint: "Completed and cancelled" },
+      { key: "all", get label() { return t("oct5Core.s0299"); }, surface: "issues", statuses: [], get hint() { return t("oct5Core.s0300"); } },
+      { key: "active", get label() { return t("oct5Core.s0301"); }, surface: "issues", statuses: ["todo", "in_progress", "in_review", "blocked"], get hint() { return t("oct5Core.s0302"); } },
+      { key: "backlog", get label() { return t("oct5Core.s0303"); }, surface: "issues", statuses: ["backlog"], get hint() { return t("oct5Core.s0304"); } },
+      { key: "done", get label() { return t("oct5Core.s0305"); }, surface: "issues", statuses: ["done", "cancelled"], get hint() { return t("oct5Core.s0306"); } },
     ],
   },
 ];

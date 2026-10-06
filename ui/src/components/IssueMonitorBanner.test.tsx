@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import { act } from "react";
+import { i18n } from "@/i18n";
 import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -156,6 +158,31 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     expect(container.textContent).not.toContain("wakes the agent now");
     expect(container.querySelector("button")).toBeNull();
     flushSync(() => root.unmount());
+  });
+
+  it("updates workspace-wait copy across languages without adding retry actions", async () => {
+    const issue = {
+      status: "todo", scheduledRetry: { status: "scheduled_retry", scheduledRetryReason: "workspace_busy", scheduledRetryAt: NOW.toISOString() },
+    } as Issue;
+    const original = JSON.stringify(issue);
+    const onCheckNow = vi.fn();
+    const root = createRoot(container);
+    try {
+      flushSync(() => root.render(<><IssueMonitorBanner issue={issue} onCheckNow={onCheckNow} /><IssueMonitorComposerStrip issue={issue} onCheckNow={onCheckNow} /></>));
+      const strip = container.querySelector('[data-testid="issue-monitor-composer-strip"]');
+      for (const language of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(container.textContent).toContain(language === "ru" ? "Ожидание рабочей области" : "Waiting for workspace");
+        expect(container.textContent).toContain(i18n.t("sep14Runtime.keepSendingInstructions"));
+        expect(container.querySelector('[data-testid="issue-monitor-composer-strip"]')).toBe(strip);
+        expect(container.querySelector("button")).toBeNull();
+      }
+      expect(onCheckNow).not.toHaveBeenCalled();
+      expect(JSON.stringify(issue)).toBe(original);
+    } finally {
+      flushSync(() => root.unmount());
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("explains pool exhaustion and retained account affinity on both waiting surfaces", () => {

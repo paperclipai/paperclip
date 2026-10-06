@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { codexLocalReasoningEffortsForModel, isCodexLocalFastModeSupported, isCodexLocalKnownModel } from "@paperclipai/adapter-codex-local";
 import { claudeLocalReasoningEffortsForModel } from "@paperclipai/adapter-claude-local";
 import { resolvePaperclipRunnerModel } from "@paperclipai/adapter-utils";
@@ -13,8 +14,8 @@ export interface ComposerRunSettings {
 
 export const DEFAULT_COMPOSER_RUN_SETTINGS: ComposerRunSettings = { model: null, effort: null, fast: false };
 export const EFFORT_LABELS: Record<string, string> = {
-  off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High",
-  xhigh: "Extra High", max: "Max", ultra: "Ultra",
+  get off() { return t("oct5Core.s0264"); }, get minimal() { return t("oct5Core.s0265"); }, get low() { return t("oct5Core.s0266"); }, get medium() { return t("oct5Core.s0267"); }, get high() { return t("oct5Core.s0268"); },
+  get xhigh() { return t("oct5Core.s0269"); }, get max() { return t("oct5Core.s0270"); }, get ultra() { return t("oct5Core.s0271"); },
 };
 
 const MODEL_ADAPTERS = new Set([

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
@@ -26,6 +27,7 @@ export function ImageGalleryModal({
   open,
   onOpenChange,
 }: ImageGalleryModalProps) {
+  const { t } = useTranslation();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const mediaRef = useRef<HTMLImageElement | HTMLVideoElement | null>(null);
   const setMediaRef = useCallback((node: HTMLImageElement | HTMLVideoElement | null) => {
@@ -104,8 +106,8 @@ export function ImageGalleryModal({
                 href={attachmentDownloadPath(current)}
                 download={filename}
                 className="text-white/50 hover:text-white transition-colors"
-                title="Download"
-                aria-label={`Download ${filename}`}
+                title={t("localizationCommonChrome.download")}
+                aria-label={t("localizationCommonChrome.downloadNamed", { filename })}
                 onClick={(e) => e.stopPropagation()}
               >
                 <Download className="h-4.5 w-4.5" />
@@ -114,7 +116,7 @@ export function ImageGalleryModal({
                 type="button"
                 onClick={() => onOpenChange(false)}
                 className="text-white/50 hover:text-white transition-colors"
-                title="Close"
+                title={t("localizationCommonChrome.close")}
               >
                 <X className="h-5 w-5" />
               </button>
@@ -130,7 +132,7 @@ export function ImageGalleryModal({
                   type="button"
                   onClick={goPrev}
                   className="rounded-full bg-white/10 p-3 text-white/60 hover:text-white hover:bg-white/20 transition-colors"
-                  title="Previous"
+                  title={t("localizationCommonChrome.previous")}
                 >
                   <ChevronLeft className="h-7 w-7" />
                 </button>
@@ -165,7 +167,7 @@ export function ImageGalleryModal({
                   type="button"
                   onClick={goNext}
                   className="rounded-full bg-white/10 p-3 text-white/60 hover:text-white hover:bg-white/20 transition-colors"
-                  title="Next"
+                  title={t("localizationCommonChrome.next")}
                 >
                   <ChevronRight className="h-7 w-7" />
                 </button>

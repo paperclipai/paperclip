@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "../lib/utils";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
@@ -71,6 +72,7 @@ export function InlineEditor({
   defaultEditing = false,
   onEditingChange,
 }: InlineEditorProps) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const [multilineEditing, setMultilineEditing] = useState(multiline && defaultEditing);
   const [multilineFocused, setMultilineFocused] = useState(false);
@@ -374,12 +376,12 @@ export function InlineEditor({
             )}
           >
             {autosaveState === "saving"
-              ? "Autosaving..."
+              ? t("localizationCommonChrome.autosaving")
               : autosaveState === "saved"
-                ? "Saved"
+                ? t("localizationCommonChrome.saved")
                 : autosaveState === "error"
-                  ? "Could not save"
-                  : "Idle"}
+                  ? t("localizationCommonChrome.couldNotSave")
+                  : t("localizationCommonChrome.idle")}
           </span>
         </div>
       </div>

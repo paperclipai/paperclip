@@ -1,8 +1,9 @@
+import { t } from "@/i18n";
 import { Inbox, ShieldCheck } from "lucide-react";
 
 export const APP_TABS = [
-  { key: "permissions", label: "Permissions", icon: ShieldCheck },
-  { key: "review", label: "Review", icon: Inbox },
+  { key: "permissions", get label() { return t("pages.apps.tabs.permissions"); }, icon: ShieldCheck },
+  { key: "review", get label() { return t("pages.apps.tabs.review"); }, icon: Inbox },
 ] as const;
 
 export type AppTabKey = (typeof APP_TABS)[number]["key"];
@@ -20,5 +21,5 @@ export function isAppTabKey(value: string | undefined): value is AppTabKey {
 }
 
 export function appTabLabel(tabKey: AppTabKey): string {
-  return APP_TABS.find((tab) => tab.key === tabKey)?.label ?? "Permissions";
+  return APP_TABS.find((tab) => tab.key === tabKey)?.label ?? t("pages.apps.tabs.permissions");
 }

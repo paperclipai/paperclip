@@ -4,6 +4,8 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PriorityIcon } from "./PriorityIcon";
+import { act as reactAct } from "react";
+import { setLocale } from "@/i18n";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -21,6 +23,7 @@ describe("PriorityIcon picker", () => {
   let root: ReturnType<typeof createRoot> | null;
 
   beforeEach(() => {
+    setLocale("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -30,6 +33,7 @@ describe("PriorityIcon picker", () => {
     await act(async () => root?.unmount());
     container.remove();
     document.body.innerHTML = "";
+    setLocale("en");
   });
 
   it("opens the real popover and selects a priority", async () => {
@@ -54,5 +58,17 @@ describe("PriorityIcon picker", () => {
     });
     expect(onChange).toHaveBeenCalledOnce();
     expect(onChange).toHaveBeenCalledWith("high");
+  });
+
+  it("updates the open priority picker in Russian but emits the raw priority", async () => {
+    const onChange = vi.fn();
+    await reactAct(async () => root?.render(<PriorityIcon priority="medium" onChange={onChange} />));
+    await reactAct(async () => container.querySelector("button")!.click());
+    await reactAct(async () => setLocale("ru"));
+    expect(container.querySelector("button")?.getAttribute("aria-label")).toBe("Изменить приоритет (сейчас: Средний)");
+    expect(onChange).not.toHaveBeenCalled();
+    const high = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Высокий")!;
+    await reactAct(async () => high.click());
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("high");
   });
 });

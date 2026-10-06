@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
+
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -121,12 +123,13 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
     onConfigured.mockReset();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => {
       root?.unmount();
     });
     root = null;
     container.remove();
+    await i18n.changeLanguage("en");
   });
 
   it("disables submit until a model is chosen, then provisions with adapter + model", async () => {
@@ -159,6 +162,19 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
     });
     expect(onConfigured).toHaveBeenCalled();
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("localizes only matching stock purpose metadata and leaves execution data untouched", async () => {
+    const state = makeState();
+    state.definition.shortPurpose = "Prepares concise operational briefs for the board and agent company.";
+    state.definition.defaultInstructions = "Keep this prompt in English.";
+    const original = structuredClone(state);
+    await renderModal(state);
+    await i18n.changeLanguage("ru");
+    await flushReact();
+    expect(document.body.textContent).toContain("Готовит краткие оперативные сводки");
+    expect(state).toEqual(original);
+    expect(provisionMock).not.toHaveBeenCalled();
   });
 
   it("prefills a built-in's default adapter and model", async () => {
@@ -233,9 +249,16 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
       budgetInput.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await flushReact();
+    await i18n.changeLanguage("ru");
+    await flushReact();
+    expect(modelInput.value).toBe("gpt-5");
+    expect(budgetInput.value).toBe("50");
+    expect(document.body.textContent).toContain("Если в организации требуется одобрение найма");
+    expect(document.body.textContent).toContain("Prepares briefs.");
+    expect(provisionMock).not.toHaveBeenCalled();
 
     flushSync(() => {
-      findButton("Configure")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      findButton("Настроить и включить")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 

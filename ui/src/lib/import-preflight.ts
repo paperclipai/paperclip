@@ -1,3 +1,4 @@
+import { i18n, t } from "@/i18n";
 import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
 
 // Inline imports post the whole parsed package as one JSON body, so oversized
@@ -80,5 +81,5 @@ export function buildInlineImportPreflight(
 }
 
 export function formatMegabytes(bytes: number): string {
-  return `${Math.max(1, Math.round(bytes / (1024 * 1024)))} MB`;
+  return t("localizationProjects.megabytes", { value: Math.max(1, Math.round(bytes / (1024 * 1024))).toLocaleString(i18n.resolvedLanguage) });
 }

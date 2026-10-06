@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, MoreHorizontal, Pencil, RefreshCw } from "lucide-react";
@@ -74,6 +75,7 @@ export function SidebarRecentTasks({
   companyId: string | null | undefined;
   liveIssueIds: ReadonlySet<string>;
 }) {
+  useTranslation();
   const { collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
   const { data: session, isPending } = useQuery({
@@ -107,6 +109,7 @@ function RecentTasksList({
   liveIssueIds: ReadonlySet<string>;
   rail: boolean;
 }) {
+  const { t } = useTranslation();
   const { entries, storageKey } = useRecentTasks({ companyId, userId });
   const queryClient = useQueryClient();
   const toastActions = useOptionalToastActions();
@@ -145,11 +148,11 @@ function RecentTasksList({
       if (storageKey) updateRecentTaskSnapshots(storageKey, companyId, [updated]);
       await refreshIssueQueries(renameEntry.id);
       setRenameEntry(null);
-      toastActions?.pushToast({ title: "Task renamed", tone: "success" });
+      toastActions?.pushToast({ title: t("localizationSidebar.taskRenamed"), tone: "success" });
     } catch (error) {
       toastActions?.pushToast({
-        title: "Task rename failed",
-        body: errorMessage(error, "Unable to rename this task."),
+        title: t("localizationSidebar.taskRenameFailed"),
+        body: errorMessage(error, t("localizationSidebar.unableToRename")),
         tone: "error",
       });
     } finally {
@@ -165,11 +168,11 @@ function RecentTasksList({
       await queryClient.invalidateQueries({
         queryKey: queryKeys.sidebarBadges(companyId),
       });
-      toastActions?.pushToast({ title: "Task archived from inbox", tone: "success" });
+      toastActions?.pushToast({ title: t("localizationSidebar.taskArchived"), tone: "success" });
     } catch (error) {
       toastActions?.pushToast({
-        title: "Task archive failed",
-        body: errorMessage(error, "Unable to archive this task from the inbox."),
+        title: t("localizationSidebar.taskArchiveFailed"),
+        body: errorMessage(error, t("localizationSidebar.unableToArchive")),
         tone: "error",
       });
     } finally {
@@ -199,13 +202,13 @@ function RecentTasksList({
             restartIssue.companyId,
           );
           if (!("id" in wakeResult)) {
-            throw new Error(wakeResult.message ?? "The assignee wake was skipped.");
+            throw new Error(wakeResult.message ?? t("localizationSidebar.assigneeWakeSkipped"));
           }
         }
         setRestartWakeRetryPending(restartRetryStorageKey, entry.id, false);
-        toastActions?.pushToast({ title: "Task restarted", tone: "success" });
+        toastActions?.pushToast({ title: t("localizationSidebar.taskRestarted"), tone: "success" });
       } else if (state.activePauseHold) {
-        throw new Error("This task is paused by a parent task. Restart it from the pause root.");
+        throw new Error(t("localizationSidebar.parentPause"));
       } else if (readRestartWakeRetryIssueIds(restartRetryStorageKey).has(entry.id)) {
         const restartIssue = await issuesApi.get(entry.id);
         if (restartIssue.assigneeAgentId) {
@@ -220,26 +223,26 @@ function RecentTasksList({
             restartIssue.companyId,
           );
           if (!("id" in wakeResult)) {
-            throw new Error(wakeResult.message ?? "The assignee wake was skipped.");
+            throw new Error(wakeResult.message ?? t("localizationSidebar.assigneeWakeSkipped"));
           }
         }
         setRestartWakeRetryPending(restartRetryStorageKey, entry.id, false);
-        toastActions?.pushToast({ title: "Task restarted", tone: "success" });
+        toastActions?.pushToast({ title: t("localizationSidebar.taskRestarted"), tone: "success" });
       } else {
         await issuesApi.createTreeHold(entry.id, {
           mode: "pause",
           reason: "Paused from Recent Tasks.",
           releasePolicy: { strategy: "manual" },
         });
-        toastActions?.pushToast({ title: "Task paused", tone: "success" });
+        toastActions?.pushToast({ title: t("localizationSidebar.taskPaused"), tone: "success" });
       }
       await queryClient.invalidateQueries({
         queryKey: ["issues", "tree-control-state", entry.id],
       });
     } catch (error) {
       toastActions?.pushToast({
-        title: "Task pause update failed",
-        body: errorMessage(error, "Unable to pause or restart this task."),
+        title: t("localizationSidebar.taskPauseUpdateFailed"),
+        body: errorMessage(error, t("localizationSidebar.unableToPauseRestart")),
         tone: "error",
       });
     } finally {
@@ -249,15 +252,15 @@ function RecentTasksList({
 
   return (
     <>
-      <SidebarSection label="Recent Tasks">
+      <SidebarSection label={t("localizationSidebar.recentTasks")}>
         {entries.map((entry) => (
           <div key={entry.id} className="sidebar-action-row group/recent-task relative">
             <SidebarNavItem
               to={`/issues/${entry.id}`}
               label={entry.title}
               trailing={entry.status === "in_review" && entry.externalConversationState === "waiting"
-                ? <span className="text-xs text-muted-foreground">Idle</span> : undefined}
-              trailingLabel={entry.status === "in_review" && entry.externalConversationState === "waiting" ? "Idle" : undefined}
+                ? <span className="text-xs text-muted-foreground">{t("status.idle")}</span> : undefined}
+              trailingLabel={entry.status === "in_review" && entry.externalConversationState === "waiting" ? t("status.idle") : undefined}
               className={rail ? undefined : "sidebar-action-link pointer-coarse:pr-8"}
               liveCount={liveIssueIds.has(entry.id) ? 1 : undefined}
             />
@@ -268,7 +271,7 @@ function RecentTasksList({
                     type="button"
                     variant="ghost"
                     size="icon-xs"
-                    aria-label={`More actions for ${entry.title}`}
+                    aria-label={t("localizationSidebar.moreTaskActions", { title: entry.title })}
                     className="sidebar-action-menu absolute right-2 top-(--pct-50) z-10 -translate-y-(--pct-50) text-muted-foreground pointer-events-none opacity-0 transition-opacity hover:bg-sidebar-accent dark:hover:bg-sidebar-accent hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 pointer-coarse:before:hidden group-hover/recent-task:pointer-events-auto group-hover/recent-task:opacity-100 group-focus-within/recent-task:pointer-events-auto group-focus-within/recent-task:opacity-100 data-[state=open]:pointer-events-auto data-[state=open]:bg-sidebar-accent data-[state=open]:text-foreground data-[state=open]:opacity-100"
                   >
                     <MoreHorizontal aria-hidden="true" />
@@ -283,25 +286,19 @@ function RecentTasksList({
                     className={RECENT_TASK_MENU_ITEM_CLASS}
                     onSelect={() => beginRename(entry)}
                   >
-                    <Pencil aria-hidden="true" />
-                    Rename
-                  </DropdownMenuItem>
+                    <Pencil aria-hidden="true" />{t("localizationSidebar.rename")}</DropdownMenuItem>
                   <DropdownMenuItem
                     className={RECENT_TASK_MENU_ITEM_CLASS}
                     disabled={pendingAction !== null}
                     onSelect={() => void archiveTask(entry)}
                   >
-                    <Archive aria-hidden="true" />
-                    Archive
-                  </DropdownMenuItem>
+                    <Archive aria-hidden="true" />{t("localizationSidebar.archive")}</DropdownMenuItem>
                   <DropdownMenuItem
                     className={RECENT_TASK_MENU_ITEM_CLASS}
                     disabled={pendingAction !== null}
                     onSelect={() => void toggleTaskPause(entry)}
                   >
-                    <RefreshCw aria-hidden="true" />
-                    Pause/Restart
-                  </DropdownMenuItem>
+                    <RefreshCw aria-hidden="true" />{t("localizationSidebar.pauseRestart")}</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : null}
@@ -318,12 +315,12 @@ function RecentTasksList({
         <DialogContent className="sm:max-w-md">
           <form className="grid gap-4" onSubmit={(event) => void submitRename(event)}>
             <DialogHeader>
-              <DialogTitle>Rename task</DialogTitle>
-              <DialogDescription>Choose a short, clear name for this task.</DialogDescription>
+              <DialogTitle>{t("localizationSidebar.renameTask")}</DialogTitle>
+              <DialogDescription>{t("localizationSidebar.chooseTaskName")}</DialogDescription>
             </DialogHeader>
             <Input
               autoFocus
-              aria-label="Task name"
+              aria-label={t("localizationSidebar.taskName")}
               value={renameValue}
               disabled={pendingAction === "rename"}
               onChange={(event) => setRenameValue(event.target.value)}
@@ -334,14 +331,12 @@ function RecentTasksList({
                 variant="outline"
                 disabled={pendingAction === "rename"}
                 onClick={() => setRenameEntry(null)}
-              >
-                Cancel
-              </Button>
+              >{t("localizationSidebar.cancel")}</Button>
               <Button
                 type="submit"
                 disabled={pendingAction === "rename" || !renameValue.trim()}
               >
-                {pendingAction === "rename" ? "Saving..." : "Save"}
+                {pendingAction === "rename" ? t("localizationSidebar.saving") : t("localizationSidebar.save")}
               </Button>
             </DialogFooter>
           </form>

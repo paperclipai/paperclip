@@ -1,3 +1,4 @@
+import { t, i18n, useTranslation } from "@/i18n";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -67,6 +68,7 @@ export function BlockedInboxView({
   showUpdatedColumn,
   presentation = "legacy",
 }: BlockedInboxViewProps) {
+  useTranslation();
   const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
 
   const {
@@ -87,10 +89,10 @@ export function BlockedInboxView({
       }),
   });
 
-  const allRows = useMemo(() => buildBlockedInboxRows(issues), [issues]);
+  const allRows = useMemo(() => buildBlockedInboxRows(issues), [i18n.resolvedLanguage, issues]);
   const filteredRows = useMemo(
     () => allRows.filter((row) => blockedRowMatchesSearch(row, searchQuery)),
-    [allRows, searchQuery],
+    [i18n.resolvedLanguage, allRows, searchQuery],
   );
   const issueFilteredRows = useMemo(() => {
     const visibleIssueIds = new Set(
@@ -104,11 +106,11 @@ export function BlockedInboxView({
       ).map((issue) => issue.id),
     );
     return filteredRows.filter((row) => visibleIssueIds.has(row.issue.id));
-  }, [currentUserId, filteredRows, issueFilters, liveIssueIds, workspaceFilterContext]);
-  const sortedRows = useMemo(() => sortBlockedInboxRows(issueFilteredRows, sortBy), [issueFilteredRows, sortBy]);
+  }, [i18n.resolvedLanguage, currentUserId, filteredRows, issueFilters, liveIssueIds, workspaceFilterContext]);
+  const sortedRows = useMemo(() => sortBlockedInboxRows(issueFilteredRows, sortBy), [i18n.resolvedLanguage, issueFilteredRows, sortBy]);
   const groups = useMemo(
     () => groupBlockedInboxRows(issueFilteredRows, sortBy),
-    [issueFilteredRows, sortBy],
+    [i18n.resolvedLanguage, issueFilteredRows, sortBy],
   );
 
   const toggleVariant = (variant: string) => {
@@ -149,7 +151,7 @@ export function BlockedInboxView({
 
   if (error) {
     const message =
-      error instanceof Error ? error.message : "Couldn't load the Blocked tab.";
+      error instanceof Error ? error.message : t("localizationIssueLists.blockedLoadError");
     return (
       <div
         data-testid="blocked-inbox-error"
@@ -159,9 +161,9 @@ export function BlockedInboxView({
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <div className="flex-1 space-y-1">
-            <p className="text-sm font-medium">Couldn't load the Blocked tab.</p>
+            <p className="text-sm font-medium">{t("localizationIssueLists.blockedLoadError", { defaultValue: "Couldn't load the Blocked tab." })}</p>
             <p className="text-xs opacity-80">
-              Other Inbox tabs still work. {message}
+              {t("localizationIssueLists.otherTabsWork", { defaultValue: t("localizationIssueLists.otherTabsWork") })} {message}
             </p>
           </div>
           <Button
@@ -172,7 +174,7 @@ export function BlockedInboxView({
             onClick={() => void refetch()}
             disabled={isFetching}
           >
-            {isFetching ? "Trying…" : "Try again"}
+            {isFetching ? t("localizationIssueLists.trying", { defaultValue: t("localizationIssueLists.trying") }) : t("common.tryAgain", { defaultValue: t("localizationProjectRepositories.retry") })}
           </Button>
         </div>
       </div>
@@ -189,9 +191,9 @@ export function BlockedInboxView({
           <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
         </span>
         <div className="space-y-1">
-          <p className="text-sm font-medium text-foreground">No work is stopped.</p>
+          <p className="text-sm font-medium text-foreground">{t("localizationIssueLists.noStoppedWork", { defaultValue: t("localizationIssueLists.noStoppedWork") })}</p>
           <p className="text-xs text-muted-foreground">
-            Tasks that need a decision, recovery, or external action will appear here.
+            {t("localizationIssueLists.stoppedWorkHelp", { defaultValue: t("localizationIssueLists.stoppedWorkHelp") })}
           </p>
         </div>
       </Card>
@@ -205,7 +207,7 @@ export function BlockedInboxView({
           data-testid="blocked-inbox-no-search-results"
           className="block border-border/70 bg-card/40 px-4 py-6 text-center text-sm text-muted-foreground"
         >
-          No stopped items match your search.
+          {t("localizationIssueLists.noStoppedMatches", { defaultValue: t("localizationIssueLists.noStoppedMatches") })}
         </Card>
       </div>
     );
@@ -314,6 +316,7 @@ function BlockedInboxRow({
   showUpdatedColumn,
   presentation,
 }: BlockedInboxRowProps) {
+  useTranslation();
   const { label: ownerName, isAgent } = resolveOwnerName(row, agentNameById, userLabelById);
   const stoppedAge = formatStoppedAge(row.attention.stoppedSinceAt);
   const blockerAttention = resolveInboxIssueBlockerAttention(row.issue, {
@@ -416,6 +419,7 @@ function BlockedRowDesktopMeta({
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
 }) {
+  useTranslation();
   const identifier = row.issue.identifier ?? row.issue.id.slice(0, 8);
   return (
     <span className="hidden shrink-0 items-center gap-2 sm:inline-flex">

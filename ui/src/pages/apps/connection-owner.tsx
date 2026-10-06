@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation } from "@/i18n";
 import type { ToolConnection } from "@paperclipai/shared";
 import { humanizeConnectionDisplayName } from "@paperclipai/shared";
 import { Identity } from "@/components/Identity";
@@ -11,16 +12,16 @@ export function connectionOwnerProfile(
 ): ConnectionOwnerProfile | null {
   if (!connection.createdByUserId) return null;
   return profiles.get(connection.createdByUserId) ?? {
-    label: connection.createdByUserId === "local-board" ? "Board" : "Board member",
+    label: connection.createdByUserId === "local-board" ? t("pages.cliAuth.board") : t("localizationApps.boardMember102"),
     image: null,
   };
 }
 
 function ownerGivenName(label: string): string {
   const trimmed = label.trim();
-  if (!trimmed) return "Board";
+  if (!trimmed) return t("pages.cliAuth.board");
   const first = trimmed.split(/\s+/)[0] ?? trimmed;
-  return first.includes("@") ? first.split("@")[0] || "Board" : first;
+  return first.includes("@") ? first.split("@")[0] || t("pages.cliAuth.board") : first;
 }
 
 function possessive(label: string): string {
@@ -35,6 +36,7 @@ export function connectionDisplayNameForOwner(
   connection: Pick<ToolConnection, "name">,
   applicationName: string,
   owner: ConnectionOwnerProfile | null,
+  displayApplicationName = applicationName,
 ): string {
   const rawName = connection.name.trim();
   // Provider account identifiers are machine values, not prose. Preserve
@@ -45,15 +47,16 @@ export function connectionDisplayNameForOwner(
     /^(?:[a-z0-9-]+\.)+[a-z]{2,}$/i.test(rawName)
       ? rawName
       : humanizeConnectionDisplayName(connection);
-  if (!owner) return connectionName;
   if (connectionName.trim().toLocaleLowerCase() !== applicationName.trim().toLocaleLowerCase()) {
     return connectionName;
   }
-  return `${possessive(ownerGivenName(owner.label))} ${applicationName}`;
+  if (!owner) return displayApplicationName;
+  return t("localizationApps.ownerApplication", { owner: (i18n.resolvedLanguage ?? "en").split("-")[0] !== "en" ? ownerGivenName(owner.label) : possessive(ownerGivenName(owner.label)), app: displayApplicationName });
 }
 
 export function ConnectionOwnerIdentity({ owner }: { owner: ConnectionOwnerProfile | null }) {
-  if (!owner) return <span className="text-xs text-muted-foreground">Unknown</span>;
+  const { t } = useTranslation();
+  if (!owner) return <span className="text-xs text-muted-foreground">{t("common.unknown")}</span>;
   return (
     <Identity
       name={owner.label}

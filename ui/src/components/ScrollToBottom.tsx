@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useCallback, useEffect, useState } from "react";
 import { ArrowDown } from "lucide-react";
 import { createPortal } from "react-dom";
@@ -36,6 +37,7 @@ function distanceFromBottom(target: ReturnType<typeof resolveScrollTarget>) {
  * On desktop that is `#main-content`; on mobile it falls back to window/page scroll.
  */
 export function ScrollToBottom() {
+  const { t } = useTranslation();
   const [visible, setVisible] = useState(false);
   const { panelVisible, panelContent } = usePanel();
   const { isMobile } = useSidebar();
@@ -101,7 +103,7 @@ export function ScrollToBottom() {
           : "fixed bottom-(--sz-calc-21) right-6 md:bottom-6",
         !isMobile && panelVisible && panelContent && "md:right-(--sz-calc-22)",
       )}
-      aria-label="Scroll to bottom"
+      aria-label={t("localizationCommonTail.scrollBottom")}
     >
       <ArrowDown className="h-4 w-4" />
     </button>

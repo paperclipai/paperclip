@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { i18n } from "@/i18n";
 
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -549,6 +550,7 @@ describe("CompanyEnvironments — test provider button", () => {
   afterEach(() => {
     root?.unmount();
     root = null;
+    void i18n.changeLanguage("en");
     container.remove();
     document.body.innerHTML = "";
     if (originalWebSocket) {
@@ -574,6 +576,12 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(buttonsBefore).toHaveLength(2);
     expect(buttonsBefore.every((button) => button.textContent?.trim() === "Test provider")).toBe(true);
     expect(buttonsBefore.every((button) => !button.disabled)).toBe(true);
+    const valuesBefore = Array.from(container.querySelectorAll("select option")).map((option) => (option as HTMLOptionElement).value);
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(container.textContent).toContain("Проверить провайдера");
+    expect(Array.from(container.querySelectorAll("select option")).map((option) => (option as HTMLOptionElement).value)).toEqual(valuesBefore);
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(container.textContent).toContain("Test provider");
 
     await act(async () => {
       buttonsBefore[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));

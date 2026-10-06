@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 import type { ToolCatalogEntry, ToolProfileEntry } from "@paperclipai/shared";
 import {
   appCheckState,
@@ -80,6 +81,30 @@ const catalog: ToolCatalogEntry[] = [
 function gmail(): AppGroup {
   return groupCatalogByApp(catalog, appsById, connsById)[0];
 }
+
+describe("locale-independent access rules", () => {
+  it("translates display labels without changing selections, risk levels or API entries", async () => {
+    const originalLanguage = i18n.language;
+    try {
+      await i18n.changeLanguage("en");
+      const group = gmail();
+      const selections = { [group.appKey]: { kind: "all_except" as const, excluded: ["g-delete"] } };
+      const rules = [{ id: "write-rule", kind: "risk_level" as const, value: "write", riskLevel: "write" as const, effect: "exclude" as const }];
+      const before = buildEntries([group], selections, rules, "allow");
+      const templates = ["read_only", "everyday", "full_access"] as const;
+      const beforeTemplates = templates.map((key) => templateSelections(key, [group]));
+      expect(appSelectionLabel(group, selections[group.appKey])).toBe("All Gmail except 1");
+      await i18n.changeLanguage("ru");
+      expect(appSelectionLabel(group, selections[group.appKey])).toBe("Все инструменты Gmail, кроме 1");
+      expect(buildEntries([group], selections, rules, "allow")).toEqual(before);
+      expect(templates.map((key) => templateSelections(key, [group]))).toEqual(beforeTemplates);
+      expect(before).toContainEqual({ selectorType: "risk_level", effect: "exclude", riskLevel: "write" });
+      expect(selections[group.appKey]).toEqual({ kind: "all_except", excluded: ["g-delete"] });
+    } finally {
+      await i18n.changeLanguage(originalLanguage);
+    }
+  });
+});
 
 describe("groupCatalogByApp", () => {
   it("groups by application and names from the app map", () => {

@@ -1,4 +1,5 @@
 import { createContext, useContext, type ReactNode } from "react";
+import { useTranslation } from "@/i18n";
 import { NavLink } from "@/lib/router";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
@@ -50,6 +51,8 @@ interface SidebarNavItemProps {
    * count is rendered as a dot (e.g. `badgeLabel="unread"` → "Inbox, 28 unread").
    */
   badgeLabel?: string;
+  /** Complete localized count phrase; preferred to concatenating a noun. */
+  badgeDescription?: string;
   textBadge?: string;
   textBadgeTone?: "default" | "amber";
   alert?: boolean;
@@ -78,6 +81,7 @@ export function SidebarNavItem({
   badge,
   badgeTone = "default",
   badgeLabel,
+  badgeDescription,
   textBadge,
   textBadgeTone = "default",
   alert = false,
@@ -87,6 +91,7 @@ export function SidebarNavItem({
   trailingLabel,
   liveAccessory,
 }: SidebarNavItemProps) {
+  const { t } = useTranslation();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   // A contextual takeover forces full labels even when the saved global app
   // sidebar preference is collapsed.
@@ -103,11 +108,11 @@ export function SidebarNavItem({
   // Accessible text equivalent for the collapsed dot indicator. The visible
   // label is `sr-only` in the rail, so the count must be surfaced here.
   const railStatusText = hasLive
-    ? `${liveCount} live`
+    ? t("localizationSidebar.liveCount", { count: liveCount })
     : hasBadge
-      ? `${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
+      ? badgeDescription ?? `${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
       : alert
-        ? "attention needed"
+        ? t("localizationSidebar.attentionNeeded")
         : undefined;
   const railAriaLabel = !rail || (!railStatusText && !trailingLabel)
     ? undefined
@@ -190,7 +195,7 @@ export function SidebarNavItem({
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-600 dark:bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-600 dark:bg-blue-400" />
               </span>
-              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{liveCount} live</span>
+              <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">{t("localizationSidebar.liveCount", { count: liveCount })}</span>
             </>
           )}
         </span>

@@ -2,6 +2,7 @@ import type { CompanyMember, CompanyUserDirectoryEntry } from "@/api/access";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { Agent, Issue, Project } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 export interface CompanyUserProfile {
   label: string;
@@ -10,6 +11,44 @@ export interface CompanyUserProfile {
 
 type CompanyUserRecord = Pick<CompanyMember, "principalId" | "status" | "user">
   | CompanyUserDirectoryEntry;
+
+// Provenance stays outside canonical maps/profiles: stored chat metadata,
+// mentions, enumerable shapes and serialized values must remain language-free.
+const fallbackLabelMaps = new WeakMap<ReadonlyMap<string, string>, Set<string>>();
+const fallbackProfiles = new WeakSet<CompanyUserProfile>();
+
+function hasGeneratedBoardLabel(member: Pick<CompanyUserRecord, "principalId" | "user">): boolean {
+  return member.principalId === "local-board"
+    && !member.user?.name?.trim()
+    && !member.user?.email?.trim();
+}
+
+export function isGeneratedCompanyUserLabel(
+  userId: string | null | undefined,
+  labels: ReadonlyMap<string, string> | Record<string, string> | null | undefined,
+): boolean {
+  return Boolean(userId && labels instanceof Map
+    && fallbackLabelMaps.get(labels)?.has(userId)
+    && labels.get(userId) === "Board");
+}
+
+/** UI-only accessor; never use this value when constructing messages or payloads. */
+export function companyUserLabelDisplayLabel(
+  userId: string | null | undefined,
+  labels: ReadonlyMap<string, string> | Record<string, string> | null | undefined,
+): string | undefined {
+  if (!userId || !labels) return undefined;
+  if (isGeneratedCompanyUserLabel(userId, labels)) return t("localizationAssigneeChrome.board");
+  return labels instanceof Map ? labels.get(userId) : (labels as Record<string, string>)[userId];
+}
+
+/** UI-only accessor; an explicit profile name, including "Board", stays raw. */
+export function companyUserProfileDisplayLabel(profile: CompanyUserProfile | null | undefined): string | undefined {
+  if (!profile) return undefined;
+  return fallbackProfiles.has(profile) && profile.label === "Board"
+    ? t("localizationAssigneeChrome.board")
+    : profile.label;
+}
 
 function fallbackUserLabel(userId: string): string {
   if (userId === "local-board") return "Board";
@@ -37,9 +76,13 @@ function activeUniqueMembers(members: CompanyUserRecord[] | null | undefined) {
 
 export function buildCompanyUserLabelMap(members: CompanyUserRecord[] | null | undefined): Map<string, string> {
   const labels = new Map<string, string>();
+  const generated = new Set<string>();
   for (const member of members ?? []) {
     labels.set(member.principalId, baseMemberLabel(member));
+    if (hasGeneratedBoardLabel(member)) generated.add(member.principalId);
+    else generated.delete(member.principalId);
   }
+  fallbackLabelMaps.set(labels, generated);
   return labels;
 }
 
@@ -48,10 +91,12 @@ export function buildCompanyUserProfileMap(
 ): Map<string, CompanyUserProfile> {
   const profiles = new Map<string, CompanyUserProfile>();
   for (const member of members ?? []) {
-    profiles.set(member.principalId, {
+    const profile = {
       label: baseMemberLabel(member),
       image: member.user?.image ?? null,
-    });
+    };
+    if (hasGeneratedBoardLabel(member)) fallbackProfiles.add(profile);
+    profiles.set(member.principalId, profile);
   }
   return profiles;
 }

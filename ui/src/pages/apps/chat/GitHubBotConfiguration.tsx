@@ -1,3 +1,5 @@
+import { chatUiErrorMessage, type ChatUiError } from "./chat-copy";
+import { t, useTranslation } from "@/i18n";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -20,12 +22,12 @@ import { Link } from "@/lib/router";
 export const githubSelectClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
 const eventLabels = {
-  opened: "New pull request",
-  synchronize: "Updated commits",
-  reopened: "Reopened",
-  ready_for_review: "Ready for review",
-  mention: "Mention",
-  comment: "Follow-up comment",
+  get opened() { return t("sep28Apps.copy4"); },
+  get synchronize() { return t("sep28Apps.copy5"); },
+  get reopened() { return t("sep28Apps.copy6"); },
+  get ready_for_review() { return t("sep28Apps.copy7"); },
+  get mention() { return t("sep28Apps.copy8"); },
+  get comment() { return t("sep28Apps.copy9"); },
 };
 export function GitHubToggle({
   label,
@@ -38,6 +40,7 @@ export function GitHubToggle({
   checked: boolean;
   onChange: (checked: boolean) => void;
 }) {
+  useTranslation();
   return (
     <div className="flex items-center justify-between gap-4 py-2">
       <div>
@@ -61,6 +64,7 @@ export function GitHubPolicyEditor({
   policy: GitHubReviewPolicy;
   onChange: (policy: GitHubReviewPolicy) => void;
 }) {
+  useTranslation();
   const [prompt, setPrompt] =
     useState<(typeof GITHUB_REVIEW_EVENTS)[number]>("opened");
   const set = <K extends keyof GitHubReviewPolicy>(
@@ -70,9 +74,7 @@ export function GitHubPolicyEditor({
   return (
     <div className="space-y-6">
       <div className="space-y-2">
-        <Label htmlFor="github-invocation">
-          When should this agent review?
-        </Label>
+        <Label htmlFor="github-invocation">{t("sep28Apps.copy10")}</Label>
         <select
           id="github-invocation"
           className={githubSelectClass}
@@ -84,20 +86,14 @@ export function GitHubPolicyEditor({
             )
           }
         >
-          <option value="linked_authors">
-            Linked members’ PRs and authorized mentions
-          </option>
-          <option value="mentions_only">Authorized mentions only</option>
-          <option value="allowed_authors">
-            Allowed authors’ PRs and authorized mentions
-          </option>
+          <option value="linked_authors">{t("sep28Apps.copy11")}</option>
+          <option value="mentions_only">{t("sep28Apps.copy12")}</option>
+          <option value="allowed_authors">{t("sep28Apps.copy13")}</option>
         </select>
-        <p className="text-xs text-muted-foreground">
-          Newly added people have a separate automatic-review setting in Access.
-        </p>
+        <p className="text-xs text-muted-foreground">{t("sep28Apps.copy14")}</p>
       </div>
       <div>
-        <h3 className="text-sm font-medium">Automatic review events</h3>
+        <h3 className="text-sm font-medium">{t("sep28Apps.copy15")}</h3>
         {GITHUB_REVIEW_EVENTS.slice(0, 4).map((event) => (
           <GitHubToggle
             key={event}
@@ -114,58 +110,56 @@ export function GitHubPolicyEditor({
           />
         ))}
         <GitHubToggle
-          label="Include draft PRs"
+          label={t("sep28Apps.copy16")}
           checked={policy.reviewDrafts}
           onChange={(value) => set("reviewDrafts", value)}
         />
         <GitHubToggle
-          label="Include bot authors"
-          description="Also allow the bot account in Access with a sponsor and automatic reviews enabled."
+          label={t("sep28Apps.copy17")}
+          description={t("sep28Apps.copy18")}
           checked={policy.reviewBotAuthors}
           onChange={(value) => set("reviewBotAuthors", value)}
         />
       </div>
       <details className="rounded-lg border border-border p-4">
-        <summary className="cursor-pointer text-sm font-medium">
-          Author, branch, label, and file filters
-        </summary>
+        <summary className="cursor-pointer text-sm font-medium">{t("sep28Apps.copy19")}</summary>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           {(
             [
               [
                 "includeAuthors",
-                "Included authors",
-                "Leave empty to include any authorized author. One username or glob per line.",
+                t("sep28Apps.copy20"),
+                t("sep28Apps.copy21"),
               ],
               [
                 "excludeAuthors",
-                "Excluded authors",
-                "One username or glob per line.",
+                t("sep28Apps.copy22"),
+                t("sep28Apps.copy23"),
               ],
               [
                 "targetBranches",
-                "Target branches",
-                "Leave empty for all branches. Supports * and **.",
+                t("sep28Apps.copy24"),
+                t("sep28Apps.copy25"),
               ],
               [
                 "excludedBranches",
-                "Excluded target branches",
-                "Never automatically review these branches. Supports * and **.",
+                t("sep28Apps.copy26"),
+                t("sep28Apps.copy27"),
               ],
               [
                 "requiredLabels",
-                "Required labels",
-                "All listed labels must be present.",
+                t("sep28Apps.copy28"),
+                t("sep28Apps.copy29"),
               ],
               [
                 "excludedLabels",
-                "Excluded labels",
-                "Any listed label prevents automatic review.",
+                t("sep28Apps.copy30"),
+                t("sep28Apps.copy31"),
               ],
               [
                 "ignoredPaths",
-                "Ignored file paths",
-                "Excluded from manual and automatic analysis. Supports * and **.",
+                t("sep28Apps.copy32"),
+                t("sep28Apps.copy33"),
               ],
             ] as const
           ).map(([key, label, help]) => (
@@ -182,25 +176,19 @@ export function GitHubPolicyEditor({
             </div>
           ))}
         </div>
-        <p className="mt-3 text-xs text-muted-foreground">
-          Authorized manual requests bypass automatic scheduling filters.
-          Repository restrictions and ignored files still apply.
-        </p>
+        <p className="mt-3 text-xs text-muted-foreground">{t("sep28Apps.copy34")}</p>
       </details>
       <div className="space-y-2">
-        <Label htmlFor="github-instructions">Review instructions</Label>
+        <Label htmlFor="github-instructions">{t("sep28Apps.copy35")}</Label>
         <Textarea
           id="github-instructions"
           value={policy.instructions}
           onChange={(e) => set("instructions", e.target.value)}
         />
-        <p className="text-xs text-muted-foreground">
-          Additional guidance for the assigned agent. Provider content cannot
-          change its permissions.
-        </p>
+        <p className="text-xs text-muted-foreground">{t("sep28Apps.copy36")}</p>
       </div>
       <div className="space-y-2">
-        <Label htmlFor="github-prompt-event">Event prompts</Label>
+        <Label htmlFor="github-prompt-event">{t("sep28Apps.copy37")}</Label>
         <select
           id="github-prompt-event"
           className={githubSelectClass}
@@ -214,21 +202,17 @@ export function GitHubPolicyEditor({
           ))}
         </select>
         <Textarea
-          aria-label={`${eventLabels[prompt]} prompt`}
+          aria-label={t("sep28Apps.eventPrompt", { event: eventLabels[prompt] })}
           value={policy.prompts[prompt]}
           onChange={(e) =>
             set("prompts", { ...policy.prompts, [prompt]: e.target.value })
           }
         />
-        <p className="text-xs text-muted-foreground">
-          Paperclip supplies repository, PR, base and head commits, sender, and
-          prior head as typed context. Saved revisions remain attached to review
-          activity.
-        </p>
+        <p className="text-xs text-muted-foreground">{t("sep28Apps.copy38")}</p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-2">
-          <Label htmlFor="github-categories">Finding categories</Label>
+          <Label htmlFor="github-categories">{t("sep28Apps.copy39")}</Label>
           <Input
             id="github-categories"
             value={policy.findingCategories.join(", ")}
@@ -242,14 +226,10 @@ export function GitHubPolicyEditor({
               )
             }
           />
-          <p className="text-xs text-muted-foreground">
-            Comma-separated assessment categories.
-          </p>
+          <p className="text-xs text-muted-foreground">{t("sep28Apps.copy40")}</p>
         </div>
         <div className="space-y-2">
-          <Label htmlFor="github-severity">
-            Minimum inline comment severity
-          </Label>
+          <Label htmlFor="github-severity">{t("sep28Apps.copy41")}</Label>
           <select
             id="github-severity"
             className={githubSelectClass}
@@ -261,41 +241,39 @@ export function GitHubPolicyEditor({
               )
             }
           >
-            <option value="info">Info</option>
-            <option value="warning">Warning</option>
-            <option value="error">Error</option>
+            <option value="info">{t("status.info")}</option>
+            <option value="warning">{t("status.warning")}</option>
+            <option value="error">{t("status.error")}</option>
           </select>
-          <p className="text-xs text-muted-foreground">
-            Hidden comments still count in the assessment.
-          </p>
+          <p className="text-xs text-muted-foreground">{t("sep28Apps.copy42")}</p>
         </div>
       </div>
       <div>
-        <h3 className="text-sm font-medium">Publication permissions</h3>
+        <h3 className="text-sm font-medium">{t("sep28Apps.copy43")}</h3>
         <GitHubToggle
-          label="Publish summary"
+          label={t("sep28Apps.copy44")}
           checked={policy.publishSummary}
           onChange={(value) => set("publishSummary", value)}
         />
         <GitHubToggle
-          label="Publish inline findings"
+          label={t("sep28Apps.copy45")}
           checked={policy.publishInline}
           onChange={(value) => set("publishInline", value)}
         />
         <GitHubToggle
-          label="Allow formal approvals"
-          description="A separate agent action; a 5/5 score never automatically approves."
+          label={t("sep28Apps.copy46")}
+          description={t("sep28Apps.copy47")}
           checked={policy.allowApprove}
           onChange={(value) => set("allowApprove", value)}
         />
         <GitHubToggle
-          label="Allow formal request changes"
+          label={t("sep28Apps.copy48")}
           checked={policy.allowRequestChanges}
           onChange={(value) => set("allowRequestChanges", value)}
         />
       </div>
       <div className="space-y-2">
-        <Label htmlFor="github-rating">Paperclip Review check</Label>
+        <Label htmlFor="github-rating">{t("sep28Apps.copy49")}</Label>
         <select
           id="github-rating"
           className={githubSelectClass}
@@ -310,27 +288,18 @@ export function GitHubPolicyEditor({
           }
         >
           {[5, 4, 3, 2, 1].map((score) => (
-            <option key={score} value={score}>
-              Require at least {score}/5
+            <option key={score} value={score}>{t("sep28Apps.copy50")} {score}/5
             </option>
           ))}
-          <option value="report">Report only</option>
+          <option value="report">{t("sep28Apps.copy51")}</option>
         </select>
-        <p className="text-xs text-muted-foreground">
-          Paperclip computes the result for the exact reviewed commit.
-          Incomplete reviews cannot pass. To require it before merging, select
-          “Paperclip Review” in your GitHub branch protection or ruleset
-          settings and choose this bot’s GitHub App as the expected source. Run
-          a review first so the check appears in GitHub’s selector.
-        </p>
+        <p className="text-xs text-muted-foreground">{t("sep28Apps.copy52")}</p>
         <a
           className="text-xs underline"
           href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository"
           target="_blank"
           rel="noreferrer"
-        >
-          Set up a required check on GitHub
-        </a>
+        >{t("sep28Apps.copy53")}</a>
       </div>
     </div>
   );
@@ -347,6 +316,7 @@ export function GitHubAccessEditor({
   configuration: GitHubChatConfiguration;
   onChange: (configuration: GitHubChatConfiguration) => void;
 }) {
+  useTranslation();
   const accountLink = useRef<HTMLAnchorElement>(null);
   const [linkCopied, setLinkCopied] = useState(false);
   const members = useQuery({
@@ -364,7 +334,7 @@ export function GitHubAccessEditor({
     githubUserId: string;
     login: string;
   } | null>(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<ChatUiError>("");
   const [busy, setBusy] = useState(false);
   const add = (person: GitHubAllowedPerson) => {
     if (
@@ -387,9 +357,7 @@ export function GitHubAccessEditor({
   return (
     <div className="space-y-5">
       <div className="space-y-2">
-        <Label htmlFor="github-responsible">
-          Responsible user for automatic events
-        </Label>
+        <Label htmlFor="github-responsible">{t("sep28Apps.copy54")}</Label>
         <select
           id="github-responsible"
           className={githubSelectClass}
@@ -404,13 +372,10 @@ export function GitHubAccessEditor({
             </option>
           ))}
         </select>
-        <p className="text-xs text-muted-foreground">
-          Accountable for automatic tasks. The PR author and webhook sender
-          remain recorded separately.
-        </p>
+        <p className="text-xs text-muted-foreground">{t("sep28Apps.copy55")}</p>
       </div>
       <div className="space-y-2">
-        <Label htmlFor="github-member-access">Company member access</Label>
+        <Label htmlFor="github-member-access">{t("sep28Apps.copy56")}</Label>
         <select
           id="github-member-access"
           className={githubSelectClass}
@@ -422,18 +387,15 @@ export function GitHubAccessEditor({
             })
           }
         >
-          <option value="all_linked">All linked company members</option>
-          <option value="selected">Only selected linked members</option>
+          <option value="all_linked">{t("sep28Apps.copy57")}</option>
+          <option value="selected">{t("sep28Apps.copy58")}</option>
         </select>
-        <p className="text-xs text-muted-foreground">
-          Members connect their own GitHub account.{" "}
+        <p className="text-xs text-muted-foreground">{t("sep28Apps.copy59")}{" "}
           <Link
             className="underline"
             ref={accountLink}
             to={`/apps/chat/connect?provider=github&resume=${endpointId}&stage=identity`}
-          >
-            Open account linking
-          </Link>
+          >{t("sep28Apps.copy60")}</Link>
           <Button
             variant="link"
             size="sm"
@@ -443,22 +405,20 @@ export function GitHubAccessEditor({
                   () => setLinkCopied(true),
                   () =>
                     setError(
-                      "Could not copy the link. Open account linking and copy the address.",
+                      { key: "sep28Apps.copy61" },
                     ),
                 );
             }}
           >
-            {linkCopied ? "Link copied" : "Copy link for teammates"}
+            {linkCopied ? t("common.linkCopied") : t("sep28Apps.copy62")}
           </Button>
           .
         </p>
       </div>
       <div className="space-y-3">
-        <h3 className="text-sm font-medium">Linked GitHub accounts</h3>
+        <h3 className="text-sm font-medium">{t("sep28Apps.copy63")}</h3>
         {links.isError && (
-          <p role="alert" className="text-sm text-destructive">
-            Could not load linked accounts.
-          </p>
+          <p role="alert" className="text-sm text-destructive">{t("sep28Apps.copy64")}</p>
         )}
         {(links.data ?? [])
           .filter((link) => link.status === "linked")
@@ -487,32 +447,24 @@ export function GitHubAccessEditor({
                     setError(
                       e instanceof Error
                         ? e.message
-                        : "Could not unlink this account.",
+                        : { key: "sep28Apps.copy65" },
                     );
                   } finally {
                     setBusy(false);
                   }
                 }}
-              >
-                Unlink account
-              </Button>
+              >{t("sep28Apps.copy66")}</Button>
             </div>
           ))}
         {!links.isPending &&
           !links.isError &&
           !(links.data ?? []).some((link) => link.status === "linked") && (
-            <p className="text-sm text-muted-foreground">
-              No accounts linked yet. Each teammate confirms their own GitHub
-              identity.
-            </p>
+            <p className="text-sm text-muted-foreground">{t("sep28Apps.copy67")}</p>
           )}
       </div>
       <div className="divide-y divide-border rounded-lg border border-border">
         {configuration.people.length === 0 && (
-          <p className="p-4 text-sm text-muted-foreground">
-            No individual access entries. Unlinked people cannot invoke this
-            bot.
-          </p>
+          <p className="p-4 text-sm text-muted-foreground">{t("sep28Apps.copy68")}</p>
         )}
         {configuration.people.map((person) => (
           <div key={person.githubUserId} className="space-y-2 p-4">
@@ -521,8 +473,8 @@ export function GitHubAccessEditor({
                 <p className="text-sm font-medium">@{person.login}</p>
                 <p className="text-xs text-muted-foreground">
                   {person.kind === "member"
-                    ? "Linked company member"
-                    : "External contributor · restricted guest permissions"}
+                    ? t("sep28Apps.copy69")
+                    : t("sep28Apps.copy70")}
                 </p>
               </div>
               <Button
@@ -536,12 +488,10 @@ export function GitHubAccessEditor({
                     ),
                   })
                 }
-              >
-                Remove
-              </Button>
+              >{t("pages.profile.remove")}</Button>
             </div>
             <GitHubToggle
-              label={`Automatic PR reviews for @${person.login}`}
+              label={t("sep28Apps.automaticPerson", { login: person.login })}
               checked={person.automaticReviews}
               onChange={(value) =>
                 onChange({
@@ -556,30 +506,19 @@ export function GitHubAccessEditor({
             />
             {person.kind === "guest" && (
               <p className="text-xs text-muted-foreground">
-                Sponsor:{" "}
-                {activeMembers.find(
-                  (member) => member.principalId === person.sponsorUserId,
-                )?.user?.name ?? person.sponsorUserId}
-                . No company membership or personal credentials are granted.
+                {t("sep28Apps.sponsorNotice", { sponsor: activeMembers.find((member) => member.principalId === person.sponsorUserId)?.user?.name ?? person.sponsorUserId })}
               </p>
             )}
           </div>
         ))}
       </div>
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" onClick={() => setKind("member")}>
-          Add linked member
-        </Button>
-        <Button variant="outline" onClick={() => setKind("guest")}>
-          Allow external contributor
-        </Button>
+        <Button variant="outline" onClick={() => setKind("member")}>{t("sep28Apps.copy72")}</Button>
+        <Button variant="outline" onClick={() => setKind("guest")}>{t("sep28Apps.copy73")}</Button>
       </div>
       {kind === "member" && (
         <div className="space-y-3 rounded-lg border border-border p-4">
-          <p className="text-sm">
-            Adding a member switches access to the selected-member list.
-            Automatic PR reviews start off.
-          </p>
+          <p className="text-sm">{t("sep28Apps.copy74")}</p>
           {(links.data ?? [])
             .filter((link) => link.status === "linked" && link.paperclipUserId)
             .map((link) => (
@@ -595,7 +534,7 @@ export function GitHubAccessEditor({
                   const id = link.githubUserId;
                   if (!id) {
                     setError(
-                      "Refresh linked identities before adding this member.",
+                      { key: "sep28Apps.copy75" },
                     );
                     return;
                   }
@@ -611,19 +550,14 @@ export function GitHubAccessEditor({
                 {link.paperclipUserLabel ?? link.externalLabel}
               </Button>
             ))}
-          <Button variant="ghost" onClick={() => setKind(null)}>
-            Cancel
-          </Button>
+          <Button variant="ghost" onClick={() => setKind(null)}>{t("pages.cliAuth.cancel")}</Button>
         </div>
       )}
       {kind === "guest" && (
         <div className="space-y-4 rounded-lg border border-border p-4">
-          <p className="text-sm">
-            Allow one GitHub account to mention the bot with restricted guest
-            permissions. A sponsor is required.
-          </p>
+          <p className="text-sm">{t("sep28Apps.copy76")}</p>
           <div className="space-y-2">
-            <Label htmlFor="github-guest-login">GitHub username</Label>
+            <Label htmlFor="github-guest-login">{t("sep28Apps.copy77")}</Label>
             <div className="flex gap-2">
               <Input
                 id="github-guest-login"
@@ -643,19 +577,17 @@ export function GitHubAccessEditor({
                     setCandidate(await githubChatApi.lookup(endpointId, login));
                   } catch (error) {
                     setError(
-                      error instanceof Error ? error.message : "Lookup failed",
+                      error instanceof Error ? error.message : { key: "sep28Apps.copy78" },
                     );
                   } finally {
                     setBusy(false);
                   }
                 }}
-              >
-                Look up
-              </Button>
+              >{t("sep28Apps.copy79")}</Button>
             </div>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="github-guest-sponsor">Sponsor</Label>
+            <Label htmlFor="github-guest-sponsor">{t("sep28Apps.copy71")}</Label>
             <select
               id="github-guest-sponsor"
               className={githubSelectClass}
@@ -675,9 +607,7 @@ export function GitHubAccessEditor({
             </p>
           )}
           <div className="flex justify-between">
-            <Button variant="ghost" onClick={() => setKind(null)}>
-              Cancel
-            </Button>
+            <Button variant="ghost" onClick={() => setKind(null)}>{t("pages.cliAuth.cancel")}</Button>
             <Button
               disabled={
                 !candidate ||
@@ -696,16 +626,14 @@ export function GitHubAccessEditor({
                   automaticReviews: false,
                 })
               }
-            >
-              Allow this account
-            </Button>
+            >{t("sep28Apps.copy80")}</Button>
           </div>
         </div>
       )}
       {(error || members.error || links.error) && (
         <p role="alert" className="text-sm text-destructive">
-          {error ||
-            "Could not load members or linked accounts. Refresh to try again."}
+          {chatUiErrorMessage(error) ||
+            t("sep28Apps.copy81")}
         </p>
       )}
     </div>

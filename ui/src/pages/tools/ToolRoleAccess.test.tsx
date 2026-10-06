@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CurrentBoardAccess } from "@/api/access";
 import { AdvancedToolsRoute } from "./AdvancedToolsRoute";
 import { ToolsAdminGate } from "./profiles/ToolsAdminGate";
+import { i18n } from "@/i18n";
 
 const accessState = vi.hoisted(() => ({ data: undefined as CurrentBoardAccess | undefined }));
 
@@ -48,9 +50,10 @@ describe.each([
     accessState.data = undefined;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => root.unmount());
     container.remove();
+    await i18n.changeLanguage("en");
   });
 
   function render(access: CurrentBoardAccess | undefined) {
@@ -61,6 +64,21 @@ describe.each([
   it.each(["owner", "admin", "operator", "member"] as const)("allows active %s defaults", (role) => {
     render(snapshot(role));
     expect(container.textContent).toContain(editorText);
+  });
+
+  it("retranslates denied-access guidance without changing membership or navigation", async () => {
+    const access = snapshot("viewer");
+    const original = JSON.stringify(access);
+    render(access);
+    const link = container.querySelector("a")!;
+    for (const locale of ["en", "ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(container.querySelector("a")).toBe(link);
+      expect(link.getAttribute("href")).toBe("/apps");
+      expect(container.querySelector("h1")?.textContent).toMatch(locale === "ru" ? /права на редактирование/ : /editing access/);
+      expect(container.textContent).not.toContain(editorText);
+      expect(JSON.stringify(access)).toBe(original);
+    }
   });
 
   it("allows local boards and instance admins without company membership", () => {

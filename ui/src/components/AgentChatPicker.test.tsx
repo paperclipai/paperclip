@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
+import { i18n } from "@/i18n";
 import { AgentChatPicker, type AgentChatPickerProps } from "./AgentChatPicker";
 
 const agents = [
@@ -37,10 +38,28 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  await i18n.changeLanguage("en");
   vi.unstubAllGlobals();
 });
 
 describe("AgentChatPicker", () => {
+  it("switches languages without clearing the query or changing the selected agent", async () => {
+    await render();
+    await search("designer");
+    for (const locale of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      const input = document.querySelector<HTMLInputElement>("[role=combobox]")!;
+      expect(input.value).toBe("designer");
+      expect(input.getAttribute("aria-label")).toBe(locale === "ru" ? "Поиск агентов по имени или роли" : "Search agents by name or role");
+      expect(options()).toHaveLength(1);
+      expect(options()[0].textContent).toContain("Product Designer");
+      expect(options()[0].textContent).toContain(locale === "ru" ? "Приостановлен" : "Paused");
+      expect(props.onSelect).not.toHaveBeenCalled();
+    }
+    await act(async () => { options()[0].click(); });
+    expect(props.onSelect).toHaveBeenCalledExactlyOnceWith(agents[1], expect.any(AbortSignal));
+    expect(props.onOpenChange).toHaveBeenCalledExactlyOnceWith(false);
+  });
   it("does not close a reopened picker when an earlier selection finishes", async () => {
     let finish!: () => void;
     await render({ onSelect: () => new Promise<void>(resolve => { finish = resolve; }) });
@@ -53,7 +72,6 @@ describe("AgentChatPicker", () => {
     expect(document.querySelector<HTMLInputElement>("[role=combobox]")!.value).toBe("designer");
     expect(options()).toHaveLength(1);
   });
-
   it("searches by role and selects the correct same-name agent with Enter", async () => {
     await render();
     expect(options()).toHaveLength(2);

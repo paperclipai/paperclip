@@ -1,8 +1,30 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import en from "@/i18n/locales/en.json";
+
+function englishCopy(key: string): string | null {
+  let value: unknown = en;
+  for (const part of key.split(".")) value = (value as Record<string, unknown> | undefined)?.[part];
+  return typeof value === "string" ? value : null;
+}
 
 function source(relativePath: string) {
-  return readFileSync(new URL(relativePath, import.meta.url), "utf8");
+  // Follow the English source copy now that rendered labels live in catalogs.
+  // Only keys used by this source are expanded; unrelated catalog text cannot
+  // satisfy a feature's copy contract.
+  return readFileSync(new URL(relativePath, import.meta.url), "utf8")
+    .replace(/\bt\("([^"]+)"\)/g, (call, key: string) => {
+      const text = englishCopy(key);
+      return text === null ? call : JSON.stringify(text);
+    })
+    .replace(/\bt\("([^"]+)"(?=,)/g, (call, key: string) => {
+      const text = englishCopy(key);
+      return text === null ? call : JSON.stringify(text);
+    })
+    .replace(/i18nKey="([^"]+)"/g, (attribute, key: string) => {
+      const text = englishCopy(key);
+      return text === null ? attribute : `${attribute} /* ${text.replace(/<[^>]+>/g, "")} */`;
+    });
 }
 
 describe("chat connector UI contract", () => {
@@ -53,7 +75,8 @@ describe("chat connector UI contract", () => {
       expect(detail).toContain(`"${tab}"`);
     }
     expect(detail).not.toContain('"overview"');
-    expect(detail).toContain("Open {providerNames[provider]}");
+    expect(detail).toContain("Open {{value0}}");
+    expect(detail).toContain("value0: providerNames[provider]");
     expect(detail).toContain("Open task");
     expect(detail.toLowerCase()).not.toContain("detach");
   });
@@ -124,6 +147,15 @@ describe("chat connector UI contract", () => {
     }
   });
 
+  it("keeps exact audit timestamps available beside localized visible dates", () => {
+    const detail = source("./ChatEndpointDetail.tsx");
+    expect(detail).toContain("dateTime={surface.observedAt}");
+    expect(detail).toContain("title={surface.observedAt}");
+    expect(detail).toContain("dateTime={item.createdAt}");
+    expect(detail).toContain("title={item.createdAt}");
+    expect(detail).toContain("formatDateTime(item.createdAt, { includeSeconds: true })");
+  });
+
   it("states the provider boundary for reconnect and removal", () => {
     const detail = source("./ChatEndpointDetail.tsx");
     const setup = source("./ChatEndpointSetup.tsx");
@@ -190,9 +222,7 @@ describe("chat connector UI contract", () => {
     expect(setup).not.toContain("/setprivacy");
     expect(setup).toContain("/task@bot_username");
     expect(setup).toContain("registers its command menu automatically");
-    expect(setup).toContain(
-      "ordinary\n          mentions are not delivered to bots",
-    );
+    expect(setup).toContain("ordinary mentions are not delivered to bots");
     expect(setup).toContain("Create Azure Bot");
     expect(setup).toContain("Microsoft 365 work or school organization");
     expect(setup).toContain("teams.live.com");

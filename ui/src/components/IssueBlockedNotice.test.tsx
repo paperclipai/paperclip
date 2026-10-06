@@ -2,6 +2,7 @@
 
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
+import { act as reactAct } from "react";
 import type { AnchorHTMLAttributes, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -14,6 +15,7 @@ import type {
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { deriveRecoveryCardState } from "./IssueRecoveryActionCard";
 import { ToastProvider } from "../context/ToastContext";
+import { i18n } from "@/i18n";
 
 const retryNowMock = vi.hoisted(() => vi.fn());
 
@@ -123,6 +125,32 @@ function render(element: ReactElement) {
 }
 
 describe("IssueBlockedNotice", () => {
+  it.each([[true, true], [true, false], [false, true], [false, false]] as const)(
+    "updates live=%s linked=%s handoff run labels without changing source facts or retrying",
+    async (live, linked) => {
+      const sourceRunId = "12345678-aaaa-bbbb-cccc-123456789abc";
+      const liveRunId = "87654321-dddd-eeee-ffff-123456789abc";
+      const handoff = { state: "required" as const, required: true, hasLiveContinuation: live, liveRunId,
+        sourceRunId, correctiveRunId: null, assigneeAgentId: linked ? "raw-agent" : null,
+        detectedProgressSummary: "Original English progress", createdAt: "2026-05-01T00:00:00.000Z" };
+      const before = JSON.stringify(handoff);
+      await i18n.changeLanguage("en");
+      const node = render(<IssueBlockedNotice issueStatus="in_progress" blockers={[]} agentName="Board" successfulRunHandoff={handoff} />);
+      const id = live ? liveRunId : sourceRunId;
+      try {
+        for (const [locale, noun] of [["en", "run"], ["ru", "запуск"], ["en", "run"]] as const) {
+          await reactAct(async () => { await i18n.changeLanguage(locale); });
+          expect(node.textContent).toContain(`${noun} ${id.slice(0, 8)}`);
+          const runLink = node.querySelector(`a[href="/agents/raw-agent/runs/${id}"]`);
+          expect(Boolean(runLink)).toBe(linked);
+          if (linked) expect(runLink?.textContent).toBe(`${noun} ${id.slice(0, 8)}`);
+          if (!live) expect(node.textContent).toContain("Original English progress");
+          expect(JSON.stringify(handoff)).toBe(before); expect(retryNowMock).not.toHaveBeenCalled();
+        }
+      } finally { await reactAct(async () => { await i18n.changeLanguage("en"); }); }
+    },
+  );
+
   it("renders a successful-run next-step notice without requiring blockers", () => {
     const node = render(
       <IssueBlockedNotice

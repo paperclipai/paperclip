@@ -129,8 +129,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       setToasts((prev) => {
         const nextToast: ToastItem = {
           id,
-          title: input.title,
-          body: input.body,
+          get title() { return input.title; },
+          get body() { return input.body; },
           tone,
           ttlMs,
           action: input.action,

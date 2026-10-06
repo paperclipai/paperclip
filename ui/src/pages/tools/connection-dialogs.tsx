@@ -1,3 +1,5 @@
+import { t, useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Stethoscope, Trash2, Vault } from "lucide-react";
@@ -40,8 +42,8 @@ import {
 } from "./shared";
 
 export const TRANSPORT_LABEL: Record<string, string> = {
-  mcp_remote: "remote http",
-  local_stdio: "local stdio",
+  get mcp_remote() { return t("localizationTools.remoteHttp0"); },
+  get local_stdio() { return t("localizationTools.localStdio1"); },
 };
 
 /** Mono URL (remote) or command-template (stdio) subtitle for a connection row. */
@@ -69,6 +71,7 @@ function vaultRef(secret: CompanySecret | undefined, version: number | "latest" 
 }
 
 export function CatalogDialog({ connection, onClose }: { connection: ToolConnection; onClose: () => void }) {
+  const { t } = useTranslation();
   const catalog = useQuery({
     queryKey: queryKeys.tools.catalog(connection.id),
     queryFn: () => toolsApi.listCatalog(connection.id),
@@ -77,16 +80,14 @@ export function CatalogDialog({ connection, onClose }: { connection: ToolConnect
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Tool catalog — {connection.name}</DialogTitle>
+          <DialogTitle>{t("localizationTools.catalogForConnection", { name: connection.name })}</DialogTitle>
         </DialogHeader>
         {catalog.isLoading ? (
           <LoadingState />
         ) : catalog.error ? (
           <ErrorState error={catalog.error} onRetry={() => catalog.refetch()} />
         ) : (catalog.data?.catalog ?? []).length === 0 ? (
-          <p className="py-6 text-sm text-muted-foreground">
-            No tools discovered yet. Use “Refresh catalog” to discover tools from this connection.
-          </p>
+          <p className="py-6 text-sm text-muted-foreground">{t("localizationTools.noToolsDiscoveredYetUseRefreshCatalogToDiscov3")}</p>
         ) : (
           <ul className="max-h-(--sz-60vh) divide-y divide-border overflow-y-auto">
             {(catalog.data?.catalog ?? []).map((entry) => (
@@ -135,6 +136,7 @@ export function AddConnectionDialog({
   defaultApplicationId?: string | null;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { pushToast } = useToast();
 
@@ -226,7 +228,7 @@ export function AddConnectionDialog({
     },
     onError: (err) =>
       pushToast({
-        title: "Could not create connection",
+        title: t("localizationTools.couldNotCreateConnection5"),
         body: err instanceof ApiError ? err.message : String(err),
         tone: "error",
       }),
@@ -240,7 +242,7 @@ export function AddConnectionDialog({
     },
     onError: (err) =>
       pushToast({
-        title: "Probe failed",
+        title: t("localizationTools.probeFailed6"),
         body: err instanceof ApiError ? err.message : String(err),
         tone: "error",
       }),
@@ -251,12 +253,12 @@ export function AddConnectionDialog({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.tools.connections(companyId) });
       qc.invalidateQueries({ queryKey: queryKeys.tools.applications(companyId) });
-      pushToast({ title: "Connection activated", tone: "success" });
+      pushToast({ title: t("localizationTools.connectionActivated7"), tone: "success" });
       onClose();
     },
     onError: (err) =>
       pushToast({
-        title: "Activation failed",
+        title: t("localizationTools.activationFailed8"),
         body: err instanceof ApiError ? err.message : String(err),
         tone: "error",
       }),
@@ -279,41 +281,38 @@ export function AddConnectionDialog({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>Add application</DialogTitle>
-          <DialogDescription>
-            Choose an existing application or create one as part of the same connection flow. Credentials stay as
-            vault references and the connection is probed before activation.
-          </DialogDescription>
+          <DialogTitle>{t("localizationTools.addApplication11")}</DialogTitle>
+          <DialogDescription>{t("localizationTools.chooseAnExistingApplicationOrCreateOneAsPartO12")}</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className={step === 1 ? "font-medium text-foreground" : ""}>1 Application</span>
+            <span className={step === 1 ? "font-medium text-foreground" : ""}>{t("localizationTools.1Application13")}</span>
             <span>/</span>
-            <span className={step === 2 ? "font-medium text-foreground" : ""}>2 Connection</span>
+            <span className={step === 2 ? "font-medium text-foreground" : ""}>{t("localizationTools.2Connection14")}</span>
           </div>
 
           {step === 1 && !locked ? (
             <>
               <div className="space-y-1.5">
-                <Label>Application</Label>
+                <Label>{t("localizationTools.application15")}</Label>
                 <Select value={applicationMode} onValueChange={(v) => setApplicationMode(v as "existing" | "new")}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="existing">Use existing application</SelectItem>
-                    <SelectItem value="new">Create new application</SelectItem>
+                    <SelectItem value="existing">{t("localizationTools.useExistingApplication16")}</SelectItem>
+                    <SelectItem value="new">{t("localizationTools.createNewApplication17")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
               {applicationMode === "existing" ? (
                 <div className="space-y-1.5">
-                  <Label>Existing application</Label>
+                  <Label>{t("localizationTools.existingApplication18")}</Label>
                   <Select value={applicationId} onValueChange={setApplicationId}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select an application" />
+                      <SelectValue placeholder={t("localizationTools.selectAnApplication19")} />
                     </SelectTrigger>
                     <SelectContent>
                       {(apps.data?.applications ?? []).map((a) => (
@@ -326,16 +325,14 @@ export function AddConnectionDialog({
                 </div>
               ) : (
                 <div className="space-y-1.5">
-                  <Label htmlFor="app-name">New application name</Label>
+                  <Label htmlFor="app-name">{t("localizationTools.newApplicationName20")}</Label>
                   <Input
                     id="app-name"
                     value={applicationName}
                     onChange={(e) => setApplicationName(e.target.value)}
-                    placeholder="e.g. GitHub Triage"
+                    placeholder={t("localizationTools.eGGitHubTriage21")}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Application type is inferred from the transport you choose next.
-                  </p>
+                  <p className="text-xs text-muted-foreground">{t("localizationTools.applicationTypeIsInferredFromTheTransportYouC22")}</p>
                 </div>
               )}
             </>
@@ -345,24 +342,23 @@ export function AddConnectionDialog({
             <>
               {applicationMode === "new" ? (
                 <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">{applicationName.trim()}</span> will be created as{" "}
-                  {inferredType}.
+                  <Trans t={t} i18nKey="localizationTools.appCreatedAs" values={{ name: applicationName.trim(), type: inferredType }} components={{ name: <span className="font-medium text-foreground" /> }} />
                 </div>
               ) : null}
 
               <div className="space-y-1.5">
-                <Label htmlFor="conn-name">Connection name</Label>
+                <Label htmlFor="conn-name">{t("localizationTools.connectionName24")}</Label>
                 <Input
                   id="conn-name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Production GitHub"
+                  placeholder={t("localizationTools.eGProductionGitHub25")}
                   disabled={locked}
                 />
               </div>
 
               <div className="space-y-1.5">
-                <Label>Transport</Label>
+                <Label>{t("localizationApps.transport263")}</Label>
                 <Select
                   value={transport}
                   onValueChange={(v) => setTransport(v as "mcp_remote" | "local_stdio")}
@@ -372,15 +368,15 @@ export function AddConnectionDialog({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="mcp_remote">Remote HTTP (no local process)</SelectItem>
-                    <SelectItem value="local_stdio">Local stdio (approved template)</SelectItem>
+                    <SelectItem value="mcp_remote">{t("localizationTools.remoteHTTPNoLocalProcess26")}</SelectItem>
+                    <SelectItem value="local_stdio">{t("localizationTools.localStdioApprovedTemplate27")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
               {transport === "mcp_remote" ? (
                 <div className="space-y-1.5">
-                  <Label htmlFor="conn-url">Endpoint URL</Label>
+                  <Label htmlFor="conn-url">{t("localizationApps.endpointURL133")}</Label>
                   <Input
                     id="conn-url"
                     value={endpointUrl}
@@ -391,10 +387,10 @@ export function AddConnectionDialog({
                 </div>
               ) : (
                 <div className="space-y-1.5">
-                  <Label>Command template</Label>
+                  <Label>{t("localizationTools.commandTemplate28")}</Label>
                   <Select value={templateId} onValueChange={setTemplateId} disabled={locked}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Select an approved template" />
+                      <SelectValue placeholder={t("localizationTools.selectAnApprovedTemplate29")} />
                     </SelectTrigger>
                     <SelectContent>
                       {(templates.data?.templates ?? []).map((t) => (
@@ -404,15 +400,13 @@ export function AddConnectionDialog({
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Only board-approved command templates can run. Arbitrary commands are never accepted.
-                  </p>
+                  <p className="text-xs text-muted-foreground">{t("localizationTools.onlyBoardApprovedCommandTemplatesCanRunArbitr30")}</p>
                 </div>
               )}
 
               {/* Vault-reference credential picker — no free-text token field. */}
               <div className="space-y-1.5">
-                <Label>Credential references</Label>
+                <Label>{t("localizationTools.credentialReferences31")}</Label>
                 {creds.length > 0 ? (
                   <ul className="space-y-1">
                     {creds.map((c, i) => (
@@ -430,7 +424,7 @@ export function AddConnectionDialog({
                             type="button"
                             className="ml-auto text-muted-foreground hover:text-destructive"
                             onClick={() => setCreds((cs) => cs.filter((_, idx) => idx !== i))}
-                            aria-label={`Remove credential reference for ${secretName(c.secretId)}`}
+                            aria-label={t("localizationTools.removeCredentialReference", { name: secretName(c.secretId) })}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
@@ -445,7 +439,7 @@ export function AddConnectionDialog({
                       <div className="flex-1 space-y-1">
                         <Select value={pendingSecretId} onValueChange={setPendingSecretId}>
                           <SelectTrigger>
-                            <SelectValue placeholder="Select a vault secret" />
+                            <SelectValue placeholder={t("localizationTools.selectAVaultSecret33")} />
                           </SelectTrigger>
                           <SelectContent>
                             {(secrets.data ?? []).map((s) => (
@@ -459,13 +453,11 @@ export function AddConnectionDialog({
                       <Input
                         value={pendingHeader}
                         onChange={(e) => setPendingHeader(e.target.value)}
-                        placeholder="Header"
+                        placeholder={t("localizationTools.header34")}
                         className="w-32"
-                        aria-label="Header name"
+                        aria-label={t("localizationConnections.headerName109")}
                       />
-                      <Button type="button" size="sm" variant="outline" onClick={addCred} disabled={!pendingSecretId}>
-                        Add
-                      </Button>
+                      <Button type="button" size="sm" variant="outline" onClick={addCred} disabled={!pendingSecretId}>{t("pages.secrets.actions.add")}</Button>
                     </div>
                     {pendingSecretId ? (
                       <p className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
@@ -474,8 +466,7 @@ export function AddConnectionDialog({
                       </p>
                     ) : null}
                     <p className="text-xs text-muted-foreground">
-                      Free-text secrets are not accepted — pick a vault entry; Paperclip stores only the
-                      <span className="font-mono"> vault://</span> reference and resolves it at gateway use time.
+                      <Trans t={t} i18nKey="localizationTools.vaultOnlyHint" components={{ code: <span className="font-mono" /> }} />
                     </p>
                   </>
                 ) : null}
@@ -487,14 +478,14 @@ export function AddConnectionDialog({
           {locked ? (
             probe.isPending ? (
               <div className="rounded-md border border-border bg-muted/40 p-3">
-                <LoadingState label="Probing connection…" />
+                <LoadingState label={t("localizationTools.probingConnection38")} />
               </div>
             ) : probe.isError ? (
               <ErrorState error={probe.error} onRetry={() => draft && probe.mutate(draft.id)} />
             ) : probeResult ? (
               <div className="rounded-md border border-border bg-muted/40 p-3">
                 <div className="flex items-center gap-2 text-sm">
-                  <span className="font-medium text-foreground">Probe result</span>
+                  <span className="font-medium text-foreground">{t("localizationTools.probeResult39")}</span>
                   <HealthBadge status={probeResult.connection.healthStatus} />
                 </div>
                 <div className="mt-2 grid grid-cols-3 gap-2">
@@ -502,19 +493,19 @@ export function AddConnectionDialog({
                     <p className="text-lg font-semibold tabular-nums text-foreground">
                       {probeResult.toolCount ?? "—"}
                     </p>
-                    <p className="text-xs text-muted-foreground">tools discovered</p>
+                    <p className="text-xs text-muted-foreground">{t("localizationTools.toolsDiscovered")}</p>
                   </div>
                   <div>
                     <p className="text-lg font-semibold tabular-nums text-foreground">
-                      {probeResult.latencyMs != null ? `${probeResult.latencyMs}ms` : "—"}
+                      {probeResult.latencyMs != null ? t("localizationTools.latencyMs", { count: probeResult.latencyMs }) : "—"}
                     </p>
-                    <p className="text-xs text-muted-foreground">probe latency</p>
+                    <p className="text-xs text-muted-foreground">{t("localizationTools.probeLatency41")}</p>
                   </div>
                   <div>
                     <p className="text-lg font-semibold tabular-nums text-foreground">
                       {probeResult.quarantinedCount}
                     </p>
-                    <p className="text-xs text-muted-foreground">quarantined</p>
+                    <p className="text-xs text-muted-foreground">{t("localizationTools.quarantined")}</p>
                   </div>
                 </div>
                 {probeResult.connection.healthMessage ? (
@@ -523,40 +514,31 @@ export function AddConnectionDialog({
                 {probeResult.connection.lastError ? (
                   <p className="mt-1 text-xs text-destructive">{probeResult.connection.lastError}</p>
                 ) : null}
-                <p className="mt-2 text-(length:--text-micro) text-muted-foreground">
-                  Probe latency is a single round-trip sample. Aggregate p95 latency across traffic is tracked on
-                  the Runtime tab once the connection is live.
-                </p>
+                <p className="mt-2 text-(length:--text-micro) text-muted-foreground">{t("localizationTools.probeLatencyIsASingleRoundTripSampleAggregate43")}</p>
               </div>
             ) : null
           ) : null}
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            Cancel
-          </Button>
+          <Button variant="outline" onClick={onClose}>{t("pages.apps.common.cancel")}</Button>
           {step === 1 && !locked ? (
-            <Button disabled={!appChoiceValid} onClick={() => setStep(2)}>
-              Continue
-            </Button>
+            <Button disabled={!appChoiceValid} onClick={() => setStep(2)}>{t("pages.apps.common.continue")}</Button>
           ) : !locked ? (
             <>
-              <Button variant="outline" onClick={() => setStep(1)}>
-                Back
-              </Button>
+              <Button variant="outline" onClick={() => setStep(1)}>{t("pages.apps.common.back")}</Button>
               <Button disabled={!canCreate} onClick={() => create.mutate()}>
-                {create.isPending ? "Creating draft…" : "Create & probe"}
+                {create.isPending ? t("localizationTools.creatingDraft47") : t("localizationTools.createProbe48")}
               </Button>
             </>
           ) : (
             <>
               <Button variant="outline" disabled={probe.isPending} onClick={() => draft && probe.mutate(draft.id)}>
                 <Stethoscope className="mr-1 h-3.5 w-3.5" />
-                {probe.isPending ? "Probing…" : "Re-probe"}
+                {probe.isPending ? t("localizationTools.probing49") : t("localizationTools.reProbe50")}
               </Button>
               <Button disabled={activate.isPending || probe.isPending} onClick={() => draft && activate.mutate(draft.id)}>
-                {activate.isPending ? "Activating…" : "Activate"}
+                {activate.isPending ? t("localizationTools.activating51") : t("pages.secrets.actions.activate")}
               </Button>
             </>
           )}

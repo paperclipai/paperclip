@@ -12,6 +12,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useLocation, useNavigate } from "@/lib/router";
 import { agentRouteRef } from "@/lib/utils";
 import { AgentChatSidebar } from "./AgentChatSidebar";
+import { useTranslation } from "@/i18n";
 import { AgentChatPicker } from "./AgentChatPicker";
 import { useSidebar } from "@/context/SidebarContext";
 
@@ -33,6 +34,7 @@ export function SidebarAgentChats() {
 
 // A scope change unmounts the picker, including its open state and search.
 function CompanyAgentChats({ companyId, userId }: { companyId: string | null; userId?: string }) {
+  const { t } = useTranslation();
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(companyId!),
     queryFn: () => agentsApi.list(companyId!),
@@ -61,7 +63,7 @@ function CompanyAgentChats({ companyId, userId }: { companyId: string | null; us
           mutation.mutate({
             resourceType: "agent",
             resourceId: id,
-            resourceName: agents.find((agent) => agent.id === id)?.name ?? "Agent",
+            resourceName: agents.find((agent) => agent.id === id)?.name ?? t("pages.agentDetail.agentFallback"),
             starred: !stars.includes(id),
           });
         }}

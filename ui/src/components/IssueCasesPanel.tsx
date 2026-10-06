@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useCaseHref } from "@/lib/router";
 import { casesApi, type CaseLinkRole } from "@/api/cases";
@@ -7,9 +8,9 @@ import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/StatusBadge";
 
 const ROLE_LABEL: Record<CaseLinkRole, string> = {
-  origin: "origin",
-  work: "work",
-  reference: "reference",
+  get origin() { return t("localizationActivityTail.caseRole_origin"); },
+  get work() { return t("localizationActivityTail.caseRole_work"); },
+  get reference() { return t("localizationActivityTail.caseRole_reference"); },
 };
 
 /**
@@ -19,6 +20,7 @@ const ROLE_LABEL: Record<CaseLinkRole, string> = {
  * dropped into the issue properties panel unconditionally.
  */
 export function IssueCasesPanel({ issueId }: { issueId: string }) {
+  const { t } = useTranslation();
   const caseHref = useCaseHref();
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -37,7 +39,7 @@ export function IssueCasesPanel({ issueId }: { issueId: string }) {
 
   return (
     <section className="space-y-2">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Cases</h3>
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("pages.cases.title")}</h3>
       <div className="space-y-1">
         {links.map((link) => (
           <Link

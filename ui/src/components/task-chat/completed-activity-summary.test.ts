@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 import { completedActivitySummary } from "./completed-activity-summary";
 import type {
   TaskChatActivityPhaseItem,
@@ -129,6 +130,17 @@ describe("completedActivitySummary", () => {
     expect(summary.fullLabel).toBe(
       "Read files, ran commands, searched files, edited files, searched the web",
     );
+  });
+
+  it("translates only the completed display projection while preserving English output and category order", () => {
+    const items = [tool("read"), tool("exec_command", "failed"), tool("grep"), tool("apply_patch"), provider("research")];
+    const raw = completedActivitySummary(items);
+    expect(completedActivitySummary(items, i18n.getFixedT("en"))).toEqual(raw);
+    const localized = completedActivitySummary(items, i18n.getFixedT("ru"));
+    expect(localized.label).toBe("Прочитаны файлы, запущены команды и другие действия");
+    expect(localized.fullLabel).toBe("Прочитаны файлы, запущены команды, выполнен поиск по файлам, изменены файлы, выполнен поиск в интернете");
+    expect(localized.icon).toBe(raw.icon);
+    expect(completedActivitySummary(items)).toEqual(raw);
   });
   it("does not invent tool activity for thoughts-only groups or expose unknown identifiers", () => {
     expect(completedActivitySummary([thought]).label).toBe(

@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { checkMcpRemoteHeaderName, checkMcpRemoteHeaderValue, mcpRemoteHeaderRejectionMessage } from "@paperclipai/shared";
 import type { GenericMcpAuthMode } from "@paperclipai/shared";
 
@@ -97,68 +98,68 @@ export function genericConnectGuidance(
   code: string | null | undefined,
   message: string | null | undefined,
 ): GenericConnectGuidance {
-  const fallback = message?.trim() || "Paperclip couldn't connect to that address. Check it and try again.";
+  const fallback = message?.trim() || t("localizationApps.paperclipCouldnTConnectToThatAddressCheckItAn738");
   switch (code) {
     case "mcp_remote_url_missing":
     case "mcp_remote_url_invalid":
       return {
-        title: "That doesn't look like a server address",
-        body: "Paste the full address, starting with https:// — for example https://mcp.example.com/mcp.",
+        title: t("localizationApps.thatDoesnTLookLikeAServerAddress739"),
+        body: t("localizationApps.pasteTheFullAddressStartingWithHttpsForExampl740"),
         focus: "url",
       };
     case "remote_http_private_endpoint":
       return {
-        title: "That address is inside a private network",
-        body: "This Paperclip is reachable from the internet, so it won't call addresses on your local network. Use the server's public address instead.",
+        title: t("localizationApps.thatAddressIsInsideAPrivateNetwork741"),
+        body: t("localizationApps.thisPaperclipIsReachableFromTheInternetSoItWo742"),
         focus: "url",
       };
     case "remote_http_dns_failed":
       return {
-        title: "We couldn't find that host",
-        body: "The address didn't resolve. Check the spelling, or confirm the server is published on the internet.",
+        title: t("localizationApps.weCouldnTFindThatHost743"),
+        body: t("localizationApps.theAddressDidnTResolveCheckTheSpellingOrConfi744"),
         focus: "url",
       };
     case "mcp_header_rejected":
       return {
-        title: "Paperclip can't send that header",
+        title: t("localizationApps.paperclipCanTSendThatHeader745"),
         body: fallback,
         focus: "credentials",
       };
     case "tool_access_name_conflict":
       return {
-        title: "Paperclip couldn’t name this connection",
-        body: "Try connecting again.",
+        title: t("localizationApps.paperclipCouldnTNameThisConnection746"),
+        body: t("localizationApps.tryConnectingAgain747"),
         focus: "none",
       };
     case "oauth_challenge":
       return {
-        title: "This server wants a credential",
-        body: "It asked us to authenticate but didn't offer a sign-in Paperclip can complete on its own. Add the key or headers its docs list under Advanced authentication.",
+        title: t("localizationApps.thisServerWantsACredential748"),
+        body: t("localizationApps.itAskedUsToAuthenticateButDidnTOfferASignInPa749"),
         focus: "credentials",
       };
     case "oauth_manual_client_required":
     case "oauth_manual_client_rebinding_required":
       return {
-        title: "This server needs sign-in details you create yourself",
-        body: "Register Paperclip in the provider's settings, then add the client ID and secret it gives you under Advanced authentication.",
+        title: t("localizationApps.thisServerNeedsSignInDetailsYouCreateYourself750"),
+        body: t("localizationApps.registerPaperclipInTheProviderSSettingsThenAd751"),
         focus: "credentials",
       };
     case "oauth_redirect_origin_unsupported":
     case "oauth_redirect_uri_invalid":
       return {
-        title: "This Paperclip needs a public HTTPS address first",
-        body: "Sign-in sends the operator back to Paperclip, so this instance has to be reachable over HTTPS. Ask your Paperclip admin to configure it.",
+        title: t("localizationApps.thisPaperclipNeedsAPublicHTTPSAddressFirst752"),
+        body: t("localizationApps.signInSendsTheOperatorBackToPaperclipSoThisIn753"),
         focus: "deployment",
       };
     case "runtime_error":
       return {
-        title: "We couldn't reach that server",
-        body: "Nothing answered at that address. Confirm the server is running and the address is right, then try again.",
+        title: t("localizationApps.weCouldnTReachThatServer754"),
+        body: t("localizationApps.nothingAnsweredAtThatAddressConfirmTheServerI755"),
         focus: "url",
       };
     default:
       return {
-        title: "Paperclip couldn't connect",
+        title: t("localizationApps.paperclipCouldnTConnect756"),
         body: fallback,
         focus: "none",
       };
@@ -179,9 +180,9 @@ export function customHeaderError(rows: CustomHeaderRow[]): string | null {
     if (!nameCheck.ok) return mcpRemoteHeaderRejectionMessage(name, nameCheck.reason!);
     const valueCheck = checkMcpRemoteHeaderValue(row.value);
     if (!valueCheck.ok) return mcpRemoteHeaderRejectionMessage(name, valueCheck.reason!);
-    if (!row.value.trim()) return `Add a value for "${name}", or remove the row.`;
+    if (!row.value.trim()) return t("localizationApps.headerValueRequired", { name });
     const lower = name.toLowerCase();
-    if (seen.has(lower)) return `"${name}" is listed twice.`;
+    if (seen.has(lower)) return t("localizationApps.duplicateHeader", { name });
     seen.add(lower);
   }
   return null;

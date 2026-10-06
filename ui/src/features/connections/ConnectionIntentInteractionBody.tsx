@@ -1,3 +1,4 @@
+import { useTranslation, t } from "@/i18n";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -48,6 +49,7 @@ export function ConnectionIntentInteractionBody({
   addresseeName,
   renderSetup,
 }: ConnectionIntentInteractionBodyProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [adoptionConnectionId, setAdoptionConnectionId] = useState<string | null>(null);
   const focusTargetRef = useRef<HTMLDivElement>(null);
@@ -209,7 +211,7 @@ export function ConnectionIntentInteractionBody({
           const agent = await agentsApi.get(interaction.payload.requestingAgentId, interaction.companyId);
           const current = agent.runtimeConfig.aiConnection;
           if (!current || current.mode === "responsible_user" || current.mode === "router" || current.connectionId !== previous.id || current.grantId !== previous.grantId) {
-            throw new Error("The agent’s AI connection changed. Reload the task and try again.");
+            throw new Error(t("oct5Apps.copy037"));
           }
           if (result.generation !== setupGeneration.current) return;
           await agentsApi.update(agent.id, {
@@ -243,26 +245,26 @@ export function ConnectionIntentInteractionBody({
     interaction.status === "accepted"
       ? {
           icon: CheckCircle2,
-          title: accessRequest ? `${serviceName} access granted` : interaction.payload.upstreamService ? "External provider connected" : `${serviceName} connected`,
-          body: accessRequest ? null : interaction.payload.upstreamService ? `${interaction.payload.requestingAgentName} can now verify and authorize ${interaction.payload.upstreamService.name} through this provider. The app is not yet verified.` : isAi ? "This agent can now use the connection." : `${interaction.payload.requestingAgentName} can use this connection on the continuation run.`,
+          title: accessRequest ? t("oct6Beta.dynamic072", { v0: serviceName }) : interaction.payload.upstreamService ? t("sep28Common.externalProviderConnected") : t("oct6Beta.dynamic073", { v0: serviceName }),
+          body: accessRequest ? null : interaction.payload.upstreamService ? t("oct6Beta.dynamic074", { v0: interaction.payload.requestingAgentName, v1: interaction.payload.upstreamService.name }) : isAi ? t("stable916Ai.agentCanUseConnection") : t("oct6Beta.dynamic075", { v0: interaction.payload.requestingAgentName }),
         }
       : interaction.status === "rejected"
         ? {
             icon: XCircle,
-            title: accessRequest ? "Access declined" : "Connection declined",
-            body: accessRequest ? null : isAi ? "The task still needs a working AI connection before it can run." : `${interaction.payload.requestingAgentName} was notified and can continue without it.`,
+            title: accessRequest ? t("oct6Beta.copy147") : t("localizationConnections.connectionDeclined212"),
+            body: accessRequest ? null : isAi ? t("sep13Connections.taskNeedsConnection") : t("oct6Beta.dynamic076", { v0: interaction.payload.requestingAgentName }),
           }
         : interaction.status === "expired"
           ? {
               icon: Clock,
               title:
                 resultOutcome === "superseded"
-                  ? "Request superseded"
-                  : "Connection request expired",
+                  ? t("localizationConnections.requestSuperseded214")
+                  : t("localizationConnections.connectionRequestExpired215"),
               body:
                 resultOutcome === "superseded"
-                  ? "This request was replaced. Use the latest connection card instead."
-                  : "This request is no longer active.",
+                  ? t("chatUi.connectionIntentInteractionBody.thisRequestWasReplacedUseTheLatestConnectionCardInstead")
+                  : t("localizationConnections.thisRequestIsNoLongerActive217"),
             }
           : null;
   const StatusIcon = status?.icon;
@@ -304,11 +306,10 @@ export function ConnectionIntentInteractionBody({
           <Clock className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
           <div>
             <p className="font-medium text-foreground">
-              Waiting for {addresseeLabel}
+              {t("oct6Beta.waitingAddressee", { name: addresseeLabel })}
             </p>
             {!accessRequest ? <p className="mt-1 text-sm text-muted-foreground">
-              Only the addressed person can choose an identity or authorize this
-              connection.
+              {t("localizationConnections.onlyTheAddressedPersonCanChooseAnIdentityOrAu219")}
             </p> : null}
           </div>
         </div>
@@ -326,22 +327,22 @@ export function ConnectionIntentInteractionBody({
         <div className="flex items-center gap-3">
           <AgentAvatar agent={agentQuery.data ?? { id: interaction.payload.requestingAgentId, name: interaction.payload.requestingAgentName }} size={32} label={interaction.payload.requestingAgentName} />
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-foreground">Grant {interaction.payload.requestingAgentName} access to “{accessRequest.connectionName}”?</p>
+            <p className="text-sm font-medium text-foreground">{t("oct6Beta.grantAccess", { agent: interaction.payload.requestingAgentName, connection: accessRequest.connectionName })}</p>
           </div>
           <AppLogo name={interaction.payload.serviceName} logoUrl={interaction.payload.serviceLogoUrl} darkLogoUrl={interaction.payload.serviceDarkLogoUrl} size={32} />
         </div>
-        <ul aria-label="Tool permissions" className="max-h-48 space-y-2 overflow-y-auto text-xs">
+        <ul aria-label={t("oct6Beta.copy148")} className="max-h-48 space-y-2 overflow-y-auto text-xs">
           {accessRequest.tools.map(tool => <li key={tool.catalogEntryId} className="flex items-start justify-between gap-3">
             <span className="min-w-0 break-all font-mono text-foreground">{tool.toolName}</span>
-            <span className="shrink-0 text-muted-foreground">{tool.permission === "allowed" ? "Allowed" : "Ask first"}</span>
+            <span className="shrink-0 text-muted-foreground">{tool.permission === "allowed" ? t("localizationInspector.ui_Allowed") : t("pages.apps.connect.actions.askFirst")}</span>
           </li>)}
         </ul>
-        {setupQuery.isError || completeMutation.isError || declineMutation.isError ? <p role="alert" className="text-sm text-destructive">{(completeMutation.error ?? declineMutation.error ?? setupQuery.error)?.message ?? "Couldn’t update this access request."}</p> : null}
-        {setupQuery.data?.canGrantAccess === false ? <p role="status" className="text-sm text-muted-foreground">Connection manager required.</p> : null}
+        {setupQuery.isError || completeMutation.isError || declineMutation.isError ? <p role="alert" className="text-sm text-destructive">{(completeMutation.error ?? declineMutation.error ?? setupQuery.error)?.message ?? t("oct6Beta.copy149")}</p> : null}
+        {setupQuery.data?.canGrantAccess === false ? <p role="status" className="text-sm text-muted-foreground">{t("oct6Beta.copy150")}</p> : null}
         <div className="flex items-center justify-between gap-2">
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => declineMutation.mutate()}>Not now</Button>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => declineMutation.mutate()}>{t("localizationIssueDetail.ui_Not_now")}</Button>
           <Button size="sm" disabled={busy || !setupQuery.data?.canGrantAccess} onClick={() => completeMutation.mutate(accessRequest.connectionId)}>
-            {completeMutation.isPending ? "Granting access…" : "Grant access"}
+            {completeMutation.isPending ? t("oct6Beta.copy151") : t("oct6Beta.copy152")}
           </Button>
         </div>
       </div>
@@ -355,25 +356,24 @@ export function ConnectionIntentInteractionBody({
     : null;
   const setupContent = setupQuery.isLoading ? (
                 <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Loading
-                  connection options…
+                  <Loader2 className="h-4 w-4 animate-spin" />{t("localizationConnections.loadingConnectionOptions226")}
                 </div>
               ) : setupQuery.isError ? (
                 <div className="py-8 text-center">
                   <p className="font-medium text-foreground">
-                    Couldn’t load connection setup
+                    {t("localizationConnections.couldnTLoadConnectionSetup30")}
                   </p>
                   <p className="mt-1 text-sm text-muted-foreground">
                     {setupQuery.error instanceof Error
                       ? setupQuery.error.message
-                      : "Try again."}
+                      : t("localizationConnections.tryAgain227")}
                   </p>
                   <Button
                     className="mt-4"
                     variant="outline"
                     onClick={() => setupQuery.refetch()}
                   >
-                    Try again
+                    {t("localizationConnections.tryAgain32")}
                   </Button>
                 </div>
               ) : setupProps ? (
@@ -385,17 +385,16 @@ export function ConnectionIntentInteractionBody({
   const inlineContent = setupQuery.isLoading || setupQuery.isError ? setupContent
     : readyForAdoption ? <div className="space-y-3">
         <p className="text-sm">
-          Use your {aiProviderName} connection for {interaction.payload.requestingAgentName}? This replaces the agent’s existing authentication
-          with each responsible person’s own account. The model stays the same.
+          {t("oct6Beta.adoptOwnAccount", { provider: aiProviderName, agent: interaction.payload.requestingAgentName })}
         </p>
         <Button disabled={adoptMutation.isPending} onClick={() => adoptMutation.mutate(readyForAdoption)}>
-          {adoptMutation.isPending ? "Checking connection…" : "Use connection and continue"}
+          {adoptMutation.isPending ? t("oct5Apps.copy038") : t("oct5Apps.copy039")}
         </Button>
       </div>
     : selectedReady ? <div className="space-y-3">
-        <p className="text-sm">{repair.connection.name} is ready.</p>
+        <p className="text-sm">{t("sep13Connections.connectionReady", { connection: repair.connection.name })}</p>
         <Button disabled={completeMutation.isPending} onClick={() => completeMutation.mutate(repair.connection.id)}>
-          {completeMutation.isPending ? "Continuing…" : "Continue task"}
+          {completeMutation.isPending ? t("sep13Connections.continuing") : t("sep13Connections.continueTask")}
         </Button>
       </div>
     : repair ? repair.canReconnect ? repair.connection.routing ? <AiProviderSetup
@@ -419,11 +418,10 @@ export function ConnectionIntentInteractionBody({
         onComplete={(result) => selectAiAccountMutation.mutate({ ...result, generation })}
         onCancel={() => { closeSetup(); returnFocusToCard(); }}
       /> : <p role="status" className="text-sm text-muted-foreground">
-        {repair.connection.ownership === "personal" ? `${repair.connection.ownerName ?? "The account owner"} must reconnect ${repair.connection.name}.` : `The account owner must reconnect ${repair.connection.name}.`}
-        {" "}You can continue here once it is restored.
+        {t("sep13Connections.ownerMustReconnect", { owner: repair.connection.ownership === "personal" ? repair.connection.ownerName ?? t("sep13Connections.accountOwnerSentence") : t("sep13Connections.accountOwnerSentence"), connection: repair.connection.name })}
       </p>
     : aiConnection && aiConnection.mode !== "responsible_user"
-      ? <p role="status" className="text-sm text-muted-foreground">The selected account is no longer available to you. Ask its owner to restore access, or choose an available AI connection in the agent’s settings.</p>
+      ? <p role="status" className="text-sm text-muted-foreground">{t("sep13Connections.selectedUnavailable")}</p>
       : aiConnection ? <AiConnectionCredentialStep
           companyId={interaction.companyId}
           provider={aiConnection.provider}
@@ -454,32 +452,29 @@ export function ConnectionIntentInteractionBody({
           />
           <div>
             <p className="font-medium text-foreground">
-              {readyForAdoption ? `Use your ${aiProviderName} account` : needsOwnAiConnection ? `Connect your ${aiProviderName} account` : isAi ? `${aiProviderName} authentication required` : `${interaction.payload.requestingAgentName} needs ${interaction.payload.serviceName}`}
+              {readyForAdoption ? t("oct6Beta.dynamic077", { v0: aiProviderName }) : needsOwnAiConnection ? t("oct6Beta.dynamic078", { v0: aiProviderName }) : isAi ? t("oct5Apps.authenticationRequired", { service: aiProviderName }) : t("oct6Beta.dynamic080", { v0: interaction.payload.requestingAgentName, v1: interaction.payload.serviceName })}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
               {readyForAdoption
-                ? `Your account is connected. Use it for ${interaction.payload.requestingAgentName} to resume this task.`
+                ? t("oct6Beta.dynamic081", { v0: interaction.payload.requestingAgentName })
                 : needsOwnAiConnection
-                ? `${interaction.payload.requestingAgentName} needs your own AI connection. Connect here and the task will resume automatically.`
+                ? t("oct6Beta.dynamic082", { v0: interaction.payload.requestingAgentName })
                 : interaction.payload.purpose === "ai"
-                ? "This task can’t run until the agent has a valid AI connection. Connect here and the task will resume automatically."
-                : isEmail ? "Connect AgentMail to create an email address for this agent."
-                : "Connect your identity or reuse an eligible connection. Access is added only for this agent."}
+                ? t("oct5Apps.copy040")
+                : isEmail ? t("oct5Apps.copy041")
+                : t("localizationConnections.connectYourIdentityOrReuseAnEligibleConnectio221")}
             </p>
           </div>
         </div>
 
         {needsRetry ? (
           <p className="mt-4 flex items-center gap-2 text-sm text-destructive">
-            <RotateCcw className="h-4 w-4" />
-            Authorization didn’t finish. Your previous choices are safe; try
-            again.
-          </p>
+            <RotateCcw className="h-4 w-4" />{t("localizationConnections.authorizationDidnTFinishYourPreviousChoicesAr222")}</p>
         ) : null}
 
         {isEmail ? setupQuery.isLoading || setupQuery.isError ? <>
           {setupContent}
-          <Button type="button" variant="ghost" disabled={declineMutation.isPending} onClick={() => declineMutation.mutate()}>Not now</Button>
+          <Button type="button" variant="ghost" disabled={declineMutation.isPending} onClick={() => declineMutation.mutate()}>{t("localizationIssueDetail.ui_Not_now")}</Button>
         </> : <AgentMailIntentSetup
           companyId={interaction.companyId}
           agentId={interaction.payload.requestingAgentId}
@@ -496,10 +491,10 @@ export function ConnectionIntentInteractionBody({
             disabled={declineMutation.isPending || completeMutation.isPending || authorizing}
             onClick={() => declineMutation.mutate()}
           >
-            Not now
+            {t("localizationIssueDetail.ui_Not_now")}
           </Button>}
           {isAi ? <Button type="button" disabled={completeMutation.isPending || adoptMutation.isPending || selectAiAccountMutation.isPending} onClick={() => open ? closeSetup() : setOpen(true)}>
-            <Plug className="h-4 w-4" />{open ? "Close setup" : readyForAdoption ? "Continue setup" : needsOwnAiConnection ? `Connect ${aiProviderName}` : "Fix connection"}
+            <Plug className="h-4 w-4" />{open ? t("sep13Connections.closeSetup") : readyForAdoption ? t("chatUi.connectionIntentInteractionBody.continueSetup") : needsOwnAiConnection ? t("oct6Beta.dynamic083", { v0: aiProviderName }) : t("sep13Connections.fixConnection")}
           </Button> : <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button type="button">
@@ -509,10 +504,10 @@ export function ConnectionIntentInteractionBody({
                   <Plug className="h-4 w-4" />
                 )}
                 {authorizing
-                  ? "Continue setup"
+                  ? t("chatUi.connectionIntentInteractionBody.continueSetup")
                   : needsRetry
-                    ? "Try again"
-                    : setupQuery.data?.existingConnections.length ? "Connect / Use existing" : "Connect"}
+                    ? t("localizationIssuePanels.ui_Try_again_982hh6")
+                    : setupQuery.data?.existingConnections.length ? t("localizationConnections.connectUseExisting224") : t("localizationConnections.connect138")}
               </Button>
             </DialogTrigger>
             <DialogContent
@@ -524,12 +519,9 @@ export function ConnectionIntentInteractionBody({
               }}
             >
               <DialogHeader className="sr-only">
-                <DialogTitle>
-                  Connect {interaction.payload.serviceName}
+                <DialogTitle>{t("localizationConnections.connectApp", { app: interaction.payload.serviceName })}
                 </DialogTitle>
-                <DialogDescription>
-                  Complete connection setup without leaving this task.
-                </DialogDescription>
+                <DialogDescription>{t("localizationConnections.completeConnectionSetupWithoutLeavingThisTask225")}</DialogDescription>
               </DialogHeader>
               {setupContent}
             </DialogContent>
@@ -555,13 +547,11 @@ export function ConnectionIntentInteractionBody({
                   declineMutation.error ??
                   phaseMutation.error
                 )?.message
-              : "Couldn’t update this connection request."}
+              : t("localizationConnections.couldnTUpdateThisConnectionRequest228")}
           </p>
         ) : null}
         {selectAiAccountMutation.isError && selectAiAccountMutation.variables?.generation === generation && (
-          <Button className="mt-3" onClick={() => selectAiAccountMutation.mutate(selectAiAccountMutation.variables!)}>
-            Retry using this connection
-          </Button>
+          <Button className="mt-3" onClick={() => selectAiAccountMutation.mutate(selectAiAccountMutation.variables!)}>{t("oct5Apps.copy042")}</Button>
         )}
       </div>
     </div>

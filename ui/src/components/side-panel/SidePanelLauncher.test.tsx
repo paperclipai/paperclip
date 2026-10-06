@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileText } from "lucide-react";
 import { SidePanelLauncher } from "./SidePanelLauncher";
+import { setLocale } from "@/i18n";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -21,6 +22,7 @@ describe("SidePanelLauncher", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    setLocale("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -29,6 +31,7 @@ describe("SidePanelLauncher", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    setLocale("en");
   });
 
   it("renders grouped loading, failure, disabled, and already-open states", async () => {
@@ -61,5 +64,28 @@ describe("SidePanelLauncher", () => {
     const option = container.querySelector<HTMLElement>('[role="option"]')!;
     await act(async () => option.click());
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "plan" }));
+  });
+
+  it("keeps search and caller data when switching the default launcher to Russian", async () => {
+    const onSelect = vi.fn();
+    const item = { id: "raw-plan-id", label: "Plan / user title", alreadyOpen: true };
+    await act(async () => root.render(<SidePanelLauncher sections={[{ id: "docs", label: "Custom section", items: [item] }]} onSelect={onSelect} />));
+    const input = container.querySelector("input")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Plan");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => setLocale("ru"));
+    expect(input.value).toBe("Plan");
+    expect(input.getAttribute("placeholder")).toBe("Поиск вкладок и ресурсов…");
+    expect(container.textContent).toContain("Custom section");
+    expect(container.textContent).toContain("Plan / user title");
+    expect(container.querySelector('[aria-label="Уже открыто"]')).not.toBeNull();
+    expect(onSelect).not.toHaveBeenCalled();
+    await act(async () => container.querySelector<HTMLElement>('[role="option"]')!.click());
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith(item);
+    await act(async () => setLocale("en"));
+    expect(input.value).toBe("Plan");
+    expect(input.getAttribute("placeholder")).toBe("Search tabs and resources…");
   });
 });

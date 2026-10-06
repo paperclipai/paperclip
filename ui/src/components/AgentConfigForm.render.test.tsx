@@ -13,6 +13,8 @@ import { AgentConfigForm, AdapterLoginPanel, subtractPersistedOverlay, type Adap
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
+import { i18n } from "../i18n";
+import { ManagedSandboxUnavailableForTestError } from "../lib/adapter-test-environment";
 import { aiConnectionsApi } from "../api/ai-connections";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
@@ -264,12 +266,14 @@ async function renderForm(
   agentOverrides: Partial<Agent> = {},
   options: {
     showAdapterTestEnvironmentButton?: boolean;
+    sectionLayout?: "cards";
     content?: "configuration" | "secrets";
     environmentVariablesPlacement?: "configuration" | "secrets";
     hideInlineSave?: boolean;
     onDirtyChange?: (dirty: boolean) => void;
     onSaveActionChange?: (save: (() => void) | null) => void;
     onCancelActionChange?: (cancel: (() => void) | null) => void;
+    onTestFeedbackChange?: (feedback: { errorMessage: string | null }) => void;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -301,7 +305,9 @@ async function renderForm(
               onDirtyChange={options.onDirtyChange}
               onSaveActionChange={options.onSaveActionChange}
               onCancelActionChange={options.onCancelActionChange}
+              onTestFeedbackChange={options.onTestFeedbackChange}
               showAdapterTypeField={false}
+              sectionLayout={options.sectionLayout}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
             />
           </TooltipProvider>
@@ -742,6 +748,67 @@ describe("AgentConfigForm environment selector", () => {
     vi.clearAllMocks();
   });
 
+  it.each(["codex_local", "claude_local"] as const)("retranslates a conflicting %s login without resuming, starting or cancelling either account", async (adapterType) => {
+    const originalLanguage = i18n.language;
+    const activeQuery = adapterType === "claude_local"
+      ? mockAgentsApi.getActiveClaudeSetupTokenLoginSession
+      : mockAgentsApi.getActiveAdapterAuthLoginSession;
+    activeQuery.mockResolvedValue({
+      sessionId: "other-account-session", environmentId: "other-environment", status: "waiting_for_user",
+      aiConnection: { provider: adapterType === "claude_local" ? "anthropic" : "openai", method: "subscription", ownership: "shared", connectionId: "other-account" },
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}>
+        <AdapterLoginPanel companyId="company-1" adapterType={adapterType} environmentId="sandbox-1" chrome="onboarding" autoStart
+          aiConnection={{ provider: adapterType === "claude_local" ? "anthropic" : "openai", method: "subscription", name: "Canonical name", ownership: "personal", agentIds: [], allAgents: true }} />
+      </QueryClientProvider>));
+      await flushUntil(() => Boolean(container.querySelector('[role="alert"]')));
+      for (const locale of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        await flushReact();
+        expect(container.querySelector('[role="alert"]')?.textContent).toBe(adapterType === "codex_local"
+          ? locale === "ru"
+            ? "Уже выполняется другая попытка входа. Завершите или отмените её, прежде чем начинать новую."
+            : "Another sign-in attempt is active. Finish or cancel that attempt before starting a new sign-in."
+          : locale === "ru"
+            ? "Уже выполняется другая попытка входа. Прежде чем начать новую, завершите или отмените текущую в настройках соответствующего аккаунта."
+            : "Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        expect(activeQuery).toHaveBeenCalledTimes(1);
+        expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.getAdapterAuthLoginStatus).not.toHaveBeenCalled();
+        expect(mockAgentsApi.getClaudeSetupTokenLoginStatus).not.toHaveBeenCalled();
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); });
+    }
+  });
+
+  it("updates card headings in Russian while preserving the Cursor command placeholder", async () => {
+    const originalLanguage = i18n.language;
+    const result = await renderForm([], { adapterType: "cursor" }, { sectionLayout: "cards" });
+    roots.push(result.root);
+    try {
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      await flushReact();
+
+      expect(result.container.querySelector('[data-config-section="identity"] h3')?.textContent).toBe("Профиль");
+      expect(result.container.querySelector('[data-config-section="adapter"] h3')?.textContent).toBe("Адаптер");
+      await clickByText(result.container, "Дополнительно");
+      expect(result.container.querySelector('input[placeholder="agent"]')).not.toBeNull();
+      expect(result.container.querySelector('input[placeholder="агентов"]')).toBeNull();
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); });
+    }
+  });
+
   it("promotes environment drafts through the page Save action and discards them through the page Discard action", async () => {
     const dirty = vi.fn();
     let save: (() => void) | null = null;
@@ -773,11 +840,11 @@ describe("AgentConfigForm environment selector", () => {
   it("reads and saves Pi thinking effort using the Pi runtime key", async () => {
     const result = await renderForm([], { adapterType: "pi_local", adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4.6", thinking: "high" } });
     roots.push(result.root);
-    const effort = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "high")!;
+    const effort = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "High")!;
     expect(effort).toBeTruthy();
     await act(async () => effort.click());
     await flushReact();
-    const low = [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "lowlow")!;
+    const low = [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Lowlow")!;
     expect(low).toBeTruthy();
     await act(async () => low.click());
     await flushReact();
@@ -1583,7 +1650,7 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(result.container, "Sign in")).toBeTruthy();
   });
 
-  it("keeps the Login button hidden under the managed-sandbox-only policy when no managed sandbox is available", async () => {
+  it.each(["inline", "lifted"])("keeps missing-sandbox errors reactive in %s feedback without probing the host", async (surface) => {
     // The policy is on, but no managed sandbox environment exists, so the login
     // target resolution fails closed. The render catches that failure and
     // resolves no login environment, so the affordance stays hidden. The Test
@@ -1593,6 +1660,7 @@ describe("AgentConfigForm environment selector", () => {
       enableManagedSandboxOnly: true,
     });
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const feedback = vi.fn();
     const result = await renderForm(
       [
         makeEnvironment({
@@ -1603,11 +1671,51 @@ describe("AgentConfigForm environment selector", () => {
         }),
       ],
       { adapterType: "claude_local", defaultEnvironmentId: null },
-      { showAdapterTestEnvironmentButton: true },
+      { showAdapterTestEnvironmentButton: true, onTestFeedbackChange: surface === "lifted" ? feedback : undefined },
     );
     roots.push(result.root);
 
     expect(findButton(result.container, "Sign in")).toBeFalsy();
+    await runTest(result.container);
+    const originalLanguage = i18n.language;
+    const english = new ManagedSandboxUnavailableForTestError().message;
+    const environmentReads = mockEnvironmentsApi.list.mock.calls.length;
+    try {
+      for (const locale of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        await flushReact();
+        const expected = locale === "en" ? english : "В этом экземпляре агенты работают только в управляемой песочнице, но среда песочницы для проверки недоступна. Убедитесь, что провайдер управляемой песочницы активен, и повторите проверку.";
+        if (surface === "lifted") expect(feedback.mock.lastCall?.[0].errorMessage).toBe(expected);
+        else expect(result.container.textContent).toContain(expected);
+        expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+        expect(mockEnvironmentsApi.list).toHaveBeenCalledTimes(environmentReads);
+        expect(result.onSave).not.toHaveBeenCalled();
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); });
+    }
+  });
+
+  it.each(["external", "unknown"])("preserves the %s test failure while changing its display language", async (failureKind) => {
+    const raw = Object.freeze(new Error(new ManagedSandboxUnavailableForTestError().message));
+    mockAgentsApi.testEnvironment.mockRejectedValue(failureKind === "external" ? raw : { unavailable: true });
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+    await runTest(result.container);
+    const originalLanguage = i18n.language;
+    try {
+      for (const locale of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        await flushReact();
+        expect(result.container.textContent).toContain(failureKind === "external"
+          ? raw.message
+          : locale === "ru" ? "Проверка окружения не пройдена" : "Environment test failed");
+        expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+        expect(result.onSave).not.toHaveBeenCalled();
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); });
+    }
   });
 
   it("starts a login session for the effective sandbox and shows the code and the authentication URL", async () => {

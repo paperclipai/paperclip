@@ -1,62 +1,64 @@
+import { useTranslation } from "@/i18n";
+import { Trans } from "react-i18next";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 interface ShortcutEntry {
   keys: string[];
-  label: string;
+  labelKey: string;
   /** Render keys as a simultaneous chord (joined with "+") rather than a
    *  "then" sequence. */
   combo?: boolean;
 }
 
 interface ShortcutSection {
-  title: string;
+  titleKey: string;
   shortcuts: ShortcutEntry[];
 }
 
 const sections: ShortcutSection[] = [
   {
-    title: "Inbox",
+    titleKey: "localizationKeyboard.inbox",
     shortcuts: [
-      { keys: ["j"], label: "Move down" },
-      { keys: ["↓"], label: "Move down" },
-      { keys: ["k"], label: "Move up" },
-      { keys: ["↑"], label: "Move up" },
-      { keys: ["←"], label: "Collapse selected group" },
-      { keys: ["→"], label: "Expand selected group" },
-      { keys: ["Enter"], label: "Open selected item" },
-      { keys: ["a"], label: "Archive item" },
-      { keys: ["y"], label: "Archive item" },
-      { keys: ["r"], label: "Mark as read" },
-      { keys: ["U"], label: "Mark as unread" },
+      { keys: ["j"], labelKey: "localizationKeyboard.moveDown" },
+      { keys: ["↓"], labelKey: "localizationKeyboard.moveDown" },
+      { keys: ["k"], labelKey: "localizationKeyboard.moveUp" },
+      { keys: ["↑"], labelKey: "localizationKeyboard.moveUp" },
+      { keys: ["←"], labelKey: "localizationKeyboard.collapseGroup" },
+      { keys: ["→"], labelKey: "localizationKeyboard.expandGroup" },
+      { keys: ["Enter"], labelKey: "localizationKeyboard.openItem" },
+      { keys: ["a"], labelKey: "localizationKeyboard.archive" },
+      { keys: ["y"], labelKey: "localizationKeyboard.archive" },
+      { keys: ["r"], labelKey: "localizationKeyboard.markRead" },
+      { keys: ["U"], labelKey: "localizationKeyboard.markUnread" },
     ],
   },
   {
-    title: "Task detail",
+    titleKey: "localizationKeyboard.taskDetail",
     shortcuts: [
-      { keys: ["y"], label: "Quick-archive back to inbox" },
-      { keys: ["g", "i"], label: "Go to inbox" },
-      { keys: ["g", "c"], label: "Focus comment composer" },
+      { keys: ["y"], labelKey: "localizationKeyboard.quickArchive" },
+      { keys: ["g", "i"], labelKey: "localizationKeyboard.goToInbox" },
+      { keys: ["g", "c"], labelKey: "localizationKeyboard.focusComment" },
     ],
   },
   {
-    title: "Decisions",
+    titleKey: "localizationKeyboard.decisions",
     shortcuts: [
-      { keys: ["j"], label: "Move down" },
-      { keys: ["↓"], label: "Move down" },
-      { keys: ["k"], label: "Move up" },
-      { keys: ["↑"], label: "Move up" },
-      { keys: ["Enter"], label: "Open or close selected decision" },
-      { keys: ["x"], label: "Dismiss selected decision" },
+      { keys: ["j"], labelKey: "localizationKeyboard.moveDown" },
+      { keys: ["↓"], labelKey: "localizationKeyboard.moveDown" },
+      { keys: ["k"], labelKey: "localizationKeyboard.moveUp" },
+      { keys: ["↑"], labelKey: "localizationKeyboard.moveUp" },
+      { keys: ["Enter"], labelKey: "localizationKeyboard.toggleDecision" },
+      { keys: ["x"], labelKey: "localizationKeyboard.dismissDecision" },
     ],
   },
   {
-    title: "Global",
+    titleKey: "localizationKeyboard.global",
     shortcuts: [
-      { keys: ["/"], label: "Search current page or quick search" },
-      { keys: ["c"], label: "New task" },
-      { keys: ["["], label: "Toggle sidebar" },
-      { keys: ["]"], label: "Toggle panel" },
-      { keys: ["?"], label: "Show keyboard shortcuts" },
+      { keys: ["/"], labelKey: "localizationKeyboard.search" },
+      { keys: ["c"], labelKey: "localizationKeyboard.newTask" },
+      { keys: ["["], labelKey: "localizationKeyboard.toggleSidebar" },
+      { keys: ["]"], labelKey: "localizationKeyboard.togglePanel" },
+      { keys: ["?"], labelKey: "localizationKeyboard.showShortcuts" },
     ],
   },
 ];
@@ -70,27 +72,28 @@ function KeyCap({ children }: { children: string }) {
 }
 
 export function KeyboardShortcutsCheatsheetContent() {
+  const { t } = useTranslation();
   return (
     <>
       <div className="divide-y divide-border border-t border-border">
         {sections.map((section) => (
-          <div key={section.title} className="px-5 py-3">
+          <div key={section.titleKey} className="px-5 py-3">
             <h3 className="mb-2 text-(length:--text-micro) font-semibold uppercase tracking-wider text-muted-foreground">
-              {section.title}
+              {t(section.titleKey)}
             </h3>
             <div className="space-y-1.5">
               {section.shortcuts.map((shortcut) => (
                 <div
-                  key={shortcut.label + shortcut.keys.join()}
+                  key={shortcut.labelKey + shortcut.keys.join()}
                   className="flex items-center justify-between gap-4"
                 >
-                  <span className="text-sm text-foreground/90">{shortcut.label}</span>
+                  <span className="text-sm text-foreground/90">{t(shortcut.labelKey)}</span>
                   <div className="flex items-center gap-1">
                     {shortcut.keys.map((key, i) => (
                       <span key={key} className="flex items-center gap-1">
                         {i > 0 && (
                           <span className="text-xs text-muted-foreground">
-                            {shortcut.combo ? "+" : "then"}
+                            {shortcut.combo ? "+" : t("localizationKeyboard.then")}
                           </span>
                         )}
                         <KeyCap>{key}</KeyCap>
@@ -105,7 +108,7 @@ export function KeyboardShortcutsCheatsheetContent() {
       </div>
       <div className="border-t border-border px-5 py-3">
         <p className="text-xs text-muted-foreground">
-          Press <KeyCap>Esc</KeyCap> to close &middot; Shortcuts are disabled in text fields
+          <Trans i18nKey="localizationKeyboard.help" components={{ key: <KeyCap>Esc</KeyCap> }} />
         </p>
       </div>
     </>
@@ -119,11 +122,12 @@ export function KeyboardShortcutsCheatsheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md gap-0 p-0 overflow-hidden" showCloseButton={false}>
         <DialogHeader className="px-5 pt-5 pb-3">
-          <DialogTitle className="text-base">Keyboard shortcuts</DialogTitle>
+          <DialogTitle className="text-base">{t("localizationKeyboard.title")}</DialogTitle>
         </DialogHeader>
         <KeyboardShortcutsCheatsheetContent />
       </DialogContent>

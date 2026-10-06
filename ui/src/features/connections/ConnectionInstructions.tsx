@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useId, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -25,23 +26,24 @@ export function ConnectionInstructionsEditor({ provider, template, value, onChan
   onChange: (value: ConnectionAgentInstructions) => void;
   disabled?: boolean;
 }) {
+  useTranslation();
   const id = useId();
   const [editing, setEditing] = useState(false);
   const changed = value.text !== template.text || value.template?.id !== template.id || value.template?.version !== template.version;
-  return <section className="space-y-3" aria-label="Agent instructions">
-    <h3 className="text-sm font-medium">Agent instructions</h3>
+  return <section className="space-y-3" aria-label={t("sep28Routines.agentInstructions")}>
+    <h3 className="text-sm font-medium">{t("sep28Routines.agentInstructions")}</h3>
     <div className="flex items-center justify-between gap-4">
-      <label htmlFor={id} className="text-sm">Tell agents to use {provider}</label>
+      <label htmlFor={id} className="text-sm">{t("oct6Beta.tellAgentsProvider", { provider })}</label>
       <ToggleSwitch id={id} checked={value.enabled} disabled={disabled} onCheckedChange={(enabled) => onChange({ ...value, enabled })} />
     </div>
-    {!value.enabled && <InlineBanner tone="warning">Agents can still use this connection’s tools, but won’t receive these instructions.</InlineBanner>}
-    {editing ? <Textarea aria-label="Instructions text" value={value.text} disabled={disabled} maxLength={CONNECTION_INSTRUCTIONS_MAX_LENGTH}
+    {!value.enabled && <InlineBanner tone="warning">{t("oct6Beta.copy136")}</InlineBanner>}
+    {editing ? <Textarea aria-label={t("oct6Beta.copy137")} value={value.text} disabled={disabled} maxLength={CONNECTION_INSTRUCTIONS_MAX_LENGTH}
       className="min-h-40" onChange={(event) => onChange({ ...value, text: event.target.value })} />
       : <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{value.text}</p>}
-    {!value.text.trim() && <p role="alert" className="text-sm text-destructive">Enter instructions.</p>}
+    {!value.text.trim() && <p role="alert" className="text-sm text-destructive">{t("oct6Beta.copy138")}</p>}
     <div className="flex items-center gap-3">
-      <Button variant="ghost" size="sm" disabled={disabled} onClick={() => setEditing(!editing)}>{editing ? "Done editing" : "Edit instructions"}</Button>
-      {changed && <Button variant="ghost" size="sm" disabled={disabled} onClick={() => onChange({ ...defaultConnectionAgentInstructions(template)!, enabled: value.enabled })}>Reset to default</Button>}
+      <Button variant="ghost" size="sm" disabled={disabled} onClick={() => setEditing(!editing)}>{editing ? t("oct6Beta.copy139") : t("localizationRoutines.editInstructions")}</Button>
+      {changed && <Button variant="ghost" size="sm" disabled={disabled} onClick={() => onChange({ ...defaultConnectionAgentInstructions(template)!, enabled: value.enabled })}>{t("oct6Beta.copy140")}</Button>}
     </div>
   </section>;
 }
@@ -52,6 +54,7 @@ export function ConnectionInstructionsSettings({ connection, provider, template,
   template: ConnectionInstructionTemplate;
   canConfigure: boolean;
 }) {
+  useTranslation();
   const client = useQueryClient();
   const [draft, setDraft] = useState<ConnectionAgentInstructions | null>(null);
   // A deliberately cleared setting stays off. Defaults are persisted by the server.
@@ -67,31 +70,32 @@ export function ConnectionInstructionsSettings({ connection, provider, template,
   const dirty = JSON.stringify(value) !== JSON.stringify(saved);
   return <div className="space-y-4">
     <ConnectionInstructionsEditor provider={provider} template={template} value={value} onChange={setDraft} disabled={!canConfigure || mutation.isPending} />
-    {mutation.isError && <div role="alert"><InlineBanner tone="danger">{mutation.error instanceof Error ? mutation.error.message : "Couldn’t save instructions. Try again."}</InlineBanner></div>}
+    {mutation.isError && <div role="alert"><InlineBanner tone="danger">{mutation.error instanceof Error ? mutation.error.message : t("sep28Apps.instructionsFailed")}</InlineBanner></div>}
     {dirty && <div className="flex items-center justify-between">
-      <Button variant="ghost" disabled={mutation.isPending} onClick={() => { setDraft(null); mutation.reset(); }}>Cancel</Button>
-      <Button disabled={!canConfigure || mutation.isPending || !value.text.trim()} onClick={() => mutation.mutate()}>{mutation.isPending ? "Saving…" : "Save instructions"}</Button>
+      <Button variant="ghost" disabled={mutation.isPending} onClick={() => { setDraft(null); mutation.reset(); }}>{t("oct5Core.s0345")}</Button>
+      <Button disabled={!canConfigure || mutation.isPending || !value.text.trim()} onClick={() => mutation.mutate()}>{mutation.isPending ? t("oct5Core.s0466") : t("sep28Apps.saveInstructions")}</Button>
     </div>}
   </div>;
 }
 
 export function AgentConnectionInstructions({ companyId, agentId }: { companyId: string; agentId: string }) {
+  useTranslation();
   const query = useQuery({ queryKey: queryKeys.tools.effectiveProfilesForAgent(companyId, agentId), queryFn: () => toolsApi.getEffectiveProfilesForAgent(companyId, agentId) });
   const sources = query.data?.installedConnections.filter((connection) => connection.agentInstructions && connection.enabled && connection.status === "active") ?? [];
-  if (query.isLoading) return <p className="text-sm text-muted-foreground">Loading connection instructions…</p>;
-  if (query.isError) return <InlineBanner tone="danger" actions={<Button variant="ghost" onClick={() => void query.refetch()}>Retry</Button>}>Couldn’t load connection instructions.</InlineBanner>;
+  if (query.isLoading) return <p className="text-sm text-muted-foreground">{t("oct6Beta.copy141")}</p>;
+  if (query.isError) return <InlineBanner tone="danger" actions={<Button variant="ghost" onClick={() => void query.refetch()}>{t("oct5Core.s0281")}</Button>}>{t("oct6Beta.copy142")}</InlineBanner>;
   if (!sources.length) return null;
-  return <section className="mt-8 space-y-4" aria-label="From connections">
-    <h3 className="text-sm font-medium">From connections</h3>
-    <p className="text-sm text-muted-foreground">Enabled instructions are included when the connection is available for the task. Access can depend on the task’s responsible person and action permissions.</p>
+  return <section className="mt-8 space-y-4" aria-label={t("oct6Beta.copy143")}>
+    <h3 className="text-sm font-medium">{t("oct6Beta.copy143")}</h3>
+    <p className="text-sm text-muted-foreground">{t("oct6Beta.copy144")}</p>
     {sources.map((connection) => {
       const config = connectionInstructionsConfig(connection);
       const app = getConnectableAppDefinition(String(config.sourceTemplateKey ?? ""));
       const context = connectionInstructionContext(app, config);
       return <div key={connection.id} className="space-y-3 rounded-lg border border-border p-4">
         <Link className="text-sm font-medium underline underline-offset-2" to={`/apps/${connection.id}/permissions`}>{connection.name}</Link>
-        {!connection.agentInstructions!.enabled && <InlineBanner tone="warning">These instructions are turned off for this connection.</InlineBanner>}
-        {context === null ? <InlineBanner tone="warning">Complete this connection’s configuration before agents receive its instructions.</InlineBanner>
+        {!connection.agentInstructions!.enabled && <InlineBanner tone="warning">{t("oct6Beta.copy145")}</InlineBanner>}
+        {context === null ? <InlineBanner tone="warning">{t("oct6Beta.copy146")}</InlineBanner>
           : <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{connection.agentInstructions!.text}</p>}
       </div>;
     })}

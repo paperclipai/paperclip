@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BoardChat } from "./BoardChat";
+import { setLocale } from "../i18n";
 
 /**
  * Regression coverage for the post-wizard Conference Room intro (PAP-134,
@@ -53,9 +54,11 @@ vi.mock("../components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../components/ChatComposer", () => ({
-  ChatComposer: forwardRef((_props, ref) => {
+  ChatComposer: forwardRef(({ value, onChange, onSubmit, placeholder, sendLabel }: {
+    value: string; onChange: (value: string) => void; onSubmit: () => void; placeholder: string; sendLabel: string;
+  }, ref) => {
     useImperativeHandle(ref, () => ({ focus: vi.fn() }));
-    return <div data-testid="chat-composer" />;
+    return <div data-testid="chat-composer"><textarea value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} /><button aria-label={sendLabel} onClick={onSubmit}>send</button></div>;
   }),
 }));
 vi.mock("../components/AgentBubbleActionRow", () => ({
@@ -118,6 +121,7 @@ describe("BoardChat staged typing intro", () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    setLocale("en");
     vi.useFakeTimers();
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
     container = document.createElement("div");
@@ -142,6 +146,7 @@ describe("BoardChat staged typing intro", () => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
     vi.clearAllMocks();
+    setLocale("en");
     // Drop any per-test document.visibilityState override.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     delete (document as any).visibilityState;
@@ -217,6 +222,52 @@ describe("BoardChat staged typing intro", () => {
     // t=2.7s: chips stage in.
     await advance(700);
     expect(hasChips(container)).toBe(true);
+  });
+
+  it("retranslates bundled welcome and suggestion labels without rewriting prompts or replaying the reveal", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await render();
+    await advance(2000);
+    await advance(700);
+    await act(async () => setLocale("ru"));
+    expect(container.textContent).toContain("Добро пожаловать в **Acme Robotics**!");
+    expect(container.textContent).toContain("Я Alex");
+    expect(container.textContent).toContain("Build affordable robots");
+    expect(hasTypingDots(container)).toBe(false);
+    const chip = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Подготовить описание организации")!;
+    await act(async () => chip.click());
+    const prompt = "Draft a one-page Organization Brief for Acme Robotics — include our mission, team roster, and first priorities.";
+    expect(container.querySelector("textarea")!.value).toBe(prompt);
+    await act(async () => setLocale("en"));
+    expect(container.querySelector("textarea")!.value).toBe(prompt);
+    expect(hasChips(container)).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps user text and translates an existing local error without sending again", async () => {
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("offline test"));
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal("fetch", fetchSpy);
+    mockIssuesApi.listComments.mockResolvedValue([USER_COMMENT]);
+    await render();
+    const input = container.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "Мой вопрос / raw command");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => setLocale("ru"));
+    expect(input.value).toBe("Мой вопрос / raw command");
+    expect(container.textContent).toContain(USER_COMMENT.body);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Отправить сообщение"]')!.click());
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual({ companyId: "company-1", message: "Мой вопрос / raw command", taskId: "issue-board" });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Ассистент руководства сейчас недоступен");
+    await act(async () => setLocale("en"));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("The board assistant is unavailable right now");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    consoleSpy.mockRestore();
   });
 
   it("skips the staged reveal when a user comment already exists", async () => {

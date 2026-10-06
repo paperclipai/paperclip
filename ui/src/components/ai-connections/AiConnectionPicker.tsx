@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { ConnectionChoiceList } from "@/features/connections/ConnectionChoiceList";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,7 @@ export function AiConnectionPicker({
   onReconnect,
   onRetry,
 }: AiConnectionPickerProps) {
+  const { t } = useTranslation();
   const compatible = connections.filter((connection) =>
     matchesAiRequirement(connection, requirement),
   );
@@ -71,7 +73,7 @@ export function AiConnectionPicker({
       grantId: connection.grantId,
     });
   return (
-    <section className="flex flex-col gap-4" aria-label="AI connection">
+    <section className="flex flex-col gap-4" aria-label={t("sep13Connections.aiConnection")}>
       <div className="flex items-center gap-3">
         <AppLogo
           name={AI_PROVIDERS[requirement.provider].name}
@@ -81,7 +83,7 @@ export function AiConnectionPicker({
           size={32}
         />
         <div className="flex min-w-0 flex-col gap-1">
-        <h3 className="text-sm font-semibold">AI connection</h3>
+        <h3 className="text-sm font-semibold">{t("sep13Connections.aiConnection")}</h3>
         <p className="text-xs text-muted-foreground">
           {AI_PROVIDERS[requirement.provider].name}
           {value && value.mode !== "responsible_user" && ` · ${aiMethodLabel(value.provider, value.method)}`}
@@ -89,7 +91,7 @@ export function AiConnectionPicker({
         </div>
       </div>
       {loading ? (
-        <div role="status" aria-label="Loading AI connections">
+        <div role="status" aria-label={t("sep13Connections.loadingConnections")}>
           <Skeleton className="h-24 w-full" />
         </div>
       ) : error ? (
@@ -99,7 +101,7 @@ export function AiConnectionPicker({
           </p>
           {onRetry && (
             <Button type="button" variant="outline" onClick={onRetry}>
-              Retry connections
+              {t("sep13Connections.retryConnections")}
             </Button>
           )}
         </div>
@@ -109,14 +111,14 @@ export function AiConnectionPicker({
             disabled={readOnly}
             selectedId={value?.mode === "responsible_user" ? "responsible_user" : value?.connectionId}
             choices={[
-              { id: "responsible_user", name: "Responsible user’s connection", description: <>
-                <span className="block">For you: {personalDefault?.name ?? "Not connected"}</span>
-                <span className="block">Other users’ tasks use their own {AI_PROVIDERS[requirement.provider].name} connection.</span>
+              { id: "responsible_user", name: t("sep13Connections.responsibleConnection"), description: <>
+                <span className="block">{t("sep13Connections.forYou", { connection: personalDefault?.name ?? t("sep13Connections.notConnected") })}</span>
+                <span className="block">{t("stable916Ai.othersOwnConnection", { provider: AI_PROVIDERS[requirement.provider].name })}</span>
               </> },
               ...compatible.filter((connection) => connection.ownership === "shared").map((connection) => ({
                 id: connection.id, name: connection.name,
                 disabled: Boolean(aiConnectionProblem(connection)),
-                description: <>Company shared · {aiMethodLabel(connection.provider, connection.method)}{connection.accountLabel ? ` · ${connection.accountLabel}` : ""}{aiConnectionProblem(connection) ? ` · ${aiConnectionProblem(connection)}` : ""}</>,
+                description: <>{t("sep13Connections.companyShared")} · {aiMethodLabel(connection.provider, connection.method)}{connection.accountLabel ? ` · ${connection.accountLabel}` : ""}{aiConnectionProblem(connection) ? ` · ${aiConnectionProblem(connection)}` : ""}</>,
               })),
             ]}
             onSelect={(id) => {
@@ -131,14 +133,12 @@ export function AiConnectionPicker({
           )}
           {!readOnly && (
             <div className="flex justify-end gap-2">
-              {onReconnect && <Button type="button" variant="outline" onClick={onReconnect}>Reconnect account</Button>}
+              {onReconnect && <Button type="button" variant="outline" onClick={onReconnect}>{t("sep13Connections.reconnectAccount")}</Button>}
               <Button
                 type="button"
                 variant="outline"
                 onClick={onConnect}
-              >
-                Connect another account
-              </Button>
+              >{t("sep13Connections.connectAnother")}</Button>
             </div>
           )}
         </>

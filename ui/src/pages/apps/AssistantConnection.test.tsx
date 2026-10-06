@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantConnection, AssistantConnectionCard } from "./AssistantConnection";
+import { i18n } from "@/i18n";
 const mocks = vi.hoisted(() => ({ setup: vi.fn(), connections: vi.fn(), revoke: vi.fn(), breadcrumbs: vi.fn(), copy: vi.fn() }));
 vi.mock("@/hooks/usePrefersReducedMotion", () => ({ usePrefersReducedMotion: () => true }));
 vi.mock("@/lib/clipboard", () => ({ copyTextToClipboard: mocks.copy }));
@@ -26,8 +27,28 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
-afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); vi.clearAllMocks(); });
+afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); vi.clearAllMocks(); await i18n.changeLanguage("en"); });
 describe("assistant setup from Connections", () => {
+  it.each(["pending", "empty", "connected"] as const)("retranslates %s card actions without refetching or navigating", async (state) => {
+    if (state === "pending") mocks.connections.mockImplementation(() => new Promise(() => {}));
+    else mocks.connections.mockResolvedValue(state === "connected" ? [grant] : []);
+    const navigate = vi.fn();
+    await render(<AssistantConnectionCard onNavigate={navigate} />);
+    const button = container.querySelector<HTMLButtonElement>("button")!;
+    const actions = state === "pending" ? ["Open", "Открыть"] : state === "connected" ? ["Manage", "Управление"] : ["Set up", "Настроить"];
+    for (const locale of ["en", "ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      const action = actions[locale === "ru" ? 1 : 0];
+      expect(container.querySelector("button")).toBe(button);
+      expect(button.textContent).toBe(action);
+      expect(button.getAttribute("aria-label")).toBe(i18n.t("oct6Beta.assistantConnectionAction", { action }));
+      expect(mocks.connections).toHaveBeenCalledOnce();
+      expect(navigate).not.toHaveBeenCalled();
+      expect(mocks.revoke).not.toHaveBeenCalled();
+    }
+    await act(async () => button.click());
+    expect(navigate).toHaveBeenCalledExactlyOnceWith("/apps/assistant-connection");
+  });
   it("copies a scoped instruction link with no credential and keeps manual configuration collapsed", async () => {
     await render();
     expect(container.querySelector("details")?.open).toBe(false);

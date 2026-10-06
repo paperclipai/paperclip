@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ToastProvider, useToastState } from "../context/ToastContext";
 import { useCopyAction, useCopyToast } from "./use-copy-action";
+import { i18n } from "../i18n";
 
 const writeText = vi.fn<(text: string) => Promise<void>>();
 
@@ -43,12 +44,12 @@ function InlineCopy() {
   );
 }
 
-function ToastCopy() {
+function ToastCopy({ defaultTitle = false }: { defaultTitle?: boolean }) {
   const copyWithToast = useCopyToast();
   const toasts = useToastState();
   return (
     <>
-      <button type="button" onClick={() => void copyWithToast("secret-value", "Message copied")}>
+      <button type="button" onClick={() => void copyWithToast("secret-value", defaultTitle ? undefined : "Message copied")}>
         Copy
       </button>
       <ul>
@@ -70,11 +71,12 @@ beforeEach(() => {
   root = createRoot(container);
 });
 
-afterEach(() => {
+afterEach(async () => {
   act(() => root?.unmount());
   root = null;
   container.remove();
   vi.useRealTimers();
+  await i18n.changeLanguage("en");
 });
 
 describe("useCopyAction", () => {
@@ -145,6 +147,24 @@ describe("useCopyAction", () => {
 });
 
 describe("useCopyToast", () => {
+  it("localizes default feedback after language changes without changing clipboard contents", async () => {
+    writeText.mockResolvedValue(undefined);
+    render(<ToastProvider><ToastCopy defaultTitle /></ToastProvider>);
+    await clickCopy();
+    expect(container.textContent).toContain("Copied");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await clickCopy();
+    expect(container.textContent).toContain("Скопировано");
+    writeText.mockRejectedValueOnce(new Error("raw provider error /not-for-display"));
+    await clickCopy();
+    expect(container.textContent).toContain("Не удалось скопировать в буфер обмена");
+    expect(container.textContent).not.toContain("raw provider error");
+    expect(writeText.mock.calls.every(([value]) => value === "secret-value")).toBe(true);
+    await act(async () => { await i18n.changeLanguage("en"); });
+    await clickCopy();
+    expect(container.textContent).toContain("Copied");
+  });
+
   it("raises a success toast once the write resolves", async () => {
     writeText.mockResolvedValue(undefined);
     render(<ToastProvider><ToastCopy /></ToastProvider>);

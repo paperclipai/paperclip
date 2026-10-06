@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
@@ -20,6 +21,7 @@ import {
   saveStructuredDraft,
 } from "@/lib/composer-draft";
 import { cn } from "@/lib/utils";
+import { InteractionResolutionDisplayError } from "@/lib/interaction-resolution-error";
 import {
   TaskChatComposerTakeoverControls,
   useTaskChatComposerTakeoverActions,
@@ -38,7 +40,12 @@ type Answer = PaperclipQuestionResponse["answers"][string];
  * outlive the next click rather than disappear the moment the reader touches
  * an option.
  */
-type FormError = { message: string; fromMissingAnswer?: boolean };
+type FormError = {
+  cause: unknown;
+  fallbackKey: string;
+  values?: { number: number };
+  fromMissingAnswer?: boolean;
+};
 
 export interface QuestionFormProps {
   id: string;
@@ -71,27 +78,27 @@ function answerError(
   answer: Answer | undefined,
 ): string | null {
   if (question.required && !answerHasValue(answer))
-    return "This question is required.";
+    return t("localizationTaskRuntime.ui_This_question_is_required_17232vw");
   if (
     question.answerMode !== "text" &&
     answer?.customText !== undefined &&
     !answer.customText.trim()
   ) {
-    return "Enter a custom answer.";
+    return t("localizationTaskRuntime.ui_Enter_a_custom_answer_1qrp4m5");
   }
   const value =
     question.answerMode === "text" ? answer?.text : answer?.customText;
   if (value == null || value.length === 0) return null;
   const validation = question.textValidation;
   if (validation?.minLength != null && value.length < validation.minLength)
-    return `Enter at least ${validation.minLength} characters.`;
+    return t("localizationTaskRuntime.minCharacters", { count: validation.minLength });
   if (validation?.maxLength != null && value.length > validation.maxLength)
-    return `Enter no more than ${validation.maxLength} characters.`;
+    return t("localizationTaskRuntime.maxCharacters", { count: validation.maxLength });
   if (validation?.pattern) {
     const result = matchSafeQuestionValidationPattern(validation.pattern, value);
     if (result === "unsupported")
-      return "This question has an unsupported validation pattern.";
-    if (result === "no_match") return "Use the requested format.";
+      return t("localizationTaskRuntime.ui_This_question_has_an_unsupported_validation_pattern_1bsejs");
+    if (result === "no_match") return t("localizationTaskRuntime.ui_Use_the_requested_format_1xk216o");
   }
   if (
     validation?.inputType === "number" ||
@@ -102,12 +109,12 @@ function answerError(
       !Number.isFinite(numeric) ||
       (validation.inputType === "integer" && !Number.isInteger(numeric))
     ) {
-      return `Enter a valid ${validation.inputType}.`;
+      return t(`localizationTaskRuntime.valid_${validation.inputType}`);
     }
     if (validation.minimum != null && numeric < validation.minimum)
-      return `Enter a value of at least ${validation.minimum}.`;
+      return t("localizationTaskRuntime.minimumValue", { value: validation.minimum });
     if (validation.maximum != null && numeric > validation.maximum)
-      return `Enter a value no greater than ${validation.maximum}.`;
+      return t("localizationTaskRuntime.maximumValue", { value: validation.maximum });
   }
   return null;
 }
@@ -131,6 +138,7 @@ function SelectOption({
   disabled: boolean;
   onClick: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <button
       type="button"
@@ -172,9 +180,7 @@ function SelectOption({
         <span className="flex flex-wrap items-center gap-1.5 text-sm font-medium leading-5 text-foreground">
           <span>{label}</span>
           {recommended ? (
-            <span className="rounded-sm bg-background/70 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground">
-              Recommended
-            </span>
+            <span className="rounded-sm bg-background/70 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground">{t("pages.apps.connect.access.recommended")}</span>
           ) : null}
         </span>
         {description ? (
@@ -194,6 +200,7 @@ export function QuestionResponseSummary({
   questionSet: PaperclipQuestionSet;
   response: PaperclipQuestionResponse;
 }) {
+  const { t } = useTranslation();
   return (
     <dl className="grid gap-2 text-sm">
       {questionSet.questions.map((question) => {
@@ -221,7 +228,7 @@ export function QuestionResponseSummary({
               </span>
             </dt>
             <dd className="mt-0.5 text-foreground">
-              {values.length > 0 ? values.join(", ") : "No answer"}
+              {values.length > 0 ? values.join(", ") : t("localizationIssueDetail.ui_No_answer")}
             </dd>
           </div>
         );
@@ -242,6 +249,7 @@ export function QuestionForm({
   onSubmit,
   onCancel,
 }: QuestionFormProps) {
+  const { t } = useTranslation();
   const takeoverActions = useTaskChatComposerTakeoverActions();
   const initialDraft = draftKey
     ? loadStructuredDraft<{
@@ -284,7 +292,6 @@ export function QuestionForm({
       previousPage.current = page;
     }
   }, [page]);
-
   const [filters, setFilters] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -306,7 +313,7 @@ export function QuestionForm({
           answerError(candidate, answers[candidate.id]),
         ]),
       ),
-    [answers, questionSet.questions],
+    [i18n.resolvedLanguage, answers, questionSet.questions],
   );
   const allValid = Object.values(validationErrors).every(
     (value) => value == null,
@@ -314,7 +321,7 @@ export function QuestionForm({
   if (!question)
     return (
       <p className="text-sm text-muted-foreground">
-        No answerable questions were provided.
+        {t("localizationTaskRuntime.ui_No_answerable_questions_were_provided_49q6h1")}
       </p>
     );
   const answer = answers[question.id] ?? {};
@@ -386,7 +393,9 @@ export function QuestionForm({
       // question and say so rather than dropping the send.
       setPage(invalidIndex);
       setError({
-        message: `Question ${invalidIndex + 1} needs an answer before you can send.`,
+        cause: null,
+        fallbackKey: "localizationTaskExecution.questionNeedsAnswer",
+        values: { number: invalidIndex + 1 },
         fromMissingAnswer: true,
       });
       return;
@@ -400,12 +409,7 @@ export function QuestionForm({
       });
       if (draftKey) clearDraft(draftKey);
     } catch (cause) {
-      setError({
-        message:
-          cause instanceof Error
-            ? cause.message
-            : "The answers could not be submitted.",
-      });
+      setError({ cause, fallbackKey: "localizationTaskRuntime.ui_The_answers_could_not_be_submitted_scl09" });
     } finally {
       setWorking(null);
     }
@@ -419,17 +423,17 @@ export function QuestionForm({
       await onCancel();
       if (draftKey) clearDraft(draftKey);
     } catch (cause) {
-      setError({
-        message:
-          cause instanceof Error
-            ? cause.message
-            : "The questions could not be cancelled.",
-      });
+      setError({ cause, fallbackKey: "localizationTaskRuntime.ui_The_questions_could_not_be_cancelled_houvd1" });
     } finally {
       setWorking(null);
     }
   }
 
+  const errorMessage = error
+    ? error.cause instanceof InteractionResolutionDisplayError
+      ? error.cause.displayMessage
+      : error.cause instanceof Error ? error.cause.message : t(error.fallbackKey, error.values)
+    : null;
   const currentError = validationErrors[question.id];
   const isLastPage = page === questionSet.questions.length - 1;
   const busy = disabled || working != null || inputUploading;
@@ -452,26 +456,26 @@ export function QuestionForm({
     questionSet.questions.length > 1 ? (
       <nav
         className="flex shrink-0 items-center gap-1"
-        aria-label="Question pagination"
+        aria-label={t("localizationTaskRuntime.ui_Question_pagination_u3z3sr")}
       >
         <Button
           type="button"
           size="icon-xs"
           variant="ghost"
-          aria-label="Previous question"
+          aria-label={t("localizationTaskRuntime.ui_Previous_question_z8vhes")}
           disabled={disabled || working != null || page === 0}
           onClick={() => setPage((current) => current - 1)}
         >
           <ChevronLeft aria-hidden />
         </Button>
         <span className="min-w-10 text-center tabular-nums">
-          {page + 1} of {questionSet.questions.length}
+          {t("localizationTaskRuntime.questionPage", { page: page + 1, total: questionSet.questions.length })}
         </span>
         <Button
           type="button"
           size="icon-xs"
           variant="ghost"
-          aria-label="Next question"
+          aria-label={t("localizationTaskRuntime.ui_Next_question_ns6pt0")}
           // The arrows browse; they do not validate. A send that finds an
           // earlier answer missing returns to that question (see submit).
           disabled={disabled || working != null || isLastPage}
@@ -518,7 +522,7 @@ export function QuestionForm({
       {questionSet.description ? (
         <div
           role="region"
-          aria-label="Question context"
+          aria-label={t("oct5Core.s0427")}
           tabIndex={0}
           className="mb-3 max-h-96 overflow-auto text-sm text-muted-foreground"
         >
@@ -527,7 +531,7 @@ export function QuestionForm({
       ) : null}
       {question.answerMode === "text" ? (
         <div className="mb-2 flex items-center gap-3 text-xs text-muted-foreground">
-          {question.answerMode === "text" ? <span>Write an answer</span> : null}
+          {question.answerMode === "text" ? <span>{t("localizationTaskRuntime.ui_Write_an_answer_1w699d7")}</span> : null}
         </div>
       ) : null}
       {pagination ? (
@@ -569,7 +573,7 @@ export function QuestionForm({
             value={answer.text ?? ""}
             disabled={disabled || working != null}
             onChange={(value) => updateAnswer({ text: value })}
-            placeholder="Write your answer"
+            placeholder={t("localizationTaskRuntime.ui_Write_your_answer_zsfqef")}
             imageUploadHandler={imageUploadHandler}
             mentions={mentions}
             autoFocus
@@ -577,7 +581,7 @@ export function QuestionForm({
             onSubmit={() => {
               if (!inputUploading && currentError == null) progressOrSubmit();
             }}
-            attachAriaLabel={`Attach image to answer for ${question.prompt}`}
+            attachAriaLabel={t("localizationTaskRuntime.attachQuestionImage", { prompt: question.prompt })}
           />
         </div>
       ) : (
@@ -600,8 +604,8 @@ export function QuestionForm({
                     [question.id]: event.target.value,
                   }))
                 }
-                placeholder="Filter choices"
-                aria-label={`Filter choices for ${question.prompt}`}
+                placeholder={t("localizationTaskRuntime.ui_Filter_choices_3a7tqn")}
+                aria-label={t("localizationTaskRuntime.filterQuestionChoices", { prompt: question.prompt })}
                 className="pl-8"
               />
             </label>
@@ -623,7 +627,7 @@ export function QuestionForm({
             <div className="space-y-1.5">
               <SelectOption
                 id={`${id}-${question.id}-custom`}
-                label={question.customAnswer?.label ?? "Other"}
+                label={question.customAnswer?.label ?? t("localizationTaskRuntime.ui_Other_ukzedx")}
                 selected={isCustomActive}
                 multiple={multiple}
                 disabled={disabled || working != null}
@@ -635,7 +639,7 @@ export function QuestionForm({
                   testId="question-other-answer-composer"
                   value={answer.customText ?? ""}
                   placeholder={
-                    question.customAnswer?.placeholder ?? "Type your answer"
+                    question.customAnswer?.placeholder ?? t("localizationTaskRuntime.ui_Type_your_answer_1dsdlhq")
                   }
                   disabled={disabled || working != null}
                   onChange={(value) =>
@@ -649,7 +653,7 @@ export function QuestionForm({
                     if (!inputUploading && currentError == null)
                       progressOrSubmit();
                   }}
-                  attachAriaLabel={`Attach image to other answer for ${question.prompt}`}
+                  attachAriaLabel={t("localizationTaskRuntime.attachQuestionOtherImage", { prompt: question.prompt })}
                 />
               ) : null}
             </div>
@@ -660,9 +664,9 @@ export function QuestionForm({
         <p className="mt-2 text-xs text-destructive">{currentError}</p>
       ) : null}
       <div aria-live="assertive">
-        {error ? (
+        {errorMessage ? (
           <div className="mt-2 rounded-sm border border-destructive/60 bg-destructive/10 px-2.5 py-2 text-sm text-destructive">
-            {error.message}
+            {errorMessage}
           </div>
         ) : null}
       </div>
@@ -677,9 +681,7 @@ export function QuestionForm({
           >
             {working === "cancel" ? (
               <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-            ) : null}{" "}
-            Cancel
-          </Button>
+            ) : null}{" "}{t("localizationFilters.cancel")}</Button>
         ) : null}
         {!question.required ? (
           <Button
@@ -688,9 +690,7 @@ export function QuestionForm({
             variant="outline"
             disabled={busy}
             onClick={skipQuestion}
-          >
-            Skip
-          </Button>
+          >{t("localizationTaskRuntime.ui_Skip_1hpqu3m")}</Button>
         ) : null}
         <Button
           type="button"
@@ -701,7 +701,7 @@ export function QuestionForm({
           {working === "submit" ? (
             <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
           ) : null}
-          {isLastPage ? (questionSet.submitLabel ?? "Submit answers") : "Next"}
+          {isLastPage ? (questionSet.submitLabel ?? t("localizationIssueDetail.ui_Submit_answers")) : t("localizationSkills.next127")}
         </Button>
       </div>
     </div>

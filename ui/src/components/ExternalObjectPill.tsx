@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { ReactNode } from "react";
 import type {
   ExternalObjectLivenessState,
@@ -15,7 +16,6 @@ import {
   externalObjectLivenessLabel,
   externalObjectIconForKey,
   externalObjectProviderLabel,
-  externalObjectTypeLabel,
 } from "../lib/external-objects";
 import { cn } from "../lib/utils";
 
@@ -39,8 +39,8 @@ function githubObjectLabel(url: string | null | undefined): string | null {
     if (parsed.hostname !== "github.com") return null;
     const [, owner, repo, kind, number] = parsed.pathname.split("/");
     if (!owner || !repo || !number) return null;
-    if (kind === "pull") return `PR ${number}`;
-    if (kind === "issues") return `Issue ${number}`;
+    if (kind === "pull") return t("localizationIssueDetail.prNumber", { number });
+    if (kind === "issues") return t("localizationIssueDetail.issueNumber", { number });
     return null;
   } catch {
     return null;
@@ -54,15 +54,16 @@ function externalObjectValueLabel(
 ): string {
   const githubLabel = object.providerKey === "github" ? githubObjectLabel(object.url) : null;
   const base = githubLabel ?? object.displayTitle?.trim() ?? fallback;
-  return statusLabel ? `${base} - ${statusLabel}` : base;
+  return statusLabel ? t("localizationExternalChrome.valueStatus", { value: base, status: statusLabel }) : base;
 }
 
-function isMergedExternalObject(object: ExternalObjectPillData, statusLabel: string): boolean {
-  return object.statusIconKey === "git-merge" || statusLabel.toLowerCase() === "merged";
+function isMergedExternalObject(object: ExternalObjectPillData): boolean {
+  const rawStatus = object.statusLabel?.trim() || object.statusCategory;
+  return object.statusIconKey === "git-merge" || rawStatus.toLowerCase() === "merged";
 }
 
-function externalObjectPillTone(object: ExternalObjectPillData, statusLabel: string): string {
-  if (isMergedExternalObject(object, statusLabel)) {
+function externalObjectPillTone(object: ExternalObjectPillData): string {
+  if (isMergedExternalObject(object)) {
     return "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400";
   }
   return externalObjectStatusIcon[object.statusCategory] ?? externalObjectStatusIconDefault;
@@ -70,9 +71,8 @@ function externalObjectPillTone(object: ExternalObjectPillData, statusLabel: str
 
 function externalObjectStatusIconKey(
   object: ExternalObjectPillData,
-  statusLabel: string,
 ): string | null | undefined {
-  if (isMergedExternalObject(object, statusLabel)) return object.statusIconKey ?? "git-merge";
+  if (isMergedExternalObject(object)) return object.statusIconKey ?? "git-merge";
   return object.statusIconKey;
 }
 
@@ -110,20 +110,25 @@ export function ExternalObjectPill({
   inert,
   showProviderIcon = true,
 }: ExternalObjectPillProps) {
+  const { t } = useTranslation();
   const overlay = externalObjectLivenessOverlay[object.liveness] ?? "";
   const providerLabel = externalObjectProviderLabel(object.providerKey);
-  const typeLabel = externalObjectTypeLabel(object.objectType);
   const displayKey = externalObjectDisplayLabel(object.providerKey, object.objectType, object.displayKey);
   const statusLabel = externalObjectDisplayStatusLabel(object);
-  const tone = externalObjectPillTone(object, statusLabel);
+  const tone = externalObjectPillTone(object);
   const valueLabel = externalObjectValueLabel(object, displayKey, statusLabel);
-  const statusIconKey = externalObjectStatusIconKey(object, statusLabel);
+  const statusIconKey = externalObjectStatusIconKey(object);
   const livenessLabel = externalObjectLivenessLabel(object.liveness);
   const ProviderIcon = externalObjectIconForKey(object.iconKey);
   const ariaKey = displayKey;
-  const ariaLabel = `${ariaKey} — ${statusLabel}${
-    object.liveness === "fresh" || object.liveness === "unknown" ? "" : ` (${livenessLabel})`
-  }${object.displayTitle ? `: ${object.displayTitle}` : ""}`;
+  const showLiveness = object.liveness !== "fresh" && object.liveness !== "unknown";
+  const ariaLabel = object.displayTitle
+    ? showLiveness
+      ? t("localizationExternalChrome.objectAriaLiveTitle", { key: ariaKey, status: statusLabel, liveness: livenessLabel, title: object.displayTitle })
+      : t("localizationExternalChrome.objectAriaTitle", { key: ariaKey, status: statusLabel, title: object.displayTitle })
+    : showLiveness
+      ? t("localizationExternalChrome.objectAriaLive", { key: ariaKey, status: statusLabel, liveness: livenessLabel })
+      : t("localizationExternalChrome.objectAria", { key: ariaKey, status: statusLabel });
 
   const interactive = !inert && Boolean(object.url);
   const classNames = cn(
@@ -138,7 +143,7 @@ export function ExternalObjectPill({
     className,
   );
   const titleAttr = sourceSummary
-    ? `${object.displayTitle ?? displayKey} — ${sourceSummary}`
+    ? t("localizationExternalChrome.objectSourceTitle", { title: object.displayTitle ?? displayKey, source: sourceSummary })
     : object.displayTitle ?? displayKey;
   const labelText = children ?? (
     <>
@@ -147,7 +152,7 @@ export function ExternalObjectPill({
         liveness={object.liveness}
         statusIconKey={statusIconKey}
         sizeClassName="h-3 w-3"
-        label={`${providerLabel}: ${statusLabel}`}
+        label={t("localizationExternalChrome.providerStatus", { provider: providerLabel, status: statusLabel })}
       />
       <span className="max-w-(--sz-16rem) truncate font-medium">{valueLabel}</span>
     </>

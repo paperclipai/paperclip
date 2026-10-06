@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useState } from "react";
 import { loadLocalAppBrandAssets, type LocalAppBrandAssets } from "@/lib/app-brand-assets";
 import { cn } from "@/lib/utils";
@@ -45,6 +46,7 @@ export function AppLogo({
   compact = false,
   className,
 }: AppLogoProps) {
+  useTranslation();
   const [failedLogoUrls, setFailedLogoUrls] = useState<ReadonlySet<string>>(() => new Set());
   const lookupKey = brandKey?.trim() || name;
   const [localAssetResult, setLocalAssetResult] = useState<{

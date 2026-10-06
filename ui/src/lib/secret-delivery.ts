@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { SecretAccessEvent } from "@paperclipai/shared";
 
 /**
@@ -32,11 +33,11 @@ export function deliveryModeForConfigPath(configPath: string | null | undefined)
 export function deliveryModeLabel(mode: SecretDeliveryMode): string {
   switch (mode) {
     case "env":
-      return "Env var";
+      return t("localizationSecrets.deliveryEnv");
     case "api":
-      return "API access";
+      return t("localizationSecrets.deliveryApi");
     default:
-      return "Config";
+      return t("localizationSecrets.deliveryConfig");
   }
 }
 
@@ -44,11 +45,11 @@ export function deliveryModeLabel(mode: SecretDeliveryMode): string {
 export function deliveryModeDescription(mode: SecretDeliveryMode): string {
   switch (mode) {
     case "env":
-      return "Injected as an environment variable at run start.";
+      return t("localizationSecrets.deliveryEnvDescription");
     case "api":
-      return "Fetched on demand via the run-bound agent API. Never written to the environment.";
+      return t("localizationSecrets.deliveryApiDescription");
     default:
-      return "Provided through adapter configuration.";
+      return t("localizationSecrets.deliveryConfigDescription");
   }
 }
 
@@ -72,12 +73,20 @@ export function aliasFromConfigPath(configPath: string | null | undefined): stri
 export function consumerTypeLabel(consumerType: SecretAccessEvent["consumerType"]): string {
   switch (consumerType) {
     case "agent_api":
-      return "Agent API";
+      return t("localizationSecrets.consumerAgentApi");
     case "plugin_worker":
-      return "Plugin worker";
+      return t("localizationSecrets.consumerPluginWorker");
     case "tool_connection":
-      return "Tool connection";
+      return t("localizationSecrets.consumerToolConnection");
+    case "agent": return t("localizationSecrets.consumerAgent");
+    case "project": return t("localizationSecrets.consumerProject");
+    case "environment": return t("localizationSecrets.consumerEnvironment");
+    case "routine": return t("localizationSecrets.consumerRoutine");
+    case "plugin": return t("localizationSecrets.consumerPlugin");
+    case "issue": return t("localizationSecrets.consumerIssue");
+    case "run": return t("localizationSecrets.consumerRun");
+    case "system": return t("localizationSecrets.consumerSystem");
     default:
-      return consumerType.charAt(0).toUpperCase() + consumerType.slice(1);
+      return String(consumerType).charAt(0).toUpperCase() + String(consumerType).slice(1);
   }
 }

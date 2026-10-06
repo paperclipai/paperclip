@@ -4,16 +4,17 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HealthStatus } from "@/api/health";
 import { AnnouncementWell } from "./AnnouncementWell";
+import { i18n } from "@/i18n";
 import { announcementPreview } from "@/lib/announcement-preview";
 
 const state = vi.hoisted(() => ({
   userId: "alice" as string | null, settled: true, companyId: "company", loading: false,
-  onboardingOpen: false, toasts: [] as unknown[], dismiss: vi.fn(), hook: vi.fn(),
+  onboardingOpen: false, toasts: [] as unknown[], dismiss: vi.fn(), hook: vi.fn(), pushToast: vi.fn(),
 }));
 vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: state.userId, settled: state.settled }) }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: state.companyId, loading: state.loading }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogState: () => ({ onboardingOpen: state.onboardingOpen }) }));
-vi.mock("@/context/ToastContext", () => ({ useOptionalToastActions: () => null, useOptionalToastState: () => state.toasts }));
+vi.mock("@/context/ToastContext", () => ({ useOptionalToastActions: () => ({ pushToast: state.pushToast }), useOptionalToastState: () => state.toasts }));
 vi.mock("@/hooks/useAnnouncement", () => ({ useAnnouncement: (options: { enabled: boolean }) => {
   state.hook(options);
   return { announcement: options.enabled ? announcementPreview : null, dismiss: state.dismiss };
@@ -33,7 +34,25 @@ describe("announcement placement gates", () => {
     health = { deploymentMode: "authenticated" } as HealthStatus;
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+  afterEach(async () => { await act(async () => root.unmount()); container.remove(); await i18n.changeLanguage("en"); });
+  it("switches dismissal feedback language without changing publication or account identity", async () => {
+    await render();
+    for (const locale of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(container.querySelector("aside")?.getAttribute("aria-label")).toBe(locale === "ru" ? "Объявления Paperclip" : "Paperclip announcements");
+      const opts = state.hook.mock.lastCall![0];
+      expect(opts.userId).toBe("alice");
+      expect(opts.companyId).toBe("company");
+      opts.onSaveFailure(true);
+      expect(state.pushToast.mock.lastCall![0].title).toBe(locale === "ru" ? "Объявление скрыто в этом браузере" : "Dismissed in this browser");
+      expect(state.pushToast.mock.lastCall![0].dedupeKey).toBe("announcement-dismissal-sync");
+      opts.onSaveFailure(false);
+      expect(state.pushToast.mock.lastCall![0].title).toBe(locale === "ru" ? "Объявление скрыто до следующего посещения" : "Dismissed for this visit");
+      expect(state.dismiss).not.toHaveBeenCalled();
+    }
+    await act(async () => container.querySelector("button")!.click());
+    expect(state.dismiss).toHaveBeenCalledExactlyOnceWith(announcementPreview.id);
+  });
   it("waits for identity, company and onboarding, and uses local-board in no-login mode", async () => {
     state.settled = false; await render(); expect(visible()).toBe(false);
     state.settled = true; state.loading = true; await render(); expect(visible()).toBe(false);

@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 import type { StatusCardUpdate } from "@paperclipai/shared";
 
 import {
   estimateStatusCardCost,
+  formatTokens,
+  formatCents,
+  formatTokenSplit,
   rollupUpdates,
   rollupUpdatesToday,
 } from "./format";
@@ -93,6 +97,28 @@ describe("rollupUpdatesToday", () => {
 
     expect(rollup.updateCount).toBe(1);
     expect(rollup.totalTokens).toBe(250);
+  });
+});
+
+describe("localized formatting without policy changes", () => {
+  it("formats Russian decimals and USD while preserving the refresh policy", async () => {
+    const originalLanguage = i18n.language;
+    const policy = { mode: "interval" as const, intervalMinutes: 60, activeHours: { start: "08:00", end: "20:00", timezone: "UTC" }, dailyTokenCap: 10000, triggers: {} as never };
+    const before = structuredClone(policy);
+    try {
+      await i18n.changeLanguage("en");
+      expect(formatTokens(1100)).toBe("1.1k tok");
+      expect(formatCents(0.6)).toBe("$0.006");
+      await i18n.changeLanguage("ru");
+      expect(formatTokens(1100)).toBe("1,1 тыс. ток.");
+      expect(formatCents(0.6)).toBe("0,006 $");
+      expect(formatTokenSplit(1100, 500)).toBe("1,1 тыс. вход / 500 выход");
+      expect(estimateStatusCardCost(policy).primary).toContain("До ~5 обновлений в день");
+      expect(estimateStatusCardCost(policy).note).toContain("при его достижении карточка приостанавливается");
+      expect(policy).toEqual(before);
+    } finally {
+      await i18n.changeLanguage(originalLanguage);
+    }
   });
 });
 

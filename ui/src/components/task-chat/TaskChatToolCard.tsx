@@ -1,3 +1,5 @@
+import { t, useTranslation } from "@/i18n";
+import { taskChatDisplayLabel } from "./task-chat-display";
 import { useTaskChatExpansion } from "./expansion-state";
 import { cn } from "@/lib/utils";
 import {
@@ -30,6 +32,7 @@ const STATUS_ICON = {
  * inset). Full diff bodies stay out of the activity feed.
  */
 export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
+  useTranslation();
   const { Icon, spin, tone } = STATUS_ICON[item.status];
   const RowIcon = toolTaxonomy(item.rawName ?? item.name).icon;
   const [showDetail, setShowDetail] = useTaskChatExpansion(item.id, false);
@@ -56,7 +59,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
           />
         </span>
         <span className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
-          <span className="shrink-0 font-medium leading-4">{item.name}</span>
+          <span className="shrink-0 font-medium leading-4">{taskChatDisplayLabel(item.name)}</span>
           {item.target ? (
             <span className="task-chat-collapsed-line-fade min-w-0 flex-1 font-mono text-(length:--text-micro) leading-4">
               {item.target}
@@ -78,7 +81,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
               ) : (
                 <ShieldX className="h-3 w-3" />
               )}
-              {item.decision}
+              {t(`localizationTaskRuntime.permission_${item.decision}`)}
             </span>
           ) : null}
           {expandable ? (
@@ -96,7 +99,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
           />
           {item.status === "interrupted" ? (
             <span className="text-(length:--text-micro) text-muted-foreground">
-              Interrupted
+              {t("localizationTaskRuntime.ui_Interrupted_1cnyep")}
             </span>
           ) : null}
         </span>
@@ -120,7 +123,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
           data-testid="task-chat-tool-change-summary"
         >
           <div className="flex min-w-0 items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-            <span className="shrink-0">Changed</span>
+            <span className="shrink-0">{t("localizationTaskRuntime.ui_Changed_12859ob")}</span>
             {item.diff.path ? (
               <span className="min-w-0 truncate font-mono text-foreground">
                 {item.diff.path}

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useMemo, type CSSProperties } from "react";
 import { Folder, GitBranch, GitBranchPlus, Monitor } from "lucide-react";
 import type { ExecutionWorkspaceSummary } from "@paperclipai/shared";
@@ -25,11 +26,11 @@ interface ComposerWorktreePickerProps {
 }
 
 const MODE_OPTIONS: WorktreeOption[] = [
-  { key: "isolated_workspace", value: "isolated_workspace", mode: "isolated_workspace", label: "New worktree", description: "Start in an isolated checkout." },
-  { key: "shared_workspace", value: "shared_workspace", mode: "shared_workspace", label: "Project workspace", description: "Use the project's shared checkout." },
-  { key: "operator_branch", value: "operator_branch", mode: "operator_branch", label: "New branch", description: "Create a branch in the project workspace." },
-  { key: "agent_default", value: "agent_default", mode: "agent_default", label: "Agent default", description: "Let the agent choose its workspace." },
-  { key: "inherit", value: "inherit", mode: "inherit", label: "Project default", description: "Use the project's worktree settings." },
+  { key: "isolated_workspace", value: "isolated_workspace", mode: "isolated_workspace", get label() { return t("oct6Beta.copy117"); }, get description() { return t("oct6Beta.copy118"); } },
+  { key: "shared_workspace", value: "shared_workspace", mode: "shared_workspace", get label() { return t("localizationIssuePanels.field_projectWorkspaceId"); }, get description() { return t("oct6Beta.copy119"); } },
+  { key: "operator_branch", value: "operator_branch", mode: "operator_branch", get label() { return t("oct6Beta.copy120"); }, get description() { return t("oct6Beta.copy121"); } },
+  { key: "agent_default", value: "agent_default", mode: "agent_default", get label() { return t("oct5Core.s0151"); }, get description() { return t("oct6Beta.copy122"); } },
+  { key: "inherit", value: "inherit", mode: "inherit", get label() { return t("localizationIssueAux.ui_Project_default_8qthk7"); }, get description() { return t("oct6Beta.copy123"); } },
 ];
 
 /** Reuses the searchable selector and the existing workspace recency ordering. */
@@ -37,19 +38,20 @@ export function ComposerWorktreePicker({
   mode, workspaceId, workspaces, onChange, loading, error, onRetry,
   disabled, mobile, contentStyle, selectedWorkspaceLabel,
 }: ComposerWorktreePickerProps) {
+  useTranslation();
   const groups = useMemo(() => [
     { id: "new", options: [MODE_OPTIONS[0]!] },
     {
-      id: "reuse", label: "Reuse a worktree",
+      id: "reuse", label: t("oct6Beta.copy124"),
       options: orderReusableExecutionWorkspaces(workspaces).map((workspace): WorktreeOption => ({
         key: `reuse:${workspace.id}`, value: `reuse:${workspace.id}`,
         workspaceId: workspace.id, mode: "reuse_existing", label: workspace.name,
-        description: workspace.branchName ?? "Existing workspace",
+        description: workspace.branchName ?? t("oct6Beta.copy125"),
         searchText: `${workspace.branchName ?? ""} ${workspace.id}`,
       })),
     },
     {
-      id: "other", label: "Other options",
+      id: "other", label: t("oct6Beta.copy126"),
       options: MODE_OPTIONS.filter((option) => option.mode === "shared_workspace"
         || (option.mode !== "isolated_workspace" && option.mode === mode)),
     },
@@ -61,11 +63,11 @@ export function ComposerWorktreePicker({
       value={value}
       groups={groups}
       onValueChange={(_, option) => onChange(option.mode, option.workspaceId ?? "")}
-      placeholder="Worktrees"
-      triggerAriaLabel="Worktrees"
-      mobileTitle="Worktrees"
-      searchPlaceholder="Search worktrees..."
-      emptyMessage="No matching worktrees."
+      placeholder={t("oct6Beta.copy127")}
+      triggerAriaLabel={t("oct6Beta.copy127")}
+      mobileTitle={t("oct6Beta.copy127")}
+      searchPlaceholder={t("oct6Beta.copy128")}
+      emptyMessage={t("oct6Beta.copy129")}
       disabled={disabled}
       modal={mobile}
       contentStyle={contentStyle}
@@ -76,8 +78,8 @@ export function ComposerWorktreePicker({
         <span className="flex min-w-0 items-center gap-1.5">
           <GitBranch className="size-3.5 shrink-0" aria-hidden />
           <span className="truncate">
-            <span className="hidden text-muted-foreground sm:inline">Worktrees · </span>
-            {option?.label ?? selectedWorkspaceLabel ?? "Select worktree"}
+            <span className="hidden text-muted-foreground sm:inline">{t("oct6Beta.copy130")} </span>
+            {option?.label ?? selectedWorkspaceLabel ?? t("oct6Beta.copy131")}
           </span>
         </span>
       )}
@@ -96,12 +98,12 @@ export function ComposerWorktreePicker({
       }}
       listFooter={loading || error || workspaces.length === 0 ? (
         <div className="border-t border-border px-3 py-2 text-xs text-muted-foreground" role="status">
-          {loading ? "Loading existing worktrees…" : error ? (
+          {loading ? t("oct6Beta.copy132") : error ? (
             <span className="flex items-center justify-between gap-2">
-              Couldn't load worktrees.
-              <button type="button" className="rounded px-2 py-1 text-foreground hover:bg-accent" onClick={onRetry}>Retry</button>
+              {t("oct6Beta.copy133")}
+              <button type="button" className="rounded px-2 py-1 text-foreground hover:bg-accent" onClick={onRetry}>{t("oct5Core.s0281")}</button>
             </span>
-          ) : "No existing worktrees yet. Choose New worktree to start one."}
+          ) : t("oct6Beta.copy134")}
         </div>
       ) : undefined}
     />
