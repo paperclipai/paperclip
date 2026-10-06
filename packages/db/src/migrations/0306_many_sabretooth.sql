@@ -1,2 +1,3 @@
-ALTER TABLE "resource_lifecycle_events" DROP CONSTRAINT "resource_lifecycle_events_action_check";--> statement-breakpoint
+-- Older JavaScript restores can omit check constraints.
+ALTER TABLE "resource_lifecycle_events" DROP CONSTRAINT IF EXISTS "resource_lifecycle_events_action_check";--> statement-breakpoint
 ALTER TABLE "resource_lifecycle_events" ADD CONSTRAINT "resource_lifecycle_events_action_check" CHECK ("resource_lifecycle_events"."action" = 'create' OR ("resource_lifecycle_events"."resource_type" = 'project' AND "resource_lifecycle_events"."action" IN ('update', 'archive')) OR ("resource_lifecycle_events"."resource_type" = 'agent' AND "resource_lifecycle_events"."action" IN ('pause', 'resume', 'terminate')));
