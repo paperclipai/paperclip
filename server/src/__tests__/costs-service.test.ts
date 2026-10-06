@@ -700,6 +700,122 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     });
   });
 
+  it("terminates on a corrupted parent cycle in the cost tree walk", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const rootIssueId = randomUUID();
+    const childIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: rootIssueId,
+        companyId,
+        title: "Root",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "CYC-1",
+      },
+      {
+        id: childIssueId,
+        companyId,
+        parentId: rootIssueId,
+        title: "Child",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 2,
+        identifier: "CYC-2",
+      },
+    ]);
+    // Corrupt the graph: the root's parent points back at its own child.
+    await db.update(issues).set({ parentId: childIssueId }).where(eq(issues.id, rootIssueId));
+    await db.insert(costEvents).values([
+      {
+        companyId,
+        agentId,
+        issueId: rootIssueId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 10,
+        cachedInputTokens: 1,
+        outputTokens: 2,
+        costCents: 100,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        companyId,
+        agentId,
+        issueId: childIssueId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        model: "gpt-5",
+        inputTokens: 20,
+        cachedInputTokens: 2,
+        outputTokens: 4,
+        costCents: 200,
+        occurredAt: new Date("2026-04-10T00:01:00.000Z"),
+      },
+    ]);
+    // One finished run on each cycle member. The dedupe guard must stop the
+    // walk without dropping either issue, so the summary sees both runs.
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:00:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:01:00.000Z"),
+        contextSnapshot: { issueId: rootIssueId },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        status: "completed",
+        startedAt: new Date("2026-04-10T00:02:00.000Z"),
+        finishedAt: new Date("2026-04-10T00:03:30.000Z"),
+        contextSnapshot: { issueId: childIssueId },
+      },
+    ]);
+
+    const summary = await costs.issueTreeSummary(companyId, rootIssueId);
+
+    expect(summary).toMatchObject({
+      issueId: rootIssueId,
+      issueCount: 2,
+      costCents: 300,
+      inputTokens: 30,
+      outputTokens: 6,
+      runCount: 2,
+    });
+    // 60s on the root plus 90s on the child: the cycle walk must count both
+    // runs exactly once.
+    expect(summary.runtimeMs).toBe(150_000);
+  });
+
   it("aggregates run wall-clock duration across the recursive issue tree", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
