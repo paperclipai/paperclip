@@ -1,4 +1,5 @@
 import {
+  Cable,
   ClipboardPaste,
   FlaskConical,
   Layers,
@@ -29,6 +30,7 @@ export const ADVANCED_TABS = [
 // `useSmokeLabEnabled`), and the route/tab itself gates on the same flag.
 export const DEVELOPER_TABS = [
   { key: "gateways", label: "Gateways", icon: Network },
+  { key: "connectors", label: "Connectors", icon: Cable },
   { key: "profiles", label: "Profiles", icon: Layers },
   { key: "smoke-lab", label: "Smoke Lab", icon: FlaskConical },
 ] as const;

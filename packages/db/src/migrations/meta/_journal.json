@@ -2087,6 +2087,13 @@
       "when": 1791248126600,
       "tag": "0299_absent_ser_duncan",
       "breakpoints": true
+    },
+    {
+      "idx": 300,
+      "version": "7",
+      "when": 1791266384341,
+      "tag": "0300_fancy_rogue",
+      "breakpoints": true
     }
   ]
 }

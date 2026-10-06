@@ -218,6 +218,14 @@ import {
   parseMcpHttpResponseBody,
 } from "./mcp-http.js";
 import {
+  connectorEndpointLabel,
+  connectorTarget,
+  mcpConnectorHub,
+  McpConnectorRelayError,
+  type McpConnectorHub,
+} from "./mcp-connector-hub.js";
+import { mcpConnectorService } from "./mcp-connectors.js";
+import {
   assertPublicRemoteHttpEndpoint,
   parseRemoteHttpEndpoint,
   type RemoteHttpEndpointLookup,
@@ -669,6 +677,8 @@ type ToolAccessServiceOptions = {
   remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
   /** Smaller reviewed catalog for deterministic discovery fixtures. */
   composioAppToolkits?: readonly string[];
+  /** Outbound MCP connector sessions (`transport: "connector"`). Defaults to the process-wide hub. */
+  mcpConnectorHub?: McpConnectorHub;
   /** Test seam for the centrally registered Gmail OAuth broker. */
   paperclipCloudConnector?: PaperclipCloudConnector | null;
   /** @deprecated Use paperclipCloudConnector. */
@@ -2873,6 +2883,13 @@ function healthFailureHttpStatus(failure: {
   if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code === "cognee_access_unverified" || failure.code === "memory_api_key_rejected") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
+  if (failure.code === "connector_offline" || failure.code === "connector_revoked" || failure.code === "connector_busy") return 503;
+  if (failure.code === "connector_timeout") return 504;
+  if (
+    failure.code === "connector_not_found" ||
+    failure.code === "connector_upstream_unknown" ||
+    failure.code === "connector_upstream_unauthorized"
+  ) return 422;
   return 502;
 }
 
@@ -2910,6 +2927,15 @@ function sanitizeHttpFailure(error: unknown): {
     }
     if (typeof code === "string" && code.startsWith("remote_http_")) {
       return { status: "error", message: error.message, code };
+    }
+    if (typeof code === "string" && code.startsWith("connector_")) {
+      // Relay errors carry fixed messages; an offline connector is a degraded
+      // dependency, not a broken connection.
+      return {
+        status: code === "connector_offline" ? "degraded" : "error",
+        message: error.message,
+        code,
+      };
     }
     if (isOAuthEndpointRejection(error)) {
       return { status: "error", message: error.message, code: String(code) };
@@ -3064,6 +3090,9 @@ export function toolAccessService(
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
   ): Promise<string> {
+    // Connector connections have no network endpoint on this server: the
+    // connector owns the upstream URL. The label only scopes caches and audit.
+    if (connection.transport === "connector") return connectorEndpointLabel(connection.config);
     const publicEndpoint = remoteEndpoint(connection.config);
     const ref = connection.credentialRefs.find(
       (candidate) => candidate.placement === "url",
@@ -3297,6 +3326,60 @@ export function toolAccessService(
       options.deploymentMode !== "authenticated" ||
       options.deploymentExposure !== "public"
     );
+  }
+
+  const connectorHub = options.mcpConnectorHub ?? mcpConnectorHub;
+  const mcpConnectors = mcpConnectorService(db, { hub: connectorHub });
+
+  function isRemoteMcpTransport(transport: ToolConnectionTransport) {
+    return transport === "mcp_remote" || transport === "connector";
+  }
+
+  /**
+   * Byte transport for `transport: "connector"`. The request goes to the
+   * connector session by upstream NAME; this server never dials the upstream,
+   * so the SSRF guard above stays the only way `mcp_remote` reaches a network.
+   */
+  function connectorRequest(connection: typeof toolConnections.$inferSelect) {
+    return async (init: RequestInit): Promise<Response> => {
+      try {
+        return await connectorHub.request({
+          companyId: connection.companyId,
+          ...connectorTarget(connection.config),
+          init,
+        });
+      } catch (error) {
+        if (error instanceof McpConnectorRelayError) {
+          throw new HttpError(error.status, error.message, { code: error.code });
+        }
+        throw error;
+      }
+    };
+  }
+
+  async function assertConnectorConnectionConfig(
+    companyId: string,
+    config: Record<string, unknown>,
+    credentialRefs: McpConnectionCredentialRef[] = [],
+  ) {
+    if (credentialRefs.some((ref) => ref.placement !== "header")) {
+      throw badRequest("Connector connections accept header credentials only", { code: "connector_credential_placement" });
+    }
+    for (const key of ["url", "endpoint", "remoteUrl"]) {
+      if (config[key] !== undefined) {
+        // The upstream URL lives only in the connector's local config.
+        throw badRequest("Connector connections address an upstream by name, not by URL", { code: "connector_url_not_allowed" });
+      }
+    }
+    try {
+      connectorTarget(config);
+    } catch (error) {
+      if (error instanceof McpConnectorRelayError) {
+        throw badRequest("Connector connections need a connectorId and an upstream name", { code: error.code });
+      }
+      throw error;
+    }
+    await mcpConnectors.assertConnectionTarget(companyId, config);
   }
 
   async function assertRemoteHttpUrlAllowed(value: string): Promise<string> {
@@ -7071,7 +7154,9 @@ export function toolAccessService(
     // PAP-17098 closed for the OAuth endpoints.
     let listRequestId = "paperclip-catalog-refresh";
     let sessionHeaders = headers;
-    const sendRemote = (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), init);
+    const sendRemote = connection.transport === "connector"
+      ? connectorRequest(connection)
+      : (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), init);
     const sendToolsList = (requestHeaders: Record<string, string>, cursor?: string) => {
       sessionHeaders = requestHeaders;
       return sendRemote({ method: "POST", headers: mcpHttpRequestHeaders(requestHeaders),
@@ -7138,6 +7223,10 @@ export function toolAccessService(
             eq(toolConnections.companyId, connection.companyId),
           ),
         );
+      // Keep the caller's row in sync: catalog refresh persists `connection.config`
+      // afterwards and would otherwise drop the session requirement again.
+      connection.config = nextConfig;
+      connection.transportConfig = nextConfig;
     }
     if (isInsufficientConnectionScope(response)) {
       await response.body?.cancel().catch(() => undefined);
@@ -7204,6 +7293,14 @@ export function toolAccessService(
         throw unprocessable(
           "Slack MCP access is disabled for this app. Ask the Slack app owner to enable MCP access, then refresh this connection.",
           { code: "slack_mcp_access_disabled", setupUrl: connectionSetupUrl(connection) },
+        );
+      }
+      if (connection.transport === "connector" && (response.status === 401 || response.status === 403)) {
+        // Browser sign-in discovery would fetch provider metadata from this
+        // server, which cannot reach a private network. Header credentials only.
+        throw unprocessable(
+          "The upstream MCP server behind the connector rejected the request. Add its credential headers to this connection or to the connector config.",
+          { code: "connector_upstream_unauthorized", status: response.status },
         );
       }
       const authenticate = response.headers.get("www-authenticate") ?? "";
@@ -7406,7 +7503,7 @@ export function toolAccessService(
       await validateAgentMailConnection(connection);
       return [];
     }
-    if (connection.transport === "mcp_remote")
+    if (isRemoteMcpTransport(connection.transport))
       return remoteTools(connection, credentialHeaders, actor);
     if (connection.transport !== "local_stdio") {
       throw unsupportedToolConnectionTransport();
@@ -7556,7 +7653,7 @@ export function toolAccessService(
         await discoverTools(connection, undefined, actor);
       } else if (isAgentMailConnection(connection)) {
         await validateAgentMailConnection(connection);
-      } else if (connection.transport === "mcp_remote") {
+      } else if (isRemoteMcpTransport(connection.transport)) {
         const canProbeWithoutAuthorization =
           options.allowUnauthenticatedProbe === true &&
           connection.status === "draft" &&
@@ -7592,7 +7689,9 @@ export function toolAccessService(
             ? "AgentMail API key is connected."
             : connection.transport === "local_stdio"
               ? "Approved stdio template is ready."
-              : "Remote MCP server responded to tools/list.",
+              : connection.transport === "connector"
+                ? "MCP connector upstream responded to tools/list."
+                : "Remote MCP server responded to tools/list.",
       );
       const runtimeSlot = await ensureRuntimeSlot(updated);
       await audit({
@@ -17826,6 +17925,8 @@ export function toolAccessService(
       ]);
       if (transport === "mcp_remote")
         await assertRemoteConnectionEndpointsAllowed(config);
+      if (transport === "connector")
+        await assertConnectorConnectionConfig(companyId, config, input.credentialRefs);
       if (transport === "local_stdio") await stdioTemplateId(companyId, config);
       assertLocalStdioCanBeEnabled(transport, input.enabled ?? false, config);
       await assertGoogleSheetsSpreadsheetOwnership(companyId, config);
@@ -17833,7 +17934,7 @@ export function toolAccessService(
         const app = await assertApplication(companyId, applicationId);
         applicationNamespace = app.applicationKey ?? app.name;
         if (
-          (transport === "mcp_remote" && app.type !== "mcp_http") ||
+          (isRemoteMcpTransport(transport) && app.type !== "mcp_http") ||
           (transport === "local_stdio" && app.type !== "mcp_stdio")
         ) {
           throw unprocessable(
@@ -17847,7 +17948,7 @@ export function toolAccessService(
             companyId,
             applicationKey: normalizeKey(input.applicationName ?? input.name),
             name: input.applicationName ?? input.name,
-            type: isBrowserUseConnection({ transport, config }) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+            type: isBrowserUseConnection({ transport, config }) ? "rest_api" : isRemoteMcpTransport(transport) ? "mcp_http" : "mcp_stdio",
             status: "active",
             metadata: {},
           })
@@ -18754,6 +18855,12 @@ export function toolAccessService(
       }
       if (existing.transport === "mcp_remote")
         await assertRemoteConnectionEndpointsAllowed(config);
+      if (existing.transport === "connector")
+        await assertConnectorConnectionConfig(
+          existing.companyId,
+          config,
+          input.credentialRefs ?? existing.credentialRefs,
+        );
       if (existing.transport === "local_stdio")
         await stdioTemplateId(existing.companyId, config);
       assertLocalStdioCanBeEnabled(
@@ -18852,7 +18959,7 @@ export function toolAccessService(
         .where(eq(toolCatalogEntries.connectionId, connection.id))
         .orderBy(desc(toolCatalogEntries.updatedAt));
       const cacheExpired =
-        connection.transport === "mcp_remote" &&
+        isRemoteMcpTransport(connection.transport) &&
         connection.status !== "archived" &&
         (rows.length === 0 ||
           !connection.lastCatalogRefreshAt ||

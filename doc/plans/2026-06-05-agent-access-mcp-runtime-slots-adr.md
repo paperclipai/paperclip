@@ -387,6 +387,20 @@ Phase 9 validates the end-to-end release with QA, SecurityEngineer, CloudOpsEngi
 - Cross-company tests must be present before any gateway route ships.
 - First-install demos should use synthetic or read-only providers until approval/idempotency are proven.
 
+### Addendum 2026-09-27: outbound MCP connector (paperclipai/paperclip#14280)
+
+`authenticated/public` deployments cannot reach private-network MCP servers
+through `remote_http`, and the SSRF guard deliberately has no override. A new
+`connector` transport lets an operator-installed process inside the private
+network dial out to Paperclip and relay governed calls to upstreams named only
+in its local config. The gateway, policy engine, invocation ledger and audit
+model are unchanged; only the byte transport is swapped behind the existing MCP
+Streamable HTTP client. Connectors are company-bound, enrolled with single-use
+hashed tokens, revocable (closing live sessions), and publish upstream names
+only. Supervising approved stdio templates on the connector as runtime slots is
+deferred to a follow-up. Security and UX sign-off gates above still apply. See
+[MCP-CONNECTOR.md](../connections/MCP-CONNECTOR.md).
+
 ## Verification for This ADR
 
 This ADR was checked against:

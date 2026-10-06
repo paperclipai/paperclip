@@ -115,6 +115,13 @@ import {
   parseMcpHttpResponseBody,
 } from "./mcp-http.js";
 import {
+  connectorEndpointLabel,
+  connectorTarget,
+  mcpConnectorHub,
+  McpConnectorRelayError,
+  type McpConnectorHub,
+} from "./mcp-connector-hub.js";
+import {
   projectedConnectionHeaders,
   projectedConnectionToolArguments,
   projectedConnectionToolInputSchema,
@@ -280,7 +287,7 @@ export interface ConnectedMcpGatewayMetadata {
   applicationDisplayName: string;
   connectionId: string;
   catalogEntryId: string;
-  transport: "mcp_remote" | "local_stdio" | "rest_api";
+  transport: "mcp_remote" | "connector" | "local_stdio" | "rest_api";
   gatewayToolName: string;
   upstreamToolName: string;
   catalogName: string;
@@ -414,7 +421,7 @@ type RemoteHttpExecutionResult = {
 };
 
 type RemoteHttpExecutionAudit = {
-  transport: "mcp_remote";
+  transport: "mcp_remote" | "connector";
   request: {
     protocol: "MCP JSON-RPC 2.0" | "Railway GraphQL" | "Railway GraphQL + SSH";
     httpMethod: "POST";
@@ -1086,6 +1093,8 @@ export function createToolGatewayService(
     onToolActionSettled?: (actionRequestId: string) => Promise<unknown>;
     /** Test seam for deterministic remote MCP protocol fixtures. */
     remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
+    /** Outbound MCP connector sessions (`transport: "connector"`). Defaults to the process-wide hub. */
+    mcpConnectorHub?: McpConnectorHub;
     /** Test seam for refreshing personal Gmail grants. */
     paperclipCloudConnector?: PaperclipCloudConnector | null;
     /** @deprecated Use paperclipCloudConnector. */
@@ -1265,7 +1274,7 @@ export function createToolGatewayService(
   function connectedMcpConnectionFilter(companyId: string) {
     return and(
       eq(toolConnections.companyId, companyId),
-      inArray(toolConnections.transport, ["mcp_remote", "local_stdio", "rest_api"]),
+      inArray(toolConnections.transport, ["mcp_remote", "connector", "local_stdio", "rest_api"]),
       eq(toolConnections.status, "active"),
       eq(toolConnections.enabled, true),
       // A personal connection has no company-level credential to probe. A
@@ -1354,7 +1363,7 @@ export function createToolGatewayService(
         !isRetiredComposioConnection(connection) &&
         !(isRailwayEndpoint(connection.config.url) && (isRailwayToolBlocked(catalogEntry.toolName) || (normalizeRailwayToolName(catalogEntry.toolName).startsWith(RAILWAY_TOOL_PREFIX) && connection.config.railwayApiStatus !== "available"))) &&
         ((isBrowserUseConnection(connection) && application.type === "rest_api") ||
-        (connection.transport === "mcp_remote" &&
+        ((connection.transport === "mcp_remote" || connection.transport === "connector") &&
           application.type === "mcp_http") ||
         (connection.transport === "local_stdio" &&
           application.type === "mcp_stdio")),
@@ -1379,6 +1388,7 @@ export function createToolGatewayService(
       ({ catalogEntry, connection, application }, index) => {
         if (
           connection.transport !== "mcp_remote" &&
+          connection.transport !== "connector" &&
           connection.transport !== "local_stdio" && !isBrowserUseConnection(connection)
         ) {
           throw new Error(
@@ -3294,6 +3304,8 @@ export function createToolGatewayService(
     connection: typeof toolConnections.$inferSelect,
     grant: typeof connectionGrants.$inferSelect,
   ): Promise<string> {
+    // The connector owns the upstream URL; this label only scopes caches and audit.
+    if (connection.transport === "connector") return connectorEndpointLabel(connection.config);
     const publicEndpoint = remoteEndpoint(connection.config ?? {});
     const ref = (connection.credentialRefs ?? []).find(
       (candidate) => candidate.placement === "url",
@@ -3351,6 +3363,35 @@ export function createToolGatewayService(
       allowPrivateNetwork: allowPrivateRemoteEndpoints(),
       error: (message, code) => new ToolGatewayHttpError(422, message, code),
     };
+  }
+
+  const connectorHub = options.mcpConnectorHub ?? mcpConnectorHub;
+
+  function connectorRelayError(error: McpConnectorRelayError, details: Record<string, unknown> = {}) {
+    return new ToolGatewayHttpError(error.status, error.message, error.code, details);
+  }
+
+  /**
+   * Byte transport for `transport: "connector"`: relay to the connector session
+   * by upstream name. Governance (profiles, policy, approvals, audit, content
+   * guards) runs above this function exactly as for `mcp_remote`.
+   */
+  async function dispatchConnector(
+    connection: typeof toolConnections.$inferSelect,
+    init: RequestInit,
+    timeoutMs?: number,
+  ): Promise<Response> {
+    try {
+      return await connectorHub.request({
+        companyId: connection.companyId,
+        ...connectorTarget(connection.config),
+        init,
+        timeoutMs,
+      });
+    } catch (error) {
+      if (error instanceof McpConnectorRelayError) throw connectorRelayError(error, { connectionId: connection.id });
+      throw error;
+    }
   }
 
   function headerName(value: unknown): string | null {
@@ -4777,7 +4818,7 @@ export function createToolGatewayService(
         ),
       )
       .limit(1);
-    if (!connection || (connection.transport !== "mcp_remote" && !isBrowserUseConnection(connection))) {
+    if (!connection || ((connection.transport !== "mcp_remote" && connection.transport !== "connector") && !isBrowserUseConnection(connection))) {
       throw new ToolGatewayHttpError(
         404,
         `Tool "${tool.name}" not found`,
@@ -5234,7 +5275,7 @@ export function createToolGatewayService(
           eq(toolConnections.companyId, session.companyId),
           eq(toolConnections.enabled, true),
           eq(toolConnections.status, "active"),
-          inArray(toolConnections.transport, ["mcp_remote", "local_stdio"]),
+          inArray(toolConnections.transport, ["mcp_remote", "connector", "local_stdio"]),
         ),
       )
       .then((rows) => rows.map((row) => row.connection));
@@ -5267,21 +5308,20 @@ export function createToolGatewayService(
       credentialHeaders,
       callerHeaders: input.callerHeaders,
     });
-    const response = await guardedRemoteHttpFetch(
-      endpoint,
-      {
-        method: "POST",
-        redirect: "manual",
-        headers: mcpHttpRequestHeaders(headers),
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: `paperclip-context-${randomUUID()}`,
-          method: input.method,
-          params: input.params,
-        }),
-      },
-      remoteHttpFetchOptions(),
-    );
+    const contextInit: RequestInit = {
+      method: "POST",
+      redirect: "manual",
+      headers: mcpHttpRequestHeaders(headers),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: `paperclip-context-${randomUUID()}`,
+        method: input.method,
+        params: input.params,
+      }),
+    };
+    const response = input.connection.transport === "connector"
+      ? await dispatchConnector(input.connection, contextInit)
+      : await guardedRemoteHttpFetch(endpoint, contextInit, remoteHttpFetchOptions());
     const body = await readBoundedRemoteResponse(response);
     if (!response.ok) {
       await markRemoteConnectionHealth(
@@ -5348,7 +5388,7 @@ export function createToolGatewayService(
     params?: Record<string, unknown>;
     callerHeaders?: Record<string, string | string[] | undefined>;
   }): Promise<unknown> {
-    if (input.connection.transport === "mcp_remote") {
+    if (input.connection.transport === "mcp_remote" || input.connection.transport === "connector") {
       return callRemoteConnectionProtocol({
         ...input,
         params: input.params ?? {},
@@ -5944,11 +5984,11 @@ export function createToolGatewayService(
     let headerSummary = builtHeaders.summary;
     const requestId = `paperclip-tool-${randomUUID()}`;
     const execution: RemoteHttpExecutionAudit = {
-      transport: "mcp_remote",
+      transport: connection.transport === "connector" ? "connector" : "mcp_remote",
       request: {
         protocol: "MCP JSON-RPC 2.0",
         httpMethod: "POST",
-        endpoint: auditSafeEndpoint(endpoint),
+        endpoint: connection.transport === "connector" ? endpoint : auditSafeEndpoint(endpoint),
         mcpMethod: "tools/call",
         requestId,
         upstreamToolName: entry.toolName,
@@ -5960,7 +6000,9 @@ export function createToolGatewayService(
     timer.unref?.();
     try {
       const dispatchRemote = (target: string, init: RequestInit) =>
-        options.remoteHttpRequest
+        connection.transport === "connector"
+          ? dispatchConnector(connection, init, ms)
+          : options.remoteHttpRequest
           ? options.remoteHttpRequest(target, init)
           : guardedRemoteHttpFetch(target, init, {
               ...remoteHttpFetchOptions(),

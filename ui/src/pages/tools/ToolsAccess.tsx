@@ -6,6 +6,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { ProfilesIndex } from "./profiles/ProfilesIndex";
 import { GatewaysTab } from "./GatewaysTab";
+import { ConnectorsTab } from "./ConnectorsTab";
 import { PasteConfigTab } from "./PasteConfigTab";
 import { SmokeLabTab } from "./SmokeLabTab";
 import {
@@ -22,6 +23,8 @@ function renderTab(tab: ToolTabKey, companyId: string) {
       return <ProfilesIndex companyId={companyId} />;
     case "gateways":
       return <GatewaysTab companyId={companyId} />;
+    case "connectors":
+      return <ConnectorsTab companyId={companyId} />;
     case "smoke-lab":
       return <SmokeLabTab companyId={companyId} />;
     case "paste-config":

@@ -223,6 +223,8 @@ interface ActorMiddlewareOptions {
 const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
 
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
+/** The outbound MCP connector authenticates this route with its own `pcmcc_` credential. */
+const mcpConnectorCredentialPath = /^\/api\/mcp-connectors\/credential\/rotate\/?$/;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
@@ -260,6 +262,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     // the normal actor authentication path below.
     if (hasBearerCredentials && publicMcpGatewayProtocolPath.test(req.path)) {
       if (runIdHeader) req.actor.runId = runIdHeader;
+      next();
+      return;
+    }
+
+    // The connector credential is verified by the connector route itself; it is
+    // never a board key or agent token, so do not try (and fail) to parse it here.
+    if (
+      req.method === "POST" &&
+      mcpConnectorCredentialPath.test(req.path) &&
+      /^bearer\s+pcmcc_/i.test(authHeader ?? "")
+    ) {
+      req.actor = { type: "none", source: "none" };
       next();
       return;
     }

@@ -178,6 +178,7 @@ export {
   toolRateLimitCounters,
   toolGatewayRateLimitCounters,
   toolAccessAuditEvents,
+  toolMcpConnectors,
 } from "./tool_access.js";
 export {
   companySkills,

@@ -2741,6 +2741,67 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("rejects reusing a same-named application whose type does not match the transport", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    await service.createApplication(company.id, {
+      name: "Shared name fixture",
+      type: "rest_api",
+    });
+
+    await expect(service.createConnection(company.id, {
+      applicationName: "Shared name fixture",
+      name: "Shared name fixture",
+      transport: "local_stdio",
+      config: { templateId: "paperclip.echo-calculator-time" },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Connection transport must match application type",
+    });
+    expect(await db.select().from(toolConnections)
+      .where(eq(toolConnections.companyId, company.id))).toEqual([]);
+  });
+
+  it("does not attach a connection to a differently named application with a matching key", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const [other] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: "my-new-app",
+      name: "Legacy app with an independent key",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+
+    await expect(service.createConnection(company.id, {
+      applicationName: "My New App",
+      name: "My New App",
+      transport: "mcp_remote",
+      config: { url: "https://mcp.example.com/mcp" },
+    })).rejects.toMatchObject({ status: 422 });
+    expect(await db.select().from(toolConnections)
+      .where(eq(toolConnections.applicationId, other.id))).toEqual([]);
+  });
+
+  it("reuses an application with a matching key and equivalent display name", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const [existing] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: "linear",
+      name: "Linear",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const connection = await service.createConnection(company.id, {
+      applicationName: "linear",
+      name: "linear workspace",
+      transport: "mcp_remote",
+      config: { url: "https://mcp.example.com/mcp" },
+    });
+    expect(connection.applicationId).toBe(existing.id);
+  });
+
   it("rejects the obsolete Anthropic REST setup before storing credentials", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

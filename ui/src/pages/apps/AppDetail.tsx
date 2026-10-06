@@ -862,6 +862,11 @@ function ToolsLoadError({ onRetry }: { onRetry: () => void }) {
 
 function unverifiedRemoteHost(connection: ToolConnection): string | null {
   const sourceTemplateKey = connection.config?.sourceTemplateKey ?? connection.transportConfig.sourceTemplateKey;
+  // A connector upstream never has a curated definition; name it by its upstream.
+  if (connection.transport === "connector") {
+    const upstream = connection.config?.upstream;
+    return typeof upstream === "string" && upstream ? `${upstream} (via connector)` : "via connector";
+  }
   if (
     connection.transport !== "mcp_remote"
     || (typeof sourceTemplateKey === "string" && sourceTemplateKey.trim())
