@@ -164,6 +164,9 @@ describe("external object routes", () => {
   // The hook has a 30s budget, so it absorbs the transform cost and every later
   // createApp() call hits the cached modules.
   beforeAll(async () => {
+    // The warmup must use the same service mocks as each test. Otherwise the
+    // first route import retains the real issue service against the stub DB.
+    registerRouteMocks();
     await createApp(boardActor());
   });
 
