@@ -130,6 +130,7 @@ it.each([
       controllerSeq: number;
       count: number;
     }> = [];
+    const runnerStateHandshakeProofs: Array<Promise<void>> = [];
     const fixtureId = randomUUID();
     const fixtureRunner = defaultCapabilityRunnerdBinary();
     const directory = await mkdtemp(join(tmpdir(), "runnerd-maintenance-"));
@@ -974,6 +975,9 @@ it.each([
                 (completedTerminalAck === "repeat" && epoch === 1));
             let attachment: ReturnType<typeof originalAttach> | undefined;
             let withheld: (typeof withheldTerminalFrames)[number] | undefined;
+            let deliveredSuspend:
+              | { commandId: string; controllerSeq: number }
+              | undefined;
             const shouldWithhold = (candidate: typeof direction): boolean => {
               if (
                 !inject ||
@@ -983,6 +987,84 @@ it.each([
                 return false;
               if (withheld) {
                 withheld.count += 1;
+                return true;
+              }
+              if (direction === "outbound") {
+                // The control plane persists the completed result
+                // synchronously (#store.save -> atomicPrivateWrite) in the
+                // same turn immediately before sending the outbound
+                // command_result_ack, so the control-store half of the
+                // handshake is provably current at frame time. The
+                // runner-state half (pendingTerminalDelivery +
+                // processedCommands) is written by the runnerd process and
+                // can reach disk a beat AFTER the first ack frame under CI
+                // load: reading it synchronously here was the 2026-09-28
+                // 08:32Z flake ("expected [] length 1 got 0", run
+                // 36397447858), and re-polling it inside sendJson starved the
+                // event loop until runnerd exited 1 (run 36421551300,
+                // reverted in c1f5900c0). So gate the withhold on the
+                // control store plus the observed delivery only, and prove
+                // the runner-state half asynchronously outside the wire
+                // hook (vi.waitFor, awaited before the assertions).
+                const control = JSON.parse(
+                  readFileSync(this.store.path, "utf8"),
+                );
+                if (!deliveredSuspend) {
+                  const pendingSuspend = control.commands.find(
+                    (entry: { type: string; status: string }) =>
+                      entry.type === "runner.suspend" &&
+                      entry.status === "pending",
+                  );
+                  if (!pendingSuspend) return false;
+                  deliveredSuspend = {
+                    commandId: pendingSuspend.commandId,
+                    controllerSeq: pendingSuspend.controllerSeq,
+                  };
+                  return false;
+                }
+                const command = control.commands.find(
+                  (entry: { commandId: string; controllerSeq: number }) =>
+                    entry.commandId === deliveredSuspend!.commandId &&
+                    entry.controllerSeq === deliveredSuspend!.controllerSeq,
+                );
+                if (command?.status !== "completed") return false;
+                const result = command.result;
+                withheld = {
+                  epoch,
+                  direction,
+                  commandId: command.commandId,
+                  controllerSeq: command.controllerSeq,
+                  count: 1,
+                };
+                withheldTerminalFrames.push(withheld);
+                const proof = (async () => {
+                  await vi.waitFor(
+                    () => {
+                      const runner = JSON.parse(
+                        readFileSync(join(copy, files[1]!), "utf8"),
+                      );
+                      const terminal = runner.pendingTerminalDelivery;
+                      expect(terminal).toMatchObject({
+                        commandType: "runner.suspend",
+                        lifecycle: "suspended",
+                        commandId: command.commandId,
+                        controllerSeq: command.controllerSeq,
+                      });
+                      const processed =
+                        runner.processedCommands[command.commandId];
+                      expect(processed).toMatchObject({
+                        status: "completed",
+                        result: { status: "completed" },
+                        commandType: "runner.suspend",
+                        controllerSeq: command.controllerSeq,
+                      });
+                      expect(result).toEqual(processed);
+                    },
+                    { timeout: 15_000, interval: 50 },
+                  );
+                })();
+                proof.catch(() => {});
+                runnerStateHandshakeProofs.push(proof);
                 return true;
               }
               const runner = JSON.parse(
@@ -1010,13 +1092,10 @@ it.each([
               if (
                 command?.type !== terminal.commandType ||
                 command.controllerSeq !== terminal.controllerSeq ||
-                command.status !==
-                  (direction === "inbound" ? "pending" : "completed")
+                command.status !== "pending"
               )
                 return false;
-              if (direction === "outbound")
-                expect(command.result).toEqual(result);
-              else expect(command.result ?? null).toBeNull();
+              expect(command.result ?? null).toBeNull();
               // Rust durably records this exact result before sending it.
               // Withhold transport delivery only after that handshake, not
               // after a guessed number of saves or an elapsed sleep. Pending
@@ -1412,6 +1491,7 @@ it.each([
           );
         },
       );
+      await Promise.all(runnerStateHandshakeProofs);
       if (failedAttempt) {
         expect(
           await Promise.all(

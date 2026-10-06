@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
 describe("protocol-failure cleanup", () => {
@@ -54,7 +55,7 @@ describe("protocol-failure cleanup", () => {
         process.stdout.write("HOST_ALIVE_CLEANUP_OUTCOME_PRESERVED");
       `;
       expect(execFileSync(process.execPath, [
-        "--unhandled-rejections=strict", "--import", import.meta.resolve("tsx"),
+        "--unhandled-rejections=strict", "--import", createRequire(import.meta.url).resolve("tsx", { conditions: ["node", "import"] }),
         "--input-type=module", "--eval", source,
       ], { encoding: "utf8", timeout: 10_000 })).toBe("HOST_ALIVE_CLEANUP_OUTCOME_PRESERVED");
     },
