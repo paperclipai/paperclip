@@ -186,6 +186,12 @@ workflow, or issue label and watchdog enrichment. Missing resources,
 authentication errors, and other database errors retain their usual behavior.
 This does not enable general SQL replay or retry a full request.
 
+The task run list also opts its execution-status projection into these bounded
+retries. Each of its four read-only lookups rebuilds only the failed query;
+completed lookups and the separate liveness backfill are not replayed. Projection
+callers that use a transaction retain single-attempt reads. The opt-in is only
+for a pooled database handle outside a transaction.
+
 ## Execution identity row locks
 
 Identity initialization, credential acquisition, and steering reconciliation lock
