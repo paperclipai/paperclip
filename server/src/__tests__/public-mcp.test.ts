@@ -202,6 +202,19 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       expect(await db.select().from(mcpOauthMetadataAdmissions)).toHaveLength(1);
     });
 
+    it("reports admission storage failures as retryable and never fetches without admission", async () => {
+      const fetcher = vi.fn(async (url: URL) => metadata(url));
+      const client = createPublicMcpOAuth(db, config, { metadataFetch: fetcher });
+      const storageFailure = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("Database unavailable"));
+      try {
+        await expect(client.authorize(input(0), "storage-failure")).rejects.toMatchObject({ code: "temporarily_unavailable", status: 503 });
+        expect(fetcher).not.toHaveBeenCalled();
+      } finally { storageFailure.mockRestore(); }
+      expect(await db.select().from(mcpOauthMetadataAdmissions)).toHaveLength(0);
+      await expect(client.authorize(input(0), "storage-failure")).resolves.toContain("/mcp-connect/");
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
     it("lets users behind one proxy reuse verified metadata beyond the network quota", async () => {
       const clientId = `https://shared-proxy-${randomUUID()}.example/client.json`;
       const fetcher = vi.fn(async (url: URL) => metadata(url));

@@ -114,6 +114,9 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         throw new McpOAuthError("temporarily_unavailable", "Client metadata verification capacity reached. Retry later.", 429);
       }
       await tx.insert(mcpOauthMetadataAdmissions).values({ sourceHash, expiresAt: sql`clock_timestamp() + interval '1 minute'` });
+    }).catch(error => {
+      if (error instanceof McpOAuthError) throw error;
+      throw new McpOAuthError("temporarily_unavailable", "Client metadata verification is temporarily unavailable. Retry later.", 503);
     });
   }
 
