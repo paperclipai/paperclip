@@ -6,6 +6,7 @@ import { parseQuestionInteractionAnswers } from "./question-interaction-answers.
 import { isUniqueViolation } from "../db-errors.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { connectionIntentDeliveries } from "@paperclipai/db";
+import { acquireIssueLifecycleFenceInTransaction } from "./issue-lifecycle-fence.js";
 import { isDeepStrictEqual } from "node:util";
 import {
   and,
@@ -138,6 +139,31 @@ import {
 
 export { extractGitHubPullRequestReferences } from "./github-pull-request-merge.js";
 export type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
+
+type LifecycleTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+async function persistConnectionIntentOwnershipExpiry(db: Db | LifecycleTransaction, issue: { id: string; companyId: string }, now: () => Date) {
+  const expired = await db.update(issueThreadInteractions).set({
+    status: "expired", result: { version: 1, outcome: "expired", reason: "The task assignment changed" },
+    resolvedAt: now(), updatedAt: now(),
+  }).where(and(eq(issueThreadInteractions.companyId, issue.companyId), eq(issueThreadInteractions.issueId, issue.id),
+    eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"))).returning();
+  if (expired.length) await db.delete(toolOauthStates).where(inArray(toolOauthStates.interactionId, expired.map((row) => row.id)));
+  return expired;
+}
+
+// Dark supplied participant: take the company fence before any earlier row locks.
+// Invocation containment is not authenticated ownership-change authority.
+export async function expireConnectionIntentsForOwnershipChangeInTransaction(
+  tx: LifecycleTransaction,
+  input: { id: string; companyId: string },
+  now: () => Date = () => new Date(),
+) {
+  const issue = { id: input.id, companyId: input.companyId };
+  if (!issue.companyId) throw unprocessable("Lifecycle ownership expiry requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, issue.companyId);
+  return persistConnectionIntentOwnershipExpiry(tx, issue, now);
+}
 
 type InteractionActor = {
   identityContextId?: string | null;
@@ -4714,14 +4740,16 @@ export function issueThreadInteractionService(
       return expired;
     },
 
-    expireConnectionIntentsForOwnershipChange: async (issue: { id: string; companyId: string }) => {
-      const expired = await db.update(issueThreadInteractions).set({
-        status: "expired", result: { version: 1, outcome: "expired", reason: "The task assignment changed" },
-        resolvedAt: now(), updatedAt: now(),
-      }).where(and(eq(issueThreadInteractions.companyId, issue.companyId), eq(issueThreadInteractions.issueId, issue.id),
-        eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"))).returning();
-      if (expired.length) await db.delete(toolOauthStates).where(inArray(toolOauthStates.interactionId, expired.map((row) => row.id)));
-      return expired;
+    expireConnectionIntentsForOwnershipChange: async (
+      issue: { id: string; companyId: string },
+      options: { lifecycleFence?: boolean } = {},
+    ) => {
+      if (options.lifecycleFence) {
+        const capturedIssue = { id: issue.id, companyId: issue.companyId };
+        if (!capturedIssue.companyId) throw unprocessable("Lifecycle ownership expiry requires companyId");
+        return db.transaction((tx) => expireConnectionIntentsForOwnershipChangeInTransaction(tx, capturedIssue, now));
+      }
+      return persistConnectionIntentOwnershipExpiry(db, issue, now);
     },
     expirePendingInteractionsForTerminalIssue: async (
       issue: { id: string; companyId: string; status: string },
