@@ -104,6 +104,45 @@ export async function resubmitApprovalInTransaction(tx: Transaction, input: {
   return persistApprovalResubmission(tx, approvalId, payload, companyId);
 }
 
+function persistApprovalCreation(writer: Pick<Db, "insert">, companyId: string,
+  data: Omit<typeof approvals.$inferInsert, "companyId">,
+) {
+  return writer.insert(approvals).values({ ...data, companyId }).returning().then((rows) => rows[0]);
+}
+
+function snapshotPendingApprovalCreation(data: Omit<typeof approvals.$inferInsert, "companyId">) {
+  const allowed = new Set(["type", "payload", "requestedByAgentId", "requestedByUserId", "status"]);
+  if (Reflect.ownKeys(data).some((key) => typeof key !== "string" || !allowed.has(key))
+    || (data.status !== undefined && data.status !== "pending")) {
+    throw unprocessable("Lifecycle-fenced approval creation accepts pending request fields only");
+  }
+  const { type, requestedByAgentId, requestedByUserId } = data;
+  const payload = snapshotResubmissionPayload(data.payload);
+  if (payload == null) throw unprocessable("Lifecycle-fenced approval creation requires JSON payload");
+  return { type, requestedByAgentId, requestedByUserId, payload, status: "pending" };
+}
+
+async function createFencedApproval(db: Db, companyId: string,
+  data: Omit<typeof approvals.$inferInsert, "companyId">,
+) {
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval creation requires companyId");
+  const snapshot = snapshotPendingApprovalCreation(data);
+  return db.transaction((tx) => createApprovalInTransaction(tx, { companyId, data: snapshot }));
+}
+
+// Dark pending gate participant; not authenticated request authority or restoration.
+export async function createApprovalInTransaction(tx: Transaction, input: {
+  companyId: string; data: Omit<typeof approvals.$inferInsert, "companyId">;
+}) {
+  const { companyId } = input;
+  if (!companyId) throw unprocessable("Lifecycle-fenced approval creation requires companyId");
+  const data = snapshotPendingApprovalCreation(input.data);
+  await acquireIssueLifecycleFenceInTransaction(tx, companyId);
+  const created = await persistApprovalCreation(tx, companyId, data);
+  if (!created) throw unprocessable("Lifecycle-fenced approval creation returned no approval");
+  return created;
+}
+
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
@@ -210,12 +249,12 @@ export function approvalService(db: Db) {
       return rows[0] ?? null;
     },
 
-    create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
-      db
-        .insert(approvals)
-        .values({ ...data, companyId })
-        .returning()
-        .then((rows) => rows[0]),
+    create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">,
+      options?: { lifecycleFence?: boolean },
+    ) => {
+      if (options?.lifecycleFence) return createFencedApproval(db, companyId, data);
+      return persistApprovalCreation(db, companyId, data);
+    },
 
     // Cancel an open (pending/revision_requested) approval without a board
     // decision — e.g. when its paired agent is terminated during duplicate
