@@ -232,6 +232,17 @@ export const wakeAgentSchema = z.object({
     .default("on_demand"),
   triggerDetail: z.enum(["manual", "ping", "callback", "system"]).optional(),
   reason: z.string().optional().nullable(),
+  /**
+   * Task scope for the wake, first-class. A wake that names an issue is
+   * persisted as a *scoped* run: `contextSnapshot.issueId` selects the run's
+   * scratch directory and task markdown, and the issue-write gate accepts
+   * writes from the run back to that issue. Omitting the scope keeps the run
+   * deliberately unscoped — its issue writes are refused rather than being
+   * attributed to an issue the caller never named.
+   */
+  issueId: z.string().uuid().optional().nullable(),
+  taskId: z.string().uuid().optional().nullable(),
+  taskKey: z.string().min(1).optional().nullable(),
   /** Select an exact failed run; its chat request and actor are server-derived. */
   failedRunId: z.string().uuid().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),

@@ -419,6 +419,16 @@ export function activityService(db: Db) {
           wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
           contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
           contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+          // Why this row is in the issue's ledger. A run whose own wake scope
+          // names this issue matches on `context`; a run scoped to a different
+          // (or no) issue only appears because it left an activity row here and
+          // matches on `activity`. The OR in the WHERE clause above hides that
+          // distinction, which makes an unscoped or foreign run
+          // indistinguishable from a run that does not exist.
+          attribution: sql<"context" | "activity">`case
+            when ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId} then 'context'
+            else 'activity'
+          end`,
         })
         .from(heartbeatRuns)
         .innerJoin(

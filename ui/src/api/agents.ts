@@ -92,6 +92,10 @@ export interface AgentWakeRequest {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
   reason?: string | null;
+  /** Task scope for the wake; the run is scoped to this issue. */
+  issueId?: string | null;
+  taskId?: string | null;
+  taskKey?: string | null;
   payload?: Record<string, unknown> | null;
   idempotencyKey?: string | null;
   forceFreshSession?: boolean;

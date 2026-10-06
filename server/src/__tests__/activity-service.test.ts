@@ -251,6 +251,101 @@ describeEmbeddedPostgres("activity service", () => {
     expect(runs[0]).not.toHaveProperty("contextSnapshot");
   });
 
+  it("labels why a run is in the issue ledger: own scope vs foreign activity", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const foreignIssueId = randomUUID();
+    const scopedRunId = randomUUID();
+    const foreignRunId = randomUUID();
+    const silentRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Answer the ledger question",
+        description: "Explain why each row is here.",
+        status: "in_progress",
+        priority: "medium",
+      },
+      {
+        id: foreignIssueId,
+        companyId,
+        title: "A different task",
+        description: "Scope of another issue.",
+        status: "in_progress",
+        priority: "medium",
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: scopedRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        contextSnapshot: { issueId },
+      },
+      {
+        id: foreignRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        contextSnapshot: { issueId: foreignIssueId },
+      },
+      {
+        // Neither scope nor activity on this issue: it must stay invisible.
+        id: silentRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        contextSnapshot: {},
+      },
+    ]);
+
+    // The foreign run only appears in this issue's ledger because it left an
+    // activity row here (its own wake scope names another issue).
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId: foreignRunId,
+      action: "issue.commented",
+      entityType: "issue",
+      entityId: issueId,
+    });
+
+    const runs = await activityService(db).runsForIssue(companyId, issueId);
+
+    expect(runs.map((run) => run.runId).sort()).toEqual([scopedRunId, foreignRunId].sort());
+    expect(runs.find((run) => run.runId === scopedRunId)?.attribution).toBe("context");
+    expect(runs.find((run) => run.runId === foreignRunId)?.attribution).toBe("activity");
+    // A run with neither an own scope nor activity on the issue is still absent,
+    // so `activity` cannot be confused with "unscoped but present".
+    expect(runs.some((run) => run.runId === silentRunId)).toBe(false);
+  });
+
   it("backfills missing liveness for completed issue runs before returning the ledger", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
