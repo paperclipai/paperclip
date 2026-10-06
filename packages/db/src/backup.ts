@@ -44,11 +44,11 @@ function resolveRetention(config: PartialConfig | null): DatabaseBackupRetention
   );
   const legacyDays = fromConfig ?? fromEnv;
   if (legacyDays == null) return ONE_OFF_BASE_RETENTION;
-  // Preserve the legacy window: the retired scalar kept every backup inside
-  // the window, so expand the tiers to cover at least that long.
+  // Preserve the legacy window without narrowing: the widest daily base (14)
+  // already covers any legacy window the monthly tier does not extend.
   return {
     hourlyHours: 48,
-    dailyDays: legacyDays <= 3 ? 3 : legacyDays <= 7 ? 7 : 14,
+    dailyDays: 14,
     weeklyWeeks: 4,
     monthlyMonths: Math.max(6, Math.ceil(legacyDays / 30)),
   };

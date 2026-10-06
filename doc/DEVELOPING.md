@@ -3268,7 +3268,7 @@ pnpm paperclipai configure --section database
 Configure automatic retention tiers in **Instance Settings → General → Backup retention**.
 Changes take effect on the next backup without a server restart.
 
-Run a one-off backup manually. One-off backups use the default `24 hourly / 7 daily / 4 weekly / 1 monthly` policy and print the effective policy before pruning:
+Run a one-off backup manually. One-off backups share the scheduled backup directory, so they prune with the widest `48 hourly / 14 daily / 4 weekly / 6 monthly` policy (a retired retentionDays value or PAPERCLIP_DB_BACKUP_RETENTION_DAYS only extends monthly further) and print the effective policy before pruning:
 
 ```sh
 pnpm paperclipai db:backup

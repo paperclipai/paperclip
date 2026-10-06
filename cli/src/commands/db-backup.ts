@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -49,12 +50,22 @@ function asPositiveInt(value: unknown): number | null {
 
 // One-off backups share the scheduled backup directory and filename prefix,
 // so pruning with the narrower scheduled default could delete restore points
-// the configured policy would keep. Use the widest presets as the safe base,
-// and preserve a retired retentionDays scalar when it is still on disk.
-function resolveRetention(config: unknown): DatabaseBackupRetentionPolicy {
-  const backup = (config as { database?: { backup?: { retentionDays?: unknown } } } | null)
-    ?.database?.backup;
-  const fromConfig = asPositiveInt(backup?.retentionDays);
+// the configured policy would keep. Use the widest presets as the safe base.
+// A retired retentionDays scalar only widens the window further, never narrows it.
+// readConfig() already migrated (deleted) retentionDays, so read the raw file.
+function readRawLegacyDays(configPath: string): number | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      database?: { backup?: { retentionDays?: unknown } };
+    } | null;
+    return asPositiveInt(raw?.database?.backup?.retentionDays);
+  } catch {
+    return null;
+  }
+}
+
+function resolveRetention(configPath?: string): DatabaseBackupRetentionPolicy {
+  const fromConfig = configPath ? readRawLegacyDays(configPath) : null;
   const envRaw = process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS?.trim();
   const fromEnv = envRaw ? asPositiveInt(Number(envRaw)) : null;
   const legacyDays = fromConfig ?? fromEnv;
@@ -63,7 +74,7 @@ function resolveRetention(config: unknown): DatabaseBackupRetentionPolicy {
   }
   return {
     hourlyHours: 48,
-    dailyDays: legacyDays <= 3 ? 3 : legacyDays <= 7 ? 7 : 14,
+    dailyDays: 14,
     weeklyWeeks: 4,
     monthlyMonths: Math.max(6, Math.ceil(legacyDays / 30)),
   };
@@ -83,7 +94,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
 
   p.log.message(pc.dim(`Config: ${configPath}`));
   p.log.message(pc.dim(`Connection source: ${connection.source}`));
-  const retention = resolveRetention(config);
+  const retention = resolveRetention(configPath);
   p.log.message(pc.dim(`Backup dir: ${backupDir}`));
   p.log.message(pc.dim(`Retention: ${formatBackupRetentionPolicy(retention)}`));
 
