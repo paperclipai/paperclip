@@ -165,6 +165,66 @@ export async function expireConnectionIntentsForOwnershipChangeInTransaction(
   return persistConnectionIntentOwnershipExpiry(tx, issue, now);
 }
 
+// Dark supplied participant. The root caller must acquire this company fence
+// before its first row lock and own rollback and post-commit telemetry/touch.
+// Authoritative status is read here; a caller-provided terminal status is not authority.
+export async function expirePendingInteractionsForTerminalIssueInTransaction(
+  tx: LifecycleTransaction,
+  input: { id: string; companyId: string },
+  inputActor: Pick<InteractionActor, "agentId" | "userId" | "systemId"> = {},
+) {
+  const issue = { id: input.id, companyId: input.companyId };
+  const actor = { agentId: inputActor.agentId, userId: inputActor.userId, systemId: inputActor.systemId };
+  if (!issue.companyId) throw unprocessable("Lifecycle terminal expiry requires companyId");
+  await acquireIssueLifecycleFenceInTransaction(tx, issue.companyId);
+  const [current] = await tx.select().from(issues)
+    .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId))).for("update");
+  if (!current) throw notFound("Issue not found");
+  if (!isTerminalIssueStatus(current.status)) return [];
+  const rows = await tx.select().from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.companyId, issue.companyId), eq(issueThreadInteractions.issueId, issue.id),
+    eq(issueThreadInteractions.status, "pending"),
+  ));
+  const now = new Date();
+  const expired: IssueThreadInteraction[] = [];
+  for (const row of rows) {
+    // Do not swallow a lost conditional update in a supplied transaction:
+    // revocation effects must roll back with the caller's transaction.
+    expired.push(hydrateInteraction(await persistTerminalInteractionExpiry(tx, row, actor, now, issue)));
+  }
+  return expired;
+}
+
+async function persistTerminalInteractionExpiry(
+  tx: LifecycleTransaction,
+  row: IssueThreadInteractionRow,
+  actor: InteractionActor,
+  now: Date,
+  scope?: { id: string; companyId: string },
+) {
+  if (row.kind === "connection_intent") {
+    await tx.delete(toolOauthStates).where(eq(toolOauthStates.interactionId, row.id));
+  }
+  await resolveLinkedToolActionRequests(tx, row, {
+    status: "expired", fromStatuses: ["pending", "approved"], actor, now,
+  });
+  await resolveLinkedSecretProposal(tx as unknown as Db, row, {
+    status: "expired", actor, reason: "Issue closed before the secret proposal was resolved", now,
+  });
+  const [resolved] = await tx.update(issueThreadInteractions).set({
+    status: "expired", result: buildAdministrativeOutcomeResult(row, "issue_closed"),
+    resolvedByAgentId: actor.agentId ?? null, resolvedByUserId: actor.userId ?? null,
+    resolvedAt: now, updatedAt: now,
+  }).where(and(
+    eq(issueThreadInteractions.id, row.id), eq(issueThreadInteractions.status, "pending"),
+    scope ? eq(issueThreadInteractions.companyId, scope.companyId) : undefined,
+    scope ? eq(issueThreadInteractions.issueId, scope.id) : undefined,
+  )).returning();
+  if (!resolved) throw new InteractionResolvedConcurrentlyError();
+  await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(resolved));
+  return resolved;
+}
+
 type InteractionActor = {
   identityContextId?: string | null;
   agentId?: string | null;
@@ -4780,48 +4840,7 @@ export function issueThreadInteractionService(
         // expires and the execution result lands on it via the gateway's
         // lifecycle reflection.
         const updated = await db
-          .transaction(async (tx) => {
-            if (row.kind === "connection_intent") {
-              await tx
-                .delete(toolOauthStates)
-                .where(eq(toolOauthStates.interactionId, row.id));
-            }
-            await resolveLinkedToolActionRequests(tx, row, {
-              status: "expired",
-              fromStatuses: ["pending", "approved"],
-              actor,
-              now,
-            });
-            await resolveLinkedSecretProposal(tx as unknown as Db, row, {
-              status: "expired",
-              actor,
-              reason: "Issue closed before the secret proposal was resolved",
-              now,
-            });
-            const [resolved] = await tx
-              .update(issueThreadInteractions)
-              .set({
-                status: "expired",
-                result: buildAdministrativeOutcomeResult(row, "issue_closed"),
-                resolvedByAgentId: actor.agentId ?? null,
-                resolvedByUserId: actor.userId ?? null,
-                resolvedAt: now,
-                updatedAt: now,
-              })
-              .where(
-                and(
-                  eq(issueThreadInteractions.id, row.id),
-                  eq(issueThreadInteractions.status, "pending"),
-                ),
-              )
-              .returning();
-            if (!resolved) throw new InteractionResolvedConcurrentlyError();
-            await enqueueTerminalIssueInteractionChatPublications(
-              tx as unknown as Db,
-              hydrateInteraction(resolved),
-            );
-            return resolved;
-          })
+          .transaction((tx) => persistTerminalInteractionExpiry(tx, row, actor, now))
           .catch((err: unknown) => {
             if (err instanceof InteractionResolvedConcurrentlyError)
               return null;

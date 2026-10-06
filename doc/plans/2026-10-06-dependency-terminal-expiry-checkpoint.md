@@ -1,0 +1,15 @@
+# Terminal interaction expiry SOURCE/MOCK checkpoint
+
+Dark supplied-tx participant `expirePendingInteractionsForTerminalIssueInTransaction` captures company/issue and actor scalars before await, acquires the company lifecycle fence before authoritative issue UPDATE-lock/read, then reads pending interactions. Only authoritative done/cancelled proceeds. It reuses extracted actual canonical per-row tool/secret/OAuth/card/publication persistence on the supplied transaction, without nested transactions. Dark conditional card UPDATE additionally binds captured company/issue.
+
+Ordinary terminal expiry retains per-row owned transactions, caller status/no-op contract, concurrent-resolution skip, touch and telemetry. The supplied entry intentionally propagates lost conditional writes so the root transaction must roll back revocation. It does not swallow a sentinel after eager effects. Caller must own rollback and post-commit touch/telemetry; do not wire after earlier locks without the pre-read company protocol.
+
+No production caller or owned opt-in was added. Actor capture is not authenticated administrative authority. Ordinary status supplied by caller is NOT the dark authorization source. No live human gate was expired.
+
+Verification from server cwd, env without PAPERCLIP_API_KEY/DATABASE_URL/FORGEJO_TOKEN, TMPDIR=infra profile scratch, /opt/homebrew/bin/node ../node_modules/vitest/vitest.mjs run --config vitest.config.ts, --pool=forks --maxWorkers=1 --testTimeout=15000:
+
+New terminal fixture initial 1 expected RED (missing fence/entry), first GREEN 1 PASS after fixing a fixture payload missing prompt. Expanded scoped conditional UPDATE: 1 expected FAIL/13 PASS, then scoped helper fix. Terminal/ownership-expiry/canonical validators: 52 PASS, 7.42s. Missing-await mutant: 1 FAIL/16 skipped, 4.23s; restored. Final 27 explicit SOURCE/MOCK participant suites: 636 PASS, 31.99s, exit 0. Terminal suite has 17 controls. Original writer/human characterization is measured separately; no route/listener replay under mock-only scope.
+
+Limits: rows and SQL predicates are synthetic; no SQL filtering, company isolation, authenticated authority, concurrency, real advisory-lock behavior, commit or rollback proof. Tool revocation remains eagerly recorded on a later rejected conditional UPDATE. Chat publication/telemetry/settings are mocks. Linked secret proposal and OAuth terminal branches are extracted but not exercised by this new request-confirmation fixture; actual publication flush and multi-row later-failure controls remain prerequisites for wiring. Typecheck/build/full gates not executed.
+
+Restoration remains UNWIRED. Interaction creation/resolution/withdrawal, hire effects, remaining common participants, native ledger/statusVersion/effects/legacy intents and production wiring are unfinished. Queue admission/revalidation/orphan expiry/live 15min acceptance also unfinished. Existing pending human-only DB scope is unchanged; no PostgreSQL, server, listener, adapter, merge, deploy or activation. PR conflict needs separate rebase and new-head validation/review.
