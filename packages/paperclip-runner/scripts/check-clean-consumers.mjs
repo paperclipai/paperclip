@@ -15,6 +15,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { withInstalledPackagePackInput } from "./lib/installed-package-pack.mjs";
 
 const runnerRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const scratchParent = process.env.PAPERCLIP_RUN_SCRATCH_DIR
@@ -76,9 +77,11 @@ try {
   }
 }
 
-async function pack(packageRoot, destination) {
+async function pack(packageRoot, destination, externalInput = false) {
   const before = new Set(await readdir(destination));
-  run("npm", ["pack", "--ignore-scripts", "--pack-destination", destination], packageRoot, { quiet: true });
+  // A dependency publisher's devEngines must not select our verification tools.
+  const args = ["pack", ...(externalInput ? [resolve(packageRoot)] : []), "--ignore-scripts", "--pack-destination", destination];
+  run("npm", args, externalInput ? destination : packageRoot, { quiet: true });
   const created = (await readdir(destination))
     .filter((entry) => entry.endsWith(".tgz") && !before.has(entry))
     .sort();
@@ -104,7 +107,8 @@ async function packRunnerRuntimeDependencies(destination) {
     const identity = `${manifest.name}@${manifest.version}`;
     let tarball = packed.get(identity);
     if (tarball === undefined) {
-      tarball = await pack(concreteRoot, destination);
+      tarball = await withInstalledPackagePackInput(concreteRoot, scratchRoot,
+        (input, externalInput) => pack(input, destination, externalInput));
       packed.set(identity, tarball);
     }
     overrides[overrideKey] = tarball;
