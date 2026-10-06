@@ -14,6 +14,14 @@ describe("explicit local subscription import", () => {
     expect(mocks.claudeQuota).toHaveBeenCalledWith("isolated-claude");
     expect(mocks.claude).not.toHaveBeenCalled();
   });
+  it("stores the refresh token and expiry with the Claude access token when the login file has them", async () => {
+    mocks.credentialFile.mockResolvedValue(JSON.stringify({
+      claudeAiOauth: { accessToken: "at", refreshToken: "rt", expiresAt: 1_800_000_000_000, scopes: ["user:inference"], extra: "dropped" },
+    }));
+    const stored = JSON.parse(await readVerifiedLocalAiCredential("anthropic", "/isolated/claude"));
+    expect(stored).toEqual({ claudeAiOauth: { accessToken: "at", refreshToken: "rt", expiresAt: 1_800_000_000_000, scopes: ["user:inference"] } });
+    expect(mocks.claudeQuota).toHaveBeenCalledWith("at");
+  });
   it("does not fall back to ambient Claude auth when an isolated login is absent or invalid", async () => {
     mocks.claude.mockResolvedValue("server-operator-token");
     mocks.claudeIsolatedKeychain.mockResolvedValue(null);
