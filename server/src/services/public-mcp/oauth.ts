@@ -122,10 +122,12 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       const [client] = await db.select().from(mcpOauthClients).where(eq(mcpOauthClients.id, id));
       return client ? { ...client, native: false } : undefined;
     }
-    await admitMetadataFetch(source);
     let metadata;
-    try { metadata = await resolveMetadata(id); }
-    catch { throw new McpOAuthError("invalid_client_metadata", "Could not verify the client's public metadata."); }
+    try { metadata = await resolveMetadata(id, () => admitMetadataFetch(source)); }
+    catch (error) {
+      if (error instanceof McpOAuthError) throw error;
+      throw new McpOAuthError("invalid_client_metadata", "Could not verify the client's public metadata.");
+    }
     return { id, name: metadata.client_name, redirectUris: metadata.redirect_uris,
       grantTypes: metadata.grant_types, native: metadata.application_type === "native" };
   }

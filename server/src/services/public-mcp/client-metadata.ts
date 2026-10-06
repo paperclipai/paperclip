@@ -40,13 +40,16 @@ const guardedFetch: MetadataFetch = (url, init) => guardedRemoteHttpFetch(url, i
 /** Client names are descriptive, not a verified brand identity. */
 export function createClientMetadataResolver(fetcher: MetadataFetch = guardedFetch) {
   const cache = new Map<string, { value: Metadata; expiresAt: number }>();
-  return async (id: string): Promise<Metadata> => {
+  return async (id: string, admitFetch?: () => Promise<void>): Promise<Metadata> => {
     const url = new URL(id);
     if (url.protocol !== "https:" || url.pathname === "/" || url.username || url.password || url.hash || id.length > 2048) throw new Error("Invalid client metadata URL.");
     const now = Date.now();
     for (const [key, value] of cache) if (value.expiresAt <= now) cache.delete(key);
     const hit = cache.get(id);
     if (hit) return hit.value;
+    // Cached, already-validated metadata performs no outbound work. Charge only
+    // cache misses so users sharing a proxy can reconnect to known clients.
+    await admitFetch?.();
     const response = await fetcher(url, { redirect: "error", headers: { Accept: "application/json" }, signal: AbortSignal.timeout(5000) });
     if (!response.ok || response.status >= 300 || !/^application\/(?:[\w.+-]+\+)?json(?:\s*;|$)/i.test(response.headers.get("content-type") ?? "")) {
       await response.body?.cancel(); throw new Error("Invalid client metadata response.");

@@ -202,6 +202,19 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       expect(await db.select().from(mcpOauthMetadataAdmissions)).toHaveLength(1);
     });
 
+    it("lets users behind one proxy reuse verified metadata beyond the network quota", async () => {
+      const clientId = `https://shared-proxy-${randomUUID()}.example/client.json`;
+      const fetcher = vi.fn(async (url: URL) => metadata(url));
+      const clients = [createPublicMcpOAuth(db, config, { metadataFetch: fetcher }), createPublicMcpOAuth(db, config, { metadataFetch: fetcher })];
+      for (let i = 0; i < 9; i++) {
+        const request = { ...input(i), client_id: clientId };
+        await expect(clients[i % 2]!.authorize(request, "shared-proxy")).resolves.toContain("/mcp-connect/");
+        await expect(clients[i % 2]!.deviceAuthorize(request, "shared-proxy")).resolves.toHaveProperty("user_code");
+      }
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(await db.select().from(mcpOauthMetadataAdmissions)).toHaveLength(2);
+    });
+
     it("caps unique-source failures globally without blocking registered clients", async () => {
       const fetcher = vi.fn(async () => { throw new Error("Remote unavailable"); });
       const clients = [createPublicMcpOAuth(db, config, { metadataFetch: fetcher }), createPublicMcpOAuth(db, config, { metadataFetch: fetcher })];
