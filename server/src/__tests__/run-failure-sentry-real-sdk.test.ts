@@ -42,6 +42,48 @@ afterEach(async () => {
 });
 
 describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", () => {
+  it("keeps portfolio diagnostics bounded and isolated from unrelated captures", async () => {
+    const Sentry = sentryPackage!;
+    const events: Array<Record<string, unknown>> = [];
+    vi.stubEnv("SENTRY_DSN_BACKEND", "https://public@example.invalid/1");
+    vi.doMock("../peer-version-check.js", () => ({ checkExactPeerVersions: () => ({ ok: true }) }));
+    vi.doMock("@sentry/node", () => ({
+      ...Sentry,
+      init: (options: Record<string, unknown>) => Sentry.init({
+        ...options,
+        transport: () => ({ send: async () => ({}), flush: async () => true }),
+        beforeSend: (event: Record<string, unknown>) => { events.push(event); return event; },
+      }),
+    }));
+    vi.resetModules();
+    const { sentryReady, captureException } = await import("../sentry.js");
+    const { CloudPortfolioError } = await import("../services/cloud-portfolio-error.js");
+    await sentryReady;
+    const failure = new CloudPortfolioError("upstream", {
+      phase: "fetch", elapsedMs: 270, upstreamStatus: null,
+    }, new TypeError("private-portfolio-message", { cause: { code: "ECONNRESET", token: "private-portfolio-token" } }));
+    Object.assign(failure, {
+      cause: new Error("private-portfolio-cause"),
+      request: { url: "https://private-portfolio.invalid", headers: { cookie: "private-portfolio-cookie" } },
+    });
+    Object.defineProperty(failure, "diagnostics", { value: { extra: "private-portfolio-replacement" } });
+    captureException(failure);
+    captureException(new Error("unrelated portfolio fixture"));
+    await Sentry.flush(2000);
+    expect(events).toHaveLength(2);
+    const captured = events.find((event) => (event.exception as { values: Array<{ value: string }> }).values.some((entry) => entry.value === failure.message));
+    expect(captured).toMatchObject({
+      tags: { error_code: "cloud_portfolio_failure" }, fingerprint: ["{{ default }}"],
+      contexts: { cloud_portfolio: { phase: "fetch", elapsedMs: 270, upstreamStatus: null, networkCode: "ECONNRESET" } },
+    });
+    expect((captured!.exception as { values: unknown[] }).values).toHaveLength(1);
+    expect(JSON.stringify(events)).not.toContain("private-portfolio-");
+    const unrelated = events.find((event) => event !== captured)!;
+    expect(unrelated).not.toHaveProperty("contexts.cloud_portfolio");
+    expect(unrelated).not.toHaveProperty("tags.error_code");
+    expect(unrelated).not.toHaveProperty("fingerprint");
+  });
+
   it.each([
     { phase: "workspace_restore", phaseElapsedMs: 60_123, expectedPhase: "workspace_restore", expectedElapsedMs: 60_123 },
     { phase: "private-provider-phase", phaseElapsedMs: 100, expectedPhase: "unknown", expectedElapsedMs: null },

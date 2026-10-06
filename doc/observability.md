@@ -467,6 +467,19 @@ native failure only while its saved review is still current and pending; caller
 payloads cannot select a different review. Dispatch checks that assignment again.
 Superseded or completed reviews retain their authority.
 
+Cloud portfolio proxy failures have an event-local `cloud_portfolio` context.
+It contains only the phase (`fetch`, `http_response`, `response_body`, or
+`response_write`), upstream HTTP status when available, elapsed milliseconds,
+and an allowlisted network error code. Unknown values become `unknown` or
+`null`; elapsed time outside 0–60,000 ms becomes `null`. Codes come from at
+most four error/cause objects' own data properties, never error messages.
+`DEADLINE_EXCEEDED` means the request's own ten-second signal was aborted.
+The route's warning uses the same safe fields. Neither record includes URLs,
+headers, cookies, bodies, user/stack IDs, or the original exception. Sentry
+receives a plain error with the existing generic message and default grouping.
+The context does not change the HTTP response, authentication, cookies, cache,
+deadline, or single-fetch behavior, and does not carry into unrelated events.
+
 An unconfirmed adapter Stop timeout has an event-local `adapter_stop` context:
 the run UUID, built-in adapter type, native/legacy runtime mode, configured
 wait duration, and whether abort was requested. Invalid identities become
