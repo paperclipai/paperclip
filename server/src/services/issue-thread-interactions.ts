@@ -172,10 +172,13 @@ export async function expirePendingInteractionsForTerminalIssueInTransaction(
   tx: LifecycleTransaction,
   input: { id: string; companyId: string },
   inputActor: Pick<InteractionActor, "agentId" | "userId" | "systemId"> = {},
+  options: { postCommitPublications: ActivityPublication[] },
 ) {
   const issue = { id: input.id, companyId: input.companyId };
   const actor = { agentId: inputActor.agentId, userId: inputActor.userId, systemId: inputActor.systemId };
   if (!issue.companyId) throw unprocessable("Lifecycle terminal expiry requires companyId");
+  const postCommitPublications = options?.postCommitPublications;
+  if (!Array.isArray(postCommitPublications)) throw unprocessable("Lifecycle terminal expiry requires a caller-owned publication queue");
   await acquireIssueLifecycleFenceInTransaction(tx, issue.companyId);
   const [current] = await tx.select().from(issues)
     .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId))).for("update");
@@ -190,7 +193,7 @@ export async function expirePendingInteractionsForTerminalIssueInTransaction(
   for (const row of rows) {
     // Do not swallow a lost conditional update in a supplied transaction:
     // revocation effects must roll back with the caller's transaction.
-    expired.push(hydrateInteraction(await persistTerminalInteractionExpiry(tx, row, actor, now, issue)));
+    expired.push(hydrateInteraction(await persistTerminalInteractionExpiry(tx, row, actor, now, issue, postCommitPublications)));
   }
   return expired;
 }
@@ -201,6 +204,7 @@ async function persistTerminalInteractionExpiry(
   actor: InteractionActor,
   now: Date,
   scope?: { id: string; companyId: string },
+  postCommitPublications?: ActivityPublication[],
 ) {
   if (row.kind === "connection_intent") {
     await tx.delete(toolOauthStates).where(eq(toolOauthStates.interactionId, row.id));
@@ -210,7 +214,7 @@ async function persistTerminalInteractionExpiry(
   });
   await resolveLinkedSecretProposal(tx as unknown as Db, row, {
     status: "expired", actor, reason: "Issue closed before the secret proposal was resolved", now,
-  });
+  }, postCommitPublications);
   const [resolved] = await tx.update(issueThreadInteractions).set({
     status: "expired", result: buildAdministrativeOutcomeResult(row, "issue_closed"),
     resolvedByAgentId: actor.agentId ?? null, resolvedByUserId: actor.userId ?? null,
@@ -1237,6 +1241,7 @@ async function resolveLinkedSecretProposal(
     reason?: string | null;
     now: Date;
   },
+  postCommitPublications?: ActivityPublication[],
 ) {
   const proposalId = linkedSecretProposalId(interaction);
   if (!proposalId) return;
@@ -1286,7 +1291,7 @@ async function resolveLinkedSecretProposal(
       interactionId: interaction.id,
       reason: outcome.reason ?? null,
     },
-  });
+  }, postCommitPublications);
 }
 
 function resolveActorKind(

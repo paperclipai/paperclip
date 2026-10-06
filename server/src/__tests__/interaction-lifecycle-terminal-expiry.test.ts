@@ -37,7 +37,7 @@ function fixture(config: { status?: string; missing?: boolean; empty?: boolean; 
   return { root, tx, events, queries, patches, release, reject };
 }
 const invoke = (f: ReturnType<typeof fixture>, issue = { id: "issue-1", companyId: "company-1" }, actor = { userId: "user-1" }) =>
-  (service as any).expirePendingInteractionsForTerminalIssueInTransaction(f.tx, issue, actor);
+  (service as any).expirePendingInteractionsForTerminalIssueInTransaction(f.tx, issue, actor, { postCommitPublications: [] });
 describe("dark supplied terminal interaction expiry recording", () => {
   it("fences before authoritative terminal read and canonical tool/card expiry", async () => {
     const f = fixture();
