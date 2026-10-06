@@ -69,7 +69,7 @@ import a67 from "./app-definitions/zep.json" with { type: "json" };
 import a68 from "./app-definitions/supermemory.json" with { type: "json" };
 import a69 from "./app-definitions/honcho.json" with { type: "json" };
 import a70 from "./app-definitions/neon.json" with { type: "json" };
-import a71 from "./app-definitions/telem.json" with { type: "json" };
+import a71 from "./app-definitions/superagent.json" with { type: "json" };
 import a72 from "./app-definitions/gmail.json" with { type: "json" };
 import a73 from "./app-definitions/google-drive.json" with { type: "json" };
 import a74 from "./app-definitions/google-docs.json" with { type: "json" };

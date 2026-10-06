@@ -1043,8 +1043,8 @@ const categoryBySlug = {
   sentry: "developer",
   similarweb: "analytics",
   stripe: "commerce",
+  superagent: "developer",
   supabase: "data",
-  telem: "ai",
   "ticket-tailor": "commerce",
   ticktick: "productivity",
   todoist: "productivity",
@@ -1144,11 +1144,7 @@ const apiKeySpec = {
     prefix: "Bearer ",
     placeholder: "sbp_...",
   },
-  telem: {
-    name: "Authorization",
-    prefix: "Bearer ",
-    placeholder: "tlm_...",
-  },
+  superagent: { name: "Authorization", prefix: "Bearer ", placeholder: "sk_live_..." },
   youcom: {
     name: "Authorization",
     prefix: "Bearer ",
@@ -1225,6 +1221,16 @@ const specialMethodsFor = (entry) => {
         key: "workspaceId", label: "Honcho workspace", type: "text", required: true,
         placeholder: "Workspace ID", validation: { maxLength: 512 },
       }] } : {}),
+    }),
+  ];
+  // Superagent's hosted server advertises protected-resource metadata, but its
+  // authorization server publishes no OAuth metadata, so organization API keys
+  // are the only working credential.
+  if (entry.slug === "superagent") return [
+    apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+      whenToUse: "Connect with a Superagent organization API key.",
+      guidanceMd: "Open Superagent Settings → API keys, create a separate key for Paperclip, and paste it below.",
+      consoleLinks: { keys: "https://www.superagent.sh/app/settings#api-keys", docs: entry.docsUrl },
     }),
   ];
   if (entry.slug === "zep") return [oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
@@ -1570,73 +1576,6 @@ const specialMethodsFor = (entry) => {
       }),
     ];
   }
-  if (entry.slug === "telem") {
-    // Telem's hosted server takes an API key only. The optional settings are
-    // per-connection request headers that the server reads; each one is left
-    // out of the request when it is empty, so an unset field keeps the
-    // server's default (auto routing off, default tier, all providers).
-    const providerList = (key, label, header, helperMd) => ({
-      key,
-      label,
-      type: "textarea",
-      advanced: true,
-      placeholder: "Optional comma-separated provider names",
-      helperMd,
-      validation: { pattern: "^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$", maxLength: 500 },
-      transport: { location: "header", name: header, format: "csv" },
-    });
-    const tenantFields = [
-      {
-        key: "autoRouting",
-        label: "Auto routing",
-        type: "select",
-        advanced: true,
-        options: [
-          { value: "off", label: "Off" },
-          { value: "accuracy", label: "Accuracy" },
-        ],
-        helperMd:
-          "Optional. Accuracy lets Telem choose the search providers for each query. Off, or no selection, keeps auto routing off.",
-        transport: { location: "header", name: "X-Telem-Auto-Routing" },
-      },
-      {
-        key: "tier",
-        label: "Tier",
-        type: "select",
-        advanced: true,
-        options: [
-          { value: "minimalist", label: "Minimalist" },
-          { value: "default", label: "Default" },
-          { value: "extended", label: "Extended" },
-          { value: "max", label: "Max" },
-        ],
-        helperMd:
-          "Optional. Sets how much search work Telem does for each query. No selection uses the Default tier.",
-        transport: { location: "header", name: "X-Telem-Tier" },
-      },
-      providerList(
-        "providersInclude",
-        "Providers to include",
-        "X-Telem-Providers-Include",
-        "Optional. Telem searches only these providers. Leave it empty to allow all providers.",
-      ),
-      providerList(
-        "providersExclude",
-        "Providers to exclude",
-        "X-Telem-Providers-Exclude",
-        "Optional. Telem does not search these providers.",
-      ),
-    ];
-    return [
-      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
-        guidanceMd:
-          "Create an API key in the Telem console at app.telem.ai. Paste the key below. Open Advanced to set auto routing, the tier, or the providers to include or exclude.",
-        whenToUse: "Connect with a Telem API key.",
-        consoleLinks: { keys: "https://app.telem.ai", docs: entry.docsUrl },
-        tenantFields,
-      }),
-    ];
-  }
   if (entry.slug === "youcom") {
     // You.com also serves a documented keyless profile at ?profile=free with a
     // reduced read-only tool set. That is a real user choice: try web search
@@ -1738,7 +1677,7 @@ for (const entry of researchManifest.entries) {
     schemaVersion: 1,
     slug: entry.slug,
     name: entry.name,
-    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers.", telem: "Search the web and read pages across many search providers with one API key." })[entry.slug] ?? (entry.slug === "fireflies"
+    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", superagent: "Review security findings, start red-team reports, and score content and packages before agents trust them.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers." })[entry.slug] ?? (entry.slug === "fireflies"
       ? "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines."
       : `Connect ${entry.name}'s provider-hosted MCP server.`),
     categories: [categoryBySlug[entry.slug] ?? "other"],
