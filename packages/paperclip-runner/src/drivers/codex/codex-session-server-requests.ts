@@ -205,7 +205,7 @@ async function handleServerRequestBody(
               text:
                 tool === CODEX_BLOCK_TOOL_NAME
                   ? "paperclip_block requires reportedWorkDisposition=blocked."
-                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake continuation.",
+                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake or persisted monitor continuation.",
             },
           ],
         };

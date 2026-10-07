@@ -1989,6 +1989,7 @@ export {
   updateIssueSchema,
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
+  issueExecutionMonitorPolicySchema,
   issueExecutionStateSchema,
   resolveIssueRecoveryActionSchema,
   retryWorkspaceExportSchema,

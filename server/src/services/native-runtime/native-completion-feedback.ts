@@ -1,3 +1,4 @@
+import { eligibleIssueMonitorWait } from "../issue-monitors.js";
 import { activeIssueInteractionCondition, ordinaryQuestionCondition } from "../issue-question-context.js";
 import { publishedTaskDocuments, validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { findAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
@@ -64,6 +65,7 @@ export async function nativeCompletionFeedback(
   if (!issue) throw new Error("Completion task no longer exists.");
   const reviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
   if (reviewContext) {
+    if (result.continuation?.kind === "monitor") throw new Error("Review-only runs cannot yield to a task monitor; resolve the assigned review or report its blocker.");
     const review = await getNativeReviewAssignment(db, {
       companyId: run.companyId, issueId: issue.id, agentId: run.agentId,
       contextSnapshot: reviewContext, allowResolvedByRunId: run.id,
@@ -95,6 +97,12 @@ export async function nativeCompletionFeedback(
       throw new Error(`completionClaim.criteria must contain exactly these criterion IDs, once each: ${JSON.stringify(expected)}. Keep contractRevision ${JSON.stringify(current.revision)} and correct the report without repeating completed work.`);
     }
 
+  }
+  if (result.reportedWorkDisposition === "yielded" && result.continuation?.kind === "monitor") {
+    if (issue.workMode !== "standard" || issue.executionRunId !== run.id ||
+        !eligibleIssueMonitorWait(issue, run.agentId)) {
+      throw new Error("A monitor wait requires a persisted, eligible monitor on this task. Call set_task_monitor for the current task, confirm its schedule, then report yielded with continuation.kind monitor.");
+    }
   }
   const signals = normalizePrpResultSignals(result);
   if (
@@ -214,6 +222,9 @@ export async function nativeCompletionFeedback(
   const readiness = await issueService(db).getDependencyReadiness(issue.id, db);
   if (readiness.unresolvedBlockerCount > 0) {
     return `Completion report accepted; this task still has unresolved dependencies. Explain the blockers on [this task](/issues/${issue.identifier ?? issue.id}); do not say the task is done.`;
+  }
+  if (result.reportedWorkDisposition === "yielded" && result.continuation?.kind === "monitor") {
+    return `Monitor wait accepted. The task remains active and Paperclip will wake its assignee at or after ${issue.monitorNextCheckAt!.toISOString()} with issue_monitor_due. End this turn; do not poll or mark the task done.`;
   }
   if (
     !isConversation(issue) &&

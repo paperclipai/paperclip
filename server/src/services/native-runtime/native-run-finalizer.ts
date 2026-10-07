@@ -1,3 +1,4 @@
+import { eligibleIssueMonitorWait } from "../issue-monitors.js";
 import { isNativePlanWaitResult, readNativePlanWait } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
@@ -1292,7 +1293,9 @@ export async function finalizeNativeRun(input: {
     };
     const hasPendingChildCompletion = !reviewContext &&
       await hasPendingNativeChildCompletion(input.db, childCompletionRecipient);
+    const monitorWaitAt = eligibleIssueMonitorWait(authoritativeIssue, run.agentId);
     const proposedDecision = resolveNativeFinalizerStatus({
+      monitorWaitAuthorized: authoritativeIssue.workMode === "standard" && authoritativeIssue.executionRunId === run.id && monitorWaitAt !== null,
       planWaitAuthorized: planWait !== null,
       hasPendingChildCompletion,
       providerModelRejected: providerFailure?.errorCode === "native_provider_model_rejected" && ownsProviderFailureDecision,
@@ -1381,6 +1384,8 @@ export async function finalizeNativeRun(input: {
         priorStatusVersion: Number(authoritativeIssue.statusVersion),
         priorDecisionId: authoritativeIssue.lastStatusDecisionId,
         decision,
+        requireMonitorWait: decision.reasonCode === "scheduled_monitor_waiting" && monitorWaitAt
+          ? { agentId: run.agentId, nextCheckAt: monitorWaitAt } : undefined,
         requirePlanWaitSource:
           decision.reasonCode === "native_plan_accepted_waiting_for_continuation"
             ? planWait?.source : undefined,

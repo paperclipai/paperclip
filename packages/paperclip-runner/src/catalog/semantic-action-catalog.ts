@@ -1,3 +1,4 @@
+import { setTaskMonitorInputSchema } from "../protocol-actions/set-task-monitor.js";
 import { listProjectsDescription, listProjectsInputSchema } from "../protocol-actions/list-projects.js";
 import { setTaskTitleAction } from "../protocol-actions/set-task-title.js";
 import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
@@ -582,6 +583,12 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
       ["idempotencyKey", "approvalId", "body"],
     ),
     outputSchema: operationReceipt,
+  }),
+  descriptor({
+    operationId: "set_task_monitor", title: "Set task monitor",
+    description: "Schedule, replace or clear a persisted one-shot monitor on an owned task.",
+    placement: "optional", effect: "write", requiredClaims: [], allowedModes: ["standard"],
+    inputSchema: setTaskMonitorInputSchema, outputSchema: openObject,
   }),
   descriptor({
     operationId: "schedule_wake",

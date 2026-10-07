@@ -656,6 +656,19 @@ An issue monitor is a one-shot deferred action path for agent-owned issues in `i
 
 Use a monitor when the current assignee owns a future check against an async system or external service. Examples include Greptile review loops, GitHub checks, Vercel deployments, or provider jobs where the agent should come back later and decide what happens next.
 
+Native runners in standard execution use `set_task_monitor({ taskId?, idempotencyKey, monitor })`. Omit `taskId` for the current task. An explicit target must be accessible, in the same company, assigned to the caller with no human assignee, and `in_progress` or `in_review`. Runtime-management permission still applies. Ask, planning, and review-only runs cannot use this tool. Generic `call_api` lifecycle restrictions remain in force.
+
+To wait for a check:
+
+1. Set a future `monitor.nextCheckAt` and short `monitor.notes` describing the check, with optional service context and bounds.
+2. Confirm the receipt's persisted task ID, monitor state, next-check time, and bounds.
+3. Call `paperclip_finish` with `reportedWorkDisposition: "yielded"` and `continuation: { kind: "monitor", summary, idempotencyKey }`. Report outstanding work honestly; the scheduled check may still block completion.
+4. End the run. Paperclip keeps the task active, releases execution ownership, and the one-shot scheduler later wakes it with `issue_monitor_due`. This does not enqueue an immediate continuation.
+
+Only a valid persisted monitor on the current task authorizes that finish; scheduling another owned task does not. Authority is checked again under the final disposition lock. A timer that becomes due during an active native execution remains scheduled until execution releases it. Dispatch checks the current schedule, claim, status, and assignee so an older dispatch cannot clear a replacement monitor.
+
+Use a new idempotency key to replace the schedule or clear it with `monitor: null`. Retrying the original call returns current monitor state without re-arming a consumed, replaced, or cleared timer. Monitor changes, audit activity, and mutation receipts are committed together, and unrelated execution/review policy is preserved. Legacy agents continue to use the issue API.
+
 Monitor policy lives under `executionPolicy.monitor` and includes:
 
 - `nextCheckAt`: when Paperclip should wake the assignee
