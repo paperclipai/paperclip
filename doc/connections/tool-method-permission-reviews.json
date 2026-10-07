@@ -2122,8 +2122,8 @@
       ],
       "reviewedAt": "2026-10-07",
       "liveProof": "not-run",
-      "keyPermissions": "This is an mcp-unifi bearer token from MCP_UNIFI_AUTH_TOKENS, not a UniFi API key. Run the server with MCP_UNIFI_READONLY=true and a UniFi API key created by a View Only local admin; Paperclip cannot narrow what the server's UniFi key may do.",
-      "evidenceLimit": "Tool names and read/mutate classification were reviewed from mcp-unifi v0.25.0 source (74 read tools, 62 mutating). Ubiquiti does not publish an MCP server or an API-key scope model; View Only admin key behavior is from Ubiquiti help and community reports. No live UniFi console proof yet."
+      "keyPermissions": "This is an mcp-unifi bearer token from MCP_UNIFI_AUTH_TOKENS, not a UniFi API key. Run the server with MCP_UNIFI_READONLY=true and a UniFi API key from a dedicated local admin. UniFi OS does not let View Only admins create API keys, so the server's UniFi key can make changes and Paperclip cannot narrow it.",
+      "evidenceLimit": "Tool names and read/mutate classification were reviewed from mcp-unifi v0.25.0 source (74 read tools, 62 mutating). Ubiquiti does not publish an MCP server or an API-key scope model; Live console check (UniFi Express 7, Network 10.6.106, 2026-10-07): a View Only local admin gets 'unauthorized edit:api_key' when creating a key, and an admin cannot create keys for another user. That View Only admin's session is refused on writes (api.err.NoPermission). No end-to-end mcp-unifi proof yet."
     },
     {
       "app": "vercel",

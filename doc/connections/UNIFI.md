@@ -54,9 +54,10 @@ classifier treats those as reads.
 
 No single layer is trusted to keep the connection read-only:
 
-1. **UniFi key.** The UniFi API key comes from a dedicated **View Only** local
-   administrator. The UniFi console rejects writes regardless of what the MCP
-   server sends.
+1. **UniFi key (not a read-only layer today).** UniFi OS does not let a
+   **View Only** administrator create an API key, so the key mcp-unifi uses
+   can make changes. Use a dedicated local administrator, never the owner
+   account. See [Credential residual risk](#credential-residual-risk).
 2. **Server mode.** mcp-unifi runs with `MCP_UNIFI_READONLY=true`. Mutating
    tools are hidden from `tools/list` and refused if called.
 3. **Paperclip governance.** Only reviewed reads start Allowed. Everything
@@ -100,7 +101,7 @@ sequenceDiagram
     participant U as UniFi OS console
     participant S as mcp-unifi (behind TLS proxy)
     participant P as Paperclip instance
-    O->>U: Add local admin with View Only role
+    O->>U: Add a dedicated local admin (not the owner)
     O->>U: As that admin, Control Plane → Integrations → create API key
     O->>S: Run mcp-unifi with UNIFI_API_KEY, MCP_UNIFI_READONLY=true, MCP_UNIFI_AUTH_TOKENS
     O->>S: TLS reverse proxy, allow only Paperclip's address
@@ -110,24 +111,35 @@ sequenceDiagram
     S-->>P: Read tools only (mutating tools hidden in read-only mode)
     P->>P: classifyRisk (exact reviewed reads), Ask first for the rest
     P->>O: Finish setup; later-discovered tools quarantined
-    Note over P,U: On a tool call: P → S (bearer token) → U local API (X-API-Key, View Only)
+    Note over P,U: On a tool call: P → S (bearer token) → U local API (X-API-Key)
 ```
 
 ### Credential residual risk
 
 - **UniFi API keys carry the role of the admin who created them.** Ubiquiti
-  documents no per-key scopes. A key minted by a Full Management or Super Admin
-  account can do anything on the console, so a **View Only** admin is required
-  (setup steps, warnings, and credential helper text). Whether every UniFi OS
-  release lets a View Only admin create a key comes from Ubiquiti help and
-  community reports. It has not been confirmed on a live console here.
+  documents no per-key scopes. **A View Only key is not possible.** Checked on
+  a live console (UniFi Express 7, Network 10.6.106, 2026-10-07):
+  - A local View Only admin (Network `readonly`) gets
+    `unauthorized edit:api_key` when it tries to create a key.
+  - A Super Admin gets `cannot create api key for others` when it tries to
+    create a key for that View Only admin.
+  - That View Only admin's **session** can read the classic Network API
+    (`/proxy/network/api/s/<site>/...`), and writes are refused with
+    `api.err.NoPermission`. `integration/v1` does not accept a session.
+  - mcp-unifi 0.25.0 authenticates its Network client with `X-API-Key` only.
+    `UNIFI_OS_USERNAME` and `UNIFI_OS_PASSWORD` unlock console-session tools,
+    not Network reads, so it cannot use a View Only principal today.
+
+  So the console does not enforce read-only for this connection.
+  `MCP_UNIFI_READONLY=true` and Paperclip's Ask-first governance are the
+  enforcing layers. Treat the key as write-capable when you store and rotate it.
 - **The bearer token** grants whatever the mcp-unifi server exposes. That is
-  why `MCP_UNIFI_READONLY=true` and the View Only key both matter. The token is
+  why `MCP_UNIFI_READONLY=true` matters. The token is
   stored only as a company secret ref, never in connection config, and the
   tests assert it is not echoed.
 - **Revocation:**
   - Remove the token from `MCP_UNIFI_AUTH_TOKENS` and restart the server.
-  - Delete the API key in UniFi OS, or remove the View Only admin.
+  - Delete the API key in UniFi OS, or remove the dedicated admin.
   - Or disconnect in Paperclip.
 - mcp-unifi writes a JSONL audit log (`MCP_UNIFI_AUDIT_PATH`) of every tool
   call, which can be used to cross-check Paperclip's own tool-call records.
@@ -135,26 +147,28 @@ sequenceDiagram
 ## Administrator Setup (mandatory)
 
 1. Run a UniFi OS console with UniFi Network 9 or newer.
-2. In UniFi OS → Admins & Users, add a dedicated **local** administrator with
-   the **View Only** role for Network. Do not use an owner, Super Admin, or
-   Full Management account.
+2. In UniFi OS → Admins & Users, add a dedicated **local** administrator for
+   mcp-unifi. Do not use the owner account. A **View Only** administrator
+   cannot create an API key (see
+   [Credential residual risk](#credential-residual-risk)), so the key will be
+   write-capable.
 3. Sign in as that administrator. Under Settings → Control Plane →
    Integrations, create an API key.
 4. Run mcp-unifi `0.25.0` or newer, pinned to a reviewed release rather than
    `latest`:
 
-   Save the View Only key in a file that only the container's `mcp` user
+   Save the key in a file that only the container's `mcp` user
    (UID 1000) can read, then mount that file read-only. The `UNIFI_API_KEY_FILE` variable only
    names the path; it does not copy the key into the container.
 
    ```bash
-   install -m 600 /dev/null ./unifi_view_only_key
-   printf '%s' "<paste View Only API key>" > ./unifi_view_only_key
-   sudo chown 1000:1000 ./unifi_view_only_key
+   install -m 600 /dev/null ./unifi_api_key
+   printf '%s' "<paste UniFi API key>" > ./unifi_api_key
+   sudo chown 1000:1000 ./unifi_api_key
    docker run -d --name mcp-unifi -p 127.0.0.1:3714:3714 \
-     -v "$PWD/unifi_view_only_key:/run/secrets/unifi_view_only_key:ro" \
+     -v "$PWD/unifi_api_key:/run/secrets/unifi_api_key:ro" \
      -e UNIFI_HOST=192.168.1.1 \
-     -e UNIFI_API_KEY_FILE=/run/secrets/unifi_view_only_key \
+     -e UNIFI_API_KEY_FILE=/run/secrets/unifi_api_key \
      -e MCP_UNIFI_READONLY=true \
      -e MCP_UNIFI_AUTH_TOKENS="$(openssl rand -hex 32)" \
      ghcr.io/pete-builds/mcp-unifi:0.25.0
@@ -173,7 +187,7 @@ sequenceDiagram
 
 ## Resource Filters
 
-None. The resource boundary is the View Only admin's site access plus the
+None. The resource boundary is the key's admin site access plus the
 modules enabled on the server. Paperclip cannot narrow it further.
 
 ## Manifest
@@ -188,7 +202,7 @@ Authored in `scripts/ingest-app-definitions.mjs` and generated to
 - Credential field `authorization`, placed as `Authorization: Bearer`.
 - `setupPrerequisite` with the steps above. Warnings cover:
   - the community, non-Ubiquiti server;
-  - the View Only key;
+  - the write-capable UniFi key (View Only admins cannot create keys);
   - `MCP_UNIFI_READONLY=true`;
   - Ask-first defaults and quarantine;
   - HTTPS only.
@@ -266,10 +280,12 @@ Deterministic coverage (no live UniFi console):
   - quarantine of a new read-looking tool on refresh;
   - rejection of a scheme, path, or port smuggled into `unifiMcpHost`.
 
+**Live console check** (2026-10-07, UniFi Express 7, Network 10.6.106): the
+View Only API-key findings under
+[Credential residual risk](#credential-residual-risk).
+
 **Outstanding live proof** (not run):
 
-- Mint a View Only API key and confirm that the console rejects a write made
-  with it.
 - Run mcp-unifi with `MCP_UNIFI_READONLY=true` behind TLS, and confirm that
   `tools/list` returns only reads.
 - Connect from Paperclip and run a safe read (`list_devices`,

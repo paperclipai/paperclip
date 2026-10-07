@@ -813,8 +813,9 @@ const apps = [
   // HTTP at /mcp and requires its own bearer token, separate from the UniFi
   // API key. The UniFi key stays in that server's environment and never
   // reaches Paperclip, so no caller identity is forwarded to the console.
-  // Read-only is layered: a View Only UniFi admin key, MCP_UNIFI_READONLY=true
-  // on the server, and Paperclip governance (classifyRisk treats only the
+  // Read-only is layered: MCP_UNIFI_READONLY=true on the server and Paperclip
+  // governance. UniFi OS does not let View Only admins create API keys, so the
+  // console itself cannot be relied on to reject writes (classifyRisk treats only the
   // reviewed read tools as reads, writes start Ask first, and tools that appear
   // later are quarantined).
   [
@@ -833,7 +834,7 @@ const apps = [
         "api_key",
         { serverUrlTemplate: "https://{unifiMcpHost}:{unifiMcpPort}/mcp" },
         "S3",
-        "Connect to your own mcp-unifi server (pete-builds/mcp-unifi 0.25 or newer) over HTTPS. Run it with a View Only UniFi API key and MCP_UNIFI_READONLY=true, then paste one of its MCP_UNIFI_AUTH_TOKENS values below. Your UniFi API key stays on that server.",
+        "Connect to your own mcp-unifi server (pete-builds/mcp-unifi 0.25 or newer) over HTTPS. Run it with a dedicated UniFi API key and MCP_UNIFI_READONLY=true, then paste one of its MCP_UNIFI_AUTH_TOKENS values below. Your UniFi API key stays on that server.",
         {
           label: "Use an MCP server token",
           grantKinds: ["organization"],
@@ -885,7 +886,7 @@ const apps = [
           },
           warnings: [
             "This connects to a community MCP server, not a Ubiquiti service. Review and pin the mcp-unifi release you run.",
-            "Give mcp-unifi a UniFi API key created by a View Only administrator, never a Full Management or Super Admin key. Paperclip cannot see or narrow that key.",
+            "UniFi OS does not let View Only administrators create API keys, so the key mcp-unifi uses can make changes. Create it from a dedicated local administrator, never the owner account, and rely on MCP_UNIFI_READONLY=true plus Ask first to keep the connection read-only. Paperclip cannot see or narrow that key.",
             "Start mcp-unifi with MCP_UNIFI_READONLY=true so it hides and refuses every change tool.",
             "Any tool that is not a reviewed read starts as Ask first, and tools that appear later stay quarantined until reviewed.",
             "Plain HTTP is not supported. Put mcp-unifi behind a TLS reverse proxy and restrict it to Paperclip's address.",
@@ -900,7 +901,7 @@ const apps = [
         description:
           "Ubiquiti does not publish an MCP server. Paperclip connects to pete-builds/mcp-unifi, which you run on your own network next to a UniFi OS console with UniFi Network 9 or newer.",
         steps: [
-          "In UniFi OS, add a dedicated administrator with the View Only role, sign in as that administrator, and create an API key under Settings, Control Plane, Integrations.",
+          "In UniFi OS, add a dedicated local administrator for mcp-unifi (not the owner account), sign in as that administrator, and create an API key under Settings, Control Plane, Integrations. View Only administrators cannot create API keys.",
           "Run mcp-unifi 0.25 or newer with that key, MCP_UNIFI_READONLY=true, and a fresh random token in MCP_UNIFI_AUTH_TOKENS.",
           "Put a TLS reverse proxy in front of the server's /mcp endpoint and allow only Paperclip's address to reach it.",
           "Paste the proxy's host name and the bearer token into Paperclip.",
