@@ -1154,6 +1154,10 @@ describe("sandbox adapter execution targets", () => {
     const logs: string[] = [];
     let emit!: (frame: string) => Promise<void>;
     let complete!: () => void;
+    let failInput!: (error: Error) => void;
+    let inputStarted = false;
+    const inputFailure = new Promise<never>((_resolve, reject) => { failInput = reject; });
+    void inputFailure.catch(() => {});
     const commandComplete = new Promise<void>((resolve) => { complete = resolve; });
     const frame = {
       type: "error", message: "synthetic-private-detail".repeat(200_000),
@@ -1164,7 +1168,14 @@ describe("sandbox adapter execution targets", () => {
       target: {
         kind: "remote", transport: "sandbox", remoteCwd: rootDir,
         runner: { execute: async (input) => {
-          if (!input.useSession) return delegate.execute(input);
+          if (!input.useSession) {
+            const script = input.args?.[1] ?? "";
+            if (script.startsWith("mkdir -p") && script.includes("/stdin/000000000001.json")) {
+              inputStarted = true;
+              return inputFailure;
+            }
+            return delegate.execute(input);
+          }
           emit = async (text) => { await input.onLog?.("stdout", text); };
           await commandComplete;
           return { exitCode: 1, stdout: "", stderr: "", timedOut: false, signal: null, pid: null, startedAt: null };
@@ -1190,16 +1201,33 @@ describe("sandbox adapter execution targets", () => {
       await emit(JSON.stringify({ type: "data", stream: "stdout", data: "" }) + "\n");
       await waitForCondition(() => output.length > 0, "Missing authenticated marker.");
       output = "";
+      peer.write(JSON.stringify({ token, type: "stdin", data: "aW5wdXQ=" }) + "\n");
+      await waitForCondition(() => inputStarted, "Input write did not start.");
       peer.pause();
-      await emit(JSON.stringify(frame) + "\n");
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      // The real wrapper emits error then exit when a child fails to spawn.
+      // A later frame must not write after end() and abort the pending error.
+      await emit([
+        frame,
+        { type: "exit", code: 1 },
+        { type: "data", stream: "stdout", data: "bGF0ZQ==" },
+        { type: "shutdownAck" },
+      ].map((event) => JSON.stringify(event) + "\n").join(""));
+      // The reverse race matters too: an already-accepted input write can
+      // reject after the remote error started draining. Its end(data) must
+      // not abort or replace the first terminal frame.
+      failInput(new Error("synthetic-private-input-detail"));
+      await waitForCondition(
+        () => logs.some((line) => line.includes("ACP process session input delivery failed.")),
+        "Input failure was not handled.",
+      );
       peer.resume();
       await closed;
       expect(JSON.parse(output)).toEqual(frame);
-      expect(logs).toEqual([
+      expect(logs.filter((line) => line.includes("ACP process session terminal:"))).toEqual([
         "[paperclip] ACP process session terminal: source=remote_event outcome=error exitCode=unknown signal=unknown.\n",
       ]);
     } finally {
+      failInput(new Error("test cleanup"));
       complete();
       peer?.destroy();
       await bridge?.stop();

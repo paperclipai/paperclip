@@ -2211,6 +2211,11 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   const writeRemoteEventToSocket = (event: (typeof pendingRemoteEvents)[number]) => {
     if (!socket) return false;
+    // `stopping` can already be set by a terminal frame buffered before auth.
+    // Use the socket's outbound state instead: once end() has been called,
+    // another write would destroy it and truncate the frame still draining.
+    // This also covers input-delivery failure, which ends the socket directly.
+    if (socket.writableEnded || socket.destroyed) return true;
     socket.write(jsonLine(event));
     if (event.type === "exit" || event.type === "error") {
       stopping = true;
@@ -2333,7 +2338,12 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
               // Flush the diagnostic before closing; destroy() can discard it
               // and leave only ACP's generic connection_close error. Do not
               // expose provider error text, which may contain a command payload.
-              nextSocket.end(jsonLine({ type: "error", message }));
+              // A remote terminal frame may already be draining while this
+              // accepted stdin write fails. end(data) would write after end
+              // and discard that first failure just like socket.write(data).
+              if (!nextSocket.writableEnded && !nextSocket.destroyed) {
+                nextSocket.end(jsonLine({ type: "error", message }));
+              }
               // stop() awaits this input chain before sending shutdown. Run-log
               // persistence must not hold teardown open when it stalls or fails.
               logFailureWithoutWaiting(`[paperclip] ${message}\n`);
