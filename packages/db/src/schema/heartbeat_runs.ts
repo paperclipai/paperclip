@@ -39,6 +39,12 @@ export const heartbeatRuns = pgTable(
     wakeupRequestId: uuid("wakeup_request_id").references(() => agentWakeupRequests.id),
     exitCode: integer("exit_code"),
     signal: text("signal"),
+    costAccountingPending: boolean("cost_accounting_pending").notNull().default(false),
+    costAccountedAt: timestamp("cost_accounted_at", { withTimezone: true }),
+    accountingProjectionVersion: text("accounting_projection_version"),
+    accountingLastAttemptAt: timestamp("accounting_last_attempt_at", { withTimezone: true }),
+    accountingLastError: text("accounting_last_error"),
+    accountingAttemptCount: integer("accounting_attempt_count").notNull().default(0),
     usageJson: jsonb("usage_json").$type<Record<string, unknown>>(),
     resultJson: jsonb("result_json").$type<Record<string, unknown>>(),
     runtimeMode: text("runtime_mode").notNull().default("legacy"),
@@ -98,6 +104,7 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     executionStatusDeliveryIdx: index("heartbeat_runs_execution_status_delivery_idx")
       .on(table.executionStatusDeliveryId).where(sql`${table.executionStatusDeliveryId} is not null`),
     executionControlDeadlineIdx: index("heartbeat_runs_execution_control_deadline_idx")

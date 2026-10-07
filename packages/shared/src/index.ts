@@ -1258,6 +1258,8 @@ export type {
   CostSummary,
   IssueCostSummary,
   CostByAgent,
+  CostByUser,
+  CostByUserReport,
   CostByProviderModel,
   CostByBiller,
   CostByAgentModel,
@@ -2827,6 +2829,8 @@ export * from "./public-mcp.js";
 export * from "./mcp-setup.js";
 
 
+export * from "./money.js";
+export * from "./accounting.js";
 export * from "./ai-provider-routing.js";
 export { aiConnectionRouterSlug, aiConnectionRouterAppDefinition, aiConnectionRouterPluginKey } from "./ai-connection-router.js";
 export { isAppAggregator, aggregatorManagementUrl, aggregatorAppsSyncSchema, aggregatorAppsRefreshSchema, arcadeDiscoverySetupSchema, type AggregatorAppSnapshot, type AggregatorAppsResponse, type ArcadeDiscoverySetupInput } from "./aggregator-apps.js";

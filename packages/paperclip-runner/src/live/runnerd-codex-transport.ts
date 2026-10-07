@@ -1789,6 +1789,10 @@ export function rehydrateRunnerdUsageNotification(
     tokenUsage: {
       total: record(rawParams.cumulative),
       runDelta: record(rawParams.runDelta),
+      // Normalized counters may contain placeholder zeroes. Keep the runner's
+      // authority beside the counters so ACPX/managed driver projections and
+      // durable replay cannot certify an incomplete delta as a free receipt.
+      runDeltaComplete: rawParams.runDeltaAvailable === true,
     },
   };
 }

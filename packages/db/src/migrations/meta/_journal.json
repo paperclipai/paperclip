@@ -2171,6 +2171,13 @@
       "when": 1791321362665,
       "tag": "0311_mcp_file_transfers",
       "breakpoints": true
+    },
+    {
+      "idx": 312,
+      "version": "7",
+      "when": 1791336871975,
+      "tag": "0312_easy_eternity",
+      "breakpoints": true
     }
   ]
 }
