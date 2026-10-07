@@ -64,7 +64,7 @@ export function TextAttachmentPreview({ title, text, markdown, downloadUrl, csv 
         </Button>
       </header>
       <div className={csv && !raw ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 flex-1 overflow-auto p-4"}>
-        {text.length === 0 ? <p className="text-sm text-muted-foreground">File is empty.</p>
+        {text.length === 0 ? <p className="p-4 text-sm text-muted-foreground">File is empty.</p>
           : csv && !raw ? <CsvPreview text={text} title={title} />
           : markdown && !raw ? <MarkdownBody mediaMode="reference">{text}</MarkdownBody>
           : <pre className="whitespace-pre-wrap break-words font-mono text-sm" aria-label={`${title} raw text`}>{text}</pre>}
