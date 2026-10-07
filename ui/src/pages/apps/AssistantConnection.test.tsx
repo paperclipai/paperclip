@@ -93,6 +93,12 @@ describe("assistant setup from Connections", () => {
     expect(container.querySelector('[aria-label="Set up Assistant Connection (MCP)"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Dotta’s OpenCode connection");
   });
+  it("uses the person’s initials when they have no profile image", async () => {
+    mocks.connections.mockResolvedValue([{ ...grant, user: { name: "Dotta", image: null } }]);
+    await render();
+    expect(container.querySelector('[data-slot="avatar-fallback"]')?.textContent).toBe("DO");
+    expect(container.textContent).toContain("Dotta’s OpenCode connection");
+  });
   it("keeps an older server’s connection usable without profile metadata", async () => {
     mocks.connections.mockResolvedValue([{ ...grant, user: undefined }]);
     await render();

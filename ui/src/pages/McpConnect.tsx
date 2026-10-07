@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Globe, Paperclip } from "lucide-react";
 import { Link, useParams } from "@/lib/router";
 import type { McpConnection, McpConnectionRequest } from "@paperclipai/shared";
-import { Identity } from "@/components/Identity";
+import { deriveInitials, Identity } from "@/components/Identity";
 import { assistantConnectionDisplayName } from "./apps/connection-owner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -132,7 +132,7 @@ export function AssistantConnectionsPage() {
     {(connections.error || revoke.error) && <p className="text-sm text-destructive">{(connections.error ?? revoke.error)?.message}</p>}
     {active?.length === 0 && <p className="text-sm">No assistant connections.</p>}
     {active?.map((connection) => <Card key={connection.id} className="block space-y-2 p-4">
-      <h2 className="font-medium"><Identity name={assistantConnectionDisplayName(connection)} avatarUrl={connection.user?.image} /></h2>
+      <h2 className="font-medium"><Identity name={assistantConnectionDisplayName(connection)} avatarUrl={connection.user?.image} initials={deriveInitials(connection.user?.name ?? "You")} /></h2>
       <p className="text-sm text-muted-foreground">Organization: {connection.companyName}</p>
       <p className="text-sm">{connection.scopes.includes("paperclip:write") ? "Read and edit work" : "Read only"}</p>
       {connection.scopes.includes("paperclip:configure") && <p className="text-sm">Configure agents, projects and skills</p>}

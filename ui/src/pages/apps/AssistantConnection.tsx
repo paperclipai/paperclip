@@ -8,7 +8,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Link } from "@/lib/router";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { Identity } from "@/components/Identity";
+import { deriveInitials, Identity } from "@/components/Identity";
 import { assistantConnectionDisplayName } from "./connection-owner";
 import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
@@ -57,7 +57,7 @@ export function AssistantConnectionCard({ onNavigate }: { onNavigate: (href: str
       <Button size="sm" variant="ghost" disabled={connections.isFetching} onClick={() => void connections.refetch()}>Try again</Button>
     </div>}
     {connections.isSuccess && active.length > 0 && <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-3 text-sm">
-      {active.map(row => <Identity key={row.id} name={assistantConnectionDisplayName(row)} avatarUrl={row.user?.image} size="sm" />)}
+      {active.map(row => <Identity key={row.id} name={assistantConnectionDisplayName(row)} avatarUrl={row.user?.image} initials={deriveInitials(row.user?.name ?? "You")} size="sm" />)}
     </div>}
   </div>;
 }
@@ -143,7 +143,7 @@ export function AssistantConnection({ initialAssistant = "codex" }: { initialAss
       {(connections.error || revoke.error) && <p role="alert" className="text-sm text-destructive">{revoke.error ? "Couldn’t revoke this connection. Try again." : "Couldn’t load your connections. Try again."} <button type="button" className="underline" onClick={() => void connections.refetch()}>Refresh</button></p>}
       {connections.isSuccess && connections.rows.length === 0 && <p className="text-sm text-muted-foreground">No assistants connected to {selectedCompany.name} yet.</p>}
       <div className="divide-y divide-border">{connections.rows.map(row => <div key={row.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-        <div className="min-w-0 flex-1 space-y-1"><Identity name={assistantConnectionDisplayName(row)} avatarUrl={row.user?.image} className="font-medium" /><p className="text-xs text-muted-foreground">{`Connected as you · ${row.scopes.includes("paperclip:write") ? "Read and write" : "Read only"}${row.scopes.includes("paperclip:configure") ? " · Configure agents, projects and skills" : ""}`}</p></div>
+        <div className="min-w-0 flex-1 space-y-1"><Identity name={assistantConnectionDisplayName(row)} avatarUrl={row.user?.image} initials={deriveInitials(row.user?.name ?? "You")} className="font-medium" /><p className="text-xs text-muted-foreground">{`Connected as you · ${row.scopes.includes("paperclip:write") ? "Read and write" : "Read only"}${row.scopes.includes("paperclip:configure") ? " · Configure agents, projects and skills" : ""}`}</p></div>
         <Button variant="outline" size="sm" disabled={revoke.isPending} onClick={() => revoke.mutate(row.id)} aria-label={`Revoke ${assistantConnectionDisplayName(row)}`}>Revoke</Button>
       </div>)}</div>
     </section>
