@@ -1,30 +1,44 @@
 .composer-run-effort-range {
   display: block;
   appearance: none;
-  height: calc(var(--spacing) * 2);
-  border-radius: var(--radius-lg);
+  height: var(--composer-effort-track-height);
+  border-radius: var(--radius-4xl);
   background: linear-gradient(to right, var(--tc-mode-ask) var(--fill), var(--muted) var(--fill));
   cursor: pointer;
 }
 
 .composer-run-effort-range::-webkit-slider-thumb {
   appearance: none;
-  width: calc(var(--spacing) * 5);
-  height: calc(var(--spacing) * 5);
-  border: calc(var(--spacing) * 0.5) solid var(--popover);
+  width: var(--composer-effort-thumb-size);
+  height: var(--composer-effort-thumb-size);
+  border: var(--composer-effort-thumb-border) solid var(--popover);
   border-radius: 50%;
   background: var(--tc-mode-ask);
   box-shadow: var(--shadow-sm);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-out), box-shadow var(--motion-duration-fast) var(--motion-ease-out);
 }
 
 .composer-run-effort-range::-moz-range-thumb {
-  width: calc(var(--spacing) * 5);
-  height: calc(var(--spacing) * 5);
-  border: calc(var(--spacing) * 0.5) solid var(--popover);
+  width: var(--composer-effort-thumb-size);
+  height: var(--composer-effort-thumb-size);
+  border: var(--composer-effort-thumb-border) solid var(--popover);
   border-radius: 50%;
   background: var(--tc-mode-ask);
   box-shadow: var(--shadow-sm);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-out), box-shadow var(--motion-duration-fast) var(--motion-ease-out);
 }
+
+/* Keep native pointer and keyboard behavior; animate only the thumb feedback. */
+.composer-run-effort-range:hover::-webkit-slider-thumb {
+  transform: scale(var(--composer-effort-hover-scale));
+  box-shadow: var(--shadow-sm), var(--composer-effort-halo);
+}
+.composer-run-effort-range:hover::-moz-range-thumb {
+  transform: scale(var(--composer-effort-hover-scale));
+  box-shadow: var(--shadow-sm), var(--composer-effort-halo);
+}
+.composer-run-effort-range:active::-webkit-slider-thumb { transform: scale(var(--composer-effort-press-scale)); }
+.composer-run-effort-range:active::-moz-range-thumb { transform: scale(var(--composer-effort-press-scale)); }
 
 .composer-run-effort-range:focus-visible { outline: calc(var(--spacing) * 0.5) solid var(--ring); outline-offset: calc(var(--spacing) * 0.5); }
 .composer-run-settings-accent { color: var(--tc-mode-ask); }
@@ -70,4 +84,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .composer-run-settings-height { transition: none; }
+  .composer-run-effort-range::-webkit-slider-thumb { transition: none; transform: none; }
+  .composer-run-effort-range::-moz-range-thumb { transition: none; transform: none; }
 }

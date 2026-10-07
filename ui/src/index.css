@@ -99,6 +99,12 @@
   --native-select-caret-inset: calc(var(--spacing) * 3);
   --native-select-caret-stroke: 1.5px;
   --native-select-end-padding: calc(var(--spacing) * 9);
+  --composer-effort-track-height: calc(var(--spacing) * 3);
+  --composer-effort-thumb-size: calc(var(--spacing) * 7);
+  --composer-effort-thumb-border: calc(var(--spacing) * 0.75);
+  --composer-effort-hover-scale: 1.08;
+  --composer-effort-press-scale: 1.16;
+  --composer-effort-halo: 0 0 0 calc(var(--spacing) * 1.5) color-mix(in oklab, var(--tc-mode-ask) 14%, transparent);
   --radius: 0.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
