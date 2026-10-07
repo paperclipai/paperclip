@@ -469,6 +469,58 @@ describe("AppDefinition catalog", () => {
     });
   });
 
+  it("connects a self-hosted read-only mcp-unifi server over HTTPS with a bearer token", () => {
+    const app = CONNECTABLE_APP_DEFINITIONS.find((entry) => entry.slug === "unifi")!;
+    expect(app).toBeDefined();
+    expect(APP_STORE_HIDDEN_SLUGS.has("unifi")).toBe(false);
+    expect(APP_STORE_DEFINITIONS.some((entry) => entry.slug === "unifi")).toBe(true);
+    expect(app.branding.logoUrl).toBe("/brands/apps/unifi.svg");
+    expect(getAppDefinitionForUrl("https://unifi-mcp.home.example.com/mcp")?.slug).toBe("unifi");
+    expect(getAppDefinitionForUrl("https://unifi.example.com/mcp")?.slug).not.toBe("unifi");
+    expect(app.methods.map((method) => method.key)).toEqual(["mcp-bearer-token"]);
+    const [method] = app.methods;
+    expect(method).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      grantKinds: ["organization"],
+      riskTier: "S3",
+      defaults: { serverUrlTemplate: "https://{unifiMcpHost}:{unifiMcpPort}/mcp" },
+      credentialFields: [
+        { key: "authorization", type: "password", required: true, secret: true },
+      ],
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
+    expect(method.credentialFields?.[0]?.helperMd).toMatch(/not a UniFi API key/);
+    expect(method.warnings?.some((warning) => /View Only/.test(warning))).toBe(true);
+    expect(method.warnings?.some((warning) => /MCP_UNIFI_READONLY=true/.test(warning))).toBe(true);
+    expect(method.warnings?.some((warning) => /not a Ubiquiti service/.test(warning))).toBe(true);
+    expect(app.setupPrerequisite?.steps?.length).toBeGreaterThan(0);
+
+    expect(
+      resolveConnectionMethodServerUrl(method, { unifiMcpHost: "unifi-mcp.example.com", unifiMcpPort: "443" }),
+    ).toBe("https://unifi-mcp.example.com/mcp");
+    expect(
+      resolveConnectionMethodServerUrl(method, { unifiMcpHost: "unifi-mcp.lan", unifiMcpPort: "8443" }),
+    ).toBe("https://unifi-mcp.lan:8443/mcp");
+    expect(resolveConnectionMethodServerUrl(method, { unifiMcpPort: "443" })).toBeNull();
+
+    const host = new RegExp(method.tenantFields!.find((entry) => entry.key === "unifiMcpHost")!.validation!.pattern!);
+    for (const value of ["unifi-mcp.example.com", "unifi-mcp.lan", "unifimcp"])
+      expect(host.test(value), value).toBe(true);
+    for (const value of ["https://unifi-mcp.example.com", "unifi-mcp.example.com/mcp", "unifi-mcp.example.com:3714", "user@unifi-mcp.example.com", "-bad.example.com"])
+      expect(host.test(value), value).toBe(false);
+    const port = method.tenantFields!.find((entry) => entry.key === "unifiMcpPort")!;
+    expect(port.defaultValue).toBe("443");
+    expect(new RegExp(port.validation!.pattern!).test("8443")).toBe(true);
+    expect(new RegExp(port.validation!.pattern!).test("0")).toBe(false);
+
+    expect(recommendedDefaultsForApp(app, method.key)).toEqual({
+      access: "all_agents",
+      askFirstRiskLevels: ["write", "destructive"],
+    });
+  });
+
   it("supports organization tokens and OAuth for the official read-only Enterpret MCP", () => {
     const app = CONNECTABLE_APP_DEFINITIONS.find(
       (entry) => entry.slug === "enterpret",
@@ -735,10 +787,10 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === "hugging-face")?.methods[0]
         ?.defaults?.scopesHint,
     ).toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]));
-  it("defaults every new connection action to allowed except Enterpret writes", () => {
+  it("defaults every new connection action to allowed except Enterpret and UniFi writes", () => {
     for (const app of APP_DEFINITIONS)
       for (const method of app.methods) {
-        if (app.slug === "enterpret") {
+        if (app.slug === "enterpret" || app.slug === "unifi") {
           expect(recommendedDefaultsForApp(app, method.key)).toEqual({
             access: "all_agents",
             askFirstRiskLevels: ["write", "destructive"],
@@ -845,7 +897,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(68);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(69);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1198,6 +1250,7 @@ describe("AppDefinition catalog", () => {
       "shopify:ucp-commerce:storeDomain",
       "supabase:mcp-api-key:projectRef",
       "supabase:mcp-oauth:projectRef",
+      "unifi:mcp-bearer-token:unifiMcpHost",
     ]);
   });
   it("limits Vercel Connect setup to the reviewed pilot methods", () => {

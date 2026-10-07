@@ -448,6 +448,12 @@
       "localAsset": "/brands/apps/todoist.svg"
     },
     {
+      "slug": "unifi",
+      "provider": "UniFi",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/unifi.svg"
+    },
+    {
       "slug": "vercel",
       "provider": "Vercel",
       "catalogVisible": false,

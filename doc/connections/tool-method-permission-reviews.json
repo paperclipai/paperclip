@@ -2108,6 +2108,24 @@
       "liveProof": "not-run"
     },
     {
+      "app": "unifi",
+      "method": "mcp-bearer-token",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Read UniFi Network devices, clients, WLANs, firewall, routing, and health through the community mcp-unifi server; when the server is not in read-only mode its tools can also block clients, restart devices, change firewall/WLAN/network settings, and restore configuration.",
+      "evidence": [
+        "https://github.com/pete-builds/mcp-unifi",
+        "https://pete-builds.github.io/mcp-unifi/guides/security/",
+        "https://help.ui.com/hc/en-us/articles/30076656117655"
+      ],
+      "reviewedAt": "2026-10-07",
+      "liveProof": "not-run",
+      "keyPermissions": "This is an mcp-unifi bearer token from MCP_UNIFI_AUTH_TOKENS, not a UniFi API key. Run the server with MCP_UNIFI_READONLY=true and a UniFi API key created by a View Only local admin; Paperclip cannot narrow what the server's UniFi key may do.",
+      "evidenceLimit": "Tool names and read/mutate classification were reviewed from mcp-unifi v0.25.0 source (74 read tools, 62 mutating). Ubiquiti does not publish an MCP server or an API-key scope model; View Only admin key behavior is from Ubiquiti help and community reports. No live UniFi console proof yet."
+    },
+    {
       "app": "vercel",
       "method": "mcp-oauth",
       "auth": "oauth",

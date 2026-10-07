@@ -5175,6 +5175,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "github-code-review-bot",
         "youcom",
         "enterpret",
+        "unifi",
         "openrouter",
         "bedrock",
         "responses-api",
@@ -5184,7 +5185,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "telem",
       ]),
     );
-    expect(res.body.apps).toHaveLength(68);
+    expect(res.body.apps).toHaveLength(69);
     for (const slug of ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
       expect(res.body.apps.find((app: { slug: string }) => app.slug === slug).tags).toContain("model-provider");
     }
@@ -5347,6 +5348,110 @@ describeEmbeddedPostgres("tool access service", () => {
         }),
       ]),
     );
+  });
+
+  it("connects UniFi with reviewed Network reads, Ask-first changes, and quarantined later tools", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const read = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+    const write = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+    const destructive = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
+    const tools = [
+      { name: "list_devices", annotations: read },
+      { name: "get_site_health", annotations: read },
+      { name: "list_cameras", annotations: read },
+      { name: "update_wlan", annotations: write },
+      { name: "trigger_speedtest", annotations: write },
+      { name: "block_client", annotations: destructive },
+      { name: "confirm_destructive_action", annotations: destructive },
+    ];
+    const fetchMock = mockToolsList(tools);
+
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "unifi",
+        connectionMethodKey: "mcp-bearer-token",
+        configValues: { unifiMcpHost: "unifi-mcp.example.com" },
+        credentialValues: { "credentials.authorization": "unifi-mcp-secret" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://unifi-mcp.example.com/mcp");
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("authorization")).toBe("Bearer unifi-mcp-secret");
+    expect(result.connection.config).toMatchObject({
+      sourceTemplateKey: "unifi",
+      quarantineNewEntries: true,
+      methodConfig: { unifiMcpHost: "unifi-mcp.example.com", unifiMcpPort: "443" },
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain("unifi-mcp-secret");
+    expect(JSON.stringify(result.connection.transportConfig ?? {})).not.toContain("unifi-mcp-secret");
+    const risks = Object.fromEntries(result.catalog.map((entry) => [entry.toolName, entry.riskLevel]));
+    expect(risks).toEqual({
+      list_devices: "read",
+      get_site_health: "read",
+      list_cameras: "write",
+      update_wlan: "write",
+      trigger_speedtest: "write",
+      block_client: "destructive",
+      confirm_destructive_action: "destructive",
+    });
+
+    await service.finishGalleryAppConnection(company.id, result.connectionId, {
+      enabledCatalogEntryIds: result.catalog.map((entry) => entry.id),
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
+    fetchMock.mockResolvedValueOnce(
+      mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: {
+          tools: [
+            ...tools,
+            // A later server release adding a read-looking tool must not bypass review.
+            { name: "list_vouchers", annotations: read },
+          ],
+        },
+      }),
+    );
+    const refreshed = await service.refreshCatalog(result.connectionId, {
+      actorType: "user",
+      actorId: "board",
+    });
+    expect(refreshed.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolName: "list_devices", status: "active" }),
+        expect.objectContaining({
+          toolName: "list_vouchers",
+          status: "quarantined",
+          quarantineReason: "pending_review",
+          riskLevel: "write",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects UniFi MCP hosts that try to smuggle a scheme, path, or port", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "list_devices", annotations: { readOnlyHint: true } }]);
+    for (const unifiMcpHost of ["http://unifi-mcp.example.com", "unifi-mcp.example.com/mcp", "unifi-mcp.example.com:3714"]) {
+      await expect(
+        service.connectGalleryApp(
+          company.id,
+          {
+            galleryKey: "unifi",
+            connectionMethodKey: "mcp-bearer-token",
+            configValues: { unifiMcpHost },
+            credentialValues: { "credentials.authorization": "unifi-mcp-secret" },
+          },
+          { actorType: "user", actorId: "board" },
+        ),
+        unifiMcpHost,
+      ).rejects.toThrow("mcp-unifi host has an invalid value");
+    }
   });
 
   it("exposes managed Google methods only for profiles signed for this enrolled instance", async () => {
@@ -19321,6 +19426,30 @@ describe("classifyRisk", () => {
     expect(classifyRisk({ name: "validate_agent_rule", annotations: { readOnlyHint: true } }, "superagent")).toBe("read");
     // Without the provider rule, the generic classifier treats these as reads.
     expect(classifyRisk({ name: "triage_finding" })).toBe("read");
+  });
+
+  it("treats only reviewed UniFi Network reads as reads", () => {
+    const read = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+    for (const name of ["list_devices", "list_clients", "get_site_health", "list_firewall_rules", "audit_open_ports", "backup_config"]) {
+      expect(classifyRisk({ name, annotations: read }, "unifi"), name).toBe("read");
+      expect(classifyRisk({ name }, "unifi"), name).toBe("read");
+    }
+    expect(classifyRisk({ name: "list_devices", annotations: { readOnlyHint: false } }, "unifi")).toBe("write");
+    expect(classifyRisk({ name: "list_devices", annotations: { destructiveHint: true } }, "unifi")).toBe("destructive");
+    // Protect/Access reads, actions without write verbs, and unknown tools stay
+    // writes even when they claim to be read-only.
+    for (const name of [
+      "list_cameras", "get_snapshot", "list_credentials", "get_door",
+      "trigger_speedtest", "locate_device", "reconnect_client", "rename_device", "update_wlan", "list_vouchers",
+    ]) {
+      expect(classifyRisk({ name, annotations: read }, "unifi"), name).toBe("write");
+      expect(classifyRisk({ name }, "unifi"), name).toBe("write");
+    }
+    for (const name of ["block_client", "restart_device", "restore_config", "confirm_destructive_action"])
+      expect(classifyRisk({ name, annotations: { destructiveHint: true } }, "unifi"), name).toBe("destructive");
+    // Without the provider rule, the generic classifier reads these as reads.
+    expect(classifyRisk({ name: "trigger_speedtest" })).toBe("read");
+    expect(classifyRisk({ name: "list_cameras", annotations: read })).toBe("read");
   });
 
   it("classifies Enterpret run_graph_query as write despite readOnlyHint", () => {
