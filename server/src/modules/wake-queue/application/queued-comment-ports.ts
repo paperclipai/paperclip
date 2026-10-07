@@ -47,6 +47,13 @@ export type QueuedCommentIssueContext = {
   companyId: string;
   assigneeAgentId: string | null;
   executionRunId: string | null;
+  /**
+   * The mutual-exclusion lock, and the fallback for finding the live turn a
+   * queued comment is waiting behind: a run denied the routine-coalescing slot
+   * by a sibling row holds the issue through this pointer alone, with
+   * `executionRunId` null (see executionSlotStamp in services/issues.ts).
+   */
+  checkoutRunId: string | null;
 };
 
 export type QueuedCommentWakeRow = {

@@ -278,7 +278,15 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
           state = "queued";
         }
 
-        const activeRunId = state === "deferred" ? input.issue.executionRunId : null;
+        // Fall back to the checkout lock: a run that lost the routine-coalescing
+        // slot to a sibling row holds the issue through `checkoutRunId` alone, and
+        // reading only `executionRunId` reported no active run — degrading live
+        // steering to `temporarily_unavailable` while a turn was in fact running.
+        // The `status = "running"` filter below is what keeps a stale pointer out.
+        const activeRunId =
+          state === "deferred"
+            ? input.issue.executionRunId ?? input.issue.checkoutRunId
+            : null;
         const activeRunRow = activeRunId
           ? await tx
               .select()

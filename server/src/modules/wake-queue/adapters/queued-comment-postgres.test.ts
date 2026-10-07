@@ -150,7 +150,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
           // The caller mistakenly names the *other* company on the issue
           // context; that single value binds every read and write for the
           // whole transaction, so it alone must decide what is visible.
-          issue: { id: issueId, companyId: otherCompanyId, assigneeAgentId: agentId, executionRunId: null },
+          issue: { id: issueId, companyId: otherCompanyId, assigneeAgentId: agentId, executionRunId: null, checkoutRunId: null },
           actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
           queueId: wakeId,
         },
@@ -178,7 +178,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     await expect(
       issueLock.withLockedQueue(
         {
-          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null, checkoutRunId: null },
           actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
           queueId: wakeId,
         },
@@ -218,7 +218,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
 
     const queue = await issueLock.withLockedQueue(
       {
-        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null, checkoutRunId: null },
         actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
         queueId: wakeId,
       },
@@ -233,7 +233,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
         expect(updated).toBe(true);
         await transaction.syncCommentReferences(commentId);
         return transaction.buildQueueSnapshot({
-          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null, checkoutRunId: null },
           actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
           wake: locked.wake,
           state: locked.state,
@@ -263,7 +263,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     await expect(
       issueLock.withLockedQueue(
         {
-          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null, checkoutRunId: null },
           actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
           queueId: wakeId,
         },
@@ -313,14 +313,14 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
     const queue = await issueLock.withLockedQueue(
       {
-        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null, checkoutRunId: null },
         actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
         queueId: wakeId,
       },
       async (locked, transaction) => {
         expect(locked.state).toBe("deferred");
         return transaction.buildQueueSnapshot({
-          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null, checkoutRunId: null },
           actor: { actorType: "user", actorId: "user-1", agentId: null, runId: null, agentApiKeyId: null },
           wake: locked.wake,
           state: "deferred",

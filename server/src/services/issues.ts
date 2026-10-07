@@ -7530,35 +7530,80 @@ export function issueService(db: Db) {
   }
 
   /**
-   * Runs a lock-stamping mutation and translates a collision against
-   * `issues_open_routine_execution_uq` into a structured 409.
+   * The two run pointers a checkout stamps are different claims, and only one
+   * of them is the lock.
    *
-   * Without this the Postgres unique violation propagates as an unhandled
-   * DrizzleQueryError to a bare `{"error":"Internal server error"}` 500, which
-   * is indistinguishable from a crash — so a monitor retries it hourly forever
-   * even though the collision is mechanical and will not clear until the
-   * sibling issue closes or is hidden. `retryable: false` is the signal that
-   * re-attempting the same mutation cannot succeed; `blockingIssue` names the
-   * sibling whose closure is the actual unblock action.
+   * `checkout_run_id` is mutual exclusion, and the only pointer `sameRunLock`,
+   * `resolveSameRunOwnership` and `assertCheckoutOwner` actually test: holding
+   * it is what lets an actor mutate the issue. `execution_run_id` is what puts
+   * the row into `issues_open_routine_execution_uq`, i.e. the routine-coalescing
+   * slot.
+   *
+   * Stamping them together meant an actor was refused the lock it needed for
+   * want of a slot a *sibling* row already held — a fact about the routine, not
+   * about whether this actor may mutate this issue. TES-2502 was stranded that
+   * way: assignee, `in_progress` and unowned, every ownership precondition met,
+   * and still unable to close its own row.
+   *
+   * So decline the slot instead of the lock. `claimExecutionSlot: false` takes
+   * `checkout_run_id` alone and leaves `execution_run_id` null, which keeps the
+   * row out of the index. The invariant the index asserts — at most one open,
+   * non-hidden row per (company, routine, fingerprint) carries an
+   * `execution_run_id` — is therefore enforced unchanged, not narrowed: the
+   * fallback never adds a second row to the index, it declines to enter it.
+   */
+  function executionSlotStamp(
+    runId: string | null | undefined,
+    claimExecutionSlot: boolean,
+    lockedAt?: Date,
+  ) {
+    // `execution_locked_at` timestamps the execution stamp, so it comes out
+    // with it; a lock time without a lock holder would read as a live claim.
+    if (!claimExecutionSlot)
+      return { executionRunId: null, executionLockedAt: null };
+    return lockedAt
+      ? { executionRunId: runId, executionLockedAt: lockedAt }
+      : { executionRunId: runId };
+  }
+
+  /**
+   * Runs a lock-stamping mutation, retrying without the coalescing slot when
+   * claiming it would collide with `issues_open_routine_execution_uq`.
+   *
+   * The remaining 409 is for a collision the checkout-only retry could not
+   * avoid. It is not reachable through the sibling-holds-the-slot shape — a row
+   * with a null `execution_run_id` is outside the index — so it stands in for an
+   * unmodelled collision, where naming the holder beats the bare
+   * `{"error":"Internal server error"}` 500 this used to answer with.
+   * `retryable: false` tells a monitor the same mutation cannot start working.
    */
   async function withRoutineExecutionLockStamp<T>(
     issueId: string,
     actorRunId: string | null | undefined,
-    stamp: () => Promise<T>,
+    stamp: (options: { claimExecutionSlot: boolean }) => Promise<T>,
   ): Promise<T> {
     try {
-      return await stamp();
+      return await stamp({ claimExecutionSlot: true });
     } catch (error) {
       if (!isUniqueViolation(error, ROUTINE_EXECUTION_LOCK_CONSTRAINT))
         throw error;
-      const holder = await findRoutineExecutionLockHolder(issueId);
-      throw conflict("Routine execution lock already held by a sibling issue", {
-        reason: "routine_execution_lock_conflict",
-        retryable: false,
-        issueId,
-        actorRunId: actorRunId ?? null,
-        blockingIssue: holder,
-      });
+      try {
+        return await stamp({ claimExecutionSlot: false });
+      } catch (retryError) {
+        if (!isUniqueViolation(retryError, ROUTINE_EXECUTION_LOCK_CONSTRAINT))
+          throw retryError;
+        const holder = await findRoutineExecutionLockHolder(issueId);
+        throw conflict(
+          "Routine execution lock already held by a sibling issue",
+          {
+            reason: "routine_execution_lock_conflict",
+            retryable: false,
+            issueId,
+            actorRunId: actorRunId ?? null,
+            blockingIssue: holder,
+          },
+        );
+      }
     }
   }
 
@@ -7568,7 +7613,8 @@ export function issueService(db: Db) {
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
-    const stamp = () => db.transaction(async (tx) => {
+    const stamp = ({ claimExecutionSlot }: { claimExecutionSlot: boolean }) =>
+      db.transaction(async (tx) => {
       const lockedIssue = await tx
         .select({
           id: issues.id,
@@ -7626,8 +7672,7 @@ export function issueService(db: Db) {
         .update(issues)
         .set({
           checkoutRunId: input.actorRunId,
-          executionRunId: input.actorRunId,
-          executionLockedAt: now,
+          ...executionSlotStamp(input.actorRunId, claimExecutionSlot, now),
           updatedAt: now,
         })
         .where(
@@ -7671,7 +7716,8 @@ export function issueService(db: Db) {
     actorAgentId: string;
     actorRunId: string;
   }) {
-    const stamp = () => db.transaction(async (tx) => {
+    const stamp = ({ claimExecutionSlot }: { claimExecutionSlot: boolean }) =>
+      db.transaction(async (tx) => {
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
       );
@@ -7688,8 +7734,7 @@ export function issueService(db: Db) {
         .update(issues)
         .set({
           checkoutRunId: input.actorRunId,
-          executionRunId: input.actorRunId,
-          executionLockedAt: now,
+          ...executionSlotStamp(input.actorRunId, claimExecutionSlot, now),
           updatedAt: now,
         })
         .where(
@@ -11558,13 +11603,13 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      const updated = await withRoutineExecutionLockStamp(id, checkoutRunId, () => db
+      const updated = await withRoutineExecutionLockStamp(id, checkoutRunId, ({ claimExecutionSlot }) => db
         .update(issues)
         .set({
           assigneeAgentId: agentId,
           assigneeUserId: null,
           checkoutRunId,
-          executionRunId: checkoutRunId,
+          ...executionSlotStamp(checkoutRunId, claimExecutionSlot),
           status: "in_progress",
           startedAt: now,
           updatedAt: now,
@@ -11607,11 +11652,11 @@ export function issueService(db: Db) {
           current.executionRunId === checkoutRunId) &&
         checkoutRunId
       ) {
-        const adopted = await withRoutineExecutionLockStamp(id, checkoutRunId, () => db
+        const adopted = await withRoutineExecutionLockStamp(id, checkoutRunId, ({ claimExecutionSlot }) => db
           .update(issues)
           .set({
             checkoutRunId,
-            executionRunId: checkoutRunId,
+            ...executionSlotStamp(checkoutRunId, claimExecutionSlot),
             updatedAt: new Date(),
           })
           .where(
@@ -11673,9 +11718,7 @@ export function issueService(db: Db) {
           const adoptionSet: Record<string, unknown> = {
             assigneeAgentId: agentId,
             checkoutRunId,
-            executionRunId: checkoutRunId,
             executionAgentNameKey: null,
-            executionLockedAt: now,
             status: "in_progress",
             updatedAt: now,
           };
@@ -11683,9 +11726,12 @@ export function issueService(db: Db) {
             adoptionSet.startedAt = now;
           }
           const staleExecutionRunId = current.executionRunId;
-          const adopted = await withRoutineExecutionLockStamp(id, checkoutRunId, () => db
+          const adopted = await withRoutineExecutionLockStamp(id, checkoutRunId, ({ claimExecutionSlot }) => db
             .update(issues)
-            .set(adoptionSet)
+            .set({
+              ...adoptionSet,
+              ...executionSlotStamp(checkoutRunId, claimExecutionSlot, now),
+            })
             .where(
               and(
                 eq(issues.id, id),

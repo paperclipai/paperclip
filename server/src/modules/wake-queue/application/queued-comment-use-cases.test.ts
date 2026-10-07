@@ -25,6 +25,7 @@ const ISSUE: QueuedCommentIssueContext = {
   companyId: "company-1",
   assigneeAgentId: "agent-1",
   executionRunId: null,
+  checkoutRunId: null,
 };
 
 const USER_ACTOR: QueuedCommentActor = {

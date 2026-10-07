@@ -1146,6 +1146,20 @@ export function routineService(
     return map;
   }
 
+  // Join condition for "this heartbeat run holds this issue". Either pointer
+  // counts: `execution_run_id` is the routine-coalescing slot, but a run denied
+  // that slot by a sibling row still holds the issue through `checkout_run_id`
+  // alone (see executionSlotStamp in services/issues.ts). Testing only the
+  // execution pointer made such an issue invisible here, which let the next
+  // trigger skip coalescing and mint a duplicate open issue for the routine —
+  // the single-flight guarantee this lookup exists to provide.
+  function liveRunHoldsIssueCondition() {
+    return or(
+      eq(heartbeatRuns.id, issues.executionRunId),
+      eq(heartbeatRuns.id, issues.checkoutRunId),
+    );
+  }
+
   async function listLiveIssueByRoutineIds(companyId: string, routineIds: string[]) {
     if (routineIds.length === 0) return new Map<string, RoutineListItem["activeIssue"]>();
     const executionBoundRows = await db
@@ -1162,7 +1176,7 @@ export function routineService(
       .innerJoin(
         heartbeatRuns,
         and(
-          eq(heartbeatRuns.id, issues.executionRunId),
+          liveRunHoldsIssueCondition(),
           inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
         ),
       )
@@ -1526,7 +1540,7 @@ export function routineService(
       .innerJoin(
         heartbeatRuns,
         and(
-          eq(heartbeatRuns.id, issues.executionRunId),
+          liveRunHoldsIssueCondition(),
           inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
         ),
       )

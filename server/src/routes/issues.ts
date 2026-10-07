@@ -15316,18 +15316,20 @@ export function issueRoutes(
     throw error;
   }
 
-  /** Builds the four-field issue context every queued-comment queue mutation call site passes, from the route's already-loaded issue. */
+  /** Builds the issue context every queued-comment queue mutation call site passes, from the route's already-loaded issue. */
   function buildQueuedCommentIssueContext(issue: {
     id: string;
     companyId: string;
     assigneeAgentId: string | null;
     executionRunId: string | null | undefined;
+    checkoutRunId: string | null | undefined;
   }): QueuedCommentIssueContext {
     return {
       id: issue.id,
       companyId: issue.companyId,
       assigneeAgentId: issue.assigneeAgentId,
       executionRunId: issue.executionRunId ?? null,
+      checkoutRunId: issue.checkoutRunId ?? null,
     };
   }
 

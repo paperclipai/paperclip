@@ -997,12 +997,22 @@ export function createPostgresRunDispatchAdapter(
       const decision =
         !initialDecision.stale && issueId
           ? await tx
-              .select({ executionRunId: issues.executionRunId })
+              .select({
+                executionRunId: issues.executionRunId,
+                checkoutRunId: issues.checkoutRunId,
+              })
               .from(issues)
               .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
               .then((rows) => rows[0] ?? null)
               .then((issue) =>
-                issue?.executionRunId === run.id
+                // Either pointer naming this run means it still owns the issue.
+                // `execution_run_id` alone is not the ownership test: a run that
+                // lost the routine-coalescing slot to a sibling row holds the
+                // issue through `checkout_run_id` only, and reading just the
+                // execution pointer cancelled it as pre-empted when nothing had
+                // displaced it.
+                issue?.executionRunId === run.id ||
+                issue?.checkoutRunId === run.id
                   ? initialDecision
                   : {
                       stale: true as const,
@@ -1013,6 +1023,7 @@ export function createPostgresRunDispatchAdapter(
                         issueId,
                         expectedExecutionRunId: run.id,
                         currentExecutionRunId: issue?.executionRunId ?? null,
+                        currentCheckoutRunId: issue?.checkoutRunId ?? null,
                       },
                     },
               )
