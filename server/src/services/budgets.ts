@@ -160,10 +160,10 @@ async function mapBudgetReads<T, R>(rows: T[], read: (row: T) => Promise<R>): Pr
 }
 
 /** Filter in PostgreSQL so one run never loads unrelated agents' policies. */
-export function budgetPoliciesForRun(companyId: string, agentId: string, projectId: string | null) {
+export function budgetPoliciesForRun(companyId: string, agentId: string | null, projectId: string | null) {
   return or(
     and(eq(budgetPolicies.scopeType, "company"), eq(budgetPolicies.scopeId, companyId)),
-    and(eq(budgetPolicies.scopeType, "agent"), eq(budgetPolicies.scopeId, agentId)),
+    agentId ? and(eq(budgetPolicies.scopeType, "agent"), eq(budgetPolicies.scopeId, agentId)) : undefined,
     projectId ? and(eq(budgetPolicies.scopeType, "project"), eq(budgetPolicies.scopeId, projectId)) : undefined,
   );
 }
@@ -858,11 +858,11 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
     getInvocationBlock: async (
       companyId: string,
-      agentId: string,
+      agentId: string | null,
       context?: { issueId?: string | null; projectId?: string | null },
     ) => {
       const scopes: Array<{ scopeType: BudgetScopeType; scopeId: string }> = [
-        { scopeType: "company", scopeId: companyId }, { scopeType: "agent", scopeId: agentId },
+        { scopeType: "company", scopeId: companyId }, ...(agentId ? [{ scopeType: "agent" as const, scopeId: agentId }] : []),
         ...(context?.projectId ? [{ scopeType: "project" as const, scopeId: context.projectId }] : []),
       ];
       for (const { scopeType, scopeId } of scopes) {
@@ -1043,7 +1043,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       mutate(companyId, (service) => service.upsertPolicy(companyId, input, actorUserId)),
     evaluateCostEvent: (event: typeof costEvents.$inferSelect) =>
       mutate(event.companyId, (service) => service.evaluateCostEvent(event)),
-    getInvocationBlock: (companyId: string, agentId: string, context?: { issueId?: string | null; projectId?: string | null }) =>
+    getInvocationBlock: (companyId: string, agentId: string | null, context?: { issueId?: string | null; projectId?: string | null }) =>
       mutate(companyId, (service) => service.getInvocationBlock(companyId, agentId, context)),
     resolveIncident: (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: string) =>
       mutate(companyId, (service) => service.resolveIncident(companyId, incidentId, input, actorUserId)),

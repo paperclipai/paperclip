@@ -1,4 +1,8 @@
+import { preserveWorkspaceRestoreRecoveryMetadataSql } from "./legacy-workspace-restore-recovery.js";
+import { preserveWorkspaceRestoreRecoveryMetadata } from "./workspace-restore-recovery-state.js";
+import { recordLegacyWorkspaceRestoreFailure } from "./legacy-execution-recovery.js";
 import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironmentProjection } from "../vendor/paperclip-runner/index.js";
+import { decisionModelService } from "./decision-models.js";
 import { activeIssueInteractionCondition, TASK_QUESTION_GUIDANCE } from "./issue-question-context.js";
 import { createAgentIdentityRedactor } from "./agent-identity-redaction.js";
 import { agentIdentityService, supportsManagedAgentIdentity } from "./agent-identity.js";
@@ -351,6 +355,8 @@ import {
   emitAgentTaskRunById,
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
+import { performance } from "node:perf_hooks";
+import { buildProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { collectRunFailureSecretValues, type RunFailureReportOptions } from "./run-failure-diagnostics.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, withCurrentBudgetEnforcement, type BudgetEnforcementScope } from "./budgets.js";
@@ -3505,6 +3511,8 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
             'errorMessage', left(${heartbeatRuns.resultJson} #>> '{instructionSave,errorMessage}', 1024),
             'storageWarning', left(${heartbeatRuns.resultJson} #>> '{instructionSave,storageWarning}', 1024)
           )) end,
+        'workspaceRestoreRecovery', case when ${heartbeatRuns.resultJson} #>> '{workspaceRestoreRecovery,schema}' = 'paperclip.workspace-restore-recovery.v1'
+          then jsonb_build_object('schema', 'paperclip.workspace-restore-recovery.v1') end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
           in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
@@ -3584,6 +3592,7 @@ const heartbeatRunExecutionEvidenceColumn = sql<Record<string, unknown> | null>`
     'stopReason', ${heartbeatRuns.resultJson} -> 'stopReason',
     'timeoutSource', ${heartbeatRuns.resultJson} -> 'timeoutSource',
     'workspaceRestoreFailure', ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure',
+    'workspaceRestoreRecovery', ${heartbeatRuns.resultJson} -> 'workspaceRestoreRecovery',
     'executionCancellation', ${heartbeatRuns.resultJson} -> 'executionCancellation',
     'nativeCancellation', ${heartbeatRuns.resultJson} -> 'nativeCancellation',
     'cancelledByActorType', ${heartbeatRuns.resultJson} -> 'cancelledByActorType',
@@ -8162,9 +8171,11 @@ export async function buildPaperclipWakePayload(input: {
         .then((rows) => rows[0] ?? null)
     : null;
   const recoveryEvidence = parseObject(recoveryAction?.evidence);
-  const executionAlreadyReconciled =
-    recoveryAction?.status === "resolved" &&
-    Boolean(recoveryEvidence.executionReconciliation);
+  // A restored task resumes its deliverable, not the completed repair. A
+  // referenced settled/missing action must not fall back to a stale cause.
+  const recoveryStillActive = recoveryAction
+    ? ["active", "escalated"].includes(recoveryAction.status)
+    : !recoveryActionId && Boolean(recoveryCause);
   const originalAssigneeId =
     recoveryAction?.returnOwnerAgentId ??
     recoveryAction?.previousOwnerAgentId ??
@@ -8208,7 +8219,7 @@ export async function buildPaperclipWakePayload(input: {
     attachmentOmissions,
     externalChatProvider,
     recovery:
-      !executionAlreadyReconciled && (recoveryAction || recoveryCause)
+      recoveryStillActive
         ? {
             cause: recoveryAction?.cause ?? recoveryCause,
             failureSummary: readNonEmptyString(recoveryEvidence.failureSummary),
@@ -12997,6 +13008,10 @@ export function heartbeatService(
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
 
+    if (previousStatus && patch?.resultJson !== undefined) patch = { ...patch,
+      resultJson: preserveWorkspaceRestoreRecoveryMetadata(previousStatus.resultJson, patch.resultJson),
+    };
+
     // Preserve the receipt-source fence when finalization enriches usage. A
     // late spool replay must still be able to complete an unfinished receipt.
     if (patch?.usageJson && previousStatus?.usageJson) patch = { ...patch, usageJson: { ...previousStatus.usageJson, ...patch.usageJson } };
@@ -13023,17 +13038,13 @@ export function heartbeatService(
       };
     }
     const updated =
-      previousStatus &&
-      await legacyExecutionNeedsReconciliationWithEvidence(db, {
-        ...previousStatus,
-        status,
-        ...patch,
-      })
+      previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? await terminalizeLegacyExecution({
             db,
             run: previousStatus,
             status,
             patch,
+            reconcileIfNeeded: true,
           })
         : await db
             .update(heartbeatRuns)
@@ -13095,6 +13106,10 @@ export function heartbeatService(
       patch = { ...patch, resultJson: cancellationResultJson(previousStatus, status, patch?.resultJson, patch?.errorCode, patch?.error) };
     }
 
+    if (previousStatus && patch?.resultJson !== undefined) patch = { ...patch,
+      resultJson: preserveWorkspaceRestoreRecoveryMetadata(previousStatus.resultJson, patch.resultJson),
+    };
+
     // Preserve the receipt-source fence when finalization enriches usage. A
     // late spool replay must still be able to complete an unfinished receipt.
     if (patch?.usageJson && previousStatus?.usageJson) patch = { ...patch, usageJson: { ...previousStatus.usageJson, ...patch.usageJson } };
@@ -13118,18 +13133,15 @@ export function heartbeatService(
       };
     }
     const updated =
-      previousStatus &&
-      await legacyExecutionNeedsReconciliationWithEvidence(db, {
-        ...previousStatus,
-        status,
-        ...patch,
-      })
+      previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? await terminalizeLegacyExecution({
             db,
             run: previousStatus,
             status,
             patch,
             fromStatuses,
+            reconcileIfNeeded: true,
+            writeConditions: [nativeRunnerOwnershipNotHeldCondition(), ...(cancellationCondition ? [cancellationCondition] : [])],
           })
         : await db
             .update(heartbeatRuns)
@@ -13843,9 +13855,8 @@ export function heartbeatService(
         .update(heartbeatRuns)
         .set({
           livenessReason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
-          resultJson: withUnmanagedBackgroundTaskStopReason(
-            parseObject(run.resultJson),
-          ),
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+            ${JSON.stringify({ stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON })}::jsonb`,
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id));
@@ -15052,7 +15063,7 @@ export function heartbeatService(
       const updated = await db
         .update(heartbeatRuns)
         .set({
-          resultJson,
+          resultJson: preserveWorkspaceRestoreRecoveryMetadataSql(resultJson, true),
           error:
             run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.error,
           errorCode:
@@ -16876,17 +16887,25 @@ export function heartbeatService(
     if (promotion.outcome === "promoted") {
       applyRunDispatchPostCommitEffects(promotion.postCommitEffects);
     }
-    const promotedRow = await getIssueRetryRun(issue.companyId, issue.id, [
-      "queued",
-      "running",
-      "cancelled",
-    ]);
-    const scheduledRetry = promotedRow
-      ? summarizeIssueScheduledRetryRun(promotedRow)
-      : summarizeIssueScheduledRetryRun({
-          run: updated,
+    // Promotion can preserve this row as a cleanup wait. Read that exact run,
+    // not an older cancelled retry or the pre-promotion schedule.
+    const currentRun = await getRun(updated.id);
+    const scheduledRetry = currentRun
+      ? summarizeIssueScheduledRetryRun({
+          run: currentRun,
           agentName: scheduled.agentName,
-        });
+        })
+      : null;
+
+    if (currentRun?.status === "scheduled_retry") {
+      return {
+        outcome: "waiting" as const,
+        message: parseObject(currentRun.resultJson?.executionWait).cause === "execution_owner_active"
+          ? "Waiting for execution cleanup. Paperclip will retry automatically once cleanup finishes."
+          : "The retry remains scheduled. Paperclip will check again at the scheduled time.",
+        scheduledRetry,
+      };
+    }
 
     if (promotion.outcome === "promoted") {
       return {
@@ -16902,10 +16921,17 @@ export function heartbeatService(
         scheduledRetry,
       };
     }
+    if (currentRun && ["queued", "running"].includes(currentRun.status)) {
+      return {
+        outcome: "already_promoted" as const,
+        message: "Scheduled retry was already promoted",
+        scheduledRetry,
+      };
+    }
     return {
-      outcome: "already_promoted" as const,
-      message: "Scheduled retry was already promoted",
-      scheduledRetry,
+      outcome: "no_scheduled_retry" as const,
+      message: "No live scheduled retry exists for this issue",
+      scheduledRetry: null,
     };
   }
 
@@ -17634,11 +17660,16 @@ export function heartbeatService(
         companyId: run.companyId,
         expectedStatus: "queued",
       });
-      if (staleness.outcome === "cancelled") {
+      if (staleness.outcome === "cancelled" || staleness.outcome === "deferred") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
         logger.info(
-          { runId: run.id, issueId, errorCode: staleness.errorCode },
-          "claimQueuedRun: cancelled stale queued run",
+          {
+            runId: run.id,
+            issueId,
+            outcome: staleness.outcome,
+            errorCode: staleness.outcome === "cancelled" ? staleness.errorCode : undefined,
+          },
+          "claimQueuedRun: withheld queued run at the execution gate",
         );
         return null;
       }
@@ -19595,6 +19626,13 @@ export function heartbeatService(
           monitorDispatchLostWithoutFutureWake);
       if (!(await revokeExpiredLegacyController(db, run))) continue;
       const baseMessage = buildProcessLossMessage(run);
+      const processLossDiagnostic = buildProcessLossDiagnostic({
+        run,
+        nowMs: Date.now(),
+        observerStartedAtMs: performance.timeOrigin,
+        checksPersistedChildLiveness,
+        retryEligible: shouldRetry,
+      });
       const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
 
       const failureWrite = await setRunStatusFromLive(
@@ -19611,7 +19649,7 @@ export function heartbeatService(
               "failed",
               {
                 conversationContinuationEligible,
-                resultJson: parseObject(run.resultJson),
+                resultJson: { ...parseObject(run.resultJson), processLossDiagnostic },
                 errorCode: "process_lost",
                 errorMessage: shouldRetry
                   ? `${baseMessage}; retrying once`
@@ -20558,6 +20596,7 @@ export function heartbeatService(
     let nativeWorkspaceSync: Awaited<
       ReturnType<typeof prepareNativeWorkspaceSync>
     > = null;
+    let requiredWorkspaceRestoreEvidence: Record<string, unknown> | null = null;
     let providerResourceDispositionForRun:
       ProviderResourceDisposition | undefined;
     let nativeLifecycleTelemetryForRun:
@@ -25245,6 +25284,16 @@ export function heartbeatService(
             adapterResult = await guardedDispatch.resultPromise;
           }
           adapterResult = identityRedactor.redact(adapterResult);
+          if (run.runtimeMode === "legacy" && hasWorkspaceRestoreFailure(adapterResult.resultJson)
+              && executionTarget?.kind === "remote" && executionTarget.transport === "sandbox") {
+            requiredWorkspaceRestoreEvidence = {
+              workspaceRestoreFailure: adapterResult.resultJson!.workspaceRestoreFailure,
+              ...(adapterResult.resultJson?.workspaceRestoreDiagnostic ? { workspaceRestoreDiagnostic: adapterResult.resultJson.workspaceRestoreDiagnostic } : {}),
+            };
+            // Retention is the fallback even if recording this receipt fails.
+            providerResourceDispositionForRun = "stop_and_retain";
+            await recordLegacyWorkspaceRestoreFailure(db, run, requiredWorkspaceRestoreEvidence);
+          }
           for (const stream of ["stdout", "stderr"] as const) {
             const tail = identityRedactor.finish(stream);
             if (tail) await appendIdentityRedactedLog(stream, tail);
@@ -25832,7 +25881,9 @@ export function heartbeatService(
               .update(heartbeatRuns)
               .set({
                 ...finalRunPatch,
-                resultJson: cancellationResultJson(persistedRunWrite.run, status, finalRunPatch.resultJson, runErrorCode, runErrorMessage),
+                resultJson: preserveWorkspaceRestoreRecoveryMetadataSql(
+                  cancellationResultJson(persistedRunWrite.run, status, finalRunPatch.resultJson, runErrorCode, runErrorMessage) ?? null,
+                ),
 
                 usageJson: { ...parseObject(persistedRunWrite.run.usageJson), ...parseObject(finalRunPatch.usageJson) },
                 finishedAt:
@@ -26040,10 +26091,7 @@ export function heartbeatService(
             await db
               .update(heartbeatRuns)
               .set({
-                resultJson: {
-                  ...persistedResultJson,
-                  presentationDecision,
-                },
+                resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision })}::jsonb`,
                 updatedAt: new Date(),
               })
               .where(eq(heartbeatRuns.id, livenessRun.id));
@@ -26443,6 +26491,7 @@ export function heartbeatService(
             errorMessage: message,
             resultJson: {
               ...parseObject(stopSnapshot?.resultJson),
+              ...requiredWorkspaceRestoreEvidence,
               ...(workspaceValidationFailure?.resultJson ??
                 configurationIncompleteFailure?.resultJson ??
                 {}),
@@ -29913,18 +29962,15 @@ export function heartbeatService(
               .set({
                 error: reason,
                 errorCode,
-                resultJson: {
-                  ...parseObject(run.resultJson),
+                // Stop may have read the row before adapter settlement saved
+                // a required-copyback receipt. Merge into current database JSON
+                // and leave those server-owned fields to the restore recorder.
+                resultJson: preserveWorkspaceRestoreRecoveryMetadataSql({
                   ...resultJson,
-                  ...(!running
-                    ? {
-                        executionCancellation: {
-                          state: "requested",
-                          requestedAt: new Date().toISOString(),
-                        },
-                      }
-                    : {}),
-                },
+                  ...(!running ? { executionCancellation: {
+                    state: "requested", requestedAt: new Date().toISOString(),
+                  } } : {}),
+                }, true),
                 updatedAt: new Date(),
               })
               .where(
@@ -30622,7 +30668,10 @@ export function heartbeatService(
     scanSilentActiveRuns,
 
     reconcileTaskWatchdogs,
-    reconcileCostAccounting: createCostAccountingReconciler(db, budgetHooks),
+    reconcileCostAccounting: async () => {
+      await decisionModelService(db, { budgetHooks }).recoverInterrupted();
+      return createCostAccountingReconciler(db, budgetHooks)();
+    },
 
     buildRunOutputSilence,
 

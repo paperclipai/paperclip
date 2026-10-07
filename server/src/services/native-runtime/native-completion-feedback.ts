@@ -176,21 +176,31 @@ export async function nativeCompletionFeedback(
       .limit(1)
       .then((rows) => rows[0]),
   ]);
-  // A response wake for this run's tool action already has a durable approval
-  // surface. Reject a repeated approval request before it becomes a new review.
-  // General evidence can also cite completed actions while waiting on something
-  // else, so a resolved card alone is not a stale wait target.
-  if (result.reportedWorkDisposition === "yielded" && result.continuation?.kind === "response_wake") {
-    const referencedIds = result.evidence.flatMap(({ ref }) => {
-      const match = typeof ref === "string" ? /^interaction:([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i.exec(ref) : null;
-      return match ? [match[1]!] : [];
-    });
-    const referenced = referencedIds.length ? await db.select().from(issueThreadInteractions).where(and(
+  // Match an existing action by its exact durable identity, regardless of how
+  // the provider labels its final disposition. A summary can cite the invocation
+  // ID instead of an interaction evidence ref; prose similarity is not identity.
+  if (signals.actionableAttentionRequests.some(request => request.kind === "approval" && request.ownerClass === "human")) {
+    const approvalTarget = {
+      summary: result.summary,
+      attentionRequests: signals.actionableAttentionRequests.filter(request => request.kind === "approval" && request.ownerClass === "human"),
+      blocker: result.blocker,
+      // An unmet criterion can name the action still being requested. Completed
+      // evidence elsewhere in the report is not authority to suppress a review.
+      unmetCriteria: result.completionClaim.criteria.filter(criterion => criterion.status !== "satisfied"),
+      continuation: result.continuation,
+      // The existing response-wake contract also names its card through evidence.
+      evidence: result.reportedWorkDisposition === "yielded" && result.continuation?.kind === "response_wake" ? result.evidence : [],
+    };
+    const referencedIds = new Set(JSON.stringify(approvalTarget).match(/\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b/gi)?.map(id => id.toLowerCase()) ?? []);
+    const cards = referencedIds.size ? await db.select().from(issueThreadInteractions).where(and(
       eq(issueThreadInteractions.companyId, run.companyId), eq(issueThreadInteractions.issueId, issue.id),
       eq(issueThreadInteractions.sourceRunId, run.id), eq(issueThreadInteractions.createdByAgentId, run.agentId),
       eq(issueThreadInteractions.kind, "request_confirmation"), eq(issueThreadInteractions.continuationPolicy, "wake_assignee"),
-      inArray(issueThreadInteractions.id, referencedIds),
     )) : [];
+    const referenced = cards.filter(card => {
+      const action = record(record(card.payload).toolAction);
+      return [card.id, action.actionRequestId, action.invocationId].some(id => typeof id === "string" && referencedIds.has(id.toLowerCase()));
+    });
     for (const card of referenced) {
       const action = record(record(card.payload).toolAction);
       if (action.version !== 1 || typeof action.actionRequestId !== "string") continue;

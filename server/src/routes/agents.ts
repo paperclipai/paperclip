@@ -4808,6 +4808,7 @@ export function agentRoutes(
           lastHeartbeatAt: null,
         },
         {
+          createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
           aiConnectionInstall: managedHireConnection ? { ...managedHireConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
           claudeLogin: {
             storedSessionId: hireStoredSessionId ?? null,
@@ -5062,6 +5063,7 @@ export function agentRoutes(
         lastHeartbeatAt: null,
       },
       {
+        createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
         aiConnectionInstall: managedConnection ? { ...managedConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
         claudeLogin: {
           storedSessionId: createStoredSessionId ?? null,

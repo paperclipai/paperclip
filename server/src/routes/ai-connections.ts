@@ -39,7 +39,7 @@ export function responsibleUserForAiRequest(req: Request): string | null {
     : getActorInfo(req).actorId;
 }
 
-async function canManageAiConnections(db: Db, req: Request, companyId: string): Promise<boolean> {
+export async function canManageAiConnections(db: Db, req: Request, companyId: string): Promise<boolean> {
   const membership = req.actor.memberships?.find((m) => m.companyId === companyId && m.status === "active");
   if (membership?.membershipRole === "viewer") return false;
   return req.actor.source === "local_implicit" || Boolean(req.actor.isInstanceAdmin)

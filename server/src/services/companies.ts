@@ -19,6 +19,7 @@ import {
   runIdentityContexts,
   heartbeatRunEvents,
   costEvents,
+  decisionInvocations,
   financeEvents,
   budgetPolicies,
   budgetIncidents,
@@ -563,6 +564,7 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         // Finance can reference costs and both can reference runs. Incidents
         // reference policies and approvals; delete these dependents first.
         await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
+        await tx.delete(decisionInvocations).where(eq(decisionInvocations.companyId, id));
         await tx.delete(costEvents).where(eq(costEvents.companyId, id));
         await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
         await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));

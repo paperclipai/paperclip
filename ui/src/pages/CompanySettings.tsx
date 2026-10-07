@@ -1,3 +1,4 @@
+import { DecisionModelSettingsSection } from "../components/decision-models/DecisionModelSettings";
 import { ChangeEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -355,6 +356,8 @@ export function CompanySettings() {
       </div>
 
       {/* Interaction governance */}
+      {selectedCompanyId && <DecisionModelSettingsSection key={selectedCompanyId} companyId={selectedCompanyId} />}
+
       <InteractionGovernancePanel
         governance={governance}
         onChange={handleGovernanceChange}

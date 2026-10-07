@@ -549,7 +549,10 @@ class HarnessNativeSession implements NativeSession {
           (event.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(event.payload.runTerminalState))) ||
           (event.eventType === "item.completed" &&
             event.payload.kind === "interrupt_acknowledgement");
-        if (this.#explicitlyCancelled && !isCancellationEvent) continue;
+        // Accounting for work already performed survives cancellation. It grants
+        // no tool, message, semantic-result, or continuation authority.
+        const isUsageReceipt = event.eventType === "item.completed" && event.payload.kind === "usage";
+        if (this.#explicitlyCancelled && !isCancellationEvent && !isUsageReceipt) continue;
         sourceInstanceId = event.sourceInstanceId;
         lastSourceSequence = Math.max(lastSourceSequence, event.sourceSeq);
         if (event.eventType === "runtime_request.created") {
@@ -735,6 +738,10 @@ class HarnessNativeSession implements NativeSession {
     return this.#session.interrupt(input);
   }
 
+  revokeTurnPublication() {
+    this.#explicitlyCancelled = true;
+  }
+
   cancel(input: { reason: string; signal: AbortSignal }) {
     if (input.signal.aborted) {
       throw (
@@ -744,7 +751,7 @@ class HarnessNativeSession implements NativeSession {
     // This flag is the adapter's synchronous publication boundary. Provider
     // interruption happens afterward as passive cleanup, so a slow or broken
     // transport cannot synthesize or publish new accepted output for the turn.
-    this.#explicitlyCancelled = true;
+    this.revokeTurnPublication();
     const interrupt = this.#session.interrupt;
     return {
       cleanup:

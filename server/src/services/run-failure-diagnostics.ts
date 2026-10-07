@@ -1,5 +1,6 @@
 import type { heartbeatRuns } from "@paperclipai/db";
 import { readRunCancellation } from "./run-cancellation.js";
+import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
 import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
@@ -146,6 +147,12 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     if (Number.isFinite(durationMs) && durationMs >= 0) execution.durationMs = durationMs;
   }
   const result = run.resultJson;
+  if (run.errorCode === "process_lost") {
+    const diagnostic = readProcessLossDiagnostic(read(result, "processLossDiagnostic"));
+    for (const [field, value] of Object.entries(diagnostic)) {
+      execution[`processLoss${field[0]!.toUpperCase()}${field.slice(1)}`] = value;
+    }
+  }
   const cancellation = readRunCancellation(result);
   if (cancellation) {
     execution.cancellationSource = cancellation.source;

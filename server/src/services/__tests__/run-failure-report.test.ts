@@ -110,6 +110,99 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     } as unknown as typeof heartbeatRuns.$inferSelect;
   }
 
+  function missingSecretRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "secret_binding_missing",
+          missingBindings: [{ bindingType: "user_secret_ref", errorCode: "user_secret_missing" }],
+        },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each([
+    { bindingType: "secret_ref" },
+    { bindingType: "secret_ref", errorCode: "binding_missing" },
+    ...["binding_missing", "responsible_user_missing", "user_secret_missing", "secret_inactive", "user_secret_definition_inactive"]
+      .map((errorCode) => ({ bindingType: "user_secret_ref", errorCode })),
+  ])("keeps the known pre-dispatch secret blocker local: %j", async (binding) => {
+    await seedCompanyAndAgent();
+    const run = missingSecretRun();
+    (run.resultJson!.configurationIncomplete as Record<string, unknown>).missingBindings = [binding];
+    const saved = structuredClone(run);
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(saved);
+  });
+
+  it.each([
+    {},
+    { reason: "secret_binding_missing", missingBindings: [] },
+    { reason: "secret_binding_missing", missingBindings: [null] },
+    { reason: "secret_binding_missing", missingBindings: [{ errorCode: "user_secret_missing" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "provider_error" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "user_secret_definition_missing" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "new_unknown_reason" }] },
+    { reason: "secret_binding_missing", missingBindings: [
+      { bindingType: "user_secret_ref", errorCode: "user_secret_missing" },
+      { bindingType: "secret_ref", errorCode: "provider_error" },
+    ] },
+    { reason: "ai_connection_unavailable" },
+  ])("reports ambiguous, unknown, and provider failures: %j", async (configurationIncomplete) => {
+    await seedCompanyAndAgent();
+    const run = missingSecretRun();
+    run.resultJson!.configurationIncomplete = configurationIncomplete;
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: "timed_out" },
+    { errorCode: "setup_failed" },
+    { errorCode: "workspace_validation_failed" },
+    { errorCode: "adapter_failed" },
+    { executionStage: "executing" },
+    { executionStage: null },
+    { exitCode: 1 },
+    { exitCode: 0 },
+    { signal: "SIGTERM" },
+  ])("reports missing-secret text without a proven pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+
+    await reportRunFailure(db, missingSecretRun(overrides), { phase: "setup" });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, { kind: "bootstrap" }, { kind: "bootstrap", providerWorkStarted: true }])(
+    "reports missing-secret failures without explicit bootstrap proof: %j", async (executionRecovery) => {
+      await seedCompanyAndAgent();
+      const run = missingSecretRun();
+      run.resultJson!.executionRecovery = executionRecovery;
+
+      await reportRunFailure(db, run, { phase: "setup" });
+
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([undefined, "execute"] as const)("reports configuration failures outside setup: %s", async (phase) => {
+    await seedCompanyAndAgent();
+
+    await reportRunFailure(db, missingSecretRun(), { phase });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
   it("captures once for the status failed", async () => {
     await seedCompanyAndAgent();
     const run = buildRun({ status: "failed" });

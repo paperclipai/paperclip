@@ -40,6 +40,50 @@ function readTaskId(run: HeartbeatRun): string | null {
   return typeof contextIssueId === "string" && contextIssueId.length > 0 ? contextIssueId : null;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/** A known owner action before dispatch, not a secret-provider or runtime failure. */
+function isMissingSecretConfigurationBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" ||
+    run.errorCode !== "configuration_incomplete" ||
+    run.executionStage !== "preparing" ||
+    options.phase !== "setup" ||
+    run.exitCode != null ||
+    run.signal != null
+  ) return false;
+
+  const configuration = asRecord(run.resultJson?.configurationIncomplete);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  if (
+    configuration?.reason !== "secret_binding_missing" ||
+    recovery?.kind !== "bootstrap" ||
+    recovery.providerWorkStarted !== false ||
+    !Array.isArray(configuration.missingBindings) ||
+    configuration.missingBindings.length === 0
+  ) return false;
+
+  return configuration.missingBindings.every((value: unknown) => {
+    const binding = asRecord(value);
+    if (!binding) return false;
+    if (binding.bindingType === "secret_ref") {
+      return binding.errorCode == null || binding.errorCode === "binding_missing";
+    }
+    if (binding.bindingType !== "user_secret_ref") return false;
+    // Missing-definition resolution can also catch a database error. Keep that
+    // ambiguous case, unknown codes, and provider errors visible in Sentry.
+    return binding.errorCode === "binding_missing" ||
+      binding.errorCode === "responsible_user_missing" ||
+      binding.errorCode === "user_secret_missing" ||
+      binding.errorCode === "secret_inactive" ||
+      binding.errorCode === "user_secret_definition_inactive";
+  });
+}
+
 /**
  * Report a terminal run failure to Sentry. Returns at once for any status
  * other than failures and unexpected started cancellations. Never throws — a Sentry failure or a
@@ -54,6 +98,7 @@ function readTaskId(run: HeartbeatRun): string | null {
 export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureReportOptions = {}): Promise<void> {
   if (!isRunFailureStatus(run.status)) return Promise.resolve();
   if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
+  if (isMissingSecretConfigurationBlocker(run, options)) return Promise.resolve();
   const runStatus = run.status;
   const report = captureTerminalRunFailure(db, run, runStatus, options);
   pendingRunFailureReports.add(report);

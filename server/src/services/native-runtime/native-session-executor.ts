@@ -27,6 +27,11 @@ import { bindManagedNativeCredentialTurn, completeManagedNativeCredentialTurn } 
 import { createLocalNativeQuestionBridge } from "./local-native-question-bridge.js";
 import { readVerifiedRemoteWorkspaceFile } from "./remote-deliverable-file.js";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
+import {
+  codexCliVersionAtLeast,
+  minimumCodexCliVersionForModel,
+  normalizeCodexModel,
+} from "@paperclipai/adapter-codex-local";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
@@ -237,6 +242,9 @@ type NativeSessionStartup = {
   resolve: (session: ActiveNativeSession | null) => void;
   stopRequested?: boolean;
   cancellationSettled?: Promise<void>;
+  governedWait?: boolean;
+  settled: Promise<void>;
+  settle: () => void;
 };
 const nativeSessionStartups = new Map<string, NativeSessionStartup>();
 
@@ -274,7 +282,20 @@ export async function detachNativeSessionsForRestart(
   const detachedRunIds: string[] = [];
   const inactiveRunIds: string[] = [];
   const unsupportedRunIds: string[] = [];
+  const settlementDeadline = Date.now() + 20_000;
   for (const runId of new Set(runIds)) {
+    // A governed stop already revoked new work and is collecting terminal
+    // accounting. Give that exact owner a bounded chance to persist it before
+    // fencing callbacks and relinquishing the runner. Timeout is not success.
+    const settling = nativeSessionStartups.get(runId);
+    if (settling?.governedWait) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([settling.settled, new Promise<void>(resolve => {
+          timer = setTimeout(resolve, Math.max(0, settlementDeadline - Date.now()));
+        })]);
+      } finally { clearTimeout(timer); }
+    }
     nativeRunsDetachingForRestart.add(runId);
     const active = activeNativeSessions.get(runId) ?? await waitForNativeSessionStartup(runId);
     if (!active) {
@@ -5997,6 +6018,7 @@ function loadWarmNativeCheckpoint(
         activeTurnId: null,
         terminalTurns: [],
         pendingRuntimeRequests: [],
+        governedWait: undefined,
       };
   if (path !== scopedPath || envelope.configDigest !== configDigest) {
     // Upgrade the validated checkpoint atomically. When moving from a legacy
@@ -7376,7 +7398,10 @@ export async function executePaperclipNativeSession(input: {
   // Register before the first asynchronous operation on either backend path.
   // A duplicate execution must not replace the original startup handoff.
   let resolveStartup!: (session: ActiveNativeSession | null) => void;
+  let settle!: () => void;
   const startup: NativeSessionStartup = {
+    settled: new Promise<void>(resolve => { settle = resolve; }),
+    settle: () => settle(),
     promise: new Promise<ActiveNativeSession | null>(resolve => { resolveStartup = resolve; }),
     resolve: session => resolveStartup(session),
   };
@@ -7473,6 +7498,7 @@ export async function executePaperclipNativeSession(input: {
       executingNativeOwnerScopes.delete(ownerScope);
     }
     startup.resolve(null);
+    startup.settle();
     if (nativeSessionStartups.get(runId) === startup) {
       nativeSessionStartups.delete(runId);
     }
@@ -7988,6 +8014,11 @@ async function executePaperclipNativeSessionWithinScope(
     }
   };
   let completedConversationReply: PrpEvent | null = null;
+  const assertControllerActive = () => {
+    if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
+      throw new NativeControllerDetachedForRestartError();
+    }
+  };
   const controlPlane = new PaperclipControlPlanePort(
     input.db,
     {
@@ -8003,6 +8034,7 @@ async function executePaperclipNativeSessionWithinScope(
     },
     {
       privateKeyPem: input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY,
+      assertControllerActive,
       onCommittedEvent: async (event) => {
         await observeAccountingEvent(event);
         await toolTrace.observe(event);
@@ -8536,8 +8568,15 @@ async function executePaperclipNativeSessionWithinScope(
             controlPlane,
             runnerInstanceId: effectiveRunnerInstanceId,
             controlPlaneInstanceId,
-            resolveGovernedWait: ({ event }) =>
-              governedWaitObservation.consume(event),
+            resolveGovernedWait: ({ event }) => {
+              assertControllerActive();
+              const result = governedWaitObservation.consume(event);
+              if (result) {
+                const startup = nativeSessionStartups.get(input.execution.binding.runId);
+                if (startup) startup.governedWait = true;
+              }
+              return result;
+            },
             resolveMissingResult: async ({ terminalEvent }) => {
               // Governed waits take precedence over an ordinary chat reply.
               // Execution tasks still require their normal semantic finish.
@@ -8576,6 +8615,10 @@ async function executePaperclipNativeSessionWithinScope(
             requireSessionCloseBeforeReturn: runnerdBackend !== null || input.instructionWorkingCopy !== undefined,
             onSessionClosed: input.instructionWorkingCopy?.collectStopped,
             onCheckpoint: async (snapshot) => {
+              if (snapshot.governedWait) {
+                const startup = nativeSessionStartups.get(input.execution.binding.runId);
+                if (startup) startup.governedWait = true;
+              }
               snapshot = identityRedactor.redact(snapshot);
               if (warmSessionId !== null && warmConfigDigest !== null) {
                 await persistWarmNativeCheckpoint(
@@ -8769,6 +8812,9 @@ async function executePaperclipNativeSessionWithinScope(
       },
       { parentName: "task.run" },
     );
+    // A detached consumer can resolve successfully after its stream closes.
+    // Only the replacement controller may settle the run or certify accounting.
+    assertControllerActive();
     // Persist provider accounting before any workspace/issue finalization. A
     // detached controller or failed finalizer must not lose a completed turn.
     // session.usage() may be an attachment baseline, a partial report, or a
@@ -11331,6 +11377,21 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!version || !isSupportedRemoteCodexVersion(version)) {
       throw new Error(
         `runner_remote_provider_artifact_incompatible: supported Codex versions ${REMOTE_CODEX_SUPPORTED_RANGE}, received ${version ?? "an unrecognized or prerelease version"}; install a supported stable Codex release or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@${REMOTE_PROVIDER_PACK_PINS.codex}`,
+      );
+    }
+    // A Codex inside the compatibility window can still be too old for the
+    // configured model: the ChatGPT backend rejects a model from clients
+    // below the model's floor on every turn. Fail before launch with the
+    // exact gap, so a stale sandbox image is not reported as an account
+    // problem. When a preinstalled Codex fails here and an npm spec is
+    // configured, the caller falls back to installing the pinned release.
+    const configuredModel = input.execution.provider.kind === "codex"
+      ? input.execution.provider.model
+      : null;
+    const modelMinimum = minimumCodexCliVersionForModel(configuredModel);
+    if (modelMinimum && !codexCliVersionAtLeast(version, modelMinimum)) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: ${normalizeCodexModel(configuredModel)} requires Codex ${modelMinimum} or newer with ChatGPT sign-in, received ${version} from the sandbox image; promote a sandbox image with Codex ${REMOTE_PROVIDER_PACK_PINS.codex} or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@${REMOTE_PROVIDER_PACK_PINS.codex}`,
       );
     }
     if (version !== REMOTE_PROVIDER_PACK_PINS.codex && !reportedCodexVersions.has(version)) {

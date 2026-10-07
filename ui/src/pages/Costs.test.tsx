@@ -12,6 +12,7 @@ const resolveIncidentMock = vi.hoisted(() => vi.fn());
 const upsertPolicyMock = vi.hoisted(() => vi.fn());
 const budgetOverviewMock = vi.hoisted(() => vi.fn());
 const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
+const decisionHistoryMock = vi.hoisted(() => vi.fn());
 const costsApiMocks = vi.hoisted(() => ({
   summary: vi.fn(),
   byAgent: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("../api/budgets", () => ({
 }));
 
 vi.mock("../api/costs", () => ({ costsApi: costsApiMocks }));
+vi.mock("../api/decision-models", () => ({ decisionModelsApi: { history: decisionHistoryMock } }));
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
@@ -61,6 +63,7 @@ describe("Shared Costs surfaces", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    decisionHistoryMock.mockResolvedValue([]);
     costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -95,7 +98,7 @@ describe("Shared Costs surfaces", () => {
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <Costs embedded initialTab="budgets" lockTab />
+          <MemoryRouter><Costs embedded initialTab="budgets" lockTab /></MemoryRouter>
         </QueryClientProvider>,
       );
       await Promise.resolve();
@@ -113,6 +116,23 @@ describe("Shared Costs surfaces", () => {
     for (const mock of Object.values(costsApiMocks)) expect(mock).not.toHaveBeenCalled();
   });
 
+  it("opens linked decision history with real date bounds instead of report cache labels", async () => {
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 0, budgetCents: 0, pricingComplete: true });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter initialEntries={["/?tab=decisions"]}><QueryClientProvider client={queryClient}><Costs /></QueryClientProvider></MemoryRouter>));
+    await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("No decision requests in this period")); });
+    expect(container.querySelector('[role="tab"][data-state="active"]')?.textContent).toBe("Decisions");
+    const [companyId, from, to] = decisionHistoryMock.mock.lastCall!;
+    expect(companyId).toBe("company-1");
+    expect(Number.isFinite(Date.parse(from))).toBe(true);
+    expect(Number.isFinite(Date.parse(to))).toBe(true);
+    queryClient.clear();
+  });
+
   it.each([
     ["reservation", 500, "agent"], ["unknown price", 500, "agent"], ["amount", 500, "agent"],
     ["amount", 0, "company"], ["amount", 0, "agent"], ["amount", 0, "project"],
@@ -126,7 +146,7 @@ describe("Shared Costs surfaces", () => {
     upsertPolicyMock.mockResolvedValue({});
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     root = createRoot(container);
-    await act(async () => root.render(<QueryClientProvider client={queryClient}><Costs embedded initialTab="budgets" lockTab /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><MemoryRouter><Costs embedded initialTab="budgets" lockTab /></MemoryRouter></QueryClientProvider>));
     await act(async () => { await vi.waitFor(() => expect(container.querySelector('[aria-label="Reserve per run (USD)"]')).not.toBeNull()); });
     const advanced = container.querySelector("details")!;
     expect(advanced.open).toBe(false);
@@ -159,7 +179,7 @@ describe("Shared Costs surfaces", () => {
     upsertPolicyMock.mockRejectedValueOnce(new Error("private SQL policy error"));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     root = createRoot(container);
-    await act(async () => root.render(<QueryClientProvider client={queryClient}><Costs embedded initialTab="budgets" lockTab /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><MemoryRouter><Costs embedded initialTab="budgets" lockTab /></MemoryRouter></QueryClientProvider>));
     await act(async () => { await vi.waitFor(() => expect(container.querySelector('input[type="checkbox"]')).not.toBeNull()); });
     const reservation = container.querySelector<HTMLInputElement>('[aria-label="Reserve per run (USD)"]')!;
     const originalReservation = reservation.value;
@@ -241,7 +261,7 @@ describe("Shared Costs surfaces", () => {
     } finally { queryClient.clear(); vi.useRealTimers(); }
   });
 
-  it.each(surfaces)("shows incomplete accounting and currency boundaries on the %s page", async (_name, props) => {
+  it.each(surfaces)("explains missing costs and pending runs neutrally on the %s page", async (_name, props) => {
     for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
     costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
     costsApiMocks.summary.mockResolvedValue({ spendCents: 12.4, budgetCents: 0, pricingComplete: false, unpricedEventCount: 2, pendingRunCount: 1 });
@@ -254,9 +274,26 @@ describe("Shared Costs surfaces", () => {
       root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs {...props} /></QueryClientProvider></MemoryRouter>);
     });
     await act(async () => {
-      await vi.waitFor(() => expect(container.textContent).toContain("Spend is incomplete: 2 usage events have no reliable price; 1 runs await accounting."));
+      await vi.waitFor(() => expect(container.textContent).toContain("Costs are unavailable for 2 usage entries in this period. Totals include known costs only."));
     });
+    const notice = [...container.querySelectorAll('[role="status"]')].find(element => element.textContent?.includes("Costs are unavailable"))!;
+    expect(notice.classList.contains("text-muted-foreground")).toBe(true);
+    expect(notice.querySelector(".text-destructive")).toBeNull();
+    expect(notice.classList.contains("text-destructive")).toBe(false);
+    expect(notice.textContent).toContain("1 run is awaiting cost data.");
+    expect(notice.previousElementSibling?.textContent).toContain("Inference spend");
     expect(container.textContent).toContain("Finance headline totals are USD only");
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 12.4, budgetCents: 0, pricingComplete: false, unpricedEventCount: 10, pendingRunCount: 0 });
+    await act(async () => { await queryClient.invalidateQueries(); });
+    await vi.waitFor(() => expect(notice.textContent).toContain("Costs are unavailable for 10 usage entries"));
+    expect(notice.textContent).not.toContain("awaiting cost data");
+    expect(notice.textContent).not.toContain("0 runs");
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 12.4, budgetCents: 0, pricingComplete: false, unpricedEventCount: 0, pendingRunCount: 1 });
+    await act(async () => { await queryClient.invalidateQueries(); });
+    await vi.waitFor(() => expect(notice.textContent).toBe("1 run is awaiting cost data."));
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 12.4, budgetCents: 0, pricingComplete: true, unpricedEventCount: 0, pendingRunCount: 0 });
+    await act(async () => { await queryClient.invalidateQueries(); });
+    await vi.waitFor(() => expect(container.contains(notice)).toBe(false));
   });
 
   it.each(surfaces)("labels each agent and expanded model independently on the %s page", async (_name, props) => {
@@ -318,7 +355,7 @@ describe("Shared Costs surfaces", () => {
       expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Costs" }]);
     }
     expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(
-      streamlined ? ["Overview", "Providers", "Billers", "Finance"] : ["Overview", "Budgets", "Providers", "Billers", "Finance"],
+      streamlined ? ["Overview", "Providers", "Billers", "Finance", "Decisions"] : ["Overview", "Budgets", "Providers", "Billers", "Finance", "Decisions"],
     );
   });
 

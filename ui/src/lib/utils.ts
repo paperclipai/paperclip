@@ -281,3 +281,8 @@ export function projectWorkspaceUrl(
 ): string {
   return `${projectUrl(project)}/workspaces/${workspaceId}`;
 }
+
+/** Preserve sub-cent inference charges instead of showing a misleading $0.00. */
+export function formatDetailedCents(cents: string | number): string {
+  return (Number(cents) / 100).toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 9 });
+}

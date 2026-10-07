@@ -2125,10 +2125,17 @@ describe("rebindNativeSessionCheckpoint", () => {
   });
 
   it("retains provider identity but clears prior turn and event state", () => {
+    const prior = previousRun();
+    const profile = prior.runnerProfileJson as Record<string, unknown>;
+    const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
+    checkpoint.governedWait = { sourceEvent: { runId: previousRunId, turnId: "old-turn" }, result: { reportedWorkDisposition: "yielded" } };
+    const before = structuredClone(prior);
     const rebound = rebindNativeSessionCheckpoint({
-      previousRun: previousRun(),
+      previousRun: prior,
       currentExecution: execution(currentRunId),
     });
+    expect(rebound?.governedWait).toBeUndefined();
+    expect(prior).toEqual(before);
     expect(rebound).toMatchObject({
       sessionId: "provider-thread-123",
       providerSessionId: "provider-thread-123",

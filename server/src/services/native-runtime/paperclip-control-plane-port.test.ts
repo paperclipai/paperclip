@@ -299,6 +299,67 @@ describe("PaperclipControlPlanePort conformance", () => {
     }
   });
 
+  it.each([
+    ["checkpoint", "detach"], ["result", "detach"], ["event", "detach"],
+    ["checkpoint", "abort"], ["result", "abort"], ["event", "abort"],
+  ] as const)("revokes an in-flight %s on %s", async (operation, reason) => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const binding = { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `detached-${identity.runId}` };
+    let detached = false;
+    const controller = new AbortController();
+    const port = new PaperclipControlPlanePort(db, binding, {
+      assertControllerActive: () => { if (detached) throw new Error("controller_detached"); },
+    });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const mutate = () => operation === "event" ? port.appendEvent({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, eventType: "turn.interrupted", schemaVersion: 1,
+      priority: 0, emittedAt: new Date().toISOString(), payload: { reason: "governed_wait" },
+    }, { signal: controller.signal }) : operation === "checkpoint"
+      ? port.checkpointSession({ backendKind: "mock", sessionId: identity.sessionId, identity }, { signal: controller.signal })
+      : port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL }, { signal: controller.signal });
+    let pending: Promise<unknown> | undefined;
+    await db.transaction(async tx => {
+      await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId)).for("update");
+      const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
+      pending = mutate().then(() => null, error => error);
+      let waiting = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const [state] = await db.execute(sql`select exists (
+          select 1 from pg_stat_activity where ${backend.pid} = any(pg_blocking_pids(pid))
+        ) as waiting`) as unknown as Array<{ waiting: boolean }>;
+        if (state.waiting) { waiting = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(waiting).toBe(true);
+      if (reason === "detach") detached = true;
+      else controller.abort(new Error("controller_detached"));
+    });
+    expect(await pending).toMatchObject({ message: "controller_detached" });
+    await expect(mutate()).rejects.toThrow("controller_detached");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    expect(run.runnerProfileJson?.sessionCheckpoint).toBeUndefined();
+    expect(run.nextEventSeq).toBe(1);
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId))).toEqual([]);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
+    expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, identity.runId))).toEqual([]);
+    // A new controller's independently authorized port can still settle it.
+    const replacement = new PaperclipControlPlanePort(db, binding);
+    await replacement.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    await expect(replacement.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT,
+      terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL })).resolves.toBeUndefined();
+  });
+
   it("redacts identity private material before persisting native events and checkpoints", async () => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();

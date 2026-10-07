@@ -1,3 +1,4 @@
+import { usePrimaryAgentPresentation } from "./primary-agent/PrimaryAgentPresentation";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties, type DragEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -318,6 +319,7 @@ export function NewIssueDialog() {
   const defaultProjectPendingRef = useRef(false);
   const createRequestRef = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
 
+  const primaryAgent = usePrimaryAgentPresentation(effectiveCompanyId);
   const isSubIssueMode = Boolean(newIssueDefaults.parentId);
   const parentIssueLabel =
     newIssueDefaults.parentIdentifier ?? (newIssueDefaults.parentId ? newIssueDefaults.parentId.slice(0, 8) : "");
@@ -979,7 +981,7 @@ export function NewIssueDialog() {
   // the queries were in flight or replacing an explicit/restored assignee.
   useEffect(() => {
     if (!newIssueOpen || !effectiveCompanyId || !defaultAssigneePendingRef.current
-      || !agents || !sessionFetched || !membersFetched) return;
+      || !agents || !sessionFetched || !membersFetched || primaryAgent?.loading) return;
     defaultAssigneePendingRef.current = false;
     const available = new Set(assigneeOptions.map((option) => option.id));
     const scopedRecents = getRecentAssigneeSelectionIds(effectiveCompanyId);
@@ -989,9 +991,10 @@ export function NewIssueDialog() {
       : getRecentAssigneeSelectionIds().filter((value) => value.startsWith("agent:"));
     const recent = recents.find((value) => available.has(value));
     const targets = agents.filter(isAgentTaskTarget);
-    const fallback = targets.find((agent) => agent.role === "ceo") ?? targets[0];
+    const fallback = targets.find((agent) => agent.id === primaryAgent?.primaryAgentId)
+      ?? targets.find((agent) => agent.role === "ceo") ?? targets[0];
     setAssigneeValue(recent ?? (fallback ? assigneeValueFromSelection({ assigneeAgentId: fallback.id }) : ""));
-  }, [newIssueOpen, effectiveCompanyId, agents, assigneeOptions, sessionFetched, membersFetched]);
+  }, [newIssueOpen, effectiveCompanyId, agents, assigneeOptions, sessionFetched, membersFetched, primaryAgent?.loading, primaryAgent?.primaryAgentId]);
   useEffect(() => {
     if (!newIssueOpen || !effectiveCompanyId || !defaultProjectPendingRef.current || !projects) return;
     defaultProjectPendingRef.current = false;

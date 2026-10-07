@@ -1542,9 +1542,11 @@ export function IssueProperties({
               ? retryNow.data?.outcome === "already_promoted"
                 ? "Already promoted — run starting"
                 : "Promoted — run starting"
-              : scheduledRetryIsContinuation
-                ? "Pulls continuation forward immediately"
-                : "Pulls retry forward immediately"}
+              : retryNow.data?.outcome === "waiting" && retryNow.data.scheduledRetry?.runId === scheduledRetry.runId
+                ? retryNow.data.message
+                : scheduledRetryIsContinuation
+                  ? "Pulls continuation forward immediately"
+                  : "Pulls retry forward immediately"}
         </span>
       </div>
     </div>

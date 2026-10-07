@@ -11,6 +11,9 @@ import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
 import { rememberComposerEffort } from "../lib/recent-composer-effort";
 import { NewIssueDialog } from "./NewIssueDialog";
 
+const primaryState = vi.hoisted(() => ({ primaryAgentId: null as string | null, loading: false }));
+vi.mock("./primary-agent/PrimaryAgentPresentation", () => ({ usePrimaryAgentPresentation: () => primaryState }));
+
 const dialogState = vi.hoisted(() => ({
   newIssueOpen: true,
   newIssueDefaults: {} as Record<string, unknown>,
@@ -351,6 +354,8 @@ describe("NewIssueDialog", () => {
   let originalInnerHeightDescriptor: PropertyDescriptor | undefined;
 
   beforeEach(() => {
+    primaryState.primaryAgentId = null;
+    primaryState.loading = false;
     vi.useRealTimers();
     originalResizeObserver = globalThis.ResizeObserver;
     originalVisualViewportDescriptor = Object.getOwnPropertyDescriptor(window, "visualViewport");
@@ -504,6 +509,23 @@ describe("NewIssueDialog", () => {
     await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe(expected));
     expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')?.value).toBe("");
     expect(container.textContent).not.toContain("@CEO");
+    act(() => root.unmount());
+  });
+
+  it.each([
+    { recent: null, explicit: null, draft: null, primary: "worker", expected: "Worker" },
+    { recent: "ceo", explicit: null, draft: null, primary: "worker", expected: "CEO" },
+    { recent: "worker", explicit: "ceo", draft: null, primary: "worker", expected: "CEO" },
+    { recent: "worker", explicit: null, draft: "ceo", primary: "worker", expected: "CEO" },
+    { recent: null, explicit: null, draft: null, primary: "missing", expected: "CEO" },
+  ])("preserves task selection precedence ($recent, $explicit, $draft, $primary)", async ({ recent, explicit, draft, primary, expected }) => {
+    mockAgentsApi.list.mockResolvedValue(defaultAgents);
+    primaryState.primaryAgentId = primary;
+    if (recent) trackRecentAssignee(recent, "company-1");
+    if (explicit) dialogState.newIssueDefaults = { assigneeAgentId: explicit };
+    if (draft) localStorage.setItem("paperclip:issue-draft", JSON.stringify({ title: "Saved request", description: "", assigneeValue: `agent:${draft}`, projectId: "" }));
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-composer-assignee-label"]')?.textContent).toBe(expected));
     act(() => root.unmount());
   });
 

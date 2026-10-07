@@ -1,6 +1,6 @@
 import { createFinanceEventInTransaction } from "./finance.js";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { agentRuntimeState, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { decisionInvocations, budgetReservations, agentRuntimeState, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { adjustCostSchema, importBillingInvoiceSchema, normalizeCents, subtractCents, type AdjustCost, type ImportBillingInvoice } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { withAccountingReadSnapshot, withAccountingTransaction } from "./accounting-transaction.js";
@@ -147,11 +147,19 @@ export function billingReconciliationService(db: Db, hooks: BudgetServiceHooks =
           reportedCostCents: event.event.reportedCostCents ?? normalizeCents(event.exact), costStatus: input.pricing.source === "rate_card" ? "estimated" : "reported", pricingProvenance: input.pricing,
         }).where(eq(costEvents.id, eventId)).returning();
         await updateMonthlySpendProjections(tx, companyId, updated.agentId, subtractCents(input.correctedCents, input.expectedCents), updated.occurredAt);
-        if (updated.heartbeatRunId) {
+        if (updated.heartbeatRunId && updated.agentId) {
           const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, updated.heartbeatRunId), eq(heartbeatRuns.companyId, companyId)));
           if (run?.costAccountedAt && run.accountingProjectionVersion === "v2") await tx.update(agentRuntimeState)
             .set({ totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${subtractCents(input.correctedCents, input.expectedCents)}::numeric`, updatedAt: new Date() })
             .where(and(eq(agentRuntimeState.agentId, updated.agentId), eq(agentRuntimeState.companyId, companyId)));
+        }
+        if (updated.usageKind === "decision") {
+          const [invocation] = await tx.select({ id: decisionInvocations.id }).from(decisionInvocations).where(and(
+            eq(decisionInvocations.companyId, companyId), eq(decisionInvocations.costEventId, eventId),
+          ));
+          if (invocation) await tx.update(budgetReservations).set({ state: "settled", settledAt: new Date() }).where(and(
+            eq(budgetReservations.companyId, companyId), eq(budgetReservations.decisionInvocationId, invocation.id), eq(budgetReservations.state, "held"),
+          ));
         }
         const budgets = budgetServiceInTransaction(tx, publications);
         await budgets.evaluateCostEvent(updated);

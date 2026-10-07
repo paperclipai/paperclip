@@ -291,6 +291,15 @@ exit 7
     const remoteWorkspace = path.join(rootDir, "remote-workspace");
     const systemHomeDir = path.join(rootDir, "system-home");
     const managedCaptureDir = path.join(rootDir, "managed-capture");
+    const fixtureBinDir = path.join(rootDir, "fixture-bin");
+    const networkAttemptPath = path.join(rootDir, "network-attempted");
+    await fs.mkdir(fixtureBinDir, { recursive: true });
+    // A regression in installer interception must fail locally, not download
+    // and execute the real CLI or depend on an external server's latency.
+    await fs.writeFile(path.join(fixtureBinDir, "curl"), `#!/bin/sh
+: > "$FIXTURE_CURL_ATTEMPT_PATH"
+exit 97
+`, { mode: 0o755 });
     await fs.mkdir(managedCaptureDir, { recursive: true });
     await fs.mkdir(workspaceDir, { recursive: true });
     await fs.mkdir(remoteWorkspace, { recursive: true });
@@ -337,6 +346,7 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
 
     const runnerState = {
       commands: [] as string[],
+      installCommands: [] as string[],
     };
     // The managed-runtime restore path probes the generated archive with
     // `wc -c` before reading bounded `dd | base64` chunks. Keep this fixture's
@@ -345,11 +355,23 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
     const runner = {
       execute: async (input: { command: string; args?: string[]; env?: Record<string, string>; stdin?: string }) => {
         runnerState.commands.push(input.command);
+        const args = [...(input.args ?? [])];
+        if (args[1] === SANDBOX_INSTALL_COMMAND) {
+          runnerState.installCommands.push(args[1]);
+          args[1] = buildInstallSimulationCommand(
+            path.join(systemHomeDir, ".local", "bin", "agent"),
+            managedCaptureDir,
+          );
+        }
         // Exercise actual bounded file reads during managed-home restoration;
         // reporting empty success for every shell command hides missing bytes.
-        return runChildProcess(`cursor-fresh-lease-${runnerState.commands.length}`, input.command, input.args ?? [], {
+        return runChildProcess(`cursor-fresh-lease-${runnerState.commands.length}`, input.command, args, {
           cwd: remoteWorkspace,
-          env: { ...input.env, PATH: `${input.env?.PATH ?? ""}:/usr/bin:/bin` },
+          env: {
+            ...input.env,
+            PATH: `${fixtureBinDir}:${input.env?.PATH ?? ""}:/usr/bin:/bin`,
+            FIXTURE_CURL_ATTEMPT_PATH: networkAttemptPath,
+          },
           stdin: input.stdin,
           timeoutSec: 30,
           graceSec: 5,
@@ -402,7 +424,11 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       });
 
       expect(result.exitCode).toBe(0);
+      await expect(fs.stat(networkAttemptPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(runnerState.installCommands).toEqual([SANDBOX_INSTALL_COMMAND]);
       expect(prepareInputs).toHaveLength(2);
+      expect(prepareInputs[1].env.HOME).toBeTruthy();
+      expect(prepareInputs[1].env.HOME).not.toBe(systemHomeDir);
       expect(finalPreparedCommand).not.toBeNull();
       expect(finalPreparedCommand).toMatch(/\.local\/(bin|sbin)\/agent$/);
       const resolvedCommand = runMeta.find(Boolean)?.command as string | undefined;

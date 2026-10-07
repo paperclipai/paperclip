@@ -11,6 +11,8 @@ export interface ExecutionBlocker {
   canContinue?: boolean;
   /** Explicit Retry candidate; the server rechecks stop proof and execution gates. */
   canRetry?: boolean;
+  /** Required workspace files must be recovered before another provider turn. */
+  workspaceRepairRequired?: boolean;
   savedMessageCount?: number;
 }
 

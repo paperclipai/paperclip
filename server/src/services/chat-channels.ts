@@ -1467,8 +1467,8 @@ export interface ChatChannelServiceOptions {
   /** Optional verified ingress origin; never used for board or identity links. */
   webhookPublicBaseUrl?: string | null;
   runtime?: ChatSdkRuntime;
-  /** Testable scheduler hook; production defaults to the next event-loop turn. */
-  scheduleDeferredWork?: (task: () => void) => void;
+  /** Testable scheduler hook; its callback settles after the tracked work finishes. */
+  scheduleDeferredWork?: (task: () => void | Promise<void>) => void;
   /** Test boundary after selecting due Slack status work and before claiming. */
   slackSessionSyncSelectionBarrier?: () => Promise<void>;
   /** Narrow fault-injection boundary for the one-time setup-secret audit. */
@@ -3441,6 +3441,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       });
       backgroundMessageTasks.add(pending);
       void pending.finally(() => backgroundMessageTasks.delete(pending));
+      return pending;
     });
   }
 

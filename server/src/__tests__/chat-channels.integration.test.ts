@@ -16000,7 +16000,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   it("reorders rapid Slack callbacks by provider time before one conversation drain", async () => {
     const fixture = await seedCompany();
     const runtime = new FakeChatSdkRuntime();
-    const deferred: Array<() => void> = [];
+    const deferred: Array<() => void | Promise<void>> = [];
+    let releaseFirstDelivery!: () => void;
+    let signalFirstDelivery!: () => void;
+    const firstDeliveryEntered = new Promise<void>((resolve) => { signalFirstDelivery = resolve; });
+    const firstDeliveryReleased = new Promise<void>((resolve) => { releaseFirstDelivery = resolve; });
+    let firstDelivery = true;
     const wakeup = vi.fn(async () => ({ accepted: true }));
     const service = chatChannelService(db, {
       deferWebhookProcessing: true,
@@ -16009,6 +16014,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       publicBaseUrl: "https://paperclip.example",
       runtime: runtime as unknown as ChatSdkRuntime,
       scheduleDeferredWork: (task) => deferred.push(task),
+      reachAuthorizationBarrier: async () => {
+        if (!firstDelivery) return;
+        firstDelivery = false;
+        signalFirstDelivery();
+        await firstDeliveryReleased;
+      },
     });
     const endpoint = await service.create(
       fixture.companyId,
@@ -16127,69 +16138,54 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       publicBaseUrl: "https://paperclip.example",
       runtime: new FakeChatSdkRuntime() as unknown as ChatSdkRuntime,
     });
-    deferred.shift()?.();
-    // Simulate another server process reconciling the same durable rows at
-    // the same time as the webhook process's deferred drain.
-    await competingService.processPendingDeliveries();
-    await vi.waitFor(async () => {
-      const rows = await db
+    let drainSettled = false;
+    const draining = Promise.resolve(deferred.shift()?.()).then(() => { drainSettled = true; });
+    try {
+      // Hold the deferred owner after it acquires the conversation lease. The
+      // competing sweep must finish without overtaking that owner.
+      await firstDeliveryEntered;
+      await competingService.processPendingDeliveries();
+      expect(drainSettled).toBe(false);
+      expect(wakeup.mock.calls.filter((call) => call[0] === fixture.assignedAgentId)).toHaveLength(0);
+      releaseFirstDelivery();
+      await draining;
+      expect(drainSettled).toBe(true);
+      const conversations = await db
         .select()
         .from(chatConversations)
         .where(eq(chatConversations.endpointId, endpoint.id));
-      expect(rows).toHaveLength(1);
-    });
-    const [conversation] = await db
-      .select()
-      .from(chatConversations)
-      .where(eq(chatConversations.endpointId, endpoint.id));
-    await vi.waitFor(async () => {
-      const rows = await db
-        .select({ id: issueComments.id })
+      expect(conversations).toHaveLength(1);
+      const [conversation] = conversations;
+      const comments = await db
+        .select({ id: issueComments.id, body: issueComments.body })
         .from(issueComments)
-        .where(eq(issueComments.issueId, conversation.issueId));
-      expect(rows).toHaveLength(8);
-    });
-    const comments = await db
-      .select({ id: issueComments.id, body: issueComments.body })
-      .from(issueComments)
-      .where(eq(issueComments.issueId, conversation.issueId))
-      .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
-    expect(comments.map((comment) => comment.body)).toEqual([
-      "@maya acknowledge quickly",
-      "follow-up 3",
-      "follow-up 4",
-      "follow-up 5",
-      "and include the rollback status",
-      "follow-up 6",
-      "follow-up 7",
-      "follow-up 8",
-    ]);
-    // Comment admission commits before the durable wake. Wait for this
-    // company's last wake too, not merely its already-visible last comment.
-    // The competing sweep may legitimately reconcile another fixture company.
-    await vi.waitFor(() => {
-      const calls = wakeup.mock.calls.filter(
-        (call) => call[0] === fixture.assignedAgentId,
-      );
+        .where(eq(issueComments.issueId, conversation.issueId))
+        .orderBy(asc(issueComments.createdAt), asc(issueComments.id));
+      expect(comments.map((comment) => comment.body)).toEqual([
+        "@maya acknowledge quickly",
+        "follow-up 3",
+        "follow-up 4",
+        "follow-up 5",
+        "and include the rollback status",
+        "follow-up 6",
+        "follow-up 7",
+        "follow-up 8",
+      ]);
+      // Joining the owner includes all comment admissions, durable wakeups and
+      // lease release. These assertions do not race a one-second polling budget.
+      expect(comments).toHaveLength(8);
+      const calls = wakeup.mock.calls.filter((call) => call[0] === fixture.assignedAgentId);
       expect(calls).toHaveLength(8);
-      expect(calls.map((call) => call[1]?.payload?.wakeCommentId)).toEqual(
-        comments.map((comment) => comment.id),
-      );
-    });
-    // The last comment and wakeup commit inside the lease. Under full-suite
-    // load the assertions above can observe those effects one microtask before
-    // the deferred owner's `finally` deletes its lease. Require prompt eventual
-    // release; a real leak would remain for the much longer lease TTL.
-    await vi.waitFor(async () => {
+      expect(calls.map((call) => call[1]?.payload?.wakeCommentId)).toEqual(comments.map((comment) => comment.id));
       expect(
-        await db
-          .select()
-          .from(chatEndpointLeases)
-          .where(eq(chatEndpointLeases.endpointId, endpoint.id)),
+        await db.select().from(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, endpoint.id)),
       ).toHaveLength(0);
-    });
-    await competingService.shutdown();
-    await service.shutdown();
+    } finally {
+      releaseFirstDelivery();
+      await draining;
+      await competingService.shutdown();
+      await service.shutdown();
+    }
   });
 
   it("stops a conversation drain after its lease renewal fails", async () => {
@@ -61921,8 +61917,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).resolves.toMatchObject({ ok: true });
     expect(deferred).toHaveLength(1);
     await drainDeferred();
-    await vi.waitFor(() => expect(deferred).toHaveLength(1));
-    await drainDeferred();
+    // Awaiting each callback also drains the lifecycle work it queues.
+    expect(deferred).toHaveLength(0);
     await vi.waitFor(async () => {
       await expect(
         db

@@ -37,6 +37,7 @@ import {
 } from "./codex-auth-cache.js";
 import { resolveCodexExecutionEngineForRun, testCodexAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { checkCodexCliVersionForModel, codexHelloProbeModelRejectionCheck } from "./cli-version.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -383,7 +384,34 @@ export async function testEnvironment(
 
   const canRunProbe =
     checks.every((check) => check.code !== "codex_cwd_invalid" && check.code !== "codex_command_unresolvable");
-  if (canRunProbe) {
+  // Models with a verified CLI floor are compared against the installed Codex
+  // before the hello probe. A probe on an older CLI only produces the backend's
+  // "not supported when using Codex with a ChatGPT account" rejection, which
+  // hides the real gap: the CLI (often a stale sandbox image), not the account.
+  let detectedCliVersion: string | null = null;
+  let configuredModelIsCompatible = true;
+  if (canRunProbe && commandLooksLike(command, "codex")) {
+    const versionCheck = await checkCodexCliVersionForModel({
+      runId,
+      model: asString(config.model, ""),
+      command,
+      target,
+      cwd,
+      env,
+    });
+    if (versionCheck) {
+      checks.push(versionCheck.check);
+      configuredModelIsCompatible = versionCheck.compatible;
+      detectedCliVersion = versionCheck.detectedVersion;
+    }
+  }
+  if (canRunProbe && !configuredModelIsCompatible) {
+    checks.push({
+      code: "codex_hello_probe_skipped_cli_version",
+      level: "info",
+      message: "Skipped hello probe because the installed Codex CLI cannot use the configured model.",
+    });
+  } else if (canRunProbe) {
     if (!commandLooksLike(command, "codex")) {
       checks.push({
         code: "codex_hello_probe_skipped_custom_command",
@@ -525,7 +553,12 @@ export async function testEnvironment(
             });
           }
         } else {
-          checks.push({
+          const modelRejection = codexHelloProbeModelRejectionCheck({
+            evidence: `${parsed.errorMessage ?? ""}\n${providerStderr}\n${probe.stdout}`,
+            detectedVersion: detectedCliVersion,
+            targetIsSandbox,
+          });
+          checks.push(modelRejection ?? {
             code: "codex_hello_probe_failed",
             level: "error",
             message: "Codex hello probe failed.",
