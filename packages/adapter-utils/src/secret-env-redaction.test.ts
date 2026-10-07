@@ -238,6 +238,23 @@ describe("createSecretEnvRedactionScanner", () => {
     },
   );
 
+  it.each(["cost", "costUsd", "costUSD", "cost_usd", "total_cost_usd", "total", "co\\u0073t"])(
+    "marks a redacted numeric %s unknown instead of zero", (key) => {
+      const scan = createSecretEnvRedactionScanner(["123456"], 1024);
+      scan.append(`{"type":"step_finish","part":{"${key}":0.123456,"tokens":{"input":123456,"output":7}}}`);
+      const part = JSON.parse(scan.snapshot()).part;
+      expect(part[JSON.parse(`"${key}"`)]).toBeNull();
+      expect(part.tokens).toEqual({ input: 0, output: 7 });
+      expect(scan.snapshot()).not.toContain("123456");
+    },
+  );
+
+  it("preserves genuine zero prices and unrelated numeric fields", () => {
+    const scan = createSecretEnvRedactionScanner(["123456"], 1024);
+    scan.append('{"type":"turn_end","message":{"usage":{"cost":{"total":0},"input":123456}}}');
+    expect(JSON.parse(scan.snapshot()).message.usage).toEqual({ cost: { total: 0 }, input: 0 });
+  });
+
   it("inspects complete candidates before retention without waiting for EOF", () => {
     const scan = createSecretEnvRedactionScanner(["123456"], 8);
     let inspected = "";

@@ -192,9 +192,16 @@ function redactControlLine(line: string, ranges: readonly RedactionRange[]): str
       range.to > token.index + token.text.length - (string ? 1 : 0)) {
       return REDACTED_SECRET_ENV_VALUE;
     }
+    const keyToken = tokens[tokenIndex - 1];
+    const key = keyToken?.text.startsWith('"') &&
+      /^\s*:\s*$/.test(line.slice(keyToken.index + keyToken.text.length, token.index))
+      ? JSON.parse(keyToken.text) as string : "";
+    // A redacted price is unknown, not a genuine free/zero-cost record. Keep
+    // counters parseable as before, but let cost parsers reject missing prices.
+    const numericReplacement = /^(?:cost|cost_?usd|total_cost_usd|total)$/i.test(key) ? "null" : "0";
     replacements.set(token.index, {
       to: token.index + token.text.length,
-      value: token.text.startsWith('"') ? JSON.stringify(REDACTED_SECRET_ENV_VALUE) : "0",
+      value: token.text.startsWith('"') ? JSON.stringify(REDACTED_SECRET_ENV_VALUE) : numericReplacement,
     });
   }
   let output = "";

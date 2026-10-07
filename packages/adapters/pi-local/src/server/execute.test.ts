@@ -15,6 +15,8 @@ vi.mock("./models.js", async (importOriginal) => {
 import { execute } from "./execute.js";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
+import { createSecretEnvRedactionScanner, redactKnownSecretEnvValues } from "@paperclipai/adapter-utils/secret-env-redaction";
+import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 
 const runProcessMock = vi.mocked(runAdapterExecutionTargetProcess);
 
@@ -39,7 +41,7 @@ describe("Pi cost accounting when redaction hides a display record", () => {
 
   // Display text is what the redacted log carries; control text is the
   // sanitized copy, where the same counter becomes 0 and stays parseable.
-  async function run(display: string[], control: string[]) {
+  async function run(display: string[], control: string[], onUsage?: (receipt: AdapterUsageCheckpoint) => Promise<void>) {
     const commandPath = path.join(home, "fake-pi");
     await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     runProcessMock.mockReset();
@@ -58,6 +60,7 @@ describe("Pi cost accounting when redaction hides a display record", () => {
       config: { command: commandPath, cwd: home, model: "openai/gpt-5" },
       context: createPromptContextFixture(),
       onLog: async () => {},
+      onUsage,
     });
   }
 
@@ -69,6 +72,66 @@ describe("Pi cost accounting when redaction hides a display record", () => {
   it("reports unknown instead of a partial sum when control also lost a record", async () => {
     const result = await run([redacted(), turn(5), turn(6)], [turn(6)]);
     expect(result.costUsd).toBeNull();
+  });
+
+  async function runRedacted(records: string[], onUsage?: (receipt: AdapterUsageCheckpoint) => Promise<void>) {
+    const raw = records.join("\n");
+    const control = createSecretEnvRedactionScanner(["123456"], 1024 * 1024);
+    control.append(raw);
+    return run([redactKnownSecretEnvValues(raw, ["123456"])], [control.snapshot()], onUsage);
+  }
+
+  it.each([false, true])("reports a redacted price as unknown (later priced turn=%s)", async later => {
+    const result = await runRedacted([turn(4, 0.123456), ...(later ? [turn(5)] : [])]);
+    expect(result.costUsd).toBeNull();
+  });
+
+  it("preserves genuine zero cost", async () => {
+    expect((await runRedacted([turn(4, 0)])).costUsd).toBe(0);
+  });
+
+  it("ignores damaged content events with accounting words", async () => {
+    const text = JSON.stringify({ type: "message_update", assistantMessageEvent: {
+      type: "text_delta", delta: 'Discuss "cost" and tokens', cost: 123456,
+    } });
+    expect((await runRedacted([text, turn(4), turn(5)])).costUsd).toBeCloseTo(0.005, 6);
+  });
+
+  it("does not count message_end duplicates as additional priced turns", async () => {
+    const message = JSON.stringify({ ...JSON.parse(turn(123456)), type: "message_end" });
+    expect((await runRedacted([message, turn(123456), turn(5)])).costUsd).toBeCloseTo(0.005, 6);
+  });
+
+  it("counts a damaged partial numeric token once", async () => {
+    expect((await runRedacted([turn(912345678), turn(5)])).costUsd).toBeCloseTo(0.005, 6);
+  });
+
+  it.each([0.123456123456, 0.1234567123456])("keeps repeatedly redacted prices unknown (%s)", async price => {
+    expect((await runRedacted([turn(4, price), turn(5)])).costUsd).toBeNull();
+  });
+
+  it("recovers priced records whose counters contain repeated matches", async () => {
+    expect((await runRedacted([turn(123456123456), turn(5)])).costUsd).toBeCloseTo(0.005, 6);
+  });
+
+  it("does not fall back from a redacted primary price to a direct zero", async () => {
+    const usage = JSON.stringify({ type: "usage", usage: { input: 4, output: 7, cost: { total: 0.123456 }, costUsd: 0 } });
+    expect((await runRedacted([usage, turn(5)])).costUsd).toBeNull();
+  });
+
+  it.each(["response", "extension_ui_request", "extension_ui_response", "extension_error", "agent_start", "agent_end", "auto_retry_end", "turn_start", "message_update", "error", "tool_execution_start", "tool_execution_end"])(
+    "does not count ignored %s envelopes with top-level usage", async type => {
+      const content = JSON.stringify({ type, usage: { input: 123456 } });
+      expect((await runRedacted([content, turn(4), turn(5)])).costUsd).toBeCloseTo(0.005, 6);
+    },
+  );
+
+  it("never publishes a complete priced subtotal after a lost display record", async () => {
+    const onUsage = vi.fn(async (_receipt: AdapterUsageCheckpoint) => {});
+    const result = await runRedacted([turn(4, 0.123456), turn(5), '{"type":"agent_end","messages":[]}'], onUsage);
+    expect(result.costUsd).toBeNull();
+    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: null, costStatus: "unpriced", complete: true }));
+    expect(onUsage.mock.calls.at(-1)![0].usage).toMatchObject({ costUsd: null });
   });
 
   it("leaves a fully readable stream on the checkpoint total", async () => {

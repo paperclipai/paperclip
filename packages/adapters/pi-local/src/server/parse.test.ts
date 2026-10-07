@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { parsePiJsonl, isPiUnknownSessionError } from "./parse.js";
 
 describe("parsePiJsonl", () => {
+  it.each([null, "***REDACTED***"])("does not fall back from an explicitly unavailable primary price (%s)", total => {
+    const parsed = parsePiJsonl(JSON.stringify({ type: "usage", usage: { cost: { total }, costUsd: 0 } }));
+    expect(parsed.usage.costUsd).toBeNull();
+    expect(parsed.costComplete).toBe(false);
+  });
+
+  it("uses a direct price only when the primary price is absent", () => {
+    const parsed = parsePiJsonl(JSON.stringify({ type: "usage", usage: { cost: {}, costUsd: 0 } }));
+    expect(parsed.usage.costUsd).toBe(0);
+    expect(parsed.costComplete).toBe(true);
+  });
   it("parses agent lifecycle and messages", () => {
     const stdout = [
       JSON.stringify({ type: "agent_start" }),

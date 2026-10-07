@@ -24,6 +24,19 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+const nonCostEvents = new Set([
+  "response", "extension_ui_request", "extension_ui_response", "extension_error",
+  "agent_start", "agent_end", "auto_retry_end", "turn_start", "message_update", "error",
+  "tool_execution_start", "tool_execution_end",
+]);
+
+/** The same cost-bearing envelopes used by parsing and lost-record accounting. */
+export function piCostUsage(event: Record<string, unknown>): Record<string, unknown> | null {
+  const type = asString(event.type, "");
+  if (nonCostEvents.has(type)) return null;
+  return asRecord(type === "turn_end" ? asRecord(event.message)?.usage : event.usage);
+}
+
 function extractTextContent(content: string | Array<{ type: string; text?: string }>): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -137,7 +150,7 @@ export function createPiJsonlParser() {
           }
 
           // Extract usage and cost from assistant message
-          const usage = asRecord(message.usage);
+          const usage = piCostUsage(event);
           if (usage) {
             result.usage.inputTokens += asNumber(usage.input, 0) + asNumber(usage.cacheWrite, 0);
             result.usage.outputTokens += asNumber(usage.output, 0);
@@ -230,7 +243,7 @@ export function createPiJsonlParser() {
 
       // Usage tracking if available in the event (fallback for standalone usage events)
       if (eventType === "usage" || event.usage) {
-        const usage = asRecord(event.usage);
+        const usage = piCostUsage(event);
         if (usage) {
           // Support both Pi format (input/output/cacheRead) and generic format (inputTokens/outputTokens/cachedInputTokens)
           result.usage.inputTokens += asNumber(usage.inputTokens ?? usage.input, 0) + asNumber(usage.cacheWrite, 0);
@@ -239,7 +252,9 @@ export function createPiJsonlParser() {
 
           // Cost may be in usage.costUsd (direct) or usage.cost.total (Pi format)
           const cost = asRecord(usage.cost);
-          addCost(cost?.total ?? usage.costUsd);
+          // An explicit unavailable primary price is not permission to use a
+          // lower-priority fallback (control redaction uses null for unknown).
+          addCost(cost && Object.hasOwn(cost, "total") ? cost.total : usage.costUsd);
         }
       }
     }

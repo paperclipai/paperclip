@@ -57,7 +57,7 @@ import {
   sanitizeInheritedPaperclipEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
-import { isPiUnknownSessionError, parsePiJsonl, createPiJsonlParser, parsePiProcessOutput } from "./parse.js";
+import { isPiUnknownSessionError, parsePiJsonl, createPiJsonlParser, parsePiProcessOutput, piCostUsage } from "./parse.js";
 import { createPiStdoutCompactor, resolvePiStdoutLogMode } from "./stdout-compaction.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 import { preparePiRuntimeConfig } from "./runtime-config.js";
@@ -768,7 +768,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         hasAccounting = true;
         const parsed = consumeAccounting(stdout);
         return { usage: parsed.usage, costUsd: parsed.usage.costUsd, usageBasis: "per_run", provider, biller: resolvePiBiller(runtimeEnv, provider), billingType: "unknown", model, complete: parsed.sawAgentEnd };
-      });
+      }, event => piCostUsage(event) !== null);
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
         cwd,

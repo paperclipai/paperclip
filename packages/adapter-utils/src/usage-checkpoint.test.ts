@@ -100,6 +100,19 @@ describe("usage checkpoint stream", () => {
     await expect(log.flush()).rejects.toBe(failure);
   });
 
+  it("clears every price representation when the display lost a cost record", async () => {
+    const saved = vi.fn();
+    const log = createUsageCheckpointLog(vi.fn(), saved, () => ({
+      usage: { inputTokens: 2, outputTokens: 1 }, costUsd: 0.25, costUsdExact: "0.25",
+      cacheAdjustedCostUsd: 0.25, usageByModel: [{ model: "example", usage: { inputTokens: 2, outputTokens: 1 }, costUsd: 0.25 }], complete: false,
+    }));
+    await log("stdout", '{"type":"step_finish","part":{"cost":***REDACTED***}}\n');
+    await log("stdout", event + "\n");
+    await log.flush({ complete: true });
+    expect(saved).toHaveBeenLastCalledWith(expect.objectContaining({ costUsd: null, costUsdExact: null, cacheAdjustedCostUsd: null, costStatus: "unpriced", complete: true }));
+    expect(saved.mock.calls.at(-1)![0].usageByModel).toBeUndefined();
+  });
+
   it("does not promote partial usage to complete merely because the stream was flushed", async () => {
     const saved = vi.fn(); const log = createUsageCheckpointLog(vi.fn(), saved, createParser());
     await log("stdout", event); await log.flush();
@@ -142,6 +155,29 @@ describe("usage checkpoint stream", () => {
 
     it("counts an accounting line whose numeric counter was replaced by the marker", async () => {
       expect(await run(damagedStep, damagedStep)).toBe(2);
+    });
+
+    it("recognizes partial and repeated secret matches within one numeric token", async () => {
+      expect(await run(
+        damagedStep.replace(`:${marker},`, `:91${marker}78,`),
+        damagedStep.replace(`:${marker},`, `:91${marker}${marker}78,`),
+        damagedStep.replace(`:${marker},`, `:91${marker}7${marker}78,`),
+      )).toBe(3);
+    });
+
+    it("does not count accounting words, nested envelopes, or Pi message duplicates as costs", async () => {
+      expect(await run(
+        `{"type":"text","part":{"text":"cost usage tokens step_finish turn_end","cost":${marker}}}`,
+        `{"type":"text","part":{"type":"step_finish","tokens":{"input":${marker}}}}`,
+        `{"type":"message_end","message":{"role":"assistant","usage":{"input":${marker},"cost":{"total":0.0025}}}}`,
+      )).toBe(0);
+    });
+
+    it("counts Pi turns and standalone usage, not words in their content", async () => {
+      expect(await run(
+        `{"type":"turn_end","message":{"usage":{"input":${marker},"cost":{"total":0.0025}}}}`,
+        `{"type":"usage","usage":{"costUsd":${marker}}}`,
+      )).toBe(2);
     });
 
     it("counts a marker-damaged line that is still unterminated at flush", async () => {

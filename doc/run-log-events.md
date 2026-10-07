@@ -128,9 +128,12 @@ pipe, without waiting for asynchronous logging. Display capture and `onLog` stil
 use literal markers; they need not remain valid JSON.
 
 For a valid single-line JSON record, control sanitization replaces each affected
-string token (including keys) with the quoted marker and each affected numeric
-token with `0`. Unaffected tokens remain unchanged. A matched span crossing
-record structure suppresses that record instead of making a new control event.
+string token (including keys) with the quoted marker. Affected numeric prices
+(`cost`, `costUsd`, `costUSD`, `cost_usd`, `total_cost_usd`, or `total`) become
+`null`, not a genuine zero price; other affected numeric tokens become `0`.
+Property names are decoded before classification. Unaffected tokens, including
+real zero prices, remain unchanged. A matched span crossing record structure
+suppresses that record instead of making a new control event.
 A changed malformed JSON-looking line is also suppressed, not repaired. Supported
 Cursor `stdout`/`stderr` framing is recognized before validating the original JSON
 payload; sanitization preserves that frame and uses payload-relative token offsets.
@@ -138,6 +141,25 @@ Malformed framed payloads are not repaired into controls. This preserves genuine
 result records and unaffected accounting; a protected numeric counter itself is not
 recoverable and is neutralized. Other text uses literal replacement. This is not a
 general structured-output sanitizer for all formats.
+
+Pi and OpenCode reconcile control accounting with full-stream display checkpoints.
+A redacted price stays unknown even when later records are priced. If numeric
+redaction makes a display line unreadable, the checkpoint classifies its event
+envelope to count lost cost records. Quoted content remains intact, while an
+unquoted marker and any adjoining numeric-token characters become `null` in a
+temporary classification-only copy. Adjacent or separated markers within one
+numeric token are classified together. That copy is never retained, consumed as
+accounting, or promoted to control output. Each adapter supplies its actual
+cost-envelope predicate: OpenCode counts only `step_finish`; Pi shares its usage
+selection between parsing and classification, excluding envelopes its parser skips.
+Pi `message_end` duplicates with nested usage do not count as lost priced turns.
+An explicitly unavailable Pi primary price cannot enable the direct-price fallback.
+A classified lost record requires complete control evidence covering the expected
+number of cost records; otherwise the total is unknown. Checkpoint callbacks mark
+all price representations unavailable after losing a display cost record, even on
+completion; final control reconciliation may recover a price, but the lower-bound
+checkpoint never advertises a fully priced subtotal. An unclassifiable damaged line
+provides no accounting evidence.
 
 The private terminal scan inspects each full candidate before retaining its
 64-Ki-character tail. The final control capture uses the existing four-Mi-character

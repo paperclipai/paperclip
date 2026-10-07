@@ -12,8 +12,26 @@ const fields = new Set([
   "thoughtsTokenCount", "inputTokens", "totalTokens", "cached", "thoughts", "total_cost_usd", "cost_usd", "costUSD", "costUsd",
 ]);
 const stringFields = new Set(["type", "subtype", "role", "id", "session_id", "sessionID", "thread_id", "model", "modelID", "providerID"]);
-/** A JSON object line naming an accounting field or a usage-bearing record type. */
-const unreadAccountingRecord = /^\s*\{.*"(?:usage|tokens|cost|costUsd|cost_usd|total_cost_usd|step_finish|turn_end|result)"/;
+/** Classify lost cost records by their envelope, never by words in content.
+ * This temporary reconstruction is only for counting: it must not be retained,
+ * consumed by a parser, or promoted to control output. Quoted strings stay intact;
+ * a marker inside a numeric token makes the entire token unavailable. */
+function unreadAccountingRecord(line: string, isCostRecord?: (event: Record<string, unknown>) => boolean): boolean {
+  try {
+    const classification = line.replace(
+      /"(?:[^"\\]|\\.)*"|(?:[-+\d.eE]*\*\*\*REDACTED\*\*\*)+[-+\d.eE]*/g,
+      token => token.startsWith('"') ? token : "null",
+    );
+    const event = JSON.parse(classification);
+    if (!event || typeof event !== "object" || Array.isArray(event)) return false;
+    if (isCostRecord) return isCostRecord(event);
+    if (event.type === "step_finish") return true;
+    const usage = event?.type === "turn_end" ? event.message?.usage : event?.usage;
+    return usage !== null && typeof usage === "object" && !Array.isArray(usage);
+  } catch {
+    return false;
+  }
+}
 function project(value: unknown, depth = 0, field = ""): unknown {
   if (depth > 8) return undefined;
   if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
@@ -71,6 +89,7 @@ export function createUsageCheckpointLog(
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
   onUsage: ((receipt: AdapterUsageCheckpoint) => Promise<void>) | undefined,
   consume: (records: string) => AdapterUsageCheckpoint | null,
+  isCostRecord?: (event: Record<string, unknown>) => boolean,
 ) {
   const attemptId = randomUUID();
   const compactStrings = createStringCompactor();
@@ -85,7 +104,7 @@ export function createUsageCheckpointLog(
       // Literal redaction of a numeric counter or price leaves the marker where
       // a number belonged, so the display record no longer parses. Count it:
       // the checkpoint's totals exclude it and its sum is only a lower bound.
-      if (line.includes(REDACTED_SECRET_ENV_VALUE) && unreadAccountingRecord.test(line)) unreadRecords++;
+      if (line.includes(REDACTED_SECRET_ENV_VALUE) && unreadAccountingRecord(line, isCostRecord)) unreadRecords++;
       return;
     }
     const compact = JSON.stringify(project(raw));
@@ -101,7 +120,15 @@ export function createUsageCheckpointLog(
     }
     const parsed = snapshot;
     if (!parsed) return;
-    const receipt = { ...parsed, complete: parsed.complete || complete };
+    const receipt: AdapterUsageCheckpoint = { ...parsed, complete: parsed.complete || complete };
+    if (unreadRecords > 0) {
+      // Display totals are only lower bounds until final control reconciliation.
+      // Never persist their price as complete, including nested Pi price metadata.
+      const usage = parsed.usage ? { ...parsed.usage } : undefined;
+      if (usage && "costUsd" in usage) usage.costUsd = null;
+      Object.assign(receipt, { usage, costUsd: null, costUsdExact: null,
+        cacheAdjustedCostUsd: null, usageByModel: undefined, costStatus: "unpriced" });
+    }
     if (!receipt.complete && receipt.costStatus !== "unpriced" && receipt.costUsd == null && receipt.costUsdExact == null &&
       !Object.values(receipt.usage ?? {}).some(value => typeof value === "number" && value > 0)) return;
     const serialized = JSON.stringify(receipt);
