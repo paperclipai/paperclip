@@ -7,8 +7,26 @@ import {
   companySkillInstallCatalogSchema,
   companySkillInstallUpdateSchema,
   companySkillResetSchema,
+  companySkillTestRunCostSummarySchema,
   companySkillUpdateStatusSchema,
 } from "./company-skill.js";
+
+describe("skill test run cost summary", () => {
+  const tokens = { inputTokens: 10, cachedInputTokens: 5, outputTokens: 2 };
+
+  it.each([0, 0.0000001, 0.1234567, 25, 4_000_000_000.125])("preserves valid cents: %s", (costCents) => {
+    const response = { ...tokens, costCents };
+    expect(companySkillTestRunCostSummarySchema.parse(response)).toEqual(response);
+  });
+
+  it.each([-0.0000001, -1, NaN, Infinity, -Infinity, "0.1234567", null])("rejects invalid cents: %s", (costCents) => {
+    expect(companySkillTestRunCostSummarySchema.safeParse({ ...tokens, costCents }).success).toBe(false);
+  });
+
+  it.each(["inputTokens", "cachedInputTokens", "outputTokens"])("still requires whole %s", (field) => {
+    expect(companySkillTestRunCostSummarySchema.safeParse({ ...tokens, costCents: 0.1234567, [field]: 0.5 }).success).toBe(false);
+  });
+});
 
 const catalogSkill = {
   id: "paperclipai:bundled:software-development:review",

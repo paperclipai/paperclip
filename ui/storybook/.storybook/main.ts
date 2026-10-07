@@ -1,9 +1,11 @@
 import path from "node:path";
+import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { StorybookConfig } from "@storybook/react-vite";
 import tailwindcss from "@tailwindcss/vite";
 import { mergeConfig } from "vite";
 import { storybookAgentAvatarAssets } from "../../../scripts/storybook-agent-avatar-assets.mjs";
+import { storybookAllowedHosts } from "../allowed-hosts";
 
 const storybookConfigDir = path.dirname(fileURLToPath(import.meta.url));
 const paperclipInstanceOrigin = (() => {
@@ -16,6 +18,9 @@ const paperclipInstanceOrigin = (() => {
 })();
 
 const config: StorybookConfig = {
+  // Preserve LAN access without accepting DNS-rebinding hostnames. Storybook
+  // forwards this exact allowlist to Vite and websocket origin validation.
+  core: { allowedHosts: storybookAllowedHosts(hostname(), process.env.PAPERCLIP_STORYBOOK_ALLOWED_HOSTS) },
   stories: ["../stories/**/*.stories.@(ts|tsx|mdx)"],
   staticDirs: ["../../public", "../public"],
   addons: ["@storybook/addon-docs", "@storybook/addon-a11y"],

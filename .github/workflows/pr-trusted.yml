@@ -616,16 +616,20 @@ jobs:
           restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
 
       - name: Install dependencies
-        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
-        # stale for the merge tree. Resolve it inline instead of waiting on a
-        # policy-job artifact: that dependency put the policy job's queue and
-        # runtime (~60s) on every lane's critical path, and policy still
-        # validates resolution as a required check in parallel.
+        id: install_dependencies
+        env:
+          ACCOUNTING_GATE: ${{ matrix.group == 'general-server-without-chat' && matrix.shard_index == 0 }}
+        # Coverage is executable evidence: its lane must use the reviewed lock.
+        # The repository bot refreshes stale locks; never resolve its provider here.
         run: |
-          if ! pnpm install --frozen-lockfile; then
-            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
-            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+          if [ "$ACCOUNTING_GATE" = "true" ]; then
             pnpm install --frozen-lockfile
+          else
+            if ! pnpm install --frozen-lockfile; then
+              echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+              pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+              pnpm install --frozen-lockfile
+            fi
           fi
 
       - name: Run grouped general test suites
@@ -636,6 +640,22 @@ jobs:
           else
             pnpm test:run:general -- --group '${{ matrix.group }}'
           fi
+
+      - name: Verify accounting coverage and crash recovery
+        if: ${{ !cancelled() && steps.install_dependencies.outcome == 'success' && matrix.group == 'general-server-without-chat' && matrix.shard_index == 0 }}
+        run: |
+          node --test scripts/test-accounting-mutations.test.mjs scripts/verify-accounting-test-results.test.mjs
+          pnpm --filter @paperclipai/paperclip-runner build:typescript
+          pnpm test:accounting
+
+      - name: Upload accounting coverage
+        if: ${{ !cancelled() && steps.install_dependencies.outcome == 'success' && matrix.group == 'general-server-without-chat' && matrix.shard_index == 0 }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: accounting-coverage
+          path: coverage/accounting/
+          if-no-files-found: error
+          retention-days: 14
 
   docker_context_integrity:
     name: Docker context integrity

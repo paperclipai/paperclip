@@ -809,6 +809,36 @@ describe("openapi routes", () => {
     });
   });
 
+  it("documents exact money, reviewed correction inputs, and board-only accounting access", () => {
+    const { spec } = loadSpecRoutes();
+    const base = "/api/companies/{companyId}/accounting/";
+    for (const [suffix, methods] of [
+      ["health", ["get"]], ["inspect", ["get"]], ["repair", ["post"]], ["retry", ["post"]],
+      ["invoices", ["get", "post"]], ["invoices/{invoiceId}", ["get"]], ["events/{eventId}/adjustments", ["get", "post"]],
+    ] as const) {
+      for (const method of methods) {
+        const operation = spec.paths[`${base}${suffix}`][method];
+        expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+        expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+        expect(operation.responses["403"]).toBeDefined();
+      }
+    }
+    const adjustment = spec.paths[`${base}events/{eventId}/adjustments`].post;
+    expect(adjustment.responses["201"]).toBeDefined();
+    expect(adjustment.responses["409"]).toBeDefined();
+    expect(adjustment.responses["422"]).toBeDefined();
+    expect(adjustment.requestBody.content["application/json"].schema.required).toEqual(expect.arrayContaining([
+      "idempotencyKey", "expectedCents", "correctedCents", "reason", "pricing",
+    ]));
+    for (const [endpoint, field] of [["cost-events", "costCents"], ["finance-events", "amountCents"]]) {
+      const operation = spec.paths[`/api/companies/{companyId}/${endpoint}`].post;
+      expect(operation.requestBody.content["application/json"].schema.properties[field]).toMatchObject({ oneOf: [{ type: "string" }, { type: "number" }] });
+      expect(operation.responses["409"]).toBeDefined();
+    }
+    const parameters = spec.paths["/api/companies/{companyId}/costs/summary"].get.parameters;
+    expect(parameters).toEqual(expect.arrayContaining([expect.objectContaining({ name: "period", in: "query", schema: expect.objectContaining({ enum: ["month", "all"] }) })]));
+  });
+
   it("documents board-only repository discovery and selection", () => {
     const { spec } = loadSpecRoutes();
     const discovery = spec.paths["/api/companies/{companyId}/project-repositories"].get;

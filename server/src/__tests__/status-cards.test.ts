@@ -1137,7 +1137,7 @@ describeEmbeddedPostgres("status card routes", () => {
       model: "gpt-5.4",
       inputTokens: 5200,
       outputTokens: 980,
-      costCents: 2,
+      costCents: 0.1234567,
       occurredAt: new Date(),
     });
     const summaryWrite = await request(writerApp).put(`/api/status-cards/${created.body.id}/summary`).send({
@@ -1170,7 +1170,7 @@ describeEmbeddedPostgres("status card routes", () => {
       summaryBody: "**Decide:** unblock launch approval.\n\n**Recent work:** launch review is waiting.",
       watchedIssueCount: 1,
       todayTokens: 6180,
-      todayCostCents: 2,
+      todayCostCents: 0.1234567,
     };
     const detail = await request(boardApp).get(`/api/status-cards/${created.body.id}`);
     expect(detail.status).toBe(200);
@@ -1202,7 +1202,7 @@ describeEmbeddedPostgres("status card routes", () => {
       model: "gpt-5.4",
       inputTokens: 1300,
       outputTokens: 410,
-      costCents: 1,
+      costCents: 3_000_000_000.25,
       occurredAt: new Date(),
     });
     const incrementalWrite = await request(createApp(db, agentActor(company.id, summarizer.id, updateRun.id)))
@@ -1214,7 +1214,7 @@ describeEmbeddedPostgres("status card routes", () => {
         model: "gpt-5.4",
       });
     expect(incrementalWrite.status).toBe(200);
-    expect(await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.kind === "incremental"))).toMatchObject({ inputTokens: 1300, outputTokens: 410 });
+    expect(await db.select().from(statusCardUpdates).then((rows) => rows.find((row) => row.kind === "incremental"))).toMatchObject({ inputTokens: 1300, outputTokens: 410, costCents: 3_000_000_000.25 });
     const revisions = await request(boardApp).get(`/api/status-cards/${created.body.id}/summary-revisions`);
     expect(revisions.status).toBe(200);
     expect(revisions.body.map((row: { revisionNumber: number }) => row.revisionNumber)).toEqual([2, 1]);

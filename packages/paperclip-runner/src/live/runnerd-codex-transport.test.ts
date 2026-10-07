@@ -1996,6 +1996,23 @@ it("rehydrates durable cumulative usage for a cold thread read", () => {
   expect(rehydrateRunnerdThreadTokenUsage(null)).toBeNull();
 });
 
+it.each([true, false, undefined, null, "true", 1])(
+  "preserves explicit runner usage completeness (%j)",
+  (runDeltaAvailable) => {
+    const runDelta = { inputTokens: 0, outputTokens: 0, providerCostUsd: 0 };
+    const notification = rehydrateRunnerdUsageNotification(
+      { cumulative: { ...runDelta, providerCostUsd: 10 }, runDelta, runDeltaAvailable },
+      "thread",
+      "turn",
+    );
+    expect(notification.tokenUsage).toEqual({
+      total: { ...runDelta, providerCostUsd: 10 },
+      runDelta,
+      runDeltaComplete: runDeltaAvailable === true,
+    });
+  },
+);
+
 it("binds a durable semantic result to the active provider turn", () => {
   expect(
     rehydrateRunnerdResultNotification(

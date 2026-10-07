@@ -42,8 +42,33 @@ import {
   type PrpEvent,
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
+import { rehydrateRunnerdUsageNotification } from "../../live/runnerd-codex-transport.js";
 
 describe("Codex app-server Codex driver", () => {
+  it("preserves incomplete runner receipts through the ACPX driver and later recovery", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport], {
+      driverIdentity: { kind: "acpx_runtime", displayName: "ACPX", version: "test" },
+    }).openSession({ runId: "run-acpx-usage", normalizedSessionId: "session-acpx-usage", workingDirectory: WORKSPACE });
+    const turn = await session.startTurn({ message: { role: "user", text: "Work." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    for (const complete of [true, false, true]) {
+      transport.push("thread/tokenUsage/updated", rehydrateRunnerdUsageNotification({
+        provider: "acpx", runDeltaAvailable: complete,
+        cumulative: { inputTokens: 0, outputTokens: 0, providerCostUsd: 10 },
+        runDelta: { inputTokens: 12, outputTokens: complete ? 4 : 0, providerCostUsd: 0 },
+      }, "thread-1", turn.turnId));
+    }
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.filter(event => event.payload.kind === "usage").map(event => event.payload.usage)).toMatchObject([
+      { runDeltaComplete: true, runDelta: { inputTokens: 12, outputTokens: 4 } },
+      { runDeltaComplete: false, runDelta: { inputTokens: 12, outputTokens: 0 } },
+      { runDeltaComplete: true, runDelta: { inputTokens: 12, outputTokens: 4 } },
+    ]);
+    expect(await session.usage()).toMatchObject({ runDeltaComplete: true });
+  });
+
   it("admits a strictly bound semantic result from the durable runner", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

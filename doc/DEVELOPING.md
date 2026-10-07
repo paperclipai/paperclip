@@ -139,6 +139,26 @@ and sending use local fixtures. The live `/chats` and `/chats/:agentRef` routes
 use the same sidebar, picker, landing page, and existing chat surface when the
 Agent Chat experimental setting is enabled.
 
+The dev server listens on all network interfaces. From another computer, open
+`http://<this-machine-hostname>:6006/` using its local network name, `.local`
+name, or LAN/Tailscale IP. The machine's full hostname, short hostname, and
+short hostname plus `.local` are allowed automatically. For another DNS alias,
+set a comma- or whitespace-separated list of exact hostnames:
+
+```sh
+PAPERCLIP_STORYBOOK_ALLOWED_HOSTS=preview.example.internal,example.tail123.ts.net pnpm storybook
+```
+
+Entries cannot include schemes, ports, paths, or wildcard suffixes. Storybook's
+host validation applies to the manager, Vite preview, and live-reload websocket
+connections; arbitrary hostnames are rejected to prevent DNS rebinding.
+
+Use **Product → Costs → Overview** to review the shared Costs page in its
+default streamlined layout, including reported, estimated and partially
+estimated agent costs, subscription runs, and project-attributed run costs.
+The illustrative data stays in Storybook. The legacy standalone route uses the
+same page; its heading, breadcrumbs and Budgets tab are covered by UI tests.
+
 Use **Chat & Comments → Issue Thread Interactions → Composer Questions Auto Advance**
 to try the paged composer form. A single selection shows a brief checked-state animation before advancing to the
 next question. Reduced-motion mode advances without animation.

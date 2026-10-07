@@ -48,6 +48,8 @@ import type { issuesApi } from "../api/issues";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
+  getCostSummary: vi.fn(),
+  listApprovals: vi.fn(),
   list: vi.fn(),
   listAll: vi.fn(),
   listAcceptedPlanDecompositions: vi.fn(),
@@ -1326,6 +1328,8 @@ describe("IssueDetail", () => {
       text: async () => "# Attachment preview",
     } as Response);
 
+    mockIssuesApi.getCostSummary.mockResolvedValue(null);
+    mockIssuesApi.listApprovals.mockResolvedValue([]);
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listAll.mockImplementation((...args) => mockIssuesApi.list(...args));
     mockIssuesApi.listComments.mockResolvedValue([]);
@@ -1670,6 +1674,24 @@ describe("IssueDetail", () => {
     history.resolve([]);
     await waitForAssertion(() => {
       expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({ initialHistoryPending: false });
+    });
+  });
+
+  it.each([false, true])("counts cached tokens once in direct and tree cost summaries (receipt: %s)", async (receipt) => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "done" }));
+    mockLocation.hash = "#document-continuation-summary";
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: false });
+    mockActivityApi.runsForIssue.mockResolvedValue([{
+      runId: "cost-run", agentId: "agent-1", status: "succeeded",
+      usageJson: { provider: "openai", inputTokens: receipt ? 20 : 100, cachedInputTokens: 80, outputTokens: 10, ...(receipt ? { accountingReceiptId: "receipt-1" } : {}) },
+    }]);
+    mockIssuesApi.getCostSummary.mockResolvedValue({ inputTokens: 20, cachedInputTokens: 80, outputTokens: 10, costCents: 0, issueCount: 2, runCount: 0, runtimeMs: 0 });
+    await act(async () => { root.render(<QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>); });
+    await waitForAssertion(() => {
+      const direct = Array.from(container.querySelectorAll("span")).find(node => node.textContent === "This task")?.parentElement;
+      const tree = Array.from(container.querySelectorAll("span")).find(node => node.textContent?.startsWith("Including sub-tasks"))?.parentElement;
+      expect(direct?.textContent).toContain("Tokens 110");
+      expect(tree?.textContent).toContain("Tokens 110");
     });
   });
 

@@ -22,6 +22,7 @@
     "typecheck:build-gaps": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && pnpm --filter @paperclipai/server build && node scripts/run-typecheck-build-gaps.mjs",
     "test": "pnpm run test:run",
     "test:watch": "pnpm run preflight:workspace-links && vitest",
+    "test:accounting": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/server exec tsc -p tsconfig.accounting-tests.json && vitest run --config server/vitest.accounting.config.ts --reporter=default --reporter=json --outputFile.json=../coverage/accounting/server-tests.json && vitest run --project @paperclipai/db packages/db/src/cost-accounting-migration.test.ts --reporter=default --reporter=json --outputFile.json=coverage/accounting/migration-tests.json && node scripts/verify-accounting-test-results.mjs coverage/accounting/server-tests.json coverage/accounting/migration-tests.json && pnpm test:accounting:mutations",
     "test:run": "pnpm run preflight:workspace-links && node scripts/run-vitest-stable.mjs",
     "test:runner-acceptance": "vitest run --config tests/runner-acceptance/vitest.config.ts",
     "test:runner-acceptance:typecheck": "tsc -p tests/runner-acceptance/tsconfig.json",
@@ -91,10 +92,13 @@
     "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs",
     "test:lifecycle-baseline": "node tests/lifecycle-baseline/run.mjs",
     "test:lifecycle-baseline:support": "node --test tests/lifecycle-baseline/report.test.mjs",
-    "test:lifecycle-baseline:typecheck": "tsc -p tests/lifecycle-baseline/tsconfig.json"
+    "test:lifecycle-baseline:typecheck": "tsc -p tests/lifecycle-baseline/tsconfig.json",
+    "test:accounting:mutations": "node scripts/test-accounting-mutations.mjs",
+    "benchmark:accounting": "node cli/node_modules/tsx/dist/cli.mjs server/scripts/benchmark-accounting.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
+    "@vitest/coverage-v8": "^5.0.3",
     "agentmail": "^0.5.31",
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.2",

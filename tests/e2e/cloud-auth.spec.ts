@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 
+test.afterEach(async ({ page }) => {
+  // Health polling may still be reading route.fetch() responses when the
+  // assertions finish. Drain those handlers before Playwright disposes them.
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 // The tenant UI and task database are real. Cloud is an external dependency:
 // simulate its entry endpoint and independent session states at the HTTP edge.
 for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paperclip.app"]) {

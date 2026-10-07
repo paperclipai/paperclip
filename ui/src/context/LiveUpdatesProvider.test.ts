@@ -16,6 +16,24 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it.each(["cost_event", "heartbeat"])("refreshes every selected costs period within the company on %s", (source) => {
+    const client = new QueryClient();
+    const keys = (companyId: string) => [
+      queryKeys.costs(companyId, undefined, "all"),
+      queryKeys.costs(companyId, "2026-10-01", "mtd"),
+      [...queryKeys.costs(companyId, undefined, "all"), "by-user"],
+      queryKeys.usageByProvider(companyId, undefined, "all"),
+      queryKeys.usageByBiller(companyId, undefined, "all"),
+    ];
+    for (const key of [...keys("company-1"), ...keys("company-2")]) client.setQueryData(key, {});
+    if (source === "cost_event") {
+      __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", { entityType: "cost_event", entityId: "charge", action: "cost.created" }, { userId: "user", agentId: null });
+    } else __liveUpdatesTestUtils.invalidateHeartbeatQueries(client, "company-1", { runId: "run", agentId: "agent" });
+    for (const key of keys("company-1").slice(0, source === "cost_event" ? 5 : 3)) expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+    for (const key of keys("company-2")) expect(client.getQueryState(key)?.isInvalidated).toBe(false);
+    client.clear();
+  });
+
   it.each([
     ["chat-1", "issue.comment_added", "agent", "agent-1", true],
     ["task-1", "issue.comment_added", "agent", "agent-1", false],

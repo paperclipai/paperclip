@@ -141,7 +141,7 @@ Human auth tables (`users`, `sessions`, and provider-specific auth artifacts) ar
 - `issue_prefix` text not null
 - `issue_counter` int not null
 - `budget_monthly_cents` int not null default 0
-- `spent_monthly_cents` int not null default 0
+- `spent_monthly_cents` numeric(24,7) not null default 0
 - `require_board_approval_for_new_agents` boolean not null default false
 - feedback sharing consent fields
 
@@ -164,7 +164,7 @@ Invariant: every business record belongs to exactly one company.
 - `default_environment_id` uuid fk `environments.id` null
 - `context_mode` enum: `thin | fat` default `thin`
 - `budget_monthly_cents` int not null default 0
-- `spent_monthly_cents` int not null default 0
+- `spent_monthly_cents` numeric(24,7) not null default 0
 - pause fields: `pause_reason`, `paused_at`
 - `permissions` jsonb not null default `{}`
 - `last_heartbeat_at` timestamptz null
@@ -370,7 +370,9 @@ Private projects are absent from list and search results for non-members, and di
 - `cost_status` text not null default `reported`; `unpriced` when usage exists but no price was reported
 - `input_tokens` int not null default 0
 - `output_tokens` int not null default 0
-- `cost_cents` int not null
+- `cost_cents` numeric(24,7) not null
+- `idempotency_key` text null; unique within a company when present
+- `receipt_hash` text null; canonical immutable-receipt fingerprint
 - `occurred_at` timestamptz not null
 
 Invariant: each event must attach to agent and company; rollups are aggregation, never manually edited.
@@ -1526,7 +1528,9 @@ for contracts, recovery behavior, Storybook, and acceptance workflows.
   - block new checkout/invocation for that agent
   - emit high-priority activity event
 
-Board may override by raising budget or explicitly resuming agent.
+Board may raise the budget or disable its hard stop. An explicit resume cannot bypass an active blocking policy. Budget-owned pauses release when the applicable UTC window expires; manual pauses remain unchanged. Active hard stops also block pending terminal-run accounting and unpriced usage unless the operator explicitly allows unpriced usage.
+
+Optional per-run budget reservations serialize available-capacity admission with ledger writes. Durable usage checkpoints, exact decimal reporting, operator integrity inspection and guarded repairs, and reviewed invoice corrections support accounting recovery. Reservations are estimates; provider charges can exceed them. See [Cost accounting and budget enforcement](COST-ACCOUNTING.md) for receipt recovery, retry guarantees, and provider-side limits.
 
 ## 13.3 Cost Event Ingestion
 
@@ -1549,13 +1553,16 @@ Board may override by raising budget or explicitly resuming agent.
 Validation:
 
 - non-negative token counts
-- `costCents >= 0`
+- finite `costCents >= 0`, retaining fractional cents to seven decimal places
+- optional company-scoped `idempotencyKey`: identical retries return the original receipt; changed content conflicts
 - company ownership checks for all linked entities
 
 ## 13.4 Rollups
 
 Read-time aggregate queries are acceptable for V1.
 Materialized rollups can be added later if query latency exceeds targets.
+
+Cost and finance queries default to month-to-date in UTC; explicit bounds are inclusive and `period=all` requests all time. Project rollups retain an unallocated bucket and must conserve total spend. Cost summaries expose missing-price and pending-run counts. Finance summaries retain original currencies without adding unlike currencies together.
 
 ## 14. UI Requirements (Board App)
 

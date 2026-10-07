@@ -33,6 +33,8 @@ import {
   type ExecuteNativeSessionOptions,
 } from "./native-session-runtime.js";
 
+import { rehydrateRunnerdUsageNotification } from "./live/runnerd-codex-transport.js";
+
 const identity = {
   runId: "run-recovery",
   sessionId: "session-recovery",
@@ -6501,7 +6503,7 @@ describe("executeNativeSession recovery", () => {
     });
   });
 
-  it.each([false, true])("only replays the original ACPX envelope for a proven effect-free initial turn (prepared: %s)", async (prepared) => {
+  it.each([false, true].flatMap(prepared => [false, true].map(translated => ({ prepared, translated }))))("only replays the original ACPX envelope for a proven effect-free initial turn (prepared: $prepared, translated: $translated)", async ({ prepared, translated }) => {
     const executionInput = prepared ? preparedInput() : input;
     const checkpoint: PersistedNativeSession = {
       backendKind: "mock",
@@ -6665,6 +6667,12 @@ describe("executeNativeSession recovery", () => {
         turnId: "turn-work",
       },
     ];
+    const receipt = effectFreeTurn[3]!.payload.usage as Record<string, unknown>;
+    if (translated) {
+      effectFreeTurn[3]!.payload.usage = rehydrateRunnerdUsageNotification({
+        provider: "acpx", cumulative: receipt.total, runDelta: receipt.runDelta, runDeltaAvailable: true,
+      }, "thread", "turn-work").tokenUsage;
+    }
     bySource.set("runner-recovery", effectFreeTurn);
 
     await expect(
@@ -6707,6 +6715,28 @@ describe("executeNativeSession recovery", () => {
         completionContract: { criteria: [{ id: "objective", source: { id: identity.issueId, location: "task.prompt" } }] },
       });
       expect(recoveryEnvelope.task).not.toHaveProperty("description");
+    }
+
+    const zeroUsage = effectFreeTurn[3]!.payload.usage as Record<string, unknown>;
+    for (const unsafeUsage of [
+      { ...zeroUsage, runDeltaComplete: false },
+      { ...zeroUsage, runDeltaComplete: null },
+      { ...zeroUsage, runDeltaComplete: "true" },
+      { ...zeroUsage, unknownEvidence: 0 },
+      { ...zeroUsage, total: { ...receipt.total as object, providerCostUsd: 1 } },
+      { ...zeroUsage, runDelta: { ...receipt.runDelta as object, inputTokens: 1 } },
+      { ...zeroUsage, runDelta: { ...receipt.runDelta as object, outputTokens: undefined } },
+      { ...zeroUsage, total: { ...receipt.total as object, requests: 2 } },
+    ]) {
+      startTurn.mockClear();
+      const unsafeTurn = structuredClone(effectFreeTurn);
+      unsafeTurn[3]!.payload.usage = unsafeUsage;
+      bySource.set("runner-recovery", unsafeTurn);
+      await executeNativeSession({ input: executionInput, backend, controlPlane: port,
+        runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
+      const unsafeEnvelope = JSON.parse(startTurn.mock.calls[0]![0].message.text);
+      expect(unsafeEnvelope.task.prompt).toContain("semantic-result recovery for a prior completed provider turn");
+      expect(unsafeEnvelope.task.prompt).not.toContain(executionInput.task.prompt);
     }
 
     startTurn.mockClear();

@@ -1,3 +1,5 @@
+import { costService, createCostEventInTransaction } from "../services/costs.js";
+import { withAccountingTransaction } from "../services/accounting-transaction.js";
 import { budgetService } from "../services/budgets.js";
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
@@ -480,6 +482,69 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         f.access.refreshCatalog(f.connection.connectionId, actor),
       ).rejects.toThrow();
     });
+    it("rolls back the Browser Use charge and Finance event if a spend projection fails", async () => {
+      const f = await fixture();
+      await costService(db).createEvent(f.company.id, { agentId: f.agent.id, provider: "fixture", model: "fixture", costCents: 100, occurredAt: new Date() });
+      await f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Read example.com" });
+      f.complete();
+      await db.execute(sql`create function fail_browser_projection() returns trigger language plpgsql as $$ begin raise exception 'injected projection failure'; end $$`);
+      await db.execute(sql.raw(`create trigger fail_browser_projection before update of spent_monthly_cents on companies for each row when (new.id = '${f.company.id}'::uuid) execute function fail_browser_projection()`));
+      try {
+        await f.tick();
+        expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(1);
+        expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toHaveLength(0);
+        expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0].spentMonthlyCents).toBe(100);
+        expect((await db.select().from(browserUseRuns).where(eq(browserUseRuns.companyId, f.company.id)))[0].accountedCents).toBe(0);
+      } finally {
+        await db.execute(sql`drop trigger fail_browser_projection on companies`);
+        await db.execute(sql`drop function fail_browser_projection()`);
+      }
+      await f.tick();
+      await f.tick();
+      expect((await costService(db).summary(f.company.id)).spendCentsExact).toBe("115.0000000");
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(2);
+      expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toMatchObject([{ amountCents: 15 }]);
+      expect((await db.select().from(companies).where(eq(companies.id, f.company.id)))[0].spentMonthlyCents).toBe(115);
+      expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0].spentMonthlyCents).toBe(115);
+    });
+
+    it("settles Browser Use atomically behind another accounting writer without losing spend", async () => {
+      const f = await fixture();
+      const charge = (costCents: number) => ({ agentId: f.agent.id, provider: "fixture", model: "fixture", costCents, occurredAt: new Date() });
+      await costService(db).createEvent(f.company.id, charge(100));
+      await f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Read example.com" });
+      f.complete();
+      let release!: () => void;
+      let locked!: () => void;
+      const released = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { locked = resolve; });
+      const writer = withAccountingTransaction(db, f.company.id, async (tx, publications) => {
+        await createCostEventInTransaction(tx, f.company.id, charge(5), publications);
+        locked();
+        await released;
+      });
+      await ready;
+      const browser = f.tick();
+      try {
+        await vi.waitFor(async () => {
+          const waiting = await db.execute(sql`select pid from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()`);
+          expect(waiting.length).toBeGreaterThan(0);
+        });
+        // Nothing from Browser Use may become visible before its projections.
+        expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(1);
+        expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toHaveLength(0);
+      } finally {
+        release();
+        await Promise.all([writer, browser]);
+      }
+      await f.tick(); // Replaying the provider's cumulative total is a no-op.
+      expect((await costService(db).summary(f.company.id)).spendCentsExact).toBe("120.0000000");
+      expect((await db.select().from(companies).where(eq(companies.id, f.company.id)))[0].spentMonthlyCents).toBe(120);
+      expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0].spentMonthlyCents).toBe(120);
+      expect(await db.select().from(financeEvents).where(eq(financeEvents.companyId, f.company.id))).toMatchObject([{ amountCents: 15 }]);
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(3);
+    });
+
     it("observes delayed browser.ready, hides viewer credentials, accounts once and cleans up", async () => {
       const f = await fixture();
       const invocation = randomUUID();

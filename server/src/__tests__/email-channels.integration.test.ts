@@ -944,6 +944,25 @@ describe("AgentMail durable email pipeline", () => {
     );
   });
 
+  it.each([
+    ["1999999999.9999999", true],
+    ["2000000000.0000000", false],
+    ["2000000000.0000001", false],
+  ])("compares exact monthly email spend %s at the budget boundary", async (spent, allowed) => {
+    const f = await fixture();
+    await f.receive(f.message());
+    const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.companyId, f.companyId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, status: "running", runtimeMode: "native", nativeIssueId: conversation.issueId, contextSnapshot: { issueId: conversation.issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, conversation.issueId));
+    await db.update(agents).set({ budgetMonthlyCents: 2000000000, spentMonthlyCents: sql`${spent}::numeric` }).where(eq(agents.id, f.agentId));
+    const request = emailSendSchema.parse({ endpointId: f.endpointId, conversationId: conversation.id, replyToMessageId: [...f.messages.keys()][0], text: "Exact budget reply", idempotencyKey: randomUUID() });
+    const queued = f.service.queueSend(f.companyId, request, { agentId: f.agentId, runId });
+    if (allowed) expect((await queued).outcome).toBe("queued");
+    else await expect(queued).rejects.toThrow("Agent is not available to send email");
+    expect(f.sends).toHaveLength(0);
+  });
+
   it("enforces one inbox owner across companies and reconnects the same identity", async () => {
     const f = await fixture();
     const other = await fixture();
