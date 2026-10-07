@@ -41,6 +41,23 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Controls X-Hermes-Session-Key. Issue scoped prevents cross-task memory bleed by default.",
       },
       {
+        key: "agentId",
+        label: "Gateway agent ID",
+        type: "text",
+        hint: "Paperclip agent ID this gateway is dedicated to. One gateway process serves exactly one agent: when set, a run for any other agent is rejected with the named cause agent_identity_mismatch instead of being multiplexed into this gateway's Hermes sessions.",
+      },
+      {
+        key: "missingIssueContext",
+        label: "Missing issue context",
+        type: "select",
+        default: "agent",
+        options: [
+          { value: "agent", label: "Use stable agent session key" },
+          { value: "fail", label: "Refuse the dispatch" },
+        ],
+        hint: "Applies when sessionKeyStrategy is issue and the run carries no issue context. The session key is never run-scoped on this path.",
+      },
+      {
         key: "timeoutSec",
         label: "Timeout seconds",
         type: "number",
