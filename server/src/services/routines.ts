@@ -559,6 +559,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     companyId: routine.companyId,
     projectId: routine.projectId,
     goalId: routine.goalId,
+    noGoal: routine.noGoal,
     parentIssueId: routine.parentIssueId,
     title: routine.title,
     description: routine.description,
@@ -2337,17 +2338,13 @@ export function routineService(
       // blocked by a field it never asked to change. `patch.status` is
       // included so a bare `{ status: "active" }` transition — the one this
       // guard exists to catch — is checked even when it doesn't also touch
-      // goalId/noGoal.
-      if (
+      // goalId/noGoal. The assertion itself runs after the row lock below
+      // (against `candidate`, not `existing`), so a concurrent edit that
+      // clears the goal between this read and the lock can't slip an
+      // unattached activation through.
+      const needsGoalRecheck =
         (patch.status !== undefined || patch.goalId !== undefined || patch.noGoal !== undefined) &&
-        (await companyRequiresGoalAttachment(db, existing.companyId))
-      ) {
-        assertRoutineGoalAttached({
-          status: nextStatus,
-          goalId: patch.goalId === undefined ? existing.goalId : patch.goalId,
-          noGoal: patch.noGoal === undefined ? existing.noGoal : patch.noGoal,
-        });
-      }
+        (await companyRequiresGoalAttachment(db, existing.companyId));
       assertRoutineVariableDefinitions(nextVariables);
       const enabledScheduleTriggers = await db
         .select({ id: routineTriggers.id })
@@ -2395,6 +2392,7 @@ export function routineService(
           projectId: nextProjectId,
           folderId: nextFolderId,
           goalId: patch.goalId === undefined ? locked.goalId : patch.goalId,
+          noGoal: patch.noGoal === undefined ? locked.noGoal : patch.noGoal,
           parentIssueId: patch.parentIssueId === undefined ? locked.parentIssueId : patch.parentIssueId,
           title: nextTitle,
           description: nextDescription,
@@ -2411,6 +2409,14 @@ export function routineService(
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
+
+        if (needsGoalRecheck) {
+          assertRoutineGoalAttached({
+            status: candidate.status,
+            goalId: candidate.goalId,
+            noGoal: candidate.noGoal,
+          });
+        }
 
         const folderChanged = patch.folderId !== undefined && locked.folderId !== candidate.folderId;
         if (locked.latestRevisionId && routineCurrentFieldsMatch(locked, candidate)) {
@@ -2460,6 +2466,7 @@ export function routineService(
             projectId: candidate.projectId,
             folderId: candidate.folderId,
             goalId: candidate.goalId,
+            noGoal: candidate.noGoal,
             parentIssueId: candidate.parentIssueId,
             title: candidate.title,
             description: candidate.description,
@@ -2774,6 +2781,18 @@ export function routineService(
           });
         }
 
+        // docs/ops/goal-attachment-policy.md: a revision can predate the
+        // guard (or predate the company opting in), so restoring it must be
+        // checked the same as any other transition into "active" — otherwise
+        // restore is a side door back to an unattached-active routine.
+        if (await companyRequiresGoalAttachment(txDb, locked.companyId)) {
+          assertRoutineGoalAttached({
+            status: routineSnapshot.status,
+            goalId: routineSnapshot.goalId,
+            noGoal: routineSnapshot.noGoal,
+          });
+        }
+
         const currentTriggers = await txDb
           .select({ id: routineTriggers.id })
           .from(routineTriggers)
@@ -2802,6 +2821,7 @@ export function routineService(
           .set({
             projectId: routineSnapshot.projectId,
             goalId: routineSnapshot.goalId,
+            noGoal: routineSnapshot.noGoal,
             parentIssueId: routineSnapshot.parentIssueId,
             title: routineSnapshot.title,
             description: routineSnapshot.description,

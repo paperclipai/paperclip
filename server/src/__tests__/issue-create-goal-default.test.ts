@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { goals } from "@paperclipai/db";
 import { issueRoutes } from "../routes/issues.js";
 import {
@@ -73,7 +73,7 @@ describeEmbeddedPostgres("issue create goal default", () => {
     const [activeGoal] = await ctx.db
       .select()
       .from(goals)
-      .where(eq(goals.status, "active"));
+      .where(and(eq(goals.companyId, seeded.companyId), eq(goals.status, "active")));
 
     const created = await request(app)
       .post(`/api/companies/${seeded.companyId}/issues`)

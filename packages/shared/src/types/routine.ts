@@ -120,6 +120,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   companyId: string;
   projectId: string | null;
   goalId: string | null;
+  noGoal: boolean;
   parentIssueId: string | null;
   title: string;
   description: string | null;

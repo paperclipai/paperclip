@@ -1167,6 +1167,7 @@ function routineRevisionSnapshotRoutine(routine: typeof routines.$inferSelect): 
     companyId: routine.companyId,
     projectId: routine.projectId,
     goalId: routine.goalId,
+    noGoal: routine.noGoal,
     parentIssueId: routine.parentIssueId,
     title: routine.title,
     description: routine.description,

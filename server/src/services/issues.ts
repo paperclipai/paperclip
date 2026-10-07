@@ -11091,13 +11091,21 @@ export function issueService(db: Db) {
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
         // docs/ops/goal-attachment-policy.md: only re-check the invariant when
-        // this request actually touches status or goalId. Otherwise an
-        // unrelated PATCH (reassignment, a comment-adjacent field) on an issue
-        // that already violates the policy — grandfathered from before this
-        // guard existed — would be blocked by a field it never asked to change.
+        // this request actually touches a field the check depends on.
+        // Otherwise an unrelated PATCH (reassignment, a comment-adjacent
+        // field) on an issue that already violates the policy —
+        // grandfathered from before this guard existed — would be blocked by
+        // a field it never asked to change. projectId and label edits count
+        // too: resolveNextIssueGoalId can silently null out patch.goalId on a
+        // project move, and a label-only patch can remove the "no-goal"
+        // label — both change the effective goal requirement without
+        // touching status or goalId directly.
         if (
           existing.originKind === "manual" &&
-          (issueData.status !== undefined || issueData.goalId !== undefined) &&
+          (issueData.status !== undefined ||
+            issueData.goalId !== undefined ||
+            issueData.projectId !== undefined ||
+            nextLabelIds !== undefined) &&
           (await companyRequiresGoalAttachment(db, existing.companyId, tx))
         ) {
           const effectiveStatus = patch.status ?? existing.status;
@@ -11528,7 +11536,11 @@ export function issueService(db: Db) {
       checkoutRunId: string | null,
     ) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({
+          companyId: issues.companyId,
+          goalId: issues.goalId,
+          originKind: issues.originKind,
+        })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
@@ -11536,6 +11548,24 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueCompany.companyId, agentId, {
         kind: "work",
       });
+
+      // docs/ops/goal-attachment-policy.md: checkout is a status transition
+      // into "in_progress" just like a PATCH, and must not be a side door
+      // around the same guard — this is the primary agent-initiated path the
+      // guard exists to cover.
+      if (
+        issueCompany.originKind === "manual" &&
+        (await companyRequiresGoalAttachment(db, issueCompany.companyId))
+      ) {
+        const labelIdsForGoalCheck = (await labelMapForIssues(db, [id])).get(id)?.map(
+          (label: IssueLabelRow) => label.id,
+        ) ?? [];
+        assertGoalAttached({
+          status: "in_progress",
+          goalId: issueCompany.goalId,
+          hasNoGoalLabel: await hasNoGoalLabel(issueCompany.companyId, labelIdsForGoalCheck),
+        });
+      }
 
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(

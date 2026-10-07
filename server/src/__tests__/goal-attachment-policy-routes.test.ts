@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { companies, issues } from "@paperclipai/db";
+import { agents, companies, issues, projects } from "@paperclipai/db";
 import { issueRoutes } from "../routes/issues.js";
 import { goalRoutes } from "../routes/goals.js";
 import { issueService } from "../services/issues.js";
@@ -11,6 +12,20 @@ import {
   seedCompanyWithBoardAccess,
   useEmbeddedPostgres,
 } from "./helpers/route-test-harness.js";
+
+function agentRow(companyId: string, input: { id: string; name: string }) {
+  return {
+    id: input.id,
+    companyId,
+    name: input.name,
+    role: "engineer",
+    status: "active",
+    adapterType: "codex_local",
+    adapterConfig: {},
+    runtimeConfig: {},
+    permissions: {},
+  };
+}
 
 /**
  * TES-2386 / docs/ops/goal-attachment-policy.md. Server-side enforcement of a
@@ -172,5 +187,120 @@ describeEmbeddedPostgres("goal-attachment policy enforcement", () => {
       .patch(`/api/issues/${grandfathered.id}`)
       .send({ title: "Pre-existing violation, retitled" })
       .expect(200);
+  });
+
+  it("rejects checkout into in_progress on a goal-less backlog issue (checkout is a status transition too)", async () => {
+    const seeded = await seed(true);
+    const agentId = randomUUID();
+    await ctx.db.insert(agents).values(agentRow(seeded.companyId, { id: agentId, name: "Coder" }));
+    const issue = await issueService(ctx.db).create(seeded.companyId, {
+      title: "Backlog issue an agent will try to check out",
+      status: "backlog",
+      priority: "medium",
+    });
+
+    await expect(
+      issueService(ctx.db).checkout(issue!.id, agentId, ["backlog"], randomUUID()),
+    ).rejects.toMatchObject({ status: 422, details: { code: "goal_required" } });
+  });
+
+  it("allows checkout on a backlog issue that carries a goalId", async () => {
+    const seeded = await seed(true);
+    const app = routeApp(ctx.db, seeded.actor, issueRoutes, goalRoutes);
+    const agentId = randomUUID();
+    await ctx.db.insert(agents).values(agentRow(seeded.companyId, { id: agentId, name: "Coder" }));
+    const goal = await request(app)
+      .post(`/api/companies/${seeded.companyId}/goals`)
+      .send({ title: "G1 — test goal", status: "active" });
+    expect([200, 201]).toContain(goal.status);
+    const issue = await issueService(ctx.db).create(seeded.companyId, {
+      title: "Backlog issue with a goal",
+      status: "backlog",
+      priority: "medium",
+      goalId: goal.body.id,
+    });
+
+    await expect(
+      issueService(ctx.db).checkout(issue!.id, agentId, ["backlog"], null),
+    ).resolves.toMatchObject({ status: "in_progress" });
+  });
+
+  it("allows checkout on a backlog issue carrying the no-goal label", async () => {
+    const seeded = await seed(true);
+    const app = routeApp(ctx.db, seeded.actor, issueRoutes, goalRoutes);
+    const agentId = randomUUID();
+    await ctx.db.insert(agents).values(agentRow(seeded.companyId, { id: agentId, name: "Coder" }));
+    const label = await request(app)
+      .post(`/api/companies/${seeded.companyId}/labels`)
+      .send({ name: "no-goal", color: "#888888" })
+      .expect(201);
+    const issue = await issueService(ctx.db).create(seeded.companyId, {
+      title: "Backlog issue with the no-goal label",
+      status: "backlog",
+      priority: "medium",
+      labelIds: [label.body.id],
+    });
+
+    await expect(
+      issueService(ctx.db).checkout(issue!.id, agentId, ["backlog"], null),
+    ).resolves.toMatchObject({ status: "in_progress" });
+  });
+
+  it("rejects a project-only patch that silently resolves goalId to null", async () => {
+    const seeded = await seed(true);
+    const app = routeApp(ctx.db, seeded.actor, issueRoutes, goalRoutes);
+    const goal = await request(app)
+      .post(`/api/companies/${seeded.companyId}/goals`)
+      .send({ title: "G1 — project default goal", status: "active" });
+    expect([200, 201]).toContain(goal.status);
+    const [goalProject] = await ctx.db
+      .insert(projects)
+      .values({ companyId: seeded.companyId, name: "Has a default goal", goalId: goal.body.id })
+      .returning();
+    const [goallessProject] = await ctx.db
+      .insert(projects)
+      .values({ companyId: seeded.companyId, name: "No default goal" })
+      .returning();
+    const created = await request(app)
+      .post(`/api/companies/${seeded.companyId}/issues`)
+      .send({ title: "todo via project default goal", status: "todo", priority: "medium", projectId: goalProject.id })
+      .expect(201);
+    expect(created.body.goalId).toBe(goal.body.id);
+
+    const res = await request(app)
+      .patch(`/api/issues/${created.body.id}`)
+      .send({ projectId: goallessProject.id })
+      .expect(422);
+
+    expect(res.body.code).toBe("goal_required");
+  });
+
+  it("rejects a label-only patch that removes the no-goal label from a goal-less issue", async () => {
+    const seeded = await seed(true);
+    const app = routeApp(ctx.db, seeded.actor, issueRoutes, goalRoutes);
+    const label = await request(app)
+      .post(`/api/companies/${seeded.companyId}/labels`)
+      .send({ name: "no-goal", color: "#888888" })
+      .expect(201);
+    const otherLabel = await request(app)
+      .post(`/api/companies/${seeded.companyId}/labels`)
+      .send({ name: "other", color: "#888888" })
+      .expect(201);
+    const created = await request(app)
+      .post(`/api/companies/${seeded.companyId}/issues`)
+      .send({
+        title: "todo with no-goal label, about to lose it",
+        status: "todo",
+        priority: "medium",
+        labelIds: [label.body.id],
+      })
+      .expect(201);
+
+    const res = await request(app)
+      .patch(`/api/issues/${created.body.id}`)
+      .send({ labelIds: [otherLabel.body.id] })
+      .expect(422);
+
+    expect(res.body.code).toBe("goal_required");
   });
 });

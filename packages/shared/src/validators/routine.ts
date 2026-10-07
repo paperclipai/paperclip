@@ -96,6 +96,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   projectId: z.string().guid().nullable(),
   folderId: z.string().guid().nullable().optional(),
   goalId: z.string().guid().nullable(),
+  noGoal: z.boolean().default(false),
   parentIssueId: z.string().guid().nullable(),
   title: z.string().trim().min(1).max(200),
   description: z.string().nullable(),

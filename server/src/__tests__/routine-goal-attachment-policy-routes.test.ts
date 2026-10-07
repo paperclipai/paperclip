@@ -161,6 +161,62 @@ describeEmbeddedPostgres("routine goal-attachment policy enforcement", () => {
       .expect(200);
   });
 
+  it("persists a noGoal opt-out saved through a bare status patch", async () => {
+    const seeded = await seed(true);
+    const app = routeApp(ctx.db, seeded.actor, routineRoutes, goalRoutes);
+    const created = await request(app)
+      .post(`/api/companies/${seeded.companyId}/routines`)
+      .send({ title: "paused, will opt out on activation", status: "paused", assigneeAgentId: seeded.agentId })
+      .expect(201);
+
+    await request(app)
+      .patch(`/api/routines/${created.body.id}`)
+      .send({ status: "active", noGoal: true })
+      .expect(200);
+
+    const [stored] = await ctx.db.select().from(routines).where(eq(routines.id, created.body.id));
+    expect(stored.noGoal).toBe(true);
+
+    // A later patch that only touches status must still see the saved
+    // opt-out and not re-demand a goalId.
+    await request(app)
+      .patch(`/api/routines/${created.body.id}`)
+      .send({ status: "paused" })
+      .expect(200);
+    await request(app)
+      .patch(`/api/routines/${created.body.id}`)
+      .send({ status: "active" })
+      .expect(200);
+  });
+
+  it("rejects restoring a revision that predates enforcement and is goal-less at active", async () => {
+    const seeded = await seed(false);
+    const app = routeApp(ctx.db, seeded.actor, routineRoutes, goalRoutes);
+    const created = await request(app)
+      .post(`/api/companies/${seeded.companyId}/routines`)
+      .send({ title: "active before the company opted in", status: "active", assigneeAgentId: seeded.agentId })
+      .expect(201);
+    const revisionsBefore = await request(app)
+      .get(`/api/routines/${created.body.id}/revisions`)
+      .expect(200);
+    const originalActiveRevisionId = revisionsBefore.body[0].id;
+
+    await ctx.db
+      .update(companies)
+      .set({ requireGoalAttachment: true })
+      .where(eq(companies.id, seeded.companyId));
+    await request(app)
+      .patch(`/api/routines/${created.body.id}`)
+      .send({ status: "paused" })
+      .expect(200);
+
+    const res = await request(app)
+      .post(`/api/routines/${created.body.id}/revisions/${originalActiveRevisionId}/restore`)
+      .expect(422);
+
+    expect(res.body.code).toBe("goal_required");
+  });
+
   it("does not retroactively block an unrelated edit on a routine that already violates the policy", async () => {
     const seeded = await seed(true);
     const app = routeApp(ctx.db, seeded.actor, routineRoutes, goalRoutes);
