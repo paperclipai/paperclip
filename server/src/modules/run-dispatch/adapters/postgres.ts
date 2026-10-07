@@ -643,7 +643,12 @@ export function createPostgresRunDispatchAdapter(
   > {
     const [row] = await tx
       .update(heartbeatRuns)
-      .set({ status: "queued", updatedAt: input.now })
+      .set({
+        status: "queued",
+        updatedAt: input.now,
+        resultJson: sql`case when ${heartbeatRuns.resultJson}->'executionWait'->>'cause' = 'execution_owner_active'
+          then ${heartbeatRuns.resultJson} - 'executionWait' else ${heartbeatRuns.resultJson} end`,
+      })
       .where(
         and(
           eq(heartbeatRuns.id, input.runId),
@@ -832,6 +837,11 @@ export function createPostgresRunDispatchAdapter(
           : { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
       }
 
+      const issueId = factsResult.facts.issueId;
+      if (issueId && (await deferRetryForCleanupInTx(tx, run, issueId, now))) {
+        return { outcome: { outcome: "not_promoted" as const }, telemetryRun: null };
+      }
+
       const promoted = await promoteDueRetryInTx(tx as unknown as Db, {
         runId: input.runId,
         companyId: input.companyId,
@@ -955,9 +965,9 @@ export function createPostgresRunDispatchAdapter(
   async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
-    if (!issueId) return { issueId: null, facts: null, decision: { stale: false as const } };
+    if (!issueId) return { issueId: null, facts: null, executionBlocker: null, decision: { stale: false as const } };
     const recovery = await getExecutionBlocker(tx, run.companyId, issueId, { conversationResetCommentId: deriveCommentId(contextSnapshot) });
-    if (recovery) return { issueId, facts: null, decision: { stale: true as const,
+    if (recovery) return { issueId, facts: null, executionBlocker: recovery, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,
       details: { issueId, recoveryActionId: recovery.recoveryActionId },
     } };
@@ -973,7 +983,67 @@ export function createPostgresRunDispatchAdapter(
       now,
       tx,
     );
-    return { issueId, facts, decision: decideQueuedRunStaleness(facts, now) };
+    return { issueId, facts, executionBlocker: null, decision: decideQueuedRunStaleness(facts, now) };
+  }
+
+  /**
+   * Keep the existing attempt durable while the previous execution releases
+   * ownership. Only an unstarted legacy conversation retry can wait here;
+   * reconciliation of uncertain actions and native execution retain their gates.
+   * Both callers hold the issue and run locks, in that order.
+   */
+  async function deferRetryForCleanupInTx(
+    tx: Db,
+    run: HeartbeatRun,
+    issueId: string,
+    now: Date,
+    observedBlocker?: Awaited<ReturnType<typeof getExecutionBlocker>>,
+  ) {
+    if (
+      run.runtimeMode !== "legacy" || !run.retryOfRunId || run.startedAt ||
+      run.processPid || run.processGroupId ||
+      !hasConversationContinuationPolicy(run.resultJson) ||
+      !["scheduled_retry", "queued"].includes(run.status)
+    ) return null;
+    // Use the dispatch gate's observation when supplied. A second read could
+    // see cleanup finish and accidentally cancel the retry for the old hold.
+    const blocker = observedBlocker === undefined
+      ? await getExecutionBlocker(tx, run.companyId, issueId)
+      : observedBlocker;
+    if (blocker?.cause !== "execution_owner_active") return null;
+
+    const previousWait = parseObject(run.resultJson?.executionWait);
+    const scheduledRetryAt = new Date(now.getTime() + 30_000);
+    const executionWait = { issueId, runId: blocker.runId, cause: blocker.cause };
+    const [waiting] = await tx.update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        scheduledRetryAt,
+        updatedAt: now,
+        contextSnapshot: { ...parseObject(run.contextSnapshot), scheduledRetryAt: scheduledRetryAt.toISOString() },
+        resultJson: { ...parseObject(run.resultJson), executionWait },
+      })
+      .where(and(
+        eq(heartbeatRuns.id, run.id),
+        eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.status, run.status),
+      ))
+      .returning();
+    if (!waiting) return null;
+    // Repeated sweeps retain one wait diagnostic, not a new attempt or event.
+    if (previousWait.cause !== blocker.cause || previousWait.runId !== blocker.runId) {
+      await appendHeartbeatRunEvent(tx, {
+        companyId: run.companyId,
+        runId: run.id,
+        agentId: run.agentId,
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Scheduled retry is waiting for execution cleanup; the same attempt will continue after ownership is released",
+        payload: { ...executionWait, scheduledRetryAttempt: run.scheduledRetryAttempt },
+      });
+    }
+    return { outcome: "deferred" as const, postCommitEffects: [statusEffect(waiting, run.status)] };
   }
 
   async function cancelStaleQueuedRun(
@@ -981,7 +1051,7 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<CancelStaleQueuedRunOutcome> {
     const cancelLockedRun = async (tx: Db, run: HeartbeatRun) => {
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
-      const { issueId, facts, decision } = await decideCurrentRunStaleness(tx, run, input.now);
+      const { issueId, facts, decision, executionBlocker } = await decideCurrentRunStaleness(tx, run, input.now);
       if (!decision.stale || !issueId) {
         if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
           // Preserve the authority accepted under the issue/run locks. Later
@@ -995,6 +1065,10 @@ export function createPostgresRunDispatchAdapter(
           }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
         }
         return { outcome: "not_stale" as const };
+      }
+      if (input.expectedStatus === "queued" && decision.errorCode === "execution_reconciliation_required") {
+        const deferred = await deferRetryForCleanupInTx(tx, run, issueId, input.now, executionBlocker);
+        if (deferred) return deferred;
       }
       return cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
     };

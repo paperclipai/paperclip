@@ -211,6 +211,19 @@ New comments received during an execution hold retain their individual deferred 
 
 The conversation groups repeated empty pre-start reconciliation cancellations into a neutral waiting notice. Started runs, actual startup failures, and run history remain inspectable. No historical run records are deleted.
 
+An unstarted legacy conversation retry waits on its existing `scheduled_retry`
+row while a previous execution still owns a process or environment lease. Each
+sweep moves the next check forward without creating another run or incrementing
+retry accounting. The wait survives a controller restart. A queued retry that
+encounters the same ownership hold returns to that scheduled state. Once
+ownership is released, normal promotion and dispatch gates still apply,
+including reassignment, cancellation, budget limits, and no-replay holds.
+
+Recovery instructions in a wake describe only an active or escalated recovery
+action. Resolving or cancelling that action removes its repair instructions from
+subsequent wakes, so the original worker can resume the task. This prompt change
+does not clear any persisted execution reconciliation hold.
+
 Workspace contention (`workspace_busy`) displays **Waiting for workspace** and
 continues automatically when the workspace is available. Internal scheduling
 attempts remain in the run log without conversation cancellation markers,

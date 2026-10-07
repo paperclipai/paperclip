@@ -8162,9 +8162,11 @@ export async function buildPaperclipWakePayload(input: {
         .then((rows) => rows[0] ?? null)
     : null;
   const recoveryEvidence = parseObject(recoveryAction?.evidence);
-  const executionAlreadyReconciled =
-    recoveryAction?.status === "resolved" &&
-    Boolean(recoveryEvidence.executionReconciliation);
+  // A restored task resumes its deliverable, not the completed repair. A
+  // referenced settled/missing action must not fall back to a stale cause.
+  const recoveryStillActive = recoveryAction
+    ? ["active", "escalated"].includes(recoveryAction.status)
+    : !recoveryActionId && Boolean(recoveryCause);
   const originalAssigneeId =
     recoveryAction?.returnOwnerAgentId ??
     recoveryAction?.previousOwnerAgentId ??
@@ -8208,7 +8210,7 @@ export async function buildPaperclipWakePayload(input: {
     attachmentOmissions,
     externalChatProvider,
     recovery:
-      !executionAlreadyReconciled && (recoveryAction || recoveryCause)
+      recoveryStillActive
         ? {
             cause: recoveryAction?.cause ?? recoveryCause,
             failureSummary: readNonEmptyString(recoveryEvidence.failureSummary),
@@ -17634,11 +17636,16 @@ export function heartbeatService(
         companyId: run.companyId,
         expectedStatus: "queued",
       });
-      if (staleness.outcome === "cancelled") {
+      if (staleness.outcome === "cancelled" || staleness.outcome === "deferred") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
         logger.info(
-          { runId: run.id, issueId, errorCode: staleness.errorCode },
-          "claimQueuedRun: cancelled stale queued run",
+          {
+            runId: run.id,
+            issueId,
+            outcome: staleness.outcome,
+            errorCode: staleness.outcome === "cancelled" ? staleness.errorCode : undefined,
+          },
+          "claimQueuedRun: withheld queued run at the execution gate",
         );
         return null;
       }

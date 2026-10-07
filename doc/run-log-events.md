@@ -280,6 +280,14 @@ warnings and errors remain visible.
 
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
+An unstarted legacy conversation retry waiting for execution cleanup retains
+`resultJson.executionWait` with the issue, blocking run, and
+`execution_owner_active` cause. A local lifecycle event records the wait and the
+unchanged scheduled retry attempt once per blocking run. Repeated scheduler
+checks update the same retry row without repeating that event. Promotion removes
+this ownership-wait marker after cleanup; other execution holds retain their
+existing dispatch gates.
+
 If execution-continuation setup finds that a task no longer exists, is closed,
 or its owner changed, the existing cancellation settlement records
 `continuation_task_ownership_changed`. The run and wake request become cancelled
