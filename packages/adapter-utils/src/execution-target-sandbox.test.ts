@@ -1,3 +1,5 @@
+import { generateKeyPairSync, randomBytes, verify } from "node:crypto";
+import { buildAgentIdentityEnv } from "./server-utils.js";
 import { createServer } from "node:http";
 import http2 from "node:http2";
 import net from "node:net";
@@ -50,7 +52,7 @@ import {
   type StartupTracer,
 } from "./acpx-engine/startup-timing.js";
 import { createSandboxRunLogTailFactory, type SandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
-import { runChildProcess } from "./server-utils.js";
+import { runChildProcess, type RunProcessResult } from "./server-utils.js";
 import { shellQuote } from "./ssh.js";
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
 import {
@@ -307,6 +309,29 @@ describe("sandbox adapter execution targets", () => {
   ): string {
     return events.filter((event) => event.stream === stream).map((event) => event.chunk).join("");
   }
+
+  it("delivers cryptographic identity through a remote sandbox process transport", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "identity-remote-process-"));
+    cleanupDirs.push(rootDir);
+    const keys = generateKeyPairSync("ed25519");
+    const identity = {
+      keyId: "sha256:remote-identity",
+      publicKeyPem: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      privateKeyPem: keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote", transport: "sandbox", providerKey: "local-test", remoteCwd: rootDir,
+      timeoutMs: 30_000, runner: createLocalSandboxRunner(),
+    };
+    const challenge = randomBytes(32);
+    const result = await runAdapterExecutionTargetProcess("identity-remote", target, process.execPath,
+      ["-e", `const {sign}=require('node:crypto');process.stdout.write(sign(null,Buffer.from(process.argv[1],'hex'),process.env.PAPERCLIP_AGENT_PRIVATE_KEY).toString('base64'));`, challenge.toString("hex")], {
+        cwd: rootDir, env: buildAgentIdentityEnv(identity), timeoutSec: 5, graceSec: 1, onLog: async () => {},
+      });
+    expect(result.exitCode).toBe(0);
+    expect(verify(null, challenge, keys.publicKey, Buffer.from(result.stdout, "base64"))).toBe(true);
+    expect((await readRuntimeTextFiles(rootDir)).join("\n")).not.toContain(identity.privateKeyPem.split("\n")[1]);
+  });
 
   it("executes through the provider-neutral runner without a remote spec", async () => {
     const runner = {
@@ -1815,7 +1840,7 @@ describe("sandbox adapter execution targets", () => {
       );
 
       const delegate = createLocalSandboxRunner();
-      const execs: Array<{ useSession?: boolean; bypassSession?: boolean; script: string }> = [];
+      const execs: Array<{ useSession?: boolean; bypassSession?: boolean; timeoutMs?: number; script: string }> = [];
       const runner = {
         execute: vi.fn(
           async (
@@ -1827,6 +1852,7 @@ describe("sandbox adapter execution targets", () => {
             execs.push({
               useSession: input.useSession,
               bypassSession: input.bypassSession,
+              timeoutMs: input.timeoutMs,
               script: input.args?.[1] ?? "",
             });
             return delegate.execute(input);
@@ -1851,7 +1877,7 @@ describe("sandbox adapter execution targets", () => {
         args: [childPath],
         cwd: rootDir,
         env: {},
-        timeoutSec: 5,
+        timeoutSec: 4 * 60 * 60,
         onLog: async () => {},
         streamOutputViaSession: true,
       });
@@ -1872,6 +1898,7 @@ describe("sandbox adapter execution targets", () => {
         const sessionExecs = execs.filter((exec) => exec.useSession === true);
         expect(sessionExecs).toHaveLength(1);
         expect(sessionExecs[0]!.bypassSession).not.toBe(true);
+        expect(sessionExecs[0]!.timeoutMs).toBe(4 * 60 * 60 * 1000);
         expect(sessionExecs[0]!.script).toContain("node ");
 
         // Every other exec is bridge control-plane plumbing. Each must force
@@ -1881,11 +1908,49 @@ describe("sandbox adapter execution targets", () => {
         expect(controlExecs.length).toBeGreaterThan(0);
         for (const exec of controlExecs) {
           expect(exec.bypassSession).toBe(true);
+          expect(exec.timeoutMs).toBe(30_000);
         }
       } finally {
         await bridge?.stop();
       }
     });
+  });
+
+  it.each(["launch", "payload setup"])("bounds a hung process-session %s", async (stage) => {
+    vi.useFakeTimers();
+    try {
+      const runner = {
+        execute: vi.fn(async (input: { args?: string[] }) => {
+          const script = input.args?.[1] ?? "";
+          if ((stage === "launch" && script.includes("nohup")) ||
+              (stage === "payload setup" && script.startsWith("chmod 600"))) {
+            return new Promise<RunProcessResult>(() => {});
+          }
+          return {
+            exitCode: 0, signal: null, timedOut: false, stdout: '{"uploaded":true}', stderr: "",
+            pid: null, startedAt: new Date().toISOString(),
+          };
+        }),
+      };
+      let error: unknown;
+      const operation = startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-hung-setup",
+        runtimeRootDir: "/workspace/runtime",
+        target: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner },
+        adapterKey: "acpx", command: "cat", args: [], cwd: "/workspace",
+        env: stage === "payload setup" ? { LARGE_VALUE: "x".repeat(70_000) } : {},
+        timeoutSec: 4 * 60 * 60,
+      }).catch((caught) => { error = caught; });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(error).toEqual(new Error("Sandbox bridge control command timed out after 30000ms."));
+      await operation;
+      expect(runner.execute.mock.calls.filter(([input]) => input.args?.[1]?.includes("nohup")))
+        .toHaveLength(stage === "launch" ? 1 : 0);
+      expect(runner.execute).toHaveBeenLastCalledWith(expect.objectContaining({ timeoutMs: 30_000 }));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("applies the remote sandbox fallback when adapter timeoutSec is unset", () => {
@@ -1896,9 +1961,8 @@ describe("sandbox adapter execution targets", () => {
       runner: createLocalSandboxRunner(),
     };
 
-    // The sandbox default is a 4h wall-clock backstop matching the recovery
-    // watchdog critical threshold (ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS);
-    // the output-inactivity monitor remains the primary hang detector.
+    // The sandbox default stays at four hours independently of the earlier
+    // informational output-silence warnings and bridge control deadlines.
     expect(DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC).toBe(4 * 60 * 60);
     expect(resolveAdapterExecutionTargetTimeoutSec(sandboxTarget, 0)).toBe(
       DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
@@ -2697,7 +2761,7 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
-  it("uses the effective adapter timeout when starting the sandbox callback bridge", async () => {
+  it("bounds callback bridge operations independently of the adapter run timeout", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-timeout-"));
     cleanupDirs.push(rootDir);
     const remoteCwd = path.join(rootDir, "workspace");
@@ -2744,9 +2808,10 @@ describe("sandbox adapter execution targets", () => {
     try {
       expect(bridge).not.toBeNull();
       expect(runner.execute).toHaveBeenCalled();
-      expect(
-        runner.execute.mock.calls.some(([input]) => input.timeoutMs === DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC * 1000),
-      ).toBe(true);
+      for (const [input] of runner.execute.mock.calls) {
+        expect(input.timeoutMs).toBeGreaterThan(0);
+        expect(input.timeoutMs).toBeLessThanOrEqual(30_000);
+      }
     } finally {
       await bridge?.stop();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));

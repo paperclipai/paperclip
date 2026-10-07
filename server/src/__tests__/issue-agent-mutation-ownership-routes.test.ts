@@ -471,14 +471,16 @@ describe("agent issue mutation checkout ownership", () => {
         input.action === "issue:comment" ||
         input.action === "issue:read" ||
         input.action === "issue:mutate" ||
-        input.action === "company_scope:read",
+        input.action === "company_scope:read" ||
+        input.action === "project:read",
       action: input.action,
       reason:
         input.action === "tasks:assign" ||
           input.action === "issue:comment" ||
           input.action === "issue:read" ||
           input.action === "issue:mutate" ||
-          input.action === "company_scope:read"
+          input.action === "company_scope:read" ||
+          input.action === "project:read"
           ? "allow_explicit_grant"
           : "deny_missing_grant",
       explanation:
@@ -486,7 +488,8 @@ describe("agent issue mutation checkout ownership", () => {
           input.action === "issue:comment" ||
           input.action === "issue:read" ||
           input.action === "issue:mutate" ||
-          input.action === "company_scope:read"
+          input.action === "company_scope:read" ||
+          input.action === "project:read"
           ? "Allowed by test default."
           : "Missing permission.",
     }));
@@ -880,7 +883,7 @@ describe("agent issue mutation checkout ownership", () => {
 
   it("allows mentioned peer agents to post comments without ownership of an active checkout", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "issue:comment",
+      allowed: input.action === "issue:comment" || input.action === "issue:read",
       action: input.action,
       reason: input.action === "issue:comment" ? "allow_issue_mention_grant" : "deny_missing_grant",
       explanation:
@@ -963,8 +966,8 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor()))
       .get(`/api/issues/${issueId}/comments`);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
   });
 
@@ -979,8 +982,8 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor()))
       .get(`/api/issues/${issueId}/interactions`);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
   });
@@ -1025,8 +1028,8 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor()))
       .get(`/api/issues/${issueId}/comments/comment-1`);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueService.getComment).not.toHaveBeenCalled();
   });
@@ -1034,7 +1037,7 @@ describe("agent issue mutation checkout ownership", () => {
   it("allows visible issue field updates for peer agents", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "issue:comment" || input.action === "issue:mutate",
+      allowed: input.action === "issue:comment" || input.action === "issue:mutate" || input.action === "issue:read",
       action: input.action,
       reason:
         input.action === "issue:comment"
@@ -1333,6 +1336,9 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("defaults agent-created root follow-up issues to inherit the current run workspace", async () => {
+    mockProjectService.getById.mockResolvedValue({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", companyId, visibility: "open",
+    } as never);
     const app = await createApp(
       ownerActor(),
       createRunContextDb({
@@ -1633,7 +1639,7 @@ describe("agent issue mutation checkout ownership", () => {
 
   it("allows agents with the active-checkout management grant to mutate active checkouts", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "issue:mutate" || input.action === "tasks:manage_active_checkouts",
+      allowed: input.action === "issue:mutate" || input.action === "tasks:manage_active_checkouts" || input.action === "issue:read",
       action: input.action,
       reason:
         input.action === "issue:mutate" || input.action === "tasks:manage_active_checkouts"
@@ -2008,7 +2014,9 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it.each(["agent", "viewer"])("rejects %s export-only retries before admission", async kind => {
-    mockAccessService.decide.mockResolvedValue({ allowed: false, explanation: "No runtime access" });
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read", explanation: "The viewer can read but has no runtime access",
+    }));
     const res = await request(await createApp(kind === "agent" ? ownerActor() : boardActor()))
       .post(`/api/issues/${issueId}/recovery-actions/retry-workspace-export`)
       .send({ actionId: recoveryActionId, runId: ownerRunId, repairNote: "Restored provider connectivity and preserved all saved files." });
@@ -2575,11 +2583,14 @@ describe("agent issue mutation checkout ownership", () => {
       explanation: "Target agent requires approval before task assignment.",
     }));
     decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "issue:mutate",
+      allowed: input.action === "issue:read" || input.action === "issue:mutate",
       action: input.action,
-      reason: input.action === "issue:mutate" ? "allow_self" : "deny_policy_restricted",
+      reason:
+        input.action === "issue:read" || input.action === "issue:mutate"
+          ? "allow_self"
+          : "deny_policy_restricted",
       explanation:
-        input.action === "issue:mutate"
+        input.action === "issue:read" || input.action === "issue:mutate"
           ? "Allowed because the actor owns the assigned issue."
           : "Target agent requires approval before task assignment.",
     }));

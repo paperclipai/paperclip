@@ -2659,19 +2659,18 @@ function IssueChatAssistantMessage({
               <span className="text-xs text-muted-foreground/60">
                 {chainOfThoughtLabel?.toLowerCase()}
               </span>
-              <span className="ml-auto flex items-center gap-1.5">
-                {message.createdAt ? (
-                  <span className="text-(length:--text-micro) text-muted-foreground/50">
-                    {commentDateLabel(message.createdAt)}
-                  </span>
-                ) : null}
-                <ChevronDown
-                  className={cn(
-                    "h-3.5 w-3.5 text-muted-foreground/40 transition-transform",
-                    !folded && "rotate-180",
-                  )}
-                />
-              </span>
+              <ChevronDown
+                aria-hidden="true"
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0 text-muted-foreground/40 opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-visible:opacity-100",
+                  !folded && "rotate-180",
+                )}
+              />
+              {message.createdAt ? (
+                <span className="ml-auto text-(length:--text-micro) text-muted-foreground/50">
+                  {commentDateLabel(message.createdAt)}
+                </span>
+              ) : null}
             </button>
           ) : (
             <div className="mb-1.5 flex items-center gap-2">

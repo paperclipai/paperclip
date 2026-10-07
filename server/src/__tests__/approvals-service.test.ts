@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { approvalService } from "../services/approvals.ts";
+import { companies } from "@paperclipai/db";
+
+vi.mock("../services/budgets.js", () => ({
+  budgetService: () => ({ deliverPendingEnforcement: vi.fn(async () => {}) }),
+  budgetServiceInTransaction: () => ({ upsertPolicy: vi.fn(async () => {}) }),
+}));
 
 const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
@@ -39,8 +45,11 @@ function createApproval(status: string): ApprovalRecord {
 
 function createDbStub(selectResults: ApprovalRecord[][], updateResults: ApprovalRecord[]) {
   const pendingSelectResults = [...selectResults];
-  const selectWhere = vi.fn(async () => pendingSelectResults.shift() ?? []);
-  const from = vi.fn(() => ({ where: selectWhere }));
+  let inTransaction = false;
+  const selectWhere = vi.fn(async () => (inTransaction ? pendingSelectResults.shift() : pendingSelectResults[0]) ?? []);
+  const from = vi.fn((table) => table === companies
+    ? { where: () => ({ for: async () => [{ id: "company-1" }] }) }
+    : { where: selectWhere });
   const select = vi.fn(() => ({ from }));
 
   const returning = vi.fn(async () => updateResults);
@@ -49,7 +58,10 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
   const update = vi.fn(() => ({ set }));
 
   return {
-    db: { select, update },
+    db: { select, update, transaction: vi.fn(async (callback: (db: unknown) => Promise<unknown>) => {
+      inTransaction = true;
+      try { return await callback({ select, update }); } finally { inTransaction = false; }
+    }) },
     selectWhere,
     returning,
   };
@@ -103,6 +115,17 @@ describe("approvalService resolution idempotency", () => {
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1", approved.payload);
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not notify the adapter when the approval transaction fails to commit", async () => {
+    const approved = createApproval("approved");
+    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+    dbStub.db.transaction.mockImplementationOnce(async callback => {
+      await callback(dbStub.db);
+      throw new Error("commit failed");
+    });
+    await expect(approvalService(dbStub.db as any).approve("approval-1", "board")).rejects.toThrow("commit failed");
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
   });
 
   it("creates the agent from payload when approval does not reference a pending agent", async () => {

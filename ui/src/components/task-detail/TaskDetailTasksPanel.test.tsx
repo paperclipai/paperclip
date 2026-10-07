@@ -38,6 +38,14 @@ describe("TaskDetailTasksPanel", () => {
     expect(container.querySelector('[data-task-id="child"]')).not.toBeNull();
   });
 
+  it("renders locked ancestors as non-interactive chips alongside readable ancestors", () => {
+    render({ ancestors: [{ id: "private-parent", identifier: "PAP-99", locked: true }, ancestors[1]] as unknown as Issue["ancestors"], subtasks: [], createdTasks: [], projects: [] });
+    const group = container.querySelector('section[aria-label="Ancestors"]')!;
+    expect(group.querySelector('[data-testid="locked-issue-chip"]')?.textContent).toContain("PAP-99");
+    expect([...group.querySelectorAll('a')].map(link => link.getAttribute("href"))).toEqual(["/issues/root"]);
+    expect(group.textContent).not.toContain("undefined");
+  });
+
   it("keeps ancestor-only tasks navigable instead of showing an empty state", () => {
     render({ ancestors, subtasks: [], createdTasks: [], projects: [] });
     expect(container.querySelectorAll('a')).toHaveLength(2);

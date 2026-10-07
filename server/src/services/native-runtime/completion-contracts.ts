@@ -10,6 +10,18 @@ import { nativeSha256 } from "./canonical.js";
 export const NATIVE_COMPLETION_CONTRACT_SCHEMA = "paperclip.completion-contract.v1";
 export const NATIVE_COMPLETION_POLICY_VERSION = "phase6-v4";
 
+/** Canonical persisted receipt includes the policy that governs the contract. */
+export function nativeCompletionContractSha256(row: Pick<typeof completionContracts.$inferSelect,
+  "schemaVersion" | "policyVersion" | "risk" | "completionAuthority" | "contractJson">): string {
+  return nativeSha256({
+    schemaVersion: row.schemaVersion,
+    policyVersion: row.policyVersion,
+    risk: row.risk,
+    completionAuthority: row.completionAuthority,
+    contract: row.contractJson,
+  });
+}
+
 type CompletionComment = {
   id?: string;
   body: string;
@@ -162,11 +174,11 @@ export async function ensureNativeCompletionContract(input: {
       immediateRequests: input.immediateRequests,
       humanResponseId: input.humanResponseId,
     });
-    const latestCandidateSha256 = nativeSha256({
+    const latestCandidateSha256 = nativeCompletionContractSha256({
       schemaVersion: NATIVE_COMPLETION_CONTRACT_SCHEMA,
       policyVersion: NATIVE_COMPLETION_POLICY_VERSION,
       ...policy,
-      contract: latestCandidate,
+      contractJson: latestCandidate as unknown as Record<string, unknown>,
     });
     if (latest?.canonicalSha256 === latestCandidateSha256) {
       return { row: latest, contract: latestCandidate, sources: buildNativeCompletionContractSources(input) };
@@ -179,11 +191,11 @@ export async function ensureNativeCompletionContract(input: {
       immediateRequests: input.immediateRequests,
       humanResponseId: input.humanResponseId,
     });
-    const canonicalSha256 = nativeSha256({
+    const canonicalSha256 = nativeCompletionContractSha256({
       schemaVersion: NATIVE_COMPLETION_CONTRACT_SCHEMA,
       policyVersion: NATIVE_COMPLETION_POLICY_VERSION,
       ...policy,
-      contract,
+      contractJson: contract as unknown as Record<string, unknown>,
     });
     const [row] = await tx.insert(completionContracts).values({
       companyId: input.companyId,

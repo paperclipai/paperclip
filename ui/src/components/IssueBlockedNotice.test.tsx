@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import type {
+  IssueRelationIssueSummary,
   IssueRecoveryAction,
   IssueRetryNowOutcome,
   IssueScheduledRetry,
@@ -123,6 +124,14 @@ function render(element: ReactElement) {
 }
 
 describe("IssueBlockedNotice", () => {
+  it("renders a locked blocker without reading its withheld status", () => {
+    const node = render(<IssueBlockedNotice issueStatus="blocked" blockers={[
+      { id: "private-task", identifier: "PAP-42", locked: true } as unknown as IssueRelationIssueSummary,
+    ]} />);
+    expect(node.textContent).toContain("PAP-42");
+    expect(node.textContent).toContain("Private");
+  });
+
   it("renders a successful-run next-step notice without requiring blockers", () => {
     const node = render(
       <IssueBlockedNotice

@@ -30,6 +30,8 @@ import {
 import type { AcpxModelStatus } from "./model-verification.js";
 import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-policy.js";
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
+import { admitCursorInstructions, createCursorInstructionAdmission } from "./cursor-instructions.js";
+import { createAcpxModeBinding } from "./provider-mode.js";
 
 const VERIFIED_COMMAND_SENTINEL = "paperclip-verified-acpx-command";
 const DEFAULT_RUNTIME_CLOSE_TIMEOUT_MS = 2_000;
@@ -265,8 +267,9 @@ export async function openQualifiedAcpxRuntime(
   );
   const permissionBoundary: {
     active: AbortController | null;
+    hasAdmittedTurn: boolean;
     handler?: AcpRuntimeOptions["onPermissionRequest"];
-  } = { active: null };
+  } = { active: null, hasAdmittedTurn: false };
   const extensionProfile = ACPX_CAPABILITY_PROFILES[options.profile.agent];
   const extensionRequests = new Set(extensionProfile.extensionRequests);
   const extensionNotifications = new Set(extensionProfile.extensionNotifications);
@@ -297,8 +300,17 @@ export async function openQualifiedAcpxRuntime(
     );
   };
   const commandLaunches = { count: 0, refreshConsumedCommand: options.refreshConsumedCommand };
+  const modeBinding = createAcpxModeBinding(options.profile.agent, options.mode);
+  const cursorInstructions = options.profile.agent === "cursor"
+    ? createCursorInstructionAdmission(options.systemInstructions)
+    : null;
   const runtimeOptions: GoalAwareAcpRuntimeOptions = {
     cwd: options.cwd,
+    ...(cursorInstructions || modeBinding ? { protocolGuardFactory: () => {
+      const instructions = cursorInstructions?.createGuard();
+      const mode = modeBinding?.createGuard();
+      return (direction: "inbound" | "outbound", message: unknown) => { instructions?.(direction, message); mode?.(direction, message); };
+    } } : {}),
     sessionStore,
     agentRegistry: createRegistry({
       // Preserve Claude's ACP capability identity. This is metadata only: the
@@ -358,6 +370,8 @@ export async function openQualifiedAcpxRuntime(
         || (rawSessionId !== undefined && rawSessionId !== request.sessionId)) {
         return { outcome: "reject_once" };
       }
+      if ((permissionBoundary.hasAdmittedTurn && !extensionBoundary.active)
+        || extensionBoundary.active?.signal.aborted || context.signal.aborted) return { outcome: "cancel" };
       const disposition = decideAcpxPermission(
         options.profile.agent,
         options.permissionMode,
@@ -371,15 +385,16 @@ export async function openQualifiedAcpxRuntime(
       );
       if (disposition === "delegate") {
         const active = permissionBoundary.active;
+        const turn = extensionBoundary.active;
         const handler = permissionBoundary.handler;
-        if (active && handler && !active.signal.aborted && !context.signal.aborted) {
+        if (active && turn && handler && !active.signal.aborted && !turn.signal.aborted && !context.signal.aborted) {
           // Capture this turn's callback before awaiting. A session-lifetime
           // callback must never acquire the next turn's approval authority.
           const decision = await handler(request, {
-            signal: AbortSignal.any([active.signal, context.signal]),
+            signal: AbortSignal.any([active.signal, turn.signal, context.signal]),
             responseDelivery: context.responseDelivery,
           });
-          if (permissionBoundary.active !== active || active.signal.aborted || context.signal.aborted) {
+          if (permissionBoundary.active !== active || extensionBoundary.active !== turn || active.signal.aborted || turn.signal.aborted || context.signal.aborted) {
             return { outcome: "cancel" };
           }
           return decision ?? { outcome: "cancel" };
@@ -439,7 +454,8 @@ export async function openQualifiedAcpxRuntime(
     runtimeCloseTimeoutMs,
   );
 
-  const handshake = Promise.resolve()
+  let handle: AcpRuntimeHandle | null = null;
+  const ensuredSession = Promise.resolve()
     .then(() =>
       runtime.ensureSession({
         sessionKey: options.providerSessionKey,
@@ -455,11 +471,46 @@ export async function openQualifiedAcpxRuntime(
             : {}),
         },
       }),
-    )
+    );
+  const handshake = (cursorInstructions || modeBinding
+    ? ensuredSession.then(async (ensuredHandle) => {
+        handle = ensuredHandle;
+        options.signal?.throwIfAborted();
+        if (cursorInstructions) await admitCursorInstructions(cursorInstructions, {
+          providerSpawned: commandLaunches.count > 0,
+          load: async () => {
+            // A fresh ACPX manager may reuse a saved record without spawning.
+            // Its supported exact-model control forces session/load and the
+            // current instruction acknowledgement before host admission.
+            if (!runtime.setConfigOption) {
+              throw new Error("Cursor cold admission requires exact model configuration");
+            }
+            await runtime.setConfigOption({
+              handle: ensuredHandle, key: "model", value: options.profile.reportedModelId,
+            });
+            // Match runtimePort.setModel: settle ownership of the temporary
+            // control connection before retiring its consumed command lease.
+            await children.verifyLifetimeOwnership();
+          },
+          refreshCommand: async () => {
+            options.signal?.throwIfAborted();
+            await commandLaunches.refreshConsumedCommand?.();
+          },
+        });
+        if (modeBinding && !modeBinding.isReady()) {
+          if (!runtime.setConfigOption) throw new Error("Provider mode admission requires native mode configuration");
+          await runtime.setConfigOption({ handle: ensuredHandle, key: modeBinding.configKey, value: modeBinding.selectedMode });
+          cursorInstructions?.assertReady();
+          modeBinding.assertReady();
+          await children.verifyLifetimeOwnership();
+          options.signal?.throwIfAborted();
+          await commandLaunches.refreshConsumedCommand?.();
+        }
+        return ensuredHandle;
+      }) : ensuredSession)
     .catch((error: unknown) => {
       throw classifySessionEnsureFailure(error);
     });
-  let handle: AcpRuntimeHandle | null = null;
   let lateCleanup: Promise<void> | null = null;
   try {
     const boundedHandshake = boundedSessionHandshake(
@@ -469,6 +520,8 @@ export async function openQualifiedAcpxRuntime(
     handle = options.signal
       ? await raceRuntimeHandshakeWithAbort(boundedHandshake, options.signal)
       : await boundedHandshake;
+    cursorInstructions?.assertReady();
+    modeBinding?.assertReady();
     // A provider can answer only after the verified sentinel is armed, but do
     // not admit the session until the owner has observed that exact handoff.
     await children.verifyLifetimeOwnership();
@@ -523,7 +576,7 @@ export async function openQualifiedAcpxRuntime(
     return runtimePort(
       runtime,
       handle,
-      requireIdentity(handle),
+      { ...requireIdentity(handle), ...(modeBinding ? { mode: modeBinding.selectedMode } : {}) },
       baseStore,
       children,
       runtimeCloseTimeoutMs,
@@ -958,7 +1011,7 @@ function runtimePort(
   runtimeCloseTimeoutMs: number,
   goalState: AcpxRuntimeGoalState,
   commandLaunches: { count: number; refreshConsumedCommand?: () => Promise<void> },
-  permissionBoundary: { active: AbortController | null; handler?: AcpRuntimeOptions["onPermissionRequest"] },
+  permissionBoundary: { active: AbortController | null; hasAdmittedTurn: boolean; handler?: AcpRuntimeOptions["onPermissionRequest"] },
   extensionBoundary: AcpxRuntimeExtensionBoundary,
 ): AcpxRuntimePort {
   extensionBoundary.sessionIds = new Set([identity.backendSessionId]);
@@ -1331,6 +1384,7 @@ function runtimePort(
         controller.abort(new Error("ACPX extension turn expired"));
         if (extensionBoundary.active === extensionTurn) extensionBoundary.active = null;
       };
+      permissionBoundary.hasAdmittedTurn = true;
       permissionBoundary.active = approval;
       permissionBoundary.handler = input.onPermissionRequest;
       const finishOwnershipAdmission =
@@ -1491,6 +1545,8 @@ async function persistedRuntimeStatus(
     agentSessionId: persistedAgentSessionId,
     lastRequestId: record.lastRequestId,
     requestTokenUsage: structuredClone(record.request_token_usage ?? {}),
+    cursorPromptUsage: structuredClone(record.cursor_prompt_usage),
+    promptMessageIds: (record.messages ?? []).flatMap(message => typeof message === "object" && message !== null && "User" in message ? [message.User.id] : []),
     usageCost: structuredClone(record.cumulative_cost),
     ...(currentModelId === undefined && !availableModelIds?.length
       ? {}

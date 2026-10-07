@@ -1622,3 +1622,22 @@ export const mixedIssueThreadInteractions = [
   pendingRequestConfirmationInteraction,
   pendingAskUserQuestionsInteraction,
 ];
+
+
+export const pendingConnectionAccessInteraction = createConnectionIntentInteraction({
+  id: "interaction-connection-access",
+  title: "Grant Composio access to Researcher?",
+  payload: { ...pendingConnectionIntentInteraction.payload, serviceSlug: "composio", serviceName: "Composio",
+    serviceLogoUrl: "/brands/apps/composio.svg",
+    accessRequest: { connectionId: "22222222-2222-4222-8222-222222222222", connectionName: "My Composio",
+      tools: [
+        { catalogEntryId: "33333333-3333-4333-8333-333333333333", toolName: "COMPOSIO_SEARCH_TOOLS", versionHash: "fixture-v1", permission: "allowed" },
+        { catalogEntryId: "44444444-4444-4444-8444-444444444444", toolName: "COMPOSIO_MANAGE_CONNECTIONS", versionHash: "fixture-v1", permission: "ask_first" },
+      ],
+    },
+  },
+});
+export const grantedConnectionAccessInteraction = createConnectionIntentInteraction({
+  ...pendingConnectionAccessInteraction, id: "interaction-connection-access-granted", status: "accepted",
+  result: { version: 1, outcome: "connected", connectionId: pendingConnectionAccessInteraction.payload.accessRequest!.connectionId },
+});

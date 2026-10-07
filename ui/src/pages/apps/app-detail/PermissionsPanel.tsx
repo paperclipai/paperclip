@@ -12,13 +12,14 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import { type InstallState } from "@/lib/tool-installs";
 import { QuarantinedActionsReview } from "./SetupPanel";
-import { ActionTestDialog } from "./TestPanel";
+import { ActionTestDialog } from "./ActionTestDialog";
 import type { AccessDraft, AppDetailSectionProps } from "./types";
 
 type ActionPermission = "off" | "ask" | "allowed";
 type ActionKindFilter = "all" | "read" | "write";
 
 export function PermissionsPanel({
+  afterAgentAccess,
   connectionId,
   appName,
   agents,
@@ -61,6 +62,8 @@ export function PermissionsPanel({
   permissionChangeWarning?: string;
   /** A credential-only connection can supply its account controls instead of tool actions. */
   actions?: ReactNode;
+  /** Supplemental agent settings share the existing connection configuration page. */
+  afterAgentAccess?: ReactNode;
 }) {
   const [searchParams] = useSearchParams();
   return (
@@ -73,6 +76,7 @@ export function PermissionsPanel({
         disabled={pending}
         onSave={onSaveAccess}
       />
+      {afterAgentAccess}
       {actions !== undefined ? actions : <ActionsSection
         key={connectionId}
         connectionId={connectionId}

@@ -1,3 +1,4 @@
+import { configuredEnvironmentKeys } from "../../configured-environment.js";
 import { randomBytes } from "node:crypto";
 import {
   constants,
@@ -28,6 +29,7 @@ import {
 } from "node:path";
 
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
+import { cursorInstructionBinding } from "./cursor-instructions.js";
 import { claudePaperclipPermissionRules } from "./permission-policy.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import {
@@ -442,6 +444,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     })}\n`);
   }
   if (input.agent === "codex") {
+    const taskEnvironmentKeys = configuredEnvironmentKeys(input.environment);
     await writePrivateFile(
       join(agentHomeDirectory, "config.toml"),
       [
@@ -453,6 +456,17 @@ export async function prepareAcpxRuntimeSandbox(input: {
         // also affect provider startup and belongs at the launch boundary.
         "[features]",
         "shell_snapshot = false",
+        ...(input.environment?.PAPERCLIP_AGENT_KEY_ID || taskEnvironmentKeys.length > 0 ? [
+          "[shell_environment_policy]", 'inherit = "all"', "ignore_default_excludes = true",
+          `include_only = ${JSON.stringify([...new Set([
+            "PATH", "HOME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
+            "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+            ...taskEnvironmentKeys,
+            // Unselected provider/config secrets keep Codex's default shell exclusions;
+            // only Paperclip's scoped API token is required by Bash/curl skills.
+            ...Object.keys(input.environment ?? {}).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+          ])])}`,
+        ] : []),
         "",
       ].join("\n"),
     );
@@ -494,6 +508,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
           AGENT_CLI_CREDENTIAL_STORE: "memory",
           NO_OPEN_BROWSER: "1",
           NODE_DISABLE_COMPILE_CACHE: "1",
+          PAPERCLIP_CURSOR_INSTRUCTIONS: cursorInstructionBinding(policy.systemInstructions).payload,
         }
       : {}),
     ...(input.agent === "copilot"

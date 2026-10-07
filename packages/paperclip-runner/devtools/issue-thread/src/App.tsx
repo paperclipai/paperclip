@@ -57,7 +57,7 @@ const MODEL_PRESETS = {
   opencode: ["openrouter/deepseek/deepseek-v4-flash-0731"],
   acpx: ["openrouter/deepseek/deepseek-v4-flash-0731", "claude-sonnet-5", "gpt-5.6-sol"],
 } as const;
-const ACPX_AGENT_MODELS = {
+const ACPX_DEFAULT_MODELS = {
   claude: "claude-sonnet-5",
   codex: "gpt-5.6-sol",
 } as const;
@@ -776,13 +776,6 @@ export function App() {
       setActionError("OpenCode models must use provider/model form.");
       return;
     }
-    if (harness.provider === "acpx") {
-      const agent = harness.acpxAgent ?? "codex";
-      if (model !== ACPX_AGENT_MODELS[agent]) {
-        setActionError(`The qualified ACPX ${agent} profile requires exact model ${ACPX_AGENT_MODELS[agent]}.`);
-        return;
-      }
-    }
     const configuration = { ...harness, model };
     persistHarnessConfiguration(configuration);
     setConfirmReset(false);
@@ -989,7 +982,7 @@ export function App() {
                         setHarness((current) => ({
                           ...current,
                           acpxAgent,
-                          model: ACPX_AGENT_MODELS[acpxAgent],
+                          model: ACPX_DEFAULT_MODELS[acpxAgent],
                         }));
                       }}
                     >
@@ -1169,7 +1162,7 @@ export function App() {
                   setHarness((current) => ({
                     ...current,
                     acpxAgent,
-                    model: ACPX_AGENT_MODELS[acpxAgent],
+                    model: ACPX_DEFAULT_MODELS[acpxAgent],
                   }));
                 }}
               >

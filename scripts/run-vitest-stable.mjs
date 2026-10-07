@@ -19,6 +19,7 @@ const serializedShardDurations = loadShardDurations(
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
+const serverScriptsDir = path.join(repoRoot, "server", "scripts");
 const nonServerProjects = [
   "@paperclipai/shared",
   "@paperclipai/skills-catalog",
@@ -26,9 +27,15 @@ const nonServerProjects = [
   "@paperclipai/adapter-utils",
   "@paperclipai/adapter-claude-local",
   "@paperclipai/adapter-codex-local",
+  "@paperclipai/adapter-cursor-cloud",
+  "@paperclipai/adapter-cursor-local",
+  "@paperclipai/adapter-gemini-local",
   "@paperclipai/adapter-grok-local",
+  "@paperclipai/hermes-paperclip-adapter",
+  "@paperclipai/adapter-kimi-local",
   "@paperclipai/adapter-openclaw-gateway",
   "@paperclipai/adapter-opencode-local",
+  "@paperclipai/adapter-pi-local",
   "@paperclipai/plugin-daytona",
   "@paperclipai/plugin-sdk",
   "@paperclipai/create-paperclip-plugin",
@@ -130,6 +137,37 @@ function toRepoPath(file) {
 
 function toServerPath(file) {
   return path.relative(serverRoot, file).split(path.sep).join("/");
+}
+
+// For a multi-line `it.each([...])("name", fn)` call, Vitest 5's `vitest
+// list --includeTaskLocation` and `vitest run <file>:<line>` disagree about
+// which line registers the test: `list` reports (and only matches) the line
+// of the wrapped "name" argument, while `run` only matches the line above
+// it, where Prettier's formatting puts that call's opening `(`. Separately,
+// on this file `list` also occasionally invents an entry whose "location"
+// sits on an ordinary body statement that merely ends in `)(` or starts a
+// line with a quote, with no `it`/`test` call anywhere nearby — a bogus
+// artifact of the same collector, not a real test. Both only showed up on
+// server/src/__tests__/chat-channels.integration.test.ts, a 70,000+ line
+// fixture; smaller files have not reproduced either issue.
+//
+// chatSuiteRunLine classifies a `list`-reported line against the actual
+// source and returns the line `vitest run` accepts, or null if the line
+// does not belong to any real `it`/`test` call (a bogus entry to drop).
+const callAnywherePattern = /(?:^|[^\w$])(?:it|test)(?:\.(?:each|skip|only))?\(/;
+const inlineCallPattern = /\)\(\s*["'`]/;
+
+function chatSuiteRunLine(sourceLines, line) {
+  const text = (sourceLines[line - 1] ?? "").trim();
+  if (callAnywherePattern.test(text) || text.endsWith(")(") || inlineCallPattern.test(text)) {
+    return line;
+  }
+  const previous = (sourceLines[line - 2] ?? "").trim();
+  const isNameArgument = text.startsWith('"') || text.startsWith("'") || text.startsWith("`");
+  if (isNameArgument && previous.endsWith(")(")) {
+    return line - 1;
+  }
+  return null;
 }
 
 function isRouteOrAuthzTest(file) {
@@ -314,6 +352,8 @@ function runVitest(args, label, testShard = null) {
   const env = {
     ...process.env,
     NODE_ENV: "test",
+    PAPERCLIP_TEST_HOST_HOME: process.env.PAPERCLIP_TEST_HOST_HOME
+      ?? (process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip")),
     PAPERCLIP_HOME: path.join(testRoot, "h"),
     // Config discovery otherwise prefers the checkout's .paperclip/config.json
     // over PAPERCLIP_HOME, importing preview scheduling policy into unit tests.
@@ -324,6 +364,8 @@ function runVitest(args, label, testShard = null) {
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
   if (testShard) {
+    const file = path.resolve(repoRoot, chatSuite);
+    const sourceLines = readFileSync(file, "utf8").split("\n");
     const collect = (filters, name) => {
       const output = path.join(testRoot, `${name}.json`);
       const result = spawnSync("pnpm", ["exec", "vitest", "list", ...sourceOnlyVitestArgs,
@@ -333,14 +375,28 @@ function runVitest(args, label, testShard = null) {
       if (result.error || result.status !== 0) fail(`Vitest collection failed: ${result.error?.message ?? result.status}`);
       return JSON.parse(readFileSync(output, "utf8"));
     };
-    const collected = collect(args, "all");
-    const file = path.resolve(repoRoot, chatSuite);
+    const allCollected = collect(args, "all");
+    const collected = [];
+    const bogusCollected = [];
+    for (const test of allCollected) {
+      (chatSuiteRunLine(sourceLines, test.location.line) === null ? bogusCollected : collected).push(test);
+    }
+    if (bogusCollected.length > 0) {
+      console.warn(
+        `[test:run] dropping ${bogusCollected.length} bogus Vitest collection entr${bogusCollected.length === 1 ? "y" : "ies"} with no matching it()/test() call: ${bogusCollected.map((test) => `${test.location.line}:${JSON.stringify(test.name)}`).join(", ")}`,
+      );
+    }
     const selected = partitionTestLines(collected, testShard.count, file)[testShard.index];
-    const filters = selected.lines.map((line) => `${chatSuite}:${line}`);
-    args = [...args.filter((arg) => arg !== chatSuite), ...filters];
-    assertSelectedTests(selected.tests, collect(args, "selected"), file);
+    // Validate shard membership with the same `list`-reported lines that
+    // produced `selected`, then switch to the `run`-compatible lines only for
+    // the filters handed to the real `vitest run` below (see
+    // chatSuiteRunLine).
+    const validationFilters = selected.lines.map((line) => `${chatSuite}:${line}`);
+    const validationArgs = [...args.filter((arg) => arg !== chatSuite), ...validationFilters];
+    assertSelectedTests(selected.tests, collect(validationArgs, "selected"), file);
     console.log(`[test:run] chat shard ${testShard.index + 1}/${testShard.count}: ${selected.tests.length}/${collected.length} tests, ${selected.lines.length} source lines; exact filter coverage verified`);
-    args.push("--allowOnly=false");
+    const runFilters = selected.lines.map((line) => `${chatSuite}:${chatSuiteRunLine(sourceLines, line)}`);
+    args = [...args.filter((arg) => arg !== chatSuite), ...runFilters, "--allowOnly=false"];
   }
   const result = spawnSync("pnpm", ["exec", "vitest", "run", ...sourceOnlyVitestArgs, ...args], {
     cwd: repoRoot,
@@ -492,10 +548,15 @@ const routeTests = walk(serverTestsDir)
 // config pins maxWorkers to 1, so the only way to parallelize is across jobs.
 // Suites are partitioned by recorded duration (scripts/general-server-shard.mjs)
 // rather than round-robin, so one slow suite cluster can't stretch a single shard.
-const generalServerTestFiles = walk(serverSrcDir)
+const serializedRepoPaths = new Set(routeTests.map(test => test.repoPath));
+const generalServerTestFiles = [
+  ...walk(serverSrcDir).filter(file => file.endsWith(".test.ts")),
+  ...walk(serverScriptsDir).filter(file => file.endsWith(".test.mjs")),
+]
   .map((file) => toRepoPath(file))
-  .filter((repoPath) => repoPath.endsWith(".test.ts"))
-  .filter((repoPath) => !isRouteOrAuthzTest(repoPath))
+  // Only exclude suites actually assigned to the serialized lane. A name
+  // such as services/openrouter-models.test.ts is not a serialized route.
+  .filter((repoPath) => !serializedRepoPaths.has(repoPath))
   .sort((a, b) => a.localeCompare(b));
 
 const options = parseCliOptions(process.argv.slice(2));

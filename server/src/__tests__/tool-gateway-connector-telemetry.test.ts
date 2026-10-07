@@ -265,6 +265,7 @@ describeEmbeddedPostgres("gateway connector invocation telemetry", () => {
   }, 30_000);
 
   afterEach(async () => {
+    vi.useRealTimers();
     track.mockClear();
     failLogActivityForAction.current = null;
     await db.delete(activityLog);
@@ -379,6 +380,9 @@ describeEmbeddedPostgres("gateway connector invocation telemetry", () => {
   }, 30_000);
 
   it("emits one denied event for a policy block and one rate_limited event past the limit", async () => {
+    // Both calls must land in the same policy window, even across a minute boundary.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-06T12:00:30Z"));
     const f = await fixture();
     await db.insert(toolPolicies).values({
       companyId: f.company.id,

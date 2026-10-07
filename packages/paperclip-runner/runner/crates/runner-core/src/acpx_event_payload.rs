@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::acpx_event_scope::AcpxEventScope;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
 use crate::durable::{
-    redact_sensitive_text_values, redact_text, sanitize_semantic_tool_input, sanitize_value,
+    redact_sensitive_text_values, redact_text, sanitize_value, validate_semantic_tool_input,
 };
 use crate::generated_acpx_sidecar_contract::{
     classify_generated_acpx_tool_operation, GeneratedAcpxSidecarEventType,
@@ -61,6 +61,7 @@ pub enum AcpxEventPayload {
         details: Value,
     },
     InputRequested {
+        tool_call_id: Option<String>,
         request_id: String,
         question_set: Value,
         origin: Option<Value>,
@@ -124,7 +125,22 @@ pub fn decode_acpx_event(
             validate_question_set(&question_set)?;
             let question_set = sanitize_question_set(question_set)?;
             let origin = optional_object(&event.payload, "origin", "input request origin")?;
+            // Native methods are interpreted by the provider adapter. This
+            // transport validates the opaque reference under the event scope.
+            let tool_call_id = if event.payload.get("toolCallId").is_some() {
+                let id =
+                    required_id_with_limit(&event.payload, "toolCallId", "input parent tool", 240)?;
+                if id.len() > 240 || sanitize_value(&json!(id)) != json!(id) {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX input parent tool identity is invalid",
+                    ));
+                }
+                Some(id)
+            } else {
+                None
+            };
             Ok(AcpxEventPayload::InputRequested {
+                tool_call_id,
                 request_id: required_id_with_limit(
                     &event.payload,
                     "requestId",
@@ -147,7 +163,7 @@ pub fn decode_acpx_event(
             // the event feed. Use the same declared-prose policy as native
             // semantic_tool.input before any generic diagnostic scrub can
             // irreversibly change the task's requirements.
-            let safe_input = sanitize_semantic_tool_input(&operation_id, &input)
+            let safe_input = validate_semantic_tool_input(&operation_id, &input)
                 .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
             Ok(AcpxEventPayload::ToolCalled {
                 call_id: required_id(&event.payload, "callId", "tool call")?,

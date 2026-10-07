@@ -42,18 +42,14 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
             "codex"
         }
         .to_owned(),
-        model: if mode.starts_with("controls") {
-            "openrouter/deepseek/deepseek-v4-flash-0731"
-        } else {
-            "gpt-5.6-sol"
-        }
-        .to_owned(),
+        model: "explicit-test-model".to_owned(),
         run_id: "run-1".to_owned(),
         catalog_revision: 1,
         runtime_directory: std::env::temp_dir(),
         normalized_session_id: "session-1".to_owned(),
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
+        mode: None,
         permission_mode_pinned: true,
         provider_policy: if mode.starts_with("controls") {
             Some(
@@ -588,7 +584,7 @@ fn reserved_completion_waits_for_feedback_and_allows_correction_in_same_turn() {
 }
 
 #[test]
-fn rejects_sensitive_reserved_input_before_dispatch_without_exposing_values() {
+fn preserves_sensitive_reserved_input_and_still_checks_result_correlation() {
     for mode in [
         "turns-sensitive-reserved-result-terminal",
         "turns-mismatched-sensitive-reserved-result-terminal",
@@ -597,18 +593,25 @@ fn rejects_sensitive_reserved_input_before_dispatch_without_exposing_values() {
         session
             .start_turn("turn-1", "Please help", &std::env::temp_dir())
             .unwrap();
-        let error = session
-            .poll_event(Duration::from_secs(1))
-            .unwrap_err()
-            .to_string();
+        let calls = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
         assert!(
-            error.contains("refusing to execute altered arguments"),
-            "{error}"
+            matches!(&calls[0], AcpxProviderStateEvent::ToolCall {input, ..}
+            if input["summary"].as_str().is_some_and(|summary| summary.contains("matching-sensitive-value")))
         );
-        assert!(!error.contains("matching-sensitive-value"), "{error}");
-        assert!(!error.contains("different-sensitive-value"), "{error}");
-        assert!(session.state().pending_tool("call-finish").is_none());
-        session.shutdown("already closed").unwrap();
+        assert!(session.state().pending_tool("call-finish").is_some());
+        if mode == "turns-mismatched-sensitive-reserved-result-terminal" {
+            let error = session
+                .poll_event(Duration::from_secs(1))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("does not match its authorized invocation"),
+                "{error}"
+            );
+            assert!(!error.contains("matching-sensitive-value"));
+            assert!(!error.contains("different-sensitive-value"));
+        }
+        session.shutdown("correlation checked").unwrap();
     }
 }
 
@@ -753,4 +756,29 @@ fn lazy_warm_handshake_updates_live_turn_control_discovery() {
         .steer_turn("turn-lazy", "control-1", "follow_up", "Then validate")
         .unwrap();
     session.shutdown("verified live handshake").unwrap();
+}
+
+#[test]
+fn forced_cancellation_retirement_preserves_terminal_polling_but_rejects_live_reuse() {
+    for mode in ["turns-retired", "turns-retired-terminal-first"] {
+        let mut session = AcpxProviderSession::start(&config(mode)).unwrap();
+        session
+            .start_turn("turn-1", "Please help", &std::env::temp_dir())
+            .unwrap();
+        session
+            .interrupt_turn("turn-1", "Stop stuck provider")
+            .unwrap();
+        assert!(session.runtime_retired());
+        let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(
+            matches!(terminal.last().unwrap(), AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-1")
+        );
+        assert!(session.state().active_turn_id().is_none());
+        assert!(session
+            .start_turn("turn-2", "Must not reuse", &std::env::temp_dir())
+            .unwrap_err()
+            .to_string()
+            .contains("runtime was retired"));
+        session.shutdown("test complete").unwrap();
+    }
 }

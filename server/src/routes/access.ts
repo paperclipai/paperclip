@@ -93,7 +93,7 @@ import {
   normalizeHumanRole,
   resolveHumanInviteRole,
 } from "../services/company-member-roles.js";
-import { humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
+import { agentJoinGrantsFromDefaults as standardAgentJoinGrantsFromDefaults, humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
 import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
@@ -2246,22 +2246,13 @@ function grantsFromDefaults(
 }
 
 export function agentJoinGrantsFromDefaults(
-  defaultsPayload: Record<string, unknown> | null | undefined
+  defaultsPayload: Record<string, unknown> | null | undefined,
+  agentId: string,
 ): Array<{
   permissionKey: (typeof PERMISSION_KEYS)[number];
   scope: Record<string, unknown> | null;
 }> {
-  const grants = grantsFromDefaults(defaultsPayload, "agent");
-  if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
-    return grants;
-  }
-  return [
-    ...grants,
-    {
-      permissionKey: "tasks:assign",
-      scope: null
-    }
-  ];
+  return standardAgentJoinGrantsFromDefaults(defaultsPayload, agentId);
 }
 
 type JoinRequestManagerCandidate = {
@@ -3082,6 +3073,15 @@ export function accessRoutes(
       input.allowedJoinTypes === "agent"
         ? null
         : input.humanRole ?? "operator";
+    if (effectiveHumanRole) {
+      // An invitation must not delegate the membership powers its creator lacks.
+      const roleGrants = grantsForHumanRole(effectiveHumanRole);
+      for (const permissionKey of ["joins:approve", "users:manage_permissions"] as const) {
+        if (roleGrants.some((grant) => grant.permissionKey === permissionKey)) {
+          await assertCompanyPermission(input.req, input.companyId, permissionKey);
+        }
+      }
+    }
     const insertValues = {
       companyId: input.companyId,
       inviteType: "company_join" as const,
@@ -4297,7 +4297,8 @@ export function accessRoutes(
           "active"
         );
         const grants = agentJoinGrantsFromDefaults(
-          invite.defaultsPayload as Record<string, unknown> | null
+          invite.defaultsPayload as Record<string, unknown> | null,
+          created.id,
         );
         await access.setPrincipalGrants(
           companyId,

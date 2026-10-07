@@ -1,4 +1,4 @@
-import { QUALIFIED_ACPX_PROFILES, resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
+import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -99,42 +99,9 @@ function acpxExecution(
     provider: {
       kind: "acpx",
       agent,
-      model:
-        agent === "codex"
-          ? "gpt-5.6-sol"
-          : agent === "pi"
-            ? "openrouter/deepseek/deepseek-v4-flash-0731"
-            : "claude-sonnet-5",
+      model: "explicit-test-model",
       permissionPolicy: "interactive",
-      profile: {
-        driverKind: "acpx_runtime",
-        protocolVersion: 1,
-        acpxVersion: "0.13.1",
-        agent,
-        agentProfileVersion: 1,
-        agentServerPackage:
-          agent === "codex"
-            ? "@agentclientprotocol/codex-acp"
-            : agent === "pi"
-              ? "pi-acp"
-              : "@agentclientprotocol/claude-agent-acp",
-        agentServerVersion:
-          agent === "codex" ? "1.6.2" : agent === "pi" ? "0.0.33" : "0.73.0",
-        agentRuntimePackage:
-          agent === "pi"
-            ? "@earendil-works/pi-coding-agent"
-            : agent === "codex"
-              ? "@openai/codex"
-              : "@anthropic-ai/claude-agent-sdk",
-        agentRuntimeVersion:
-          agent === "pi" ? "0.84.2" : agent === "codex" ? "0.156.0" : "0.3.280",
-        commandDigest:
-          agent === "codex"
-            ? "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3"
-            : agent === "pi"
-              ? "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f"
-              : "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
-      },
+      profile: resolveQualifiedAcpxProfile(agent, "explicit-test-model"),
     },
   };
 }
@@ -292,12 +259,13 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "opencode_server",
-      version: "1.18.32",
+      version: "1.18.34",
       capabilities: {
         steering: false,
         resume: true,
         interruption: true,
         dynamicTools: true,
+        toolRefreshOnResume: true,
         collaborationModes: ["default", "plan"],
       },
     });
@@ -444,7 +412,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "opencode_server",
-      version: "1.18.32",
+      version: "1.18.34",
       capabilities: {
         resume: true,
         interruption: true,
@@ -470,10 +438,14 @@ describe("native backend factory", () => {
     });
   });
 
-  it.each(["codex" as const, "claude" as const])(
+  it.each(["codex" as const, "claude" as const, "grok" as const])(
     "routes qualified %s ACPX through runnerd",
     async (agent) => {
-      const backend = createNativeSessionBackend(acpxExecution(agent), {
+      const input = acpxExecution();
+      if (input.provider.kind !== "acpx") throw new Error("Invalid ACPX fixture");
+      const model = "explicit-test-model";
+      Object.assign(input.provider, { agent, model, profile: resolveQualifiedAcpxProfile(agent, model) });
+      const backend = createNativeSessionBackend(input, {
         codexTransportFactory: () => {
           throw new Error("descriptor must not launch the transport");
         },
@@ -488,6 +460,7 @@ describe("native backend factory", () => {
           interruption: true,
           dynamicTools: true,
           collaborationModes: ["default", "plan"],
+          toolRefreshOnResume: true,
         },
       });
     },
@@ -501,7 +474,7 @@ describe("native backend factory", () => {
   it.each(["pi", "cursor", "copilot"] as const)("constructs %s identity on the supplied runnerd transport without starting a provider", async agent => {
     const input = acpxExecution();
     if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
-    const model = agent === "pi" ? QUALIFIED_ACPX_PROFILES.pi.qualificationModel : "explicit-fixture-model";
+    const model = "explicit-fixture-model";
     Object.assign(input.provider, { agent, model, profile: resolveQualifiedAcpxProfile(agent, model) });
     const backend = createNativeSessionBackend(input, {
       codexTransportFactory: () => { throw new Error("descriptor must not launch the transport"); },
@@ -523,15 +496,24 @@ describe("native backend factory", () => {
     },
   );
 
-  it.each(["pi", "cursor", "copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {
+  it.each(["pi", "copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {
     const input = acpxExecution();
     if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
-    const model = agent === "pi" ? QUALIFIED_ACPX_PROFILES.pi.qualificationModel : "explicit-fixture-model";
+    const model = "explicit-fixture-model";
     const profile = resolveQualifiedAcpxProfile(agent, model);
     Object.assign(input.provider, { agent, model, profile });
     expect(() => createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime",
       acpxEnvironment: { COPILOT_GITHUB_TOKEN: "explicit-fixture", CURSOR_API_KEY: "explicit-fixture", OPENROUTER_API_KEY: "explicit-fixture" },
     })).toThrow("ACPX candidate direct execution requires completed qualification");
+  });
+
+  it("constructs the qualified Cursor backend without candidate admission", async () => {
+    const input = acpxExecution();
+    if (input.provider.kind !== "acpx") throw new Error("invalid fixture");
+    const model = "explicit-cursor-model";
+    Object.assign(input.provider, { agent: "cursor", model, mode: "agent", profile: resolveQualifiedAcpxProfile("cursor", model) });
+    const backend = createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime", acpxEnvironment: { CURSOR_API_KEY: "explicit-fixture" } });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
   });
 
   it("rejects a Codex ACPX snapshot that drifts from its qualified profile", () => {

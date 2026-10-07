@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agentRuntimeState,
   agentWakeupRequests,
@@ -179,6 +180,7 @@ async function deleteHeartbeatRunsForCleanup(db: Db) {
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
     try {
+      await db.delete(costEvents);
       await db.delete(heartbeatRuns);
       return;
     } catch (error) {

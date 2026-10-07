@@ -26,6 +26,7 @@ function sourceAnchor(path, line, heading) {
 function classifyHeading(path, heading) {
   const normalized = heading.toLowerCase();
   if (normalized === "conversational confirmation answers") return "always_agent_tool";
+  if (normalized === "incidental feedback") return "optional_agent_tool";
   if (/(authentication|identity|checkout|budget|error|wake|heartbeat|approval follow-up|activity|audit|release|terminology)/.test(normalized)) {
     return "control_plane_owned";
   }
@@ -159,7 +160,7 @@ function renderHandoff() {
   ].join("\n") + "\n";
 }
 
-async function buildContract() {
+export async function buildContract() {
   const contract = JSON.parse(await readFile(contractPath, "utf8"));
   const capabilities = await readSkillHeadings(contract.skillSources);
   const discoveredTools = await readLegacyTools();

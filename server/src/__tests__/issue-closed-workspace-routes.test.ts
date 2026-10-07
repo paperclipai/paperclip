@@ -29,6 +29,12 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+    decide: vi.fn(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "project:read",
+      action: input.action,
+      reason: "allow_test_read",
+      explanation: "The fixture actor can read the task.",
+    })),
   hasPermission: vi.fn(),
 }));
 
@@ -204,7 +210,7 @@ async function assertNoBackgroundClearWithinRetryWindow() {
   expect(mockExecutionWorkspaceService.clearReopenPendingConsumptionForUnconsumedReopen).not.toHaveBeenCalled();
 }
 
-describe.sequential("closed isolated workspace issue routes", () => {
+describe("closed isolated workspace issue routes", () => {
   const routeModules = hoistModuleGraph(registerServiceMocks, async () => {
     const [{ issueRoutes }, { errorHandler }] = await Promise.all([
       vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),

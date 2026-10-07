@@ -188,7 +188,10 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       exceptions: [{ message: "adapter threw" }, { message: "provider unreachable", code: "ECONNRESET", status: 503, requestId: "request-123" }],
     });
     expect(captured.diagnostics.exceptions[0].stack).toContain("run-failure-report.test.ts");
-    expect(JSON.stringify(captured)).not.toContain("private-");
+    // Match the sensitive fixture values, not a legitimate checkout name in the stack.
+    for (const value of ["private-response", "private-stderr", "private-stdout", "private-prompt", "private-provider-raw", "private-summary", "private-env", "private-adapter-response"]) {
+      expect(JSON.stringify(captured)).not.toContain(value);
+    }
     expect(error.cause).toBe(cause);
   });
 
@@ -259,6 +262,25 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       await reportRunFailure(db, run);
     }
 
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+  it.each(["provider", "unknown"])("reports an unexpected started cancellation from %s", async source => {
+    await seedCompanyAndAgent();
+    const run = buildRun({ status: "cancelled", startedAt: new Date(0), finishedAt: new Date(1000),
+      resultJson: { cancellation: { source, expected: false, initiator: { type: "provider", id: "private-actor" },
+        reason: "private-reason", recordedAt: new Date(1000).toISOString() } } });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    expect(mockCaptureRunFailure.mock.calls[0][0]).toMatchObject({ runStatus: "cancelled",
+      diagnostics: { execution: { cancellationSource: source, cancellationExpected: false } } });
+    expect(JSON.stringify(mockCaptureRunFailure.mock.calls)).not.toMatch(/private-actor|private-reason/);
+  });
+  it("does not report an operator's Stop as a failure", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ status: "cancelled", startedAt: new Date(0), resultJson: {
+      cancellation: { source: "operator", expected: true, initiator: { type: "user", id: "board" },
+        reason: "Stop", recordedAt: new Date().toISOString() },
+    } }));
     expect(mockCaptureRunFailure).not.toHaveBeenCalled();
   });
 

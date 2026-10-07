@@ -33,6 +33,11 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("requires routing authority for native pooled connector declarations without a custom UI bundle", () => {
+    const manifest = { id: "example.pool", apiVersion: 1, version: "0.1.0", displayName: "Pool", description: "Pool", author: "Tests", categories: ["connector"], entrypoints: { worker: "worker.js" }, aiConnectionRouter: { name: "AI connection pool", description: "Use saved connections" } };
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["ui.page.register"] }).success).toBe(false);
+    expect(pluginManifestV1Schema.parse({ ...manifest, capabilities: ["ai.connections.route"] }).aiConnectionRouter).toEqual(manifest.aiConnectionRouter);
+  });
   it("accepts existing-style plugins that do not request access or authorization capabilities", () => {
     const parsed = pluginManifestV1Schema.parse({
       id: "paperclip.compat-dashboard",

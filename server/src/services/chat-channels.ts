@@ -1,3 +1,4 @@
+import { authorizationService, canActorReadIssuePrivacy, canPublishIssueToChatAudience } from "./authorization.js";
 import { withSlackBoardLease } from "./slack-board-lease.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { authorizeSlackBoardPublication } from "./slack-board-authority.js";
@@ -8667,7 +8668,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             );
           return true;
         }
-        validateNativeQuestionResponseInput(interaction, { answers });
+        await validateNativeQuestionResponseInput(interaction, { answers });
         // Canonical service rechecks required fields, options, audience, and
         // pending -> answered atomically with the response-delivery receipt.
         const issue = await db
@@ -11757,6 +11758,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (!admission?.allowed) throw deny();
       authorization.userId = admission.responsibleUserId ?? null;
     }
+    if (!(await canActorReadIssuePrivacy(tx, authorization.userId
+      ? { type: "board", userId: authorization.userId }
+      : { type: "none" }, issue))) throw deny();
     const expectedUserId =
       payload.requestedByActorType === "user"
         ? payload.requestedByActorId
@@ -13627,6 +13631,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     tx: DbOrTransaction,
     publication: typeof chatPublications.$inferSelect,
   ): Promise<boolean> {
+    if (!(await canPublishIssueToChatAudience(tx, publication))) return false;
     const notice = parseInboundWakePublicationKey(publication.idempotencyKey);
     let runId = runIdFromMilestonePublication(publication);
     if (!runId && publication.commentId && !notice) {

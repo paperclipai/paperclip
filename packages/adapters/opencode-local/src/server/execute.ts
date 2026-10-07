@@ -1,4 +1,5 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
+import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -40,6 +41,7 @@ import {
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
+  hydrateFreshSessionHandoff,
   selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
@@ -51,7 +53,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlParser } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -82,7 +84,7 @@ function parseModelProvider(model: string | null): string | null {
 }
 
 function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
-  return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
+  return provider === "openai" ? inferOpenAiCompatibleBiller(env, "openai") ?? "unknown" : provider ?? "unknown";
 }
 
 const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
@@ -271,7 +273,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {
-    ...buildPaperclipEnv(agent),
+    ...buildPaperclipEnv(agent, ctx.agentIdentity),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
   env.PAPERCLIP_RUN_ID = runId;
@@ -623,6 +625,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
+      await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
       const { basePrompt, promptMetrics } = buildPrompt(Boolean(resumeSessionId));
       const prompt = joinPromptSections([
         selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
@@ -643,6 +646,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
+      const consumeAccounting = createOpenCodeJsonlParser();
+      let hasAccounting = false;
+      const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage ?? (async () => {}), stdout => {
+        hasAccounting = true;
+        const parsed = consumeAccounting(stdout);
+        const provider = parseModelProvider(model || null);
+        return { usage: parsed.usageReported ? parsed.usage : undefined, costUsd: parsed.costUsd,
+          costStatus: parsed.usageComplete || parsed.costUsd != null ? undefined : "unpriced",
+          usageBasis: "per_run", provider, biller: resolveOpenCodeBiller(runtimeEnv, provider), billingType: "unknown", model, complete: false };
+      });
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
@@ -652,15 +665,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceSec,
         onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog,
+        onLog: accountingLog,
         runLogTail: paperclipBridge?.runLogTail,
         settleRunDisposition: paperclipBridge?.settleRunDisposition,
       });
-      return {
-        proc,
-        rawStderr: proc.stderr,
-        parsed: parseOpenCodeJsonl(proc.stdout),
-      };
+      // Parse any unterminated final record before deciding whether its usage
+      // is complete. A clean exit alone cannot turn absent counters into zero.
+      await accountingLog.flush();
+      const retainedAccounting = consumeAccounting("");
+      await accountingLog.flush({ complete: proc.exitCode === 0 && !proc.timedOut && !proc.signal
+        && (retainedAccounting.usageComplete || retainedAccounting.costUsd != null) });
+      // Display output is capped by the process transport. Keep accounting
+      // from the full stream, including when no checkpoint callback is installed.
+      const parsed = parseOpenCodeJsonl(proc.stdout);
+      if (hasAccounting) {
+        const retained = consumeAccounting("");
+        parsed.usage = retained.usage;
+        parsed.usageReported = retained.usageReported;
+        parsed.usageComplete = retained.usageComplete;
+        parsed.costUsd = retained.costUsd;
+      }
+      return { proc, rawStderr: proc.stderr, parsed };
     };
 
     const toResult = (
@@ -676,6 +701,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
+          usageComplete: false,
+          usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
+          usageBasis: "per_run",
+          provider: parseModelProvider(model || null),
+          biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(model || null)),
+          model,
+          billingType: "unknown",
+          costUsd: attempt.parsed.costUsd,
+          costStatus: attempt.parsed.usageComplete || attempt.parsed.costUsd != null ? undefined : "unpriced",
           errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
@@ -713,16 +747,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
+        usageComplete: attempt.proc.exitCode === 0 && !attempt.proc.signal
+          && (attempt.parsed.usageComplete || attempt.parsed.costUsd != null),
+        usageBasis: "per_run",
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
         // Forward the transport-level error code from the run-disposition seam.
         // A lost duplex control channel surfaces the typed `duplex_channel_lost`
         // code; every other result carries no code here.
         errorCode: attempt.proc.errorCode ?? null,
-        usage: {
-          inputTokens: attempt.parsed.usage.inputTokens,
-          outputTokens: attempt.parsed.usage.outputTokens,
-          cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
-        },
+        usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
@@ -731,6 +764,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         model: modelId,
         billingType: "unknown",
         costUsd: attempt.parsed.costUsd,
+        costStatus: attempt.parsed.usageComplete || attempt.parsed.costUsd != null ? undefined : "unpriced",
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,

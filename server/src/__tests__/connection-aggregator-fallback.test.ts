@@ -1,3 +1,6 @@
+import Ajv2020 from "ajv/dist/2020.js";
+import { requestHumanInputAction } from "../../../packages/paperclip-runner/src/protocol-actions/request-human-input.js";
+import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -281,17 +284,24 @@ const support = await getEmbeddedPostgresTestSupport();
         await instanceSettingsService(db).updateExperimental({ enableChatConnectors: false });
       }
     });
-    it("discovers all purposes with truthful setup actions and the chat feature gate", async () => {
+    it.each([false, true])("discovers AgentMail with truthful setup actions regardless of the chat setting (%s)", async (enabled) => {
       await resetQuestions();
       const service = connectionIntentService(db);
-      expect((await service.search(claims, "agentmail")).results.some(item => item.service === "agentmail")).toBe(false);
-      await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+      await instanceSettingsService(db).updateExperimental({ enableChatConnectors: enabled });
       try {
         const result = await service.search(claims, "agentmail");
         expect(result.results[0]?.methods).toEqual([expect.objectContaining({
           key: "email-agent", purpose: "channel", setupPath: `/AGG/apps/chat/connect?provider=agentmail&purpose=chat&agentId=${claims.sub}`,
         })]);
-        expect(result.instruction).toContain("setupPath");
+        expect(result.instruction).toContain("connection_request");
+        const requested = await service.request(claims, "agentmail");
+        expect(requested).toMatchObject({ state: "needs_user_action", interactionId: expect.any(String) });
+        expect(await service.request(claims, "agentmail")).toMatchObject({ interactionId: requested.interactionId });
+        const options = await service.setupOptions(requested.interactionId!);
+        expect(options.interaction.payload).toMatchObject({ purpose: "channel", serviceSlug: "agentmail", requestingAgentId: claims.sub });
+        expect(options.emailSetup).toEqual({ credentialConnectionId: null, readyConnectionId: null });
+        await service.decline(requested.interactionId!, "responsible-user");
+        await expect(service.request(claims, "agentmail")).rejects.toThrow(/already been resolved/);
         const browse = await service.search(claims, "");
         expect(browse.results.some(item => item.service === "agentmail")).toBe(true);
         expect(browse.results.some(item => item.service === "anthropic")).toBe(true);
@@ -378,6 +388,18 @@ const support = await getEmbeddedPostgresTestSupport();
         "via:zapier:hubspot",
       ]);
       expect(result.providerQuestion?.prompt).toContain("external service");
+      const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: false });
+      const input = { idempotencyKey: "provider-choice", interactionKind: "questions", title: "Choose a provider",
+        prompt: result.providerQuestion!.prompt, continuationPolicy: "wake_assignee" };
+      for (const payload of [{ version: 1, questionSet: result.providerQuestionSet }, { version: 1, questions: [result.providerQuestion] }]) {
+        expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload }), JSON.stringify(ajv.errors)).toBe(true);
+      }
+      expect(questionSetToAskUserQuestionsPayload(result.providerQuestionSet!).questions).toEqual([result.providerQuestion]);
+      expect(result.instruction).toContain("questionSet:providerQuestionSet");
+      expect(result.instruction).not.toContain("do not add questionSet");
+      expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload: { version: 1 } })).toBe(false);
+      expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload: { version: 1,
+        questionSet: { ...result.providerQuestionSet, questions: [{ ...result.providerQuestionSet!.questions[0], answerMode: "text" }] } } })).toBe(false);
       expect(result.results.every((item) => item.state !== "ready")).toBe(true);
       expect(result.results.every((item) => item.aggregator?.evidenceUrl)).toBe(
         true,

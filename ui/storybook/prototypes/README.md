@@ -6,6 +6,28 @@ Run Storybook:
 pnpm --filter @paperclipai/ui exec storybook dev --port 6010 --host 127.0.0.1 --no-open -c storybook/.storybook
 ```
 
+## Connector catalog chips
+
+**Apps → Catalog source selection → Chips** is the focused catalog preview.
+The four text chips are **Paperclip**, **Composio**, **Installed**, and **All**.
+The selected chip has a neutral pill background; the other choices are plain text.
+Connected accounts stay above discovery. Installed shows only saved native and
+Composio apps. All includes every catalog source, including Arcade. Searching
+from Paperclip includes aggregator apps; choosing a chip explicitly scopes the
+search. Clearing that automatic global search returns to Paperclip, while
+explicit All or Installed selections remain selected.
+
+Stories cover each chip, global and installed-account search, empty results,
+native precedence, and mobile. **Switch filters and search** exercises selection,
+pagination, installed-only results, and search. The superseded dropdown, sidebar,
+and provider-overview explorations have been removed.
+
+These remain design fixtures, not changes to the production Apps page. They use
+shipped `ConnectorCard`, representative native entries, public aggregator catalogs
+with native duplicates omitted, and example saved accounts. Eight entries per page
+keep review compact; the page-size control also offers 24. Setup and account
+mutations are outside this preview.
+
 ## Existing onboarding
 
 **Onboarding → Agent arc** mounts the shipped `OnboardingWizard` against API

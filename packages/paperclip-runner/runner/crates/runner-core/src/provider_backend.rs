@@ -18,10 +18,10 @@ use crate::codex_provider::{
     MAX_SETTLED_PROVIDER_TURN_IDS,
 };
 use crate::durable::{
-    create_private_temporary_file, current_unix_ms, open_private_regular_file,
-    sanitize_semantic_tool_input, sanitize_value, verify_private_directory, Command,
-    CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError, EventPriority,
-    OpenCodeLaunchProfile, PolledEvent, TerminalDeliveryReconciliation,
+    create_private_temporary_file, current_unix_ms, open_private_regular_file, sanitize_value,
+    validate_semantic_tool_input, verify_private_directory, Command, CommandExecution,
+    CommandExecutor, DurableRunnerConfig, DurableRunnerError, EventPriority, OpenCodeLaunchProfile,
+    PolledEvent, TerminalDeliveryReconciliation,
 };
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, semantic_value_digest, AuthorizedToolSet, DurableReplayFilter,
@@ -339,7 +339,7 @@ fn semantic_input_event(
     identity: &ProviderEventIdentity,
     call: &PendingToolCall,
 ) -> Result<NormalizedProviderEvent, DurableRunnerError> {
-    let safe_input = sanitize_semantic_tool_input(&call.operation_id, &call.input)?;
+    let safe_input = validate_semantic_tool_input(&call.operation_id, &call.input)?;
     Ok(NormalizedProviderEvent {
         event_type: "semantic_tool.input".to_owned(),
         priority: EventPriority::P0,
@@ -538,11 +538,13 @@ fn admit_terminal_tool_authority(
         "paperclip_finish" => {
             matches!(disposition.as_str(), "done" | "needs_review")
                 || (disposition == "yielded"
-                    && input
-                        .get("continuation")
-                        .and_then(|continuation| continuation.get("kind"))
-                        .and_then(Value::as_str)
-                        == Some("response_wake"))
+                    && matches!(
+                        input
+                            .get("continuation")
+                            .and_then(|continuation| continuation.get("kind"))
+                            .and_then(Value::as_str),
+                        Some("response_wake" | "monitor")
+                    ))
         }
         "paperclip_block" => disposition == "blocked",
         _ => false,
@@ -2103,17 +2105,29 @@ impl CodexCommandExecutor {
                                 "providerTurnId": previous_active_turn_id,
                                 "status": "failed",
                                 "providerTerminalObserved": false,
+                                "error": if provider_label == "codex" { json!({
+                                    "code": "provider_turn_lost_on_restore",
+                                    "recoverable": true,
+                                    "message": "The runner restored the conversation after process loss, but the previous turn is no longer active.",
+                                }) } else { Value::Null },
                             }),
                         };
-                        let outcome = terminal_events(
-                            state,
-                            "turn.failed",
-                            state.goal.as_ref().map(|goal| goal.status.as_str()),
-                        );
-                        state.extend_terminal_events(with_terminal_outcome(
-                            vec![provider_terminal],
-                            outcome,
-                        ))?;
+                        if provider_label == "codex" {
+                            // No provider result was observed. Preserve the lost
+                            // turn as a fact, but leave the run open for the
+                            // controller's bounded same-conversation recovery.
+                            state.push_terminal_event(provider_terminal)?;
+                        } else {
+                            let outcome = terminal_events(
+                                state,
+                                "turn.failed",
+                                state.goal.as_ref().map(|goal| goal.status.as_str()),
+                            );
+                            state.extend_terminal_events(with_terminal_outcome(
+                                vec![provider_terminal],
+                                outcome,
+                            ))?;
+                        }
                     }
                 } else {
                     state.push_event(reconciled)?;
@@ -3712,7 +3726,7 @@ impl CodexCommandExecutor {
         operation_id: String,
         input: Value,
     ) -> Result<(), DurableRunnerError> {
-        if let Err(error) = sanitize_semantic_tool_input(&operation_id, &input) {
+        if let Err(error) = validate_semantic_tool_input(&operation_id, &input) {
             return self.reject_tool_call(
                 call_id,
                 operation_id,
@@ -4888,8 +4902,9 @@ mod tests {
         assert_eq!(finish_result.result["error"]["code"], "invalid_tool_call");
         assert_eq!(finish_result.result["error"]["retryable"], false);
         let finish_message = finish_result.result["error"]["message"].as_str().unwrap();
-        assert!(finish_message
-            .contains("continuation must include kind=response_wake, summary, and idempotencyKey"));
+        assert!(finish_message.contains(
+            "continuation must include kind=response_wake or monitor, summary, and idempotencyKey"
+        ));
         assert!(finish_message.contains("/required (missing \"requiredField\")"));
         assert!(finish_message.contains("/additionalProperties"));
         assert!(!finish_message.contains("secretSubmittedValue"));
@@ -4903,6 +4918,18 @@ mod tests {
             .contains("blocker must include reasonCode, owner, unblockAction, and scope"));
         assert!(block_message.len() <= 512);
         assert!(!block_message.chars().any(char::is_control));
+
+        let question_result = schema_rejection(
+            "request_human_input",
+            json!({"PRIVATE_FIELD": "PRIVATE_VALUE"}),
+        );
+        let question_message = question_result.result["error"]["message"].as_str().unwrap();
+        assert!(question_message.contains("payload.questionSet"));
+        assert!(question_message.contains("/required (missing \"requiredField\")"));
+        assert!(!question_message.contains("PRIVATE_FIELD"));
+        assert!(!question_result.result.to_string().contains("PRIVATE_VALUE"));
+        assert!(question_message.len() <= 512);
+        assert_eq!(question_result.result["error"]["retryable"], false);
 
         let ordinary_result = schema_rejection("get_task_context", json!({}));
         assert_eq!(
@@ -4933,7 +4960,7 @@ mod tests {
             CodexProviderConfig {
                 provider: "opencode".to_owned(),
                 driver: "opencode_server".to_owned(),
-                provider_version: "1.18.32".to_owned(),
+                provider_version: "1.18.34".to_owned(),
                 command: PathBuf::from("node"),
                 args: Vec::new(),
                 cwd: std::env::current_dir()
@@ -5145,6 +5172,25 @@ mod tests {
     }
 
     #[test]
+    fn accepted_terminal_tool_preserves_an_explicit_monitor_wait() {
+        let mut state = opencode_result_state();
+        let mut result = valid_opencode_result();
+        result["reportedWorkDisposition"] = json!("yielded");
+        result["continuation"] = json!({
+            "kind": "monitor",
+            "summary": "Wait for the scheduled check.",
+            "idempotencyKey": "monitor-1"
+        });
+
+        admit_terminal_tool_authority(&mut state, "paperclip_finish", &result, false).unwrap();
+        let terminal = terminal_events(&state, "turn.completed", None);
+
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].payload["reportedWorkDisposition"], "yielded");
+        assert!(state.validate().is_ok());
+    }
+
+    #[test]
     fn terminal_tool_authority_rejects_an_unbound_yield() {
         let mut state = opencode_result_state();
         let mut result = valid_opencode_result();
@@ -5295,7 +5341,7 @@ mod tests {
             CodexProviderConfig {
                 provider: "opencode".to_owned(),
                 driver: "opencode_server".to_owned(),
-                provider_version: "1.18.32".to_owned(),
+                provider_version: "1.18.34".to_owned(),
                 command: PathBuf::from("node"),
                 args: Vec::new(),
                 cwd: std::env::current_dir()
@@ -5512,7 +5558,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_input_rejects_credential_material_before_dispatch() {
+    fn semantic_input_preserves_credential_arguments_for_the_harness() {
         let identity = ProviderEventIdentity {
             runner_instance_id: "runner-1".to_owned(),
             run_id: "run-1".to_owned(),
@@ -5525,10 +5571,12 @@ mod tests {
             operation_id: "get_task_context".to_owned(),
             input: json!({"password": "do-not-persist", "safe": true}),
         };
-        assert!(semantic_input_event(&identity, &call)
-            .unwrap_err()
-            .to_string()
-            .contains("refusing to execute altered arguments"));
+        let event = semantic_input_event(&identity, &call).unwrap();
+        assert_eq!(event.payload["semantic_tool"]["input"], call.input);
+        assert_eq!(
+            event.payload["semantic_tool"]["content"]["digest"],
+            json!(semantic_value_digest(&call.input))
+        );
     }
 
     #[test]

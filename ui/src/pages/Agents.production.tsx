@@ -14,8 +14,6 @@ import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
-import { MembershipAction } from "../components/MembershipAction";
-import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
@@ -27,9 +25,7 @@ import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import {
-  isStarred,
   resourceMembershipState,
-  useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
@@ -272,7 +268,6 @@ export function Agents() {
   });
   usePublishSharedQueryData(sharedRuns, runs, runsUpdatedAt);
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
-  const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
 
   // Map agentId -> first live run + live run count
   const liveRunByAgent = useMemo(() => {
@@ -347,13 +342,6 @@ export function Agents() {
 
   const renderAgentRow = (agent: Agent) => {
     const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
-    const agentPending =
-      membershipMutation.isPending &&
-      membershipMutation.variables?.resourceType === "agent" &&
-      membershipMutation.variables.resourceId === agent.id;
-    const agentStarPending = agentPending && membershipMutation.variables?.starred !== undefined;
-    const agentJoinLeavePending = agentPending && membershipMutation.variables?.starred === undefined;
-    const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
     const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
     // Lifecycle chip + inline `Set up`. Rendered inline in
@@ -442,37 +430,7 @@ export function Agents() {
               <span className="w-20 flex justify-end">
                 <AgentStatusBadge status={agent.status} />
               </span>
-              <StarToggle
-                size="row"
-                starred={agentStarred}
-                pending={agentStarPending}
-                resourceName={agent.name}
-                onToggle={(next) => membershipMutation.mutate({
-                  resourceType: "agent",
-                  resourceId: agent.id,
-                  resourceName: agent.name,
-                  starred: next,
-                })}
-              />
             </div>
-            <MembershipAction
-              state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}
-              pending={agentJoinLeavePending}
-              pendingState={agentJoinLeavePending ? membershipMutation.variables?.state ?? null : null}
-              resourceName={agent.name}
-              onJoin={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "joined",
-              })}
-              onLeave={() => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: agent.id,
-                resourceName: agent.name,
-                state: "left",
-              })}
-            />
           </div>
         }
       />
@@ -569,7 +527,6 @@ export function Agents() {
               showEnvironment={showEnvironmentColumn}
               tab={tab}
               memberships={membershipsQuery.data}
-              membershipMutation={membershipMutation}
               builtInByAgentId={builtInByAgentId}
               onConfigureBuiltIn={setConfigureState}
             />
@@ -614,7 +571,6 @@ function OrgTreeNode({
   showEnvironment,
   tab,
   memberships,
-  membershipMutation,
   builtInByAgentId,
   onConfigureBuiltIn,
 }: {
@@ -627,7 +583,6 @@ function OrgTreeNode({
   showEnvironment: boolean;
   tab: FilterTab;
   memberships: ReturnType<typeof useResourceMemberships>["data"];
-  membershipMutation: ReturnType<typeof useResourceMembershipMutation>;
   builtInByAgentId: Map<string, BuiltInAgentState>;
   onConfigureBuiltIn: (state: BuiltInAgentState) => void;
 }) {
@@ -636,12 +591,6 @@ function OrgTreeNode({
   const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
   const hasInvalidOrgChain = Boolean(agent && agent.orgChainHealth?.status === "invalid_org_chain");
   const membershipState = resourceMembershipState(memberships, "agent", node.id);
-  const pending = membershipMutation.isPending &&
-    membershipMutation.variables?.resourceType === "agent" &&
-    membershipMutation.variables.resourceId === node.id;
-  const starPending = pending && membershipMutation.variables?.starred !== undefined;
-  const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
-  const starred = isStarred(memberships, "agent", node.id);
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
@@ -724,38 +673,6 @@ function OrgTreeNode({
               <AgentStatusBadge status={node.status} />
             </span>
           </div>
-          <MembershipAction
-            state={membershipState}
-            pending={joinLeavePending}
-            pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
-            resourceName={node.name}
-            onJoin={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "joined",
-            })}
-            onLeave={() => membershipMutation.mutate({
-              resourceType: "agent",
-              resourceId: node.id,
-              resourceName: node.name,
-              state: "left",
-            })}
-          />
-          <div className="hidden sm:flex items-center gap-3">
-            <StarToggle
-              size="row"
-              starred={starred}
-              pending={starPending}
-              resourceName={node.name}
-              onToggle={(next) => membershipMutation.mutate({
-                resourceType: "agent",
-                resourceId: node.id,
-                resourceName: node.name,
-                starred: next,
-              })}
-            />
-          </div>
         </div>
       </Link>
       {node.reports && node.reports.length > 0 && (
@@ -772,7 +689,6 @@ function OrgTreeNode({
               showEnvironment={showEnvironment}
               tab={tab}
               memberships={memberships}
-              membershipMutation={membershipMutation}
               builtInByAgentId={builtInByAgentId}
               onConfigureBuiltIn={onConfigureBuiltIn}
             />

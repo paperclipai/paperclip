@@ -238,6 +238,7 @@ export type {
   PluginLocalFolderListing,
   PluginLocalFoldersClient,
   PluginEventsClient,
+  ResourceLifecycleEvent,
   PluginJobsClient,
   PluginLaunchersClient,
   PluginHttpClient,
@@ -451,3 +452,5 @@ export {
 
 export { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError } from "./environment-creation-cleanup.js";
 export type { PluginEnvironmentCreationCleanup } from "./environment-creation-cleanup.js";
+
+export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";

@@ -12,7 +12,7 @@
 // (#13116) -- because nothing enforced it.
 //
 // This derives the required set from esbuild's own module-resolution scan
-// of the two entry points server actually imports (index.js, testing.js),
+// of the entry points server actually imports (index.js, testing.js, live/index.js),
 // with `write: false` so nothing is written to disk and `packages:
 // "external"` so npm imports are reported, not inlined. That is precise:
 // paperclip-runner declares dependencies (react-markdown, the codex/opencode
@@ -43,9 +43,8 @@ const runnerRoot = resolve(serverRoot, "../packages/paperclip-runner");
 const runnerDist = resolve(runnerRoot, "dist");
 
 // The only entry points server/src actually imports from the vendored
-// runner (server/src/**/*.ts import "../vendor/paperclip-runner/index.js"
-// or ".../testing.js").
-const ENTRY_POINT_NAMES = ["index.js", "testing.js"];
+// runner, including the installed-runtime readiness probe surface.
+const ENTRY_POINT_NAMES = ["index.js", "testing.js", "live/index.js"];
 
 const NODE_BUILTINS = new Set([
   ...builtinModules,

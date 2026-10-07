@@ -19,6 +19,8 @@ import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-co
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { AgentDirectoryReuseInvalidatedError, agentDirectoryWorkingCopyService } from "../services/agent-directory-working-copies.js";
+import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { heartbeatRunEvents } from "@paperclipai/db";
 
 describe("persistent agent directories", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -727,6 +729,252 @@ describe("persistent agent directories", () => {
     expect(row?.receipt?.schema).toBe("paperclip.agent-files.v1");
     expect(row?.receipt?.baseline).toBeUndefined();
     expect(await fs.readFile(path.join(root, "note.txt"), "utf8")).toBe("one write");
+  });
+
+  it.each(["prepared", "unavailable", "warm_saved", "superseded", "saved", "unchanged", "resolved"])(
+    "does not acquire a held directory lock for a no-op %s release", async state => {
+      const copy = await run();
+      const stopped = ["superseded", "saved", "unchanged", "resolved"].includes(state);
+      await db.update(agentInstructionWorkingCopies).set({ state, processStoppedAt: stopped ? new Date() : null,
+        receipt: { ...copy.receipt, ...(stopped ? { cleanupPending: false } : {}) } })
+        .where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      const before = await copies.get(companyId, copy.runId);
+      await withDirectoryMergeLock(path.resolve(copy.localRoot, "../../.."), async () => {
+        // Any attempted nested acquisition fails promptly instead of hanging the test.
+        let now = Date.now();
+        const clock = vi.spyOn(Date, "now").mockImplementation(() => now += 31_000);
+        try { await copies.release(companyId, copy.runId); } finally { clock.mockRestore(); }
+        expect(await copies.get(companyId, copy.runId)).toEqual(before);
+        expect(await fs.readFile(path.join(copy.localRoot, entryFile), "utf8")).toBe(initial);
+      });
+    });
+
+  async function unavailableRemote(options: { state?: "stopped" | "destroyed"; receiptMismatch?: string } = {}) {
+    const copy = await run();
+    const environmentId = randomUUID(), leaseId = randomUUID(), remoteCwd = "/fixture/cleanup-task";
+    const lease = { id: leaseId, companyId, environmentId, heartbeatRunId: copy.runId, provider: "daytona", providerLeaseId: "cleanup-fixture" };
+    await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
+    const receipt = options.state ? remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: options.state })! : undefined;
+    if (receipt && options.receiptMismatch) (receipt as Record<string, unknown>)[options.receiptMismatch] = randomUUID();
+    await db.insert(environmentLeases).values({ ...lease, ...(receipt ? { status: "released", releasedAt: new Date(), cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: receipt } } : {}) });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, copy.runId));
+    await db.update(agentInstructionWorkingCopies).set({ state: "unavailable", errorCode: "INSTRUCTION_COLLECTION_UNAVAILABLE",
+      errorMessage: "Fixture could not collect files", candidateHash: "preserved-candidate", candidateBase64: Buffer.from("preserved bytes").toString("base64"), attempts: 3,
+      location: `remote:${environmentId}`, executionRoot: path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, copy.runId),
+      receipt: { ...copy.receipt, cleanup: { leaseId, remoteCwd } } }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+    return { copy: (await copies.get(companyId, copy.runId))!, lease, environmentId };
+  }
+
+  it.each([undefined, "stopped", "companyId", "runId", "leaseId", "provider", "providerLeaseId"])(
+    "defers unavailable cleanup without exact destruction proof (%s)", async proof => {
+      const { copy } = await unavailableRemote({ state: proof === undefined ? undefined : proof === "stopped" ? "stopped" : "destroyed",
+        receiptMismatch: proof && proof !== "stopped" ? proof : undefined });
+      const execute = vi.fn();
+      copies = agentInstructionWorkingCopyService(db, { environmentRuntime: { execute } as unknown as EnvironmentRuntimeService });
+      const before = Date.now();
+      await withDirectoryMergeLock(path.resolve(copy.localRoot, "../../.."), () => copies.recoverStopped());
+      const deferred = (await copies.get(companyId, copy.runId))!;
+      expect(deferred).toMatchObject({ state: "unavailable", processStoppedAt: null, attempts: 3,
+        candidateHash: copy.candidateHash, candidateBase64: copy.candidateBase64, errorCode: copy.errorCode, errorMessage: copy.errorMessage, receipt: copy.receipt });
+      expect(deferred.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(before + 30_000);
+      expect(await copies.recoverStopped()).toBe(0);
+      expect(await fs.readFile(path.join(copy.localRoot, entryFile), "utf8")).toBe(initial);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+  it("cleans an unavailable copy after exact destruction without claiming a save or executing remotely", async () => {
+    const { copy, environmentId } = await unavailableRemote({ state: "destroyed" });
+    await fs.writeFile(path.join(copy.localRoot, "unsaved.txt"), "unsaved edit");
+    await db.delete(environments).where(eq(environments.id, environmentId));
+    const execute = vi.fn();
+    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockRejectedValue(new Error("must not execute"));
+    copies = agentInstructionWorkingCopyService(db, { environmentRuntime: { execute } as unknown as EnvironmentRuntimeService });
+    try {
+      await copies.recoverStopped();
+      const recovered = (await copies.get(companyId, copy.runId))!;
+      expect(recovered).toMatchObject({ state: "unavailable", candidateHash: copy.candidateHash, candidateBase64: copy.candidateBase64, attempts: 3,
+        errorCode: copy.errorCode, errorMessage: copy.errorMessage, receipt: { cleanupPending: false } });
+      expect(recovered.processStoppedAt).toBeInstanceOf(Date);
+      expect(recovered.nextAttemptAt).toBeNull();
+      await expect(fs.stat(copy.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(fs.stat(path.join(root, "unsaved.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe(initial);
+      expect(execute).not.toHaveBeenCalled(); expect(shell).not.toHaveBeenCalled();
+    } finally { shell.mockRestore(); }
+  });
+
+  it.each([false, true])("preserves uncollected local edits and their unavailable receipt even after local stop proof (%s)", async stopped => {
+    const copy = await run();
+    await fs.writeFile(path.join(copy.localRoot, "unsaved-local.txt"), "recoverable local edit");
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native" }).where(eq(heartbeatRuns.id, copy.runId));
+    await copies.reportUnavailable(companyId, copy.runId);
+    if (stopped) await db.insert(heartbeatRunEvents).values({ companyId, runId: copy.runId, agentId, seq: 1, eventType: "native.local_process_stopped", stream: "system", level: "info", message: "fixture stop" });
+    const before = (await copies.get(companyId, copy.runId))!;
+    expect(before).toMatchObject({ state: "unavailable", attempts: 0, processStoppedAt: null });
+    await copies.recoverStopped();
+    const patch = vi.fn(async () => { throw new Error("local copy must not be changed"); });
+    await agentDirectoryWorkingCopyService(db, copies.get, patch).recoverUnavailable(before);
+    expect(patch).not.toHaveBeenCalled();
+    expect(await copies.get(companyId, copy.runId)).toEqual(before);
+    expect(await fs.readFile(path.join(copy.localRoot, "unsaved-local.txt"), "utf8")).toBe("recoverable local edit");
+    await expect(fs.stat(path.join(root, "unsaved-local.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("serializes same-run preparation after recovery commits stop proof and before it removes bytes", async () => {
+    const { copy, lease } = await unavailableRemote({ state: "destroyed" });
+    const remoteCwd = "/fixture/cleanup-task";
+    const executionTarget = { kind: "remote" as const, transport: "ssh" as const, environmentId: lease.environmentId, leaseId: lease.id, remoteCwd,
+      spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd } };
+    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" });
+    const stage = vi.spyOn(ssh, "syncDirectoryToSsh").mockResolvedValue(undefined);
+    let stopCommitted!: () => void, finishCleanup!: () => void;
+    const committed = new Promise<void>(resolve => { stopCommitted = resolve; });
+    const proceed = new Promise<void>(resolve => { finishCleanup = resolve; });
+    const directories = agentDirectoryWorkingCopyService(db, copies.get, async (row, values) => {
+      const [updated] = await db.update(agentInstructionWorkingCopies).set(values).where(eq(agentInstructionWorkingCopies.runId, row.runId)).returning();
+      if (values.processStoppedAt) { stopCommitted(); await proceed; }
+      return updated!;
+    });
+    const recovering = directories.recoverUnavailable(copy);
+    await committed;
+    let prepareSettled = false;
+    const preparing = copies.prepare({ ...target(), runId: copy.runId, cwd: home, target: executionTarget }).then(row => { prepareSettled = true; return row; });
+    try {
+      try {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(prepareSettled).toBe(false);
+        expect((await copies.get(companyId, copy.runId))?.state).toBe("unavailable");
+      } finally { finishCleanup(); await recovering; }
+      const prepared = await preparing;
+      expect(prepared).toMatchObject({ state: "prepared", processStoppedAt: null });
+      expect(await fs.readFile(path.join(copy.localRoot, entryFile), "utf8")).toBe(initial);
+      // A stale cleanup callback now observes the live lifecycle and does nothing.
+      await directories.release(copy);
+      expect(await fs.readFile(path.join(copy.localRoot, entryFile), "utf8")).toBe(initial);
+    } finally { shell.mockRestore(); stage.mockRestore(); }
+  });
+
+  it("keeps stopped pending cleanup behind a held lock and lets recovery proceed to other agents", async () => {
+    const blocked = await run();
+    await db.update(agentInstructionWorkingCopies).set({ state: "unavailable", processStoppedAt: new Date() }).where(eq(agentInstructionWorkingCopies.runId, blocked.runId));
+    // A distinct canonical agent has its own lifecycle lock.
+    const firstAgent = agentId, firstRoot = root;
+    agentId = randomUUID();
+    root = resolveManagedInstructionsRoot({ ...target(), id: agentId, name: "Other", adapterConfig: {} });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Other", adapterConfig: { instructionsBundleMode: "managed", instructionsRootPath: root, instructionsEntryFile: entryFile } });
+    await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: agentId, membershipRole: "member" });
+    await db.update(principalPermissionGrants).set({ scope: { agentIds: [firstAgent, agentId] } }).where(eq(principalPermissionGrants.companyId, companyId));
+    await fs.mkdir(path.dirname(path.join(root, entryFile)), { recursive: true }); await fs.writeFile(path.join(root, entryFile), initial);
+    const other = await run();
+    await db.update(agentInstructionWorkingCopies).set({ state: "unavailable", processStoppedAt: new Date() }).where(eq(agentInstructionWorkingCopies.runId, other.runId));
+    agentId = firstAgent; root = firstRoot;
+    await withDirectoryMergeLock(path.resolve(blocked.localRoot, "../../.."), async () => {
+      let now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now += 31_000);
+      try {
+        await expect(copies.release(companyId, blocked.runId)).rejects.toMatchObject({ code: "ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT" });
+        await copies.recoverCaptured();
+      } finally { clock.mockRestore(); }
+      expect((await copies.get(companyId, blocked.runId))?.nextAttemptAt).toBeInstanceOf(Date);
+      expect(await fs.readFile(path.join(blocked.localRoot, entryFile), "utf8")).toBe(initial);
+      await expect(fs.stat(other.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+    // A fresh recovery worker retries after the holder releases the lock. It
+    // cleans the pending copy without changing the failed-save receipt.
+    const deferred = (await copies.get(companyId, blocked.runId))!;
+    await db.update(agentInstructionWorkingCopies).set({ nextAttemptAt: new Date(0) })
+      .where(eq(agentInstructionWorkingCopies.runId, blocked.runId));
+    await agentInstructionWorkingCopyService(db).recoverCaptured();
+    expect(await copies.get(companyId, blocked.runId)).toMatchObject({ state: deferred.state,
+      errorCode: deferred.errorCode, errorMessage: deferred.errorMessage,
+      candidateHash: deferred.candidateHash, receipt: { cleanupPending: false }, nextAttemptAt: null });
+    await expect(fs.stat(blocked.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["environment", "path", "lease-run"])("rejects destruction outside the registered copy binding (%s)", async mismatch => {
+    const { copy, lease } = await unavailableRemote({ state: "destroyed" });
+    if (mismatch === "environment") await db.update(agentInstructionWorkingCopies).set({ location: `remote:${randomUUID()}` }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+    if (mismatch === "path") await db.update(agentInstructionWorkingCopies).set({ executionRoot: "/fixture/foreign" }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+    if (mismatch === "lease-run") {
+      const other = await run();
+      const moved = { ...lease, heartbeatRunId: other.runId };
+      await db.update(environmentLeases).set({ heartbeatRunId: other.runId, metadata: { remoteExecutionTermination: remoteTerminationReceipt(moved, { providerLeaseId: moved.providerLeaseId, state: "destroyed" }) } }).where(eq(environmentLeases.id, lease.id));
+    }
+    await copies.recoverStopped();
+    expect((await copies.get(companyId, copy.runId))?.processStoppedAt).toBeNull();
+    expect(await fs.readFile(path.join(copy.localRoot, entryFile), "utf8")).toBe(initial);
+  });
+
+  it("backs off an unproven batch so the next unavailable copy can be cleaned", async () => {
+    const deferred: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const { copy } = await unavailableRemote();
+      deferred.push(copy.runId);
+      await db.update(agentInstructionWorkingCopies).set({ updatedAt: new Date(i) }).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+    }
+    const { copy: ready } = await unavailableRemote({ state: "destroyed" });
+    await db.update(agentInstructionWorkingCopies).set({ updatedAt: new Date(20) }).where(eq(agentInstructionWorkingCopies.runId, ready.runId));
+    await copies.recoverStopped();
+    expect((await copies.get(companyId, ready.runId))?.processStoppedAt).toBeNull();
+    await copies.recoverStopped();
+    expect((await copies.get(companyId, ready.runId))?.receipt?.cleanupPending).toBe(false);
+    for (const runId of deferred) expect(await copies.get(companyId, runId)).toMatchObject({ state: "unavailable", processStoppedAt: null, attempts: 3 });
+  });
+
+  it("continues cleanup when both retry-reservation writes fail for the first copy", async () => {
+    const first = await run(), second = await run();
+    for (const [index, copy] of [first, second].entries()) {
+      await db.update(agentInstructionWorkingCopies).set({ state: "unavailable", processStoppedAt: new Date(), updatedAt: new Date(index),
+        errorCode: "INSTRUCTION_COLLECTION_UNAVAILABLE", candidateHash: "preserved", candidateBase64: Buffer.from("candidate").toString("base64") })
+        .where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+    }
+    const before = await copies.get(companyId, first.runId);
+    const failReservation = () => { throw new Error("fixture retry-reservation write failure"); };
+    const update = vi.spyOn(db, "update").mockImplementationOnce(failReservation).mockImplementationOnce(failReservation);
+    try { await copies.recoverCaptured(); } finally { update.mockRestore(); }
+    expect(await copies.get(companyId, first.runId)).toEqual(before);
+    expect(await fs.readFile(path.join(first.localRoot, entryFile), "utf8")).toBe(initial);
+    expect(await copies.get(companyId, second.runId)).toMatchObject({ state: "unavailable", errorCode: "INSTRUCTION_COLLECTION_UNAVAILABLE", candidateHash: "preserved", receipt: { cleanupPending: false } });
+    await expect(fs.stat(second.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([false, true])("does not execute a cached transport after destruction, including an ambiguous stop-proof commit (%s)", async interrupted => {
+    const runId = randomUUID(), environmentId = randomUUID(), leaseId = randomUUID(), remoteCwd = "/fixture/cached-task";
+    const lease = { id: leaseId, companyId, environmentId, heartbeatRunId: runId, provider: "daytona", providerLeaseId: "cached-fixture" };
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
+    await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
+    await db.insert(environmentLeases).values(lease);
+    const execute = vi.fn(), restoreWorkspace = vi.fn(), cleanupWorkspaceSnapshot = vi.fn().mockResolvedValue(undefined);
+    const executionTarget = { kind: "remote" as const, transport: "sandbox" as const, environmentId, leaseId, remoteCwd, runner: { execute } };
+    const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" });
+    const stage = vi.spyOn(executionTargetTools, "prepareAdapterExecutionTargetRuntime").mockImplementation(async () => ({ target: executionTarget,
+      workspaceRemoteDir: path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, runId), runtimeRootDir: null,
+      assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null, restoreWorkspace, cleanupWorkspaceSnapshot }));
+    try {
+      const copy = (await copies.prepare({ ...target(), runId, cwd: home, target: executionTarget }))!;
+      await copies.reportUnavailable(companyId, runId);
+      await copies.release(companyId, runId);
+      expect(cleanupWorkspaceSnapshot).not.toHaveBeenCalled();
+      shell.mockClear(); stage.mockClear();
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, runId));
+      await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+        metadata: { remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "destroyed" }) } }).where(eq(environmentLeases.id, leaseId));
+      if (interrupted) {
+        const directories = agentDirectoryWorkingCopyService(db, copies.get, async (row, values) => {
+          const [updated] = await db.update(agentInstructionWorkingCopies).set(values).where(eq(agentInstructionWorkingCopies.runId, row.runId)).returning();
+          if (values.processStoppedAt) throw new Error("fixture lost update response after commit");
+          return updated!;
+        });
+        await expect(directories.recoverUnavailable((await copies.get(companyId, runId))!)).rejects.toThrow("lost update response");
+        expect((await copies.get(companyId, runId))?.receipt?.cleanupDestroyedOnly).toBe(true);
+        await copies.recoverCaptured();
+      } else await copies.recoverStopped();
+      expect(await copies.get(companyId, runId)).toMatchObject({ state: "unavailable", errorCode: "INSTRUCTION_COLLECTION_UNAVAILABLE", receipt: { cleanupPending: false } });
+      await expect(fs.stat(copy.localRoot)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(cleanupWorkspaceSnapshot).toHaveBeenCalledOnce();
+      expect(execute).not.toHaveBeenCalled(); expect(restoreWorkspace).not.toHaveBeenCalled(); expect(shell).not.toHaveBeenCalled(); expect(stage).not.toHaveBeenCalled();
+    } finally { shell.mockRestore(); stage.mockRestore(); }
   });
 
 });

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { parseProviderMode } from "../contracts/provider-mode.js";
+import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "../drivers/acpx/profile-activity.js";
 import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { deliverAcpxResponse, requireAcpxResponseDelivery } from "../drivers/acpx/response-delivery.js";
@@ -136,6 +138,7 @@ interface PendingPermission {
   turnId: string;
   responseDelivery: Promise<void>;
   normalized: NormalizedAcpxPermission;
+  deliveredEvidence?: (outcome: string) => void;
   settle(response: AcpPermissionDecision): void;
   cleanup(): void;
 }
@@ -285,6 +288,7 @@ async function dispatch(
         clientCapabilities: acpxProfileClientCapabilities(params.agent),
         model: params.model,
         permissionMode: params.permissionMode,
+        mode: params.mode,
         providerPolicy: params.providerPolicy,
         systemInstructions: params.systemInstructions,
         runtimeContext: params.runtimeContext,
@@ -354,6 +358,7 @@ async function dispatch(
     if (!runId) throw new Error("attach a run before starting an ACPX turn");
     if (turnId) throw new Error("ACPX sidecar already has an active turn");
     const currentTurnId = boundedIdentity(request.params.turnId, "turnId");
+    const activeAgent = openParams!.agent;
     turnId = currentTurnId;
     turnControls.begin(currentTurnId);
     let runtimeTurn: AcpxRuntimeTurn;
@@ -366,6 +371,14 @@ async function dispatch(
       waitForInput: (input, context) => waitForExtensionInput(currentTurnId, input, context),
       emit: event => emit("runtime.rich_event", { ...event }, currentTurnId),
     });
+    const activity = acpxProfileActivity(activeAgent);
+    const toolEvidence = activity.createToolEvidence?.({
+      sessionId: activeHost.identity().backendSessionId, turnId: currentTurnId,
+      workingDirectory: openParams!.workingDirectory,
+      active: () => turnId === currentTurnId && host === activeHost,
+      emit: event => { validateAcpxRichEvent(event); emit("runtime.rich_event", { ...event }, currentTurnId); },
+      unavailable: () => diagnostic(`${openParams!.agent}_evidence_unavailable`, "ACP tool evidence is incomplete; permission and terminal outcomes are unchanged."),
+    });
     let usageBefore: unknown;
     try {
       usageBefore = await readSidecarHostStatusWithin(activeHost);
@@ -377,13 +390,13 @@ async function dispatch(
         onElicitation: (providerRequest, context) =>
           waitForInput(currentTurnId, providerRequest, context),
         onPermissionRequest: (providerRequest, context) =>
-          waitForPermission(currentTurnId, providerRequest, context),
+          waitForPermission(currentTurnId, activeAgent, providerRequest, context, toolEvidence),
       });
     } catch (error) {
       turnId = null;
       throw error;
     }
-    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain);
+    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence);
     // Warm sessions may defer initialize until their first prompt. Publish only
     // the capabilities of that live initialized connection, never old disk state.
     await runtimeTurn.promptStarted;
@@ -407,14 +420,15 @@ async function dispatch(
   if (request.command === "turn.cancel") {
     const expected = boundedIdentity(request.params.turnId, "turnId");
     if (expected !== turnId) throw new Error("cannot cancel a stale ACPX turn");
-    await requireHost().interruptActiveTurn(
+    const activeHost = requireHost();
+    await activeHost.interruptActiveTurn(
       boundedOptionalText(
         request.params.reason,
         "Paperclip cancellation",
         4_000,
       ),
     );
-    return { cancelled: true };
+    return { cancelled: true, sessionClosed: activeHost.isClosed() };
   }
   if (request.command === "permission.resolve") {
     const requestId = boundedIdentity(request.params.requestId, "requestId");
@@ -427,7 +441,9 @@ async function dispatch(
     const decision = pending.normalized.resolve(resolution);
     if (!permissions.delete(requestId)) throw new Error("permission request lost its settlement race");
     pending.cleanup();
-    return await deliverAcpxResponse(pending.responseDelivery, () => pending.settle(decision));
+    const receipt = await deliverAcpxResponse(pending.responseDelivery, () => pending.settle(decision));
+    pending.deliveredEvidence?.(decision.outcome);
+    return receipt;
   }
   if (request.command === "input.resolve") {
     const requestId = boundedIdentity(request.params.requestId, "requestId");
@@ -460,7 +476,9 @@ async function dispatch(
       pending.turnId !== expectedTurnId ||
       turnId !== expectedTurnId
     ) {
-      throw new Error("tool call is stale or unknown");
+      throw Object.assign(new Error("tool call is stale or unknown"), {
+        code: "ACPX_TOOL_CALL_STALE",
+      });
     }
     if (!tools.delete(callId))
       throw new Error("tool call lost its settlement race");
@@ -589,6 +607,8 @@ async function pumpTurn(
   activeHost: AcpxRuntimeHost,
   usageBefore: unknown,
   drainExtensions: () => Promise<void>,
+  activity: AcpxActivityAdapter,
+  toolEvidence?: AcpxToolEvidence,
 ): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
@@ -599,6 +619,7 @@ async function pumpTurn(
     const normalizeMessage = initializedAgent === "grok"
       ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
     for await (const event of runtimeTurn.events) {
+      toolEvidence?.tool(event);
       emit(
         "runtime.event",
         sanitizeRuntimeEvent(
@@ -610,9 +631,16 @@ async function pumpTurn(
     const result = await runtimeTurn.result;
     await drainExtensions();
     try {
+      const usageAfter = await readSidecarHostStatusWithin(activeHost);
+      try {
+        const notice = activity.usageNotice?.(usageBefore, usageAfter, runtimeTurn.requestId, currentTurnId);
+        if (notice) { validateAcpxRichEvent(notice); emit("runtime.rich_event", { ...notice }, currentTurnId); }
+      } catch {
+        // Optional diagnostics must not suppress standard usage or terminal settlement.
+      }
       const usage = persistedAcpxTurnUsage(
         usageBefore,
-        await readSidecarHostStatusWithin(activeHost),
+        usageAfter,
         runtimeTurn.requestId,
         openParams?.agent,
       );
@@ -677,13 +705,22 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
         "ACPX semantic result disposition does not match its terminal operation",
       );
     }
+    // Semantic result identity must survive the wire encoder unchanged. Its
+    // display-text Unicode repair is unsuitable for authenticated result data.
+    try {
+      if (stringifyAcpxSidecarFrame(validation.result) !== JSON.stringify(validation.result)) {
+        throw new Error("Semantic input changes during encoding");
+      }
+    } catch {
+      throw new Error("ACPX semantic result cannot be encoded without changing its identity");
+    }
     // The authenticated runner bridge must admit this built-in invocation
     // before the provider sees a result. Keep the call pending until runnerd
     // sends tool.resolve after the server's completion feedback accepts it.
     // This is the same roundtrip used by ordinary dynamic tools; emitting a
     // local semantic_result here would let an invalid review handoff appear
     // accepted before the server has checked it.
-    emit(
+    const forwarded = emit(
       "runtime.tool_called",
       {
         callId,
@@ -692,6 +729,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       },
       activeTurnId,
     );
+    if (!forwarded) throw new Error("ACPX semantic tool call exceeds the sidecar frame limit");
     return await new Promise((settle, reject) => {
       const abort = () => {
         const pending = tools.get(callId);
@@ -702,7 +740,12 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       call.signal.addEventListener("abort", abort, { once: true });
       tools.set(callId, {
         turnId: activeTurnId,
-        settle,
+        settle: (result) => {
+          // A pipe write alone does not prove receiver admission. Only this
+          // call's turn-bound tool.resolve success confirms runnerd accepted
+          // the validated body; rejection, cancellation and timeout stay null.
+          settle(result);
+        },
         reject,
         cleanup: () => call.signal.removeEventListener("abort", abort),
       });
@@ -738,14 +781,19 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
 
 async function waitForPermission(
   activeTurnId: string,
+  agent: QualifiedAcpxAgent,
   request: AcpPermissionRequest,
   context: { signal: AbortSignal; responseDelivery?: Promise<void> },
+  toolEvidence?: AcpxToolEvidence,
 ): Promise<AcpPermissionDecision> {
   const { signal } = context;
   if (turnId !== activeTurnId || signal.aborted || permissions.size >= MAX_PENDING_INPUTS) {
     return { outcome: "cancel" };
   }
-  const normalized = normalizeAcpxPermission(request, ["pi", "copilot"].includes(openParams?.agent ?? "") ? { allowAlwaysScope: "session" } : {});
+  const normalized = normalizeAcpxPermission(request, {
+    provider: agent, workingDirectory: openParams?.workingDirectory,
+    ...(["pi", "copilot"].includes(agent) ? { allowAlwaysScope: "session" } : {}),
+  });
   const responseDelivery = requireAcpxResponseDelivery(context);
   const requestId = stableRequestId(activeTurnId, ++requestSequence, normalized.toolCallId);
   return await new Promise((settle) => {
@@ -756,6 +804,7 @@ async function waitForPermission(
     };
     permissions.set(requestId, {
       turnId: activeTurnId, normalized, settle, responseDelivery,
+      deliveredEvidence: toolEvidence?.permission(request, requestId, normalized.choices.map(choice => choice.key)),
       cleanup: () => signal.removeEventListener("abort", abort),
     });
     signal.addEventListener("abort", abort, { once: true });
@@ -763,6 +812,7 @@ async function waitForPermission(
     emit("runtime.permission_requested", {
       requestId, kind: normalized.kind, title: normalized.title,
       toolCallId: normalized.toolCallId, choices: normalized.choices,
+      origin: { adapter: "acpx-runtime-sidecar", provider: agent, method: "session/request_permission" },
     }, activeTurnId);
   });
 }
@@ -821,6 +871,7 @@ async function waitForExtensionInput(
 ): Promise<Record<string, unknown>> {
   if (turnId !== activeTurnId || context.signal.aborted || inputs.size >= MAX_PENDING_INPUTS) return input.cancel();
   const responseDelivery = requireAcpxResponseDelivery(context);
+  const toolCallId = acpxProfileActivity(openParams?.agent ?? initializedAgent).inputToolIdentity?.(input);
   const requestId = stableRequestId(activeTurnId, ++requestSequence, context.requestId);
   return await new Promise((settle) => {
     const abort = () => {
@@ -841,6 +892,7 @@ async function waitForExtensionInput(
     context.signal.addEventListener("abort", abort, { once: true });
     emit("runtime.input_requested", {
       requestId, questionSet: input.questionSet,
+      ...(toolCallId === undefined ? {} : { toolCallId }),
       origin: { adapter: "acpx-runtime-sidecar", provider: openParams?.agent ?? initializedAgent ?? "unknown", method: input.method },
     }, activeTurnId);
     if (context.signal.aborted) abort();
@@ -1138,6 +1190,8 @@ function safeOutput(value: unknown): Record<string, unknown> {
 function parseOpenParams(
   value: Record<string, unknown>,
 ): AcpxSidecarOpenParams {
+  const fields = new Set(["runtimeDirectory", "normalizedSessionId", "workingDirectory", "agent", "model", "permissionMode", "mode", "permissionModePinned", "providerPolicy", "systemInstructions", "runtimeContext", "tools", "providerSessionKey", "expectedIdentity"]);
+  if (Object.keys(value).some(key => !fields.has(key))) throw new Error("ACPX open parameters include an unsupported field");
   const agent = requireQualifiedAgent(value.agent);
   const model = requiredText(value.model, "model");
   resolveQualifiedAcpxProfile(agent, model);
@@ -1159,6 +1213,7 @@ function parseOpenParams(
     agent,
     model,
     permissionMode: requiredPermissionMode(value.permissionMode),
+    ...(value.mode === undefined ? {} : { mode: parseProviderMode(value.mode) }),
     permissionModePinned: value.permissionModePinned === true,
     ...(value.providerPolicy == null ? {} : { providerPolicy: parseProviderPolicy(value.providerPolicy) }),
     systemInstructions: boundedText(
@@ -1228,6 +1283,7 @@ function parseExpectedIdentity(value: unknown): AcpxExpectedSessionIdentity {
     ...(input.permissionMode === undefined
       ? {}
       : { permissionMode: requiredPermissionMode(input.permissionMode) }),
+    ...(input.mode === undefined ? {} : { mode: parseProviderMode(input.mode) }),
     providerLifetimeFenceCandidates: requiredFenceCandidates(
       input.providerLifetimeFenceCandidates,
     ),
@@ -1272,18 +1328,21 @@ function emit(
   eventType: AcpxSidecarEvent["eventType"],
   payload: Record<string, unknown>,
   eventTurnId: string | null = turnId,
-): void {
+): boolean {
   if (sequence >= Number.MAX_SAFE_INTEGER) {
     throw new Error("ACPX sidecar event sequence exhausted");
   }
-  writeFrame({
+  const accepted = writeFrame({
     protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION,
-    sequence: ++sequence,
+    sequence: sequence + 1,
     eventType,
     runId,
     turnId: eventTurnId,
     payload,
   });
+  // A dropped frame never entered the stream and must not consume an identity.
+  if (accepted) sequence++;
+  return accepted;
 }
 
 function diagnostic(code: string, message: string): void {
@@ -1307,13 +1366,16 @@ function response(
   });
 }
 
-function writeFrame(value: AcpxSidecarEvent | AcpxSidecarResponse): void {
+function writeFrame(value: AcpxSidecarEvent | AcpxSidecarResponse): boolean {
   const line = stringifyAcpxSidecarFrame(value);
   if (Buffer.byteLength(line) > ACPX_SIDECAR_MAX_FRAME_BYTES) {
     process.stderr.write("[paperclip-acpx-sidecar] output_frame_too_large\n");
-    return;
+    return false;
   }
   process.stdout.write(`${line}\n`);
+  // Writable.write(false) accepted the bytes into its queue; it signals
+  // backpressure, not a rejected frame. A synchronous write error still throws.
+  return true;
 }
 
 function requireHost(
@@ -1385,6 +1447,9 @@ function stableRequestId(
 }
 
 function stableProviderIdentity(value: string, kind: string): string {
+  // Adapters normalize native tool IDs before the shared sidecar bound.
+  const activity = acpxProfileActivity(openParams?.agent ?? initializedAgent);
+  if (kind === "tool" && activity.toolIdentity) return activity.toolIdentity(value);
   if (Buffer.byteLength(value) <= 240 && !/[\u0000-\u001f\u007f]/.test(value)) {
     return value;
   }

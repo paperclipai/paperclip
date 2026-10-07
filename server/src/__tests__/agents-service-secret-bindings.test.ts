@@ -13,6 +13,7 @@ import {
   companySecretVersions,
   companySecrets,
   createDb,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -46,6 +47,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(principalPermissionGrants);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);

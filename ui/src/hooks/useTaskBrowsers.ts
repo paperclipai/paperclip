@@ -6,7 +6,7 @@ export function useTaskBrowsers(issueId?: string) {
   return useQuery({
     queryKey: ["task-browsers", issueId],
     queryFn: () => browserUseApi.list(issueId!),
-    enabled: Boolean(issueId),
+    enabled: Boolean(issueId) && !issueId?.startsWith("chat:"),
     refetchInterval: 3000,
     retry: false,
   });

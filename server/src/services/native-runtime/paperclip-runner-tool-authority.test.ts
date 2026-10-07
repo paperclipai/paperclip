@@ -5,8 +5,10 @@ import { and, eq, inArray } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  authUsers,
   approvals,
   companies,
+  companyMemberships,
   createDb,
   documents,
   heartbeatRuns,
@@ -26,6 +28,7 @@ import { READ_CURRENT_WAKE_COMMENTS_TOOL_NAME } from "./current-wake-comments.js
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
 
 describe("PaperclipRunnerToolAuthority", () => {
+  const credentialDocumentBody = "Use a secret manager for credential handling.\nAuthorization: Bearer intentional-document-credential";
   let temporary: Awaited<
     ReturnType<typeof startEmbeddedPostgresTestDatabase>
   > | null = null;
@@ -99,15 +102,17 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(35);
+    expect(authority.definitions()).toHaveLength(39);
     const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
     expect(questions.description).toContain("ask only the next unanswered question");
     expect(questions.description).toContain("Never fabricate answers");
     expect(questions.description).toContain("resolve-from-comment");
     expect(questions.description).toContain("Existing resolver permissions still apply");
     expect(questions.description).toContain("Do not fabricate answer links");
-    expect(JSON.stringify(questions.inputSchema)).toContain("at least two distinct meaningful options");
-    expect(JSON.stringify(questions.inputSchema)).toContain("answerMode:'text'");
+    expect(JSON.stringify(questions.inputSchema)).toContain("at least two meaningful options");
+    expect(questions.inputSchema).toMatchObject({ properties: { payload: { properties: { questionSet: {
+      properties: { questions: { items: { properties: { answerMode: { enum: ["single_select", "multi_select", "text"] } } } } },
+    } } } } });
 
     expect(authority.definitions().map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
@@ -118,14 +123,18 @@ describe("PaperclipRunnerToolAuthority", () => {
         "get_task_history",
         "search_tasks",
         "report_progress",
+        "submit_complaint",
+        "submit_suggestion",
         "request_human_input",
         "create_task",
         "set_dependencies",
+        "set_task_monitor",
         "list_documents",
         "read_document",
         "list_document_revisions",
         "write_document",
         "create_skill",
+        "update_skill",
         "list_agents",
         "get_agent",
         "list_approvals",
@@ -405,7 +414,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         "current Paperclip task bound to this run",
       );
       expect(advertised.description).toContain(
-        "payload.questions for choices",
+        "one complete payload.questionSet",
       );
       expect(advertised.description).toContain(
         "Paperclip renders it and authenticates the response",
@@ -424,7 +433,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     },
   );
 
-  it.each(["choice", "text"] as const)("executes the advertised %s question once on the bound reviewed task", async (answerMode) => {
+  it.each(["choice", "text", "mixed"] as const)("executes the advertised %s question once on the bound reviewed task", async (answerMode) => {
     const binding = {
       companyId: randomUUID(),
       agentId: randomUUID(),
@@ -434,7 +443,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     await db.insert(companies).values({
       id: binding.companyId,
       name: "Question invocation",
-      issuePrefix: answerMode === "choice" ? "RQA" : "RQT",
+      issuePrefix: answerMode === "choice" ? "RQA" : answerMode === "text" ? "RQT" : "RQM",
     });
     await db.insert(agents).values({
       id: binding.agentId,
@@ -471,7 +480,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     const advertised = authority
       .definitions()
       .find((tool) => tool.name === "request_human_input")!;
-    expect(advertised.description).toContain("payload.questions");
+    expect(advertised.description).toContain("payload.questionSet");
     const questions = [
       {
         id: "color",
@@ -487,28 +496,19 @@ describe("PaperclipRunnerToolAuthority", () => {
     const payloadDescription = (advertised.inputSchema as {
       properties: { payload: { description: string } };
     }).properties.payload.description;
-    expect(payloadDescription).toContain("at least two distinct meaningful options");
+    expect(payloadDescription).toContain("at least two meaningful options");
     expect(payloadDescription).toContain("questionSet");
     expect(payloadDescription).not.toContain("use exactly");
     const payload = answerMode === "choice"
       ? { version: 1, questions }
       : {
           version: 1,
-          questions: [{
-            id: "goal",
-            prompt: "What should we accomplish?",
-            selectionMode: "single",
-            required: true,
-            options: [{ id: "describe", label: "Your answer", freeText: true }],
-          }],
           questionSet: {
             schema: "paperclip.question_set.v1",
-            questions: [{
-              id: "goal",
-              prompt: "What should we accomplish?",
-              answerMode: "text",
-              required: true,
-            }],
+            questions: [
+              { id: "goal", prompt: "What should we accomplish?", answerMode: "text", required: true },
+              ...(answerMode === "mixed" ? [{ id: "color", prompt: "Choose one color", answerMode: "single_select", required: true, options: questions[0].options }] : []),
+            ],
           },
         };
     const call = {
@@ -544,6 +544,8 @@ describe("PaperclipRunnerToolAuthority", () => {
       .from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.issueId, binding.issueId));
     expect(rows).toHaveLength(1);
+    expect((rows[0].payload as { questions: { id: string }[] }).questions.map((question) => question.id))
+      .toEqual(answerMode === "choice" ? ["color"] : answerMode === "text" ? ["goal"] : ["goal", "color"]);
     const [task] = await db
       .select()
       .from(issues)
@@ -800,6 +802,7 @@ describe("PaperclipRunnerToolAuthority", () => {
   });
 
   it("writes a real revisioned document and replays the mutation receipt", async () => {
+    const body = credentialDocumentBody;
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,
       agentId,
@@ -813,7 +816,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         idempotencyKey: "write-plan-1",
         key: "plan",
         title: "Execution plan",
-        body: "Use the real document service.",
+        body,
         // Provider bridges may serialize nullable string inputs as the literal
         // "null". The protocol boundary treats that as document creation.
         baseRevisionId: "null",
@@ -829,7 +832,8 @@ describe("PaperclipRunnerToolAuthority", () => {
     expect(first).toMatchObject({
       disposition: "applied",
       created: true,
-      document: { key: "plan", body: "Use the real document service." },
+      document: { key: "plan", body },
+      documentHref: "/RNT/issues/RNT-1#document-plan",
     });
     expect(
       await db
@@ -837,6 +841,8 @@ describe("PaperclipRunnerToolAuthority", () => {
         .from(documents)
         .where(eq(documents.companyId, companyId)),
     ).toHaveLength(1);
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "plan"))
+      .toMatchObject({ body: credentialDocumentBody });
     const documentActivity = await db
       .select()
       .from(activityLog)
@@ -958,7 +964,7 @@ describe("PaperclipRunnerToolAuthority", () => {
         documentId: plan!.id,
         revisionId: plan!.latestRevisionId,
         revisionNumber: plan!.latestRevisionNumber,
-        markdown: "Use the real document service.",
+        markdown: credentialDocumentBody,
       },
     });
   });
@@ -1280,12 +1286,15 @@ describe("PaperclipRunnerToolAuthority", () => {
   it("captures delegation and approval origins before steering and preserves replay identity", async () => {
     const issueId = "00000000-0000-4000-8000-000000000120";
     const runId = "00000000-0000-4000-8000-000000000121";
+
     await db.insert(issues).values({ id: issueId, companyId, title: "Identity delegation",
       status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId,
       status: "running", runtimeMode: "native", nativeIssueId: issueId,
       invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId } });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    await db.insert(authUsers).values(["person-a", "person-b"].map(id => ({ id, name: id, email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
+    await db.insert(companyMemberships).values(["person-a", "person-b"].map(principalId => ({ companyId, principalType: "user", principalId, status: "active", membershipRole: "operator" })));
     const origin = await initializeRunIdentity(db, {
       companyId, runId, issueId, responsibleUserId: "person-a", cause: "instruction",
     });

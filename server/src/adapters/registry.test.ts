@@ -11,6 +11,7 @@ const { probeInstallation, probeGrokInstallation } = vi.hoisted(() => ({
 vi.mock("@paperclipai/paperclip-runner/live", () => ({
   probeAcpxClaudeInstallation: probeInstallation,
   probeAcpxGrokInstallation: probeGrokInstallation,
+  probeAcpxCursorInstallation: vi.fn(async () => undefined),
 }));
 
 // The registry registers a login capability for the two built-in interactive

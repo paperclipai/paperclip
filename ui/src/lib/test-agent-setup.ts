@@ -10,7 +10,7 @@ export async function testAgentSetup(input: {
   adapterType: string;
   providerAdapter: string;
   adapterConfig: Record<string, unknown>;
-  aiConnection?: import("@paperclipai/shared").AiConnectionBinding;
+  aiConnection?: import("@paperclipai/shared").AiRuntimeConnectionBinding;
   testCredentials?: Record<string, string>;
   environmentId: string | null;
 }): Promise<AdapterEnvironmentTestResult> {
@@ -27,6 +27,7 @@ export async function testAgentSetup(input: {
     payload,
   );
   if (
+    input.aiConnection?.mode === "router" ||
     runtime.status === "fail" ||
     runtime.checks.some(
       (check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE,

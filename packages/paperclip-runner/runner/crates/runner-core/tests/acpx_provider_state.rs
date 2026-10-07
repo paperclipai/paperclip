@@ -176,6 +176,95 @@ fn promotes_only_the_latest_provider_message_as_the_terminal_reply() {
 }
 
 #[test]
+fn pi_native_boundaries_keep_progress_but_never_promote_tool_narration_or_history() {
+    for final_reason in ["stop", "length", "toolUse", "error", "aborted", "empty"] {
+        let mut state = AcpxProviderState::new("run-1").unwrap();
+        state.begin_turn("turn-1").unwrap();
+        let mut messages = vec![
+            json!({"type":"text_delta","messageId":"history","text":"Earlier session answer","piMessageHistory":true}),
+            json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"start"}}),
+            json!({"type":"text_delta","messageId":"first","text":"Calling finish."}),
+            json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"end","stopReason":"toolUse"}}),
+            json!({"type":"text_delta","messageId":"last","text":"","piMessageBoundary":{"phase":"start"}}),
+        ];
+        if final_reason != "empty" {
+            messages.push(json!({"type":"text_delta","messageId":"last","text":"EXACT_MARKER"}));
+        }
+        messages.push(json!({"type":"text_delta","messageId":"last","text":"","piMessageBoundary":{"phase":"end","stopReason":if final_reason == "empty" { "stop" } else { final_reason }}}));
+        let count = messages.len() as u64;
+        for (index, payload) in messages.into_iter().enumerate() {
+            state
+                .accept_event(&event(
+                    index as u64 + 1,
+                    GeneratedAcpxSidecarEventType::RuntimeEvent,
+                    Some("turn-1"),
+                    payload,
+                ))
+                .unwrap();
+        }
+        let terminal = state
+            .accept_event(&event(
+                count + 1,
+                GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                Some("turn-1"),
+                json!({"status":"completed"}),
+            ))
+            .unwrap();
+        let replies: Vec<_> = terminal
+            .iter()
+            .filter_map(|entry| {
+                if let AcpxProviderStateEvent::AssistantMessage { text, .. } = entry {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            replies,
+            if matches!(final_reason, "stop" | "length") {
+                vec!["EXACT_MARKER"]
+            } else {
+                vec![]
+            }
+        );
+    }
+}
+
+#[test]
+fn pi_native_boundary_order_and_terminal_completeness_fail_closed() {
+    for malformed in [
+        json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"start"}}),
+        json!({"type":"text_delta","messageId":"other","text":"","piMessageBoundary":{"phase":"end","stopReason":"stop"}}),
+        json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"end","stopReason":"invented"}}),
+        json!({"type":"text_delta","messageId":"other","text":"Out of order"}),
+    ] {
+        let mut state = AcpxProviderState::new("run-1").unwrap();
+        state.begin_turn("turn-1").unwrap();
+        state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeEvent, Some("turn-1"), json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"start"}}))).unwrap();
+        assert!(state
+            .accept_event(&event(
+                2,
+                GeneratedAcpxSidecarEventType::RuntimeEvent,
+                Some("turn-1"),
+                malformed
+            ))
+            .is_err());
+    }
+    let mut state = AcpxProviderState::new("run-1").unwrap();
+    state.begin_turn("turn-1").unwrap();
+    state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeEvent, Some("turn-1"), json!({"type":"text_delta","messageId":"first","text":"","piMessageBoundary":{"phase":"start"}}))).unwrap();
+    assert!(state
+        .accept_event(&event(
+            2,
+            GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+            Some("turn-1"),
+            json!({"status":"completed"})
+        ))
+        .is_err());
+}
+
+#[test]
 fn preserves_an_idless_prefix_when_the_provider_begins_identifying_deltas() {
     let mut state = AcpxProviderState::new("run-1").unwrap();
     state.begin_turn("turn-1").unwrap();
@@ -540,42 +629,36 @@ fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection(
         json!(paperclip_runner_core::provider_bridge::semantic_value_digest(&expected))
     );
 
-    for (operation, field, prose, preserved) in [
+    for (operation, field, prose) in [
         (
             "write_document",
             "body",
             "Include the token CHAT8322bda781b81.",
-            true,
         ),
         (
             "create_project",
             "description",
             "Include the token CHAT8322bda781b81.",
-            true,
         ),
         (
             "get_task_context",
             "description",
             "Include the token CHAT8322bda781b81.",
-            false,
         ),
         (
             "mcp__untrusted__create_task",
             "description",
             "Include the token CHAT8322bda781b81.",
-            false,
         ),
         (
             "create_task",
             "description",
             "Authorization: Bearer actual-credential",
-            false,
         ),
         (
             "create_task",
             "initialPlan",
             "access token actual-credential",
-            false,
         ),
     ] {
         let mut candidate = AcpxProviderState::new("run-1").unwrap();
@@ -586,14 +669,6 @@ fn mutation_prose_survives_sidecar_decode_pending_state_and_semantic_projection(
             Some("turn-1"),
             json!({"callId":"call-1", "operationId":operation, "input":{field:prose}}),
         ));
-        if !preserved {
-            assert!(emitted
-                .unwrap_err()
-                .to_string()
-                .contains("refusing to execute altered arguments"));
-            assert!(candidate.pending_tool("call-1").is_none());
-            continue;
-        }
         let events = emitted.unwrap();
         let AcpxProviderStateEvent::ToolCall { input, .. } = &events[0] else {
             panic!("expected tool call");
@@ -668,5 +743,65 @@ fn terminal_requests_expire_with_their_projected_identity_before_terminal_and_ne
                 json!({"status":status})
             ))
             .is_err());
+    }
+}
+
+#[test]
+fn cursor_plan_parent_identity_survives_decode_pending_and_terminal_projection() {
+    use paperclip_runner_core::acpx_event_payload::AcpxRuntimeEventKind;
+    use paperclip_runner_core::provider_events::normalize_acpx_runtime_event;
+    for id in [
+        "x".repeat(160),
+        "x".repeat(161),
+        "x".repeat(240),
+        "é".repeat(120),
+    ] {
+        for status in ["completed", "cancelled", "failed"] {
+            let mut state = AcpxProviderState::new("run-1").unwrap();
+            state.begin_turn("turn-1").unwrap();
+            let context = AcpxEventProjectionContext {
+                run_id: "run-1".into(),
+                normalized_session_id: "session-1".into(),
+                turn_id: "turn-1".into(),
+                provider_turn_id: None,
+                item_id: "item-1".into(),
+            };
+            let input = state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeInputRequested, Some("turn-1"), json!({"requestId":"input-1","toolCallId":id,"questionSet":question_set(),"origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"cursor/create_plan"}}))).unwrap();
+            let created = project_acpx_state_event(&context, &input[0]).unwrap();
+            let tool = normalize_acpx_runtime_event(
+                AcpxRuntimeEventKind::ToolCall,
+                &json!({"type":"tool_call","toolCallId":id,"kind":"execute","status":"pending"}),
+                Some("execute"),
+                "item-1",
+                "turn-1",
+                0,
+            );
+            assert_eq!(
+                created[0].payload["request"]["itemId"],
+                tool[0].payload["executionId"]
+            );
+            let ended = state
+                .accept_event(&event(
+                    2,
+                    GeneratedAcpxSidecarEventType::RuntimeTurnTerminal,
+                    Some("turn-1"),
+                    json!({"status":status}),
+                ))
+                .unwrap();
+            let terminal = project_acpx_state_event(&context, &ended[0]).unwrap();
+            assert_eq!(
+                terminal[0].payload["request"]["itemId"],
+                created[0].payload["request"]["itemId"]
+            );
+            assert_eq!(
+                terminal[0].payload["itemId"],
+                created[0].payload["request"]["itemId"]
+            );
+        }
+    }
+    for id in ["x".repeat(241), format!("{}x", "é".repeat(120))] {
+        let mut state = AcpxProviderState::new("run-1").unwrap();
+        state.begin_turn("turn-1").unwrap();
+        assert!(state.accept_event(&event(1, GeneratedAcpxSidecarEventType::RuntimeInputRequested, Some("turn-1"), json!({"requestId":"input-1","toolCallId":id,"questionSet":question_set(),"origin":{"provider":"cursor","method":"cursor/create_plan"}}))).is_err());
     }
 }

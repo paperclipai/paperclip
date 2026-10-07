@@ -1274,7 +1274,7 @@ jobs:
           path: runner-e2e-merged-report
 
       - name: Exchange GitHub OIDC identity for scoped AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
         with:
           role-to-assume: ${{ vars.RUNNER_E2E_HISTORY_AWS_ROLE_ARN }}
           aws-region: ${{ vars.RUNNER_E2E_HISTORY_AWS_REGION }}
@@ -1294,7 +1294,7 @@ jobs:
 
       - name: Package pruned dashboard with declared screenshots for GitHub Pages
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           name: ${{ steps.pages_artifact_name.outputs.name }}
           path: runner-e2e-merged-report/pages
@@ -1313,7 +1313,7 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
         with:
           # If only this failed job is rerun, GitHub retains the successful
           # publisher job's output from the earlier workflow attempt.

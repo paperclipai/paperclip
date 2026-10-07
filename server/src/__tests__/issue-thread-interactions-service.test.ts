@@ -213,6 +213,89 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     };
   }
 
+  it("persists and answers a canonical-only mixed question form", async () => {
+    const { companyId, issueId } = await seedSourceQuestionFixture({});
+    const questionSet = {
+      schema: "paperclip.question_set.v1" as const,
+      questions: [
+        { id: "repo", prompt: "Repository URL?", required: true, answerMode: "text" as const },
+        { id: "scope", prompt: "Review scope?", required: true, answerMode: "single_select" as const, options: [{ id: "all", label: "All changes" }, { id: "selected", label: "Selected changes" }] },
+        { id: "hosting", prompt: "Preview hosting?", required: true, answerMode: "multi_select" as const, options: [{ id: "existing", label: "Existing host" }, { id: "new", label: "New host" }] },
+      ],
+    };
+    const input = { kind: "ask_user_questions" as const, idempotencyKey: "canonical:mixed", payload: { version: 1 as const, questionSet } };
+    const issue = { id: issueId, companyId };
+    const created = await interactionsSvc.create(issue, input, { userId: "local-board" });
+    if (created.kind !== "ask_user_questions") throw new Error("expected questions");
+    expect(created.payload.questionSet).toEqual(questionSet);
+    expect(created.payload.questions.map((question) => question.id)).toEqual(["repo", "scope", "hosting"]);
+    expect(await interactionsSvc.create(issue, input, { userId: "local-board" })).toEqual(created);
+    await expect(interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "repo", optionIds: [], otherText: "https://example.com/repo" }] }, { userId: "local-board" })).rejects.toThrow("requires an answer");
+    const answered = await interactionsSvc.answerQuestions(issue, created.id, { answers: [
+      { questionId: "repo", optionIds: [], otherText: "https://example.com/repo" },
+      { questionId: "scope", optionIds: ["all"] },
+      { questionId: "hosting", optionIds: ["existing", "new"] },
+    ] }, { userId: "local-board" });
+    expect(answered.status).toBe("answered");
+  });
+
+  it("rejects canonical text and custom answers that violate constraints before resolution", async () => {
+    const { companyId, issueId } = await seedSourceQuestionFixture({});
+    const issue = { id: issueId, companyId };
+    const cases = [
+      { textValidation: { minLength: 3, maxLength: 4 }, invalid: ["ab", "abcde"], valid: "abcd" },
+      { textValidation: { pattern: "^https://" }, invalid: ["http://example.test"], valid: "https://example.test" },
+      { textValidation: { inputType: "integer" as const, minimum: 2, maximum: 4 }, invalid: ["no", "3.5", "1", "5"], valid: "3" },
+      { textValidation: { inputType: "number" as const, minimum: 2, maximum: 4 }, invalid: ["Infinity", "1.9", "4.1"], valid: "2.5" },
+    ];
+    for (const [index, entry] of cases.entries()) {
+      const created = await interactionsSvc.create(issue, {
+        kind: "ask_user_questions", payload: { version: 1, questionSet: {
+          schema: "paperclip.question_set.v1", questions: [{ id: "value", prompt: "Value?", required: true, answerMode: "text", textValidation: entry.textValidation }],
+        } },
+      }, { userId: "local-board" });
+      for (const otherText of entry.invalid) {
+        await expect(interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "value", optionIds: [], otherText }] }, { userId: "local-board" })).rejects.toThrow();
+        const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, created.id));
+        expect(row?.status, `case ${index}: ${otherText}`).toBe("pending");
+      }
+      expect((await interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "value", optionIds: [], otherText: entry.valid }] }, { userId: "local-board" })).status).toBe("answered");
+    }
+    const custom = await interactionsSvc.create(issue, { kind: "ask_user_questions", payload: { version: 1, questionSet: {
+      schema: "paperclip.question_set.v1", questions: [{ id: "scope", prompt: "Scope?", required: true, answerMode: "single_select", options: [{ id: "all", label: "All" }, { id: "selected", label: "Selected" }], customAnswer: { enabled: true }, textValidation: { minLength: 3 } }],
+    } } }, { userId: "local-board" });
+    await expect(interactionsSvc.answerQuestions(issue, custom.id, { answers: [{ questionId: "scope", optionIds: [], otherText: "ab" }] }, { userId: "local-board" })).rejects.toThrow("at least 3");
+    expect((await interactionsSvc.answerQuestions(issue, custom.id, { answers: [{ questionId: "scope", optionIds: [], otherText: "abc" }] }, { userId: "local-board" })).status).toBe("answered");
+  });
+
+  it("accepts existing custom-answer IDs in compatible dual forms", async () => {
+    const { companyId, issueId } = await seedSourceQuestionFixture({});
+    const issue = { id: issueId, companyId };
+    const options = [{ id: "all", label: "All" }, { id: "selected", label: "Selected" }];
+    const created = await interactionsSvc.create(issue, { kind: "ask_user_questions", payload: {
+      version: 1,
+      questions: [{ id: "scope", prompt: "Scope?", required: true, selectionMode: "single", options: [...options, { id: "existing-custom-id", label: "Other", freeText: true }] }],
+      questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "scope", prompt: "Scope?", required: true, answerMode: "single_select", options, customAnswer: { enabled: true }, textValidation: { minLength: 3 } }] },
+    } }, { userId: "local-board" });
+    const answered = await interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "scope", optionIds: ["existing-custom-id"], otherText: "Specific files" }] }, { userId: "local-board" });
+    expect(answered).toMatchObject({ status: "answered", result: { answers: [{ questionId: "scope", optionIds: ["existing-custom-id"], otherText: "Specific files" }] } });
+  });
+
+  it("keeps historical pending written-answer paths usable with their text constraints", async () => {
+    const { companyId, issueId } = await seedSourceQuestionFixture({});
+    const issue = { id: issueId, companyId };
+    const created = await interactionsSvc.create(issue, { kind: "ask_user_questions", payload: { version: 1, questionSet: {
+      schema: "paperclip.question_set.v1", questions: [{ id: "scope", prompt: "Scope?", required: true, answerMode: "single_select", options: [{ id: "all", label: "All" }, { id: "selected", label: "Selected" }], customAnswer: { enabled: true }, textValidation: { minLength: 3 } }],
+    } } }, { userId: "local-board" });
+    if (created.kind !== "ask_user_questions") throw new Error("expected questions");
+    const historicalPayload = structuredClone(created.payload);
+    delete historicalPayload.questionSet!.questions[0].customAnswer;
+    await db.update(issueThreadInteractions).set({ payload: historicalPayload }).where(eq(issueThreadInteractions.id, created.id));
+    await expect(interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "scope", optionIds: ["paperclip_custom_answer"], otherText: "ab" }] }, { userId: "local-board" })).rejects.toThrow("at least 3");
+    const answered = await interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "scope", optionIds: ["paperclip_custom_answer"], otherText: "Specific files" }] }, { userId: "local-board" });
+    expect(answered.status).toBe("answered");
+  });
+
   async function seedQuestionUser(companyId: string, userId: string, role = "member", status = "active") {
     await db.insert(authUsers).values({ id: userId, name: "Question recipient", email: `${randomUUID()}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, membershipRole: role, status });
@@ -257,10 +340,25 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const scope = { id: fixture.issueId, companyId: fixture.companyId };
     const input = { ...questionCreateInput(fixture.runId), idempotencyKey: "chat-question" };
     const actor = { agentId: fixture.agentId };
-    const [omitted, explicit] = await Promise.all([
-      interactionsSvc.create(scope, input, actor),
-      interactionsSvc.create(scope, { ...input, addresseeUserId: fixture.userId }, actor),
-    ]);
+    // Both callers must finish their optimistic lookup before either transaction
+    // inserts, forcing the unique-conflict recovery path instead of relying on timing.
+    const transaction = db.transaction.bind(db);
+    let arrivals = 0;
+    let release!: () => void;
+    const ready = new Promise<void>(resolve => { release = resolve; });
+    const gate = vi.spyOn(db, "transaction").mockImplementation(async (callback, config) => {
+      if (++arrivals === 2) release();
+      await ready;
+      return transaction(callback, config);
+    });
+    let omitted!: Awaited<ReturnType<typeof interactionsSvc.create>>;
+    let explicit!: Awaited<ReturnType<typeof interactionsSvc.create>>;
+    try {
+      [omitted, explicit] = await Promise.all([
+        interactionsSvc.create(scope, input, actor),
+        interactionsSvc.create(scope, { ...input, addresseeUserId: fixture.userId }, actor),
+      ]);
+    } finally { gate.mockRestore(); }
     expect(explicit.id).toBe(omitted.id);
     expect(explicit.addresseeUserId).toBe(fixture.userId);
     expect(await db.select().from(issueThreadInteractions)).toHaveLength(1);
@@ -504,18 +602,21 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       permissions: {},
     });
 
-    await db.update(heartbeatRuns)
-      .set({ nativeIssueId: randomUUID() })
-      .where(eq(heartbeatRuns.id, fixture.runId));
+    // Simulate historical corruption to retain the service-level defense test.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.update(heartbeatRuns).set({ nativeIssueId: randomUUID() }).where(eq(heartbeatRuns.id, fixture.runId));
+    });
     await expect(interactionsSvc.create(
       { id: fixture.issueId, companyId: fixture.companyId },
       questionCreateInput(fixture.runId),
       { agentId: fixture.agentId, runId: fixture.runId },
     )).rejects.toMatchObject({ status: 422, message: "sourceRunId must belong to the same issue" });
 
-    await db.update(heartbeatRuns)
-      .set({ nativeIssueId: null, contextSnapshot: { issueId: randomUUID(), paperclipWake: { comments: [] } } })
-      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.update(heartbeatRuns).set({ nativeIssueId: null, contextSnapshot: { issueId: randomUUID(), paperclipWake: { comments: [] } } }).where(eq(heartbeatRuns.id, fixture.runId));
+    });
     await expect(interactionsSvc.create(
       { id: fixture.issueId, companyId: fixture.companyId },
       questionCreateInput(fixture.runId),
@@ -4375,6 +4476,96 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         foreignRunId,
       };
     }
+
+    it.each(["request_confirmation", "request_checkbox_confirmation"] as const)(
+      "projects %s readiness until its source workspace settles",
+      async (kind) => {
+        const { companyId, executionWorkspaceId, issueId, interactionId, sourceRunId, foreignRunId } =
+          await seedAcceptGateFixture({ kind, sourceRunStatus: "running" });
+        // A source run without workspace operations needs no sync barrier.
+        expect((await interactionsSvc.listForIssue(issueId))[0].acceptanceBlocker).toBeUndefined();
+        await db.insert(workspaceOperations).values({
+          companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+          phase: "worktree_prepare", status: "succeeded",
+        });
+        const assertPreparing = async () => {
+          const expected = { id: interactionId, status: "pending", acceptanceBlocker: "workspace_sync_pending" };
+          expect((await interactionsSvc.listForIssue(issueId))[0]).toMatchObject(expected);
+          expect(await interactionsSvc.getById(interactionId)).toMatchObject(expected);
+          expect(await interactionsSvc.getForIssue({ id: issueId, companyId }, interactionId)).toMatchObject(expected);
+        };
+        await assertPreparing();
+        const [finalize] = await db.insert(workspaceOperations).values({
+          companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+          phase: "workspace_finalize", status: "running",
+        }).returning();
+        await assertPreparing();
+        await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id, finalize.id));
+        await db.insert(workspaceOperations).values({
+          companyId, executionWorkspaceId, heartbeatRunId: foreignRunId,
+          phase: "worktree_prepare", status: "succeeded",
+        });
+        expect((await interactionsSvc.listForIssue(issueId))[0].acceptanceBlocker).toBeUndefined();
+        expect((await interactionsSvc.getById(interactionId))?.acceptanceBlocker).toBeUndefined();
+        expect((await interactionsSvc.getForIssue({ id: issueId, companyId }, interactionId)).acceptanceBlocker).toBeUndefined();
+      },
+    );
+
+    it.each(["failed", "skipped", "stale"])("does not keep preparing after a %s finalize", async (outcome) => {
+      const { companyId, executionWorkspaceId, issueId, sourceRunId } =
+        await seedAcceptGateFixture({ sourceRunStatus: "failed" });
+      await db.insert(workspaceOperations).values({
+        companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+        phase: "workspace_finalize", status: outcome === "stale" ? "running" : outcome,
+      });
+      expect((await interactionsSvc.listForIssue(issueId))[0].acceptanceBlocker).toBeUndefined();
+    });
+
+    it.each(["accepted", "rejected", "cancelled", "expired"])("does not project a blocker on %s history", async (status) => {
+      const { companyId, executionWorkspaceId, issueId, interactionId, sourceRunId } = await seedAcceptGateFixture();
+      await db.insert(workspaceOperations).values({
+        companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+        phase: "worktree_prepare", status: "succeeded",
+      });
+      await db.update(issueThreadInteractions).set({ status }).where(eq(issueThreadInteractions.id, interactionId));
+      expect((await interactionsSvc.listForIssue(issueId))[0].acceptanceBlocker).toBeUndefined();
+      expect((await interactionsSvc.getById(interactionId))?.acceptanceBlocker).toBeUndefined();
+    });
+
+    it("does not project a blocker for confirmations expired by task closure", async () => {
+      const { companyId, executionWorkspaceId, issueId, sourceRunId } = await seedAcceptGateFixture();
+      await db.insert(workspaceOperations).values({
+        companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+        phase: "worktree_prepare", status: "succeeded",
+      });
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+      const [interaction] = await interactionsSvc.listForIssue(issueId);
+      expect(interaction.status).toBe("expired");
+      expect(interaction.acceptanceBlocker).toBeUndefined();
+    });
+
+    it.each(["toolAction", "ask_user_questions"])(
+      "keeps live %s decisions available while the workspace is active",
+      async (kind) => {
+        const { companyId, executionWorkspaceId, issueId, interactionId, sourceRunId } =
+          await seedAcceptGateFixture({ sourceRunStatus: "running" });
+        await db.insert(workspaceOperations).values({
+          companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+          phase: "worktree_prepare", status: "succeeded",
+        });
+        const payload = kind === "ask_user_questions"
+          ? { version: 1, questions: [{ id: "question", prompt: "Which option?", selectionMode: "single", options: [{ id: "first", label: "First" }] }] }
+          : { version: 1, prompt: "Allow this action?", [kind]: { version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "example.write",
+                toolDisplayName: "Write", connectionId: randomUUID(), applicationId: randomUUID(),
+                appDisplayName: "Example", risk: "write", previewMarkdown: "Write one row", argumentsSummaryJson: "{}",
+                argumentsHash: "hash", expiresAt: "2099-01-01T00:00:00.000Z" } };
+        await db.update(issueThreadInteractions).set({
+          kind: kind === "ask_user_questions" ? kind : "request_confirmation", payload,
+        }).where(eq(issueThreadInteractions.id, interactionId));
+        expect((await interactionsSvc.listForIssue(issueId))[0].acceptanceBlocker).toBeUndefined();
+        expect((await interactionsSvc.getById(interactionId))?.acceptanceBlocker).toBeUndefined();
+      },
+    );
 
     it("allows request_confirmation accept when the source run finalized but a foreign run is mid-flight", async () => {
       const { companyId, executionWorkspaceId, issueId, goalId, interactionId, sourceRunId, foreignRunId } =

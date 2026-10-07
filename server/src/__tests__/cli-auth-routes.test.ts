@@ -90,7 +90,7 @@ async function createApp(actor: any, db: any = {} as any) {
   return app;
 }
 
-describe.sequential("cli auth routes", () => {
+describe("cli auth routes", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
@@ -101,7 +101,7 @@ describe.sequential("cli auth routes", () => {
     vi.resetAllMocks();
   });
 
-  it.sequential("creates a CLI auth challenge with approval metadata", async () => {
+  it("creates a CLI auth challenge with approval metadata", async () => {
     mockBoardAuthService.createCliAuthChallenge.mockResolvedValue({
       challenge: {
         id: "12345678-1234-4123-8123-123456789abc",
@@ -132,7 +132,7 @@ describe.sequential("cli auth routes", () => {
     expect(res.body.approvalUrl).toContain("/cli-auth/12345678-1234-4123-8123-123456789abc?token=pcp_cli_auth_secret");
   });
 
-  it.sequential("rejects anonymous access to generic skill documents", async () => {
+  it("rejects anonymous access to generic skill documents", async () => {
     const indexApp = await createApp({ type: "none", source: "none" });
     const skillApp = await createApp({ type: "none", source: "none" });
 
@@ -143,7 +143,7 @@ describe.sequential("cli auth routes", () => {
     expect(skillRes.status, skillRes.text || JSON.stringify(skillRes.body)).toBe(401);
   });
 
-  it.sequential("serves the invite-scoped paperclip skill anonymously for active invites", async () => {
+  it("serves the invite-scoped paperclip skill anonymously for active invites", async () => {
     const invite = {
       id: "invite-1",
       companyId: "company-1",
@@ -174,7 +174,7 @@ describe.sequential("cli auth routes", () => {
     expect(res.text).toContain("# Paperclip Skill");
   });
 
-  it.sequential("marks challenge status as requiring sign-in for anonymous viewers", async () => {
+  it("marks challenge status as requiring sign-in for anonymous viewers", async () => {
     mockBoardAuthService.describeCliAuthChallenge.mockResolvedValue({
       id: "12345678-1234-4123-8123-123456789abc",
       status: "pending",
@@ -261,7 +261,7 @@ describe.sequential("cli auth routes", () => {
     expect(mockBoardAuthService.cancelCliAuthChallenge).toHaveBeenCalledWith(id, "pcp_cli_auth_secret");
   });
 
-  it.sequential("approves a CLI auth challenge for a signed-in board user", async () => {
+  it("approves a CLI auth challenge for a signed-in board user", async () => {
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {
@@ -306,7 +306,7 @@ describe.sequential("cli auth routes", () => {
     );
   });
 
-  it.sequential("logs approve activity for instance admins without company memberships", async () => {
+  it("logs approve activity for instance admins without company memberships", async () => {
     mockBoardAuthService.approveCliAuthChallenge.mockResolvedValue({
       status: "approved",
       challenge: {
@@ -339,7 +339,7 @@ describe.sequential("cli auth routes", () => {
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it.sequential("logs revoke activity with resolved audit company ids", async () => {
+  it("logs revoke activity with resolved audit company ids", async () => {
     mockBoardAuthService.assertCurrentBoardKey.mockResolvedValue({
       id: "board-key-3",
       userId: "admin-2",
@@ -370,7 +370,7 @@ describe.sequential("cli auth routes", () => {
     );
   });
 
-  it.sequential("creates a named board API key and logs audit activity", async () => {
+  it("creates a named board API key and logs audit activity", async () => {
     mockBoardAuthService.createNamedBoardApiKey.mockResolvedValue({
       id: "board-key-4",
       name: "external-admin",
@@ -419,7 +419,7 @@ describe.sequential("cli auth routes", () => {
     );
   });
 
-  it.sequential("lists and revokes named board API keys for the current board user", async () => {
+  it("lists and revokes named board API keys for the current board user", async () => {
     const keyId = "55555555-5555-4555-8555-555555555555";
     mockBoardAuthService.listBoardApiKeys.mockResolvedValue([
       {
@@ -471,7 +471,7 @@ describe.sequential("cli auth routes", () => {
     );
   });
 
-  it.sequential("rejects malformed board API key IDs before database lookup", async () => {
+  it("rejects malformed board API key IDs before database lookup", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",

@@ -135,7 +135,7 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 - Do not make the core product a general chat app. The current product definition is explicitly task/comment-centric and “not a chatbot,” and that boundary is valuable.
 - Do not build a complete Jira/GitHub replacement. The repo/docs already position Paperclip as organization orchestration, not focused on pull-request review.
 - Do not build enterprise-grade RBAC first. Paperclip now has authenticated mode, company memberships, instance roles, and permission grants, but fine-grained enterprise governance should remain secondary to the core company control plane.
-- Do not interpret agent-level privacy flags as a project/issue privacy feature in V1; work visibility stays company-scoped.
+- Do not interpret agent-profile privacy flags as project/issue privacy. Work remains company-open by default, while explicitly private issues and projects use their own task ACLs.
 - Do not lead with raw bash logs and transcripts. Default view should be human-readable intent/progress, with raw detail beneath.
 - Do not force users to understand provider/API-key plumbing unless absolutely necessary. There are active onboarding/auth issues already; friction here is clearly real.
 
@@ -209,10 +209,35 @@ telemetry. See [Announcements](ANNOUNCEMENTS.md).
 
 ### Agent chat discovery
 
-With Agent Chat enabled, the Chats sidebar always includes the company's
-earliest-created agent, plus personal starred agents and up to four other recent
-conversations. First use has the same compact rows as returning use. The compose
-icon shares a column with stars and appears on hover or keyboard focus (always on
-touch). It opens a company-wide name/role search, independent of sidebar membership.
+With Agent Chat enabled, Chat is the first row of the Work section and opens a
+secondary sidebar beside the primary nav. It lists every agent you can chat
+with: the open conversation first, then your other conversations by recent
+activity, then the rest of the roster alphabetically. Terminated agents and
+agents you have left are omitted unless you have history with them. Search
+filters by name, title, or role; **+** starts or reopens a conversation.
 Selecting an agent opens their persistent conversation; it does not reset history
 or create a task until the existing first-write flow requires one.
+
+Beside a conversation, the side panel opens on the agent's tasks: one card per
+task the agent created, was assigned, commented on, or acted on, newest first,
+with the task list's filters and a sort control. The agent's artifacts are a
+second card stack available from the panel's **+** menu. Both open in a new tab
+so the conversation stays open.
+
+### Combined Inbox + Task List
+
+An opt-in experimental setting (`enableCombinedInboxTasks`, off by default)
+folds Inbox into Tasks. The Inbox nav row goes away and its unread badge moves
+to Tasks. A Views menu on the task list covers the inbox views (Mine, Unread,
+Blocked, Recent, Everything) and the task-status views (All, Active, Backlog,
+Done). Bare `/issues` opens the last-used view, defaulting to Mine; links that
+carry a task filter open All. Old `/inbox` links redirect to the matching view.
+
+### CSV file previews
+
+Task attachment and workspace file tabs render CSV files as tables by default.
+The first record supplies column headers. Row numbers, row and column counts,
+and sticky headers help operators scan exports. Rendered and raw view icons
+remain next to download; raw view preserves the original source. The table
+shows up to 500 data rows and 100 columns, with a notice when the preview is
+limited. Download retains the complete file.

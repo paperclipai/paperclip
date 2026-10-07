@@ -16,6 +16,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type {
+  ConnectionAgentInstructions,
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
   McpConnectionCredentialRef,
@@ -129,6 +130,7 @@ export const toolConnections = pgTable(
     credentialPolicy: text("credential_policy").$type<ToolConnectionCredentialPolicy>().notNull().default("shared"),
     status: text("status").$type<ToolConnectionStatus>().notNull().default("draft"),
     enabled: boolean("enabled").notNull().default(false),
+    agentInstructions: jsonb("agent_instructions").$type<ConnectionAgentInstructions>(),
     config: jsonb("config").$type<Record<string, unknown>>().notNull().default({}),
     transportConfig: jsonb("transport_config").$type<Record<string, unknown>>().notNull().default({}),
     credentialRefs: jsonb("credential_refs").$type<McpConnectionCredentialRef[]>().notNull().default([]),
@@ -187,6 +189,21 @@ export const connectionGrants = pgTable(
         strategy?: string;
         accessTokenExpiresAt?: string | null;
         scopes?: string[];
+        /**
+         * Whether `scopes` is what the provider asserted, or only what we requested.
+         * A provider may omit `scope` from the token response, and RFC 6749 §5.1 reads that
+         * omission as "the grant matches the request" — but a provider that over-grants and
+         * omits it turns our own request into a false record of the grant.
+         */
+        scopeSource?: "provider" | "requested_fallback";
+        /** Scopes the provider asserted that we never asked for. Empty unless it over-granted. */
+        unrequestedScopes?: string[];
+        /**
+         * The scopes the authorization URL sent for *this* grant. A refresh carries no fresh
+         * request, so this is the baseline it judges the provider's response against. It is
+         * per-grant because two users can authorize the same connection with different scopes.
+         */
+        requestedScopes?: string[];
         tokenType?: string;
         refreshedAt?: string;
         refreshTokenExpiresAt?: string;
@@ -563,6 +580,7 @@ export const toolMcpGatewayTokens = pgTable(
   },
   (table) => [
     uniqueIndex("tool_mcp_gateway_tokens_token_hash_uq").on(table.tokenHash),
+    index("tool_mcp_gateway_tokens_expiry_idx").on(table.expiresAt, table.id),
     index("tool_mcp_gateway_tokens_gateway_idx").on(table.companyId, table.gatewayId),
     index("tool_mcp_gateway_tokens_subject_idx").on(table.companyId, table.subjectType, table.subjectId),
     index("tool_mcp_gateway_tokens_company_expires_idx").on(table.companyId, table.expiresAt),

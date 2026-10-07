@@ -315,6 +315,15 @@ describe("native runner file handoff", () => {
 
     await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
       .resolves.toContain("Completion report accepted");
+    await db.update(issues).set({ title: "Create a Markdown document on this task." }).where(eq(issues.id, issueId));
+    try {
+      await expect(nativeCompletionFeedback(db, runId, doneReport([`deliverable:${first.entityRefs[0]}`])))
+        .resolves.toContain("Completion report accepted");
+      await expect(nativeCompletionFeedback(db, runId, doneReport(["out/answer.txt"])))
+        .rejects.toThrow("write_document");
+    } finally {
+      await db.update(issues).set({ title: "Prepare a requested file" }).where(eq(issues.id, issueId));
+    }
     const otherIssueId = "00000000-0000-4000-8000-000000009111";
     await db.insert(issues).values({ id: otherIssueId, companyId, title: "Unrelated file", status: "in_progress" });
     await db.update(issueAttachments).set({ issueId: otherIssueId }).where(eq(issueAttachments.id, first.entityRefs[0]));

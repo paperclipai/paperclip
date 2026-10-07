@@ -54,21 +54,36 @@ async function main() {
     let response;
     if (base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
       const url = base.replace(/\/+$/, '').replace(/\/api$/, '') + '/runtime-tools/github/credentials';
-      for (let attempt = 0; attempt < 30; attempt++) {
-        response = await fetch(url, {
-          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
-          headers: { authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
-            'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN, 'content-type': 'application/json' },
-          body: '{}',
-        });
-        if (response.status !== 409) break;
-        await response.arrayBuffer();
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      // A slow or restarting control plane must not cost the operation its
+      // managed identity, so a failed request is retried before giving up.
+      // Busy (409) responses and transport failures keep separate budgets, and
+      // the body is read inside the retry so a failed read is retried too.
+      let transportFailures = 0, conflicts = 0, result;
+      for (;;) {
+        try {
+          response = await fetch(url, {
+            method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
+            headers: { authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
+              'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN, 'content-type': 'application/json' },
+            body: '{}',
+          });
+          if (response.status === 409 && conflicts < 29) {
+            conflicts += 1;
+            await response.arrayBuffer();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            continue;
+          }
+          result = response.ok ? await response.json() : null;
+          break;
+        } catch (error) {
+          transportFailures += 1;
+          if (transportFailures >= 3) throw error;
+          await new Promise(resolve => setTimeout(resolve, 500 * transportFailures));
+        }
       }
       if (!response.ok) {
         diagnostic(response.status === 401 || response.status === 403 ? 'capability_rejected' : 'broker_response_unavailable');
       } else {
-      const result = await response.json();
       if (result.status === 'unavailable') {
         const reason = typeof result.reason === 'string'
           ? result.reason.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 500)

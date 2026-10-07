@@ -395,6 +395,8 @@ export const companySkillFileUpdateSchema = z.object({
   content: z.string(),
   encoding: z.enum(["utf8", "base64"]).optional(),
   executable: z.boolean().optional(),
+  expectedVersionId: z.string().guid().nullable().optional(),
+  idempotencyKey: z.string().min(1).max(240).optional(),
 });
 
 export const companySkillFileDeleteSchema = z.object({
@@ -471,7 +473,7 @@ export const companySkillTestRunTemplateSnapshotSchema = z.object({
 );
 
 export const companySkillTestRunCostSummarySchema = z.object({
-  costCents: z.number().int().nonnegative(),
+  costCents: z.number().nonnegative(),
   inputTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),

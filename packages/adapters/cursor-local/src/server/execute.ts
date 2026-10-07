@@ -1,4 +1,5 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
+import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -44,6 +45,7 @@ import {
   resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   renderTemplate,
+  hydrateFreshSessionHandoff,
   selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
@@ -52,7 +54,7 @@ import {
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { firstCursorDiagnosticLine, parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
+import { firstCursorDiagnosticLine, parseCursorJsonl, createCursorJsonlParser, isCursorUnknownSessionError } from "./parse.js";
 import { prepareCursorSandboxCommand } from "./remote-command.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
@@ -239,7 +241,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const envConfig = parseObject(config.env);
   let env: Record<string, string> = {
-    ...buildPaperclipEnv(agent),
+    ...buildPaperclipEnv(agent, ctx.agentIdentity),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
   env.PAPERCLIP_RUN_ID = runId;
@@ -604,6 +606,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
     const { basePrompt, promptMetrics } = buildPrompt(Boolean(resumeSessionId));
     const prompt = joinPromptSections([
       selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
@@ -624,11 +627,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
 
+    const consumeAccounting = createCursorJsonlParser();
+    const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
+      const parsed = consumeAccounting(stdout);
+      const provider = resolveProviderFromModel(model);
+      const hasCompleteAccounting = parsed.usageComplete || parsed.costUsd != null;
+      return {
+        usage: parsed.usageReported ? parsed.usage : undefined,
+        costUsd: parsed.costUsd,
+        costStatus: hasCompleteAccounting ? undefined : "unpriced",
+        usageBasis: "per_run", provider,
+        biller: resolveCursorBiller(effectiveEnv, billingType, provider), billingType, model,
+        complete: parsed.sawResult && hasCompleteAccounting,
+      };
+    });
     let stdoutLineBuffer = "";
     const emitNormalizedStdoutLine = async (rawLine: string) => {
       const normalized = normalizeCursorStreamLine(rawLine);
       if (!normalized.line) return;
-      await onLog(normalized.stream ?? "stdout", `${normalized.line}\n`);
+      await accountingLog(normalized.stream ?? "stdout", `${normalized.line}\n`);
     };
     const flushStdoutChunk = async (chunk: string, finalize = false) => {
       const combined = `${stdoutLineBuffer}${chunk}`;
@@ -668,6 +685,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       settleRunDisposition: paperclipBridge?.settleRunDisposition,
     });
     await flushStdoutChunk("", true);
+    await accountingLog.flush();
 
     return {
       proc,
@@ -691,11 +709,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     },
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
+    const hasCompleteAccounting = attempt.parsed.usageComplete || attempt.parsed.costUsd != null;
+    const usageComplete = hasCompleteAccounting && (attempt.parsed.sawResult || (attempt.parsed.sawLegacyStep
+      && attempt.proc.exitCode === 0 && !attempt.proc.signal && !attempt.proc.timedOut
+      && !attempt.parsed.errorMessage));
     if (attempt.proc.timedOut) {
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: true,
+        usageComplete,
+        usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
+        usageBasis: "per_run",
+        provider: providerFromModel,
+        biller: resolveCursorBiller(effectiveEnv, billingType, providerFromModel),
+        model,
+        billingType,
+        costUsd: attempt.parsed.costUsd,
+        costStatus: hasCompleteAccounting ? undefined : "unpriced",
         errorMessage: `Timed out after ${timeoutSec}s`,
         clearSession: clearSessionOnMissingSession,
       };
@@ -727,6 +758,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: attempt.proc.exitCode,
       signal: attempt.proc.signal,
       timedOut: false,
+      usageComplete,
+      usageBasis: "per_run",
       errorMessage:
         (attempt.proc.exitCode ?? 0) === 0
           ? null
@@ -735,7 +768,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // lost duplex control channel surfaces the typed `duplex_channel_lost`
       // code; every other result carries no code here.
       errorCode: attempt.proc.errorCode ?? null,
-      usage: attempt.parsed.usage,
+      usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
@@ -744,6 +777,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       model,
       billingType,
       costUsd: attempt.parsed.costUsd,
+      costStatus: hasCompleteAccounting ? undefined : "unpriced",
       resultJson: {
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,

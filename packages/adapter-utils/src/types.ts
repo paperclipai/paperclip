@@ -5,6 +5,7 @@
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
+import type { AdapterExecutionPhaseSink } from "./execution-phase.js";
 import type { ExecutionContinuationEnvelope, NativeFinalizationResult } from "@paperclipai/shared";
 
 export interface AdapterAgent {
@@ -30,9 +31,32 @@ export interface AdapterRuntime {
 // ---------------------------------------------------------------------------
 
 export interface UsageSummary {
+  /** Uncached input plus cache writes; excludes cache reads. Total tokens are input + cachedInput + output. */
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  /** Subset of inputTokens, not an additional token count. */
+  cacheWriteTokens?: number;
+}
+
+/** Accounting-only snapshot. Never include prompt, response, or credentials. */
+export interface AdapterUsageCheckpoint {
+  attemptId?: string;
+  usage?: UsageSummary;
+  usageByModel?: Array<{ model: string; usage: UsageSummary; costUsd: number }>;
+  usageBasis?: "per_run" | "session_cumulative" | null;
+  provider?: string | null;
+  biller?: string | null;
+  model?: string | null;
+  billingType?: AdapterBillingType | null;
+  costUsd?: number | null;
+  costUsdExact?: string | null;
+  costStatus?: "reported" | "estimated" | "unpriced";
+  pricingContext?: { serviceTier?: string; contextTier?: "short" | "long" };
+  pricingProvenance?: { source: "provider_reported" | "provider_invoice" | "operator" | "rate_card" | "unknown"; version?: string; evidence?: string; inputCentsPerMillion?: string; cachedInputCentsPerMillion?: string; cacheWriteCentsPerMillion?: string; outputCentsPerMillion?: string; serviceTier?: string; contextTier?: "short" | "long" };
+  cacheAdjustedCostUsd?: number | null;
+  providerRequestId?: string | null;
+  complete: boolean;
 }
 
 export type AdapterBillingType =
@@ -67,6 +91,7 @@ export interface AdapterRuntimeServiceReport {
 }
 
 export type AdapterExecutionErrorFamily =
+  | "configuration"
   | "transient_upstream"
   | "provider_quota"
   | "model_refusal"
@@ -91,11 +116,14 @@ export interface AdapterExecutionResult {
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
+  /** Complete per-model receipts, when supplied by the runtime. Their sums must match the run totals. */
+  usageByModel?: Array<{ model: string; usage: UsageSummary; costUsd: number }>;
   /**
    * How `usage` totals are scoped. "per_run" means the tokens cover only this
    * execution; "session_cumulative" means they are running totals for the
    * persisted session, and the server must delta consecutive runs. Absent
-   * means unknown — the server applies its legacy session-delta heuristic.
+   * defaults to per-run; the server must never infer cumulative usage from a
+   * reused session ID.
    */
   usageBasis?: "per_run" | "session_cumulative" | null;
   /**
@@ -109,6 +137,12 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  costUsdExact?: string | null;
+  costStatus?: "reported" | "estimated" | "unpriced";
+  pricingContext?: { serviceTier?: string; contextTier?: "short" | "long" };
+  pricingProvenance?: { source: "provider_reported" | "provider_invoice" | "operator" | "rate_card" | "unknown"; version?: string; evidence?: string; inputCentsPerMillion?: string; cachedInputCentsPerMillion?: string; cacheWriteCentsPerMillion?: string; outputCentsPerMillion?: string; serviceTier?: string; contextTier?: "short" | "long" };
+  providerRequestId?: string | null;
+  usageComplete?: boolean;
   /**
    * Provider-billed cost after prompt-cache discounts. Adapters should set
    * this when they expose it separately; otherwise the server treats a
@@ -194,7 +228,17 @@ export interface AdapterRuntimeEvent {
   payload?: Record<string, unknown>;
 }
 
+export interface AgentRuntimeIdentity {
+  keyId: string;
+  publicKeyPem: string;
+  privateKeyPem: string;
+}
+
 export interface AdapterExecutionContext {
+  /** Server-owned credentials. Never persist this object or merge it into config. */
+  agentIdentity?: AgentRuntimeIdentity;
+  /** Synchronous, content-free diagnostic scope; never stop or collection authority. */
+  onExecutionPhase?: AdapterExecutionPhaseSink;
   /** Run-scoped operator cancellation; adapters must settle before returning. */
   signal?: AbortSignal;
   /** Opt in to signal-based cancellation before starting provider work. */
@@ -212,6 +256,8 @@ export interface AdapterExecutionContext {
   runtime: AdapterRuntime;
   config: Record<string, unknown>;
   context: Record<string, unknown>;
+  /** Build bounded history only when an actual provider attempt starts fresh. */
+  getFreshSessionHandoff?: () => Promise<string | null>;
   runtimeCommandSpec?: AdapterRuntimeCommandSpec | null;
   executionTarget?: AdapterExecutionTarget | null;
   /**
@@ -226,6 +272,7 @@ export interface AdapterExecutionContext {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
+  onUsage?: (receipt: AdapterUsageCheckpoint) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   /**
    * Reports that execution has crossed the adapter's dispatch boundary.
@@ -462,6 +509,8 @@ export interface ServerAdapterModule {
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
   sessionManagement?: import("./session-compaction.js").AdapterSessionManagement;
+  /** Selected harness can resume its conversation with this run's tool bindings. */
+  supportsToolRefreshOnResume?: boolean | ((config: Record<string, unknown>) => boolean);
   supportsLocalAgentJwt?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;
@@ -611,6 +660,8 @@ export interface PaperclipQuestion {
   helpText?: string;
   required: boolean;
   answerMode: "single_select" | "multi_select" | "text";
+  /** Editable starting text, never an implicit or submitted answer. Text mode only. */
+  initialText?: string;
   options?: PaperclipQuestionOption[];
   customAnswer?: { enabled: true; label?: string; placeholder?: string };
   textValidation?: {

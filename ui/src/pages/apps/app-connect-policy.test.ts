@@ -1,4 +1,4 @@
-import { APP_STORE_DEFINITIONS, appSupportsCatalogSetup } from "@paperclipai/shared";
+import { APP_STORE_DEFINITIONS, aiConnectionRouterAppDefinition, appSupportsCatalogSetup } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import {
   MCP_DIRECT_OAUTH_CONNECT_SLUGS,
@@ -15,14 +15,11 @@ describe("app connect policy", () => {
     expect(MCP_DIRECT_OAUTH_CONNECT_SLUGS).toEqual(expect.arrayContaining(["jira", "notion", "sentry"]));
     expect(isMcpDirectOAuthConnectSlug("notion")).toBe(true);
     expect(isMcpDirectOAuthConnectSlug("jira")).toBe(true);
-    // PAP-659 step 4: Asana's own OAuth metadata advertises registration, and
-    // live discovery now outranks its pinned customer-only ownership mode, so
-    // it reaches the provider directly instead of the client-ID form.
-    expect(isMcpDirectOAuthConnectSlug("asana")).toBe(true);
-    // Still false, and for two different reasons worth keeping apart: GitHub's
-    // one-click path is Paperclip-managed rather than direct, and Slack really
-    // does require a customer-registered OAuth client.
+    // Asana and GitHub need an available Paperclip-managed profile for
+    // one-click sign-in. The static catalog defaults to their custom-app path.
+    expect(isMcpDirectOAuthConnectSlug("asana")).toBe(false);
     expect(isMcpDirectOAuthConnectSlug("github")).toBe(false);
+    // Slack requires a customer-registered OAuth client.
     expect(isMcpDirectOAuthConnectSlug("slack")).toBe(false);
     expect(isMcpDirectOAuthConnectSlug(null)).toBe(false);
   });
@@ -35,6 +32,10 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=context7"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("source=zapier"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=model-provider"))).toBe(false);
+    for (const source of ["responses-api", "messages-api", "chat-completions-api", "bedrock", "local", "google", "openrouter"]) {
+      expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(true);
+    }
     expect(canEnterAppsConnect(new URLSearchParams("byo=1"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("byo=1&source=zapier"))).toBe(false);
   });
@@ -66,6 +67,14 @@ describe("app connect policy", () => {
     expect(vercelConnectSourceHref("notion")).toBe("/apps/vercel-connect?source=notion");
   });
 
+  it("lets installed router connectors reach host catalog validation", () => {
+    const pool = aiConnectionRouterAppDefinition("example.pool", { name: "AI connection pool", description: "Use saved connections" });
+    const params = new URL(appSourceConnectHref(pool.slug), "http://paperclip.test").searchParams;
+    expect(canEnterAppsConnect(params)).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=ai-router-invalid"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=ai-router-1"))).toBe(false);
+  });
+
   it("routes every capability-backed catalog definition through its source deep link", () => {
     const connectableApps = APP_STORE_DEFINITIONS.filter(appSupportsCatalogSetup);
 
@@ -90,6 +99,7 @@ describe("app connect policy", () => {
 
   it("retains GitHub tools but denies chat-only deep links while chat connectors are disabled", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=agentmail"))).toBe(true);
     for (const source of ["discord", "telegram", "microsoft-teams"]) {
       expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(false);
       expect(canEnterAppsConnect(new URLSearchParams({ source, reconnect: "connection-1" })), source).toBe(false);

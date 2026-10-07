@@ -160,6 +160,19 @@ function singletonSelectionInput(paths: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("runner E2E workflow rerun artifact selection", () => {
+  it("retains credential-free prerequisites inside the exact campaign root", async () => {
+    const paths = await fixture();
+    const { artifactName, campaignName } = await addArtifact({ root: paths.artifactRoot,
+      executionId: RERUN, workflowAttempt: 2, status: "passed" });
+    const prerequisite = path.join(paths.artifactRoot, artifactName, campaignName,
+      "stock-harness-prerequisites", "fixture", "preflight.json");
+    await mkdir(path.dirname(prerequisite), { recursive: true });
+    await writeFile(prerequisite, JSON.stringify({ passed: true, providerCalls: 0 }));
+    await selectRerunArtifacts(singletonSelectionInput(paths));
+    expect(await readFile(path.join(paths.selectedRoot, artifactName, campaignName,
+      "stock-harness-prerequisites", "fixture", "preflight.json"), "utf8"))
+      .toContain('"providerCalls":0');
+  });
 
   it.each(["before", "after"])("ignores a queued placeholder %s a started replacement without hiding its failure", async order => {
     const paths = await fixture();

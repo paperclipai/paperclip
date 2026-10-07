@@ -47,6 +47,8 @@ export const queryKeys = {
     activity: (endpointId: string) => ["chat-endpoints", endpointId, "activity"] as const,
   },
   tools: {
+    aggregatorApps: (connectionId: string, userId: string | null) => ["tools", "aggregator-apps", connectionId, userId] as const,
+    composioApps: (connectionId: string) => ["tools", "composio-apps", connectionId] as const,
     applications: (companyId: string) =>
       ["tools", companyId, "applications"] as const,
     connections: (companyId: string) =>
@@ -215,6 +217,7 @@ export const queryKeys = {
       ["team-catalog", "installed", companyId] as const,
   },
   agents: {
+    identity: (id: string) => ["agents", "identity", id] as const,
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
     runtimeState: (id: string) => ["agents", "runtime-state", id] as const,
@@ -337,6 +340,8 @@ export const queryKeys = {
         "plugin-operations",
         originKindPrefix,
       ] as const,
+    listParticipatedByAgent: (companyId: string, agentId: string) =>
+      ["issues", companyId, "participated-by-agent", agentId] as const,
     listByParent: (companyId: string, parentId: string) =>
       ["issues", companyId, "parent", parentId] as const,
     listCreatedFromIssue: (companyId: string, issueId: string) =>
@@ -369,10 +374,10 @@ export const queryKeys = {
       options.excludeRoot
         ? (["issues", "cost-summary", issueId, "exclude-root"] as const)
         : (["issues", "cost-summary", issueId] as const),
-    attachments: (issueId: string) =>
-      ["issues", "attachments", issueId] as const,
-    attachmentPreview: (attachmentId: string) =>
-      ["issues", "attachment-preview", attachmentId] as const,
+    privacyConstraints: (issueId: string) => ["issues", "privacy-constraints", issueId] as const,
+    accessGrants: (issueId: string) => ["issues", "access-grants", issueId] as const,
+    attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
+    attachmentPreview: (attachmentId: string) => ["issues", "attachment-preview", attachmentId] as const,
     documents: (issueId: string) => ["issues", "documents", issueId] as const,
     document: (issueId: string, key: string) =>
       ["issues", "document", issueId, key] as const,
@@ -392,6 +397,8 @@ export const queryKeys = {
       ["issues", "runner-goal", issueId, agentId ?? "__effective__"] as const,
     workProducts: (issueId: string) =>
       ["issues", "work-products", issueId] as const,
+    workProductPullRequestRefresh: (issueId: string) =>
+      ["issues", "work-product-pr-refresh", issueId] as const,
     fileResources: (
       issueId: string,
       options: {
@@ -524,6 +531,7 @@ export const queryKeys = {
         { includeArchived: opts.includeArchived === true },
       ] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+    accessMembers: (id: string) => ["projects", "access-members", id] as const,
   },
   cases: {
     list: (companyId: string) => ["cases", companyId] as const,
@@ -570,6 +578,8 @@ export const queryKeys = {
         groupBy ?? "none",
         groupIssueId ?? "",
       ] as const,
+    byAgent: (companyId: string, agentId: string) =>
+      ["artifacts", companyId, "by-agent", agentId] as const,
   },
   budgets: {
     overview: (companyId: string) =>

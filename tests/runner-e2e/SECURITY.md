@@ -1,5 +1,29 @@
 # Runner E2E security for a public repository
 
+## Attended connection authentication
+
+See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
+`provider-connections` suite, local/staging target ownership, dedicated browser
+profiles, credential handoffs, private evidence, and cleanup contract.
+
+Provider-connection results may retain closed diagnostic codes and terminal run
+status before managed-instance teardown. Only error records and failed tool
+receipts are inspected; raw error messages, child stderr, model output and
+reasoning are not retained. Unknown causes and unavailable logs stay explicit.
+The optional installed-Gemini filesystem smoke uses synthetic credentials and
+loopback model responses, makes no real provider calls, and removes its
+disposable home/workspace.
+
+The explicit [public MCP suite](PUBLIC-MCP.md) also creates a disposable browser
+account and OAuth grant. Signup and token exchange use Node fetch, credentials
+stay outside model context, and dynamic cookie/code/token values join the
+attempt's redaction set. Tracing, video and automatic screenshots are disabled
+for that suite; only reviewed fixture task routes may produce public screenshots.
+External API evidence retains visible answers and tool outcomes, never raw model
+reasoning. Empty provider configuration directories prevent operator plugins and
+MCP credentials from being inherited. All grants are revoked during cleanup and
+the launcher removes the isolated database and provider homes.
+
 This suite can spend provider money, expose selected local and workflow API credentials to isolated
 test processes, publish a container, retain private visual evidence, and write
 public structured evidence. Treat changes to the workflow, harness, fixture
@@ -292,3 +316,5 @@ Cursor, Copilot, GitHub and GH environment variables are stripped from the
 server environment. GitHub PAT shapes are included in retained-evidence scans.
 Candidates have no automatic infrastructure retries; spending must be reconciled
 before a deliberate repeat.
+
+The private resource-admission marker and raw cleanup results control recovery-state retention independently of evidence packaging. A worker crash after admission keeps the owner-only recovery database; a confirmed pre-allocation bootstrap failure does not. Neither the marker nor the database enters published evidence.

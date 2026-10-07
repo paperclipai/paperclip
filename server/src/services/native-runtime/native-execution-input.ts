@@ -1,4 +1,5 @@
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
+import { resolvePaperclipRunnerCursorMode } from "@paperclipai/adapter-utils";
 import { createHash } from "node:crypto";
 import { buildNativeContinuationPrompt } from "./native-continuation.js";
 import type {
@@ -42,6 +43,8 @@ export function buildNativeExecutionInput(input: {
   };
   taskPrompt: string;
   initialCommunicationGuidance?: string | null;
+  /** Bounded, redacted background restored only after a fresh provider bootstrap. */
+  freshSessionHandoff?: string | null;
   /**
    * The already-sanitized Paperclip wake envelope for this run. Native drivers
    * receive a closed execution input rather than the legacy adapter context,
@@ -55,6 +58,7 @@ export function buildNativeExecutionInput(input: {
   previousTurn?: { runId: string; task: { title: string; description: string | null } } | null;
   conversationMode?: boolean;
   agentId: string;
+  agentKeyId?: string;
   workspace: {
     id: string;
     cwd: string;
@@ -69,6 +73,7 @@ export function buildNativeExecutionInput(input: {
   codexReasoningEffort?: string;
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
+  acpxSessionMode?: "agent" | "plan" | "ask";
   model?: string | null;
   managedProfile?: Extract<
     NativeExecutionInputV5["provider"],
@@ -100,6 +105,7 @@ export function buildNativeExecutionInput(input: {
   if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask") {
     throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, or ask");
   }
+  const mode = resolvePaperclipRunnerCursorMode(input.provider, input.acpxAgent, input.acpxSessionMode);
   const executionMode = input.executionMode
     ?? (input.issue.workMode === "planning" ? "plan" : "default");
   const acpxProfile = input.provider === "acpx"
@@ -186,7 +192,9 @@ export function buildNativeExecutionInput(input: {
     : [];
   return parseNativeExecutionInput({
     schema: "paperclip.native-execution-input.v5",
-    ...(input.initialCommunicationGuidance ? { initialCommunicationGuidance: input.initialCommunicationGuidance } : {}),
+    ...((input.initialCommunicationGuidance || input.freshSessionHandoff) ? {
+      initialCommunicationGuidance: [input.initialCommunicationGuidance, input.freshSessionHandoff].filter(Boolean).join("\n\n"),
+    } : {}),
     ...(input.resumedSession && input.previousTurn && !input.conversationMode ? {
       continuationPrompt: buildNativeContinuationPrompt({
         wakePayload: input.wakePayload,
@@ -203,6 +211,7 @@ export function buildNativeExecutionInput(input: {
       runId: input.runId,
       issueId: input.issue.id,
       agentId: input.agentId,
+      ...(input.agentKeyId ? { agentKeyId: input.agentKeyId } : {}),
       executionWorkspaceId: input.workspace.id,
     },
     task: {
@@ -259,6 +268,7 @@ export function buildNativeExecutionInput(input: {
           agent: acpxProfile!.agent,
           model: input.model,
           permissionMode: input.acpxPermissionMode ?? "approve-all",
+          ...(mode === undefined ? {} : { mode }),
           profile: {
             driverKind: acpxProfile!.driverKind,
             protocolVersion: acpxProfile!.protocolVersion,

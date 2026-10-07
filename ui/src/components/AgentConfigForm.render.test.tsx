@@ -13,6 +13,10 @@ import { AgentConfigForm, AdapterLoginPanel, subtractPersistedOverlay, type Adap
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
+import { aiConnectionsApi } from "../api/ai-connections";
+import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
+import type { AdapterConfigFieldsProps } from "../adapters/types";
+import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(),
@@ -103,12 +107,10 @@ vi.mock("../adapters", () => ({
     // The stand-in also records the two gates the form resolves for every
     // adapter, so a test can assert the plumbing without rendering a real
     // adapter's fields.
-    ConfigFields: ({ adapterType, hideInstructionsFile, managedSandboxOnly }: {
-      adapterType: string;
-      hideInstructionsFile?: boolean;
-      managedSandboxOnly?: boolean;
-    }) =>
-      adapterType === "hermes_gateway"
+    ConfigFields: (props: AdapterConfigFieldsProps) => {
+      if (type === "paperclip_runner") return <CodexLocalConfigFields {...props} />;
+      const { adapterType, hideInstructionsFile, managedSandboxOnly } = props;
+      return adapterType === "hermes_gateway"
         ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
         : (
           <div
@@ -116,7 +118,8 @@ vi.mock("../adapters", () => ({
             data-hide-instructions-file={String(hideInstructionsFile === true)}
             data-managed-sandbox-only={String(managedSandboxOnly === true)}
           />
-        ),
+        );
+    },
     buildAdapterConfig: (values: { model?: string }) => ({
       model: values.model || undefined,
     }),
@@ -782,6 +785,44 @@ describe("AgentConfigForm environment selector", () => {
     await act(async () => save.click());
     expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ thinking: "low" }) }));
     expect(result.onSave.mock.calls[0][0].adapterConfig.effort).toBeUndefined();
+  });
+
+  it.each([
+    ["Codex", "codex", undefined, DEFAULT_CODEX_LOCAL_MODEL],
+    ["ACP agents", "acpx", "claude", "claude-sonnet-5"],
+    ["Claude Managed", "claude_managed", undefined, "claude-sonnet-5"],
+  ])("saves the %s harness default without the previous OpenCode model prefix", async (label, provider, acpxAgent, model) => {
+    const accountList = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({
+      currentUserId: "you",
+      canManageConnections: true,
+      connections: [],
+    });
+    try {
+      const result = await renderForm([], {
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.6" },
+        runtimeConfig: { aiConnection: { mode: "responsible_user", provider: "openrouter", method: "api_key" } },
+      });
+      roots.push(result.root);
+      await act(async () => {
+        result.container.querySelector('[aria-label="Harness"]')!
+          .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      });
+      await flushReact();
+      const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+        .find(element => element.textContent === label)!;
+      expect(option).toBeTruthy();
+      await act(async () => {
+        option.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      });
+      await flushReact();
+      await clickByText(result.container, "Save");
+      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
+        adapterConfig: expect.objectContaining({ provider, model, ...(acpxAgent ? { acpxAgent } : {}) }),
+      }));
+    } finally {
+      accountList.mockRestore();
+    }
   });
 
   it("saves Grok 4.7 reasoning effort using the runtime key", async () => {

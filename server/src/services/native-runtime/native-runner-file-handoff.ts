@@ -883,10 +883,10 @@ export async function stageNativeRunnerWakeAttachments(input: {
   if (workspaceRoot) {
     const processDirectoryName = await currentStagingProcessDirectoryName();
     await withStagingRegistryLock(workspaceRoot, async () => {
-      const stagingDirectory = await ensurePrivateStagingDirectory(
-        workspaceRoot,
-        processDirectoryName,
-      );
+      // Empty wakes still scrub abandoned bytes, but need no new staging paths.
+      const stagingDirectory = selections.length > 0
+        ? await ensurePrivateStagingDirectory(workspaceRoot, processDirectoryName)
+        : null;
       const activePaths =
         activeStagingPathsByWorkspace.get(workspaceRoot) ?? new Set<string>();
       const reusablePaths = await scrubNativeRunnerStagingResidue(
@@ -894,7 +894,7 @@ export async function stageNativeRunnerWakeAttachments(input: {
         activePaths,
         processDirectoryName,
       );
-      if (selections.length > 0) {
+      if (stagingDirectory !== null) {
         stagingDestinations = reusablePaths.slice(0, selections.length);
         while (stagingDestinations.length < selections.length) {
           const candidate = path.join(stagingDirectory, randomUUID());

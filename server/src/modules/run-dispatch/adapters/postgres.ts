@@ -15,9 +15,11 @@ import {
   issues,
 } from "@paperclipai/db";
 import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@paperclipai/shared";
+import { withAccountingTransaction } from "../../../services/accounting-transaction.js";
+import type { ActivityPublication } from "../../../services/activity-log.js";
 import { parseObject } from "../../../adapters/utils.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
-import { budgetService } from "../../../services/budgets.js";
+import { budgetService, budgetServiceInTransaction } from "../../../services/budgets.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { collectDispositionRepairSourceState } from "../../../services/recovery/disposition-repair.js";
@@ -127,8 +129,8 @@ function readNonEmptyString(value: unknown): string | null {
 function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
   if (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON) return "max_turn_continuation";
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
-  if (retryReason === "ai_connection_busy") return "ai_connection_wait";
-  if (retryReason === "native_safe_replacement") return "native_safe_replacement";
+  if ((retryReason === "ai_connection_busy" || retryReason === "ai_connection_pool_wait")) return "ai_connection_wait";
+  if (retryReason === "native_safe_replacement" || retryReason === "native_provider_overloaded") return "native_safe_replacement";
   return "other";
 }
 
@@ -190,7 +192,7 @@ export function createPostgresRunDispatchAdapter(
   async function withIssueThenRunLocks<T>(
     input: { runId: string; companyId: string },
     onMissing: () => T,
-    operation: (tx: Db, run: HeartbeatRun) => Promise<T>,
+    operation: (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => Promise<T>,
   ): Promise<T> {
     // Queue editing and claiming already use issue -> wake -> run. Read the
     // immutable issue reference without a lock first, then acquire issue ->
@@ -206,8 +208,9 @@ export function createPostgresRunDispatchAdapter(
       const hintedIssueId = readNonEmptyString(parseObject(hint.contextSnapshot).issueId);
 
       const result: { kind: "missing" | "retry" } | { kind: "value"; value: T } =
-        await db.transaction(async (tx) => {
-          const typedTx = tx as unknown as Db;
+        await withAccountingTransaction(db, input.companyId, async (typedTx, publications) => {
+          // Budget gates mutate policy state. Acquire company before issue/run,
+          // matching receipt writers (including their attribution FK locks).
           if (hintedIssueId) {
             await typedTx
               .select({ id: issues.id })
@@ -231,7 +234,7 @@ export function createPostgresRunDispatchAdapter(
 
           const lockedIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
           if (lockedIssueId !== hintedIssueId) return { kind: "retry" as const };
-          return { kind: "value" as const, value: await operation(typedTx, run) };
+          return { kind: "value" as const, value: await operation(typedTx, run, publications) };
         });
 
       if (result.kind === "missing") return onMissing();
@@ -247,12 +250,13 @@ export function createPostgresRunDispatchAdapter(
     input: LoadGateFactsInput,
     now: Date,
     tx?: unknown,
+    publications?: ActivityPublication[],
   ): Promise<LoadGateFactsResult> {
     // Semantic adapter operations pass their transaction here so the fact
     // read and the state transition share one unit of work. This helper is
     // deliberately not exposed through the module's public API.
     const dbOrTx = (tx as Db | undefined) ?? db;
-    const budgetsForRead = tx ? budgetService(dbOrTx) : budgets;
+    const budgetsForRead = tx ? budgetServiceInTransaction(dbOrTx, publications) : budgets;
     const treeControlForRead = tx ? issueTreeControlService(dbOrTx) : treeControlSvc;
     const issuesSvcForRead = tx ? issueService(dbOrTx) : issuesSvc;
 
@@ -747,7 +751,7 @@ export function createPostgresRunDispatchAdapter(
   ): Promise<PromoteScheduledRetryOutcome> {
     const now = input.now;
 
-    const promoteLockedRun = async (tx: Db, run: HeartbeatRun) => {
+    const promoteLockedRun = async (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => {
       if (
         run.status !== "scheduled_retry" ||
         !run.scheduledRetryAt ||
@@ -768,6 +772,7 @@ export function createPostgresRunDispatchAdapter(
         },
         now,
         tx,
+        publications,
       );
 
       if (!factsResult.agentFound) {
@@ -1010,7 +1015,7 @@ export function createPostgresRunDispatchAdapter(
     input: DispatchResolvedInteractionInput<T>,
   ): Promise<DispatchResolvedInteractionOutcome<T>> {
     const dispatchLockedRun = async (tx: Db, run: HeartbeatRun) => {
-      if (run.status !== input.expectedStatus) {
+      if (run.status !== input.expectedStatus || run.resultJson?.cancellation || run.resultJson?.startupCancellation) {
         return { dispatched: false as const, cancellation: { outcome: "lost_race" as const } };
       }
       const { issueId, decision: initialDecision } = await decideCurrentRunStaleness(

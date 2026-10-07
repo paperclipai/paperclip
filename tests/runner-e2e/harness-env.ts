@@ -114,9 +114,11 @@ export function buildRunnerE2EProcessEnvironment(
   const candidates = new Map<string, string>();
   for (const execution of executions) {
     const agent = execution.profile.qualificationCandidate;
-    if (!agent) continue;
-    if (execution.suite.id !== "extended-harnesses" || !execution.suite.manualOnly) {
-      throw new Error("Candidate qualification requires the explicit extended-harnesses suite");
+    if (!agent || agent === "cursor") continue;
+    const admittedSuite = execution.suite.id === "extended-harnesses"
+      || execution.suite.id === "rich-acp-warm-continuity";
+    if (!admittedSuite || !execution.suite.manualOnly) {
+      throw new Error("Candidate qualification requires an explicit provider qualification suite");
     }
     const prior = candidates.get(agent);
     if (prior !== undefined && prior !== execution.profile.model) throw new Error("Conflicting candidate models");

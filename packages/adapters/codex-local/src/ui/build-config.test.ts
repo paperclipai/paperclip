@@ -94,7 +94,7 @@ describe("buildCodexLocalConfig", () => {
     });
   });
 
-  it.each([["gpt-6-astra", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("persists the exact %s model and supported controls", (model, effort) => {
+  it.each([["gpt-6-astra", "ultra"], ["gpt-6.1-sol", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("persists the exact %s model and supported controls", (model, effort) => {
     const config = buildCodexLocalConfig(
       makeValues({
         model,
@@ -226,19 +226,31 @@ describe("buildPaperclipRunnerConfig", () => {
     expect(config).not.toHaveProperty("acpxAgent");
   });
 
-  it("does not materialize the unavailable ACPX Pi profile", () => {
-    expect(buildPaperclipRunnerConfig(makeValues({
+  it.each(["pi", "copilot"])("rejects unavailable ACPX %s without selecting another provider", (acpxAgent) => {
+    expect(() => buildPaperclipRunnerConfig(makeValues({
       adapterType: "paperclip_runner",
-      model: "",
+      model: "explicit-provider-model",
       adapterSchemaValues: {
         provider: "acpx",
-        acpxAgent: "pi",
+        acpxAgent,
       },
-    }))).toMatchObject({
-      provider: "acpx",
-      acpxAgent: "claude",
-      model: "claude-sonnet-5",
-    });
+    }))).toThrow(/is not enabled for production/);
+  });
+
+  it.each(["agent", "plan", "ask"])("preserves Cursor's explicit model and %s mode", (mode) => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      model: "explicit-cursor-model",
+      adapterSchemaValues: { provider: "acpx", acpxAgent: "cursor", acpxSessionMode: mode },
+    }))).toMatchObject({ provider: "acpx", acpxAgent: "cursor", model: "explicit-cursor-model", acpxSessionMode: mode });
+  });
+
+  it("defaults Cursor to Agent and requires an explicit model", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({
+      model: "explicit-cursor-model", adapterSchemaValues: { provider: "acpx", acpxAgent: "cursor" },
+    }))).toMatchObject({ acpxAgent: "cursor", acpxSessionMode: "agent", model: "explicit-cursor-model" });
+    expect(() => buildPaperclipRunnerConfig(makeValues({
+      model: "", adapterSchemaValues: { provider: "acpx", acpxAgent: "cursor" },
+    }))).toThrow("cursor requires an explicit provider model");
   });
 
   it("builds a Claude Managed profile reference with explicit retention and spend controls", () => {

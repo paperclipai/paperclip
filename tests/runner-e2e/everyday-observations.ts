@@ -1,3 +1,5 @@
+import type { IssueComment } from "../../packages/shared/src/types/issue.js";
+
 export interface StoryCheck {
   id: string;
   passed: boolean;
@@ -24,9 +26,8 @@ export interface StoryIssue {
   wakeDiagnostics?: StoryWakeDiagnostics;
   blockedTransitionAt?: string | null;
 }
-export interface StoryComment {
+export interface StoryComment extends Partial<Pick<IssueComment, "authorAgentId" | "createdByRunId">> {
   id?: string;
-  authorAgentId?: string | null;
   body?: unknown;
   createdAt?: string;
 }
@@ -36,6 +37,8 @@ export interface StoryActivityRecord {
   createdAt?: string;
 }
 export interface StoryInteraction {
+  sourceRunId?: string | null;
+  createdByAgentId?: string | null;
   id?: string;
   kind?: string;
   issueId?: string | null;
@@ -440,6 +443,32 @@ export function storyHasDurableAgentReviewContinuation(
       );
     }) ?? false),
   );
+}
+
+/** An executed approval may enqueue its wake just after run finalization.
+ * Wait within the original deadline only for this task/run's recorded response.
+ * Once a follow-up run has consumed it, a new blocker is a real failure.
+ */
+export function storyHasDurableServiceContinuation(issues: StoryIssue[], parentId: string, agentId: string, runs: StoryRun[]): boolean {
+  const issue = issues.find(i => i.id === parentId);
+  if (issue?.status !== "blocked" || issue.assigneeAgentId !== agentId) return false;
+  return issue.interactions?.some(interaction => {
+    const source = runs.find(run => run.id === interaction.sourceRunId);
+    const action = interaction.payload?.toolAction as Record<string, unknown> | undefined;
+    const result = interaction.result?.toolAction as Record<string, unknown> | undefined;
+    if (interaction.issueId !== parentId || interaction.createdByAgentId !== agentId ||
+        interaction.kind !== "request_confirmation" || interaction.continuationPolicy !== "wake_assignee" ||
+        interaction.status !== "accepted" || interaction.result?.outcome !== "accepted" ||
+        action?.version !== 1 || typeof action.actionRequestId !== "string" || result?.status !== "executed" ||
+        source?.agentId !== agentId || source.companyId !== issue.companyId || source.status !== "succeeded" ||
+        !(Date.parse(source.finishedAt ?? "") >= Date.parse(interaction.resolvedAt ?? ""))) return false;
+    return !runs.some(run => {
+      const input = run.runnerProfileJson?.nativeExecutionInput as
+        { interactionResponses?: Array<{ interactionId?: string }> } | undefined;
+      return run.id !== source.id && run.agentId === agentId &&
+        input?.interactionResponses?.some(response => response.interactionId === interaction.id);
+    });
+  }) ?? false;
 }
 
 /** Timeout evidence requires a stranded leaf with durable accepted-review evidence. */

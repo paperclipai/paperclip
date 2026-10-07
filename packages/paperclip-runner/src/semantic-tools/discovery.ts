@@ -21,6 +21,7 @@ const MAX_DISCOVERY_RESULTS = 10;
 
 const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Object.freeze({
   set_task_title: "active_task",
+  set_task_monitor: "continuation",
   search_api: "api_fallback",
   call_api: "api_fallback",
   get_task_context: "active_task", get_task_history: "active_task",
@@ -33,12 +34,13 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
   update_agent_instructions: "agent_instructions",
   get_agent_instruction_history: "agent_instructions",
   restore_agent_instructions: "agent_instructions",
- create_skill: "skills", create_task: "delegation", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
+ create_skill: "skills", update_skill: "skills", create_task: "delegation", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
   set_dependencies: "delegation", reassign_task: "delegation", list_approvals: "governance", get_approval: "governance",
   get_approval_context: "governance", request_approval: "governance",
   decide_approval: "governance", comment_on_approval: "governance",
   get_workspace_runtime: "workspace", control_workspace_service: "workspace",
   schedule_wake: "continuation", generic_api_request: "test_infrastructure",
+  submit_complaint: "feedback", submit_suggestion: "feedback",
 });
 
 export const CAPABILITY_DISCOVERY_NAMESPACES = Object.freeze([
@@ -48,6 +50,7 @@ export const CAPABILITY_DISCOVERY_NAMESPACES = Object.freeze([
   { name: "governance", description: "Read, request, discuss, and decide approvals." },
   { name: "workspace", description: "Inspect and control active-task workspace services." },
   { name: "continuation", description: "Schedule a bounded continuation wake." },
+  { name: "feedback", description: "Submit internal complaints and improvement suggestions." },
 ]);
 
 export const CAPABILITY_DISCOVERY_GATEWAY_DEFINITIONS = Object.freeze([{

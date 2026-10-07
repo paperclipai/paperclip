@@ -417,6 +417,9 @@ This starts the UI and API at `http://localhost:3100`. An embedded PostgreSQL da
 
 > **Requirements:** Node.js 24.11+, pnpm 9.15+
 
+Local Claude and Codex subscription sign-in also needs Python 3 and the
+corresponding provider CLI on the Paperclip host. The Docker image includes them.
+
 Source development also builds the native Paperclip Runner when enabled (the self-hosted default). Install a Rust toolchain, or set `PAPERCLIP_RUNNER_BINARY` to a compatible prebuilt runner.
 
 <br/>

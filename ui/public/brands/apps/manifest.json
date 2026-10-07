@@ -33,6 +33,12 @@
       "localAsset": "/brands/apps/asana.svg"
     },
     {
+      "slug": "bedrock",
+      "provider": "Amazon Bedrock",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/bedrock.svg"
+    },
+    {
       "slug": "beehiiv",
       "provider": "beehiiv",
       "catalogVisible": false,
@@ -123,6 +129,12 @@
       "localAsset": "/brands/apps/embat.svg"
     },
     {
+      "slug": "enterpret",
+      "provider": "Enterpret",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/enterpret.png"
+    },
+    {
       "slug": "executor",
       "provider": "Executor",
       "catalogVisible": true,
@@ -153,6 +165,12 @@
       "provider": "Google Sheets",
       "catalogVisible": true,
       "localAsset": "/brands/apps/google-sheets.svg"
+    },
+    {
+      "slug": "google",
+      "provider": "Google",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google.svg"
     },
     {
       "slug": "google-drive",
@@ -289,6 +307,12 @@
       "darkAsset": "/brands/apps/netlify-dark.svg"
     },
     {
+      "slug": "neon",
+      "provider": "Neon",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/neon.png"
+    },
+    {
       "slug": "notion",
       "provider": "Notion",
       "catalogVisible": true,
@@ -384,6 +408,19 @@
       "provider": "Supabase",
       "catalogVisible": true,
       "localAsset": "/brands/apps/supabase.svg"
+    },
+    {
+      "slug": "superagent",
+      "provider": "Superagent",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/superagent.png"
+    },
+    {
+      "slug": "telem",
+      "provider": "Telem.AI",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/telem.svg",
+      "darkAsset": "/brands/apps/telem-dark.svg"
     },
     {
       "slug": "telegram",
@@ -530,6 +567,30 @@
       "localAsset": "/brands/apps/browser-use.svg",
       "sourceUrl": "https://browser-use.com/logo-primary.svg",
       "retrievedAt": "2026-09-29"
+    },
+    {
+      "slug": "chat-completions-api",
+      "provider": "Chat Completions API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "local",
+      "provider": "Local endpoint",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "messages-api",
+      "provider": "Messages API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "responses-api",
+      "provider": "Responses API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
     }
   ]
 }

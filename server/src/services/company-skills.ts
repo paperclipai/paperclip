@@ -2960,6 +2960,10 @@ export function companySkillService(db: Db) {
     const configuredRoots = [
       resolveManagedSkillsRoot(companyId),
       ...projectRows.flatMap((project) => project.workspaces.map((workspace) => workspace.cwd)),
+      // Include server-derived managed-checkout dirs for projects with no registered workspace cwd.
+      // Uses managedFolder (not effectiveLocalFolder) to stay server-controlled; user-registered
+      // localFolder paths are already covered by workspaces[].cwd above.
+      ...projectRows.map((project) => project.codebase.managedFolder),
     ].filter((root): root is string => typeof root === "string" && root.trim().length > 0);
     const approvedRoots = (await Promise.all(
       configuredRoots.map((root) => fs.realpath(path.resolve(root)).catch(() => null)),
@@ -4639,6 +4643,11 @@ export function companySkillService(db: Db) {
       for (const slug of [...new Set([initial.slug, ...additionalSlugs])].filter(Boolean).sort()) {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${companyId}:${slug}`}, 0))`);
       }
+      await tx.execute(sql`
+        select ${companySkills.id} from ${companySkills}
+        where ${companySkills.id} = ${skillId} and ${companySkills.companyId} = ${companyId}
+        for update
+      `);
       const skill = await getById(companyId, skillId, tx);
       if (!skill) throw notFound("Skill not found");
       if (skill.slug !== initial.slug) throw conflict("Skill was renamed. Retry the operation.");
@@ -4665,9 +4674,15 @@ export function companySkillService(db: Db) {
     relativePath: string,
     content: string,
     actor: SkillActor | null = null,
-    format: { encoding?: "utf8" | "base64"; executable?: boolean } = {},
+    format: { encoding?: "utf8" | "base64"; executable?: boolean; expectedVersionId?: string | null;
+      afterUpdate?: (versionId: string | null) => Promise<void>;
+      onRollback?: (restore: () => Promise<void>, versionId: string | null) => void } = {},
   ): Promise<CompanySkillFileDetail> {
     return withSkillFileMutation(companyId, skillId, async (skill, tx) => {
+
+      if (format.expectedVersionId !== undefined && skill.currentVersionId !== format.expectedVersionId) {
+        throw conflict("Skill version changed. Read the current version before retrying.");
+      }
 
       const source = deriveSkillSourceInfo(skill);
       if (!source.editable || skill.sourceType !== "local_path") {
@@ -4685,41 +4700,55 @@ export function companySkillService(db: Db) {
       }
       const previousContent = await fs.readFile(absolutePath).catch(() => null);
       const previousMode = (await fs.stat(absolutePath).catch(() => null))?.mode ?? 0o644;
+      const restore = async () => {
+        if (previousContent === null) await fs.rm(absolutePath, { force: true });
+        else {
+          await fs.writeFile(absolutePath, previousContent);
+          await fs.chmod(absolutePath, previousMode);
+        }
+      };
+      format.onRollback?.(restore, skill.currentVersionId);
       const mode = (format.executable ?? Boolean(previousMode & 0o111)) ? 0o755 : 0o644;
-      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-      await fs.writeFile(absolutePath, bytes);
-      await fs.chmod(absolutePath, mode);
+      try {
+        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+        await fs.writeFile(absolutePath, bytes);
+        await fs.chmod(absolutePath, mode);
 
-      if (normalizedPath === "SKILL.md") {
-        const parsed = parseFrontmatterMarkdown(content);
-        await tx
-          .update(companySkills)
-          .set({
-            name: asString(parsed.frontmatter.name) ?? skill.name,
-            description: asString(parsed.frontmatter.description) ?? skill.description,
-            markdown: content,
-            ...readSkillStoreMetadata(parsed.frontmatter, skill.metadata),
-            updatedAt: new Date(),
-          })
-          .where(eq(companySkills.id, skill.id));
-      } else {
-        await tx
-          .update(companySkills)
-          .set({ updatedAt: new Date() })
-          .where(eq(companySkills.id, skill.id));
+        if (normalizedPath === "SKILL.md") {
+          const parsed = parseFrontmatterMarkdown(content);
+          await tx
+            .update(companySkills)
+            .set({
+              name: asString(parsed.frontmatter.name) ?? skill.name,
+              description: asString(parsed.frontmatter.description) ?? skill.description,
+              markdown: content,
+              ...readSkillStoreMetadata(parsed.frontmatter, skill.metadata),
+              updatedAt: new Date(),
+            })
+            .where(eq(companySkills.id, skill.id));
+        } else {
+          await tx
+            .update(companySkills)
+            .set({ updatedAt: new Date() })
+            .where(eq(companySkills.id, skill.id));
+        }
+
+        const inventory = await refreshEditedSkillInventory(skill, tx);
+        if (!previousContent?.equals(bytes) || Boolean(previousMode & 0o111) !== Boolean(mode & 0o111)) {
+          await createVersion(companyId, skillId, {}, actor, {
+            database: tx, skipInventoryRefresh: true, skill, fileInventory: inventory,
+          });
+        }
+
+        const updated = await getById(companyId, skillId, tx);
+        const detail = updated ? await readLoadedSkillFile(updated, normalizedPath) : null;
+        if (!detail) throw notFound("Skill file not found");
+        await format.afterUpdate?.(updated?.currentVersionId ?? null);
+        return detail;
+      } catch (error) {
+        await restore();
+        throw error;
       }
-
-      const inventory = await refreshEditedSkillInventory(skill, tx);
-      if (!previousContent?.equals(bytes) || Boolean(previousMode & 0o111) !== Boolean(mode & 0o111)) {
-        await createVersion(companyId, skillId, {}, actor, {
-          database: tx, skipInventoryRefresh: true, skill, fileInventory: inventory,
-        });
-      }
-
-      const updated = await getById(companyId, skillId, tx);
-      const detail = updated ? await readLoadedSkillFile(updated, normalizedPath) : null;
-      if (!detail) throw notFound("Skill file not found");
-      return detail;
     });
   }
 
@@ -6594,7 +6623,7 @@ export function companySkillService(db: Db) {
     const rows = await db
       .select({
         issueId: costEvents.issueId,
-        costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+        costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::double precision`,
         inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
         cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
         outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,

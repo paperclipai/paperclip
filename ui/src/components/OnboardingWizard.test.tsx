@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
+import type { LocalAiLoginStatus } from "@paperclipai/shared";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,8 +17,9 @@ const localHealth = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("@/api/health", () => ({ healthApi: localHealth }));
 const managedApi = vi.hoisted(() => ({
   list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
-  startLocalLogin: vi.fn(async () => ({ sessionId: "local-attempt", command: "CODEX_HOME='/fixture/login' codex login", expiresAt: "2026-09-11T20:00:00Z" })),
-  checkLocalLogin: vi.fn(async () => ({ status: "sign_in_required" as "sign_in_required" | "ready" })),
+  startLocalLogin: vi.fn(async () => ({ sessionId: "local-attempt", expiresAt: "2099-01-01T00:00:00Z" })),
+  submitLocalLoginCode: vi.fn(async () => ({ ok: true })),
+  checkLocalLogin: vi.fn(async (): Promise<LocalAiLoginStatus> => ({ status: "sign_in_required" })),
   cancelLocalLogin: vi.fn(async () => ({})),
   connectLocal: vi.fn(async () => ({ connectionId: "local-connection", grantId: "local-grant" })),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
@@ -161,7 +163,7 @@ const mockProjectsApi = vi.hoisted(() => ({
 // model/harness picker internals are out of scope here, so stub the adapter
 // layer entirely and drive it through this knob.
 const mockAdapterRegistry = vi.hoisted(() => ({
-  list: [] as Array<{ type: string }>,
+  list: [] as Array<{ type: string; recommended?: boolean }>,
   disabled: new Set<string>(),
 }));
 
@@ -198,7 +200,7 @@ vi.mock("../adapters/adapter-display-registry", () => ({
     // then sat in the "Advanced settings" disclosure and was reachable anyway;
     // with the step down to a tile row built from this flag, it made that row
     // empty in every test and hid the surface under it.
-    recommended: type === "claude_local" || type === "codex_local",
+    recommended: type === "claude_local" || type === "codex_local" || mockAdapterRegistry.list.some(entry => entry.type === type && entry.recommended),
     label: type,
     description: "",
     icon: () => null,
@@ -324,7 +326,11 @@ function isArcPrimary(text: string): boolean {
 describe("OnboardingWizard restore-gate (stale localStorage across accounts)", () => {
   beforeEach(() => {
     localHealth.get.mockResolvedValue({ deploymentMode: "authenticated" });
-    managedApi.checkLocalLogin.mockReset().mockResolvedValue({ status: "sign_in_required" });
+    managedApi.checkLocalLogin.mockReset().mockResolvedValue({
+      status: "sign_in_required",
+      authorizationUrl: "https://claude.ai/oauth/authorize?code=true",
+      code: "TEST-CODE",
+    });
     managedApi.connectLocal.mockReset().mockResolvedValue({ connectionId: "local-connection", grantId: "local-grant" });
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-b", userId: SESSION_USER_ID },
@@ -430,7 +436,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
     async function clickByText(match: (text: string) => boolean) {
       const el = [...document.body.querySelectorAll("button")].find((b) =>
-        match(b.textContent?.trim() ?? ""),
+        match(b.getAttribute("aria-label")?.startsWith("Use ") ? b.getAttribute("aria-label")! : b.textContent?.trim() ?? ""),
       )!;
       await act(async () => {
         el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -521,7 +527,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       const clickText = async (match: (t: string) => boolean) => {
         const el = [...document.body.querySelectorAll("button")].find((b) =>
-          match(b.textContent?.trim() ?? ""),
+          match(b.getAttribute("aria-label")?.startsWith("Use ") ? b.getAttribute("aria-label")! : b.textContent?.trim() ?? ""),
         )!;
         await act(async () => {
           el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -598,7 +604,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       const clickText = async (match: (t: string) => boolean) => {
         const el = [...document.body.querySelectorAll("button")].find((b) =>
-          match(b.textContent?.trim() ?? ""),
+          match(b.getAttribute("aria-label")?.startsWith("Use ") ? b.getAttribute("aria-label")! : b.textContent?.trim() ?? ""),
         )!;
         await act(async () => {
           el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -777,7 +783,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       const clickByText = async (match: (text: string) => boolean) => {
         const el = [...document.body.querySelectorAll("button")].find((b) =>
-          match(b.textContent?.trim() ?? ""),
+          match(b.getAttribute("aria-label")?.startsWith("Use ") ? b.getAttribute("aria-label")! : b.textContent?.trim() ?? ""),
         )!;
         await act(async () => {
           el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -3063,7 +3069,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
 
       const clickByText = async (match: (text: string) => boolean) => {
         const el = [...document.body.querySelectorAll("button")].find((b) =>
-          match(b.textContent?.trim() ?? ""),
+          match(b.getAttribute("aria-label")?.startsWith("Use ") ? b.getAttribute("aria-label")! : b.textContent?.trim() ?? ""),
         )!;
         await act(async () => {
           el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -3136,7 +3142,8 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         const { root, queryClient } = await openStep4({ adapterType });
         try {
           await pickSource(label);
-          expect(document.body.textContent).toContain("Run this in a terminal");
+          expect(document.body.textContent).toContain("Sign in to");
+          expect(document.body.textContent).not.toContain("Run this in a terminal");
           expect(button("Connect").disabled).toBe(false);
           await detected();
           expectTesting();
@@ -3208,7 +3215,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           await settle();
           expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
           expect(mockAgentsApi.hire).not.toHaveBeenCalled();
-          expect(document.body.textContent).toContain("Run this in a terminal");
+          expect(document.body.textContent).toContain("Sign in to");
           expect(button("Connect").disabled).toBe(false);
         } finally { await act(async () => root.unmount()); }
       });
@@ -3331,19 +3338,34 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           await settle();
           expect(mockAgentsApi.hire).not.toHaveBeenCalled();
           expect(document.body.textContent).not.toContain("is ready to work!");
-          if (navigation === "provider") expect(document.body.textContent).toContain("claude auth login");
+          if (navigation === "provider") expect(document.body.textContent).toContain("Preparing browser sign-in");
         } finally { if (mounted) await act(async () => root.unmount()); }
       });
     });
 
-    it("shows local Claude instructions and saves its connection before hiring", async () => {
+    it("keeps Gemini local login out of managed Claude subscription setup", async () => {
+      localHealth.get.mockResolvedValue({ deploymentMode: "local_trusted" });
+      mockEnvironmentsApi.list.mockResolvedValue([LOCAL_ENVIRONMENT]);
+      mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+      mockAdapterRegistry.list.push({ type: "gemini_local", recommended: true });
+      const { root } = await openStep4({ adapterType: "gemini_local" });
+      try {
+        await pickSource(/Gemini|Google|gemini_local/);
+        expect(managedApi.startLocalLogin).not.toHaveBeenCalled();
+        expect(managedApi.connectLocal).not.toHaveBeenCalled();
+        expect(document.body.textContent).not.toContain("claude auth login");
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it("shows the Claude browser sign-in card and saves its connection before hiring", async () => {
       localHealth.get.mockResolvedValue({ deploymentMode: "local_trusted" });
       mockEnvironmentsApi.list.mockResolvedValue([LOCAL_ENVIRONMENT]);
       mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
       const { root } = await openStep4({ adapterType: "claude_local" });
       await pickSource(/Claude/);
-      expect(document.body.textContent).toContain("claude auth login");
-      expect(document.body.textContent).toContain("machine running Paperclip");
+      expect(document.body.textContent).toContain("Sign in to Claude then come back and enter authorization code");
+      expect(document.body.textContent).not.toContain("claude auth login");
       expect(document.body.textContent).not.toContain("No managed sandbox");
       expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
       const connect = [...document.body.querySelectorAll("button")].find(b => b.textContent?.trim().startsWith("Connect"));

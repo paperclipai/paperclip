@@ -1,4 +1,13 @@
+import { AGGREGATOR_NAMES, isAppAggregator, type AggregatorAppsResponse, type ArcadeDiscoverySetupInput } from "@paperclipai/shared/aggregator-apps";
+import { resolveAggregatorApp, type AppCatalogAggregator } from "@paperclipai/shared/aggregator-app-catalog";
+import { AggregatorDiscoveryUnavailableError, discoverArcadeApps, discoverExecutorApps, type DiscoveredApp } from "./aggregator-app-discovery.js";
+import { COMPOSIO_APP_TOOLKITS, findComposioCatalogApp } from "@paperclipai/shared/aggregator-app-catalog";
+import type { ComposioAppAccount, ComposioAppAccountInput, ComposioAppSetupInput, ComposioAppSetupResult, ComposioAppSnapshot, ComposioAppsResponse } from "@paperclipai/shared";
+import { composioAppAccounts, composioAppSetupResult } from "./composio-app-setup.js";
+import { honchoManagedArguments } from "./honcho-connection.js";
+import { defaultConnectionAgentInstructions } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
+import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
 import { browserUseClient, isBrowserUseConnection } from "./browser-use-client.js";
 import { browserUseService } from "./browser-use.js";
@@ -57,6 +66,8 @@ import {
   toolActionRequests,
   toolCatalogEntries,
   toolConnectionInstalls,
+  toolConnectionAppSnapshots,
+  toolConnectionAppSyncs,
   toolConnections,
   toolOauthStates,
   toolStdioCommandTemplates,
@@ -277,6 +288,7 @@ type ActorInfo = {
     | "board_key"
     | "agent_key"
     | "agent_jwt"
+    | "mcp_oauth"
     | "cloud_tenant";
 };
 
@@ -494,6 +506,8 @@ export function oauthClientIdMetadataDocument(input: {
 type OAuthProviderEndpoints = {
   provider: string;
   scopes: string[];
+  /** Refresh permission belongs to authorization-server metadata, not MCP tool scopes. */
+  offlineAccessSupported?: boolean;
   authorizationUrl: string;
   tokenUrl: string;
   registrationUrl?: string | null;
@@ -654,6 +668,8 @@ type ToolAccessServiceOptions = {
   remoteHttpEndpointLookup?: RemoteHttpEndpointLookup;
   /** Test seam for protocol fixtures. Production uses the DNS-pinned transport. */
   remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
+  /** Smaller reviewed catalog for deterministic discovery fixtures. */
+  composioAppToolkits?: readonly string[];
   /** Test seam for the centrally registered Gmail OAuth broker. */
   paperclipCloudConnector?: PaperclipCloudConnector | null;
   /** @deprecated Use paperclipCloudConnector. */
@@ -1195,10 +1211,14 @@ export function projectedConnectionHeaders(
   const headers: Record<string, string> = {};
   if (app) {
     const method = connectionMethodForConnection(app, connection);
-    Object.assign(headers, normalizeConnectionMethodConfig(
-      method,
-      asRecord(connection.config.methodConfig),
-    ).headers);
+    // Non-transport settings do not participate in header projection. In
+    // particular, legacy connections can lack a newly introduced setting.
+    if ([...(method.tenantFields ?? []), ...(method.extensionFields ?? [])].some((field) => field.transport?.location === "header")) {
+      Object.assign(headers, normalizeConnectionMethodConfig(
+        method,
+        asRecord(connection.config.methodConfig),
+      ).headers);
+    }
   }
   if (
     connection.transport === "mcp_remote" &&
@@ -1291,7 +1311,10 @@ export function projectedConnectionToolArguments(
   connection: typeof toolConnections.$inferSelect,
   parameters: unknown,
   toolName: string,
+  inputSchema: Record<string, unknown> = {},
 ): Record<string, unknown> {
+  const managed = honchoManagedArguments(connection, inputSchema);
+  if (managed) parameters = mergeManagedToolArguments(asRecord(parameters), managed);
   assertGoogleChatToolArgumentsSupported(connection, toolName, parameters);
   const sourceTemplateKey =
     typeof connection.config.sourceTemplateKey === "string"
@@ -1312,6 +1335,8 @@ export function projectedConnectionToolInputSchema(
   inputSchema: Record<string, unknown>,
   toolName: string,
 ): Record<string, unknown> {
+  const managed = honchoManagedArguments(connection, inputSchema);
+  if (managed) inputSchema = stripManagedToolArgumentSchema(inputSchema, managed);
   inputSchema = googleChatToolInputSchema(connection, toolName, inputSchema);
   const sourceTemplateKey =
     typeof connection.config.sourceTemplateKey === "string"
@@ -1610,6 +1635,7 @@ function toConnection(row: typeof toolConnections.$inferSelect): ToolConnection 
     credentialPolicy: row.credentialPolicy,
     status: row.status,
     enabled: row.enabled && !retired,
+    agentInstructions: row.agentInstructions ?? null,
     config: row.config ?? {},
     transportConfig: row.transportConfig ?? {},
     credentialRefs: row.credentialRefs ?? [],
@@ -2232,6 +2258,7 @@ function connectionSetupMutationFingerprint(
     transport: row.transport,
     status: row.status,
     enabled: row.enabled,
+    agentInstructions: row.agentInstructions,
     config: row.config,
     transportConfig: row.transportConfig,
     credentialRefs: row.credentialRefs,
@@ -2372,8 +2399,22 @@ export function classifyRisk(
   if (sourceTemplateKey === "fireflies" && [
     "fireflies-share-meeting", "fireflies-revoke-meeting-access", "fireflies-move-meeting",
   ].includes(normalizedToolName)) return "write";
+  // Enterpret's run_graph_query self-reports readOnlyHint: true, but Cypher is
+  // not a read-only language and live validation never established the tool as
+  // safe. Treat it as write so Ask-first defaults can restrict it.
+  if (sourceTemplateKey === "enterpret" && normalizedToolName === "run-graph-query")
+    return "write";
   if (sourceTemplateKey === "posthog" && normalizedToolName === "exec")
     return "destructive";
+  // Superagent mirrors its REST API, and several mutations use verbs the
+  // generic classifier reads as reads: billable triage_finding, scans,
+  // restore_agent_builtin_rule, and credential-revoking revoke_agent_client.
+  // Only list/get tools and tools the provider marks read-only are reads.
+  if (sourceTemplateKey === "superagent") {
+    if (verbMatches(tool.name, "delete|remove|destroy|revoke")) return "destructive";
+    if (annotations.readOnlyHint === false || annotations.writeHint === true) return "write";
+    return /^(list|get)-/.test(normalizedToolName) || annotations.readOnlyHint === true ? "read" : "write";
+  }
   if (
     sourceTemplateKey === "shopify" &&
     SHOPIFY_DESTRUCTIVE_TOOLS.has(normalizedToolName)
@@ -2491,13 +2532,16 @@ export function isGoogleWorkspaceToolAllowed(
 }
 
 type ManagedConnectorProfileId =
-  GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId;
+  GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId;
 
 function managedConnectorProfile(value: string | undefined): {
   id: ManagedConnectorProfileId;
-  provider: "google" | "github";
+  provider: "google" | "github" | "asana";
   scopes: readonly string[];
 } | null {
+  if (value && isAsanaConnectorProfileId(value)) {
+    return { id: value, provider: "asana", scopes: ASANA_CONNECTOR_SCOPES };
+  }
   if (value && isGoogleWorkspaceConnectorProfileId(value)) {
     return {
       id: value,
@@ -3027,6 +3071,9 @@ export function toolAccessService(
   options: ToolAccessServiceOptions = {},
 ) {
   const secrets = secretService(db);
+  const composioSyncJobs = new Map<string, Promise<void>>();
+  const composioSyncTtlMs = 5 * 60_000;
+  const composioSyncLeaseMs = 4 * 60_000;
 
   async function resolvedRemoteEndpoint(
     connection: typeof toolConnections.$inferSelect,
@@ -3621,6 +3668,360 @@ export function toolAccessService(
     status: ToolConnectionHealthStatus,
   ): boolean {
     return isToolConnectionAttentionHealth(status);
+  }
+
+  async function composioCredentialKey(connection: typeof toolConnections.$inferSelect, actor: ActorInfo) {
+    const usesConnectionRefs = ["arcade", "executor"].includes(String(connection.config.sourceTemplateKey)) && connection.authKind !== "oauth" && connection.credentialPolicy === "shared";
+    const grant = usesConnectionRefs ? null : await vaultGrantForConnection(connection, actor);
+    const refs = grant?.credentialSecretRefs ?? connection.credentialSecretRefs;
+    const discovery = asRecord(asRecord(connection.config.aggregatorDiscovery)[actor.actorId!]);
+    const ids = [...new Set([...refs.map(ref => ref.secretId), ...(typeof discovery.secretId === "string" ? [discovery.secretId] : [])])].sort();
+    const versions = ids.length ? await db.select({ id: companySecrets.id, version: companySecrets.latestVersion }).from(companySecrets)
+      .where(and(eq(companySecrets.companyId, connection.companyId), inArray(companySecrets.id, ids))).orderBy(asc(companySecrets.id)) : [];
+    return createHash("sha256").update(JSON.stringify({ grant: grant?.id, refs, versions,
+      ...(Object.keys(discovery).length ? { discovery } : {}),
+      ...(connection.config.sourceTemplateKey === "arcade" || connection.config.sourceTemplateKey === "executor"
+        ? { headers: projectedConnectionHeaders(connection), managementUrl: connection.config.managementUrl } : {}), endpoint: remoteEndpoint(connection.config), policy: connection.credentialPolicy, connectedAt: asRecord(connection.config.oauth)?.connectedAt })).digest("hex");
+  }
+
+  async function cachedComposioApps(connection: typeof toolConnections.$inferSelect, actor: ActorInfo): Promise<ComposioAppSnapshot[]> {
+    const credentialKey = await composioCredentialKey(connection, actor);
+    const rows = await db.select().from(toolConnectionAppSnapshots).where(and(
+      eq(toolConnectionAppSnapshots.companyId, connection.companyId), eq(toolConnectionAppSnapshots.connectionId, connection.id),
+      eq(toolConnectionAppSnapshots.userId, actor.actorId!), eq(toolConnectionAppSnapshots.credentialKey, credentialKey),
+    ));
+    return rows.map(row => ({ connectionId: row.connectionId, toolkit: row.toolkit, status: row.status, accounts: row.accounts,
+      checkedAt: row.checkedAt.toISOString(), errorAt: row.errorAt?.toISOString() ?? null }));
+  }
+
+  async function composioAppsResponse(connection: typeof toolConnections.$inferSelect, actor: ActorInfo): Promise<ComposioAppsResponse> {
+    const credentialKey = await composioCredentialKey(connection, actor);
+    const [sync] = await db.select().from(toolConnectionAppSyncs).where(and(
+      eq(toolConnectionAppSyncs.companyId, connection.companyId), eq(toolConnectionAppSyncs.connectionId, connection.id),
+      eq(toolConnectionAppSyncs.userId, actor.actorId!), eq(toolConnectionAppSyncs.credentialKey, credentialKey),
+    ));
+    const interrupted = sync?.status === "syncing" && sync.updatedAt.getTime() < Date.now() - composioSyncLeaseMs;
+    return { apps: await cachedComposioApps(connection, actor), sync: {
+      status: interrupted || sync?.status === "unsupported" ? "error" : sync?.status ?? "idle", coverage: "supported_catalog",
+      checked: sync?.checked ?? 0, total: sync?.total ?? 0, failed: sync?.failed ?? 0,
+      lastCompletedAt: sync?.lastCompletedAt?.toISOString() ?? null,
+      error: interrupted ? "App checks were interrupted. Refresh to try again."
+        : (sync?.status === "error" || sync?.status === "unsupported") ? "Couldn’t finish checking Composio apps. Refresh to try again." : null,
+    } };
+  }
+
+  async function openComposioGateway(connectionId: string, actor: ActorInfo) {
+    const connection = await getConnectionRow(connectionId);
+    if (actor.actorType !== "user" || !actor.actorId) throw forbidden("A human connection manager must configure this app");
+    if (connection.config.sourceTemplateKey !== "composio" || connection.transport !== "mcp_remote"
+      || connection.status !== "active" || !connection.enabled) throw unprocessable("Connect your Composio gateway first");
+    const catalog = await db.select().from(toolCatalogEntries).where(and(
+      eq(toolCatalogEntries.companyId, connection.companyId), eq(toolCatalogEntries.connectionId, connection.id),
+    ));
+    if (!catalog.some(tool => tool.toolName === "COMPOSIO_MANAGE_CONNECTIONS" && tool.status === "active")) {
+      throw unprocessable("Refresh your Composio gateway's actions before configuring this app");
+    }
+    const endpoint = await resolvedRemoteEndpoint(connection, actor);
+    const headers = { ...projectedConnectionHeaders(connection), ...(await resolveCredentialHeaders(connection, actor)) };
+    const credentialKey = await composioCredentialKey(await getConnectionRow(connectionId), actor);
+    const send = (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), { ...init, signal: AbortSignal.timeout(30_000) });
+    let sessionHeaders = connection.config.mcpSessionRequired === true
+      ? await getMcpHttpSession({ send, headers, scope: `${connection.id}:app-setup:${actor.actorId}`, requestId: "paperclip-app-setup" }) : headers;
+    async function manage(toolkits: { name: string; action: "list" | "add" | "rename" | "remove"; account_id?: string; alias?: string }[], tolerateToolkitErrors = false) {
+      const checkedAt = new Date();
+      const id = `paperclip-app-setup-${randomUUID()}`;
+      const request = () => send({ method: "POST", headers: mcpHttpRequestHeaders(sessionHeaders), body: JSON.stringify({
+        jsonrpc: "2.0", id, method: "tools/call", params: { name: "COMPOSIO_MANAGE_CONNECTIONS", arguments: { toolkits } },
+      }) });
+      const markFailed = async () => {
+        const names = toolkits.filter(tool => tool.action === "list").map(tool => tool.name);
+        if (names.length) await db.update(toolConnectionAppSnapshots).set({ errorAt: checkedAt }).where(and(
+          eq(toolConnectionAppSnapshots.companyId, connection.companyId), eq(toolConnectionAppSnapshots.connectionId, connectionId),
+          eq(toolConnectionAppSnapshots.userId, actor.actorId!), eq(toolConnectionAppSnapshots.credentialKey, credentialKey),
+          inArray(toolConnectionAppSnapshots.toolkit, names), lte(toolConnectionAppSnapshots.checkedAt, checkedAt),
+        ));
+      };
+      try {
+      let response = await request();
+      // Only reads retry. An uncertain account mutation must never repeat automatically.
+      if (toolkits.every(tool => tool.action === "list") && (response.status === 400 || response.status === 404)) {
+        await response.body?.cancel();
+        sessionHeaders = await initializeMcpHttpSession({ send, headers, requestId: id });
+        response = await request();
+      }
+      if (!response.ok) throw new HttpError(502, toolkits.every(tool => tool.action === "list")
+        ? "Composio could not check this app. Reconnect the gateway if its sign-in expired."
+        : "Composio has not confirmed this change. Refresh the accounts before trying again.", { code: "composio_app_setup_failed", status: response.status });
+      const payload = await readMcpHttpResponse(response, id);
+      if (await composioCredentialKey(await getConnectionRow(connectionId), actor) !== credentialKey) {
+        throw conflict("The Composio account changed while checking apps. Refresh to check the current account.");
+      }
+      const failedToolkits: string[] = [];
+      for (const tool of toolkits.filter(tool => tool.action === "list")) {
+        let accounts: ComposioAppAccount[];
+        try {
+          composioAppSetupResult(payload, tool.name);
+          const parsed = composioAppAccounts(payload, tool.name);
+          if (!parsed) throw unprocessable("Composio did not return a complete account list. Refresh the accounts before trying again.");
+          accounts = parsed;
+        } catch (error) {
+          await db.update(toolConnectionAppSnapshots).set({ errorAt: checkedAt }).where(and(
+            eq(toolConnectionAppSnapshots.companyId, connection.companyId), eq(toolConnectionAppSnapshots.connectionId, connectionId),
+            eq(toolConnectionAppSnapshots.userId, actor.actorId!), eq(toolConnectionAppSnapshots.credentialKey, credentialKey),
+            eq(toolConnectionAppSnapshots.toolkit, tool.name), lte(toolConnectionAppSnapshots.checkedAt, checkedAt),
+          ));
+          if (!tolerateToolkitErrors) throw error;
+          failedToolkits.push(tool.name);
+          continue;
+        }
+        const status = accounts.some(account => account.status === "ACTIVE") ? "connected" as const : "not_connected" as const;
+        await db.insert(toolConnectionAppSnapshots).values({ companyId: connection.companyId, connectionId, userId: actor.actorId!,
+          credentialKey, toolkit: tool.name, accounts, status, checkedAt, errorAt: null,
+        }).onConflictDoUpdate({ target: [toolConnectionAppSnapshots.companyId, toolConnectionAppSnapshots.connectionId, toolConnectionAppSnapshots.userId, toolConnectionAppSnapshots.toolkit],
+          set: { accounts, status, checkedAt, credentialKey, errorAt: null }, setWhere: lte(toolConnectionAppSnapshots.checkedAt, checkedAt) });
+      }
+      return { payload, failedToolkits };
+      } catch (error) { await markFailed(); throw error; }
+    }
+    return { connection, catalog, credentialKey, manage: async (...args: Parameters<typeof manage>) => (await manage(...args)).payload, checkBatch: manage };
+  }
+
+  async function startComposioAppSync(connectionId: string, force: boolean, actor: ActorInfo) {
+    const opened = await openComposioGateway(connectionId, actor);
+    const { connection, credentialKey } = opened;
+    const existing = await cachedComposioApps(connection, actor);
+    const catalog = options.composioAppToolkits ?? COMPOSIO_APP_TOOLKITS;
+    const toolkits = [...new Set([...existing.filter(app => app.accounts.length > 0).map(app => app.toolkit), ...catalog])];
+    const leaseId = randomUUID();
+    const startedAt = new Date();
+    const [lease] = await db.insert(toolConnectionAppSyncs).values({ companyId: connection.companyId, connectionId,
+      userId: actor.actorId!, credentialKey, leaseId, status: "syncing", total: toolkits.length, updatedAt: startedAt,
+    }).onConflictDoUpdate({ target: [toolConnectionAppSyncs.companyId, toolConnectionAppSyncs.connectionId, toolConnectionAppSyncs.userId, toolConnectionAppSyncs.credentialKey],
+      set: { leaseId, status: "syncing", checked: 0, total: toolkits.length, failed: 0, updatedAt: startedAt },
+      setWhere: and(
+        or(ne(toolConnectionAppSyncs.status, "syncing"), lt(toolConnectionAppSyncs.updatedAt, new Date(Date.now() - composioSyncLeaseMs))),
+        force ? sql`true` : or(ne(toolConnectionAppSyncs.status, "ready"), isNull(toolConnectionAppSyncs.lastCompletedAt),
+          lt(toolConnectionAppSyncs.lastCompletedAt, new Date(Date.now() - composioSyncTtlMs))),
+      ),
+    }).returning();
+    if (lease) {
+      const updateLease = async (values: Partial<typeof toolConnectionAppSyncs.$inferInsert>) => {
+        const updated = await db.update(toolConnectionAppSyncs).set({ ...values, updatedAt: new Date() })
+          .where(and(eq(toolConnectionAppSyncs.id, lease.id), eq(toolConnectionAppSyncs.leaseId, leaseId))).returning({ id: toolConnectionAppSyncs.id });
+        if (!updated.length) throw conflict("App checks were replaced by a newer sync.");
+      };
+      const job = (async () => {
+        let failed = 0;
+        try {
+          for (let start = 0; start < toolkits.length; start += 32) {
+            if (Date.now() - startedAt.getTime() > composioSyncLeaseMs) throw new Error("Sync deadline exceeded");
+            await updateLease({});
+            const current = start === 0 ? opened : await openComposioGateway(connectionId, actor);
+            if (current.credentialKey !== credentialKey) throw conflict("Composio credentials changed during sync.");
+            const batch = toolkits.slice(start, start + 32);
+            const result = await current.checkBatch(batch.map(name => ({ name, action: "list" })), true);
+            failed += result.failedToolkits.length;
+            await updateLease({ checked: start + batch.length, failed });
+          }
+          await updateLease({ status: failed > 0 ? "error" : "ready", lastCompletedAt: new Date(), failed });
+        } catch {
+          const [activeLease] = await db.select({ id: toolConnectionAppSyncs.id }).from(toolConnectionAppSyncs)
+            .where(and(eq(toolConnectionAppSyncs.id, lease.id), eq(toolConnectionAppSyncs.leaseId, leaseId)));
+          if (!activeLease) return;
+          // Preserve observations, but never present a failed check as current authorization.
+          await db.update(toolConnectionAppSnapshots).set({ errorAt: new Date() }).where(and(
+            eq(toolConnectionAppSnapshots.companyId, connection.companyId), eq(toolConnectionAppSnapshots.connectionId, connectionId),
+            eq(toolConnectionAppSnapshots.userId, actor.actorId!), eq(toolConnectionAppSnapshots.credentialKey, credentialKey),
+            lte(toolConnectionAppSnapshots.checkedAt, startedAt),
+          ));
+          await updateLease({ status: "error", failed }).catch(() => undefined);
+        }
+      })();
+      composioSyncJobs.set(leaseId, job);
+      void job.finally(() => composioSyncJobs.delete(leaseId)).catch(() => undefined);
+    }
+    return composioAppsResponse(await getConnectionRow(connectionId), actor);
+  }
+
+  function aggregatorProvider(connection: typeof toolConnections.$inferSelect): AppCatalogAggregator {
+    const provider = connection.config.sourceTemplateKey;
+    if (!isAppAggregator(provider) || connection.transport !== "mcp_remote") throw notFound("Aggregator gateway not found");
+    return provider;
+  }
+
+  function assertDiscoveryActor(actor: ActorInfo) {
+    if (actor.actorType !== "user" || !actor.actorId) throw forbidden("A human connection manager must check accounts");
+  }
+
+  async function aggregatorDiscoveryState(connection: typeof toolConnections.$inferSelect, actor: ActorInfo, retryUnsupported = false): Promise<AggregatorAppsResponse["discovery"]> {
+    const provider = aggregatorProvider(connection);
+    if (connection.status !== "active" || !connection.enabled) return { availability: "disabled", message: "Restore this gateway to check its accounts." };
+    if (provider === "arcade") {
+      const discovery = asRecord(asRecord(connection.config.aggregatorDiscovery)[actor.actorId!]);
+      const headers = projectedConnectionHeaders(connection);
+      const grant = connection.authKind === "oauth" || connection.credentialPolicy !== "shared" ? await vaultGrantForConnection(connection, actor) : null;
+      const refs = grant?.credentialSecretRefs ?? connection.credentialSecretRefs;
+      const hasUserId = Boolean(Object.entries(headers).find(([key]) => key.toLowerCase() === "arcade-user-id")?.[1])
+        || refs.some(ref => ref.configPath.toLowerCase() === "headers.arcade-user-id");
+      if ((!discovery.secretId || !discovery.userId) && !(hasUserId && connection.authKind === "api_key")) {
+        return { availability: "setup_required", message: "Set up account sync to see your Arcade apps here." };
+      }
+    }
+    const catalog = await db.select({ name: toolCatalogEntries.toolName }).from(toolCatalogEntries).where(and(
+      eq(toolCatalogEntries.companyId, connection.companyId), eq(toolCatalogEntries.connectionId, connection.id), eq(toolCatalogEntries.status, "active"),
+    ));
+    if ((provider === "executor" && !catalog.some(tool => ["integrations", "execute"].includes(tool.name)))
+      || (provider === "composio" && !catalog.some(tool => tool.name === "COMPOSIO_MANAGE_CONNECTIONS"))) {
+      return { availability: "unsupported", message: `${AGGREGATOR_NAMES[provider]} account discovery is unavailable on this gateway. Refresh its actions or check its setup.` };
+    }
+    if (!retryUnsupported && provider === "executor") {
+      const credentialKey = await composioCredentialKey(connection, actor);
+      const [sync] = await db.select({ status: toolConnectionAppSyncs.status }).from(toolConnectionAppSyncs).where(and(
+        eq(toolConnectionAppSyncs.companyId, connection.companyId), eq(toolConnectionAppSyncs.connectionId, connection.id),
+        eq(toolConnectionAppSyncs.userId, actor.actorId!), eq(toolConnectionAppSyncs.credentialKey, credentialKey),
+      ));
+      if (sync?.status === "unsupported") return { availability: "unsupported", message: "Executor account discovery is unavailable on this server. You can still use the gateway’s actions." };
+    }
+    return { availability: "available", message: null };
+  }
+
+  async function aggregatorAppsResponse(connection: typeof toolConnections.$inferSelect, actor: ActorInfo): Promise<AggregatorAppsResponse> {
+    assertDiscoveryActor(actor);
+    const provider = aggregatorProvider(connection);
+    const result = await composioAppsResponse(connection, actor);
+    const discovery = await aggregatorDiscoveryState(connection, actor);
+    return { provider, discovery, apps: result.apps.map(snapshot => {
+      const app = resolveAggregatorApp(provider, snapshot.toolkit, snapshot.accounts[0]?.appName);
+      return { ...snapshot, provider, freshness: discovery.availability !== "available" || snapshot.errorAt || result.sync.status === "error" || connection.status !== "active" || !connection.enabled || Date.now() - new Date(snapshot.checkedAt).getTime() > composioSyncTtlMs ? "stale" as const : "fresh" as const, appSlug: app.slug.startsWith(`${provider}:`) ? `${provider}:${connection.id}:${snapshot.toolkit}` : snapshot.accounts[0]?.appSlug ?? app.slug, appName: snapshot.accounts[0]?.appName ?? app.name };
+    }), sync: { ...result.sync, coverage: provider === "composio" ? "supported_catalog" : provider === "arcade" ? "gateway_tools" : "visible_accounts",
+      error: result.sync.error ? `Couldn’t finish checking ${AGGREGATOR_NAMES[provider]} apps. Refresh to try again.` : null,
+    } };
+  }
+
+  async function discoverAggregatorInventory(connection: typeof toolConnections.$inferSelect, actor: ActorInfo): Promise<DiscoveredApp[]> {
+    const provider = aggregatorProvider(connection);
+    const tools = await remoteTools(connection, undefined, actor);
+    connection = await getConnectionRow(connection.id);
+    const headers = { ...projectedConnectionHeaders(connection), ...(await resolveCredentialHeaders(connection, actor)) };
+    const endpoint = new URL(await resolvedRemoteEndpoint(connection, actor));
+    if (provider === "arcade") {
+      // The extra project credential never joins invocation headers or tool grants.
+      if (endpoint.hostname !== "api.arcade.dev" || endpoint.protocol !== "https:") throw unprocessable("Account sync requires an Arcade Cloud gateway");
+      const discovery = asRecord(asRecord(connection.config.aggregatorDiscovery)[actor.actorId!]);
+      let key: string | undefined;
+      let userId: string | undefined;
+      if (typeof discovery.secretId === "string" && typeof discovery.userId === "string") {
+        const [secret] = await db.select().from(companySecrets).where(and(eq(companySecrets.id, discovery.secretId), eq(companySecrets.companyId, connection.companyId), eq(companySecrets.ownerUserId, actor.actorId!)));
+        if (!secret?.userSecretDefinitionId) throw forbidden("Your Arcade discovery credential is unavailable");
+        const resolved = await secrets.resolveUserSecretValue(connection.companyId, { definitionId: secret.userSecretDefinitionId, responsibleUserId: actor.actorId!, required: true }, {
+          actorType: "user", actorId: actor.actorId!, consumerType: "tool_connection", consumerId: connection.id, responsibleUserId: actor.actorId!,
+        });
+        key = resolved?.value;
+        userId = discovery.userId;
+      } else {
+        userId = Object.entries(headers).find(([name]) => name.toLowerCase() === "arcade-user-id")?.[1];
+        if (connection.authKind === "api_key") key = Object.entries(headers).find(([name]) => name.toLowerCase() === "authorization")?.[1].replace(/^Bearer\s+/i, "");
+      }
+      if (!key || !userId) throw unprocessable("Set up Arcade account sync first");
+      return discoverArcadeApps({ userId, gatewayTools: tools.map(tool => tool.name), request: async path => {
+        const response = await requestRemoteHttpEndpoint(new URL(path, endpoint.origin), { method: "GET", headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(30_000) });
+        if (!response.ok) { await response.body?.cancel(); throw new HttpError(502, "Arcade could not list your accounts. Check the project API key and Arcade user ID."); }
+        return response.json();
+      } });
+    }
+    const send = (init: RequestInit) => requestRemoteHttpEndpoint(endpoint, { ...init, signal: AbortSignal.timeout(30_000) });
+    let sessionHeaders = connection.config.mcpSessionRequired === true ? await getMcpHttpSession({ send, headers, scope: `${connection.id}:inventory:${actor.actorId}`, requestId: "paperclip-account-inventory" }) : headers;
+    return discoverExecutorApps({ toolNames: tools.map(tool => tool.name), managementUrl: typeof connection.config.managementUrl === "string" ? connection.config.managementUrl : null,
+      call: async (name, args) => {
+        const id = `paperclip-account-inventory-${randomUUID()}`;
+        const request = () => send({ method: "POST", headers: mcpHttpRequestHeaders(sessionHeaders), body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }) });
+        let response = await request();
+        if (response.status === 400 || response.status === 404) {
+          await response.body?.cancel(); sessionHeaders = await initializeMcpHttpSession({ send, headers, requestId: id }); response = await request();
+        }
+        if (!response.ok) { await response.body?.cancel(); throw new HttpError(502, "Executor could not list your accounts. Reconnect if sign-in expired."); }
+        return readMcpHttpResponse(response, id);
+      },
+    });
+  }
+
+  async function syncAggregatorApps(connectionId: string, force: boolean, actor: ActorInfo): Promise<AggregatorAppsResponse> {
+    assertDiscoveryActor(actor);
+    let connection = await getConnectionRow(connectionId);
+    const provider = aggregatorProvider(connection);
+    const discovery = await aggregatorDiscoveryState(connection, actor, force);
+    if (discovery.availability !== "available") return aggregatorAppsResponse(connection, actor);
+    if (provider === "composio") {
+      await startComposioAppSync(connectionId, force, actor);
+      return aggregatorAppsResponse(await getConnectionRow(connectionId), actor);
+    }
+    // Resolve/refresh the caller's gateway credentials before fingerprinting the lease.
+    await resolveCredentialHeaders(connection, actor);
+    connection = await getConnectionRow(connectionId);
+    const credentialKey = await composioCredentialKey(connection, actor);
+    const leaseId = randomUUID();
+    const startedAt = new Date();
+    const [lease] = await db.insert(toolConnectionAppSyncs).values({ companyId: connection.companyId, connectionId, userId: actor.actorId!, credentialKey, leaseId, status: "syncing", updatedAt: startedAt })
+      .onConflictDoUpdate({ target: [toolConnectionAppSyncs.companyId, toolConnectionAppSyncs.connectionId, toolConnectionAppSyncs.userId, toolConnectionAppSyncs.credentialKey],
+        set: { leaseId, status: "syncing", checked: 0, total: 0, failed: 0, updatedAt: startedAt },
+        setWhere: and(or(ne(toolConnectionAppSyncs.status, "syncing"), lt(toolConnectionAppSyncs.updatedAt, new Date(Date.now() - composioSyncLeaseMs))),
+          force ? sql`true` : or(ne(toolConnectionAppSyncs.status, "ready"), isNull(toolConnectionAppSyncs.lastCompletedAt), lt(toolConnectionAppSyncs.lastCompletedAt, new Date(Date.now() - composioSyncTtlMs)))),
+      }).returning();
+    if (lease) {
+      const job = (async () => {
+        try {
+          const apps = await discoverAggregatorInventory(connection, actor);
+          await db.transaction(async tx => {
+            const [current] = await tx.select().from(toolConnections).where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, connection.companyId))).for("update");
+            const [active] = await tx.select().from(toolConnectionAppSyncs).where(and(eq(toolConnectionAppSyncs.id, lease.id), eq(toolConnectionAppSyncs.leaseId, leaseId))).for("update");
+            if (!current || !active || current.status !== "active" || !current.enabled || Date.now() - startedAt.getTime() > composioSyncLeaseMs
+              || await composioCredentialKey(current, actor) !== credentialKey) throw conflict("The gateway changed during account discovery");
+            const checkedAt = new Date();
+            // Commit the entire enumeration at once; a failed later page cannot delete accounts.
+            await tx.update(toolConnectionAppSnapshots).set({ accounts: [], status: "not_connected", checkedAt, errorAt: null }).where(and(
+              eq(toolConnectionAppSnapshots.companyId, connection.companyId), eq(toolConnectionAppSnapshots.connectionId, connectionId), eq(toolConnectionAppSnapshots.userId, actor.actorId!), eq(toolConnectionAppSnapshots.credentialKey, credentialKey),
+            ));
+            for (const app of apps) await tx.insert(toolConnectionAppSnapshots).values({ companyId: connection.companyId, connectionId, userId: actor.actorId!, credentialKey,
+              toolkit: app.toolkit, accounts: app.accounts, status: app.accounts.some(account => account.status === "ACTIVE") ? "connected" : "not_connected", checkedAt,
+            }).onConflictDoUpdate({ target: [toolConnectionAppSnapshots.companyId, toolConnectionAppSnapshots.connectionId, toolConnectionAppSnapshots.userId, toolConnectionAppSnapshots.toolkit],
+              set: { accounts: app.accounts, status: app.accounts.some(account => account.status === "ACTIVE") ? "connected" : "not_connected", checkedAt, errorAt: null, credentialKey },
+            });
+            await tx.update(toolConnectionAppSyncs).set({ status: "ready", checked: apps.length, total: apps.length, failed: 0, updatedAt: checkedAt, lastCompletedAt: checkedAt }).where(eq(toolConnectionAppSyncs.id, lease.id));
+          });
+        } catch (error) {
+          await db.transaction(async tx => {
+            const [active] = await tx.select().from(toolConnectionAppSyncs).where(and(eq(toolConnectionAppSyncs.id, lease.id), eq(toolConnectionAppSyncs.leaseId, leaseId))).for("update");
+            if (!active) return;
+            await tx.update(toolConnectionAppSnapshots).set({ errorAt: new Date() }).where(and(eq(toolConnectionAppSnapshots.companyId, connection.companyId), eq(toolConnectionAppSnapshots.connectionId, connectionId), eq(toolConnectionAppSnapshots.userId, actor.actorId!), eq(toolConnectionAppSnapshots.credentialKey, credentialKey)));
+            await tx.update(toolConnectionAppSyncs).set({ status: error instanceof AggregatorDiscoveryUnavailableError ? "unsupported" : "error", failed: 1, updatedAt: new Date() }).where(eq(toolConnectionAppSyncs.id, lease.id));
+          });
+        }
+      })();
+      composioSyncJobs.set(leaseId, job);
+      void job.finally(() => composioSyncJobs.delete(leaseId)).catch(() => undefined);
+    }
+    return aggregatorAppsResponse(await getConnectionRow(connectionId), actor);
+  }
+
+  async function configureArcadeDiscovery(connectionId: string, input: ArcadeDiscoverySetupInput, actor: ActorInfo) {
+    assertDiscoveryActor(actor);
+    const companyId = (await getConnectionRow(connectionId)).companyId;
+    await db.transaction(async tx => {
+      const [connection] = await tx.select().from(toolConnections).where(eq(toolConnections.id, connectionId)).for("update");
+      if (!connection || aggregatorProvider(connection) !== "arcade" || connection.status === "archived") throw notFound("Arcade gateway not found");
+      const all = asRecord(connection.config.aggregatorDiscovery);
+      const before = asRecord(all[actor.actorId!]);
+      const { secret } = await writeConnectionCredential(tx, {
+        companyId: connection.companyId, connectionName: connection.name, configPath: "aggregatorDiscovery.apiKey", label: "Arcade account sync API key",
+        value: input.apiKey, ownerUserId: actor.actorId!, actor: actorForSecret(actor),
+        existingRef: typeof before.secretId === "string" ? { secretId: before.secretId, configPath: "aggregatorDiscovery.apiKey", versionSelector: "latest" } : undefined,
+        definitionKey: `arcade_discovery.${connection.id}`,
+      });
+      const config = { ...connection.config, aggregatorDiscovery: { ...all, [actor.actorId!]: { userId: input.userId, secretId: secret.id } } };
+      await tx.update(toolConnections).set({ config, transportConfig: config, updatedAt: new Date() }).where(eq(toolConnections.id, connectionId));
+    });
+    await logActivity(db, { companyId, actorType: "user", actorId: actor.actorId!, action: "tool_connection.account_sync_configured", entityType: "tool_connection", entityId: connectionId, details: { provider: "arcade" } });
+    return syncAggregatorApps(connectionId, true, actor);
   }
 
   async function audit(input: {
@@ -5515,7 +5916,38 @@ export function toolAccessService(
       previous: typeof connectionGrants.$inferSelect | null;
       current: typeof connectionGrants.$inferSelect;
     }) => void,
+    /**
+     * Scope provenance from the authorization that just completed, for the callers that have
+     * one. The default organization grant is created before OAuth has issued any credentials,
+     * so without this the grants API reads back a shared identity whose scope has no source
+     * and no over-grant warning — while the connection record carries both.
+     *
+     * Deliberately scope fields only. The shared grant takes its credential lifecycle from the
+     * connection, and writing `accessTokenExpiresAt` here would make an expired connection
+     * look fresh to the refresh-due check and skip the reconnect prompt.
+     */
+    oauthProvenance?: {
+      scopes: string[];
+      scopeSource: "provider" | "requested_fallback";
+      unrequestedScopes: string[];
+      requestedScopes: string[];
+    },
   ) {
+    const providerTenantWithOauth = (
+      current: (typeof connectionGrants.$inferSelect)["providerTenant"],
+    ) =>
+      oauthProvenance
+        ? {
+            ...(current ?? {}),
+            oauth: {
+              ...(current?.oauth ?? {}),
+              scopes: oauthProvenance.scopes,
+              scopeSource: oauthProvenance.scopeSource,
+              unrequestedScopes: oauthProvenance.unrequestedScopes,
+              requestedScopes: oauthProvenance.requestedScopes,
+            },
+          }
+        : current;
     const [existing] = await dbClient
       .select()
       .from(connectionGrants)
@@ -5542,6 +5974,9 @@ export function toolAccessService(
           credentialSecretRefs: isRailwayConnection(connection)
             ? [...connection.credentialSecretRefs, ...existing.credentialSecretRefs.filter((ref) => ref.configPath === RAILWAY_SSH_SECRET_PATH && !connection.credentialSecretRefs.some((candidate) => candidate.configPath === ref.configPath))]
             : connection.credentialSecretRefs,
+          ...(oauthProvenance
+            ? { providerTenant: providerTenantWithOauth(existing.providerTenant) }
+            : {}),
           status: "active",
           revokedAt: null,
           revokedByAgentId: null,
@@ -5562,6 +5997,9 @@ export function toolAccessService(
         connectionId: connection.id,
         kind: "organization",
         credentialSecretRefs: connection.credentialSecretRefs,
+        ...(oauthProvenance
+          ? { providerTenant: providerTenantWithOauth(null) }
+          : {}),
         status: "active",
         isDefault: true,
       })
@@ -6346,6 +6784,7 @@ export function toolAccessService(
     // provider error leaves an unresolvable secret and a resumable removal
     // rather than a half-open app.
     const candidateSecretIds = [
+      ...Object.values(asRecord(connection.config.aggregatorDiscovery)).flatMap(value => typeof asRecord(value).secretId === "string" ? [asRecord(value).secretId as string] : []),
       ...connection.credentialRefs.map((ref) => ref.secretId),
       ...connection.credentialSecretRefs.map((ref) => ref.secretId),
       ...grantRows.flatMap((grant) =>
@@ -7350,11 +7789,14 @@ export function toolAccessService(
       isGoogleWorkspaceConnectorProfileId(googleProfileValue)
         ? googleProfileValue
         : null;
+    const preserveReviewedCatalog =
+      (isRailwayEndpoint(connection.config.url) || sourceTemplateKey === "enterpret") &&
+      existingRows.length > 0;
     const quarantineOnRefresh =
-      (!refreshOptions.enableAllByDefault || (isRailwayEndpoint(connection.config.url) && existingRows.length > 0)) &&
+      (!refreshOptions.enableAllByDefault || preserveReviewedCatalog) &&
       shouldQuarantineNewEntries(connection) &&
       (connection.status === "active" ||
-        (isRailwayEndpoint(connection.config.url) && existingRows.length > 0) ||
+        preserveReviewedCatalog ||
         sourceTemplateKey === "posthog" ||
         refreshOptions.quarantineManagedOAuthDraft === true);
     const safeDefault = asRecord(connection.config).safeDefault === true;
@@ -7450,12 +7892,14 @@ export function toolAccessService(
       }
     }
 
-    const normalizedConfig = isRailwayEndpoint(connection.config.url)
+    const preserveQuarantine =
+      isRailwayEndpoint(connection.config.url) || sourceTemplateKey === "enterpret";
+    const normalizedConfig = preserveQuarantine
       ? { ...connection.config, quarantineNewEntries: true }
       : refreshOptions.enableAllByDefault
       ? { ...connection.config, quarantineNewEntries: false }
       : connection.config;
-    const normalizedTransportConfig = isRailwayEndpoint(connection.config.url)
+    const normalizedTransportConfig = preserveQuarantine
       ? { ...connection.transportConfig, quarantineNewEntries: true }
       : refreshOptions.enableAllByDefault
       ? { ...connection.transportConfig, quarantineNewEntries: false }
@@ -8402,6 +8846,27 @@ export function toolAccessService(
     return oauthClientConfig(provider);
   }
 
+  async function annotateSavedOAuthClientSecret(connections: ToolConnection[], viewerUserId?: string) {
+    const personal = connections.filter((connection) => connection.authKind === "oauth" && connection.credentialPolicy === "per_user");
+    const grants = viewerUserId && personal.length > 0
+      ? await db.select({ connectionId: connectionGrants.connectionId, refs: connectionGrants.credentialSecretRefs })
+        .from(connectionGrants)
+        .where(and(
+          inArray(connectionGrants.companyId, [...new Set(personal.map((connection) => connection.companyId))]),
+          inArray(connectionGrants.connectionId, personal.map((connection) => connection.id)),
+          eq(connectionGrants.kind, "user"),
+          eq(connectionGrants.subjectUserId, viewerUserId),
+          eq(connectionGrants.status, "active"),
+        ))
+      : [];
+    const savedPersonal = new Set(grants.filter((grant) => grant.refs.some((ref) => ref.configPath === "oauth.client_secret")).map((grant) => grant.connectionId));
+    for (const connection of connections) {
+      connection.hasSavedOAuthClientSecret = connection.credentialPolicy === "per_user"
+        ? savedPersonal.has(connection.id)
+        : connection.credentialSecretRefs.some((ref) => ref.configPath === "oauth.client_secret");
+    }
+  }
+
   async function oauthClientForConnection(
     connection: typeof toolConnections.$inferSelect,
     provider: string,
@@ -8556,6 +9021,74 @@ export function toolAccessService(
         .map((item) => item.trim())
         .filter(Boolean);
     return [];
+  }
+
+  /**
+   * Decide what a token grant actually carries, keeping the provider's assertion separate from
+   * our own request.
+   *
+   * RFC 6749 §5.1 permits a provider to omit `scope` only when the grant is identical to the
+   * request, so reading the request as the grant is the specified fallback. A provider that
+   * over-grants *and* omits `scope` breaks that contract, and recording the request unmarked
+   * turns what we asked for into a confident-looking record of what we got. `scopeSource` keeps
+   * the two readable apart so nothing downstream can mistake an inference for an assertion.
+   *
+   * `unrequestedScopes` is only meaningful when we asked for something specific; with no
+   * requested scopes there is no baseline to compare against, so it stays empty rather than
+   * flagging every scope on connections that keep their scopes in provider-side app config.
+   *
+   * `previous` is the provenance already recorded for this grant. A refresh response that omits
+   * `scope` asserts nothing at all — least of all that a permission was taken away — so the
+   * earlier record is carried forward verbatim instead of being overwritten with a clean-looking
+   * inference. Only a fresh provider assertion replaces a recorded over-grant.
+   */
+  function resolveGrantedOauthScopes(input: {
+    tokenScope: unknown;
+    requestedScopes: unknown;
+    previous?: {
+      scopes?: unknown;
+      scopeSource?: unknown;
+      unrequestedScopes?: unknown;
+    };
+  }): {
+    scopes: string[];
+    scopeSource: "provider" | "requested_fallback";
+    unrequestedScopes: string[];
+  } {
+    const requested = normalizeOauthScopes(input.requestedScopes);
+    const asserted =
+      input.tokenScope === undefined || input.tokenScope === null
+        ? []
+        : normalizeOauthScopes(input.tokenScope);
+    if (asserted.length === 0) {
+      const previousScopes = normalizeOauthScopes(input.previous?.scopes);
+      const previousUnrequested = normalizeOauthScopes(
+        input.previous?.unrequestedScopes,
+      );
+      if (previousScopes.length > 0) {
+        return {
+          scopes: previousScopes,
+          scopeSource:
+            input.previous?.scopeSource === "provider"
+              ? "provider"
+              : "requested_fallback",
+          unrequestedScopes: previousUnrequested,
+        };
+      }
+      return {
+        scopes: requested,
+        scopeSource: "requested_fallback",
+        unrequestedScopes: previousUnrequested,
+      };
+    }
+    return {
+      scopes: asserted,
+      scopeSource: "provider",
+      unrequestedScopes:
+        requested.length === 0
+          ? []
+          : asserted.filter((scope) => !requested.includes(scope)),
+    };
   }
 
   function isSmokeLabOAuthUrl(value: string | null | undefined) {
@@ -8727,6 +9260,9 @@ export function toolAccessService(
       firstPartyOrigin,
     );
     let scopes = normalizeOauthScopes(metadata.scopes_supported);
+    let offlineAccessSupported = Boolean(
+      authorizationUrl && scopes.includes("offline_access"),
+    );
     let codeChallengeMethodsSupported = normalizeOauthScopes(
       metadata.code_challenge_methods_supported,
     );
@@ -8779,6 +9315,15 @@ export function toolAccessService(
         !sameOAuthIssuer(advertisedIssuer, candidate.issuer)
       )
         continue;
+      // A document can carry its own endpoints and also list other servers.
+      // Adopt capabilities only from metadata bound to the selected endpoints
+      // and issuer; otherwise offline access could break an unrelated sign-in.
+      if (
+        (authorizationUrl && candidateAuthorizationUrl !== authorizationUrl) ||
+        (tokenUrl && candidateTokenUrl !== tokenUrl) ||
+        (issuer && !sameOAuthIssuer(issuer, advertisedIssuer ?? candidate.issuer))
+      )
+        continue;
       authorizationUrl = authorizationUrl ?? candidateAuthorizationUrl;
       tokenUrl = tokenUrl ?? candidateTokenUrl;
       registrationUrl =
@@ -8790,6 +9335,8 @@ export function toolAccessService(
           firstPartyOrigin,
         );
       issuer = issuer ?? advertisedIssuer ?? candidate.issuer;
+      offlineAccessSupported = offlineAccessSupported ||
+        normalizeOauthScopes(authMetadata.scopes_supported).includes("offline_access");
       if (scopes.length === 0)
         scopes = normalizeOauthScopes(authMetadata.scopes_supported);
       if (codeChallengeMethodsSupported.length === 0) {
@@ -8817,6 +9364,7 @@ export function toolAccessService(
     return {
       provider: oauthProviderForConnection(connection, metadataUrl),
       scopes,
+      offlineAccessSupported,
       authorizationUrl,
       tokenUrl,
       registrationUrl,
@@ -8883,9 +9431,31 @@ export function toolAccessService(
         ? oauth.resource.trim()
         : canonicalResourceIndicator(remoteEndpoint(connection.config));
     if (configuredAuthorizationUrl && configuredTokenUrl) {
+      // Pre-existing generic connections cached endpoints before refresh-scope
+      // support was recorded. Recover that capability from their bound metadata
+      // without adopting a different issuer or changing their requested tool scopes.
+      let refreshMetadata: OAuthProviderEndpoints | null = null;
+      if (
+        !connection.config.sourceTemplateKey &&
+        typeof oauth.offlineAccessSupported !== "boolean" &&
+        typeof oauth.metadataUrl === "string"
+      ) {
+        const discovered = await endpointsFromMetadataUrl(
+          connection, oauth.metadataUrl, rejections, firstPartyOrigin,
+        );
+        if (
+          discovered?.authorizationUrl === configuredAuthorizationUrl &&
+          discovered.tokenUrl === configuredTokenUrl &&
+          (typeof oauth.issuer !== "string" ||
+            (discovered.issuer && sameOAuthIssuer(discovered.issuer, oauth.issuer)))
+        ) refreshMetadata = discovered;
+      }
       return {
         provider,
         scopes,
+        offlineAccessSupported: typeof oauth.offlineAccessSupported === "boolean"
+          ? oauth.offlineAccessSupported
+          : refreshMetadata?.offlineAccessSupported,
         authorizationUrl: configuredAuthorizationUrl,
         tokenUrl: configuredTokenUrl,
         registrationUrl: safeOAuthEndpointUrl(
@@ -8900,6 +9470,9 @@ export function toolAccessService(
         tokenEndpointAuthMethodsSupported: normalizeOauthScopes(
           oauth.tokenEndpointAuthMethodsSupported,
         ),
+        grantTypesSupported: Array.isArray(oauth.grantTypesSupported)
+          ? normalizeOauthScopes(oauth.grantTypesSupported)
+          : refreshMetadata?.grantTypesSupported,
         grantType,
         metadataUrl:
           typeof oauth.metadataUrl === "string"
@@ -9030,6 +9603,17 @@ export function toolAccessService(
       connection.ownership !== "dcr" &&
       typeof storedOAuth.clientId === "string" &&
       storedOAuth.clientId.trim().length > 0;
+    // A reviewed protected-resource document is authoritative for this method.
+    // Some hosts still serve metadata for a retired MCP server at the root.
+    // Resolve it before cached endpoints, including on existing draft reconnects.
+    if (!smokeLabEndpoints && galleryMethod?.defaults?.discoveryUrl) {
+      const endpoints = await endpointsFromMetadataUrl(
+        connection, galleryMethod.defaults.discoveryUrl, [], originOf(redirectUri),
+      );
+      if (!endpoints) throw unprocessable("OAuth provider metadata could not be loaded");
+      assertNotSmokeLabOAuthEndpoints(connection, endpoints);
+      return endpoints;
+    }
     const hasCompleteGalleryEndpointHints = Boolean(
       galleryMethod?.defaults?.authorizationEndpoint &&
       galleryMethod.defaults.tokenEndpoint &&
@@ -9505,6 +10089,8 @@ export function toolAccessService(
         registrationUrl: input.endpoints.registrationUrl,
         metadataUrl: input.endpoints.metadataUrl ?? null,
         scopes: input.endpoints.scopes,
+        offlineAccessSupported: input.endpoints.offlineAccessSupported,
+        grantTypesSupported: input.endpoints.grantTypesSupported ?? [],
         codeChallengeMethodsSupported:
           input.endpoints.codeChallengeMethodsSupported ?? [],
         tokenEndpointAuthMethodsSupported:
@@ -9571,6 +10157,8 @@ export function toolAccessService(
         registrationUrl: input.endpoints.registrationUrl ?? null,
         metadataUrl: input.endpoints.metadataUrl ?? null,
         scopes: input.endpoints.scopes,
+        offlineAccessSupported: input.endpoints.offlineAccessSupported,
+        grantTypesSupported: input.endpoints.grantTypesSupported ?? [],
         codeChallengeMethodsSupported:
           input.endpoints.codeChallengeMethodsSupported ?? [],
         tokenEndpointAuthMethodsSupported:
@@ -9637,13 +10225,34 @@ export function toolAccessService(
    * reusing them across a moved binding would let a re-pointed endpoint borrow
    * another server's registration.
    */
+  function reviewedOAuthClientBinding(connection: typeof toolConnections.$inferSelect, endpoints: OAuthProviderEndpoints) {
+    const oauth = oauthConfig(connection);
+    // Only repair the known Asana v1 discovery mistake. Retain company and
+    // callback checks, and never carry a secret to an arbitrary new issuer.
+    if (connection.config.sourceTemplateKey === "asana"
+      && connection.config.connectionMethodKey === "mcp-own-oauth"
+      && connection.config.url === "https://mcp.asana.com/v2/mcp"
+      && oauth.clientRegistrationSource === "manual"
+      && connection.ownership !== "dcr"
+      && endpoints.issuer === "https://app.asana.com"
+      && endpoints.authorizationUrl === "https://app.asana.com/-/oauth_authorize"
+      && endpoints.tokenUrl === "https://app.asana.com/-/oauth_token"
+      && endpoints.resource === "https://mcp.asana.com/v2/mcp"
+      && [undefined, null, "https://mcp.asana.com", "https://app.asana.com"].includes(oauth.clientIssuer as string | null | undefined)
+      && [undefined, null, "https://mcp.asana.com", "https://mcp.asana.com/v2/mcp"].includes(oauth.clientResource as string | null | undefined)
+      && (oauth.clientIssuer === "https://mcp.asana.com" || oauth.clientResource === "https://mcp.asana.com")) {
+      return { ...oauth, clientIssuer: endpoints.issuer, clientResource: endpoints.resource };
+    }
+    return oauth;
+  }
+
   function oauthClientBindingMatches(
     connection: typeof toolConnections.$inferSelect,
     endpoints: OAuthProviderEndpoints,
     redirectUri: string,
     clientIdMetadataDocumentUrl: string | null,
   ): boolean {
-    const oauth = oauthConfig(connection);
+    const oauth = reviewedOAuthClientBinding(connection, endpoints);
     if (typeof oauth.clientId !== "string" || !oauth.clientId.trim())
       return false;
     const source =
@@ -9708,7 +10317,8 @@ export function toolAccessService(
     endpoints: OAuthProviderEndpoints,
     redirectUri: string,
   ): Promise<typeof toolConnections.$inferSelect> {
-    const oauth = oauthConfig(connection);
+    const originalOAuth = oauthConfig(connection);
+    const oauth = reviewedOAuthClientBinding(connection, endpoints);
     const nextBinding = {
       clientRedirectUri: redirectUri,
       clientIssuer:
@@ -9725,7 +10335,7 @@ export function toolAccessService(
           : connection.companyId,
     };
     const unchanged = Object.entries(nextBinding).every(
-      ([key, value]) => oauth[key] === value,
+      ([key, value]) => originalOAuth[key] === value,
     );
     if (unchanged) return connection;
     const nextConfig = {
@@ -10277,6 +10887,7 @@ export function toolAccessService(
         | "board_key"
         | "agent_key"
         | "agent_jwt"
+        | "mcp_oauth"
         | "cloud_tenant";
       issueId?: string | null;
       heartbeatRunId?: string | null;
@@ -11160,6 +11771,27 @@ export function toolAccessService(
         const expiresAt = token.expiresIn
           ? new Date(Date.now() + token.expiresIn * 1000).toISOString()
           : null;
+        // A refresh carries no fresh authorization request, so the baseline stays what
+        // Paperclip asked for when *this* grant was authorized. Judging the response against
+        // the grant's own scopes instead would let an over-grant that the provider re-asserts
+        // on every refresh read back as clean, because the widened grant would have become
+        // its own baseline. The connection-level list is only a fallback for grants created
+        // before the per-grant baseline existed — it is whichever callback ran last, so on a
+        // connection two users authorized with different scopes it is the wrong baseline for
+        // at least one of them.
+        const refreshed = resolveGrantedOauthScopes({
+          tokenScope: token.scope,
+          requestedScopes:
+            grantOauth.requestedScopes ??
+            oauth.scopes ??
+            oauth.scope ??
+            grantOauth.scopes,
+          previous: {
+            scopes: grantOauth.scopes,
+            scopeSource: grantOauth.scopeSource,
+            unrequestedScopes: grantOauth.unrequestedScopes,
+          },
+        });
         const providerTenant = {
           ...(grant.providerTenant ?? {}),
           oauth: {
@@ -11169,9 +11801,9 @@ export function toolAccessService(
                 ? grantOauth.strategy
                 : "direct_oauth",
             accessTokenExpiresAt: expiresAt ?? undefined,
-            scopes: normalizeOauthScopes(
-              token.scope ?? grantOauth.scopes ?? oauth.scopes ?? oauth.scope,
-            ),
+            scopes: refreshed.scopes,
+            scopeSource: refreshed.scopeSource,
+            unrequestedScopes: refreshed.unrequestedScopes,
             tokenType: token.tokenType,
             refreshedAt: now().toISOString(),
           },
@@ -11222,6 +11854,11 @@ export function toolAccessService(
               oauth: {
                 expiresAt,
                 scope: token.scope ?? latestOauth.scope ?? null,
+                // Carry the same provenance the grant just recorded. Without it a connection
+                // read reverts to a bare scope with no source and no over-grant warning after
+                // the first ordinary refresh, while the grant read still has both.
+                scopeSource: refreshed.scopeSource,
+                unrequestedScopes: refreshed.unrequestedScopes,
                 tokenType: token.tokenType,
               },
             },
@@ -11290,6 +11927,7 @@ export function toolAccessService(
         | "board_key"
         | "agent_key"
         | "agent_jwt"
+        | "mcp_oauth"
         | "cloud_tenant";
       issueId?: string | null;
       heartbeatRunId?: string | null;
@@ -12092,7 +12730,7 @@ export function toolAccessService(
     const normalizedMethodConfig =
       isGoogleSheetsRobotMethod || !method
         ? null
-        : normalizeConnectionMethodConfig(method, input.configValues);
+        : normalizeConnectionMethodConfig(method, input.configValues ?? asRecord(asRecord(retainedConnection?.config).methodConfig));
     const remoteUrlCredential =
       transport === "mcp_remote" && input.link
         ? splitRemoteUrlCredential(input.link)
@@ -12118,13 +12756,26 @@ export function toolAccessService(
           // Grant-backed setup keeps the full discovered catalog selectable;
           // the wizard projects the app's action defaults into policies at
           // finish time instead of using catalog quarantine as access state.
-          quarantineNewEntries: galleryEntry.slug === "railway",
+          quarantineNewEntries: galleryEntry.slug === "railway" || galleryEntry.slug === "enterpret",
           ...(remoteMcpConnector ? {
             mcpSessionRequired: true,
             mcpAuthMode: input.authMode ?? "auto",
             mcpPreserveAccess: Boolean(retainedConnection && (retainedConnection.status === "active" || asRecord(retainedConnection.config).mcpPreserveAccess === true)),
           } : {}),
           ...(galleryEntry.slug === "posthog" ? { safeDefault: true } : {}),
+          // Telem.AI attributes each search to the Paperclip company, agent,
+          // run and issue, so its catalog connection forwards those context
+          // headers by default (the gateway still drops empty values). A
+          // reconnect keeps the policy the operator saved on the connection.
+          ...(galleryEntry.slug === "telem"
+            ? {
+                headerPolicy: asRecord(retainedConnection?.config).headerPolicy ?? {
+                  metadata: {
+                    forward: ["company_id", "issue_id", "agent_id", "run_id", "project_id", "correlation_id"],
+                  },
+                },
+              }
+            : {}),
         }
       : { ...baseConfig, quarantineNewEntries: false, unverifiedServer: true };
     if (method && isPaperclipCloudConnectorStrategy(method.oauthStrategy)) {
@@ -12490,6 +13141,10 @@ export function toolAccessService(
             transport,
             status: "draft",
             enabled: false,
+            agentInstructions: input.agentInstructions !== undefined
+              ? input.agentInstructions
+              : retainedConnection ? retainedConnection.agentInstructions
+              : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions),
             config,
             transportConfig: config,
             credentialRefs,
@@ -12523,6 +13178,10 @@ export function toolAccessService(
             transport,
             status: "draft",
             enabled: false,
+            agentInstructions: input.agentInstructions !== undefined
+              ? input.agentInstructions
+              : retainedConnection ? retainedConnection.agentInstructions
+              : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions),
             config,
             transportConfig: config,
             credentialRefs,
@@ -12919,6 +13578,7 @@ export function toolAccessService(
               await tx
                 .update(toolConnections)
                 .set({
+                  agentInstructions: revivedConnectionPrevious.agentInstructions,
                   name: revivedConnectionPrevious.name,
                   transport: revivedConnectionPrevious.transport,
                   status: revivedConnectionPrevious.status,
@@ -13228,7 +13888,7 @@ export function toolAccessService(
       const config = { ...connection.config };
       delete config.mcpPreserveAccess;
       const updated = await db.transaction(async (tx) => {
-        const [row] = await tx.update(toolConnections).set({ config, transportConfig: config, status: "active", enabled: true, updatedAt: new Date() })
+        const [row] = await tx.update(toolConnections).set({ config, transportConfig: config, status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
           .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId))).returning();
         await tx.update(toolApplications).set({ status: "active", updatedAt: new Date() }).where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)));
         return row;
@@ -13339,6 +13999,19 @@ export function toolAccessService(
           ),
         )
         .limit(1);
+      // A renamed connection can leave its old profile name in use. Resolve
+      // names against profiles too, including when finalizing an installed draft.
+      const otherProfiles = await tx
+        .select({ name: toolProfiles.name })
+        .from(toolProfiles)
+        .where(and(
+          eq(toolProfiles.companyId, companyId),
+          ne(toolProfiles.profileKey, profileKey),
+        ));
+      const profileName = nextAvailableConnectionName(
+        connection.name,
+        otherProfiles.map((profile) => profile.name),
+      );
       let profileId: string;
       if (existingProfile) {
         if (input.preserveExistingAccess) {
@@ -13418,7 +14091,7 @@ export function toolAccessService(
         const [updated] = await tx
           .update(toolProfiles)
           .set({
-            name: connection.name,
+            name: profileName,
             description: `Access profile for ${connection.name}.`,
             status: "active",
             defaultAction: "deny",
@@ -13437,7 +14110,7 @@ export function toolAccessService(
           .values({
             companyId,
             profileKey,
-            name: connection.name,
+            name: profileName,
             description: `Access profile for ${connection.name}.`,
             status: "active",
             defaultAction: "deny",
@@ -13568,7 +14241,7 @@ export function toolAccessService(
       );
       const [updatedConnection] = await tx
         .update(toolConnections)
-        .set({ status: "active", enabled: true, updatedAt: new Date() })
+        .set({ status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
         .where(eq(toolConnections.id, connection.id))
         .returning();
       await tx
@@ -14137,7 +14810,9 @@ export function toolAccessService(
         issuer:
           managedProfile.provider === "github"
             ? "https://github.com"
-            : "https://accounts.google.com",
+            : managedProfile.provider === "asana"
+              ? "https://app.asana.com"
+              : "https://accounts.google.com",
         resource: galleryMethod.defaults?.serverUrl ?? null,
         registrationSource: null,
       };
@@ -14161,10 +14836,24 @@ export function toolAccessService(
     });
     connection = resolvedClient.connection;
     const client = resolvedClient.client;
+    if (galleryMethod?.oauthClientSecretRequired && !client.clientSecret) {
+      throw unprocessable("This app requires an OAuth client secret. Add it in the app setup before signing in.");
+    }
     if (!client.clientId)
       throw unprocessable(
         `OAuth client id is not configured for ${endpoints.provider}`,
       );
+
+    const authorizationScopes = normalizeOauthScopes(
+      galleryMethod ? (requestedScopes ?? []) : (input.scopes ?? endpoints.scopes),
+    );
+    if (
+      !galleryMethod &&
+      endpoints.offlineAccessSupported &&
+      (!endpoints.grantTypesSupported?.length ||
+        endpoints.grantTypesSupported.includes("refresh_token")) &&
+      !authorizationScopes.includes("offline_access")
+    ) authorizationScopes.push("offline_access");
 
     await db
       .delete(toolOauthStates)
@@ -14186,7 +14875,7 @@ export function toolAccessService(
       createdByActorId: binding.actorId,
       createdBySessionId: binding.sessionId,
       subjectUserId: authorizationSubjectUserId,
-      requestedScopes: requestedScopes ?? undefined,
+      requestedScopes: authorizationScopes,
       returnTo: input.returnTo,
       issueId: intentLink?.issueId ?? input.issueId,
       interactionId: intentLink?.id,
@@ -14222,9 +14911,6 @@ export function toolAccessService(
     // method either sends its reviewed hint or omits scope entirely. Generic
     // MCP URLs retain discovery-first behavior because Paperclip has no manifest
     // against which it could safely judge the caller's requested scope.
-    const authorizationScopes = galleryMethod
-      ? (requestedScopes ?? [])
-      : (input.scopes ?? endpoints.scopes);
     if (authorizationScopes.length > 0)
       authorizationUrl.searchParams.set("scope", authorizationScopes.join(" "));
     const reviewedAuthorizationParams =
@@ -14239,6 +14925,10 @@ export function toolAccessService(
         "prompt",
         reviewedAuthorizationParams.prompt,
       );
+    else if (!galleryMethod && authorizationScopes.includes("offline_access"))
+      // OIDC offline access requires consent unless the provider has another
+      // established basis for granting it. A generic server has no reviewed override.
+      authorizationUrl.searchParams.set("prompt", "consent");
 
     if (
       authorizationSubjectUserId &&
@@ -14366,7 +15056,9 @@ export function toolAccessService(
         // Curated apps persist only the reviewed scopes attached to this OAuth
         // state. Discovery metadata can advertise a provider's entire scope
         // universe and must never silently become Paperclip's requested set.
-        scopes: galleryMethod ? (requestedScopes ?? []) : endpoints.scopes,
+        scopes: authorizationScopes,
+        offlineAccessSupported: endpoints.offlineAccessSupported,
+        grantTypesSupported: endpoints.grantTypesSupported ?? [],
         codeChallengeMethodsSupported:
           endpoints.codeChallengeMethodsSupported ?? [],
         tokenEndpointAuthMethodsSupported:
@@ -14765,9 +15457,9 @@ export function toolAccessService(
       redemptionId: input.state,
     });
     const refreshToken = credentials.refreshToken;
-    if (profile.provider === "google" && !refreshToken) {
+    if ((profile.provider === "google" || profile.provider === "asana") && !refreshToken) {
       throw unprocessable(
-        `Google did not return offline access. Reconnect ${providerName} and grant the requested scopes.`,
+        `${providerName} did not return offline access. Reconnect and grant the requested permissions.`,
         {
           code: "oauth_refresh_missing",
         },
@@ -15433,6 +16125,11 @@ export function toolAccessService(
       input.redirectUri,
     );
     assertOAuthCallbackIssuer(connection, endpoints, input.iss);
+    // Generic states created before requested scopes were persisted may still
+    // complete after an upgrade. Keep their original cached/discovered scope set.
+    const authorizedScopes = normalizeOauthScopes(
+      stateRow.requestedScopes ?? (galleryEntry ? [] : endpoints.scopes),
+    );
     const client = await oauthClientForConnection(
       connection,
       endpoints.provider,
@@ -15547,6 +16244,10 @@ export function toolAccessService(
             nextCredentialSecretRefs.push(existingRefreshRef);
         }
 
+        const grantedScopes = resolveGrantedOauthScopes({
+          tokenScope: token.scope,
+          requestedScopes: authorizedScopes,
+        });
         const grantValues = {
           providerTenant: {
             ...(existingUserGrant?.providerTenant ?? {}),
@@ -15554,9 +16255,13 @@ export function toolAccessService(
               ...asRecord(asRecord(existingUserGrant?.providerTenant).oauth),
               strategy: "direct_oauth",
               accessTokenExpiresAt: expiresAt ?? undefined,
-              scopes: normalizeOauthScopes(
-                token.scope ?? stateRow.requestedScopes,
-              ),
+              scopes: grantedScopes.scopes,
+              scopeSource: grantedScopes.scopeSource,
+              unrequestedScopes: grantedScopes.unrequestedScopes,
+              // Per-grant, because two users can authorize the same connection with
+              // different scopes. The connection-level list is whichever callback ran last,
+              // so it is the wrong baseline for anyone else's refresh.
+              requestedScopes: authorizedScopes,
               tokenType: token.tokenType,
               refreshedAt: connectedAt.toISOString(),
             },
@@ -15593,9 +16298,7 @@ export function toolAccessService(
             authorizationUrl: endpoints.authorizationUrl,
             tokenUrl: endpoints.tokenUrl,
             metadataUrl: endpoints.metadataUrl ?? null,
-            scopes: galleryEntry
-              ? normalizeOauthScopes(stateRow.requestedScopes)
-              : endpoints.scopes,
+            scopes: authorizedScopes,
             clientIdEnv: client.clientIdEnv,
             clientSecretEnv: client.clientSecret
               ? client.clientSecretEnv
@@ -15614,6 +16317,8 @@ export function toolAccessService(
             oauth: {
               expiresAt,
               scope: token.scope,
+              scopeSource: grantedScopes.scopeSource,
+              unrequestedScopes: grantedScopes.unrequestedScopes,
               tokenType: token.tokenType,
             },
           },
@@ -15849,6 +16554,10 @@ export function toolAccessService(
         if (existingRefreshRef)
           nextCredentialSecretRefs.push(existingRefreshRef);
       }
+      const organizationGrantedScopes = resolveGrantedOauthScopes({
+        tokenScope: token.scope,
+        requestedScopes: authorizedScopes,
+      });
       const nextConfig = {
         ...connection.config,
         oauth: {
@@ -15857,9 +16566,7 @@ export function toolAccessService(
           authorizationUrl: endpoints.authorizationUrl,
           tokenUrl: endpoints.tokenUrl,
           metadataUrl: endpoints.metadataUrl ?? null,
-          scopes: galleryEntry
-            ? normalizeOauthScopes(stateRow.requestedScopes)
-            : endpoints.scopes,
+          scopes: authorizedScopes,
           clientIdEnv: client.clientIdEnv,
           clientSecretEnv: client.clientSecret ? client.clientSecretEnv : null,
           credentialScope: credentialScope(connection, input.actor),
@@ -15876,7 +16583,13 @@ export function toolAccessService(
         },
         providerMetadata: {
           ...asRecord(connection.config.providerMetadata),
-          oauth: { expiresAt, scope: token.scope, tokenType: token.tokenType },
+          oauth: {
+            expiresAt,
+            scope: token.scope,
+            scopeSource: organizationGrantedScopes.scopeSource,
+            unrequestedScopes: organizationGrantedScopes.unrequestedScopes,
+            tokenType: token.tokenType,
+          },
         },
       };
       const [updatedConnection] = await tx
@@ -15914,7 +16627,12 @@ export function toolAccessService(
       // Synchronize it after every successful callback/rotation so all real tool
       // execution paths receive the credentials that setup and catalog discovery
       // just proved.
-      await ensureDefaultOrganizationGrant(connection, tx);
+      await ensureDefaultOrganizationGrant(connection, tx, undefined, {
+        scopes: organizationGrantedScopes.scopes,
+        scopeSource: organizationGrantedScopes.scopeSource,
+        unrequestedScopes: organizationGrantedScopes.unrequestedScopes,
+        requestedScopes: authorizedScopes,
+      });
       await syncCredentialBindings(connection, [], tx);
     });
     emitConnectionUpdated(
@@ -16561,6 +17279,100 @@ export function toolAccessService(
       return toStdioCommandTemplate(row);
     },
 
+    async setupComposioApp(connectionId: string, toolkit: string, input: ComposioAppSetupInput, actor: ActorInfo): Promise<ComposioAppSetupResult> {
+      if (!findComposioCatalogApp(toolkit)) throw notFound("This Composio app is not in the catalog");
+      const { connection, manage } = await openComposioGateway(connectionId, actor);
+      let result = composioAppSetupResult(await manage([{ name: toolkit, action: "list" }]), toolkit);
+      if (input.action === "start" && result.status !== "connected") {
+        result = composioAppSetupResult(await manage([{ name: toolkit, action: "add" }]), toolkit);
+        if (result.status === "not_connected") throw unprocessable("Composio did not return a sign-in link for this app. Manage it in Composio to check its setup requirements.");
+      }
+      if (input.action === "complete") {
+        if (result.status !== "connected") throw conflict("Finish connecting this app in Composio, then check again");
+        const currentConnection = await getConnectionRow(connectionId);
+        if (currentConnection.status !== "active" || !currentConnection.enabled) {
+          throw conflict("The gateway is no longer active. Restore it before connecting this app.");
+        }
+      }
+      await audit({ companyId: connection.companyId, connectionId, action: "tool_connection.upstream_app_setup", outcome: "success", actor,
+        details: { toolkit, action: input.action, status: result.status } });
+      return result;
+    },
+
+    listAggregatorApps: async (connectionId: string, actor: ActorInfo) => aggregatorAppsResponse(await getConnectionRow(connectionId), actor),
+    syncAggregatorApps,
+    refreshAggregatorApps: async (connectionId: string, requested: string[], actor: ActorInfo) => {
+      const connection = await getConnectionRow(connectionId);
+      if (aggregatorProvider(connection) === "composio" && requested.length) {
+        const { manage } = await openComposioGateway(connectionId, actor);
+        if (requested.some(toolkit => !findComposioCatalogApp(toolkit))) throw notFound("This Composio app is not in the catalog");
+        await manage(requested.map(name => ({ name, action: "list" })));
+        return aggregatorAppsResponse(connection, actor);
+      }
+      return syncAggregatorApps(connectionId, true, actor);
+    },
+    configureArcadeDiscovery,
+    syncComposioApps: startComposioAppSync,
+
+    async listComposioApps(connectionId: string, actor: ActorInfo) {
+      const connection = await getConnectionRow(connectionId);
+      if (actor.actorType !== "user" || !actor.actorId) throw forbidden("Board access required");
+      if (connection.config.sourceTemplateKey !== "composio") throw notFound("Composio gateway not found");
+      return composioAppsResponse(connection, actor);
+    },
+
+    async refreshComposioApps(connectionId: string, requested: string[], actor: ActorInfo) {
+      if (requested.some(toolkit => !findComposioCatalogApp(toolkit))) throw notFound("This Composio app is not in the catalog");
+      const { connection, manage } = await openComposioGateway(connectionId, actor);
+      const existing = await cachedComposioApps(connection, actor);
+      // Migrate observations from the original direct setup flow on the first visit.
+      const history = await db.select({ details: toolAccessAuditEvents.details }).from(toolAccessAuditEvents).where(and(
+        eq(toolAccessAuditEvents.companyId, connection.companyId), eq(toolAccessAuditEvents.connectionId, connectionId),
+        eq(toolAccessAuditEvents.actorId, actor.actorId!), eq(toolAccessAuditEvents.action, "tool_connection.upstream_app_setup"),
+      )).orderBy(desc(toolAccessAuditEvents.createdAt)).limit(128);
+      const known = [...existing.filter(app => app.accounts.length > 0).map(app => app.toolkit),
+        ...history.map(row => row.details.toolkit).filter((toolkit): toolkit is string => typeof toolkit === "string" && Boolean(findComposioCatalogApp(toolkit)))];
+      const toolkits = [...new Set([...requested, ...known])];
+      for (let start = 0; start < toolkits.length; start += 32) {
+        await manage(toolkits.slice(start, start + 32).map(name => ({ name, action: "list" })));
+      }
+      return composioAppsResponse(connection, actor);
+    },
+
+    async manageComposioAppAccount(connectionId: string, toolkit: string, input: ComposioAppAccountInput, actor: ActorInfo) {
+      if (!findComposioCatalogApp(toolkit)) throw notFound("This Composio app is not in the catalog");
+      const { connection, manage } = await openComposioGateway(connectionId, actor);
+      if (input.action !== "add") {
+        const before = composioAppAccounts(await manage([{ name: toolkit, action: "list" }]), toolkit);
+        if (!before?.some(account => account.id === input.accountId)) throw notFound("This account is no longer available in the selected Composio app");
+      }
+      const details = { toolkit, ...(input.action !== "add" ? { accountId: input.accountId } : {}) };
+      await logActivity(db, { companyId: connection.companyId, actorType: "user", actorId: actor.actorId!,
+        action: `tool_connection.upstream_account_${input.action}_requested`, entityType: "tool_connection", entityId: connectionId, details });
+      let payload: unknown;
+      try {
+        payload = await manage([{ name: toolkit, action: input.action,
+          ...(input.action !== "add" ? { account_id: input.accountId } : {}), ...(input.action === "rename" ? { alias: input.alias } : {}) }]);
+      } catch (error) {
+        await audit({ companyId: connection.companyId, connectionId, actor, action: `tool_connection.upstream_account_${input.action}`,
+          outcome: "failure", reasonCode: "provider_unconfirmed", details });
+        throw error;
+      }
+      const result = composioAppSetupResult(payload, toolkit); // Reject provider errors before reporting success.
+      if (input.action === "add" && !result.authorizationUrl) throw unprocessable("Composio did not return a sign-in link. Check the app in Composio.");
+      if (input.action !== "add") {
+        const after = composioAppAccounts(await manage([{ name: toolkit, action: "list" }]), toolkit);
+        if (!after || (input.action === "remove" ? after.some(account => account.id === input.accountId)
+          : !after.some(account => account.id === input.accountId && account.alias === input.alias))) {
+          throw conflict("Composio has not confirmed this change. Refresh the accounts before trying again.");
+        }
+      }
+      await logActivity(db, { companyId: connection.companyId, actorType: "user", actorId: actor.actorId!,
+        action: `tool_connection.upstream_account_${input.action}`, entityType: "tool_connection", entityId: connectionId,
+        details: { toolkit, ...(input.action !== "add" ? { accountId: input.accountId } : {}) } });
+      return { ...result, apps: await cachedComposioApps(connection, actor) };
+    },
+
     connectGalleryApp,
 
     finishGalleryAppConnection,
@@ -17180,6 +17992,7 @@ export function toolAccessService(
       }
       await annotateAiGrantHealth(connections);
       await annotateGitHubAuthorization(connections, viewerUserId);
+      await annotateSavedOAuthClientSecret(connections, viewerUserId);
       return connections;
     },
 
@@ -17251,6 +18064,9 @@ export function toolAccessService(
             (input.authKind === "oauth" ? "per_user" : "shared"),
           status: input.status ?? "draft",
           enabled: input.enabled ?? false,
+          agentInstructions: input.agentInstructions !== undefined ? input.agentInstructions : defaultConnectionAgentInstructions(
+            typeof config.sourceTemplateKey === "string" ? getConnectableAppDefinition(config.sourceTemplateKey)?.agentInstructions : null,
+          ),
           config,
           transportConfig: isGoogleSheetsConnectionConfig(config)
             ? config
@@ -17284,6 +18100,7 @@ export function toolAccessService(
       );
       await annotateAiGrantHealth([connection]);
       await annotateGitHubAuthorization([connection], viewerUserId);
+      await annotateSavedOAuthClientSecret([connection], viewerUserId);
       return connection;
     },
 
@@ -18122,6 +18939,10 @@ export function toolAccessService(
       const config = normalizeGoogleSheetsConnectionConfig(
         input.config ?? input.transportConfig ?? existing.config,
       );
+      if (input.config?.methodConfig !== undefined && typeof config.sourceTemplateKey === "string") {
+        const app = getConnectableAppDefinition(config.sourceTemplateKey);
+        if (app) normalizeConnectionMethodConfig(connectionMethodForConnection(app, { ...existing, config }), asRecord(config.methodConfig));
+      }
       if (existing.transport === "mcp_remote")
         await assertRemoteConnectionEndpointsAllowed(config);
       if (existing.transport === "local_stdio")
@@ -18144,6 +18965,7 @@ export function toolAccessService(
           name: input.name ?? existing.name,
           status: input.status ?? existing.status,
           enabled: input.enabled ?? existing.enabled,
+          ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}),
           config,
           transportConfig: isGoogleSheetsConnectionConfig(config)
             ? config

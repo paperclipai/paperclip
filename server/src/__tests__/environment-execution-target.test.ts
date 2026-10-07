@@ -713,6 +713,23 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(delivered).toEqual([["stdout", "full"]]);
   });
 
+  it("does not replay a capped provider tail after streaming more than 4 MiB", async () => {
+    const receipt = JSON.stringify({ type: "turn_end", message: { usage: { input: 20, output: 10, cost: { total: 0.004 } } } }) + "\n";
+    const output = "x".repeat(5 * 1024 * 1024) + "\n" + receipt;
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({ provider: "createos", tracer,
+      execute: async (input: unknown) => {
+        const typed = input as { onLog?: (s: "stdout" | "stderr", c: string) => Promise<void> };
+        for (let offset = 0; offset < output.length; offset += 65536) await typed.onLog?.("stdout", output.slice(offset, offset + 65536));
+        await typed.onLog?.("stderr", "diagnostic prefix\nlast warning\n");
+        return { exitCode: 0, signal: null, timedOut: false, stdout: output.slice(-4 * 1024 * 1024), stderr: "last warning\n" };
+      },
+    });
+    const delivered = await runExecuteCollectingLogs(runner as { execute(input: unknown): Promise<unknown> });
+    expect(delivered.filter(([stream]) => stream === "stdout").map(([, chunk]) => chunk).join("")).toBe(output);
+    expect(delivered.filter(([stream]) => stream === "stderr")).toEqual([["stderr", "diagnostic prefix\nlast warning\n"]]);
+  });
+
   it("delivers the full captured output when the provider streams nothing incrementally", async () => {
     // The provider streams no incremental chunk, so the whole final result is
     // the suffix and reaches the sink once.

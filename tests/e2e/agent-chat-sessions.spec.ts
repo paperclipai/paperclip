@@ -264,7 +264,9 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await page.getByRole("link", { name: "Chat", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Who would you like to talk to?" })).toBeVisible();
     const sidebar = page.getByRole("complementary", { name: "Chat", exact: true });
-    await expect(sidebar.getByText("No chats yet", { exact: true })).toBeVisible();
+    // The rail lists every eligible agent before any conversation exists.
+    const nav = sidebar.getByRole("navigation", { name: "Agent conversations" });
+    await expect(nav.getByRole("link")).toHaveText([/^Alpha/, /^Beta/, /^Delta/, /^Epsilon/, /^Gamma/, /^Zeta/]);
     const landingBounds = await sidebar.boundingBox();
     const compose = sidebar.getByRole("button", { name: "Add chat", exact: true });
     const picker = page.getByRole("dialog", { name: "Chat with an agent", exact: true });
@@ -298,10 +300,10 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await picker.getByRole("combobox").press("Enter");
     await expect(picker).not.toBeVisible();
     await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
-    const nav = sidebar.getByRole("navigation", { name: "Agent conversations" });
     const alphaLink = nav.getByRole("link", { name: /^Alpha / });
     const betaLink = nav.getByRole("link", { name: /^Beta / });
-    await expect(nav.getByRole("link")).toHaveCount(2);
+    // Open chat first, then other conversations, then the rest alphabetically.
+    await expect(nav.getByRole("link")).toHaveText([/^Alpha/, /^Beta/, /^Delta/, /^Epsilon/, /^Gamma/, /^Zeta/]);
     const editor = page.getByTestId("task-chat-composer-input").locator('[contenteditable="true"]');
     await editor.fill("Unsent draft for Alpha");
     await betaLink.click();
@@ -316,15 +318,15 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     await expect(nav.getByRole("link")).toHaveCount(1);
     await expect(betaLink).toBeVisible();
     await search.press("Escape");
-    await expect(nav.getByRole("link")).toHaveCount(2);
+    await expect(nav.getByRole("link")).toHaveCount(6);
     await page.reload();
     await expect(editor).toContainText("Unsent draft for Alpha");
-    await expect(nav.getByRole("link")).toHaveCount(2);
+    await expect(nav.getByRole("link")).toHaveCount(6);
 
     await page.getByRole("link", { name: "Chat", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Who would you like to talk to?" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
+    await expect(editor).toContainText("Unsent draft for Alpha");
     expect(await sidebar.boundingBox()).toEqual(landingBounds);
-    await alphaLink.click();
     await page.getByRole("link", { name: "Configure Alpha", exact: true }).click();
     await expect(page).toHaveURL(/\/agents\/.*\/runtime/);
     await json(await request.post(`/api/issues/${beta.id}/comments`, {
@@ -335,6 +337,7 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     }));
     await idle(request, betaPath);
     await page.getByRole("link", { name: "Chat", exact: true }).click();
+    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
     await compose.click();
     await picker.getByRole("combobox").fill("Beta");
     await picker.getByRole("combobox").press("Enter");

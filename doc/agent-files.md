@@ -37,6 +37,12 @@ workspace: their independent agent copy therefore lives under the excluded
 `.paperclip-runtime/agent-files/<agent>/<run>/` area. It is not included in task
 workspace sync, Git staging, or task deliverables.
 
+Claude CLI runs keep the working-copy location in each run's prompt, separate
+from the cached system instructions. A new copy path alone does not reset the
+task session. Each turn names the current copy for relative file references;
+instruction or enabled skill content changes still invalidate the prompt bundle.
+Sessions saved with the older path-bearing bundle start fresh once after upgrade.
+
 Regular files (including binary bytes) and directories are supported, up to
 100,000 entries (files and folders), 256 MiB per file and 2 GiB total. Symlinks,
 hardlinks, and special
@@ -172,6 +178,22 @@ New current-file bytes are not database revision rows. Old instruction-only
 candidates are retained solely for upgrade compatibility.
 
 Crash recovery can collect a stopped working copy without starting a model.
+Cleanup does not wait for a directory lock before process-stop proof exists, or
+after the copy is superseded or cleanup is complete. An unavailable copy keeps
+its failed-save receipt. Recovery can later clean an unavailable remote copy
+after destruction of its exact lease and executes no remote command. An
+unavailable local copy can still contain uncollected edits; this cleanup path
+preserves those bytes even if local stop proof arrives later.
+Deferred cleanup retries after a
+delay so one blocked copy does not prevent other copies from being cleaned.
+If releasing a run's instruction copy fails, the run records a cleanup warning
+and leaves the durable copy for the recovery sweep. Cleanup does not replace the
+provider's result, discard usage accounting, or prevent environment lease release.
+It does not claim that unsaved agent-file changes were saved; collection failures
+keep their separate failed-save receipts. A run attempts failed cleanup only once
+before handing it to recovery, rather than repeating the lock wait in teardown.
+Re-preparing an existing run uses the same lock as cleanup and rechecks its
+receipt under that lock. Preparing a new run keeps its separate admission path.
 Missing stop proof or lost remote bytes produce a visible diagnostic, never a
 save receipt. An interrupted apply can replay its changed files with the same
 last-sync-wins rule. Cleanup resumes for terminal runs; no copy is retained as

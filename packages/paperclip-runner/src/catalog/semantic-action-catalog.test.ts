@@ -69,7 +69,8 @@ describe("semantic action catalog", () => {
       (action) => action.operationId,
     );
 
-    expect(operationIds).toHaveLength(36);
+    expect(operationIds).toHaveLength(37);
+    expect(operationIds).toContain("set_task_monitor");
     expect(new Set(operationIds).size).toBe(operationIds.length);
     expect(operationIds).not.toContain("generic_api_request");
     expect(Object.isFrozen(PAPERCLIP_SEMANTIC_ACTION_CATALOG)).toBe(true);

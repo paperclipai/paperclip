@@ -208,6 +208,20 @@ describeEmbeddedPostgres("workspace file resources", () => {
     await tempDb?.cleanup();
   });
 
+  it("withholds private task files and private cross-project targets", async () => {
+    const { projectRoot, executionRoot, targetProjectRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, { projectRoot, executionRoot, targetProjectRoot });
+    await fs.writeFile(path.join(projectRoot, "secret.txt"), "PRIVATE_FILE", "utf8");
+    await fs.writeFile(path.join(targetProjectRoot, "secret.txt"), "PRIVATE_TARGET", "utf8");
+    const app = createApp(db, { type: "board", userId: "board-user", companyIds: [graph.companyId], source: "session", isInstanceAdmin: false });
+    await db.update(issues).set({ visibility: "private", responsibleUserId: "owner" }).where(eq(issues.id, graph.issueId));
+    await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "project", path: "secret.txt" }).expect(404);
+    await db.update(issues).set({ visibility: "open" }).where(eq(issues.id, graph.issueId));
+    await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ workspace: "project", path: "secret.txt" }).expect(200);
+    await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, graph.targetProjectId));
+    await request(app).get(`/api/issues/${graph.issueId}/file-resources/content`).query({ projectId: graph.targetProjectId, workspaceId: graph.targetProjectWorkspaceId, path: "secret.txt" }).expect(404);
+  });
+
   it("resolves and reads a project file without exposing absolute paths", async () => {
     const { root, projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });
@@ -981,7 +995,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
     expect(linkedSecret.status).toBe(403);
   });
 
-  it("rejects denied paths, non-regular files, oversized text, binary, and HTML while previewing SVG as source", async () => {
+  it("rejects denied paths, non-regular files, oversized text and binary while returning HTML and SVG as text", async () => {
     const { projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });
     await fs.mkdir(path.join(projectRoot, ".git"), { recursive: true });
@@ -1000,7 +1014,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       isInstanceAdmin: false,
     });
 
-    for (const filePath of [".git/config", "folder", "big.txt", "blob.bin", "index.html"]) {
+    for (const filePath of [".git/config", "folder", "big.txt", "blob.bin"]) {
       const res = await request(app)
         .get(`/api/issues/${graph.issueId}/file-resources/content`)
         .query({ workspace: "project", path: filePath });
@@ -1012,6 +1026,19 @@ describeEmbeddedPostgres("workspace file resources", () => {
     expect(svg.status).toBe(200);
     expect(svg.body.resource.previewKind).toBe("text");
     expect(svg.body.content.data).toContain("<svg");
+    const html = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query({ workspace: "project", path: "index.html" });
+    expect(html.status).toBe(200);
+    expect(html.headers["content-type"]).toContain("application/json");
+    expect(html.headers["x-content-type-options"]).toBe("nosniff");
+    expect(html.body.resource).toMatchObject({ contentType: "text/html", previewKind: "text", capabilities: { preview: true } });
+    expect(html.body.content).toEqual({ encoding: "utf8", data: "<script>alert(1)</script>" });
+    const downloaded = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query({ workspace: "project", path: "index.html", download: "1" });
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.headers["content-disposition"]).toBe('attachment; filename="index.html"');
   });
 
   it("rejects remote workspaces without fetching provider resources", async () => {

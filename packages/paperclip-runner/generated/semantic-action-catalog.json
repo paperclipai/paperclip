@@ -1874,11 +1874,23 @@
       "planning",
       "skill_test"
     ],
-    "description": "Inspect available company projects before selecting a project for new work.",
+    "description": "List company project summaries (IDs, names, status, and up to 1,000 characters of description). Returns up to 50 projects and nextCursor; continue with cursor until it is null. Read a project's API resource for full details.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
-      "properties": {},
+      "properties": {
+        "cursor": {
+          "description": "The nextCursor returned by the previous page.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Page size (default 50).",
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
       "required": [],
       "type": "object"
     },
@@ -2547,6 +2559,120 @@
     ],
     "schema": "paperclip.semantic-action.v1",
     "title": "Comment on approval",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Schedule, replace or clear a persisted one-shot monitor on an owned task.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotencyKey": {
+          "description": "Reuse with identical arguments on retries.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "monitor": {
+          "additionalProperties": false,
+          "properties": {
+            "externalRef": {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "external_service",
+                null
+              ],
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "maxAttempts": {
+              "description": "Optional cumulative attempt limit for this task's monitor.",
+              "maximum": 100,
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "nextCheckAt": {
+              "description": "Future UTC timestamp for the next check. This is one shot, not a recurring interval.",
+              "type": "string"
+            },
+            "notes": {
+              "description": "What to check on the next run; do not include secrets.",
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            "recoveryPolicy": {
+              "enum": [
+                "wake_owner",
+                "create_recovery_issue",
+                "escalate_to_board",
+                null
+              ],
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "serviceName": {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "timeoutAt": {
+              "description": "Optional deadline later than nextCheckAt.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "nextCheckAt",
+            "notes"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "taskId": {
+          "description": "Owned task UUID. Omit for the active task.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "monitor"
+      ],
+      "type": "object"
+    },
+    "operationId": "set_task_monitor",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Set task monitor",
     "version": 1
   },
   {

@@ -19,7 +19,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
-import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
+import { legacyExecutionNeedsReconciliationWithEvidence } from "../../../services/legacy-execution-recovery.js";
 import {
   authorizeFailedChatRunRetryWake,
   FailedChatRunRetryAuthorizationError,
@@ -1104,7 +1104,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           issueStatus: issueRow?.status ?? "",
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
-          legacyExecutionNeedsReconciliation: legacyExecutionNeedsReconciliation(run),
+          legacyExecutionNeedsReconciliation: await legacyExecutionNeedsReconciliationWithEvidence(tx as unknown as Db, run),
           // An operator stop never promotes old queued work by itself. The
           // next explicit wake adopts those messages atomically when it
           // queues a run.
@@ -1196,6 +1196,18 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
 
         const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot, recoveryOnly };
         const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
+        // Explicit retry admission requires the exact source's task claim.
+        // Preserve it only when the existing queue-first recovery policy
+        // requests that retry. The clear/restore stays inside this task lock.
+        if (run.runtimeMode === "legacy" && ["failed", "timed_out"].includes(run.status) &&
+            run.contextSnapshot?.explicitUserContinuation && issueRow.executionRunId === run.id &&
+            result.postCommitEffects.some(effect => effect.kind === "conversation_retry_requested" && effect.runId === run.id)) {
+          await tx.update(issues).set({ executionRunId: run.id,
+            executionAgentNameKey: issueRow.executionAgentNameKey,
+            executionLockedAt: issueRow.executionLockedAt,
+          }).where(and(eq(issues.companyId, input.companyId), eq(issues.id, issueRow.id),
+            sql`${issues.executionRunId} is null`));
+        }
         return { ...result, run: runSnapshot };
       });
     },
