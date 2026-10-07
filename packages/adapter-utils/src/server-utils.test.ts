@@ -935,6 +935,66 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  const monitorWake = {
+    reason: "issue_monitor_due",
+    issue: {
+      id: "issue-monitor-1",
+      identifier: "OPS-1",
+      title: "Watch the deploy marker",
+      description: "Long-running checkpoint.",
+      descriptionTruncated: false,
+      status: "in_progress",
+      workMode: "standard",
+    },
+    monitor: {
+      notes: "Check /healthz first; if the marker is GREEN-REK259 do nothing.\nSecond line survives.",
+      nextCheckAt: "2026-09-29T20:00:00.000Z",
+      attemptCount: 3,
+    },
+    commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+    fallbackFetchNeeded: false,
+  };
+
+  it("renders the monitor note into the wake prompt so the waking agent reads it", () => {
+    for (const resumedSession of [false, true]) {
+      const prompt = renderPaperclipWakePrompt(monitorWake, { resumedSession });
+      expect(prompt).toContain("executionPolicy.monitor.notes");
+      expect(prompt).toContain("Check /healthz first; if the marker is GREEN-REK259 do nothing.");
+      expect(prompt).toContain("Second line survives.");
+      expect(prompt).toContain("2026-09-29T20:00:00.000Z");
+      expect(prompt).toContain("attempt 3");
+    }
+  });
+
+  it("changes nothing else in the prompt when no monitor note is present", () => {
+    const { monitor, ...withoutMonitor } = monitorWake;
+    const withNote = renderPaperclipWakePrompt(monitorWake);
+    const withoutNote = renderPaperclipWakePrompt(withoutMonitor);
+    expect(withoutNote).not.toContain("executionPolicy.monitor.notes");
+    expect(withNote.replace(/^- monitor note.*$/gm, "")).not.toBe(withoutNote);
+  });
+
+  it("drops a monitor block whose note is empty, so the field is not shown as a stub", () => {
+    const prompt = renderPaperclipWakePrompt({
+      ...monitorWake,
+      monitor: { ...monitorWake.monitor, notes: "   " },
+    });
+    expect(prompt).not.toContain("executionPolicy.monitor.notes");
+  });
+
+  it("keeps the monitor note verbatim, including the whitespace inside it", () => {
+    const notes = "  alpha\n    indented beta  \n\n  gamma\t";
+    const prompt = renderPaperclipWakePrompt({
+      ...monitorWake,
+      monitor: { ...monitorWake.monitor, notes },
+    });
+    // The renderer adds two spaces of its own to every non-blank line, so a
+    // line that keeps its own leading and trailing whitespace proves the note
+    // was not trimmed on the way in.
+    expect(prompt).toContain("  alpha\n      indented beta  \n");
+    expect(prompt).toContain("  gamma\t");
+  });
+
   it("leaves conversation disposition and accepted-plan handoff to the injected chat policy", () => {
     const payload = {
       reason: "issue_commented",

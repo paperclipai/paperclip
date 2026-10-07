@@ -312,6 +312,18 @@ describe("openapi routes", () => {
     expect(wake.responses["409"]).toBeDefined();
     expect(wake.description).toContain("durable queued/deferred receipt");
   });
+  it("documents that the issue monitor note is read by the waking agent", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+
+    const notes =
+      res.body.paths["/api/issues/{id}"].patch.requestBody.content[
+        "application/json"
+      ].schema.properties.executionPolicy.properties.monitor.properties
+        .notes;
+    expect(notes).toMatchObject({ type: "string", maxLength: 500 });
+    expect(notes.description).toContain("wake prompt of every monitor wake");
+  });
+
   it("serves the generated OpenAPI document", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
 
