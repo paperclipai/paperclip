@@ -1,5 +1,6 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
+import { mergeAccountingCost, mergeAccountingUsage } from "@paperclipai/adapter-utils/accounting-merge";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -793,8 +794,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const parsed = parsePiProcessOutput(proc);
       if (hasAccounting) {
         const retained = consumeAccounting("");
-        parsed.usage = retained.usage;
-        parsed.sawAgentEnd = retained.sawAgentEnd;
+        // Merge, never overwrite: a usage counter matching a secret value is
+        // unparseable in the redacted display stream (checkpoint totals stay
+        // zero) while the sanitized control record stays parseable. Either
+        // stream may also be the fuller one when capture is capped.
+        parsed.usage = {
+          ...mergeAccountingUsage(parsed.usage, retained.usage),
+          costUsd: mergeAccountingCost(parsed.usage.costUsd, retained.usage.costUsd),
+        };
+        parsed.sawAgentEnd = parsed.sawAgentEnd || retained.sawAgentEnd;
       }
       return { proc, rawStderr: proc.stderr, parsed };
     };
