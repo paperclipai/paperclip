@@ -37,6 +37,12 @@ workspace: their independent agent copy therefore lives under the excluded
 `.paperclip-runtime/agent-files/<agent>/<run>/` area. It is not included in task
 workspace sync, Git staging, or task deliverables.
 
+Claude CLI runs keep the working-copy location in each run's prompt, separate
+from the cached system instructions. A new copy path alone does not reset the
+task session. Each turn names the current copy for relative file references;
+instruction or enabled skill content changes still invalidate the prompt bundle.
+Sessions saved with the older path-bearing bundle start fresh once after upgrade.
+
 Regular files (including binary bytes) and directories are supported, up to
 100,000 entries (files and folders), 256 MiB per file and 2 GiB total. Symlinks,
 hardlinks, and special
