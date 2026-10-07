@@ -18,20 +18,27 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function resolveClaudeSkillsHome(config: Record<string, unknown>) {
+function resolveClaudeSkillsHome(config: Record<string, unknown>): { skillsHome: string; locationLabel: string } {
   const env =
     typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
       ? (config.env as Record<string, unknown>)
       : {};
+  // Claude Code reads skills from $CLAUDE_CONFIG_DIR/skills when the variable is set.
+  // The agent env overrides the host env, the same as for the spawned process.
+  const configDir = asString(env.CLAUDE_CONFIG_DIR) ?? asString(process.env.CLAUDE_CONFIG_DIR);
+  if (configDir) {
+    const skillsHome = path.join(path.resolve(configDir), "skills");
+    return { skillsHome, locationLabel: skillsHome };
+  }
   const configuredHome = asString(env.HOME);
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
-  return path.join(home, ".claude", "skills");
+  return { skillsHome: path.join(home, ".claude", "skills"), locationLabel: "~/.claude/skills" };
 }
 
 async function buildClaudeSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkills = resolveLegacyPaperclipDesiredSkillNames(config, availableEntries);
-  const skillsHome = resolveClaudeSkillsHome(config);
+  const { skillsHome, locationLabel } = resolveClaudeSkillsHome(config);
   const installed = await readInstalledSkillTargets(skillsHome);
   return buildRuntimeMountedSkillSnapshot({
     adapterType: "claude_local",
@@ -39,7 +46,7 @@ async function buildClaudeSkillSnapshot(config: Record<string, unknown>): Promis
     desiredSkills,
     configuredDetail: "Will be materialized into the stable Paperclip-managed Claude prompt bundle on the next run.",
     externalInstalled: installed,
-    externalLocationLabel: "~/.claude/skills",
+    externalLocationLabel: locationLabel,
     externalDetail: "Installed outside Paperclip management in the Claude skills home.",
     skillsHome,
   });
