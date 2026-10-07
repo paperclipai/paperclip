@@ -1,4 +1,4 @@
-CREATE TABLE "user_company_preferences" (
+CREATE TABLE IF NOT EXISTS "user_company_preferences" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"user_id" text NOT NULL,
@@ -8,10 +8,18 @@ CREATE TABLE "user_company_preferences" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "user_company_preferences" ADD CONSTRAINT "user_company_preferences_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "user_company_preferences" ADD CONSTRAINT "user_company_preferences_primary_agent_id_agents_id_fk" FOREIGN KEY ("primary_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "user_company_preferences_company_user_uq" ON "user_company_preferences" USING btree ("company_id","user_id");--> statement-breakpoint
-CREATE INDEX "user_company_preferences_primary_agent_idx" ON "user_company_preferences" USING btree ("primary_agent_id");--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TABLE "user_company_preferences" ADD CONSTRAINT "user_company_preferences_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+--> statement-breakpoint
+DO $$ BEGIN
+  ALTER TABLE "user_company_preferences" ADD CONSTRAINT "user_company_preferences_primary_agent_id_agents_id_fk" FOREIGN KEY ("primary_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "user_company_preferences_company_user_uq" ON "user_company_preferences" USING btree ("company_id","user_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "user_company_preferences_primary_agent_idx" ON "user_company_preferences" USING btree ("primary_agent_id");--> statement-breakpoint
 -- Attribute only explicit human creation events. Select the original event
 -- before joining the agent: deletion/termination must not promote a later hire.
 WITH first_creations AS (

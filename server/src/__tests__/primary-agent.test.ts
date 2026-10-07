@@ -171,8 +171,13 @@ if (!support.supported) console.warn(`Primary agent database tests unavailable: 
     });
     await request(app(actor(c, "explicit"))).put(url(c)).send({ primaryAgentId: later.id }).expect(200);
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0315_rapid_emma_frost.sql", import.meta.url), "utf8");
-    const backfill = migration.slice(migration.indexOf("WITH first_creations"));
-    await db.execute(sql.raw(backfill));
+    // Replay the whole migration twice: an already migrated preview instance
+    // must retain its explicit preferences when upgrading to the merged build.
+    for (let replay = 0; replay < 2; replay++) {
+      for (const statement of migration.split("--> statement-breakpoint")) {
+        if (statement.trim()) await db.execute(sql.raw(statement));
+      }
+    }
     expect((await get(c, "human")).primaryAgentId).toBe(first.id);
     expect(await get(c, "gone")).toMatchObject({ primaryAgentId: null, initialized: true });
     expect(await get(c, "retired")).toMatchObject({ primaryAgentId: null, initialized: true });

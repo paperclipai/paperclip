@@ -13,7 +13,8 @@ now includes persistence, API wiring, and production defaults.
 - Stories keep simulated state as the approved reference. The application now
   mounts a separate provider backed by a user/company preference endpoint.
 - Delivery includes real test-drive acceptance on desktop/mobile and required
-  repository checks; no merge or deployment is requested.
+  repository checks. After reviewing the working feature, the user requested a
+  pull request with passing checks and merge into master.
 
 ## Agreed product contract
 
@@ -146,7 +147,8 @@ not evidence of authorization, persistence, concurrency, or real execution.
   Heartbeat database-setup timeouts passed isolated reruns. The broad run began
   before the final edits and also reported primary/approval failures; those suites
   passed in fresh processes against final source. Later broad-run groups did not
-  complete. No merge or PR-ready claim is made on the strength of this run.
+  complete. These local failures remain disclosed; PR checks must pass on the
+  current head before merge.
 
 The final-code test drive remains running at http://localhost:3104 with **Alex**
 primary and **Maia's profile** open. Choose **Set as my primary**, confirm, and
