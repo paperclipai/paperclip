@@ -94,4 +94,20 @@ describe("resolveInitialTaskView", () => {
     expect(resolveInitialTaskView(null, true, "mine")).toBe("all");
     expect(resolveInitialTaskView(null, true, "blocked")).toBe("all");
   });
+
+  it("honours a saved view, including alongside an organization filter", () => {
+    // Saved views render on the task list, so unlike a My-work view they can
+    // apply ?assignee= and friends.
+    expect(resolveInitialTaskView("saved:abc", false, "mine")).toBe("saved:abc");
+    expect(resolveInitialTaskView("saved:abc", true, "mine")).toBe("saved:abc");
+  });
+
+  it("returns to the last-used saved view on a bare /issues", () => {
+    expect(resolveInitialTaskView(null, false, "saved:abc")).toBe("saved:abc");
+  });
+
+  it("addresses a saved view on the same route as a built-in one", () => {
+    expect(taskViewPath("saved:abc")).toBe("/issues?view=saved%3Aabc");
+    expect(new URLSearchParams(taskViewPath("saved:abc").split("?")[1]).get("view")).toBe("saved:abc");
+  });
 });

@@ -117,6 +117,7 @@ export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recover
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
+export { savedTaskViewService, SavedTaskViewNameTakenError } from "./saved-task-views.js";
 export { resourceMembershipService, type ResourceMembershipPolicyHook } from "./resource-memberships.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { accessService } from "./access.js";

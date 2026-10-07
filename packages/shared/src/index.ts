@@ -1313,6 +1313,7 @@ export type {
   UserProfileWindowStats,
   SidebarBadges,
   SidebarOrderPreference,
+  SavedTaskView,
   InboxDismissal,
   InboxDismissalKind,
   AccessUserProfile,
@@ -1723,6 +1724,20 @@ export {
   upsertSidebarOrderPreferenceSchema,
   type UpsertSidebarOrderPreference,
 } from "./validators/sidebar-preferences.js";
+export {
+  createSavedTaskViewSchema,
+  listSavedTaskViewsQuerySchema,
+  savedTaskViewCollectionKeySchema,
+  savedTaskViewNameSchema,
+  savedTaskViewStateSchema,
+  updateSavedTaskViewSchema,
+  SAVED_TASK_VIEW_COLLECTION_KEY_MAX_LENGTH,
+  SAVED_TASK_VIEW_NAME_MAX_LENGTH,
+  SAVED_TASK_VIEW_STATE_MAX_BYTES,
+  type CreateSavedTaskView,
+  type ListSavedTaskViewsQuery,
+  type UpdateSavedTaskView,
+} from "./validators/saved-task-views.js";
 export {
   resourceMembershipStateSchema,
   updateDocumentResourceMembershipSchema,

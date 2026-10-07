@@ -1,4 +1,5 @@
 import type { InboxTab } from "./inbox";
+import { isSavedTaskViewKey, type SavedTaskViewKey } from "./saved-task-views";
 
 /**
  * The single view registry behind the merged Tasks surface (PAP-670).
@@ -29,6 +30,13 @@ export const TASK_VIEW_KEYS = [
 
 export type TaskViewKey = (typeof TASK_VIEW_KEYS)[number];
 export type TaskViewSurface = "inbox" | "issues";
+
+/**
+ * What `?view=` can hold: one of the built-in keys above, or `saved:<id>` for
+ * a view the user defined and saved (see `saved-task-views.ts`). Saved views
+ * always render on the `issues` surface.
+ */
+export type TaskSurfaceViewKey = TaskViewKey | SavedTaskViewKey;
 
 export interface TaskView {
   key: TaskViewKey;
@@ -90,8 +98,9 @@ export function normalizeTaskViewKey(value: string | null | undefined): TaskView
   return isTaskViewKey(value) ? value : null;
 }
 
-export function taskViewPath(key: TaskViewKey): string {
-  return `/issues?${TASK_VIEW_PARAM}=${key}`;
+/** The shareable, bookmarkable address of a view — built-in or saved. */
+export function taskViewPath(key: TaskSurfaceViewKey): string {
+  return `/issues?${TASK_VIEW_PARAM}=${encodeURIComponent(key)}`;
 }
 
 /** Inbox tab → view key, for redirecting the retired `/inbox/*` URLs. */
@@ -109,15 +118,19 @@ export function taskViewForInboxTab(tab: string | null | undefined): TaskViewKey
     : DEFAULT_TASK_VIEW;
 }
 
-export function loadLastTaskView(): TaskViewKey {
+export function loadLastTaskView(): TaskSurfaceViewKey {
   try {
-    return normalizeTaskViewKey(window.localStorage.getItem(TASK_LAST_VIEW_KEY)) ?? DEFAULT_TASK_VIEW;
+    const stored = window.localStorage.getItem(TASK_LAST_VIEW_KEY);
+    // A saved view the user has since deleted still reads back as a well-formed
+    // key here; the Tasks surface falls back when it fails to resolve the id.
+    if (isSavedTaskViewKey(stored)) return stored;
+    return normalizeTaskViewKey(stored) ?? DEFAULT_TASK_VIEW;
   } catch {
     return DEFAULT_TASK_VIEW;
   }
 }
 
-export function saveLastTaskView(key: TaskViewKey): void {
+export function saveLastTaskView(key: TaskSurfaceViewKey): void {
   try {
     window.localStorage.setItem(TASK_LAST_VIEW_KEY, key);
   } catch {
@@ -142,8 +155,11 @@ export const ORGANIZATION_SCOPED_PARAMS = [
 export function resolveInitialTaskView(
   requested: string | null,
   hasOrganizationScopedParam: boolean,
-  lastUsed: TaskViewKey,
-): TaskViewKey {
+  lastUsed: TaskSurfaceViewKey,
+): TaskSurfaceViewKey {
+  // A saved view renders on the task list, so it can carry organization
+  // filters and is always honoured as asked for.
+  if (isSavedTaskViewKey(requested)) return requested;
   const explicit = normalizeTaskViewKey(requested);
   // Inbox views can't apply organization filters, so a link carrying one
   // opens All tasks rather than silently dropping the filter.

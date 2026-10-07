@@ -11,6 +11,9 @@ import {
   issueAgeBucket,
   issueAgeBucketsCrossed,
   issueAgeSeparatorLabel,
+  normalizeIssueSavedViewState,
+  normalizeIssueViewState,
+  readSavedViewSearch,
 } from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
@@ -2352,5 +2355,25 @@ describe("legacy issue age separators", () => {
     expect(issueAgeSeparatorLabel(1)).toBe("Older than a day");
     expect(issueAgeSeparatorLabel(2)).toBe("Older than a week");
     expect(issueAgeBucketsCrossed(0, 2)).toEqual([1, 2]);
+  });
+});
+
+describe("saved view state", () => {
+  it("carries the search as part of the view, not as a stray view-state key", () => {
+    const stored = { statuses: ["todo"], search: "invoice" };
+
+    expect(readSavedViewSearch(stored)).toBe("invoice");
+    expect(normalizeIssueSavedViewState(stored).search).toBe("invoice");
+    expect(normalizeIssueSavedViewState(stored).statuses).toEqual(["todo"]);
+    // The list's own view state is persisted to preferences, so `search` must
+    // not leak into it.
+    expect("search" in normalizeIssueViewState(stored)).toBe(false);
+  });
+
+  it("reads a definition written before views stored a search as an empty search", () => {
+    expect(readSavedViewSearch({ statuses: ["todo"] })).toBe("");
+    expect(readSavedViewSearch(undefined)).toBe("");
+    expect(readSavedViewSearch({ search: 7 })).toBe("");
+    expect(normalizeIssueSavedViewState({ statuses: ["todo"] }).search).toBe("");
   });
 });
