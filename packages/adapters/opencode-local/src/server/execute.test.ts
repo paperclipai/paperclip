@@ -399,6 +399,36 @@ describe("OpenCode cost accounting when redaction hides a display record", () =>
     });
   }
 
+  const unpricedStep = (input: number | string) => JSON.stringify({
+    type: "step_finish", part: { tokens: { input, output: 7 } },
+  });
+
+  it("does not equate parsed counts when redaction hides a different step", async () => {
+    const damaged = unpricedStep(marker).replace(`"${marker}"`, marker);
+    const onUsage = vi.fn(async (_receipt: AdapterUsageCheckpoint) => {});
+    const result = await run([unpricedStep(-1), unpricedStep(5), damaged], [unpricedStep(5), unpricedStep(0)], onUsage);
+    expect(result.usageComplete).toBe(false);
+    expect(result.costStatus).toBe("unpriced");
+    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: false, costStatus: "unpriced" }));
+  });
+
+  it.each([false, true])("preserves invalid full-stream usage when control is capped (%s)", async capped => {
+    const records = [unpricedStep(-1), unpricedStep(5)];
+    const onUsage = vi.fn(async (_receipt: AdapterUsageCheckpoint) => {});
+    const result = await run(records, capped ? records.slice(1) : records, onUsage);
+    expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 7, cachedInputTokens: 0 });
+    expect(result.usageComplete).toBe(false);
+    expect(result.costStatus).toBe("unpriced");
+    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: false, costStatus: "unpriced" }));
+  });
+
+  it("keeps complete full-stream usage when control holds only a valid suffix", async () => {
+    const result = await run([step(4), step(5)], [step(5)]);
+    expect(result.usage).toEqual({ inputTokens: 9, outputTokens: 14, cachedInputTokens: 0 });
+    expect(result.usageComplete).toBe(true);
+    expect(result.costUsd).toBeCloseTo(0.005, 6);
+  });
+
   it("keeps the control total when a redacted step is missing from the display stream", async () => {
     // Step 1's input matched a secret: unparseable in display, input 0 in control.
     const result = await run([step(marker).replace(`"${marker}"`, marker), step(5)], [step(0), step(5)]);

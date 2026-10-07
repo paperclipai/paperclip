@@ -159,7 +159,11 @@ number of cost records; otherwise the total is unknown. Checkpoint callbacks mar
 all price representations unavailable after losing a display cost record, even on
 completion; final control reconciliation may recover a price, but the lower-bound
 checkpoint never advertises a fully priced subtotal. An unclassifiable damaged line
-provides no accounting evidence.
+provides no accounting evidence. OpenCode also preserves the retained stream's
+usage-completeness verdict when its parsed plus classified unread `step_finish`
+records outnumber control records: a valid captured suffix cannot hide earlier
+invalid counters. Equal parsed counts alone do not prove equal coverage. Control
+covering that full expected record count still permits the existing recovery.
 
 The private terminal scan inspects each full candidate before retaining its
 64-Ki-character tail. The final control capture uses the existing four-Mi-character

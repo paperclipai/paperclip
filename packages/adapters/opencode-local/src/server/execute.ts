@@ -706,7 +706,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         // stream may also be the fuller one when capture is capped.
         parsed.usage = mergeAccountingUsage(parsed.usage, retained.usage);
         parsed.usageReported = parsed.usageReported || retained.usageReported;
-        parsed.usageComplete = parsed.usageComplete || retained.usageComplete;
+        // A valid captured suffix cannot erase invalid counters seen earlier.
+        // Include unread display records when comparing stream coverage.
+        parsed.usageComplete = retained.costRecords + accountingLog.unreadRecords() > parsed.costRecords
+          ? retained.usageComplete
+          : parsed.usageComplete || retained.usageComplete;
         parsed.costUsd = mergeAccountingCost(
           { costUsd: parsed.costUsd, costComplete: parsed.costComplete, costRecords: parsed.costRecords },
           { costUsd: retained.costUsd, costComplete: retained.costComplete, costRecords: retained.costRecords },
