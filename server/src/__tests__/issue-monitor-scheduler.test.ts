@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import {
@@ -692,12 +692,23 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       clearReason: "max_attempts_exhausted",
     });
 
+    // The owner is the same agent the monitor failed to dispatch to (still
+    // paused), so recovery cannot wake them either — it should fall back to
+    // a comment instead of throwing (which would also undo the `skipped`
+    // accounting asserted above).
     const wakeup = await db
       .select()
       .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.agentId, agentId))
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.reason, "issue_monitor_recovery")))
       .then((rows) => rows[0] ?? null);
-    expect(wakeup?.reason).toBe("issue_monitor_recovery");
+    expect(wakeup).toBeNull();
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .then((rows) => rows.map((row) => row.body));
+    expect(comments.some((body) => body.includes("could not be woken"))).toBe(true);
 
     const activity = await db
       .select()
@@ -705,7 +716,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId))
       .then((rows) => rows.map((row) => row.action));
     expect(activity).toContain("issue.monitor_exhausted");
-    expect(activity).toContain("issue.monitor_recovery_wake_queued");
+    expect(activity).toContain("issue.monitor_recovery_wake_skipped");
   });
 
   it("exhausts (not endlessly defers) a monitor whose timeoutAt has already passed via a transient dispatch error", async () => {
