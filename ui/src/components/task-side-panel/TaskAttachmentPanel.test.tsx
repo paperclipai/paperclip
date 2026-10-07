@@ -54,6 +54,22 @@ describe("text attachment tabs", () => {
     expect(host.querySelector("[data-rendered]")).not.toBeNull();
     await act(async () => root.unmount()); host.remove();
   });
+  it("renders CSV cells safely and switches to the exact raw source beside download", async () => {
+    const host = document.createElement("div"); const root = createRoot(host);
+    const text = 'Name,Notes,Amount\n"Lee, Sam","<script>hello</script>",12\nJo,"line 1\nline 2",';
+    await act(async () => root.render(<TextAttachmentPreview title="export.csv" markdown={false} csv text={text} downloadUrl="/download" />));
+    expect(host.querySelector("table")).not.toBeNull();
+    expect(host.textContent).toContain("2 rows");
+    expect(host.querySelector("td")?.textContent).toBe("Lee, Sam");
+    expect(host.querySelector("script")).toBeNull();
+    expect(host.querySelector("header")?.lastElementChild?.getAttribute("href")).toBe("/download");
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Raw"]')!.click());
+    expect(host.querySelector("pre")?.textContent).toBe(text);
+    expect(host.querySelector("table")).toBeNull();
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Rendered"]')!.click());
+    expect(host.querySelector("table")).not.toBeNull();
+    await act(async () => root.unmount());
+  });
   it("shows plain text literally without Markdown controls", async () => {
     const host = document.createElement("div"); const root = createRoot(host);
     await act(async () => root.render(<TextAttachmentPreview title="notes.txt" markdown={false} text="<script>alert(1)</script>" downloadUrl="/download" />));

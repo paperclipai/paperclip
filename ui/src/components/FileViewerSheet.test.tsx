@@ -168,3 +168,20 @@ describe("FileViewerMetadataRow", () => {
     expect(markup).toContain("Loading file details");
   });
 });
+
+
+describe("workspace CSV content", () => {
+  const csv: WorkspaceFileContent = {
+    resource: { kind: "file", provider: "git_worktree", title: "export.csv", displayPath: "export.csv", workspaceLabel: "Workspace", workspaceKind: "execution_workspace", workspaceId: "ws", contentType: "text/csv", byteSize: 20, previewKind: "text", capabilities: { preview: true, download: true, listChildren: false } },
+    content: { encoding: "utf8", data: 'Name,Amount\n"Lee, Sam",12' },
+  };
+  it("defaults to a table and supports toolbar-controlled raw mode", () => {
+    const rendered = renderToStaticMarkup(<FileContentViewer content={csv} highlightedLine={null} previewMode="rendered" />);
+    expect(rendered).toContain("<table");
+    expect(rendered).toContain("Lee, Sam");
+    expect(rendered).not.toContain("CSV preview mode");
+    const raw = renderToStaticMarkup(<FileContentViewer content={csv} highlightedLine={null} previewMode="raw" />);
+    expect(raw).toContain("export.csv source");
+    expect(raw).not.toContain("<table");
+  });
+});

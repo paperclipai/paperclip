@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Code2, Download, Eye } from "lucide-react";
 import { issuesApi } from "@/api/issues";
 import { Button } from "@/components/ui/button";
+import { CsvPreview } from "@/components/CsvPreview";
+import { isCsvFile } from "@/lib/csv-preview";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { attachmentDownloadPath, isMarkdownAttachment, isTextAttachment } from "@/lib/issue-attachments";
 import { queryKeys } from "@/lib/queryKeys";
@@ -34,19 +36,21 @@ export async function readTextPreview(response: Response) {
   }
 }
 
-export function TextAttachmentPreview({ title, text, markdown, downloadUrl }: {
+export function TextAttachmentPreview({ title, text, markdown, downloadUrl, csv = false }: {
   title: string;
   text: string;
   markdown: boolean;
+  csv?: boolean;
   downloadUrl: string;
 }) {
   const [raw, setRaw] = useState(false);
+  useEffect(() => setRaw(false), [title]);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex items-center gap-2 border-b border-border px-3 py-2">
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>{title}</h2>
-        {markdown ? (
-          <div className="flex gap-1" role="group" aria-label="Markdown view">
+        {markdown || csv ? (
+          <div className="flex gap-1" role="group" aria-label={csv ? "CSV view" : "Markdown view"}>
             <Button size="icon-sm" variant={raw ? "ghost" : "secondary"} aria-label="Rendered" title="Rendered" aria-pressed={!raw} onClick={() => setRaw(false)}>
               <Eye aria-hidden />
             </Button>
@@ -59,8 +63,9 @@ export function TextAttachmentPreview({ title, text, markdown, downloadUrl }: {
           <a href={downloadUrl} download aria-label={`Download ${title}`} title={`Download ${title}`}><Download aria-hidden /></a>
         </Button>
       </header>
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className={csv && !raw ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 flex-1 overflow-auto p-4"}>
         {text.length === 0 ? <p className="text-sm text-muted-foreground">File is empty.</p>
+          : csv && !raw ? <CsvPreview text={text} title={title} />
           : markdown && !raw ? <MarkdownBody mediaMode="reference">{text}</MarkdownBody>
           : <pre className="whitespace-pre-wrap break-words font-mono text-sm" aria-label={`${title} raw text`}>{text}</pre>}
       </div>
@@ -99,5 +104,5 @@ export function TaskAttachmentPanel({ issueId, attachmentId }: { issueId: string
     );
   }
   if (content.data === undefined) return <p className="p-4 text-sm" role="status">Loading file…</p>;
-  return <TextAttachmentPreview title={attachment.originalFilename ?? attachment.id} text={content.data} markdown={isMarkdownAttachment(attachment)} downloadUrl={downloadUrl} />;
+  return <TextAttachmentPreview title={attachment.originalFilename ?? attachment.id} text={content.data} csv={isCsvFile(attachment.originalFilename ?? "", attachment.contentType)} markdown={isMarkdownAttachment(attachment)} downloadUrl={downloadUrl} />;
 }
