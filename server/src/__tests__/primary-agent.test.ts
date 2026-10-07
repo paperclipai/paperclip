@@ -11,6 +11,7 @@ import { primaryAgentRoutes } from "../routes/primary-agent.js";
 import { agentService } from "../services/agents.js";
 import { primaryAgentService } from "../services/primary-agent.js";
 import { resourceMembershipService } from "../services/resource-memberships.js";
+import { activityRoutes } from "../routes/activity.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 if (!support.supported) console.warn(`Primary agent database tests unavailable: ${support.reason}`);
@@ -31,7 +32,8 @@ if (!support.supported) console.warn(`Primary agent database tests unavailable: 
   const app = (identity: Express.Request["actor"]) => {
     const result = express(); result.use(express.json());
     result.use((req, _res, next) => { req.actor = identity; next(); });
-    result.use("/api", primaryAgentRoutes(db)); result.use(errorHandler);
+    result.use("/api", primaryAgentRoutes(db));
+    result.use("/api", activityRoutes(db)); result.use(errorHandler);
     return result;
   };
   async function company() {
@@ -86,20 +88,37 @@ if (!support.supported) console.warn(`Primary agent database tests unavailable: 
 
   it("serializes competing explicit choices and leave races", async () => {
     const c = await company();
-    const first = await create(c, "Maia", "user-a"), a = await create(c, "Alex"), b = await create(c, "River");
+    await create(c, "Maia", "user-a");
+    const a = await create(c, "Alex"), b = await create(c, "River");
     const service = primaryAgentService(db);
     await Promise.all([service.set(c, "user-a", a.id, actor(c)), service.set(c, "user-a", b.id, actor(c))]);
     const current = (await get(c)).primaryAgentId;
     const updates = await db.select().from(activityLog).where(and(eq(activityLog.companyId, c), eq(activityLog.action, "primary_agent.updated")));
     expect(updates).toHaveLength(2);
-    expect(updates.filter(event => event.details?.previousPrimaryAgentId === first.id)).toHaveLength(1);
-    expect(updates.find(event => event.details?.primaryAgentId === current)?.details?.previousPrimaryAgentId).toBe(current === a.id ? b.id : a.id);
+    expect([a.id, b.id]).toContain(current);
     await Promise.all([
       service.set(c, "user-a", a.id, actor(c)),
       resourceMembershipService(db).updateAgent({ companyId: c, userId: "user-a", agentId: a.id, state: "left", actor: actor(c) }),
     ]);
     const memberships = await resourceMembershipService(db).listForUser(c, "user-a", actor(c));
     expect((await get(c)).primaryAgentId).toBe(memberships.agentMemberships[a.id] === "left" ? null : a.id);
+  });
+
+  it("audits preference changes without exposing the selection through company activity", async () => {
+    const c = await company();
+    const first = await create(c, "Maia", "user-a"), next = await create(c, "Alex");
+    await primaryAgentService(db).set(c, "user-a", next.id, actor(c));
+    await resourceMembershipService(db).updateAgent({ companyId: c, userId: "user-a", agentId: next.id, state: "left", actor: actor(c) });
+    const response = await request(app(actor(c, "user-b"))).get(`/api/companies/${c}/activity`).expect(200);
+    const events = response.body.filter((event: { action: string }) => event.action.startsWith("primary_agent."));
+    expect(events.map((event: { action: string }) => event.action).sort()).toEqual([
+      "primary_agent.cleared", "primary_agent.initialized", "primary_agent.updated",
+    ]);
+    for (const event of events) {
+      expect(event).toMatchObject({ entityType: "user_preference", entityId: "user-a", agentId: null, details: null });
+      expect(JSON.stringify(event)).not.toContain(first.id);
+      expect(JSON.stringify(event)).not.toContain(next.id);
+    }
   });
 
   it("retains paused/error primaries, clears on leave, rejoins when chosen, and preserves stars", async () => {

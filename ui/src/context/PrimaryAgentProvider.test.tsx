@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,10 +25,14 @@ const preference = (companyId = "company-a", userId = "user-a", primaryAgentId: 
 });
 function Harness() {
   const value = usePrimaryAgentPresentation(state.companyId);
+  const [onboarding, setOnboarding] = useState(false);
   return <>
     <output>{value?.loading ? "loading" : value?.error ? "error" : value?.primaryAgentId ?? "none"}</output>
     <button onClick={() => value?.onChange("alex")}>Choose Alex</button>
     <button onClick={() => value?.onRetry?.()}>Retry</button>
+    <button onClick={() => setOnboarding(true)}>Continue onboarding</button>
+    {onboarding ? <aside>Onboarding is open</aside> : null}
+    <span data-pending>{value?.pendingAgentId ?? "none"}</span>
   </>;
 }
 async function render() {
@@ -81,6 +85,37 @@ describe("primary agent persistence provider", () => {
     expect(client.getQueryData(queryKeys.primaryAgent.mine("company-a", "user-a"))).toEqual(preference());
     expect(client.getQueryData(queryKeys.primaryAgent.mine("company-b", "user-a"))).toEqual(preference("company-b", "user-a", "alex"));
     expect(client.getQueryData(queryKeys.primaryAgent.mine("company-b", "user-b"))).toEqual(preference("company-b", "user-b", null));
+  });
+
+  it("preserves app and onboarding state when the company or authenticated user changes", async () => {
+    await render(); await waitForOutput("maia");
+    await act(async () => container.querySelectorAll("button")[2].click());
+    state.companyId = "company-b";
+    state.get.mockResolvedValue(preference("company-b", "user-a", "alex"));
+    await render(); await waitForOutput("alex");
+    expect(container.querySelector("aside")?.textContent).toBe("Onboarding is open");
+    state.get.mockResolvedValue(preference("company-b", "user-b", null));
+    await act(async () => client.setQueryData(queryKeys.auth.session, { user: { id: "user-b" } }));
+    await waitForOutput("none");
+    expect(container.querySelector("aside")?.textContent).toBe("Onboarding is open");
+  });
+
+  it("keeps a late mutation failure in its original company and user scope", async () => {
+    let reject!: (error: Error) => void;
+    state.set.mockImplementationOnce(() => new Promise((_resolve, onReject) => { reject = onReject; }));
+    await render(); await waitForOutput("maia");
+    await act(async () => container.querySelector("button")!.click());
+    await waitForOutput("alex");
+    state.companyId = "company-b";
+    state.get.mockResolvedValue(preference("company-b", "user-b", null));
+    await act(async () => client.setQueryData(queryKeys.auth.session, { user: { id: "user-b" } }));
+    await render(); await waitForOutput("none");
+    expect(container.querySelector("[data-pending]")?.textContent).toBe("none");
+    await act(async () => reject(new Error("Old request failed")));
+    await waitForOutput("none");
+    expect(client.getQueryData(queryKeys.primaryAgent.mine("company-a", "user-a"))).toEqual(preference());
+    expect(client.getQueryData(queryKeys.primaryAgent.mine("company-b", "user-b"))).toEqual(preference("company-b", "user-b", null));
+    expect(state.toast).not.toHaveBeenCalled();
   });
 
   it("retries session failures before fetching a personal preference", async () => {

@@ -154,3 +154,22 @@ The final-code test drive remains running at http://localhost:3104 with **Alex**
 primary and **Maia's profile** open. Choose **Set as my primary**, confirm, and
 reload to try persistence. New Task and Chat retain recent Alex choices by design;
 the primary is their fallback when no eligible recent choice or draft exists.
+
+## Pull request verification
+
+- PR: https://github.com/paperclipai/paperclip/pull/15470. The user authorized
+  passing PR checks and merging into master.
+- The rebased branch passes repository typecheck and build, token gates, and
+  114 focused tests. Migration replay now runs twice without replacing choices.
+- The earlier OpenCode timeouts pass all 31 tests with an isolated XDG config
+  directory; the local config copy caused the delay. The large Git streaming test
+  also passes when run alone (296 seconds).
+- Initial CI identified stale creation-option assertions and app remounts on
+  company changes. Preserve mounted app children and bind each pending mutation
+  to its original user/company. Refresh membership caches for primary changes
+  received from other devices.
+- Security review identified agent mappings in company activity. Preference
+  events now record only the affected user and action, with no selected agent IDs.
+  An authenticated cross-user activity endpoint test covers this boundary.
+- Review fixes pass 96 database/permission-route tests and 127 provider,
+  live-update, and skill-route tests. Final merge requires fresh-head CI and review.

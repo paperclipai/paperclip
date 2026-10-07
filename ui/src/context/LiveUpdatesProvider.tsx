@@ -1284,7 +1284,7 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({ queryKey: ["primary-agent", companyId] });
   }
 
-  if (action?.startsWith("resource_membership.")) {
+  if (action?.startsWith("resource_membership.") || action?.startsWith("primary_agent.")) {
     const targetUserId = readString(details?.userId);
     if (!targetUserId || targetUserId === currentActor.userId) {
       queryClient.invalidateQueries({

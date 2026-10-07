@@ -16,6 +16,18 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("refreshes personal membership state when a primary changes on another device", () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "user_preference", entityId: "user-1", action: "primary_agent.updated",
+      actorType: "user", actorId: "user-1",
+    }, { userId: "user-1", agentId: null });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["primary-agent", "company-1"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.resourceMemberships.mine("company-1") });
+    client.clear();
+  });
+
   it.each([
     ["chat-1", "issue.comment_added", "agent", "agent-1", true],
     ["task-1", "issue.comment_added", "agent", "agent-1", false],

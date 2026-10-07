@@ -21,7 +21,7 @@ export async function initializePrimaryAgent(db: Db, companyId: string, userId: 
   }).returning();
   if (row) await persistActivity(db, {
     companyId, actorType: "user", actorId: userId, action: "primary_agent.initialized",
-    entityType: "agent", entityId: agentId, details: { primaryAgentId: agentId },
+    entityType: "user_preference", entityId: userId,
   });
 }
 
@@ -35,8 +35,7 @@ export async function clearPrimaryAgent(db: Db, companyId: string, agentId: stri
   )).returning();
   for (const row of rows) await persistActivity(db, {
     companyId, actorType: "system", actorId: "primary-agent-lifecycle", action: "primary_agent.cleared",
-    entityType: "agent", entityId: agentId,
-    details: { userId: row.userId, previousPrimaryAgentId: agentId },
+    entityType: "user_preference", entityId: row.userId,
   });
 }
 
@@ -59,11 +58,9 @@ export function primaryAgentService(db: Db) {
           throw unprocessable("Choose an active, approved agent as your primary.");
         }
         await resourceMembershipService(txDb).updateAgent({ companyId, userId, agentId, state: "joined", actor });
-        // Serialize personal changes even when they target different agents, so
-        // the audit trail records the primary that this choice actually replaced.
+        // Serialize personal changes even when they target different agents.
         await tx.insert(userCompanyPreferences).values({ companyId, userId }).onConflictDoNothing();
         await tx.select().from(userCompanyPreferences).where(preferenceWhere(companyId, userId)).for("update");
-        const previous = await primaryAgentService(txDb).get(companyId, userId);
         await tx.insert(userCompanyPreferences).values({
           companyId, userId, primaryAgentId: agentId, primaryAgentInitialized: true,
         }).onConflictDoUpdate({
@@ -72,8 +69,9 @@ export function primaryAgentService(db: Db) {
         });
         const { publication } = await persistActivity(txDb, {
           companyId, actorType: "user", actorId: userId, action: "primary_agent.updated",
-          entityType: "agent", entityId: agentId,
-          details: { previousPrimaryAgentId: previous.primaryAgentId, primaryAgentId: agentId },
+          // Activity and its live events are company-visible. Audit the change
+          // without disclosing the user's private agent selection.
+          entityType: "user_preference", entityId: userId,
         });
         return { preference: await primaryAgentService(txDb).get(companyId, userId), publication };
       });

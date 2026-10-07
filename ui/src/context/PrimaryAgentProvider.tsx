@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PrimaryAgentPreference } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
@@ -12,35 +12,33 @@ import { useToastActions } from "./ToastContext";
 export function PrimaryAgentProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId: companyId } = useCompany();
   const preference = usePrimaryAgent(companyId);
-  return <CompanyPrimaryAgentProvider key={`${companyId}:${preference.userId}`} companyId={companyId} preference={preference}>
-    {children}
-  </CompanyPrimaryAgentProvider>;
-}
-
-function CompanyPrimaryAgentProvider({ children, companyId, preference }: {
-  children: ReactNode; companyId: string | null; preference: ReturnType<typeof usePrimaryAgent>;
-}) {
   const client = useQueryClient();
   const { pushToast } = useToastActions();
-  const key = queryKeys.primaryAgent.mine(companyId ?? "__none__", preference.userId);
+  const scope = useRef({ companyId, userId: preference.userId });
+  scope.current = { companyId, userId: preference.userId };
+  type Choice = { companyId: string; userId: string; agentId: string };
+  const keyFor = (choice: Choice) => queryKeys.primaryAgent.mine(choice.companyId, choice.userId);
+  const isCurrentScope = (choice: Choice) => choice.companyId === scope.current.companyId && choice.userId === scope.current.userId;
   const roster = useQuery({ queryKey: queryKeys.agents.list(companyId!), queryFn: () => agentsApi.list(companyId!), enabled: !!companyId });
   const mutation = useMutation({
-    mutationFn: (agentId: string) => primaryAgentApi.set(companyId!, { primaryAgentId: agentId }),
-    onMutate: async agentId => {
+    mutationFn: (choice: Choice) => primaryAgentApi.set(choice.companyId, { primaryAgentId: choice.agentId }),
+    onMutate: async choice => {
+      const key = keyFor(choice);
       await client.cancelQueries({ queryKey: key });
       const previous = client.getQueryData<PrimaryAgentPreference>(key);
-      client.setQueryData<PrimaryAgentPreference>(key, { companyId: companyId!, userId: preference.userId, primaryAgentId: agentId, initialized: true });
+      client.setQueryData<PrimaryAgentPreference>(key, { companyId: choice.companyId, userId: choice.userId, primaryAgentId: choice.agentId, initialized: true });
       return { previous };
     },
-    onError: (error, agentId, context) => {
-      client.setQueryData(key, context?.previous);
+    onError: (error, choice, context) => {
+      client.setQueryData(keyFor(choice), context?.previous);
+      if (!isCurrentScope(choice)) return;
       pushToast({ title: "Couldn't change your primary agent.", body: error.message, tone: "error",
-        action: { label: "Retry", onClick: () => mutation.mutate(agentId) } });
+        action: { label: "Retry", onClick: () => { if (isCurrentScope(choice)) mutation.mutate(choice); } } });
     },
-    onSuccess: data => client.setQueryData(key, data),
-    onSettled: () => {
-      void client.invalidateQueries({ queryKey: key });
-      void client.invalidateQueries({ queryKey: queryKeys.resourceMemberships.mine(companyId!) });
+    onSuccess: (data, choice) => client.setQueryData(keyFor(choice), data),
+    onSettled: (_data, _error, choice) => {
+      void client.invalidateQueries({ queryKey: keyFor(choice) });
+      void client.invalidateQueries({ queryKey: queryKeys.resourceMemberships.mine(choice.companyId) });
     },
   });
   const primaryAgent = roster.data?.find(agent => agent.id === preference.data?.primaryAgentId && agent.status !== "terminated") ?? null;
@@ -50,7 +48,7 @@ function CompanyPrimaryAgentProvider({ children, companyId, preference }: {
     loading: preference.loading || roster.isPending,
     error: error?.message,
     onRetry: () => { void preference.retry(); void roster.refetch(); },
-    pendingAgentId: mutation.isPending ? mutation.variables : null,
-    onChange: agentId => mutation.mutate(agentId),
+    pendingAgentId: mutation.isPending && isCurrentScope(mutation.variables) ? mutation.variables.agentId : null,
+    onChange: agentId => mutation.mutate({ companyId, userId: preference.userId, agentId }),
   } : null}>{children}</PrimaryAgentPresentationProvider>;
 }
