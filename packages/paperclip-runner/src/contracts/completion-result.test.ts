@@ -31,6 +31,17 @@ describe("provider-neutral completion result schema", () => {
   const validate = new Ajv2020({ allErrors: true, strict: false })
     .compile(PRP_COMPLETION_RESULT_OUTPUT_SCHEMA);
 
+  it("accepts an explicit monitor wait across provider and normalized schemas", () => {
+    const report = { ...baseResult, reportedWorkDisposition: "yielded",
+      completionClaim: { ...baseResult.completionClaim, objectiveSatisfied: false,
+        remainingWork: [{ description: "Check the next run", blocksCompletion: true }] },
+      continuation: { kind: "monitor", summary: "Wait for persisted timer", idempotencyKey: "monitor-wait" } };
+    expect(validate(report)).toBe(true);
+    const providerValidate = new Ajv2020({ allErrors: true, strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    expect(providerValidate(report)).toBe(true);
+    expect(validate({ ...report, continuation: { ...report.continuation, kind: "invented" } })).toBe(false);
+  });
+
   it("allows done with no verification and no actionable attention", () => {
     expect(validate(structuredClone(baseResult))).toBe(true);
   });

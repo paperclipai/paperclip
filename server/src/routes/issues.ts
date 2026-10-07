@@ -1,3 +1,4 @@
+import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssueMonitor, summarizeIssueMonitor } from "../services/issue-monitors.js";
 import type { IssuePrivacyConstraints } from "@paperclipai/shared";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import { activeIssueInteractionCondition, readTaskQuestionContext } from "../services/issue-question-context.js";
@@ -2167,106 +2168,6 @@ function summarizeIssueReferenceActivityDetails(
     ...(input.currentReferencedIssues.length > 0
       ? { currentReferencedIssues: input.currentReferencedIssues }
       : {}),
-  };
-}
-
-function monitorPoliciesEqual(
-  left: NormalizedExecutionPolicy | null,
-  right: NormalizedExecutionPolicy | null,
-) {
-  return (
-    JSON.stringify(left?.monitor ?? null) ===
-    JSON.stringify(right?.monitor ?? null)
-  );
-}
-
-function applyActorMonitorScheduledBy(
-  policy: NormalizedExecutionPolicy | null,
-  actorType: "agent" | "user",
-) {
-  return setIssueExecutionPolicyMonitorScheduledBy(
-    policy,
-    actorType === "user" ? "board" : "assignee",
-  );
-}
-
-async function assertCanManageIssueMonitor(
-  accessSvc: ReturnType<typeof accessService>,
-  req: Request,
-  companyId: string,
-  assigneeAgentId: string | null,
-  monitorChanged: boolean,
-) {
-  if (!monitorChanged) return;
-  if (req.actor.type === "board") return;
-  const runtimeDecision = await accessSvc.decide({
-    actor: req.actor,
-    action: "runtime:manage",
-    resource: { type: "company", companyId },
-  });
-  if (!runtimeDecision.allowed) {
-    throw forbidden(
-      runtimeDecision.explanation,
-      authorizationDeniedDetails(runtimeDecision),
-    );
-  }
-  if (
-    req.actor.type === "agent" &&
-    req.actor.agentId &&
-    req.actor.agentId === assigneeAgentId
-  )
-    return;
-  throw forbidden(
-    "Only the assignee agent or a board user can manage issue monitors",
-  );
-}
-
-function summarizeIssueMonitor(
-  issue: {
-    monitorNextCheckAt?: Date | null;
-    monitorLastTriggeredAt?: Date | null;
-    monitorAttemptCount?: number | null;
-    monitorNotes?: string | null;
-    monitorScheduledBy?: string | null;
-    executionState?: unknown;
-  },
-  policy: NormalizedExecutionPolicy | null,
-) {
-  const state = parseIssueExecutionState(issue.executionState);
-  return {
-    nextCheckAt:
-      issue.monitorNextCheckAt?.toISOString() ??
-      policy?.monitor?.nextCheckAt ??
-      null,
-    lastTriggeredAt:
-      issue.monitorLastTriggeredAt?.toISOString() ??
-      state?.monitor?.lastTriggeredAt ??
-      null,
-    attemptCount:
-      issue.monitorAttemptCount ?? state?.monitor?.attemptCount ?? 0,
-    notes:
-      policy?.monitor?.notes ??
-      issue.monitorNotes ??
-      state?.monitor?.notes ??
-      null,
-    scheduledBy:
-      issue.monitorScheduledBy ??
-      policy?.monitor?.scheduledBy ??
-      state?.monitor?.scheduledBy ??
-      null,
-    kind: policy?.monitor?.kind ?? state?.monitor?.kind ?? null,
-    serviceName:
-      policy?.monitor?.serviceName ?? state?.monitor?.serviceName ?? null,
-    externalRef: redactIssueMonitorExternalRef(
-      policy?.monitor?.externalRef ?? state?.monitor?.externalRef ?? null,
-    ),
-    timeoutAt: policy?.monitor?.timeoutAt ?? state?.monitor?.timeoutAt ?? null,
-    maxAttempts:
-      policy?.monitor?.maxAttempts ?? state?.monitor?.maxAttempts ?? null,
-    recoveryPolicy:
-      policy?.monitor?.recoveryPolicy ?? state?.monitor?.recoveryPolicy ?? null,
-    status: state?.monitor?.status ?? (policy?.monitor ? "scheduled" : null),
-    clearReason: state?.monitor?.clearReason ?? null,
   };
 }
 

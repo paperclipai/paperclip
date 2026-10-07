@@ -79,6 +79,40 @@ describe("text attachment tabs", () => {
     expect(host.querySelector('a[aria-label="Download notes.txt"] svg')).not.toBeNull();
     await act(async () => root.unmount());
   });
+  it("renders HTML in an opaque sandbox, switches to literal source, and keeps download beside the controls", async () => {
+    const html = '<h1>Report</h1><script>parent.document.cookie</script>';
+    const host = document.createElement("div"); const root = createRoot(host);
+    await act(async () => root.render(<TextAttachmentPreview title="report.html" markdown={false} html text={html} downloadUrl="/download" />));
+    const frame = host.querySelector("iframe");
+    expect(frame?.getAttribute("sandbox")).toBe("allow-scripts");
+    expect(frame?.getAttribute("referrerpolicy")).toBe("no-referrer");
+    expect(frame?.getAttribute("srcdoc")).toContain("Content-Security-Policy");
+    expect(host.querySelector("script")).toBeNull();
+    const toggle = host.querySelector('[aria-label="HTML view"]');
+    expect(toggle?.nextElementSibling?.getAttribute("href")).toBe("/download");
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Raw"]')!.click());
+    expect(host.querySelector("iframe")).toBeNull();
+    expect(host.querySelector("pre")?.textContent).toBe(html);
+    expect(host.querySelector('[aria-label="Raw"]')?.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Rendered"]')!.click());
+    expect(host.querySelector("iframe")).not.toBeNull();
+    await act(async () => root.unmount());
+  });
+  it("opens HTML from an authorized attachment and resets the view for the next file", async () => {
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    client.setQueryData(queryKeys.issues.attachments("task"), ["one", "two"].map(id => ({ id, originalFilename: `${id}.html`, contentType: "text/html", byteSize: 20, contentPath: `/api/attachments/${id}/content` })));
+    for (const id of ["one", "two"]) client.setQueryData(["task-text-attachment", "task", id], `<h1>${id}</h1>`);
+    const host = document.createElement("div"); const root = createRoot(host);
+    const panel = (id: string) => <QueryClientProvider client={client}><TaskAttachmentPanel issueId="task" attachmentId={id} /></QueryClientProvider>;
+    await act(async () => root.render(panel("one")));
+    expect(host.querySelector("iframe")?.getAttribute("title")).toBe("one.html rendered HTML");
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Raw"]')!.click());
+    await act(async () => root.render(panel("two")));
+    expect(host.querySelector("iframe")?.getAttribute("title")).toBe("two.html rendered HTML");
+    expect(fetch).not.toHaveBeenCalled();
+    await act(async () => root.unmount()); client.clear();
+  });
   it("rejects HTTP errors, oversized responses and binary data", async () => {
     await expect(readTextPreview(new Response("denied", { status: 403 }))).rejects.toThrow("403");
     await expect(readTextPreview(new Response("x".repeat(TEXT_PREVIEW_MAX_BYTES + 1)))).rejects.toThrow("too large");
