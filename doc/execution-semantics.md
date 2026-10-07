@@ -218,6 +218,9 @@ retry accounting. The wait survives a controller restart. A queued retry that
 encounters the same ownership hold returns to that scheduled state. Once
 ownership is released, normal promotion and dispatch gates still apply,
 including reassignment, cancellation, budget limits, and no-replay holds.
+The **Retry now** action returns `waiting` with the saved retry schedule while
+cleanup holds ownership. Its controls show the wait without claiming that a run
+started, and another click can check the gate again.
 
 Recovery instructions in a wake describe only an active or escalated recovery
 action. Resolving or cancelling that action removes its repair instructions from
