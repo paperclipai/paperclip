@@ -84,6 +84,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .composer-run-settings-height { transition: none; }
-  .composer-run-effort-range::-webkit-slider-thumb { transition: none; transform: none; }
-  .composer-run-effort-range::-moz-range-thumb { transition: none; transform: none; }
+  .composer-run-effort-range::-webkit-slider-thumb,
+  .composer-run-effort-range:hover::-webkit-slider-thumb,
+  .composer-run-effort-range:active::-webkit-slider-thumb { transition: none; transform: none; }
+  .composer-run-effort-range::-moz-range-thumb,
+  .composer-run-effort-range:hover::-moz-range-thumb,
+  .composer-run-effort-range:active::-moz-range-thumb { transition: none; transform: none; }
 }

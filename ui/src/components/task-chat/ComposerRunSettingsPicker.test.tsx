@@ -64,7 +64,7 @@ describe("composer assignee picker", () => {
       const [settings, setSettings] = useState({ model: "gpt-6-sol", effort: "high", fast: false });
       return <ComposerRunSettingsPicker companyId="company-1" assigneeValue="agent:a1" currentAssigneeValue="agent:a1"
         options={options} agents={agents} settings={settings} onSettingsChange={(next) => setSettings(next! as typeof settings)}
-        onAssigneeChange={vi.fn()} mobile={mobile} modelOptionsOverride={[{ id: "gpt-6-sol", label: "GPT-6 Sol" }]} />;
+        onAssigneeChange={vi.fn()} mobile={mobile} modelOptionsOverride={[{ id: "gpt-6-sol", label: "GPT-6 Sol" }, { id: "gpt-6-astra", label: "GPT-6 Astra" }]} />;
     }
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -87,6 +87,19 @@ describe("composer assignee picker", () => {
     expect(label()).toBe("Select model");
     await click("Clippy");
     expect(label()).toBe("GPT-6 Sol");
+    expect(container!.querySelector('[aria-label="Select model and effort"]')!.textContent).toContain("Low");
+    await click("Select model and effort");
+    await click("Choose exact model");
+    await click("GPT-6 Astra");
+    expect(label()).toBe("Select model");
+    if (mobile) await click("Close picker");
+    else {
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+    expect(label()).toBe("GPT-6 Astra");
     expect(container!.querySelector('[aria-label="Select model and effort"]')!.textContent).toContain("Low");
   });
 
