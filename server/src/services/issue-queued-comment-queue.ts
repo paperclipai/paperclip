@@ -166,6 +166,7 @@ type QueuedCommentQueueEntryFacts = {
   id: string;
   updatedAt: Date;
   authorUserId: string | null;
+  authorAgentId: string | null;
 };
 
 /**
@@ -202,7 +203,12 @@ export function buildQueuedCommentQueueSnapshot<TComment extends QueuedCommentQu
       comment: comment as unknown as IssueComment,
       position,
       canEdit: facts.actorType === "user" && comment.authorUserId === facts.actorId,
-      canDiscard: facts.actorType === "user" && comment.authorUserId === facts.actorId,
+      // A user actor can never match an agent-authored entry's user author,
+      // but the board may discard agent-authored entries — mirror the
+      // discardQueuedComment override so the UI affordance matches the API
+      // (issue #15464).
+      canDiscard: facts.actorType === "user" &&
+        (comment.authorUserId === facts.actorId || comment.authorAgentId !== null),
     })),
   };
 }
