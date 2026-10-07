@@ -22,6 +22,7 @@ const support = externalTestDatabaseUrl ? { supported: true } : await getEmbedde
     await db.insert(agents).values({ id: agentId, companyId, name: "Engineer", role: "engineer", adapterType: "codex_local" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Restore files", status: options.taskDone ? "done" : "in_progress", assigneeAgentId: agentId });
     const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "legacy", contextSnapshot: { issueId } }).returning();
+    if (options.local) await db.insert(environments).values({ name: "Local", driver: "local" }).onConflictDoNothing();
     const [environment] = options.local ? await db.select().from(environments).where(eq(environments.driver, "local"))
       : await db.insert(environments).values({ name: `Isolated test sandbox ${runId}`, driver: "sandbox" }).returning();
     const [lease] = await db.insert(environmentLeases).values({ companyId, issueId, heartbeatRunId: runId, environmentId: environment.id,

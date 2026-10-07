@@ -7977,10 +7977,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       try {
         await vi.waitFor(async () => {
           const [row] = await db.execute<{ count: number }>(sql`
-          select count(*)::int as count from pg_stat_activity
-          where datname = current_database() and ${pid} = any(pg_blocking_pids(pid))
-            and (query ilike '%update%heartbeat_runs%'
-              or query ilike '%heartbeat_runs%for update%')
+          select count(*)::int as count from pg_stat_activity activity
+          where datname = current_database() and ${pid} = any(pg_blocking_pids(activity.pid))
+            and wait_event_type = 'Lock'
+            and exists (select 1 from pg_locks locks where locks.pid = activity.pid
+              and locks.relation = 'heartbeat_runs'::regclass)
         `);
           expect(row!.count).toBeGreaterThan(0);
         });
