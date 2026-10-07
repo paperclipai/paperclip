@@ -1,4 +1,4 @@
-import { issueExecutionMonitorPolicySchema } from "@paperclipai/shared";
+import { issueExecutionMonitorPolicySchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import type { issues } from "@paperclipai/db";
 import { z } from "zod";
 import { forbidden, unprocessable } from "../errors.js";
@@ -113,7 +113,10 @@ export const setTaskMonitorSchema = z.object({
   idempotencyKey: z.string().trim().min(1).max(240),
   monitor: issueExecutionMonitorPolicySchema.omit({ scheduledBy: true }).extend({
     notes: z.string().trim().min(1).max(500),
-  }).strict().nullable(),
+  }).strict().refine(monitor => monitor.serviceName !== PROVIDER_QUOTA_MONITOR_SERVICE_NAME, {
+    message: "This serviceName is reserved for server-owned quota recovery; use a different service name for an ordinary task check",
+    path: ["serviceName"],
+  }).nullable(),
 }).strict();
 
 /** Caller holds the issue lock; merge only monitor state, never review policy. */
@@ -155,7 +158,8 @@ export function eligibleIssueMonitorWait(
   if (issue.assigneeAgentId !== agentId || issue.assigneeUserId ||
       !["in_progress", "in_review"].includes(issue.status) || !issue.monitorNextCheckAt) return null;
   const monitor = normalizeIssueExecutionPolicy(issue.executionPolicy)?.monitor;
-  if (!monitor || Date.parse(monitor.nextCheckAt) !== issue.monitorNextCheckAt.getTime() ||
+  if (!monitor || monitor.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME ||
+      Date.parse(monitor.nextCheckAt) !== issue.monitorNextCheckAt.getTime() ||
       (monitor.timeoutAt && Date.parse(monitor.timeoutAt) <= now.getTime()) ||
       (monitor.maxAttempts != null && issue.monitorAttemptCount >= monitor.maxAttempts)) return null;
   return issue.monitorNextCheckAt.toISOString();

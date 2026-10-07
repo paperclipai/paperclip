@@ -2,13 +2,20 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agents, authUsers, companyMemberships, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
-import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { buildIssueMonitorTriggeredPatch, normalizeIssueExecutionPolicy } from "../issue-execution-policy.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 
-describe("native task monitors", () => {
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+if (!embeddedPostgresSupport.supported) {
+  console.warn(`Skipping embedded Postgres native task monitor tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`);
+}
+
+describeEmbeddedPostgres("native task monitors", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
@@ -172,7 +179,26 @@ describe("native task monitors", () => {
     await expect(nativeCompletionFeedback(db, value.runId, result)).rejects.toThrow("persisted, eligible monitor");
     await value.call({ idempotencyKey: "self", monitor: value.monitor });
     await expect(nativeCompletionFeedback(db, value.runId, result)).resolves.toContain("issue_monitor_due");
+    // Legacy APIs may persist a server-owned quota monitor. It cannot justify
+    // a native wait because its dispatcher explicitly excludes native runs.
+    await db.update(issues).set({ executionPolicy: { monitor: { ...value.monitor, serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME } } }).where(eq(issues.id, value.issueId));
+    await expect(nativeCompletionFeedback(db, value.runId, result)).rejects.toThrow("persisted, eligible monitor");
     await value.call({ idempotencyKey: "clear", monitor: null });
     await expect(nativeCompletionFeedback(db, value.runId, result)).rejects.toThrow("persisted, eligible monitor");
+  });
+
+  it("rejects the server-owned quota recovery name without promising a wake", async () => {
+    const value = await fixture();
+    await expect(value.call({ idempotencyKey: "quota", monitor: {
+      ...value.monitor, serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: value.runId,
+    } })).rejects.toThrow("reserved for server-owned quota recovery");
+    expect((await value.read()).monitorNextCheckAt).toBeNull();
+    const audits = await db.select().from(activityLog).where(eq(activityLog.entityId, value.issueId));
+    expect(audits).toHaveLength(0);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, value.runId));
+    expect(run.resultJson?.semanticToolReceipts).toBeUndefined();
+    await expect(value.call({ idempotencyKey: "quota", monitor: {
+      ...value.monitor, serviceName: "Provider usage dashboard",
+    } })).resolves.toMatchObject({ monitor: { status: "scheduled" }, replayed: false });
   });
 });
