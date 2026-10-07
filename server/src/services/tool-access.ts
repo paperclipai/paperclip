@@ -7921,7 +7921,9 @@ export function toolAccessService(
     }
 
     const preserveQuarantine =
-      isRailwayEndpoint(connection.config.url) || sourceTemplateKey === "enterpret";
+      isRailwayEndpoint(connection.config.url) ||
+      sourceTemplateKey === "enterpret" ||
+      sourceTemplateKey === "home-assistant";
     const normalizedConfig = preserveQuarantine
       ? { ...connection.config, quarantineNewEntries: true }
       : refreshOptions.enableAllByDefault

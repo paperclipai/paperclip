@@ -5388,11 +5388,47 @@ describeEmbeddedPostgres("tool access service", () => {
       script__get_live_context: "destructive",
     });
 
+    const askFirstRiskLevels = result.suggestedDefaults.askFirstRiskLevels as string[];
+    expect(askFirstRiskLevels).toEqual(["write", "destructive"]);
+    const askFirstCatalogEntryIds = result.catalog
+      .filter((entry) => askFirstRiskLevels.includes(entry.riskLevel))
+      .map((entry) => entry.id);
+    expect(askFirstCatalogEntryIds).toHaveLength(2);
     await service.finishGalleryAppConnection(company.id, result.connectionId, {
       enabledCatalogEntryIds: result.catalog.map((entry) => entry.id),
-      askFirstCatalogEntryIds: [],
+      askFirstCatalogEntryIds,
       access: "all_agents",
     });
+    await db
+      .update(toolConnections)
+      .set({ status: "active", enabled: true })
+      .where(eq(toolConnections.id, result.connectionId));
+    const agent = await createAgent(db, company.id);
+    const policyService = toolAccessPolicyService(db);
+    const decide = (toolName: string) => {
+      const entry = result.catalog.find((candidate) => candidate.toolName === toolName)!;
+      return policyService.decide({
+        companyId: company.id,
+        actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+        request: {
+          connectionId: result.connectionId,
+          catalogEntryId: entry.id,
+          toolName,
+          arguments: {},
+        },
+      });
+    };
+    await expect(decide("GetLiveContext")).resolves.toMatchObject({
+      decision: "allow",
+      reasonCode: "allow_profile",
+    });
+    for (const toolName of ["HassTurnOn", "script__get_live_context"]) {
+      await expect(decide(toolName)).resolves.toMatchObject({
+        decision: "require_approval",
+        reasonCode: "requires_approval_policy",
+      });
+    }
+
     fetchMock.mockResolvedValueOnce(
       mcpHttpResponse({
         jsonrpc: "2.0",
@@ -5416,6 +5452,62 @@ describeEmbeddedPostgres("tool access service", () => {
         expect.objectContaining({ toolName: "GetLiveContext", status: "active" }),
         expect.objectContaining({
           toolName: "script__unlock_front_door",
+          status: "quarantined",
+          quarantineReason: "pending_review",
+          riskLevel: "destructive",
+        }),
+      ]),
+    );
+
+    // Replacing the token must keep quarantine on, so scripts exposed after the
+    // reconnect cannot slip into the allowed profile without review.
+    const reconnectFetchMock = mockToolsList([
+      { name: "GetLiveContext", annotations: { readOnlyHint: true, destructiveHint: true, openWorldHint: false } },
+      { name: "HassTurnOn", annotations: haDefaults },
+      { name: "script__get_live_context", annotations: haDefaults },
+      { name: "script__unlock_front_door", annotations: haDefaults },
+    ]);
+    const reconnected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "home-assistant",
+        connectionMethodKey: "mcp-access-token",
+        reconnectConnectionId: result.connectionId,
+        configValues: { haHost: "ha.example.com" },
+        credentialValues: { "credentials.authorization": "replacement-llat" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(reconnected.connectionId).toBe(result.connectionId);
+    expect(reconnected.connection.config).toMatchObject({ quarantineNewEntries: true });
+    expect(JSON.stringify(reconnected.connection.config)).not.toContain("replacement-llat");
+    expect(reconnected.catalog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolName: "script__unlock_front_door", status: "quarantined" }),
+    ]));
+
+    reconnectFetchMock.mockResolvedValueOnce(
+      mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: {
+          tools: [
+            { name: "GetLiveContext", annotations: { readOnlyHint: true, destructiveHint: true, openWorldHint: false } },
+            { name: "HassTurnOn", annotations: haDefaults },
+            { name: "script__get_live_context", annotations: haDefaults },
+            { name: "script__unlock_front_door", annotations: haDefaults },
+            { name: "script__open_garage", annotations: haDefaults },
+          ],
+        },
+      }),
+    );
+    const afterReconnect = await service.refreshCatalog(result.connectionId, {
+      actorType: "user",
+      actorId: "board",
+    });
+    expect(afterReconnect.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          toolName: "script__open_garage",
           status: "quarantined",
           quarantineReason: "pending_review",
           riskLevel: "destructive",
