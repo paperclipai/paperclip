@@ -94,7 +94,7 @@
     "description": "Ubiquiti does not publish an MCP server. Paperclip connects to pete-builds/mcp-unifi, which you run on your own network next to a UniFi OS console with UniFi Network 9 or newer.",
     "steps": [
       "In UniFi OS, add a dedicated local administrator for mcp-unifi (not the owner account), sign in as that administrator, and create an API key under Settings, Control Plane, Integrations. View Only administrators cannot create API keys.",
-      "Run mcp-unifi 0.25 or newer with that key, MCP_UNIFI_READONLY=true, and a fresh random token in MCP_UNIFI_AUTH_TOKENS.",
+      "Run mcp-unifi 0.25 or newer with that key, STUB_MODE=false (the server returns mock data by default), MCP_UNIFI_READONLY=true, and a fresh random token in MCP_UNIFI_AUTH_TOKENS.",
       "Put a TLS reverse proxy in front of the server's /mcp endpoint and allow only Paperclip's address to reach it.",
       "Paste the proxy's host name and the bearer token into Paperclip."
     ],

@@ -10,8 +10,11 @@ This document follows the template in
 [Connection Authoring Runbook](./CONNECTOR-PLAYBOOK.md) and records exactly what
 was and was not verified.
 
-**Status: catalog connector with deterministic tests only.** It has not been
-connected to a live UniFi console or mcp-unifi server. See
+**Status: catalog connector with deterministic tests plus a live server
+check.** A read-only mcp-unifi deployment in front of a real UniFi console
+was verified end to end over TLS and bearer auth, and its live tool list
+matched this connector's reviewed reads exactly. Connecting through a running
+Paperclip build of this connector has not been done yet. See
 [Validation Hook](#validation-hook).
 
 **Release path:** the **bearer token** method (`mcp-bearer-token`) targets
@@ -169,11 +172,16 @@ sequenceDiagram
      -v "$PWD/unifi_api_key:/run/secrets/unifi_api_key:ro" \
      -e UNIFI_HOST=192.168.1.1 \
      -e UNIFI_API_KEY_FILE=/run/secrets/unifi_api_key \
+     -e STUB_MODE=false \
      -e MCP_UNIFI_READONLY=true \
      -e MCP_UNIFI_AUTH_TOKENS="$(openssl rand -hex 32)" \
      ghcr.io/pete-builds/mcp-unifi:0.25.0
    ```
 
+   - Set `STUB_MODE=false`. mcp-unifi defaults to `STUB_MODE=true` and
+     returns canned devices (`192.168.1.x`, WAN `203.0.113.42`) without
+     contacting the console. Its startup log line `MCP UniFi starting` shows
+     `"stub_mode": false` when it is talking to the real console.
    - Keep `MCP_UNIFI_MODULES_ENABLED` at its default (`network`). The Protect
      and Access modules expose camera imagery and door, credential, and
      visitor data, which this connector does not review as reads.
@@ -181,7 +189,9 @@ sequenceDiagram
      the console's certificate.
 5. Put a TLS reverse proxy (Caddy, nginx, Traefik) in front of
    `127.0.0.1:3714`, serving `/mcp` on a host name with a valid certificate.
-   Allow only Paperclip's egress address to reach it.
+   Allow only Paperclip's egress address to reach it. If clients connect by
+   IP address, they send no TLS SNI; with Caddy, set the global
+   `default_sni <ip>` option or the handshake fails.
 6. In Paperclip, open Apps → UniFi. Paste the proxy host name and one bearer
    token from `MCP_UNIFI_AUTH_TOKENS`, then keep no other copy of the token.
 
@@ -284,12 +294,31 @@ Deterministic coverage (no live UniFi console):
 View Only API-key findings under
 [Credential residual risk](#credential-residual-risk).
 
+**Live server proof** (2026-10-07, UniFi Express 7, Network 10.6.106).
+Deployment: mcp-unifi `0.25.0` (`STUB_MODE=false`, `MCP_UNIFI_READONLY=true`,
+modules `network`) using a dedicated local admin's key, behind a Caddy
+`tls internal` proxy that allows only the Paperclip host's address. Every
+probe ran from the Paperclip host and only read data.
+
+- The startup log shows `"stub_mode": false`, `"readonly": true`, and
+  `read-only mode enabled: every mutating tool is hidden from tools/list and
+  refused on tools/call`.
+- Without a bearer token the server returns `401`. A client that is not on
+  the proxy allowlist gets `403`.
+- `initialize` returns `UniFi 4.0.10`. `tools/list` returns 48 tools, all
+  with `readOnlyHint: true`.
+- The live tool names exactly match the 48 names in `UNIFI_READ_TOOLS`, with
+  none missing and none extra. The `classifyRisk` rules classify all 48 as
+  `read`.
+- `list_devices` returned the real gateway and access point, and
+  `get_site_health` returned the WAN, LAN, and WLAN subsystems.
+  `list_networks` returned the real networks and VLANs.
+
 **Outstanding live proof** (not run):
 
-- Run mcp-unifi with `MCP_UNIFI_READONLY=true` behind TLS, and confirm that
-  `tools/list` returns only reads.
-- Connect from Paperclip and run a safe read (`list_devices`,
-  `get_site_health`).
+- Connect through a running Paperclip build that includes this connector
+  (Apps → UniFi), and run a safe read there. This covers the gallery connect,
+  the Ask-first defaults, and quarantine in the UI.
 - Confirm refresh quarantine after an mcp-unifi upgrade.
 - Revoke the token, then the key.
 
