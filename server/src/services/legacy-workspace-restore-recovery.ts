@@ -60,4 +60,3 @@ export async function preserveLegacyWorkspaceRestoreSources(db: Db, run: Run): P
   }
   return retained;
 }
-
