@@ -571,3 +571,82 @@ export async function settleUnrecoverableExecutions(
     }
   }
 }
+
+/**
+ * A user-driven status change is the operator's decision that this task's
+ * recorded execution state is the intended one. Resolved recovery actions
+ * that still hold `evidence.automaticRecovery.replay = "blocked"` otherwise
+ * keep parking every wake on the issue forever: the issue looks alive, but
+ * execution-blocker admission silently swallows each wake, so nothing —
+ * monitors, comment wakes, retry loops — ever runs again. Fold that hold
+ * into a reconciled marker so the issue accepts work again. The original
+ * evidence is preserved and an audit activity row is recorded.
+ *
+ * Scope guards:
+ * - Only the resolved no-replay marker folds. Active/escalated recovery
+ *   actions keep their own resolution flow.
+ * - Unsafe-workspace holds (`workspaceRestoreFailure = "restore_unsafe_archive"`)
+ *   are never retired here: a status change cannot make an unsafe workspace
+ *   safe, and that hold deliberately survives until repair or reconciliation.
+ * - Conversation recovery actions are owned by the conversation fold in
+ *   settleUnrecoverableExecutions.
+ */
+export async function retireExecutionReplayHoldOnStatusRestore(
+  db: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+    fromStatus: string;
+    toStatus: string;
+    actorId: string;
+    now?: Date;
+  },
+): Promise<{ retiredRecoveryActionIds: string[] }> {
+  const now = input.now ?? new Date();
+  const foldableHold = and(
+    eq(issueRecoveryActions.companyId, input.companyId),
+    eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    not(conversationRecoveryActionPredicate()!),
+    eq(issueRecoveryActions.status, "resolved"),
+    inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+    sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+    sql`coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'`,
+  );
+  const folded = await db
+    .update(issueRecoveryActions)
+    .set({
+      evidence: sql`jsonb_set(
+        ${issueRecoveryActions.evidence},
+        '{automaticRecovery}',
+        (${issueRecoveryActions.evidence}->'automaticRecovery') || ${JSON.stringify(
+          {
+            replay: "user_status_restore",
+            clearedAt: now.toISOString(),
+            clearedBy: input.actorId,
+            fromStatus: input.fromStatus,
+            toStatus: input.toStatus,
+          },
+        )}::jsonb
+      )`,
+      updatedAt: now,
+    })
+    .where(foldableHold)
+    .returning({ id: issueRecoveryActions.id });
+  if (folded.length === 0) return { retiredRecoveryActionIds: [] };
+  await persistActivity(db, {
+    companyId: input.companyId,
+    actorType: "user",
+    actorId: input.actorId,
+    action: "issue.execution_recovery_settled",
+    entityType: "issue",
+    entityId: input.issueId,
+    details: {
+      continuation: "user_status_restore",
+      fromStatus: input.fromStatus,
+      toStatus: input.toStatus,
+      recoveryActionIds: folded.map((row) => row.id),
+      replayHoldRetired: true,
+    },
+  });
+  return { retiredRecoveryActionIds: folded.map((row) => row.id) };
+}

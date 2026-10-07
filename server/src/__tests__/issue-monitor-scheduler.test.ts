@@ -556,4 +556,140 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(JSON.stringify(activity.map((row) => row.details))).not.toContain("provider.example");
     expect(activity.find((row) => row.action === "issue.monitor_triggered")?.details).not.toHaveProperty("externalRef");
   });
+
+  async function seedExecutionReplayHold(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    options?: {
+      replay?: string;
+      workspaceRestoreFailure?: string;
+      status?: string;
+    };
+  }) {
+    const sourceRunId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      companyId: input.companyId,
+      sourceIssueId: input.issueId,
+      kind: "active_run_watchdog",
+      status: input.options?.status ?? "resolved",
+      ownerType: "agent",
+      ownerAgentId: input.agentId,
+      cause: "uncertain_provider_action",
+      fingerprint: `storm-${input.issueId}`,
+      evidence: {
+        policy: "preserve_without_replay_v1",
+        runId: sourceRunId,
+        automaticRecovery: {
+          policy: "preserve_without_replay_v1",
+          runId: sourceRunId,
+          replay: input.options?.replay ?? "blocked",
+          actionOutcome: "unknown",
+          recordedAt: "2026-04-11T12:00:00.000Z",
+        },
+        ...(input.options?.workspaceRestoreFailure
+          ? { workspaceRestoreFailure: input.options.workspaceRestoreFailure }
+          : {}),
+      },
+      nextAction: "Automatic recovery stopped. Recorded work is preserved.",
+      outcome: "cancelled",
+      resolvedAt: new Date("2026-04-11T12:00:00.000Z"),
+    });
+    return { sourceRunId };
+  }
+
+  it("keeps the monitor armed and logs a visible park when execution-blocker admission parks the wake", async () => {
+    const { companyId, agentId, issueId, nextCheckAt } = await seedFixture();
+    await seedExecutionReplayHold({ companyId, agentId, issueId });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    expect(result.enqueued).toBe(0);
+    expect(result.skipped).toBe(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt.toISOString());
+    expect(issue.monitorAttemptCount).toBe(0);
+    expect(issue.monitorLastTriggeredAt).toBeNull();
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor ?? null).not.toBeNull();
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+    });
+
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+
+    const parkedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(parkedWake?.status).toBe("skipped");
+    expect(parkedWake?.reason).toBe("execution_reconciliation_required");
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activity.map((row) => row.action)).toContain("issue.monitor_wake_parked");
+    expect(activity.map((row) => row.action)).not.toContain("issue.monitor_triggered");
+    expect(
+      activity.find((row) => row.action === "issue.monitor_wake_parked")?.details,
+    ).toMatchObject({
+      identifier: issue.identifier,
+      blockerCause: "uncertain_provider_action",
+      blockerNextAction: "Automatic recovery stopped. Recorded work is preserved.",
+    });
+  });
+
+  it("retries a parked monitor after the execution hold is reconciled, with the claim throttle intact", async () => {
+    const { companyId, agentId, issueId } = await seedFixture();
+    const { sourceRunId } = await seedExecutionReplayHold({ companyId, agentId, issueId });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    // Inside the stale-claim window the armed monitor must not re-dispatch.
+    await heartbeat.tickTimers(new Date("2026-04-11T12:33:00.000Z"));
+    const parkedAfterThrottledTick = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(activityLog)
+      .where(sql`${activityLog.entityId} = ${issueId} and ${activityLog.action} = 'issue.monitor_wake_parked'`);
+    expect(Number(parkedAfterThrottledTick[0]?.count ?? 0)).toBe(1);
+
+    // The operator reconciles the stopped execution (same fold shape the
+    // status-restore path applies): the no-replay hold retires.
+    await db
+      .update(issueRecoveryActions)
+      .set({
+        evidence: {
+          policy: "preserve_without_replay_v1",
+          runId: sourceRunId,
+          automaticRecovery: {
+            policy: "preserve_without_replay_v1",
+            runId: sourceRunId,
+            replay: "manually_reconciled",
+            actionOutcome: "unknown",
+            recordedAt: "2026-04-11T12:00:00.000Z",
+          },
+        },
+      })
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+
+    // Past the stale-claim window the monitor dispatches normally and the
+    // loop completes instead of dying after one parked fire.
+    const result = await heartbeat.tickTimers(new Date("2026-04-11T12:37:00.000Z"));
+
+    expect(result.enqueued).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(issue.monitorAttemptCount).toBe(1);
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activity.map((row) => row.action)).toContain("issue.monitor_triggered");
+  });
 });

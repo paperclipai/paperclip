@@ -11861,8 +11861,8 @@ export function heartbeatService(
           if (scheduled.outcome === "not_scheduled")
             throw conflict(scheduled.reason);
         }
-      } else
-        await enqueueWakeup(targetAgentId, {
+      } else {
+        const wake = await enqueueWakeup(targetAgentId, {
           source: input.source,
           triggerDetail: input.triggerDetail,
           reason: wakeReason,
@@ -11892,6 +11892,52 @@ export function heartbeatService(
             manualTrigger: input.activitySource === "manual",
           },
         });
+        // A null wake is not always benign: execution-blocker admission parks
+        // issue-targeted wakes (deferred_issue_execution) without throwing, so
+        // no run ever spawns and nothing would re-arm this monitor after the
+        // triggered patch below clears it. While an execution blocker holds
+        // the issue, keep the monitor armed so the next tick retries once the
+        // hold is reconciled, and leave a visible activity row — the previous
+        // silence is what made parked monitor loops die invisibly.
+        if (!wake) {
+          const parkedBlocker = await getExecutionBlocker(
+            db,
+            claimed.companyId,
+            claimed.id,
+          );
+          if (parkedBlocker) {
+            await logActivity(db, {
+              companyId: claimed.companyId,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              action: "issue.monitor_wake_parked",
+              entityType: "issue",
+              entityId: claimed.id,
+              details: {
+                identifier: claimed.identifier,
+                nextCheckAt: scheduledAtIso,
+                attemptCount: nextAttemptCount,
+                notes: claimed.monitorNotes ?? null,
+                ...monitorMetadata,
+                source: input.activitySource,
+                blockerRecoveryActionId: parkedBlocker.recoveryActionId,
+                blockerCause: parkedBlocker.cause,
+                blockerNextAction: parkedBlocker.nextAction,
+              },
+            });
+            // The claim already wrote monitorWakeRequestedAt, so parked
+            // retries self-throttle to the staleClaimThreshold window; the
+            // armed monitorNextCheckAt keeps the schedule eligible and
+            // timeoutAt enforcement stays owned by issueMonitorLimitClearReason.
+            return {
+              outcome: "parked" as const,
+              reason: parkedBlocker.nextAction,
+            };
+          }
+        }
+      }
 
       await db
         .update(issues)
@@ -12093,6 +12139,7 @@ export function heartbeatService(
 
     let triggered = 0;
     let skipped = 0;
+    let parked = 0;
 
     for (const due of dueMonitors) {
       const claimed = await db.transaction(async (tx) => {
@@ -12137,6 +12184,7 @@ export function heartbeatService(
         });
         if (result.outcome === "triggered") triggered += 1;
         if (result.outcome === "skipped") skipped += 1;
+        if (result.outcome === "parked") parked += 1;
       } catch (err) {
         logger.error({ err, issueId: claimed.id }, "issue monitor tick failed");
       }
@@ -12146,6 +12194,7 @@ export function heartbeatService(
       checked: dueMonitors.length,
       triggered,
       skipped,
+      parked,
     };
   }
 
