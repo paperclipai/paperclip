@@ -206,8 +206,9 @@ expire one minute after consent and are single-use. Access tokens expire in
 fifteen minutes. `offline_access` issues a thirty-day rotating refresh token;
 replaying a consumed refresh token revokes its entire grant. Tokens and codes
 are hashed at rest. `paperclip:read` is required; `paperclip:write` adds only task
-work and attachment mutations on direct connections. The separately consented
-`paperclip:configure` scope covers allowed configuration operations. Scope expansion
+work and attachment mutations on direct connections. The `paperclip:configure`
+scope covers allowed configuration operations. One **Write all of your Paperclip
+data** consent checkbox approves both requested mutation scopes. Scope expansion
 requires a new consent flow; the directory broker retains its original operations.
 
 Each grant records the person, client, company, resource and scopes. Membership
@@ -446,9 +447,12 @@ Existing direct requests and grants are unchanged.
 Direct instance connections expose 37 explicitly registered operations. The central
 public directory broker retains its original ten tools and rejects expanded calls.
 The existing experimental setting gates both surfaces; sharing a setup link still
-conveys no authority. Reconnect and explicitly check **Allow configuring agents,
-projects and skills as me** to grant `paperclip:configure`. This new checkbox starts
-unchecked. Existing write connections do not acquire it, including after refresh.
+conveys no authority. Consent has one **Write all of your Paperclip data** checkbox,
+checked by default for eligible roles. It approves the requested work and
+configuration scopes together; unchecking it grants read-only access. Clients must
+request `paperclip:configure` to configure agents, projects and skills. Existing
+write connections do not acquire this scope, including after refresh; reconnect
+with the expanded scopes to approve it.
 Normal Paperclip permissions are required in addition to the connection scope.
 
 - Work (`paperclip:write`): update, finish or block tasks; write Markdown documents;

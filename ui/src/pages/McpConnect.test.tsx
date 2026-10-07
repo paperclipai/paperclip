@@ -172,7 +172,8 @@ it("pins the default organization across refetches and never falls back after it
   } finally { page.cleanup(); }
 });
 
-it("denies without granting the default write permission", async () => {
+it("denies without granting default work or configuration access", async () => {
+  route.requestedConfigure = true;
   const page = setup();
   try {
     await vi.waitFor(() => expect(page.checkbox()?.getAttribute("aria-checked")).toBe("true"));
@@ -196,16 +197,39 @@ it("does not fetch client-selected favicons or trust names for branding", async 
 });
 
 
-it("requires a separate unchecked configuration choice and submits only explicit consent", async () => {
+it.each([
+  { device: false, optOut: false },
+  { device: false, optOut: true },
+  { device: true, optOut: false },
+  { device: true, optOut: true },
+])("uses one write choice for requested work and configuration access: %j", async ({ device, optOut }) => {
   route.requestedConfigure = true;
+  const page = setup(device);
+  try {
+    await vi.waitFor(() => expect(page.checkbox()?.getAttribute("aria-checked")).toBe("true"));
+    expect(page.container.querySelectorAll('[role="checkbox"]')).toHaveLength(1);
+    expect(page.container.textContent).toContain("Write all of your Paperclip data");
+    expect(page.container.textContent).not.toContain("Allow configuring");
+    if (optOut) flushSync(() => page.checkbox().click());
+    flushSync(() => page.connect().click());
+    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith(
+      device ? "/mcp/device/consent" : "/mcp/requests/request-one/consent",
+      { decision: "approve", companyId: "company-one", allowWrites: !optOut, allowConfiguration: !optOut, ...(device ? { userCode: "MIST-YPED" } : {}) },
+    ));
+  } finally { page.cleanup(); }
+});
+
+it.each([
+  { requestedWrite: false, canWrite: true, enabled: true },
+  { requestedWrite: true, canWrite: false, enabled: false },
+])("keeps one write choice for configuration-only requests and viewer restrictions: %j", async ({ requestedWrite, canWrite, enabled }) => {
+  Object.assign(route, { requestedWrite, requestedConfigure: true, canWrite });
   const page = setup();
   try {
-    await vi.waitFor(() => expect(page.container.querySelector("#mcp-allow-configuration")).not.toBeNull());
-    const checkbox = page.container.querySelector("#mcp-allow-configuration") as HTMLButtonElement;
-    expect(checkbox.getAttribute("aria-checked")).toBe("false");
-    expect(page.checkbox().getAttribute("aria-checked")).toBe("true");
-    flushSync(() => checkbox.click());
+    await vi.waitFor(() => expect(page.checkbox()?.getAttribute("aria-checked")).toBe(String(enabled)));
+    expect(page.container.querySelectorAll('[role="checkbox"]')).toHaveLength(1);
+    expect(page.checkbox().disabled).toBe(!canWrite);
     flushSync(() => page.connect().click());
-    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ allowWrites: true, allowConfiguration: true })));
+    await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ allowWrites: false, allowConfiguration: enabled })));
   } finally { page.cleanup(); }
 });
