@@ -58,6 +58,7 @@ import {
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   getAvailableConnectionMethod,
   getConnectableAppDefinition,
+  recommendedDefaultsForApp,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
 import {
@@ -5398,11 +5399,30 @@ describeEmbeddedPostgres("tool access service", () => {
       confirm_destructive_action: "destructive",
     });
 
-    await service.finishGalleryAppConnection(company.id, result.connectionId, {
+    // Finish with the wizard's recommended defaults so the Ask-first promise
+    // is exercised rather than an all-Allowed connection.
+    const defaults = recommendedDefaultsForApp(getConnectableAppDefinition("unifi")!, "mcp-bearer-token") as {
+      access: "all_agents";
+      askFirstRiskLevels: string[];
+    };
+    expect(defaults).toEqual({ access: "all_agents", askFirstRiskLevels: ["write", "destructive"] });
+    const askFirst = result.catalog.filter((entry) => defaults.askFirstRiskLevels.includes(entry.riskLevel));
+    const finish = await service.finishGalleryAppConnection(company.id, result.connectionId, {
       enabledCatalogEntryIds: result.catalog.map((entry) => entry.id),
-      askFirstCatalogEntryIds: [],
-      access: "all_agents",
+      askFirstCatalogEntryIds: askFirst.map((entry) => entry.id),
+      access: defaults.access,
     });
+    const approvalToolNames = finish.policies
+      .filter((policy) => policy.policyType === "require_approval" && policy.enabled)
+      .map((policy) => result.catalog.find((entry) => entry.id === (policy.selectors as { catalogEntryId?: string }).catalogEntryId)?.toolName)
+      .sort();
+    expect(approvalToolNames).toEqual([
+      "block_client",
+      "confirm_destructive_action",
+      "list_cameras",
+      "trigger_speedtest",
+      "update_wlan",
+    ]);
     fetchMock.mockResolvedValueOnce(
       mcpHttpResponse({
         jsonrpc: "2.0",

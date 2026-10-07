@@ -143,8 +143,16 @@ sequenceDiagram
 4. Run mcp-unifi `0.25.0` or newer, pinned to a reviewed release rather than
    `latest`:
 
+   Save the View Only key in a file that only the container's `mcp` user
+   (UID 1000) can read, then mount that file read-only. The `UNIFI_API_KEY_FILE` variable only
+   names the path; it does not copy the key into the container.
+
    ```bash
+   install -m 600 /dev/null ./unifi_view_only_key
+   printf '%s' "<paste View Only API key>" > ./unifi_view_only_key
+   sudo chown 1000:1000 ./unifi_view_only_key
    docker run -d --name mcp-unifi -p 127.0.0.1:3714:3714 \
+     -v "$PWD/unifi_view_only_key:/run/secrets/unifi_view_only_key:ro" \
      -e UNIFI_HOST=192.168.1.1 \
      -e UNIFI_API_KEY_FILE=/run/secrets/unifi_view_only_key \
      -e MCP_UNIFI_READONLY=true \
