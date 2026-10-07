@@ -801,8 +801,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsed.usage = {
           ...mergeAccountingUsage(parsed.usage, retained.usage),
           costUsd: mergeAccountingCost(
-            { costUsd: parsed.usage.costUsd, costComplete: parsed.costComplete },
-            { costUsd: retained.usage.costUsd, costComplete: retained.costComplete },
+            { costUsd: parsed.usage.costUsd, costComplete: parsed.costComplete, costRecords: parsed.costRecords },
+            { costUsd: retained.usage.costUsd, costComplete: retained.costComplete, costRecords: retained.costRecords },
+            accountingLog.unreadRecords(),
           ),
         };
         parsed.sawAgentEnd = parsed.sawAgentEnd || retained.sawAgentEnd;

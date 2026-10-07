@@ -36,35 +36,51 @@ describe("mergeAccountingUsage", () => {
 });
 
 describe("mergeAccountingCost", () => {
+  const view = (costUsd: number | null | undefined, costRecords: number, costComplete = true) =>
+    ({ costUsd, costComplete, costRecords });
+
   it("prefers the full-stream checkpoint sum when it is complete", () => {
-    expect(mergeAccountingCost(
-      { costUsd: 0.5, costComplete: true },
-      { costUsd: 1.25, costComplete: true },
-    )).toBe(1.25);
+    expect(mergeAccountingCost(view(0.5, 1), view(1.25, 3))).toBe(1.25);
   });
 
   it("fills the gap from control when the checkpoint saw no cost evidence", () => {
-    // Display lines redacted away are invisible to the checkpoint while the
-    // sanitized control record stays parseable.
-    expect(mergeAccountingCost(
-      { costUsd: 1.25, costComplete: true },
-      { costUsd: null, costComplete: true },
-    )).toBe(1.25);
+    expect(mergeAccountingCost(view(1.25, 1), view(null, 0))).toBe(1.25);
   });
 
   it("reports unknown when the full stream shows a cost is missing", () => {
     // An early unpriced step pushed out of capped control capture must not
     // let a later partial sum pose as the priced total.
-    expect(mergeAccountingCost(
-      { costUsd: 0.5, costComplete: true },
-      { costUsd: null, costComplete: false },
-    )).toBeNull();
+    expect(mergeAccountingCost(view(0.5, 1), view(null, 2, false))).toBeNull();
+    expect(mergeAccountingCost(view(0.5, 1), view(null, 2, false), 1)).toBeNull();
   });
 
   it("returns null when both sides are missing", () => {
-    expect(mergeAccountingCost(
-      { costUsd: null, costComplete: true },
-      { costUsd: undefined, costComplete: true },
-    )).toBeNull();
+    expect(mergeAccountingCost(view(null, 0), view(undefined, 0))).toBeNull();
+  });
+
+  describe("when redaction left checkpoint records unreadable", () => {
+    it("takes the control sum when control parsed every record the stream carried", () => {
+      // Step 1's counter matched a secret, so its display line was unparseable:
+      // the checkpoint holds only step 2 (0.0025) while control holds both.
+      expect(mergeAccountingCost(view(0.005, 2), view(0.0025, 1), 1)).toBe(0.005);
+    });
+
+    it("fills from control when every display record was unreadable", () => {
+      expect(mergeAccountingCost(view(0.0025, 1), view(null, 0), 1)).toBe(0.0025);
+    });
+
+    it("reports unknown when capped control is missing a record too", () => {
+      // Control kept only the later step; the earlier readable one fell out of
+      // its capture, so neither view holds the whole stream.
+      expect(mergeAccountingCost(view(0.0025, 1), view(0.0025, 1), 1)).toBeNull();
+    });
+
+    it("reports unknown when control is itself incomplete", () => {
+      expect(mergeAccountingCost(view(0.005, 2, false), view(0.0025, 1), 1)).toBeNull();
+    });
+
+    it("reports unknown when control holds no cost evidence for the unreadable record", () => {
+      expect(mergeAccountingCost(view(null, 2), view(0.0025, 1), 1)).toBeNull();
+    });
   });
 });

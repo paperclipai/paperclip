@@ -12,6 +12,8 @@ const fields = new Set([
   "thoughtsTokenCount", "inputTokens", "totalTokens", "cached", "thoughts", "total_cost_usd", "cost_usd", "costUSD", "costUsd",
 ]);
 const stringFields = new Set(["type", "subtype", "role", "id", "session_id", "sessionID", "thread_id", "model", "modelID", "providerID"]);
+/** A JSON object line naming an accounting field or a usage-bearing record type. */
+const unreadAccountingRecord = /^\s*\{.*"(?:usage|tokens|cost|costUsd|cost_usd|total_cost_usd|step_finish|turn_end|result)"/;
 function project(value: unknown, depth = 0, field = ""): unknown {
   if (depth > 8) return undefined;
   if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
@@ -76,9 +78,16 @@ export function createUsageCheckpointLog(
   let snapshot: AdapterUsageCheckpoint | null = null;
   let failure: unknown;
   let failed = false;
+  let unreadRecords = 0;
   function retain(line: string) {
     let raw: unknown;
-    try { raw = JSON.parse(line); } catch { return; }
+    try { raw = JSON.parse(line); } catch {
+      // Literal redaction of a numeric counter or price leaves the marker where
+      // a number belonged, so the display record no longer parses. Count it:
+      // the checkpoint's totals exclude it and its sum is only a lower bound.
+      if (line.includes(REDACTED_SECRET_ENV_VALUE) && unreadAccountingRecord.test(line)) unreadRecords++;
+      return;
+    }
     const compact = JSON.stringify(project(raw));
     if (!compact || !/usage|tokens|cost|"result"|"turn.started"|"turn.completed"|"turn.failed"|"error"|"agent_end"|"step_finish"|"model"|"modelID"/.test(compact)) return;
     accounting += compact + "\n";
@@ -115,6 +124,8 @@ export function createUsageCheckpointLog(
     await onLog(stream, chunk);
   };
   return Object.assign(log, {
+    /** Accounting records the display stream lost to redaction, so unparseable here. */
+    unreadRecords: () => unreadRecords,
     async flush(options: { complete?: boolean } = {}) {
       if (failed) throw failure;
       if (!onUsage) return;
@@ -124,3 +135,4 @@ export function createUsageCheckpointLog(
   });
 }
 import { randomUUID } from "node:crypto";
+import { REDACTED_SECRET_ENV_VALUE } from "./secret-env-redaction.js";

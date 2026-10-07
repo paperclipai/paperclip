@@ -298,3 +298,12 @@ describe("Pi price availability", () => {
     expect(parsePiJsonl(JSON.stringify(event)).usage.costUsd).toBe(0);
   });
 });
+
+describe("Pi cost-bearing record count", () => {
+  it("counts every usage-bearing record, priced or not, so views can be reconciled", () => {
+    const turn = (total?: number) => JSON.stringify({ type: "turn_end", message: { role: "assistant", content: "x", usage: { input: 1, output: 1, ...(total === undefined ? {} : { cost: { total } }) } } });
+    expect(parsePiJsonl("").costRecords).toBe(0);
+    expect(parsePiJsonl([turn(0.5), turn(0.25)].join("\n"))).toMatchObject({ costRecords: 2, costComplete: true, usage: { costUsd: 0.75 } });
+    expect(parsePiJsonl([turn(0.5), turn()].join("\n"))).toMatchObject({ costRecords: 2, costComplete: false, usage: { costUsd: null } });
+  });
+});

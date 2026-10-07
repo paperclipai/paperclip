@@ -13,6 +13,8 @@ interface ParsedPiOutput {
   };
   /** False when a parsed record showed a cost was missing or unparseable. */
   costComplete: boolean;
+  /** Cost-bearing records parsed, priced or not. */
+  costRecords: number;
   finalMessage: string | null;
   toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown; result: string | null; isError: boolean }>;
 }
@@ -52,10 +54,12 @@ export function createPiJsonlParser() {
     toolCalls: [],
     // Derived at return from missingCost; stays true on the accumulator.
     costComplete: true,
+    costRecords: 0,
   };
 
   let missingCost = false;
   function addCost(value: unknown) {
+    result.costRecords++;
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) result.usage.costUsd = (result.usage.costUsd ?? 0) + value;
     else missingCost = true;
   }

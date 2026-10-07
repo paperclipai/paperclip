@@ -129,4 +129,35 @@ describe("usage checkpoint stream", () => {
     expect(parser).toHaveBeenCalledTimes(1024);
     expect(parser.mock.calls.reduce((sum, [input]) => sum + input.length, 0)).toBeLessThanOrEqual(1024 * (event.length + 1));
   });
+
+  describe("records the display stream lost to redaction", () => {
+    const marker = "***REDACTED***";
+    const damagedStep = `{"type":"step_finish","part":{"cost":0.0025,"tokens":{"input":${marker},"output":7}}}`;
+    const run = async (...lines: string[]) => {
+      const log = createUsageCheckpointLog(vi.fn(), vi.fn(), () => null);
+      for (const line of lines) await log("stdout", line + "\n");
+      await log.flush();
+      return log.unreadRecords();
+    };
+
+    it("counts an accounting line whose numeric counter was replaced by the marker", async () => {
+      expect(await run(damagedStep, damagedStep)).toBe(2);
+    });
+
+    it("counts a marker-damaged line that is still unterminated at flush", async () => {
+      const log = createUsageCheckpointLog(vi.fn(), vi.fn(), () => null);
+      await log("stdout", damagedStep);
+      await log.flush();
+      expect(log.unreadRecords()).toBe(1);
+    });
+
+    it("does not count a line that parses, a non-record line, or an unrelated damaged line", async () => {
+      expect(await run(
+        '{"type":"step_finish","part":{"cost":0.0025,"tokens":{"input":' + JSON.stringify(marker) + ',"output":7}}}',
+        `not json ${marker} tokens cost`,
+        `{"type":"text","part":{"text":"hello ${marker.slice(0, 4)}","n":${marker}}}`,
+        '{"type":"step_finish","part":{"cost":0.0025,"tokens":{"input":',
+      )).toBe(0);
+    });
+  });
 });

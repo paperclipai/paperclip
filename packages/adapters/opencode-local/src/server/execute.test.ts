@@ -356,3 +356,60 @@ describe("ensureRemoteOpenCodeModelConfiguredAndAvailable — probe is non-fatal
     ).rejects.toThrow("Configured OpenCode model is unavailable on the remote execution target");
   });
 });
+
+describe("OpenCode cost accounting when redaction hides a display record", () => {
+  const marker = "***REDACTED***";
+  const step = (input: number | string, cost = 0.0025) => JSON.stringify({
+    type: "step_finish", sessionID: "cost-session",
+    part: { reason: "done", cost, tokens: { input, output: 7, reasoning: 0, cache: { read: 0, write: 0 } } },
+  });
+  let home: string;
+
+  beforeEach(async () => {
+    home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-cost-"));
+    vi.stubEnv("XDG_CONFIG_HOME", home);
+  });
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fs.rm(home, { recursive: true, force: true });
+  });
+
+  // Display text is what the redacted log carries (a counter matching a known
+  // secret becomes the bare marker, so that JSON line no longer parses);
+  // control text is the sanitized copy, where the same counter becomes 0.
+  async function run(display: string[], control: string[]) {
+    const commandPath = path.join(home, "fake-opencode");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock.mockReset();
+    runProcessMock.mockImplementation((async (_runId: string, _target: unknown, _command: string, _args: string[], opts: { onLog: (stream: "stdout" | "stderr", text: string) => Promise<void> }) => {
+      const stdout = display.join("\n") + "\n";
+      await opts.onLog("stdout", stdout);
+      return probeResult({ stdout, controlOutput: { stdout: control.join("\n") + "\n", stderr: "" } });
+    }) as never);
+    return execute({
+      runId: "cost-run",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: commandPath, cwd: home, model: "openai/gpt-5", env: { OPENCODE_ALLOW_ALL_MODELS: "1" } },
+      context: createPromptContextFixture(),
+      onLog: async () => {},
+    });
+  }
+
+  it("keeps the control total when a redacted step is missing from the display stream", async () => {
+    // Step 1's input matched a secret: unparseable in display, input 0 in control.
+    const result = await run([step(marker).replace(`"${marker}"`, marker), step(5)], [step(0), step(5)]);
+    expect(result.costUsd).toBeCloseTo(0.005, 6);
+  });
+
+  it("reports unknown instead of a partial sum when control also lost a record", async () => {
+    // Control capture kept only the later step, so no view holds both records.
+    const result = await run([step(marker).replace(`"${marker}"`, marker), step(5), step(6)], [step(6)]);
+    expect(result.costUsd).toBeNull();
+  });
+
+  it("leaves a fully readable stream on the checkpoint total", async () => {
+    const result = await run([step(4), step(5)], [step(4), step(5)]);
+    expect(result.costUsd).toBeCloseTo(0.005, 6);
+  });
+});
