@@ -5184,7 +5184,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "telem",
       ]),
     );
-    expect(res.body.apps).toHaveLength(68);
+    expect(res.body.apps).toHaveLength(69);
     for (const slug of ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
       expect(res.body.apps.find((app: { slug: string }) => app.slug === slug).tags).toContain("model-provider");
     }
@@ -6308,6 +6308,52 @@ describeEmbeddedPostgres("tool access service", () => {
         actor,
       }),
     ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("connects Speko with an organization API key sent as a bearer header", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = mockToolsList([
+      { name: "sessions.transcript.get", annotations: { readOnlyHint: true } },
+      { name: "agents.test_call", annotations: { readOnlyHint: false } },
+      { name: "phone_numbers.delete", annotations: { destructiveHint: true } },
+    ]);
+
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "speko",
+        credentialValues: { "credentials.authorization": "sk_live_test-secret" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://mcp.speko.ai/mcp",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer sk_live_test-secret",
+        }),
+      }),
+    );
+    expect(result.connection).toMatchObject({
+      authKind: "api_key",
+      config: {
+        url: "https://mcp.speko.ai/mcp",
+        sourceTemplateKey: "speko",
+        connectionMethodKey: "mcp-api-key",
+      },
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain(
+      "sk_live_test-secret",
+    );
+    expect(result.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolName: "sessions.transcript.get", riskLevel: "read", status: "active" }),
+        expect.objectContaining({ toolName: "agents.test_call", riskLevel: "write", status: "active" }),
+        expect.objectContaining({ toolName: "phone_numbers.delete", riskLevel: "destructive", status: "active" }),
+      ]),
+    );
   });
 
   it("connects Superagent with an organization API key sent as a bearer header", async () => {
@@ -19297,6 +19343,18 @@ describe("classifyRisk", () => {
     for (const name of ["fireflies_share_meeting", "fireflies_revoke_meeting_access", "fireflies_move_meeting", "fireflies_create_soundbite", "fireflies_update_meeting_title"])
       expect(classifyRisk({ name, annotations: { readOnlyHint: true } }, "fireflies")).toBe("write");
     expect(classifyRisk({ name: "fireflies_share_meeting", annotations: { destructiveHint: true } }, "fireflies")).toBe("destructive");
+  });
+
+  it("treats Speko tools as writes unless Speko marks them read-only", () => {
+    for (const name of ["agents.list", "sessions.transcript.get", "phone_numbers.available.search"])
+      expect(classifyRisk({ name, annotations: { readOnlyHint: true } }, "speko")).toBe("read");
+    // These place real calls or change live agents without a generic write verb.
+    for (const name of ["agents.test_call", "agents.deploy", "receptionist.go_live", "agents.evals.run"]) {
+      expect(classifyRisk({ name }, "speko")).toBe("write");
+      expect(classifyRisk({ name })).toBe("read");
+    }
+    expect(classifyRisk({ name: "agents.delete", annotations: { destructiveHint: true } }, "speko")).toBe("destructive");
+    expect(classifyRisk({ name: "agents.get", annotations: { readOnlyHint: false } }, "speko")).toBe("write");
   });
 
   it("classifies Superagent mutations whose names read like reads as writes", () => {

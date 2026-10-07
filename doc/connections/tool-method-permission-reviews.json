@@ -1926,6 +1926,22 @@
       "evidenceLimit": "Provider documentation was unavailable or not readable during this review; metadata/registered source only. Account-bound proof remains outstanding."
     },
     {
+      "app": "speko",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "provider-controlled",
+      "supportedActions": "Create, update, deploy, roll back and delete voice agents; place outbound phone calls and test calls; buy, update and release phone numbers; read sessions, calls, transcripts and recordings; manage knowledge bases, evals, monitors, scenarios and the receptionist setup; read usage, credits and invoices.",
+      "evidence": [
+        "https://docs.speko.ai/quickstart/mcp",
+        "https://mcp.speko.ai/.well-known/oauth-protected-resource/mcp"
+      ],
+      "reviewedAt": "2026-10-07",
+      "liveProof": "not-run",
+      "keyPermissions": "A Speko API key reaches its whole Speko organization, including billable outbound calls, phone-number purchases and permanent deletes. Create a separate key for Paperclip in an organization that holds only the agents and phone numbers agents may reach, and set calling, deploy and delete actions to Ask first before agents run unattended."
+    },
+    {
       "app": "stripe",
       "method": "mcp-oauth",
       "auth": "oauth",

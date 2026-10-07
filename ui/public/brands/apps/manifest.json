@@ -398,6 +398,12 @@
       "localAsset": "/brands/apps/slack.svg"
     },
     {
+      "slug": "speko",
+      "provider": "Speko",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/speko.svg"
+    },
+    {
       "slug": "stripe",
       "provider": "Stripe",
       "catalogVisible": true,
