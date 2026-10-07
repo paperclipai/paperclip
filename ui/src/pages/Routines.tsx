@@ -661,6 +661,7 @@ export function Routines() {
         queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"],
       });
     },
+    onError: (error) => pushToast({ title: "Failed to update task", body: error.message, tone: "error" }),
   });
 
   function handleLegacyTabChange(tab: string) {

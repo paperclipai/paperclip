@@ -187,6 +187,7 @@ function ProjectTilePicker({
 
 function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -231,6 +232,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
     },
+    onError: (error) => pushToast({ title: "Failed to update task", body: error.message, tone: "error" }),
   });
 
   return (
@@ -258,6 +260,7 @@ function ProjectPluginOperationsList({
   pluginKey: string;
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
   const originKindPrefix = `plugin:${pluginKey}`;
 
   const { data: agents } = useQuery({
@@ -302,6 +305,7 @@ function ProjectPluginOperationsList({
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
     },
+    onError: (error) => pushToast({ title: "Failed to update task", body: error.message, tone: "error" }),
   });
 
   return (

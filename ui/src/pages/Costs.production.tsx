@@ -27,6 +27,7 @@ import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToastActions } from "../context/ToastContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
 import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
@@ -151,6 +152,7 @@ export function Costs() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
 
   const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
   const [activeProvider, setActiveProvider] = useState("all");
@@ -222,6 +224,7 @@ export function Costs() {
         windowKind: input.windowKind,
       }),
     onSuccess: invalidateBudgetViews,
+    onError: (error) => pushToast({ title: "Failed to save budget", body: error.message, tone: "error" }),
   });
 
   const incidentMutation = useMutation({
@@ -229,6 +232,8 @@ export function Costs() {
       budgetsApi.resolveIncident(companyId, input.incidentId, input),
     onSuccess: invalidateBudgetViews,
   });
+  const incidentError = (incidentId: string) =>
+    incidentMutation.variables?.incidentId === incidentId ? incidentMutation.error?.message ?? null : null;
 
   const { data: spendData, isLoading: spendLoading, error: spendError } = useQuery({
     queryKey: queryKeys.costs(companyId, from || undefined, to || undefined),
@@ -644,6 +649,7 @@ export function Costs() {
                       key={incident.id}
                       incident={incident}
                       isMutating={incidentMutation.isPending}
+                      error={incidentError(incident.id)}
                       onKeepPaused={() => incidentMutation.mutate({ incidentId: incident.id, action: "keep_paused" })}
                       onRaiseAndResume={(amount) =>
                         incidentMutation.mutate({
@@ -889,6 +895,7 @@ export function Costs() {
                         key={incident.id}
                         incident={incident}
                         isMutating={incidentMutation.isPending}
+                        error={incidentError(incident.id)}
                         onKeepPaused={() => incidentMutation.mutate({ incidentId: incident.id, action: "keep_paused" })}
                         onRaiseAndResume={(amount) =>
                           incidentMutation.mutate({

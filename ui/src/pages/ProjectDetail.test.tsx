@@ -33,6 +33,7 @@ const mockNavigate = vi.hoisted(() => vi.fn());
 const mockParams = vi.hoisted(() => ({ projectId: "project-1" }));
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockIssuesList = vi.hoisted(() => vi.fn());
+const mockPushToast = vi.hoisted(() => vi.fn());
 const mockSummarySlotCard = vi.hoisted(() => vi.fn());
 const mockLocation = vi.hoisted(() => ({
   pathname: "/projects/project-1/plugin-operations",
@@ -71,7 +72,7 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 vi.mock("../context/PanelContext", () => ({ usePanel: () => ({ closePanel: vi.fn() }) }));
-vi.mock("../context/ToastContext", () => ({ useToastActions: () => ({ pushToast: vi.fn() }) }));
+vi.mock("../context/ToastContext", () => ({ useToastActions: () => ({ pushToast: mockPushToast }) }));
 vi.mock("../context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mockSetBreadcrumbs }) }));
 vi.mock("@/plugins/slots", () => ({
   PluginSlotMount: (props: unknown) => {
@@ -295,6 +296,38 @@ describe("ProjectDetail", () => {
     const props = mockIssuesList.mock.calls.at(-1)?.[0];
     expect(props).toEqual(expect.objectContaining({ projectId: "project-1" }));
     expect(props).not.toHaveProperty("projectTimelineHref");
+  });
+
+  it("shows an error toast when a task update from the project list fails", async () => {
+    mockLocation.pathname = "/projects/project-1/issues";
+    mockIssuesApi.update.mockRejectedValueOnce(new Error("in_progress issues require an assignee"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const { onUpdateIssue } = mockIssuesList.mock.calls.at(-1)?.[0] as {
+      onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
+    };
+    await act(async () => {
+      onUpdateIssue("issue-1", { status: "in_progress" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mockPushToast).toHaveBeenCalledWith({
+      title: "Failed to update task",
+      body: "in_progress issues require an assignee",
+      tone: "error",
+    });
   });
 
   describe("plugin detail-tab deep links", () => {

@@ -151,6 +151,35 @@ describe("AttentionQueueRow", () => {
     expect(el.textContent).not.toContain("Open");
   });
 
+  it("shows the server reason when an expanded approval decision fails", async () => {
+    vi.mocked(approvalsApi.approve).mockRejectedValue(
+      new ApiError("Only pending or revision requested approvals can be approved", 422, {
+        error: "Only pending or revision requested approvals can be approved",
+      }),
+    );
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const approve = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Approve",
+    );
+    act(() => approve?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const feedback = document.body.textContent ?? "";
+    expect(feedback).toContain("Could not approve");
+    expect(feedback).toContain("Only pending or revision requested approvals can be approved");
+  });
+
   it("inlines a stalled review with the three review verbs (PAP-16080 §4.4)", () => {
     const el = render(
       <AttentionQueueRow

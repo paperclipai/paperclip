@@ -523,6 +523,7 @@ function ExecutionWorkspaceIssuesList({
   project: Project | null;
 }) {
   const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -559,6 +560,7 @@ function ExecutionWorkspaceIssuesList({
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, project.id) });
       }
     },
+    onError: (error) => pushToast({ title: "Failed to update task", body: error.message, tone: "error" }),
   });
 
   const projectOptions = useMemo(
