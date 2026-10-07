@@ -93,6 +93,12 @@ describe("assistant setup from Connections", () => {
     expect(container.querySelector('[aria-label="Set up Assistant Connection (MCP)"]')).not.toBeNull();
     expect(container.textContent).not.toContain("Dotta’s OpenCode connection");
   });
+  it.each(["https://assistant.example", "my_assistant", "Custom Assistant"])("preserves a custom client’s name: %s", async (clientName) => {
+    mocks.connections.mockResolvedValue([{ ...grant, clientName }]);
+    await render();
+    expect(container.textContent).toContain(`Dotta’s ${clientName} connection`);
+    expect(container.querySelector('button[aria-label^="Revoke Dotta’s"]')?.getAttribute("aria-label")).toBe(`Revoke Dotta’s ${clientName} connection`);
+  });
   it("uses the person’s initials when they have no profile image", async () => {
     mocks.connections.mockResolvedValue([{ ...grant, user: { name: "Dotta", image: null } }]);
     await render();
