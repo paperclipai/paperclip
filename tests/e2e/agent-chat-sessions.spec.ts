@@ -262,7 +262,14 @@ test("secondary chat navigation preserves layout, unique conversations, history,
     }));
     await page.goto(`/${f.company.issuePrefix}/dashboard`);
     await page.getByRole("link", { name: "Chat", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Who would you like to talk to?" })).toBeVisible();
+    // With no recent conversation, Chat opens the first human-created primary.
+    // Navigation alone must not create a conversation or start execution.
+    expect(await json(await request.get(`/api/companies/${f.company.id}/primary-agent/me`))).toMatchObject({
+      primaryAgentId: f.agents[0].id, initialized: true,
+    });
+    await expect(page.getByRole("link", { name: "Configure Alpha", exact: true })).toBeVisible();
+    expect(await json(await request.get(f.chatPath))).toBeNull();
+    expect(await json(await request.get(`/api/companies/${f.company.id}/heartbeat-runs`))).toHaveLength(0);
     const sidebar = page.getByRole("complementary", { name: "Chat", exact: true });
     // The rail lists every eligible agent before any conversation exists.
     const nav = sidebar.getByRole("navigation", { name: "Agent conversations" });
