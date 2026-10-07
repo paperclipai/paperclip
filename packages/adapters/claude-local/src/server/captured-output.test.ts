@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { createSecretEnvRedactionScanner } from "@paperclipai/adapter-utils/secret-env-redaction";
 import { parseClaudeProcessOutput, parseClaudeStreamJson } from "./parse.js";
 
 describe("sanitized Claude CLI control output", () => {
@@ -237,5 +238,48 @@ describe("sanitized Claude CLI control output", () => {
     expect(result.proc.stdout).toContain("normal-completion");
     expect(result.snapshots.every((text) => parseClaudeStreamJson(text).resultJson === null)).toBe(true);
     expect(result.logged).toBe(result.proc.stdout);
+  });
+});
+
+const producer = `let input = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => { const data = JSON.parse(input); require('node:fs').writeSync(data.pipe === 'stderr' ? 2 : 1, data.text); if (data.wait) setTimeout(() => process.exit(0), data.wait); });`;
+function options(text: string, pipe: "stdout" | "stderr" = "stdout", wait = 0, env: Record<string, string> = {}) {
+  return { cwd: process.cwd(), env, stdin: JSON.stringify({ text, pipe, wait }), timeoutSec: 5, graceSec: 1, onLog: async () => {} };
+}
+
+function exactResult(length: number) {
+  const empty = JSON.stringify({ type: "result", result: "" });
+  return JSON.stringify({ type: "result", result: "A".repeat(length - empty.length) });
+}
+describe("captured-output clipped-record provenance", () => {
+  it.each([65536, 4 * 1024 * 1024])("scanner does not promote the retained suffix at cap %i", (cap) => {
+    const valid = exactResult(cap);
+    const invalid = "x" + valid;
+    expect(valid.length).toBe(cap);
+    expect(parseClaudeStreamJson(valid).resultJson).not.toBeNull();
+    expect(parseClaudeStreamJson(invalid).resultJson).toBeNull();
+    const scanner = createSecretEnvRedactionScanner(["A".repeat(64)], cap);
+    let inspected = "";
+    scanner.append(invalid, value => { inspected = value; });
+    expect(parseClaudeStreamJson(inspected).resultJson).toBeNull();
+    expect(parseClaudeStreamJson(scanner.snapshot()).resultJson).toBeNull();
+  });
+  it.each(["stdout", "stderr"] as const)("malformed original on %s does not trigger cleanup after clipping", async (pipe) => {
+    const malformed = "x" + exactResult(65536);
+    const result = await runChildProcess(randomUUID(), process.execPath, ["-e", producer], {
+      ...options(malformed, pipe, 300, { CLIENT_SECRET: "A".repeat(64) }),
+      terminalResultCleanup: { graceMs: 20, hasTerminalResult: output => parseClaudeStreamJson(output[pipe]).resultJson !== null },
+    });
+    expect(parseClaudeStreamJson(result[pipe]).resultJson).toBeNull();
+    expect(result[pipe]).not.toContain("A".repeat(64));
+    expect(result.terminalResultCleanup).toBeNull();
+    expect(result.exitCode).toBe(0);
+  });
+  it.each(["stdout", "stderr"] as const)("genuine compacted result on %s still triggers cleanup", async (pipe) => {
+    const result = await runChildProcess(randomUUID(), process.execPath, ["-e", producer], {
+      ...options(exactResult(65536), pipe, 300, { CLIENT_SECRET: "A".repeat(64) }),
+      terminalResultCleanup: { graceMs: 20, hasTerminalResult: output => parseClaudeStreamJson(output[pipe]).resultJson !== null },
+    });
+    expect(parseClaudeStreamJson(result[pipe]).resultJson).not.toBeNull();
+    expect(result.terminalResultCleanup).not.toBeNull();
   });
 });

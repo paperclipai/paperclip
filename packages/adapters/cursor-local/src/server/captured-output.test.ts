@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
+import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { parseCursorJsonl, parseCursorProcessOutput } from "./parse.js";
 
 // Result/usage envelope from server/src/__tests__/cursor-local-adapter.test.ts.
@@ -63,5 +64,34 @@ describe("sanitized Cursor CLI control output", () => {
     expect(parseCursorProcessOutput({ stdout, controlOutput: { stdout: "***REDACTED***", stderr: "" } }).sessionId).toBeNull();
     const malformed = '{"type":"result","session_id":"synthetic-cursor-session","usage":{"input_tokens":***REDACTED***}}';
     expect(parseCursorProcessOutput({ stdout: malformed }).sessionId).toBeNull();
+  });
+});
+
+const producer = `let input = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => { const data = JSON.parse(input); require('node:fs').writeSync(data.pipe === 'stderr' ? 2 : 1, data.text); if (data.wait) setTimeout(() => process.exit(0), data.wait); });`;
+function options(text: string, pipe: "stdout" | "stderr" = "stdout", wait = 0, env: Record<string, string> = {}) {
+  return { cwd: process.cwd(), env, stdin: JSON.stringify({ text, pipe, wait }), timeoutSec: 5, graceSec: 1, onLog: async () => {} };
+}
+
+describe("captured-output supported Cursor framing", () => {
+  it("prefixed malformed original does not become accepted evidence", async () => {
+    const secret = 'BAD"DATA';
+    const text = 'stdout: {"type":"result","result":"before ' + secret + ' after"}\n';
+    expect(parseCursorJsonl(text).summary).toBe("");
+    const result = await runChildProcess(randomUUID(), process.execPath, ["-e", producer], options(text, "stdout", 0, { CLIENT_SECRET: secret }));
+    expect(result.stdout).not.toContain(secret);
+    expect(result.controlOutput?.displayFallbackSafe).toBe(false);
+    expect(parseCursorProcessOutput(result).summary).toBe("");
+  });
+  it("prefixed valid numeric collision preserves summary and unaffected accounting", async () => {
+    const text = "stdout: " + JSON.stringify({ type: "result", result: "completed", usage: { input_tokens: 123456, output_tokens: 7 } }) + "\n";
+    expect(parseCursorJsonl(text)).toMatchObject({ summary: "completed", usage: { inputTokens: 123456, outputTokens: 7 } });
+    const result = await runChildProcess(randomUUID(), process.execPath, ["-e", producer], options(text, "stdout", 0, { CLIENT_SECRET: "123456" }));
+    expect(result.stdout).not.toContain("123456");
+    expect(parseCursorProcessOutput(result)).toMatchObject({ summary: "completed", usage: { inputTokens: 0, outputTokens: 7 } });
+  });
+  it("unaffected prefixed result and accounting survive", async () => {
+    const text = "stdout: " + JSON.stringify({ type: "result", result: "completed", usage: { input_tokens: 17, output_tokens: 7 } }) + "\n";
+    const result = await runChildProcess(randomUUID(), process.execPath, ["-e", producer], options(text, "stdout", 0, { CLIENT_SECRET: "unused-value" }));
+    expect(parseCursorProcessOutput(result)).toMatchObject({ summary: "completed", usage: { inputTokens: 17, outputTokens: 7 } });
   });
 });
