@@ -20,6 +20,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { stripVTControlCharacters } from "node:util";
 
 import type {
   AdapterExecutionContext,
@@ -34,7 +35,6 @@ import {
   renderTemplate,
   ensureAbsoluteDirectory,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   joinPromptSections,
   selectPaperclipPromptSections,
   stringifyPaperclipWakePayload,
@@ -82,7 +82,7 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
 
-const HERMES_DEFAULT_PROMPT_TEMPLATE = [
+const HERMES_RUNTIME_IDENTITY_TEMPLATE = [
   'You are "{{agent.name}}", an AI agent employee in a Paperclip-managed company.',
   "",
   "Paperclip runtime identity:",
@@ -90,7 +90,11 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "- Company ID: {{agent.companyId}}",
   "- Run ID: {{run.id}}",
   "- API base: {{paperclipApiUrl}}",
-  "",
+].join("\n");
+
+// Hermes applies this overlay at each API call, including after compaction,
+// without storing it in conversation history. Keep run/task deltas in -q.
+const HERMES_SYSTEM_PROMPT_TEMPLATE = [
   "Paperclip API guidance:",
   "- Use `curl` from the terminal for Paperclip API calls; browser/web extraction tools may not reach localhost.",
   "- Use `$PAPERCLIP_API_URL`, `$PAPERCLIP_API_KEY`, and `$PAPERCLIP_RUN_ID`; do not hard-code local ports or copy secrets into comments.",
@@ -112,7 +116,7 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "MD",
   ")",
   "jq -n --arg status done --arg comment \"$body\" '{status:$status, comment:$comment}' | \\",
-  "  curl -sS -X PATCH \"$api/issues/{{context.issueId}}\" \\",
+  "  curl -sS -X PATCH \"$api/issues/$PAPERCLIP_TASK_ID\" \\",
   "    -H \"Authorization: Bearer $PAPERCLIP_API_KEY\" \\",
   "    -H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\" \\",
   "    -H \"Content-Type: application/json\" \\",
@@ -141,9 +145,7 @@ export function buildPrompt(
   options: { resumedSession?: boolean } = {},
 ): string {
   const context = (ctx as any).context || {};
-  const template = cfgString(config.promptTemplate) || (context.conversationMode === true
-    ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
-    : HERMES_DEFAULT_PROMPT_TEMPLATE);
+  const template = cfgString(config.promptTemplate);
   const taskId = cfgString(context.taskId) || cfgString(context.issueId) || cfgString(ctx.config?.taskId);
   const taskTitle = cfgString(context.taskTitle) || cfgString(ctx.config?.taskTitle) || "";
   const taskBody = cfgString(context.taskBody) || cfgString(ctx.config?.taskBody) || "";
@@ -200,10 +202,11 @@ export function buildPrompt(
     paperclipRunIdEnv: "PAPERCLIP_RUN_ID",
   };
 
-  const rendered = isPaperclipRecoveryWakePayload(context.paperclipWake)
-    ? ""
-    : renderTemplate(renderConditionalSections(template, vars), vars);
+  const rendered = template && !isPaperclipRecoveryWakePayload(context.paperclipWake)
+    ? renderTemplate(renderConditionalSections(template, vars), vars)
+    : "";
   return joinPromptSections([
+    renderTemplate(HERMES_RUNTIME_IDENTITY_TEMPLATE, vars),
     wakePrompt,
     sessionHandoffMarkdown,
     taskContextMarkdown,
@@ -404,7 +407,7 @@ export async function execute(
 
   // ── Load agent instructions file (Paperclip instruction bundles) ──────
   // Paperclip can materialize managed instructions into instructionsFilePath;
-  // when present, inject that bundle into the Hermes prompt.
+  // when present, reapply that bundle through Hermes's native system overlay.
   const instructionsFilePath = cfgString(config.instructionsFilePath);
   let agentInstructions = "";
   if (instructionsFilePath) {
@@ -430,10 +433,8 @@ export async function execute(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
-  let prompt = buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
-  if (agentInstructions) {
-    prompt = agentInstructions + "\n\n---\n\n" + prompt;
-  }
+  const sessionId = persistSession ? prevSessionId : undefined;
+  const prompt = buildPrompt(ctx, config, { resumedSession: Boolean(sessionId) });
 
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
@@ -474,14 +475,6 @@ export async function execute(
   // system is designed for human-attended interactive sessions.
   args.push("--yolo");
 
-  if (persistSession && prevSessionId) {
-    args.push("--resume", prevSessionId);
-  }
-
-  if (extraArgs?.length) {
-    args.push(...extraArgs);
-  }
-
   // ── Build environment ──────────────────────────────────────────────────
   const userEnv = config.env as Record<string, string> | undefined;
   const env: Record<string, string> = {
@@ -490,6 +483,17 @@ export async function execute(
     ...buildPaperclipEnv(ctx.agent, ctx.agentIdentity),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
+
+  // Scope the overlay to this child process. Read the current bundle on every
+  // invocation; never infer its availability from a persisted session ID.
+  // Preserve an operator's explicit overlay before Paperclip's instructions.
+  env.HERMES_EPHEMERAL_SYSTEM_PROMPT = joinPromptSections([
+    env.HERMES_EPHEMERAL_SYSTEM_PROMPT,
+    agentInstructions,
+    renderTemplate(HERMES_SYSTEM_PROMPT_TEMPLATE, {
+      agent: ctx.agent,
+    }),
+  ]);
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
 
@@ -527,10 +531,10 @@ export async function execute(
     "stdout",
     `[hermes] Starting Hermes Agent (model=${model}, provider=${resolvedProvider} [${resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
   );
-  if (prevSessionId) {
+  if (sessionId) {
     await ctx.onLog(
       "stdout",
-      `[hermes] Resuming session: ${prevSessionId}\n`,
+      `[hermes] Resuming session: ${sessionId}\n`,
     );
   }
 
@@ -558,14 +562,31 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
-  });
+  const runAttempt = async (resumeId: string | undefined) => {
+    const attemptArgs = [...args];
+    if (resumeId) attemptArgs.push("--resume", resumeId);
+    else attemptArgs[2] = buildPrompt(ctx, config, { resumedSession: false });
+    if (extraArgs?.length) attemptArgs.push(...extraArgs);
+    return runChildProcess(ctx.runId, hermesCmd, attemptArgs, {
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: wrappedOnLog,
+      onSpawn: ctx.onSpawn,
+    });
+  };
+
+  let result = await runAttempt(sessionId);
+  let missingSession = false;
+  // Retry only an explicit missing-session failure, never a provider error,
+  // cancellation, timeout, or arbitrary failure after work may have started.
+  if (sessionId && !result.timedOut && !result.signal && typeof result.exitCode === "number" && result.exitCode !== 0 &&
+    /^(?:Error:\s*)?(?:Session\b[^\n]*\bnot found\b|Unknown session\b|No session found\b)/im.test(stripVTControlCharacters(`${result.stdout}\n${result.stderr}`))) {
+    missingSession = true;
+    await ctx.onLog("stdout", "[hermes] Saved session was not found; retrying with current instructions and full task context.\n");
+    result = await runAttempt(undefined);
+  }
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
@@ -619,6 +640,7 @@ export async function execute(
     executionResult.sessionParams = { sessionId: parsed.sessionId };
     executionResult.sessionDisplayId = parsed.sessionId.slice(0, 16);
   }
+  if (missingSession && !executionResult.sessionParams) executionResult.clearSession = true;
 
   return executionResult;
 }
