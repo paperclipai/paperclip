@@ -54,3 +54,31 @@ is safe to remove from its age, an absent PID, or a successful task response.
 
 This change prevents new orphaned ownership. It cannot recover file changes
 that an earlier failed collection discarded.
+
+## Required remote restore failures
+
+When a legacy sandbox run cannot copy required workspace files back, the server
+keeps the original allocation for repair. It writes the failed run, the exact
+lease retention intent, and a board-owned recovery action in one transaction.
+Cleanup stops that allocation and verifies its provider receipt. It does not
+use ordinary ephemeral destruction or return the source to warm reuse. Stop
+failures use the existing cleanup retry and backoff policy.
+
+The retained source uses `retain_on_failure`. A stopped source can still incur
+provider storage charges. It stays available until an operator recovers or
+explicitly discards it; elapsed time never proves that its files were copied.
+The recovery action lists the original lease IDs. Inspect those exact leases,
+confirm that cleanup stopped them, recover the missing files, and record
+`workspaceRepairEvidence` through the existing execution reconciliation action.
+Then use the provider's operator console to remove that exact retained
+allocation when its files are no longer needed. Verify its immutable provider
+allocation ID against the recorded lease before removal. The ordinary reusable
+sandbox cleanup does not select `retain_on_failure` sources; do not use
+environment deletion as proof that this allocation was removed. Keep the
+environment and its provider credentials until recovery is complete. Recording a
+repair decision does not automatically destroy it.
+
+A new message, Retry, or `/new` cannot clear this workspace repair hold. Ordinary
+local lock-timeout retries and runs without a required remote copy-back failure
+keep their existing policy. This change preserves future failures; it cannot
+recover files from an allocation that was already destroyed.

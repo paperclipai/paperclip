@@ -1,9 +1,11 @@
+import { hasRequiredWorkspaceRecovery, preserveWorkspaceRestoreRecoveryMetadata, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
+import { hasUnrestoredRemoteWorkspace, preserveLegacyWorkspaceRestoreSources } from "./legacy-workspace-restore-recovery.js";
 import { isPreDispatchReviewWaitVerified } from "./pre-dispatch-review-wait.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { claimedAdapterType, hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
@@ -25,7 +27,7 @@ export function legacyExecutionNeedsReconciliation(
   )
     return false;
   // A fresh model turn cannot repair or verify unrestored files.
-  if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive") return true;
+  if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson)) return true;
   // A fresh conversation turn lets the agent decide what remains. The retry
   // scheduler, not an action-outcome hold, owns the automatic attempt limit.
   if (hasConversationContinuationPolicy(run.resultJson)) return false;
@@ -57,7 +59,8 @@ export function legacyExecutionNeedsReconciliation(
 /** Review-wait receipts are only exempt after retained execution evidence agrees.
  * The synchronous classifier stays conservative for callers without a DB proof. */
 export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run: Run): Promise<boolean> {
-  return legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run));
+  return await hasUnrestoredRemoteWorkspace(db, run) ||
+    (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run)));
 }
 
 /** Persist the failed legacy run, owned lock release and operator decision together. */
@@ -67,8 +70,13 @@ export async function terminalizeLegacyExecution(input: {
   status: string;
   patch?: Partial<typeof heartbeatRuns.$inferInsert>;
   fromStatuses?: string[];
+  reconcileIfNeeded?: boolean;
+  writeConditions?: SQL[];
+  /** Adapter settlement records a copy-back failure before host finalization. */
+  recordRestoreFailureOnly?: boolean;
 }) {
-  const { db, run, status, patch } = input;
+  const { db, run, status } = input;
+  let patch = input.patch;
   const issueId =
     run.nativeIssueId ??
     (typeof run.contextSnapshot?.issueId === "string"
@@ -87,10 +95,19 @@ export async function terminalizeLegacyExecution(input: {
           )
           .for("update")
       : [];
-    const [updated] = await tx
+    const [current] = await tx.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+    )).for("update");
+    if (!current || current.runtimeMode !== "legacy" ||
+        (!input.recordRestoreFailureOnly && !(input.fromStatuses ?? [run.status]).includes(current.status))) return null;
+    if (patch?.resultJson !== undefined) patch = { ...patch,
+      resultJson: preserveWorkspaceRestoreRecoveryMetadata(current.resultJson,
+        input.recordRestoreFailureOnly ? { ...current.resultJson, ...patch.resultJson } : patch.resultJson),
+    };
+    let [updated] = await tx
       .update(heartbeatRuns)
       .set({
-        status,
+        status: input.recordRestoreFailureOnly ? current.status : status,
         ...patch,
         executionStatusDeliveryId: randomUUID(),
         updatedAt: new Date(),
@@ -99,12 +116,24 @@ export async function terminalizeLegacyExecution(input: {
         and(
           eq(heartbeatRuns.id, run.id),
           eq(heartbeatRuns.companyId, run.companyId),
-          inArray(heartbeatRuns.status, input.fromStatuses ?? [run.status]),
+          eq(heartbeatRuns.status, current.status),
+          ...(input.writeConditions ?? []),
         ),
       )
       .returning();
     if (!updated) return null;
-    if (task?.executionRunId === run.id)
+    const retainedLeaseIds = await preserveLegacyWorkspaceRestoreSources(tx as unknown as Db, input.recordRestoreFailureOnly ? { ...updated, status: "failed" } : updated);
+    if (retainedLeaseIds.length) {
+      [updated] = await tx.update(heartbeatRuns).set({ resultJson: {
+        ...updated.resultJson,
+        workspaceRestoreRecovery: { schema: LEGACY_WORKSPACE_RECOVERY_SCHEMA, leaseIds: retainedLeaseIds },
+      } }).where(and(eq(heartbeatRuns.id, updated.id), eq(heartbeatRuns.companyId, updated.companyId))).returning();
+    }
+    const needsRecovery = input.recordRestoreFailureOnly
+      ? retainedLeaseIds.length > 0 || hasRequiredWorkspaceRecovery(updated.resultJson)
+      : !input.reconcileIfNeeded || await legacyExecutionNeedsReconciliationWithEvidence(tx as unknown as Db, updated);
+    if (!needsRecovery) return updated;
+    if (!input.recordRestoreFailureOnly && task?.executionRunId === run.id)
       await tx
         .update(issues)
         .set({
@@ -113,7 +142,7 @@ export async function terminalizeLegacyExecution(input: {
           executionLockedAt: null,
         })
         .where(eq(issues.id, task.id));
-    if (task?.checkoutRunId === run.id)
+    if (!input.recordRestoreFailureOnly && task?.checkoutRunId === run.id)
       await tx
         .update(issues)
         .set({ checkoutRunId: null })
@@ -125,7 +154,7 @@ export async function terminalizeLegacyExecution(input: {
       task &&
       !isSupersededConversationRun(task, updated) &&
       (task.assigneeAgentId === run.agentId || isCurrentReviewer) &&
-      !["done", "cancelled"].includes(task.status)
+      (!["done", "cancelled"].includes(task.status) || retainedLeaseIds.length > 0)
     ) {
       // Periodic stranded-work checks may revisit this terminal run before its
       // reconciled continuation is dispatched. Preserve the recorded decision
@@ -135,16 +164,39 @@ export async function terminalizeLegacyExecution(input: {
           eq(issueRecoveryActions.companyId, run.companyId),
           eq(issueRecoveryActions.sourceIssueId, task.id),
           eq(issueRecoveryActions.status, "resolved"),
+          ...(hasRequiredWorkspaceRecovery(updated.resultJson) ? [
+            sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
+          ] : []),
           or(
             sql`${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${run.id}`,
             and(
               sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
-              sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
+              or(sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
+                sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`),
               sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
             ),
           ),
         )).limit(1);
       if (reconciled) return updated;
+      // Observation and finalization are two writes for one failure, not two
+      // recovery attempts. Preserve the existing board decision and budget.
+      const [existingRestoreAction] = hasRequiredWorkspaceRecovery(updated.resultJson)
+        ? await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, task.id),
+          eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        )).limit(1) : [];
+      if (existingRestoreAction) {
+        await tx.update(issueRecoveryActions).set({
+          evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
+            workspaceRestoreFailure: updated.resultJson!.workspaceRestoreFailure,
+            workspaceRestoreRecovery: updated.resultJson!.workspaceRestoreRecovery,
+          })}::jsonb`,
+          nextAction: "The original sandbox is retained for workspace repair. Verify its stop receipt, recover the missing files, and record workspaceRepairEvidence before continuing.",
+          updatedAt: new Date(),
+        }).where(eq(issueRecoveryActions.id, existingRestoreAction.id));
+        return updated;
+      }
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
         companyId: run.companyId,
         sourceIssueId: task.id,
@@ -158,10 +210,13 @@ export async function terminalizeLegacyExecution(input: {
           ...(isCurrentReviewer ? { reviewParticipantAgentId: run.agentId } : {}),
           originalFailureCode: updated.errorCode,
           ...(hasWorkspaceRestoreFailure(updated.resultJson) ? { workspaceRestoreFailure: updated.resultJson!.workspaceRestoreFailure } : {}),
+          ...(hasRequiredWorkspaceRecovery(updated.resultJson) ? { workspaceRestoreRecovery: updated.resultJson!.workspaceRestoreRecovery } : {}),
           adapterRecovery: "unsupported_or_unknown",
           attempt: executionFailureRetryCount(run) + 1,
         },
-        nextAction: hasWorkspaceRestoreFailure(updated.resultJson)
+        nextAction: hasRequiredWorkspaceRecovery(updated.resultJson)
+          ? "The original sandbox is retained for workspace repair. Verify that it has stopped, recover the missing files, record workspaceRepairEvidence, and explicitly remove the retained allocation when recovery is complete. A new agent turn cannot prove file recovery."
+          : hasWorkspaceRestoreFailure(updated.resultJson)
           ? "Verify safe workspace staging or repair, then reconcile the stopped run before continuing. Saved work and approval decisions remain in force."
           : "Inspect the stopped provider and recorded actions, then reconcile their outcomes before continuing. This adapter has not established a safe resume checkpoint.",
         maxAttempts: 3,
@@ -235,5 +290,14 @@ export async function settleInterruptedNativeBootstrap(
       details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id) },
     });
     return settled;
+  });
+}
+
+/** Capture the required-file obligation before unrelated host writes. Keeps
+ * execution ownership while the adapter's host finalization is still running. */
+export async function recordLegacyWorkspaceRestoreFailure(db: Db, run: Run, evidence: Record<string, unknown>) {
+  if (run.runtimeMode !== "legacy" || !hasWorkspaceRestoreFailure(evidence)) return;
+  await terminalizeLegacyExecution({ db, run, status: run.status,
+    recordRestoreFailureOnly: true, patch: { resultJson: evidence },
   });
 }

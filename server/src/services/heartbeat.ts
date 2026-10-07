@@ -1,3 +1,5 @@
+import { preserveWorkspaceRestoreRecoveryMetadata } from "./workspace-restore-recovery-state.js";
+import { recordLegacyWorkspaceRestoreFailure } from "./legacy-execution-recovery.js";
 import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironmentProjection } from "../vendor/paperclip-runner/index.js";
 import { activeIssueInteractionCondition, TASK_QUESTION_GUIDANCE } from "./issue-question-context.js";
 import { createAgentIdentityRedactor } from "./agent-identity-redaction.js";
@@ -3507,6 +3509,8 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
             'errorMessage', left(${heartbeatRuns.resultJson} #>> '{instructionSave,errorMessage}', 1024),
             'storageWarning', left(${heartbeatRuns.resultJson} #>> '{instructionSave,storageWarning}', 1024)
           )) end,
+        'workspaceRestoreRecovery', case when ${heartbeatRuns.resultJson} #>> '{workspaceRestoreRecovery,schema}' = 'paperclip.workspace-restore-recovery.v1'
+          then jsonb_build_object('schema', 'paperclip.workspace-restore-recovery.v1') end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
           in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
@@ -3586,6 +3590,7 @@ const heartbeatRunExecutionEvidenceColumn = sql<Record<string, unknown> | null>`
     'stopReason', ${heartbeatRuns.resultJson} -> 'stopReason',
     'timeoutSource', ${heartbeatRuns.resultJson} -> 'timeoutSource',
     'workspaceRestoreFailure', ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure',
+    'workspaceRestoreRecovery', ${heartbeatRuns.resultJson} -> 'workspaceRestoreRecovery',
     'executionCancellation', ${heartbeatRuns.resultJson} -> 'executionCancellation',
     'nativeCancellation', ${heartbeatRuns.resultJson} -> 'nativeCancellation',
     'cancelledByActorType', ${heartbeatRuns.resultJson} -> 'cancelledByActorType',
@@ -13001,6 +13006,10 @@ export function heartbeatService(
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
 
+    if (previousStatus && patch?.resultJson !== undefined) patch = { ...patch,
+      resultJson: preserveWorkspaceRestoreRecoveryMetadata(previousStatus.resultJson, patch.resultJson),
+    };
+
     // Preserve the receipt-source fence when finalization enriches usage. A
     // late spool replay must still be able to complete an unfinished receipt.
     if (patch?.usageJson && previousStatus?.usageJson) patch = { ...patch, usageJson: { ...previousStatus.usageJson, ...patch.usageJson } };
@@ -13027,17 +13036,13 @@ export function heartbeatService(
       };
     }
     const updated =
-      previousStatus &&
-      await legacyExecutionNeedsReconciliationWithEvidence(db, {
-        ...previousStatus,
-        status,
-        ...patch,
-      })
+      previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? await terminalizeLegacyExecution({
             db,
             run: previousStatus,
             status,
             patch,
+            reconcileIfNeeded: true,
           })
         : await db
             .update(heartbeatRuns)
@@ -13099,6 +13104,10 @@ export function heartbeatService(
       patch = { ...patch, resultJson: cancellationResultJson(previousStatus, status, patch?.resultJson, patch?.errorCode, patch?.error) };
     }
 
+    if (previousStatus && patch?.resultJson !== undefined) patch = { ...patch,
+      resultJson: preserveWorkspaceRestoreRecoveryMetadata(previousStatus.resultJson, patch.resultJson),
+    };
+
     // Preserve the receipt-source fence when finalization enriches usage. A
     // late spool replay must still be able to complete an unfinished receipt.
     if (patch?.usageJson && previousStatus?.usageJson) patch = { ...patch, usageJson: { ...previousStatus.usageJson, ...patch.usageJson } };
@@ -13122,18 +13131,15 @@ export function heartbeatService(
       };
     }
     const updated =
-      previousStatus &&
-      await legacyExecutionNeedsReconciliationWithEvidence(db, {
-        ...previousStatus,
-        status,
-        ...patch,
-      })
+      previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? await terminalizeLegacyExecution({
             db,
             run: previousStatus,
             status,
             patch,
             fromStatuses,
+            reconcileIfNeeded: true,
+            writeConditions: [nativeRunnerOwnershipNotHeldCondition(), ...(cancellationCondition ? [cancellationCondition] : [])],
           })
         : await db
             .update(heartbeatRuns)
@@ -20589,6 +20595,7 @@ export function heartbeatService(
     let nativeWorkspaceSync: Awaited<
       ReturnType<typeof prepareNativeWorkspaceSync>
     > = null;
+    let requiredWorkspaceRestoreEvidence: Record<string, unknown> | null = null;
     let providerResourceDispositionForRun:
       ProviderResourceDisposition | undefined;
     let nativeLifecycleTelemetryForRun:
@@ -25276,6 +25283,16 @@ export function heartbeatService(
             adapterResult = await guardedDispatch.resultPromise;
           }
           adapterResult = identityRedactor.redact(adapterResult);
+          if (run.runtimeMode === "legacy" && hasWorkspaceRestoreFailure(adapterResult.resultJson)
+              && executionTarget?.kind === "remote" && executionTarget.transport === "sandbox") {
+            requiredWorkspaceRestoreEvidence = {
+              workspaceRestoreFailure: adapterResult.resultJson!.workspaceRestoreFailure,
+              ...(adapterResult.resultJson?.workspaceRestoreDiagnostic ? { workspaceRestoreDiagnostic: adapterResult.resultJson.workspaceRestoreDiagnostic } : {}),
+            };
+            // Retention is the fallback even if recording this receipt fails.
+            providerResourceDispositionForRun = "stop_and_retain";
+            await recordLegacyWorkspaceRestoreFailure(db, run, requiredWorkspaceRestoreEvidence);
+          }
           for (const stream of ["stdout", "stderr"] as const) {
             const tail = identityRedactor.finish(stream);
             if (tail) await appendIdentityRedactedLog(stream, tail);
@@ -26071,10 +26088,7 @@ export function heartbeatService(
             await db
               .update(heartbeatRuns)
               .set({
-                resultJson: {
-                  ...persistedResultJson,
-                  presentationDecision,
-                },
+                resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision })}::jsonb`,
                 updatedAt: new Date(),
               })
               .where(eq(heartbeatRuns.id, livenessRun.id));
@@ -26474,6 +26488,7 @@ export function heartbeatService(
             errorMessage: message,
             resultJson: {
               ...parseObject(stopSnapshot?.resultJson),
+              ...requiredWorkspaceRestoreEvidence,
               ...(workspaceValidationFailure?.resultJson ??
                 configurationIncompleteFailure?.resultJson ??
                 {}),
