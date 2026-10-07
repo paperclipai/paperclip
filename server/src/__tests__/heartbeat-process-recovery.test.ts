@@ -5688,6 +5688,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     });
     expect(configurationComment).toBeTruthy();
+    await heartbeat.waitForRunExecutionDrain(runId);
+    expect(mockCaptureRunFailure.mock.calls.filter(([event]) => event.runId === runId)).toEqual([]);
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {

@@ -434,6 +434,15 @@ They do not change the ambient Sentry scope, whose isolation is unavailable
 without an OpenTelemetry context manager. Later, unrelated exceptions must
 not inherit a previous run's identity or fingerprint.
 
+Known missing-secret configuration blockers are kept in the task's run log,
+blocked state, and owner recovery action, without a Sentry run-failure event.
+This requires a failed `configuration_incomplete` run in the preparing stage,
+a setup-phase report, explicit proof that provider work did not start, and a
+nonempty list of recognized missing or inactive secret bindings. Process exit
+evidence, unknown binding reasons, secret-provider failures, ambiguous missing
+secret-definition lookups, and workspace failures remain reportable. This filter
+does not change task recovery, credentials, or execution policy.
+
 The `run_failure` context also includes the recorded process `exitCode` and
 `signal`, so a generic adapter error can still distinguish a nonzero exit from
 a signal termination. Exit codes must fit the database's signed 32-bit integer;
