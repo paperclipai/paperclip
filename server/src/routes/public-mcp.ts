@@ -64,7 +64,7 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     next();
   });
   router.get(["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource" + PUBLIC_MCP_PATH], (_req, res) => res.json({
-    resource, authorization_servers: [origin], scopes_supported: ["paperclip:read", "paperclip:write"], bearer_methods_supported: ["header"],
+    resource, authorization_servers: [origin], scopes_supported: ["paperclip:read", "paperclip:write", "paperclip:configure"], bearer_methods_supported: ["header"],
     resource_name: "Paperclip",
   }));
   router.get("/.well-known/oauth-authorization-server", (_req, res) => res.json({
@@ -92,14 +92,14 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     let principal;
     try { if (!token) throw new Error(); principal = await oauth.authenticate(token); }
     catch {
-      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadata}", scope="paperclip:read paperclip:write", error="invalid_token"`);
+      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadata}", scope="paperclip:read paperclip:write paperclip:configure", error="invalid_token"`);
       res.status(401).json({ error: "invalid_token" }); return;
     }
     if (req.method !== "POST") { res.setHeader("Allow", "POST"); res.status(405).end(); return; }
     const listTools = async () => ({
       tools: publicMcpCapabilities.map((c) => ({
         name: c.name, description: c.description, inputSchema: z.toJSONSchema(c.schema) as { type: "object"; properties: Record<string, unknown> },
-        annotations: { readOnlyHint: !c.write, destructiveHint: false, idempotentHint: true, openWorldHint: !!c.write },
+        annotations: { readOnlyHint: !c.write && !c.configure, destructiveHint: !!c.destructive, idempotentHint: true, openWorldHint: !!c.write || !!c.configure },
       })),
     });
     const callTool = async (request: z.infer<typeof CallToolRequestSchema>) => {
@@ -107,8 +107,19 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
         const result = await execute(token!, request.params.name, request.params.arguments ?? {});
         return { isError: result.outcome === "unknown" || result.outcome === "rejected", content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
       } catch (error) {
-        const message = error instanceof z.ZodError ? "Invalid tool arguments."
-          : error instanceof McpApiError || error instanceof McpCapabilityError || error instanceof McpOAuthError ? error.message
+        if (error instanceof z.ZodError) {
+          const issues = error.issues.slice(0, 12).map(issue => ({
+            path: issue.path.slice(0, 8).filter(part => typeof part === "number" || (typeof part === "string" && /^[a-zA-Z][a-zA-Z0-9_]{0,80}$/.test(part))).join("."),
+            code: issue.code,
+            message: issue.code === "invalid_format" && issue.format === "uuid"
+              ? "Use a valid UUID: 8-4-4-4-12 hex digits; the fourth group starts with 8, 9, a or b."
+              : issue.code === "unrecognized_keys" ? "Remove unsupported fields."
+              : "Check this field against the operation's input schema.",
+          }));
+          const result = { outcome: "rejected", phase: "validation", message: "Invalid tool arguments. No action was executed. Correct the indicated fields before trying again.", issues };
+          return { isError: true, content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
+        }
+        const message = error instanceof McpApiError || error instanceof McpCapabilityError || error instanceof McpOAuthError ? error.message
           : "Paperclip could not confirm this operation. Before retrying a write, inspect the task and comments and keep the same requestId.";
         return { isError: true, content: [{ type: "text", text: message }] };
       }

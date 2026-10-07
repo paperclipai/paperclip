@@ -356,7 +356,8 @@ Key shared semantics:
 - **Continuation policy.** `request_checkbox_confirmation` and `request_item_verdicts` default to `wake_assignee`, which wakes you after the card is resolved or newly resolved item verdicts are submitted. `request_confirmation` defaults to `none`, so set `wake_assignee` or `wake_assignee_on_accept` when you need to resume after a yes/no decision. `none` never wakes you — only use it when you truly do not need to resume.
 - **Target binding and staleness.** `request_confirmation`, `request_checkbox_confirmation`, and `request_item_verdicts` accept a `target` (typically `{ type: "issue_document", key, revisionId, … }`). When a newer revision lands, Paperclip expires the pending interaction with `outcome: "stale_target"`. Rebuild against the latest revision and create a fresh interaction.
 - **Supersede on user comment.** Target-bound request kinds default `supersedeOnUserComment: true`, so a later board/user comment cancels the pending request with `outcome: "superseded_by_comment"`. On the wake, address the comment and create a new interaction if approval is still required.
-- **Withdraw and terminal expiry.** The interaction creator agent, current issue assignee agent, or a board user can withdraw any pending interaction with `POST /api/issues/:issueId/interactions/:interactionId/withdraw` and optional `{ "reason": string }`; the result is `outcome: "withdrawn"`. Closing an issue as `done` or `cancelled` expires all remaining pending interactions with `outcome: "issue_closed"` and never wakes the closed issue.
+- **Historical questions.** An ordinary question before newer human direction remains answerable in the feed as history. Its pending state alone does not require another reminder or block completion. Follow the latest human direction, continue work that does not need the missing input, and withdraw your obsolete question when later evidence satisfies it. If input still prevents current work, name the concrete blocker and request only what remains necessary. Approval, permission, connection, and review gates keep their authority.
+- **Withdraw and terminal expiry.** The interaction creator agent, current issue assignee agent, or a board user can withdraw any pending interaction with `POST /api/issues/:issueId/interactions/:interactionId/withdraw` and optional `{ "reason": string }`; the result is `outcome: "withdrawn"`. Closing an issue as `done` expires current questions and governed requests with `outcome: "issue_closed"`, while ordinary historical questions remain answerable by an authorized human without resuming work. Closing as `cancelled` expires all remaining pending interactions. Neither terminal path wakes the closed issue.
 - **Idempotency.** Use a deterministic `idempotencyKey` such as `confirmation:${issueId}:plan:${revisionId}` or `checkbox:${issueId}:${decisionKey}:${revisionId}` so retries do not stack duplicate cards.
 - **Source issue posture.** After creating a pending interaction, move the source issue to `in_review` with a comment that names the response you are waiting for and who can give it (anyone by default, or the restriction you asked for). When a `request_confirmation` or `request_checkbox_confirmation` is the issue review request, include its returned id as `reviewInteractionId` in that PATCH. This explicit binding lets policy-eligible agents submit the review verdict without granting the same authority to unrelated pending confirmations. The pending interaction is the explicit waiting path.
 
@@ -759,3 +760,21 @@ improvement. This is not a mandatory report. Their shared helper is
 `scripts/submit-agent-commentary.mjs`, relative to this skill directory. Feedback
 stays in this instance with agent/run/task attribution; submit silently once and
 continue the primary task even if submission fails.
+
+**External review handoffs.**
+
+For a PR, put its link in the work product's top-level `url` field. If a human
+must review or merge it before you can continue, name that action in a durable
+human-only interaction with an appropriate continuation policy and leave the
+task `in_review`. A `needs_board_review` work-product flag and a periodic monitor
+do not create an interaction card. Keep any merge check bounded, record its
+purpose in the monitor's `notes`, and verify the actual provider state when you
+resume; a confirmation response is not proof of a merge. Update the existing PR
+work product when the PR merges or closes instead of registering a duplicate.
+
+The same rule applies to external release approval gates: link the exact run,
+create a human-only confirmation asking whether the user approved it in the
+provider, and keep the agent assigned with `continuationPolicy: "wake_assignee"`
+so the answer resumes verification. A handoff comment asking the user to comment
+back or reassign the task is not a confirmation card. The card records the user's
+answer; verify the provider's gate and publish result before continuing.

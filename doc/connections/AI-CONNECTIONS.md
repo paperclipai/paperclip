@@ -193,6 +193,17 @@ and contain neither credentials nor raw provider errors. Expired credentials
 report `authentication_required`; the probe does not exchange refresh tokens
 or change connection health.
 
+The Costs dashboard uses the company quota endpoint. It reads each authorized
+managed subscription separately, retaining the last successful observation on
+transient errors. For managed Codex accounts, a 401 can trigger one persisted
+OAuth refresh; it defers while potentially competing OpenAI work is active.
+Refresh takes the company secret-mutation lock before database row locks and
+requires those row locks immediately, before exchanging a single-use token.
+Reconnect and runtime credential write-back follow the same lock order.
+Credential resolution checks its version after any database wait and reloads a
+rotated value before giving it to a new run. Unknown utilization has no progress
+bar, but any provider-reported reset time remains visible.
+
 Verification:
 
 ```sh
@@ -498,9 +509,10 @@ existing account name. Connecting installs access for that agent and resumes the
 work automatically. Explicit incompatible bindings and shared-account permission
 denials still fail; hiring never expands a restricted shared account's audience.
 
-Concurrent runs of one subscription do not wait for each other. No credential
-lease exists to hold them, so a fresh task execution cannot enter a contention
-wait. A run that already entered this wait keeps its scheduled retries. It does
+Concurrent runs of one subscription do not hold a credential lease. A fresh
+task can briefly wait when a credential rotation holds the company file lock or
+a grant/secret database row lock. Lock timeouts become `ai_connection_busy`,
+keeping the task on its automatic pre-provider scheduled retry path. It does
 not request new credentials, and it does not consume the provider-failure retry
 allowance. Each retry revalidates the account, and existing run-dispatch rules
 still suppress cancelled, reassigned, or otherwise ineligible work. An assignee
@@ -524,6 +536,39 @@ requires a fresh session. The metadata is removed before passing session params
 to an adapter. Temporary authentication-home paths do not change the configuration
 fingerprint. These checks do not relax current connection authorization.
 
+Quota polling has a 20-second response deadline. Once a managed OAuth refresh
+starts, it has its own 60-second request lifetime so the replacement token body
+can still be read and committed after the dashboard stops waiting. A successful
+refreshed observation uses the saved grant/secret revision as its cache identity.
+A reconnect during credential resolution defers the poll instead of associating
+one account's quota with another revision. Both Costs surfaces retain matching
+successful observations on transient failures and clear them on authentication
+failure or credential rotation.
+
+Managed runtime token write-back retries a company-lock timeout twice (three
+30-second acquisition attempts), so a slow quota exchange does not discard a
+different account's replacement tokens. Any remaining write-back error preserves
+the private runtime home for retry; cleanup deletes it only after a successful
+transaction or an intentional freshness/authorization discard. These retained
+homes are recovery evidence, not a background replay queue; persistent database
+or lock failures still require operator intervention.
+
+Quota OAuth replacement tokens are encrypted with the instance secrets master
+key and fsynced under `<instance-root>/quota-credential-recovery/<company-id>/`
+before vault, grant, or activity writes. Storage and encryption are checked before
+exchanging a single-use refresh token. Failed saves retry without another OAuth
+exchange; persistent failures keep the encrypted record for the next quota poll,
+including after a restart. New OpenAI subscription runtimes serialize credential
+reads with quota exchanges and recover a matching pending replacement before
+materializing an auth home. Authentication-failure handling also recovers a
+matching replacement before marking the grant invalid. A failed recovery save
+defers these actions and leaves both the active grant and journal intact.
+The journal is removed only after database commit (or
+when an authorized newer credential makes it obsolete). Replay checks the grant,
+connection, secret, and original credential fingerprint and cannot reactivate a
+revoked grant or overwrite a reconnect. Back up this directory and the instance
+secrets key with the instance data. Loss of durable storage while receiving a
+provider token can still require reconnecting the account.
 
 ## Advanced provider routing (2026-10-02)
 

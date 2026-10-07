@@ -13,8 +13,8 @@ Runtime authentication: [AI Connections](./AI-CONNECTIONS.md).
 Long-term memory: [Experimental memory connectors](./MEMORY.md).
 
 Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
-[Gmail](./GMAIL.md), [Asana](./ASANA.md), [PostHog](./POSTHOG.md), [Neon](./NEON.md),
-[AgentMail](./AGENTMAIL.md), [iMessage Photon](./IMESSAGE-PHOTON.md), and
+[Gmail](./GMAIL.md), [Asana](./ASANA.md), [PostHog](./POSTHOG.md), [Neon](./NEON.md), [Superagent](./SUPERAGENT.md),
+[AgentMail](./AGENTMAIL.md), [Telem.AI](./TELEM.md), [iMessage Photon](./IMESSAGE-PHOTON.md), and
 [Enterpret](./ENTERPRET.md). Optional credential custody:
 [Vercel Connect](./VERCEL-CONNECT.md).
 

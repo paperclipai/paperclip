@@ -1,4 +1,5 @@
 import { isNativePlanWaitResult, readNativePlanWait } from "./native-plan-wait.js";
+import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
 import { settleSlackConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
@@ -150,18 +151,7 @@ export async function pendingNativeGovernance(input: {
           eq(issueThreadInteractions.companyId, input.companyId),
           eq(issueThreadInteractions.issueId, input.issueId),
           eq(issueThreadInteractions.status, "pending"),
-          // A previous chat turn's ordinary input remains answerable in history;
-          // it does not own the lifecycle of every subsequent reply. Current-turn
-          // requests, task execution, and governed approvals keep their gates.
-          isConversation(issue) ? sql`(
-            ${issueThreadInteractions.sourceRunId} is not distinct from ${input.runId}
-            or not (
-              ${issueThreadInteractions.kind} = 'ask_user_questions'
-              or (${issueThreadInteractions.kind} in ('request_confirmation', 'request_checkbox_confirmation')
-                and ${issueThreadInteractions.effectiveResolverPolicy} = 'anyone'
-                and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization']))
-            )
-          )` : undefined,
+          activeIssueInteractionCondition({ runId: input.runId, conversationMode: isConversation(issue) }),
         ),
       )
       .limit(1)

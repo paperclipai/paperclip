@@ -64,6 +64,7 @@ const ASANA_MANAGED = {
 const BOX = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "box")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
 const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
+const SUPERAGENT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
 const SHOPIFY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "shopify")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
@@ -2022,6 +2023,37 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Connect GitHub");
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
+  });
+
+  it("connects Superagent with only an organization API key", async () => {
+    mockParams.appKey = "superagent";
+    listGalleryMock.mockResolvedValueOnce({ apps: [SUPERAGENT] });
+    await render();
+
+    expect(radioContaining("Sign in with")).toBeFalsy();
+    // The Ask-first advice must be visible on the key form, which renders the
+    // credential helper text rather than method warnings.
+    expect(container.textContent).toContain("set billable and destructive actions to Ask first");
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keyInput).toBeTruthy();
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+
+    await act(async () => {
+      setInputValue(keyInput!, "sk_live_test-key");
+    });
+    await flushReact();
+    const submit = buttonByText("Connect");
+    expect(submit?.disabled).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "superagent",
+      connectionMethodKey: "mcp-api-key",
+      credentialValues: { "credentials.authorization": "sk_live_test-key" },
+    }));
   });
 
   it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {

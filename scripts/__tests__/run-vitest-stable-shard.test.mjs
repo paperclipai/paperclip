@@ -92,15 +92,35 @@ test("a route/authz suite never leaks into the general-server shards", () => {
   const shard = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", SHARD_COUNT.toString()]);
   for (const file of shard.selectedGeneralServerSuites) {
     assert.ok(
-      !/[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/.test(file),
+      !(file.startsWith("server/src/__tests__/") && /[^/]*(?:route|routes|authz)[^/]*\.test\.ts$/.test(file)),
       `route/authz suite must stay in the serialized lane, not general-server: ${file}`,
     );
   }
 });
 
+test("general shards retain scripts and route-named suites outside the serialized directory", () => {
+  const general = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"]);
+  for (const file of [
+    "server/scripts/verify-runner-vendor-dependencies.test.mjs",
+    "server/src/services/openrouter-models.test.ts",
+    "server/src/routes/setup-token-route.test.ts",
+  ]) assert.ok(general.selectedGeneralServerSuites.includes(file), `missing configured server suite: ${file}`);
+});
+
 test("shard flags are rejected for the workspaces-b group", () => {
   const result = dryRun(["--mode", "general", "--group", "general-workspaces-b", "--shard-index", "0", "--shard-count", "3"]);
   assert.notEqual(result.status, 0, "workspaces-b must not accept shard flags");
+});
+
+test("workspace lanes cover every non-server project in the root Vitest configuration", () => {
+  const config = readFileSync(path.join(repoRoot, "vitest.config.ts"), "utf8");
+  const roots = [...config.matchAll(/^\s+"([^"]+)",?\s*$/gm)].map(match => match[1]);
+  assert.ok(roots.includes("server"), "expected the explicit root Vitest project list");
+  const expected = roots.filter(root => root !== "server")
+    .map(root => JSON.parse(readFileSync(path.join(repoRoot, root, "package.json"), "utf8")).name).sort();
+  const actual = ["general-workspaces-a", "general-workspaces-b"]
+    .flatMap(group => dryRunJson(["--mode", "general", "--group", group]).workspaceProjects).sort();
+  assert.deepEqual(actual, expected, "no configured project may be silently omitted or run twice");
 });
 
 test("workspaces-a shards map to Vitest native --shard slices over a stable project list", () => {

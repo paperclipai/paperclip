@@ -1426,6 +1426,12 @@ describe("codex_local ACP lane", () => {
 });
 
 describe("resolveCodexAcpBillingIdentity", () => {
+  it.each([["openrouter", "api_key", "openrouter"], ["custom", "api_key", "unknown"], ["local", "none", "unknown"]])("classifies managed %s/%s independently of host authentication", (kind, auth, biller) => {
+    expect(resolveCodexAcpBillingIdentity({ config: {
+      managedAiRouting: { kind, auth },
+      env: { OPENAI_API_KEY: "", PAPERCLIP_AI_PROVIDER_KEY: auth === "none" ? "" : "fixture" },
+    } })).toEqual({ provider: "openai", biller, billingType: "api" });
+  });
   const originalOpenAiKey = process.env.OPENAI_API_KEY;
   const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
 

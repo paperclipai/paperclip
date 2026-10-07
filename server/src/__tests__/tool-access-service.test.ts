@@ -5181,9 +5181,10 @@ describeEmbeddedPostgres("tool access service", () => {
         "messages-api",
         "chat-completions-api",
         "local",
+        "telem",
       ]),
     );
-    expect(res.body.apps).toHaveLength(66);
+    expect(res.body.apps).toHaveLength(68);
     for (const slug of ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
       expect(res.body.apps.find((app: { slug: string }) => app.slug === slug).tags).toContain("model-provider");
     }
@@ -6309,6 +6310,52 @@ describeEmbeddedPostgres("tool access service", () => {
     ).rejects.toMatchObject({ status: 400 });
   });
 
+  it("connects Superagent with an organization API key sent as a bearer header", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const fetchMock = mockToolsList([
+      { name: "list_findings", annotations: { readOnlyHint: true } },
+      { name: "create_repository_report" },
+      { name: "delete_finding", annotations: { destructiveHint: true } },
+    ]);
+
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "superagent",
+        credentialValues: { "credentials.authorization": "sk_live_test-secret" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://www.superagent.sh/mcp",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer sk_live_test-secret",
+        }),
+      }),
+    );
+    expect(result.connection).toMatchObject({
+      authKind: "api_key",
+      config: {
+        url: "https://www.superagent.sh/mcp",
+        sourceTemplateKey: "superagent",
+        connectionMethodKey: "mcp-api-key",
+      },
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain(
+      "sk_live_test-secret",
+    );
+    expect(result.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolName: "list_findings", riskLevel: "read", status: "active" }),
+        expect.objectContaining({ toolName: "create_repository_report", riskLevel: "write", status: "active" }),
+        expect.objectContaining({ toolName: "delete_finding", riskLevel: "destructive", status: "active" }),
+      ]),
+    );
+  });
+
   it("projects Neon's optional project pin and read-only mode into the hosted server URL", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -6580,6 +6627,67 @@ describeEmbeddedPostgres("tool access service", () => {
         { actorType: "agent", actorId: "agent-1" },
       ),
     ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("keeps a saved Telem.AI header policy when the connection is reconnected", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board" };
+    mockToolsList([{ name: "telem_search" }]);
+    const first = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "telem",
+        connectionMethodKey: "mcp-api-key",
+        credentialValues: { "credentials.authorization": "tlm_first-key" },
+      },
+      actor,
+    );
+    await service.updateConnection(first.connectionId, {
+      status: "active",
+      config: { ...first.connection.config, headerPolicy: { metadata: { forward: [] } } },
+    });
+
+    mockToolsList([{ name: "telem_search" }]);
+    const reconnected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "telem",
+        connectionMethodKey: "mcp-api-key",
+        credentialValues: { "credentials.authorization": "tlm_second-key" },
+        reconnectConnectionId: first.connectionId,
+      },
+      actor,
+    );
+
+    expect(reconnected.connectionId).toBe(first.connectionId);
+    expect(reconnected.connection.config.headerPolicy).toEqual({ metadata: { forward: [] } });
+  });
+
+  it("forwards Paperclip context headers by default for a Telem.AI connection", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "telem_search" }]);
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "telem",
+        connectionMethodKey: "mcp-api-key",
+        credentialValues: { "credentials.authorization": "tlm_test-secret" },
+        configValues: { tier: "extended" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+    expect(result.connection.config).toMatchObject({
+      sourceTemplateKey: "telem",
+      methodConfig: { tier: "extended" },
+      headerPolicy: {
+        metadata: {
+          forward: ["company_id", "issue_id", "agent_id", "run_id", "project_id", "correlation_id"],
+        },
+      },
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain("tlm_test-secret");
   });
 
   it("requires an explicit PostHog method and projects optional validated project filters", async () => {
@@ -19191,6 +19299,30 @@ describe("classifyRisk", () => {
     expect(classifyRisk({ name: "fireflies_share_meeting", annotations: { destructiveHint: true } }, "fireflies")).toBe("destructive");
   });
 
+  it("classifies Superagent mutations whose names read like reads as writes", () => {
+    for (const name of ["list_findings", "get_finding", "get_context_score", "list_agent_alerts"])
+      expect(classifyRisk({ name }, "superagent")).toBe("read");
+    for (const name of [
+      "triage_finding",
+      "restore_agent_builtin_rule",
+      "scan_package",
+      "discover_application_inventory",
+      "trigger_dependency_updates",
+      "test_telemetry_endpoint",
+      "create_repository_report",
+      "set_agent_builtin_rule_mode",
+    ])
+      expect(classifyRisk({ name }, "superagent")).toBe("write");
+    for (const name of ["delete_finding", "delete_agent_rule", "revoke_agent_client"])
+      expect(classifyRisk({ name }, "superagent")).toBe("destructive");
+    // A provider write hint wins over a read-looking name; a read-only hint
+    // opts a tool outside list/get into reads.
+    expect(classifyRisk({ name: "get_finding", annotations: { readOnlyHint: false } }, "superagent")).toBe("write");
+    expect(classifyRisk({ name: "validate_agent_rule", annotations: { readOnlyHint: true } }, "superagent")).toBe("read");
+    // Without the provider rule, the generic classifier treats these as reads.
+    expect(classifyRisk({ name: "triage_finding" })).toBe("read");
+  });
+
   it("classifies Enterpret run_graph_query as write despite readOnlyHint", () => {
     expect(
       classifyRisk(
@@ -19364,6 +19496,51 @@ describe("normalizeConnectionMethodConfig", () => {
   const shopifyUcpMethod = shopifyMethods.find(
     (method) => method.key === "ucp-commerce",
   )!;
+
+  it("sends Telem settings as headers and leaves unset settings out", () => {
+    const telemMethod = getConnectableAppDefinition("telem")!.methods[0]!;
+    expect(normalizeConnectionMethodConfig(telemMethod, {})).toEqual({
+      values: {},
+      url: "https://mcp.telem.ai/mcp",
+    });
+    expect(
+      normalizeConnectionMethodConfig(telemMethod, {
+        autoRouting: "accuracy",
+        tier: "extended",
+        providersInclude: "brave, exa\nbrave",
+        providersExclude: "serpapi",
+      }),
+    ).toEqual({
+      values: {
+        autoRouting: "accuracy",
+        tier: "extended",
+        providersInclude: "brave,exa",
+        providersExclude: "serpapi",
+      },
+      url: "https://mcp.telem.ai/mcp",
+      headers: {
+        "X-Telem-Auto-Routing": "accuracy",
+        "X-Telem-Tier": "extended",
+        "X-Telem-Providers-Include": "brave,exa",
+        "X-Telem-Providers-Exclude": "serpapi",
+      },
+    });
+    expect(
+      normalizeConnectionMethodConfig(telemMethod, { autoRouting: "off" }),
+    ).toEqual({
+      values: { autoRouting: "off" },
+      url: "https://mcp.telem.ai/mcp",
+      headers: { "X-Telem-Auto-Routing": "off" },
+    });
+    expect(() =>
+      normalizeConnectionMethodConfig(telemMethod, { tier: "premium" }),
+    ).toThrow("Tier has an invalid option");
+    expect(() =>
+      normalizeConnectionMethodConfig(telemMethod, {
+        providersInclude: "brave; drop",
+      }),
+    ).toThrow("Providers to include has an invalid value");
+  });
 
   it("builds a concrete Shopify endpoint from the validated store domain", () => {
     expect(

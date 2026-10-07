@@ -19,6 +19,7 @@ const serializedShardDurations = loadShardDurations(
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
+const serverScriptsDir = path.join(repoRoot, "server", "scripts");
 const nonServerProjects = [
   "@paperclipai/shared",
   "@paperclipai/skills-catalog",
@@ -26,9 +27,14 @@ const nonServerProjects = [
   "@paperclipai/adapter-utils",
   "@paperclipai/adapter-claude-local",
   "@paperclipai/adapter-codex-local",
+  "@paperclipai/adapter-cursor-cloud",
+  "@paperclipai/adapter-cursor-local",
+  "@paperclipai/adapter-gemini-local",
   "@paperclipai/adapter-grok-local",
+  "@paperclipai/adapter-kimi-local",
   "@paperclipai/adapter-openclaw-gateway",
   "@paperclipai/adapter-opencode-local",
+  "@paperclipai/adapter-pi-local",
   "@paperclipai/plugin-daytona",
   "@paperclipai/plugin-sdk",
   "@paperclipai/create-paperclip-plugin",
@@ -345,6 +351,8 @@ function runVitest(args, label, testShard = null) {
   const env = {
     ...process.env,
     NODE_ENV: "test",
+    PAPERCLIP_TEST_HOST_HOME: process.env.PAPERCLIP_TEST_HOST_HOME
+      ?? (process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip")),
     PAPERCLIP_HOME: path.join(testRoot, "h"),
     // Config discovery otherwise prefers the checkout's .paperclip/config.json
     // over PAPERCLIP_HOME, importing preview scheduling policy into unit tests.
@@ -539,10 +547,15 @@ const routeTests = walk(serverTestsDir)
 // config pins maxWorkers to 1, so the only way to parallelize is across jobs.
 // Suites are partitioned by recorded duration (scripts/general-server-shard.mjs)
 // rather than round-robin, so one slow suite cluster can't stretch a single shard.
-const generalServerTestFiles = walk(serverSrcDir)
+const serializedRepoPaths = new Set(routeTests.map(test => test.repoPath));
+const generalServerTestFiles = [
+  ...walk(serverSrcDir).filter(file => file.endsWith(".test.ts")),
+  ...walk(serverScriptsDir).filter(file => file.endsWith(".test.mjs")),
+]
   .map((file) => toRepoPath(file))
-  .filter((repoPath) => repoPath.endsWith(".test.ts"))
-  .filter((repoPath) => !isRouteOrAuthzTest(repoPath))
+  // Only exclude suites actually assigned to the serialized lane. A name
+  // such as services/openrouter-models.test.ts is not a serialized route.
+  .filter((repoPath) => !serializedRepoPaths.has(repoPath))
   .sort((a, b) => a.localeCompare(b));
 
 const options = parseCliOptions(process.argv.slice(2));

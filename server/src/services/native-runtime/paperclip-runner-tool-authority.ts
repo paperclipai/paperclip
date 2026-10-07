@@ -1,3 +1,5 @@
+import { readTaskQuestionContext } from "../issue-question-context.js";
+import { isConversation } from "../agent-conversations.js";
 import { setIssueTitle } from "../issue-title.js";
 import { externalObjectService } from "../external-objects.js";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -486,6 +488,9 @@ export class PaperclipRunnerToolAuthority {
         return {
           company: { id: this.binding.companyId },
           actor: redactedActor(context.actor),
+          taskQuestionContext: await readTaskQuestionContext(this.db, {
+            ...this.binding, conversationMode: isConversation(context.issue),
+          }),
           activeTask: redactedTask(context.issue),
           childTasks: childTasks.slice(0, 100).map(redactedTask),
           childTasksTruncated: childTasks.length > 100,

@@ -36,7 +36,7 @@ import type {
   UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
-import { api, ApiError, type RequestOptions } from "./client";
+import { api, ApiError, detachInflightGet, type RequestOptions } from "./client";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 
 function hasCommentReceipt(value: unknown): boolean {
@@ -596,10 +596,12 @@ export const issuesApi = {
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
-  listWorkProducts: (id: string, options?: { refreshPullRequests?: boolean }) =>
-    api.get<IssueWorkProduct[]>(
-      `/issues/${id}/work-products${options?.refreshPullRequests ? "?refreshPullRequests=true" : ""}`,
-    ),
+  listWorkProducts: (id: string, options?: { refreshPullRequests?: boolean; signal?: AbortSignal; fresh?: boolean }) => {
+    const path = `/issues/${id}/work-products${options?.refreshPullRequests ? "?refreshPullRequests=true" : ""}`;
+    // Query invalidations must not rejoin a request that read rows before the write.
+    if (options?.fresh) detachInflightGet(path);
+    return api.get<IssueWorkProduct[]>(path, { signal: options?.signal });
+  },
   ensureWorkProductReviewDocument: (id: string, workProductId: string) =>
     api.post<IssueDocument>(
       `/issues/${id}/work-products/${workProductId}/review-document`,

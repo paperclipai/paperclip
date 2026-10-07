@@ -18,7 +18,7 @@ export function mcpSetupSteps(serverUrl: string, assistant: AssistantClient) {
   switch (assistant) {
     case "codex": return [
       { text: "Check for an existing Paperclip server first. Reuse it only if its URL matches this instance. Add the remote server with the Codex CLI.", code: `codex mcp add paperclip --url ${quoted}` },
-      { text: "Start browser authorization and give the user the approval link.", code: "codex mcp login paperclip --scopes paperclip:read,paperclip:write,offline_access" },
+      { text: "Start browser authorization and give the user the approval link.", code: "codex mcp login paperclip --scopes paperclip:read,paperclip:write,paperclip:configure,offline_access" },
       { text: "If the current conversation does not reload its MCP tools, start a new conversation or restart the client. Verify the connection with paperclip_connection before claiming success." },
     ];
     case "claude": return [

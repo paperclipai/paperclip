@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agents,
   agentWakeupRequests,
+  agentRuntimeState,
   companies,
   costEvents,
   createDb,
@@ -1225,6 +1226,41 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         }),
       ]),
     );
+  });
+
+  it.each(["codex_local", "gemini_local"].flatMap(adapterType => [
+    { adapterType, inputTokens: 50_000, cachedInputTokens: 550_000, rotate: true, rawInputIncludesCached: false },
+    { adapterType, inputTokens: 50_000, cachedInputTokens: 449_999, rotate: false, rawInputIncludesCached: false },
+    { adapterType, inputTokens: 0, cachedInputTokens: 500_000, rotate: true, rawInputIncludesCached: false },
+    { adapterType, inputTokens: 400_000, cachedInputTokens: 350_000, rotate: false, rawInputIncludesCached: undefined },
+    { adapterType, inputTokens: 500_000, cachedInputTokens: 350_000, rotate: true, rawInputIncludesCached: undefined },
+  ]))("counts cached prompt input for $adapterType session rotation ($inputTokens + $cachedInputTokens; raw includes cache: $rawInputIncludesCached)", async ({ adapterType, inputTokens, cachedInputTokens, rotate, rawInputIncludesCached }) => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ heartbeatConfig: {
+      sessionCompaction: { enabled: true, maxSessionRuns: 0, maxRawInputTokens: 500_000, maxSessionAgeHours: 0 },
+    } });
+    const sessionId = randomUUID();
+    await db.update(agents).set({ adapterType }).where(eq(agents.id, agentId));
+    await db.insert(agentRuntimeState).values({ companyId, agentId, adapterType, sessionId });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", sessionIdAfter: sessionId,
+      usageJson: { ...(rawInputIncludesCached === false ? { rawInputIncludesCached } : {}), inputTokens, cachedInputTokens, outputTokens: 10, rawInputTokens: inputTokens, rawCachedInputTokens: cachedInputTokens },
+      resultJson: { summary: "Continue from this completed turn" }, startedAt: new Date(), finishedAt: new Date(),
+    });
+    mockAdapterExecute.mockResolvedValueOnce({ exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+      provider: "test", model: "test-model", costUsd: 0, usageComplete: true, usageBasis: "per_run",
+      usage: { inputTokens: 1, cachedInputTokens: 2, outputTokens: 3 },
+    });
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual" });
+    expect(run).not.toBeNull();
+    expect(await waitForCondition(() => Promise.resolve(countExecuteCallsForRun(run!.id) === 1))).toBe(true);
+    const [context] = mockAdapterExecute.mock.calls.find(([context]) => context?.runId === run!.id)!;
+    expect(context.runtime.sessionId).toBe(rotate ? null : sessionId);
+    if (rotate) {
+      expect(context.context.paperclipSessionRotationReason).toContain((inputTokens + (rawInputIncludesCached === false ? cachedInputTokens : 0)).toLocaleString("en-US"));
+      expect(context.context.paperclipSessionHandoffMarkdown).toContain("Continue from this completed turn");
+    } else expect(context.context.paperclipSessionRotationReason).toBeUndefined();
+    await heartbeat.drainActiveRunExecutions();
+    const [finished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+    expect(finished.usageJson).toMatchObject({ rawInputTokens: 1, rawCachedInputTokens: 2, rawInputIncludesCached: false });
   });
 
   it("skips wakes before queueing when per-agent daily cost cap is reached", async () => {

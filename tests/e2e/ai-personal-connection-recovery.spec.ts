@@ -61,7 +61,7 @@ test("missing onboarding key offers personal Claude setup in chat and resumes on
     const after = await json(await request.get(`/api/companies/${company.id}/heartbeat-runs`));
     const resumed = await json(await request.get(`/api/heartbeat-runs/${after.find((run: { id: string }) => run.id !== sourceRunId).id}`));
     expect(resumed.contextSnapshot.aiConnection).toMatchObject({ connectionId: accounts[0].id, responsibleUserId: "local-board" });
-    expect((await json(await request.get(`/api/issues/${chat.id}`))).status).toBe("in_review");
+    await expect.poll(async () => (await json(await request.get(`/api/issues/${chat.id}`))).status).toBe("in_review");
     await page.reload();
     await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible();
     await expect(page.getByRole("button", { name: "Connect Claude", exact: true })).toHaveCount(0);

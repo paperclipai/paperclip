@@ -509,6 +509,7 @@ describe("AI repair inside the card", () => {
     if (fails) adoptMock.mockRejectedValue(new Error("Connection test failed"));
     else adoptMock.mockResolvedValue({ ...interaction, status: "accepted" });
     renderBody(interaction); await flush();
+    await waitForAssertion(() => expect(button("Connect OpenAI")).toBeDefined());
     await act(() => button("Connect OpenAI")!.click());
     await act(() => button("Reconnect selected account")!.click());
     expect(adoptMock).not.toHaveBeenCalled();
@@ -528,7 +529,7 @@ describe("AI repair inside the card", () => {
     completeMock.mockResolvedValue({ ...interaction, status: "accepted" });
     renderBody(interaction); await flush();
     const providerName = provider === "anthropic" ? "Claude" : "OpenAI";
-    expect(document.body.textContent).toContain(`Connect your ${providerName} account`);
+    await waitForAssertion(() => expect(document.body.textContent).toContain(`Connect your ${providerName} account`));
     expect(document.body.textContent).toContain("needs your own AI connection");
     await act(() => button(`Connect ${providerName}`)!.click());
     expect(document.querySelector('[role="dialog"]')).toBeNull();

@@ -410,6 +410,19 @@
       "localAsset": "/brands/apps/supabase.svg"
     },
     {
+      "slug": "superagent",
+      "provider": "Superagent",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/superagent.png"
+    },
+    {
+      "slug": "telem",
+      "provider": "Telem.AI",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/telem.svg",
+      "darkAsset": "/brands/apps/telem-dark.svg"
+    },
+    {
       "slug": "telegram",
       "provider": "Telegram",
       "catalogVisible": true,

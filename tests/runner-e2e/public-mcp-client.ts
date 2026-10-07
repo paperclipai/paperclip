@@ -30,20 +30,20 @@ export async function oauthPost(route: string, body: unknown) {
   return fetch(origin + "/mcp/oauth/" + route, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 
-export async function beginConnection(write = true, redirect = origin + "/eval-client-callback") {
+export async function beginConnection(write = true, redirect = origin + "/eval-client-callback", configure = false) {
   const registration = await oauthPost("register", { client_name: "Paperclip acceptance client", redirect_uris: [redirect] });
   expect(registration.status, "public client registration").toBe(201);
   const { client_id: clientId } = await registration.json() as { client_id: string };
   const verifier = randomBytes(32).toString("base64url");
   const state = randomBytes(32).toString("base64url");
-  const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirect, response_type: "code", resource, code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", state, scope: `paperclip:read ${write ? "paperclip:write " : ""}offline_access` });
+  const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirect, response_type: "code", resource, code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", state, scope: `paperclip:read ${write ? "paperclip:write " : ""}${configure ? "paperclip:configure " : ""}offline_access` });
   const response = await fetch(origin + "/mcp/oauth/authorize?" + params, { redirect: "manual" });
   expect(response.status, "authorization request").toBe(303);
   const consentUrl = response.headers.get("location")!;
   return { clientId, verifier, state, redirect, params, consentUrl, requestId: new URL(consentUrl).pathname.split("/").at(-1)! };
 }
 
-export async function connect(context: BrowserContext, team: Team, write = true, page?: Page, secrets: string[] = []) {
+export async function connect(context: BrowserContext, team: Team, write = true, page?: Page, secrets: string[] = [], configure = false) {
   // A real assistant callback has its own origin. A same-origin fake callback
   // would be intercepted by Paperclip's service worker and render the board.
   const callbackServer = page ? createServer((_req, res) => { res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" }); res.end("<h1>Assistant connected</h1>"); }) : undefined;
@@ -51,20 +51,20 @@ export async function connect(context: BrowserContext, team: Team, write = true,
   const address = callbackServer?.address();
   const redirect = address && typeof address !== "string" ? `http://127.0.0.1:${address.port}/callback` : undefined;
   try {
-  const request = await beginConnection(write, redirect);
+  const request = await beginConnection(write, redirect, configure);
   let redirectUrl: string;
   if (page) {
     await page.goto(request.consentUrl);
     await expect(page.getByRole("heading", { name: /^Connect .+ to Paperclip$/ })).toBeVisible();
     await page.getByRole("radio", { name: team.name, exact: true }).check();
-    if (write) await page.getByRole("checkbox").check();
+    if (write || configure) await page.getByRole("checkbox", { name: "Write all of your Paperclip data", exact: true }).check();
     await page.getByRole("button", { name: "Connect organization", exact: true }).click();
     await expect(page.getByRole("heading", { name: "Assistant connected" })).toBeVisible();
     redirectUrl = page.url();
     // Leave the secret-bearing callback before any later assertions/evidence.
     await page.goto(origin + "/assistant-connections");
   } else {
-    ({ redirectUrl } = await api<{ redirectUrl: string }>(context, "POST", `/api/mcp/requests/${request.requestId}/consent`, { decision: "approve", companyId: team.id, allowWrites: write }));
+    ({ redirectUrl } = await api<{ redirectUrl: string }>(context, "POST", `/api/mcp/requests/${request.requestId}/consent`, { decision: "approve", companyId: team.id, allowWrites: write, allowConfiguration: configure }));
   }
   const callback = new URL(redirectUrl);
   secrets.push(request.verifier, callback.searchParams.get("code") ?? "");

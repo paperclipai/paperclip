@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { eq, ne } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agentRuntimeState,
   agentTaskSessions,
@@ -136,6 +137,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       await db.delete(activityLog);
       await db.delete(heartbeatRunEvents);
       try {
+        await db.delete(costEvents);
         await db.delete(heartbeatRuns);
         break;
       } catch (error) {

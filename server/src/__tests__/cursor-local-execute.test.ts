@@ -1,9 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { execute } from "@paperclipai/adapter-cursor-local/server";
+
+// These fixtures verify command discovery, environment and real CLI execution.
+// Callback bridge startup/teardown has its own execution-target coverage; starting
+// that server here adds unrelated process and polling work to command assertions.
+vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>(
+    "@paperclipai/adapter-utils/execution-target",
+  );
+  return {
+    ...actual,
+    startAdapterExecutionTargetPaperclipBridge: async () => null,
+  };
+});
 
 async function writeFakeCursorCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -88,6 +101,11 @@ function createLocalSandboxRunner() {
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
+      // Both sandbox fixtures install their fake CLI up front. Never fall back
+      // to a network install if discovery regresses on another host or shell.
+      if (input.args?.some(arg => arg.includes("curl https://cursor.com/install"))) {
+        throw new Error("Sandbox fixture did not discover its preinstalled Cursor CLI");
+      }
       return await runChildProcess(`cursor-sandbox-execute-${counter}`, input.command, input.args ?? [], {
         cwd: input.cwd ?? process.cwd(),
         env: input.env ?? {},

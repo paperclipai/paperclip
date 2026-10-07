@@ -13,7 +13,7 @@ import {
   parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkScope,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
-import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
@@ -330,6 +330,8 @@ export function resolveCodexAcpBillingIdentity(
   ctx: Pick<AdapterExecutionContext, "config"> &
     Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
 ): { provider: string; biller: string; billingType: AdapterBillingType } {
+  const managedBilling = resolveManagedOpenAiBilling(ctx.config.managedAiRouting);
+  if (managedBilling) return managedBilling;
   const envConfig = parseObject(parseObject(ctx.config).env);
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,

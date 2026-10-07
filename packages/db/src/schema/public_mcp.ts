@@ -154,3 +154,37 @@ export const mcpEventDeliveries = pgTable("mcp_event_deliveries", {
   uniqueIndex("mcp_event_deliveries_activity_uq").on(t.subscriptionId, t.activityId),
   index("mcp_event_deliveries_due_idx").on(t.nextAttemptAt),
 ]);
+
+// Upload identities outlive their short-lived tickets so retries cannot duplicate files.
+export const mcpAttachmentUploads = pgTable("mcp_attachment_uploads", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
+  requestId: uuid("request_id").notNull(),
+  taskId: uuid("task_id").notNull(),
+  argumentsHash: text("arguments_hash").notNull(),
+  originalFilename: text("original_filename").notNull(),
+  contentType: text("content_type").notNull(),
+  byteSize: integer("byte_size").notNull(),
+  sha256: text("sha256").notNull(),
+  attachmentId: uuid("attachment_id"),
+  // Allocated before storage writes, so a crash never loses cleanup provenance.
+  objectKey: text("object_key").notNull(),
+  storageProvider: text("storage_provider").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  cleanedAt: timestamp("cleaned_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("mcp_attachment_upload_request_uq").on(t.companyId, t.userId, t.requestId),
+  index("mcp_attachment_upload_expiry_idx").on(t.expiresAt),
+]);
+
+export const mcpFileTickets = pgTable("mcp_file_tickets", {
+  tokenHash: text("token_hash").primaryKey(),
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  grantId: uuid("grant_id").notNull().references(() => mcpOauthGrants.id, { onDelete: "cascade" }),
+  uploadId: uuid("upload_id").references(() => mcpAttachmentUploads.id, { onDelete: "cascade" }),
+  attachmentId: uuid("attachment_id"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("mcp_file_ticket_expiry_idx").on(t.expiresAt), index("mcp_file_ticket_grant_idx").on(t.grantId)]);

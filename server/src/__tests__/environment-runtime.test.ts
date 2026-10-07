@@ -11,6 +11,7 @@ import {
   stopSshEnvLabFixture,
 } from "@paperclipai/adapter-utils/ssh";
 import {
+  costEvents,
   agents,
   builtInManagedResources,
   companies,
@@ -219,6 +220,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     }
     await db.delete(environmentLeases);
     await db.delete(issues);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(environments);

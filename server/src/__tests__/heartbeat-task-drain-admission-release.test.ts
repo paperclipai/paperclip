@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  costEvents,
   activityLog,
   agents,
   agentRuntimeState,
@@ -51,6 +52,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       await db.delete(heartbeatRunEvents);
       await db.delete(activityLog);
       try {
+        await db.delete(costEvents);
         await db.delete(heartbeatRuns);
         return;
       } catch (error) {

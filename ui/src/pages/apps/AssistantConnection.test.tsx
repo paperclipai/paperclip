@@ -54,7 +54,7 @@ describe("assistant setup from Connections", () => {
   it("uses the canonical URL and explains how OpenCode opens consent without granting access", async () => {
     await render();
     const config = Array.from(container.querySelectorAll("pre")).map(p => p.textContent!).find(p => p.startsWith("{"))!;
-    expect(JSON.parse(config).mcp.paperclip).toEqual({ type: "remote", url: "https://canonical.example/mcp/paperclip", enabled: true, oauth: { scope: "paperclip:read paperclip:write offline_access" } });
+    expect(JSON.parse(config).mcp.paperclip).toEqual({ type: "remote", url: "https://canonical.example/mcp/paperclip", enabled: true, oauth: { scope: "paperclip:read paperclip:write paperclip:configure offline_access" } });
     expect(container.textContent).toContain("opencode mcp auth paperclip");
     expect(container.textContent).toContain("No assistants connected to Butter yet");
     expect(container.querySelector('[role="combobox"]')).toBeNull();

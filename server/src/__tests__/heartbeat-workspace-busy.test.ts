@@ -5,6 +5,7 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   agents,
   agentRuntimeState,
   agentWakeupRequests,
@@ -151,6 +152,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
   }
 
   async function cleanupFixtureOnce() {
+    await db.delete(costEvents);
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueComments);

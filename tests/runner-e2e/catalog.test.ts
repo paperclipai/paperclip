@@ -109,7 +109,7 @@ describe("runner E2E catalog", () => {
     expect(suite.manualOnly).toBe(true);
     expect(suite.environments.map(environment => environment.id)).toEqual(["local"]);
     expect(suite.profiles.map(profile => profile.model)).toEqual(["gpt-5.4-mini", "claude-haiku-4-5-20251001", "claude-sonnet-4-6"]);
-    expect(suite.tasks).toHaveLength(13);
+    expect(suite.tasks).toHaveLength(21);
     expect(suite.tasks.every(task => task.flow === "public_mcp" && task.expectedRunCount === 1)).toBe(true);
     expect(suite.definitionMetadata?.workflowDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "public-mcp")).toBe(false);
@@ -146,10 +146,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      39, 12, 6, 8, 2, 2, 2, 30, 3, 16, 16, 2, 6, 8, 46, 23, 52, 6, 6, 20, 26, 52, 28, 18, 2, 6, 6, 12, 10, 48, 16, 10, 2, 1, 1, 116,
+      63, 12, 6, 8, 2, 2, 2, 30, 3, 16, 16, 2, 6, 8, 46, 23, 52, 6, 6, 20, 26, 52, 28, 18, 2, 6, 6, 12, 10, 48, 16, 10, 2, 1, 1, 116,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(659);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(659);
+    expect(validateRunnerCatalog()).toHaveLength(683);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(683);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);

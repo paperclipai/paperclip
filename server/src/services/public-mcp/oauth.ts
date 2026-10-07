@@ -67,17 +67,17 @@ const authorizeSchema = z.object({
 export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: { metadataFetch?: MetadataFetch } = {}) {
   const resolveMetadata = createClientMetadataResolver(options.metadataFetch);
   const settings = instanceSettingsService(db);
-  const isEnabled = async () => (await settings.getExperimental()).enablePublicMcp === true;
-  async function assertEnabled() {
-    if (!await isEnabled()) throw new PublicMcpDisabledError();
+  const isEnabled = async (queryDb: Db = db) => (await (queryDb === db ? settings : instanceSettingsService(queryDb)).getExperimental()).enablePublicMcp === true;
+  async function assertEnabled(queryDb: Db = db) {
+    if (!await isEnabled(queryDb)) throw new PublicMcpDisabledError();
   }
   const boardAuth = boardAuthService(db);
 
-  async function actorForGrant(grant: typeof mcpOauthGrants.$inferSelect): Promise<Request["actor"]> {
+  async function actorForGrant(grant: typeof mcpOauthGrants.$inferSelect, queryDb: Db = db): Promise<Request["actor"]> {
     if (grant.revokedAt || grant.resource !== config.resource) throw invalidGrant();
-    const access = await boardAuth.resolveBoardAccess(grant.userId);
+    const access = await boardAuthService(queryDb).resolveBoardAccess(grant.userId);
     const membership = access.memberships.find((m) => m.companyId === grant.companyId && m.status === "active");
-    const [company] = await db.select({ status: companies.status }).from(companies).where(eq(companies.id, grant.companyId));
+    const [company] = await queryDb.select({ status: companies.status }).from(companies).where(eq(companies.id, grant.companyId));
     if (!access.user || !membership || !company || company.status === "archived") throw invalidGrant();
     return {
       type: "board", source: "mcp_oauth", userId: grant.userId,
@@ -183,15 +183,16 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     }) };
   }
 
-  async function approveGrant(tx: Db, actor: Request["actor"], request: { requestedCompanyId: string | null; clientId: string; resource: string; scopes: string[] }, input: { companyId?: string; allowWrites: boolean }) {
+  async function approveGrant(tx: Db, actor: Request["actor"], request: { requestedCompanyId: string | null; clientId: string; resource: string; scopes: string[] }, input: { companyId?: string; allowWrites: boolean; allowConfiguration?: boolean }) {
     if (actor.type !== "board" || !actor.userId || !["session", "cloud_tenant"].includes(actor.source ?? "")) throw new McpOAuthError("access_denied", "Sign in to approve an assistant connection.", 401);
-    const access = await boardAuth.resolveBoardAccess(actor.userId);
+    const access = await boardAuthService(tx).resolveBoardAccess(actor.userId);
     const membership = access.memberships.find(m => m.companyId === input.companyId && m.status === "active");
     if (!access.user || !membership || (request.requestedCompanyId && request.requestedCompanyId !== input.companyId)) throw new McpOAuthError("access_denied", "Choose an available organization for this request.", 403);
     const [company] = await tx.select({ status: companies.status }).from(companies).where(eq(companies.id, input.companyId!));
     if (!company || company.status === "archived") throw new McpOAuthError("access_denied", "This organization is no longer available.", 403);
-    if (input.allowWrites && membership.membershipRole === "viewer") throw new McpOAuthError("access_denied", "Viewer access is read-only.", 403);
-    const scopes = request.scopes.filter(s => s !== "paperclip:write" || input.allowWrites);
+    if ((input.allowWrites || input.allowConfiguration) && membership.membershipRole === "viewer") throw new McpOAuthError("access_denied", "Viewer access is read-only.", 403);
+    const scopes = request.scopes.filter(s => (s !== "paperclip:write" || input.allowWrites)
+      && (s !== "paperclip:configure" || input.allowConfiguration === true));
     const [grant] = await tx.insert(mcpOauthGrants).values({ companyId: input.companyId!, userId: actor.userId, clientId: request.clientId, resource: request.resource, scopes }).returning();
     await tx.insert(activityLog).values({ companyId: grant!.companyId, actorType: "user", actorId: actor.userId,
       action: "mcp.connection_authorized", entityType: "mcp_connection", entityId: grant!.id, details: { clientId: grant!.clientId, scopes } });
@@ -216,7 +217,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       if (row.status !== "approved" || !row.grantId) return { error: "authorization_pending" };
       const [grant] = await tx.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.id, row.grantId)).for("update");
       if (!grant) return { error: "invalid_grant" };
-      await actorForGrant(grant);
+      await actorForGrant(grant, tx as unknown as Db);
       await tx.update(mcpOauthDeviceRequests).set({ status: "consumed" }).where(eq(mcpOauthDeviceRequests.id, row.id));
       return { tokens: await issueTokens(tx as unknown as Db, grant) };
     });
@@ -259,10 +260,10 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
         .where(and(eq(mcpOauthDeviceRequests.userCodeHash, deviceHash(userCode)), eq(mcpOauthDeviceRequests.status, "pending"), gt(mcpOauthDeviceRequests.expiresAt, new Date())));
       if (!row) throw new McpOAuthError("invalid_request", "This code is expired, already decided, or invalid. Start a new connection from your assistant.", 404);
       return { id: row.request.id, clientName: row.client.name, redirectOrigin: "", clientOrigin: row.client.id.startsWith("https://") ? new URL(row.client.id).origin : null,
-        requestedWrite: row.request.scopes.includes("paperclip:write"), offlineAccess: row.request.scopes.includes("offline_access"), requestedCompanyId: row.request.requestedCompanyId,
+        requestedConfigure: row.request.scopes.includes("paperclip:configure"), requestedWrite: row.request.scopes.includes("paperclip:write"), offlineAccess: row.request.scopes.includes("offline_access"), requestedCompanyId: row.request.requestedCompanyId,
         setupUrl: null, ...await consentContext(actor, row.request.requestedCompanyId) };
     },
-    async consentDevice(userCode: string, actor: Request["actor"], input: { decision: "approve" | "deny"; companyId?: string; allowWrites: boolean }) {
+    async consentDevice(userCode: string, actor: Request["actor"], input: { decision: "approve" | "deny"; companyId?: string; allowWrites: boolean; allowConfiguration?: boolean }) {
       await assertEnabled();
       if (actor.type !== "board" || !actor.userId || !["session", "cloud_tenant"].includes(actor.source ?? "")) throw new McpOAuthError("access_denied", "Sign in to approve a connection.", 401);
       return db.transaction(async tx => {
@@ -331,12 +332,12 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       return {
         id, clientName: row.client.name, redirectOrigin: new URL(row.request.redirectUri).origin,
         clientOrigin: row.client.id.startsWith("https://") ? new URL(row.client.id).origin : null,
-        requestedWrite: row.request.scopes.includes("paperclip:write"), offlineAccess: row.request.scopes.includes("offline_access"),
+        requestedConfigure: row.request.scopes.includes("paperclip:configure"), requestedWrite: row.request.scopes.includes("paperclip:write"), offlineAccess: row.request.scopes.includes("offline_access"),
         requestedCompanyId: row.request.requestedCompanyId,
         ...await consentContext(actor, row.request.requestedCompanyId), setupUrl,
       };
     },
-    async consent(id: string, actor: Request["actor"], input: { decision: "approve" | "deny"; companyId?: string; allowWrites: boolean }) {
+    async consent(id: string, actor: Request["actor"], input: { decision: "approve" | "deny"; companyId?: string; allowWrites: boolean; allowConfiguration?: boolean }) {
       await assertEnabled();
       if (actor.type !== "board" || !actor.userId || !["session", "cloud_tenant"].includes(actor.source ?? "")) {
         throw new McpOAuthError("access_denied", "Sign in to approve an assistant connection.", 401);
@@ -387,7 +388,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
             || row.expiresAt <= new Date() || !row.grantId) throw invalidGrant();
           const [grant] = await tx.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.id, row.grantId)).for("update");
           if (!grant) throw invalidGrant();
-          await actorForGrant(grant);
+          await actorForGrant(grant, tx as unknown as Db);
           await tx.update(mcpOauthRequests).set({ consumedAt: new Date() }).where(eq(mcpOauthRequests.id, row.id));
           return issueTokens(tx as unknown as Db, grant);
         });
@@ -411,7 +412,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
             return null;
           }
           if (token.expiresAt <= new Date()) return null;
-          await actorForGrant(grant);
+          await actorForGrant(grant, tx as unknown as Db);
           if (input.scope !== undefined && input.scope !== grant.scopes.join(" ")) {
             throw new McpOAuthError("invalid_scope", "Refresh cannot change the consented scopes; reconnect instead.");
           }
@@ -423,13 +424,13 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
       }
       throw new McpOAuthError("unsupported_grant_type", "Unsupported authorization grant.");
     },
-    async authorizeGrant(grantId: string): Promise<McpPrincipal> {
-      await assertEnabled();
-      const [row] = await db.select({ grant: mcpOauthGrants, company: { id: companies.id, name: companies.name, issuePrefix: companies.issuePrefix, status: companies.status } })
+    async authorizeGrant(grantId: string, queryDb: Db = db): Promise<McpPrincipal> {
+      await assertEnabled(queryDb);
+      const [row] = await queryDb.select({ grant: mcpOauthGrants, company: { id: companies.id, name: companies.name, issuePrefix: companies.issuePrefix, status: companies.status } })
         .from(mcpOauthGrants).innerJoin(companies, eq(mcpOauthGrants.companyId, companies.id))
         .where(eq(mcpOauthGrants.id, grantId));
       if (!row || !row.grant.scopes.includes("paperclip:read")) throw invalidGrant();
-      return { ...row, actor: await actorForGrant(row.grant) };
+      return { ...row, actor: await actorForGrant(row.grant, queryDb) };
     },
     async authenticate(token: string): Promise<McpPrincipal> {
       await assertEnabled();

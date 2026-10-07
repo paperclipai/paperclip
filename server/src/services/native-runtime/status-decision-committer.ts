@@ -1,4 +1,6 @@
 import { readNativePlanWait, type NativePlanWaitSource } from "./native-plan-wait.js";
+import { activeIssueInteractionCondition } from "../issue-question-context.js";
+import { isConversation } from "../agent-conversations.js";
 import { hasPendingNativeChildCompletion, type NativeChildCompletionRecipient } from "./native-child-completion-delivery.js";
 import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -470,6 +472,8 @@ async function validateGovernanceGate(
       Extract<NativeStatusEffect, { kind: "create_interaction" }>["gate"]
     >;
     executionState: unknown;
+    runId: string;
+    conversationMode: boolean;
   },
 ) {
   if (input.gate.kind === "execution_stage") {
@@ -491,6 +495,7 @@ async function validateGovernanceGate(
           eq(issueThreadInteractions.companyId, input.companyId),
           eq(issueThreadInteractions.issueId, input.issueId),
           eq(issueThreadInteractions.status, "pending"),
+          activeIssueInteractionCondition(input),
         ),
       )
       .limit(1)
@@ -538,6 +543,8 @@ async function materializeDecisionEffect(input: {
         issueId: input.issue.id,
         gate: effect.gate,
         executionState: input.issue.executionState,
+        runId: input.runId,
+        conversationMode: isConversation(input.issue),
       });
       return {
         effectKind: effect.kind,

@@ -4,6 +4,7 @@ import { browserUseRoutes } from "./routes/browser-use.js";
 import { browserUseService } from "./services/browser-use.js";
 import { slackToolRoutes } from "./routes/slack-tools.js";
 import { createPublicMcpOAuth, publicMcpConfig } from "./services/public-mcp/oauth.js";
+import { createPublicMcpTransfers } from "./services/public-mcp/file-transfers.js";
 import { createMcpApiDispatch, createPublicMcpExecutor } from "./services/public-mcp/capabilities.js";
 import { createPublicMcpEvents, type PublicMcpEvents } from "./services/public-mcp/events.js";
 import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "./routes/public-mcp.js";
@@ -552,12 +553,9 @@ export async function createApp(
     createChatWebhookDiagnostics(),
     chatWebhookBodyParser,
   );
-  app.use(
-    express.json({
-      limit: DEFAULT_JSON_BODY_LIMIT,
-      verify: captureRawBody,
-    }),
-  );
+  const jsonBodyParser = express.json({ limit: DEFAULT_JSON_BODY_LIMIT, verify: captureRawBody });
+  // File tickets authenticate before parsing bytes; JSON attachments must remain bytes too.
+  app.use((req, res, next) => req.path === "/mcp/files/upload" ? next() : jsonBodyParser(req, res, next));
   app.use("/api", apiCompression());
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
@@ -992,7 +990,9 @@ export async function createApp(
       isBackgroundWorkEnabled: () => !isWarmStandby(),
     });
     publicMcpEvents.start();
-    publicMcpIngress.use(publicMcpIngressRoutes(publicMcpOAuth, createPublicMcpExecutor(db, publicMcpOAuth, dispatch), publicMcpEvents));
+    const transfers = createPublicMcpTransfers(db, publicMcpOAuth, dispatch, opts.storageService);
+    publicMcpIngress.use(transfers.router);
+    publicMcpIngress.use(publicMcpIngressRoutes(publicMcpOAuth, createPublicMcpExecutor(db, publicMcpOAuth, dispatch, transfers), publicMcpEvents));
     api.use(publicMcpManagementRoutes(publicMcpOAuth));
   }
 

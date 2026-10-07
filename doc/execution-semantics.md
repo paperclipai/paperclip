@@ -78,6 +78,24 @@ Entering `blocked` requires a routable waiting path. An issue may transition int
 
 When a structured unblock descriptor is the waiting path, Paperclip immediately notifies the named owner: an agent owner gets a wake, a user or board owner gets an inbox notification. Prose-only blocked — free-text that names an owner or action in a comment without any of the paths above — routes to nobody. It is rejected at the API or auto-classified as `needs_attention` with a board notification, never silently accepted as a healthy waiting state.
 
+Ordinary task questions are current input waits only while they still belong to
+the current human direction. A newer non-deleted human message on the same task
+makes an earlier ordinary question historical, without answering, cancelling,
+or accepting it. Agent-authored, run-attributed, derived-agent, and untrusted
+comments do not establish that direction. The server uses the same question
+classification in task context, completion feedback, governed waits, and native
+status finalization. Browser dismissal remains a local presentation preference.
+
+A historical question stays in the feed and remains answerable after completion.
+A later authorized human answer updates history without reopening or resuming
+work. Cancellation still expires the question. Its pending
+state alone does not block completion or require another reminder. Agents must
+continue authorized work that does not need the missing information, withdraw
+obsolete questions when evidence satisfies them, and name any input that still
+prevents the current work. New current questions still define a waiting path.
+Approvals, governed tool/credential/connection requests, and configured review
+stages retain their gates; a later message does not grant approval.
+
 A permission denial is not, by itself, a blocker. If an instructed step is denied at an authorization boundary but the issue's own deliverable is complete, the right disposition is `done`, not `blocked` (see the review-delegation rules in §6).
 
 This requirement is prospective-only on rollout: it applies to transitions into `blocked` made after the feature ships, gated on the blocked-transition timestamp against the rollout marker, not on issue `createdAt`. Issues already blocked at upgrade time are untouched — no backfilled notifications, no retroactive validation, no `needs_attention` storm on deploy. Triage of pre-existing prose-blocked issues is a one-time opt-in digest, not a default.
@@ -374,6 +392,20 @@ An unmanaged local process is not a durable action path. Shell jobs started with
 Before a heartbeat finalizes, its issue disposition must therefore be evaluated from durable Paperclip state, not from processes still visible only to that heartbeat. An agent-owned issue may remain `in_progress` after the heartbeat only when another valid action-path primitive already exists. If the only claimed continuation is a local/background watcher, finalization treats the issue as having no live path even when the process has not yet been observed exiting.
 
 If useful deliverable work can continue without the external result, the agent should continue that work or delegate it rather than parking the issue. Use `blocked` only for a real dependency that prevents productive progress. Use a monitor when the assignee owns a bounded future check, and use delegated child work when another owner can make progress independently.
+
+Saved pull-request work products remain linked in task properties even when
+external-object detection or provider access is unavailable. Live updates read
+saved rows independently of GitHub refreshes. A delayed provider response only
+enriches matching PR versions; it cannot replace the saved work-product list.
+During a scheduled
+GitHub monitor wait, an outstanding `needs_board_review` PR also appears beside
+the composer with its link and the next check time. **Check status** invokes the
+existing bounded monitor check; it does not merge the PR or attest that it merged.
+Merged, closed, and archived PRs do not request review even when their saved review
+flag is stale. This display is not an approval gate or a new execution path.
+When work actually needs a human answer, the agent must still create the existing
+durable interaction and leave the task `in_review` rather than relying on a PR
+review flag or a monitor comment to request that answer.
 
 Recovery from an invalid external wait is bounded and idempotent:
 
