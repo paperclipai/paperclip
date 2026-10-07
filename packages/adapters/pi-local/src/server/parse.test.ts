@@ -208,6 +208,7 @@ describe("parsePiJsonl", () => {
     expect(parsed.usage.outputTokens).toBe(75);
     expect(parsed.usage.cachedInputTokens).toBe(25);
     expect(parsed.usage.costUsd).toBe(0.003);
+    expect(parsed.costComplete).toBe(true);
   });
 
   it("surfaces failed auto-retry exhaustion as an error", () => {

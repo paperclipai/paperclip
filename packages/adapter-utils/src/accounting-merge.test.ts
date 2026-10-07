@@ -36,19 +36,35 @@ describe("mergeAccountingUsage", () => {
 });
 
 describe("mergeAccountingCost", () => {
-  it("keeps a known control cost when the checkpoint cost is missing", () => {
-    expect(mergeAccountingCost(1.25, null)).toBe(1.25);
+  it("prefers the full-stream checkpoint sum when it is complete", () => {
+    expect(mergeAccountingCost(
+      { costUsd: 0.5, costComplete: true },
+      { costUsd: 1.25, costComplete: true },
+    )).toBe(1.25);
   });
 
-  it("keeps a known checkpoint cost when the control cost is missing", () => {
-    expect(mergeAccountingCost(null, 0.5)).toBe(0.5);
+  it("fills the gap from control when the checkpoint saw no cost evidence", () => {
+    // Display lines redacted away are invisible to the checkpoint while the
+    // sanitized control record stays parseable.
+    expect(mergeAccountingCost(
+      { costUsd: 1.25, costComplete: true },
+      { costUsd: null, costComplete: true },
+    )).toBe(1.25);
+  });
+
+  it("reports unknown when the full stream shows a cost is missing", () => {
+    // An early unpriced step pushed out of capped control capture must not
+    // let a later partial sum pose as the priced total.
+    expect(mergeAccountingCost(
+      { costUsd: 0.5, costComplete: true },
+      { costUsd: null, costComplete: false },
+    )).toBeNull();
   });
 
   it("returns null when both sides are missing", () => {
-    expect(mergeAccountingCost(null, undefined)).toBeNull();
-  });
-
-  it("takes the fuller cost when both sides report one", () => {
-    expect(mergeAccountingCost(1.25, 0.5)).toBe(1.25);
+    expect(mergeAccountingCost(
+      { costUsd: null, costComplete: true },
+      { costUsd: undefined, costComplete: true },
+    )).toBeNull();
   });
 });

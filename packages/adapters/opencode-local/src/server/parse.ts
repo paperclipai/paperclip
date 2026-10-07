@@ -100,6 +100,7 @@ export function createOpenCodeJsonlParser() {
       usageReported,
       usageComplete: usageReported && !missingUsage,
       costUsd: missingCost ? null : costUsd,
+      costComplete: !missingCost,
       errorMessage: errors.length > 0 ? errors.join("\n") : null,
       toolErrors,
     };

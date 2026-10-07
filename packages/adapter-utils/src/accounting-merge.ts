@@ -26,12 +26,21 @@ export function mergeAccountingUsage<T extends AccountingCounters>(control: T, c
   };
 }
 
-export function mergeAccountingCost(
-  control: number | null | undefined,
-  checkpoint: number | null | undefined,
-): number | null {
-  const known = [control, checkpoint].filter(
-    (value): value is number => typeof value === "number" && Number.isFinite(value),
-  );
-  return known.length > 0 ? Math.max(...known) : null;
+export interface CostEvidence {
+  costUsd: number | null | undefined;
+  /** False when the stream itself showed a cost was missing or unparseable. */
+  costComplete: boolean;
+}
+
+/** Merge cost evidence without letting a partial sum pose as a priced total.
+ *
+ * The checkpoint sees the full stream, so its completeness verdict dominates:
+ * a missing cost anywhere in the full stream makes the total unknown, even
+ * when capped control capture still holds a partial sum from later steps.
+ * Only when the checkpoint saw no cost evidence at all (e.g. its display
+ * lines were redacted away while the sanitized control record stayed
+ * parseable) does control's record fill the gap. */
+export function mergeAccountingCost(control: CostEvidence, checkpoint: CostEvidence): number | null {
+  if (!checkpoint.costComplete) return null;
+  return checkpoint.costUsd ?? control.costUsd ?? null;
 }

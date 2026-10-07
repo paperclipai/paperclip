@@ -707,7 +707,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsed.usage = mergeAccountingUsage(parsed.usage, retained.usage);
         parsed.usageReported = parsed.usageReported || retained.usageReported;
         parsed.usageComplete = parsed.usageComplete || retained.usageComplete;
-        parsed.costUsd = mergeAccountingCost(parsed.costUsd, retained.costUsd);
+        parsed.costUsd = mergeAccountingCost(
+          { costUsd: parsed.costUsd, costComplete: parsed.costComplete },
+          { costUsd: retained.costUsd, costComplete: retained.costComplete },
+        );
       }
       return { proc, rawStderr: proc.stderr, parsed };
     };

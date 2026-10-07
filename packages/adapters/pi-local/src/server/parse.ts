@@ -11,6 +11,8 @@ interface ParsedPiOutput {
     cachedInputTokens: number;
     costUsd: number | null;
   };
+  /** False when a parsed record showed a cost was missing or unparseable. */
+  costComplete: boolean;
   finalMessage: string | null;
   toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown; result: string | null; isError: boolean }>;
 }
@@ -48,6 +50,8 @@ export function createPiJsonlParser() {
     },
     finalMessage: null,
     toolCalls: [],
+    // Derived at return from missingCost; stays true on the accumulator.
+    costComplete: true,
   };
 
   let missingCost = false;
@@ -237,7 +241,7 @@ export function createPiJsonlParser() {
     }
 
     if (missingCost) result.usage.costUsd = null;
-    return { ...result, usage: { ...result.usage }, messages: [...result.messages], errors: [...result.errors], toolCalls: [...result.toolCalls] };
+    return { ...result, usage: { ...result.usage }, costComplete: !missingCost, messages: [...result.messages], errors: [...result.errors], toolCalls: [...result.toolCalls] };
   };
 }
 

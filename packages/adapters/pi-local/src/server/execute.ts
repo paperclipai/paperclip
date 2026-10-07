@@ -800,7 +800,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         // stream may also be the fuller one when capture is capped.
         parsed.usage = {
           ...mergeAccountingUsage(parsed.usage, retained.usage),
-          costUsd: mergeAccountingCost(parsed.usage.costUsd, retained.usage.costUsd),
+          costUsd: mergeAccountingCost(
+            { costUsd: parsed.usage.costUsd, costComplete: parsed.costComplete },
+            { costUsd: retained.usage.costUsd, costComplete: retained.costComplete },
+          ),
         };
         parsed.sawAgentEnd = parsed.sawAgentEnd || retained.sawAgentEnd;
       }
