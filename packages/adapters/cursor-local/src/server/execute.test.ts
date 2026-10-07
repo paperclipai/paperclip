@@ -138,6 +138,36 @@ function createFreshLeaseSandboxRunner(options: {
 }
 
 describe("cursor execute", () => {
+  it.each([0, 7])("settles legacy step usage only after a clean process exit (%s)", async (exitCode) => {
+    setPrepareCursorSandboxCommand.mockReset();
+    setPrepareCursorSandboxCommand.mockImplementation(async (input) => ({
+      command: input.command, env: input.env, remoteSystemHomeDir: null,
+      addedPathEntry: null, preferredCommandPath: null,
+    }));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-legacy-"));
+    const command = path.join(root, "agent.sh");
+    await fs.writeFile(command, `#!/bin/sh
+cat >/dev/null
+printf '%s\\n' '{"type":"step_finish","part":{"tokens":{"input":20,"output":5},"cost":0.01}}'
+exit ${exitCode}
+`, { mode: 0o755 });
+    const onUsage = vi.fn();
+    try {
+      const result = await execute({
+        runId: "run-legacy", agent: { id: "agent-1", companyId: "company-1", name: "Cursor", adapterType: "cursor", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { command, cwd: root }, context: createPromptContextFixture(),
+        authToken: "fixture-run-token", onLog: async () => {}, onUsage,
+      });
+      expect(result.usage).toMatchObject({ inputTokens: 20, outputTokens: 5 });
+      expect(result.costUsd).toBe(0.01);
+      expect(result.usageComplete).toBe(exitCode === 0);
+      expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ complete: false, costUsd: 0.01 }));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     { detail: "Authentication failed", structured: "", expected: "Authentication failed" },
     { detail: "", structured: "", expected: "Cursor exited with code 7" },

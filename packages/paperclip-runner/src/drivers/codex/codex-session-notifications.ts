@@ -533,9 +533,19 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     }
     if (notification.method === "thread/tokenUsage/updated") {
       state.usageSnapshot = boundedPayload(record(params.tokenUsage));
-      if (state.driverKind === "codex_app_server" && Object.keys(record(record(params.tokenUsage).total)).length > 0) {
-        state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, record(params.tokenUsage).total, false);
-        state.usageSnapshot = { ...state.usageSnapshot, ...codexRunUsage(state.codexUsageBaseline) };
+      if (state.driverKind === "codex_app_server") {
+        const reported = record(record(params.tokenUsage).total);
+        const validCount = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+        // The monotonic snapshot retains absent counters from older reports.
+        // Preserve whether this provider report can actually close accounting.
+        const runDeltaComplete = validCount(reported.inputTokens) && validCount(reported.outputTokens)
+          && Object.entries(reported).every(([key, value]) => !key.endsWith("Tokens") || validCount(value))
+          && Object.keys(state.codexUsageBaseline?.latest ?? {}).every(key => !key.endsWith("Tokens") || validCount(reported[key]));
+        if (Object.keys(reported).length > 0) {
+          state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, reported, false);
+          state.usageSnapshot = { ...state.usageSnapshot, ...codexRunUsage(state.codexUsageBaseline) };
+        }
+        state.usageSnapshot = { ...state.usageSnapshot, runDeltaComplete };
       }
       // Codex can replay a thread-scoped usage snapshot while a resumed thread
       // is being attached, before the next turn has started. Keep the snapshot,
