@@ -1,3 +1,5 @@
+import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
+import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -470,6 +472,38 @@ describe("agent-created hires use managed AI connections", () => {
 });
 
 describe("hired agents sharing a subscription", () => {
+  it("keeps a credential-lock timeout on automatic retry without blocking the task or starting a provider", async () => {
+    const f = await fixture("openai", "subscription");
+    const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Waiting teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
+    // Only an operator may set host execution paths after the agent is hired.
+    await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, cwd: home } }).where(eq(agents.id, agent.id));
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Wait for credential rotation", status: "todo", assigneeAgentId: agent.id, responsibleUserId: f.userId, createdByUserId: f.userId }).returning();
+    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, resultJson: {} }));
+    registerServerAdapter({ ...getServerAdapter(f.adapterType), execute });
+    const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock")
+      .mockRejectedValueOnce(Object.assign(new Error("quota refresh holds company lock"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE }));
+    const heartbeat = heartbeatService(db);
+    try {
+      const run = await heartbeat.invoke(agent.id, "assignment", { issueId: issue.id, wakeReason: "issue_assigned", responsibleUserId: f.userId }, "system");
+      expect(run).not.toBeNull();
+      await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("cancelled");
+      await heartbeat.drainActiveRunExecutions();
+      expect(await heartbeat.getRun(run!.id)).toMatchObject({ errorCode: "ai_connection_busy", resultJson: { executionRecovery: { providerWorkStarted: false } } });
+      const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
+      expect(retries).toHaveLength(1);
+      expect(retries[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy" });
+      const [savedIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
+      expect(savedIssue.status).not.toBe("blocked");
+      expect(savedIssue.executionRunId).toBe(retries[0].id);
+      expect(execute).not.toHaveBeenCalled();
+      expect(await aiConnectionService(db).list(f.companyId, f.userId)).toEqual([expect.objectContaining({ status: "connected" })]);
+    } finally {
+      lock.mockRestore();
+      await heartbeat.drainActiveRunExecutions();
+      unregisterServerAdapter(f.adapterType);
+    }
+  });
+
   it.each(["openai", "anthropic"] as const)("runs the %s child alongside a live parent and inherits its connection", async (provider) => {
     const f = await fixture(provider, "subscription");
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agent-hires`).send({ name: "Concurrent teammate", role: "engineer", adapterType: f.adapterType, reportsTo: f.agentId, adapterConfig: { engine: "cli" }, runtimeConfig: { heartbeat: { enabled: false } } }));
