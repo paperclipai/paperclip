@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   listClaudeSkills,
   syncClaudeSkills,
@@ -24,6 +24,7 @@ describe("claude local skill sync", () => {
   const cleanupDirs = new Set<string>();
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await Promise.all(Array.from(cleanupDirs).map((dir) => fs.rm(dir, { recursive: true, force: true })));
     cleanupDirs.clear();
   });
@@ -105,6 +106,54 @@ describe("claude local skill sync", () => {
       locationLabel: "~/.claude/skills",
       readOnly: true,
       detail: "Installed outside Paperclip management in the Claude skills home.",
+    }));
+  });
+  it("reads user-installed Claude skills from CLAUDE_CONFIG_DIR in the agent env", async () => {
+    const home = await makeTempDir("paperclip-claude-home-");
+    const configDir = await makeTempDir("paperclip-claude-config-dir-");
+    cleanupDirs.add(home);
+    cleanupDirs.add(configDir);
+    await createSkillDir(path.join(home, ".claude", "skills"), "home-only-skill");
+    await createSkillDir(path.join(configDir, "skills"), "config-dir-skill");
+
+    const snapshot = await listClaudeSkills({
+      agentId: "agent-5",
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        env: {
+          HOME: home,
+          CLAUDE_CONFIG_DIR: configDir,
+        },
+      },
+    });
+
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: "config-dir-skill",
+      state: "external",
+      origin: "user_installed",
+      locationLabel: path.join(configDir, "skills"),
+    }));
+    expect(snapshot.entries.find((entry) => entry.key === "home-only-skill")).toBeUndefined();
+  });
+
+  it("reads user-installed Claude skills from the host CLAUDE_CONFIG_DIR", async () => {
+    const configDir = await makeTempDir("paperclip-claude-host-config-dir-");
+    cleanupDirs.add(configDir);
+    await createSkillDir(path.join(configDir, "skills"), "host-config-dir-skill");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", configDir);
+
+    const snapshot = await listClaudeSkills({
+      agentId: "agent-6",
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {},
+    });
+
+    expect(snapshot.entries).toContainEqual(expect.objectContaining({
+      key: "host-config-dir-skill",
+      state: "external",
+      locationLabel: path.join(configDir, "skills"),
     }));
   });
 });
