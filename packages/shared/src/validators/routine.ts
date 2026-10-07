@@ -66,6 +66,9 @@ export const createRoutineSchema = z.object({
   projectId: z.string().guid().optional().nullable(),
   folderId: z.string().guid().optional().nullable(),
   goalId: z.string().guid().optional().nullable(),
+  // docs/ops/goal-attachment-policy.md (TES-2386): routines have no labels,
+  // so this is the explicit opt-out a "no-goal" label gives an issue.
+  noGoal: z.boolean().optional(),
   parentIssueId: z.string().guid().optional().nullable(),
   title: z.string().trim().min(1).max(200),
   description: z.string().optional().nullable(),

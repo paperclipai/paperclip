@@ -214,6 +214,25 @@ export const ISSUE_LIST_MAX_LIMIT = 1000;
 export const ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS = 100;
 export const ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS = 50;
 export const ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS = 50;
+
+// This is one company's board policy (docs/ops/goal-attachment-policy.md),
+// not a platform default: most companies on this instance have no G1-G6
+// goal system for the rule to attach to, and defaulting it on would reject
+// issue creation for all of them. `companies.requireGoalAttachment`
+// (default false) is the opt-in; only flip it for a company that has
+// actually decided to require this. Exported so routineService can apply
+// the same company-level decision to routine create/update.
+export async function companyRequiresGoalAttachment(
+  db: Db,
+  companyId: string,
+  dbOrTx: any = db,
+): Promise<boolean> {
+  const [company] = await dbOrTx
+    .select({ requireGoalAttachment: companies.requireGoalAttachment })
+    .from(companies)
+    .where(eq(companies.id, companyId));
+  return company?.requireGoalAttachment === true;
+}
 export const ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS = 14;
 export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_DEPTH = 8;
 export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_NODES = 100;
@@ -7228,23 +7247,6 @@ export function issueService(db: Db) {
     );
   }
 
-  // This is one company's board policy (docs/ops/goal-attachment-policy.md),
-  // not a platform default: most companies on this instance have no G1-G6
-  // goal system for the rule to attach to, and defaulting it on would reject
-  // issue creation for all of them. `companies.requireGoalAttachment`
-  // (default false) is the opt-in; only flip it for a company that has
-  // actually decided to require this.
-  async function companyRequiresGoalAttachment(
-    companyId: string,
-    dbOrTx: any = db,
-  ): Promise<boolean> {
-    const [company] = await dbOrTx
-      .select({ requireGoalAttachment: companies.requireGoalAttachment })
-      .from(companies)
-      .where(eq(companies.id, companyId));
-    return company?.requireGoalAttachment === true;
-  }
-
   async function getIssueRelationSummaryMap(
     companyId: string,
     issueIds: string[],
@@ -10305,7 +10307,7 @@ export function issueService(db: Db) {
         // a goal at, and their originKind is never "manual".
         if (
           values.originKind === "manual" &&
-          (await companyRequiresGoalAttachment(companyId, tx))
+          (await companyRequiresGoalAttachment(db, companyId, tx))
         ) {
           assertGoalAttached({
             status: values.status ?? "backlog",
@@ -11096,7 +11098,7 @@ export function issueService(db: Db) {
         if (
           existing.originKind === "manual" &&
           (issueData.status !== undefined || issueData.goalId !== undefined) &&
-          (await companyRequiresGoalAttachment(existing.companyId, tx))
+          (await companyRequiresGoalAttachment(db, existing.companyId, tx))
         ) {
           const effectiveStatus = patch.status ?? existing.status;
           const labelIdsForGoalCheck = nextLabelIds !== undefined

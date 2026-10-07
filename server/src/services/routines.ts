@@ -64,7 +64,7 @@ import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../e
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { issueService } from "./issues.js";
+import { companyRequiresGoalAttachment, issueService } from "./issues.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { secretService } from "./secrets.js";
@@ -1030,6 +1030,22 @@ export function routineService(
       .then((rows) => rows[0] ?? null);
     if (!goal) throw notFound("Goal not found");
     if (goal.companyId !== companyId) throw unprocessable("Goal must belong to same company");
+  }
+
+  // docs/ops/goal-attachment-policy.md (TES-2386/TES-2492): only an *active*
+  // routine fires, so a paused/archived one can't yet mint the unattached
+  // issue closures this guard exists to prevent — mirrors the issue-side
+  // guard letting "backlog" through. Routines have no labels, so
+  // `noGoal: true` is the equivalent of an issue's "no-goal" label: an
+  // explicit opt-out, not the default "nobody picked one" null.
+  function assertRoutineGoalAttached(input: { status: string; goalId: string | null | undefined; noGoal: boolean }) {
+    if (input.status !== "active") return;
+    if (input.goalId) return;
+    if (input.noGoal) return;
+    throw unprocessable(
+      'Active routines require a goalId, or noGoal: true. See docs/ops/goal-attachment-policy.md.',
+      { code: "goal_required", docsPath: "docs/ops/goal-attachment-policy.md" },
+    );
   }
 
   async function assertParentIssue(companyId: string, issueId: string) {
@@ -2216,6 +2232,10 @@ export function routineService(
       await assertAssignableAgent(db, companyId, input.assigneeAgentId ?? null, { kind: "routine" });
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
+      const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
+      if (await companyRequiresGoalAttachment(db, companyId)) {
+        assertRoutineGoalAttached({ status, goalId: input.goalId, noGoal: input.noGoal === true });
+      }
       const env = input.env === undefined || input.env === null
         ? null
         : await secretsSvc.normalizeEnvBindingsForPersistence(companyId, input.env, {
@@ -2227,7 +2247,6 @@ export function routineService(
         sanitizeRoutineVariableInputs(input.variables),
       );
       assertRoutineVariableDefinitions(variables);
-      const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
       const responsibleUserId = await resolveRoutineResponsibleUserId(db, companyId, actor.userId, input.parentIssueId ?? null);
       if (!responsibleUserId) {
         throw unprocessable("Routine requires a responsible user");
@@ -2241,6 +2260,7 @@ export function routineService(
             projectId: input.projectId ?? null,
             folderId: input.folderId ?? null,
             goalId: input.goalId ?? null,
+            noGoal: input.noGoal === true,
             parentIssueId: input.parentIssueId ?? null,
             title: input.title,
             description: input.description ?? null,
@@ -2310,6 +2330,24 @@ export function routineService(
       }
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
+      // Only re-check when this request actually touches status, goalId or
+      // noGoal — same reasoning as the issue-update guard: an unrelated
+      // patch on a routine grandfathered from before this check existed (or
+      // one of the paused-owner holdouts TES-2467 backfilled) shouldn't be
+      // blocked by a field it never asked to change. `patch.status` is
+      // included so a bare `{ status: "active" }` transition — the one this
+      // guard exists to catch — is checked even when it doesn't also touch
+      // goalId/noGoal.
+      if (
+        (patch.status !== undefined || patch.goalId !== undefined || patch.noGoal !== undefined) &&
+        (await companyRequiresGoalAttachment(db, existing.companyId))
+      ) {
+        assertRoutineGoalAttached({
+          status: nextStatus,
+          goalId: patch.goalId === undefined ? existing.goalId : patch.goalId,
+          noGoal: patch.noGoal === undefined ? existing.noGoal : patch.noGoal,
+        });
+      }
       assertRoutineVariableDefinitions(nextVariables);
       const enabledScheduleTriggers = await db
         .select({ id: routineTriggers.id })

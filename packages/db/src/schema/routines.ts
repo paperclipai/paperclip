@@ -28,6 +28,10 @@ export const routines = pgTable(
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "cascade" }),
     folderId: uuid("folder_id").references(() => folders.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id, { onDelete: "set null" }),
+    // docs/ops/goal-attachment-policy.md (TES-2386): routines have no labels,
+    // so this is their equivalent of an issue's "no-goal" label — an explicit
+    // opt-out instead of the default "nobody picked one" null.
+    noGoal: boolean("no_goal").notNull().default(false),
     parentIssueId: uuid("parent_issue_id").references(() => issues.id, { onDelete: "set null" }),
     title: text("title").notNull(),
     description: text("description"),

@@ -1,0 +1,1 @@
+ALTER TABLE "routines" ADD COLUMN "no_goal" boolean DEFAULT false NOT NULL;
