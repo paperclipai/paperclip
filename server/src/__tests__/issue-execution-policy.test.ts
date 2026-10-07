@@ -118,7 +118,7 @@ describe("normalizeIssueExecutionPolicy", () => {
       monitor: {
         nextCheckAt: "2026-04-11T12:30:00.000Z",
         notes: "Check deployment",
-        externalRef: "https://example.test/deploy?token=secret",
+        externalRef: "https://github.test/example/example/pull/42",
       },
       stages: [],
     });
@@ -128,9 +128,20 @@ describe("normalizeIssueExecutionPolicy", () => {
         nextCheckAt: "2026-04-11T12:30:00.000Z",
         notes: "Check deployment",
         scheduledBy: "assignee",
-        externalRef: "[redacted]",
+        externalRef: "https://github.test/example/example/pull/42",
       },
     });
+  });
+
+  it("preserves the raw externalRef value instead of redacting it", () => {
+    const result = normalizeIssueExecutionPolicy({
+      monitor: {
+        nextCheckAt: "2026-04-11T12:30:00.000Z",
+        externalRef: "  https://github.test/example/example/pull/42  ",
+      },
+      stages: [],
+    });
+    expect(result?.monitor?.externalRef).toBe("https://github.test/example/example/pull/42");
   });
 });
 

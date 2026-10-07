@@ -11806,11 +11806,7 @@ export function heartbeatService(
 
     try {
       if (monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
-        // Normalized monitor projections redact externalRef. Read the claimed
-        // persisted policy only on this server-owned quota recovery path.
-        const sourceRunId = readNonEmptyString(
-          parseObject(parseObject(claimed.executionPolicy).monitor).externalRef,
-        );
+        const sourceRunId = readNonEmptyString(monitor.externalRef);
         const sourceRun =
           sourceRunId && isUuidLike(sourceRunId)
             ? await getRun(sourceRunId, { unsafeFullResultJson: true })
