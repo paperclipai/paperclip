@@ -60,6 +60,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/openai-compatible",
+    "name": "@paperclipai/adapter-openai-compatible",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/adapters/openclaw-gateway",
     "name": "@paperclipai/adapter-openclaw-gateway",
     "publishFromCi": true

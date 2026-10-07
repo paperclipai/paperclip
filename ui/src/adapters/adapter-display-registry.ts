@@ -15,6 +15,7 @@ import {
   Sparkles,
   Terminal,
   Cpu,
+  Plug,
 } from "lucide-react";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
 
@@ -131,6 +132,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Cursor Cloud",
     description: "Managed remote Cursor agent",
     icon: MousePointer2,
+  },
+  openai_compatible: {
+    label: "OpenAI-compatible API",
+    description: "Any OpenAI-compatible API with your URL, model, and key",
+    icon: Plug,
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",

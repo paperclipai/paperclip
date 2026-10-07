@@ -101,6 +101,9 @@ importers:
       '@paperclipai/adapter-kimi-local':
         specifier: workspace:*
         version: link:../packages/adapters/kimi-local
+      '@paperclipai/adapter-openai-compatible':
+        specifier: workspace:*
+        version: link:../packages/adapters/openai-compatible
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -323,6 +326,22 @@ importers:
         version: 5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
 
   packages/adapters/kimi-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+      picocolors:
+        specifier: ^1.1.1
+        version: 1.1.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
+  packages/adapters/openai-compatible:
     dependencies:
       '@paperclipai/adapter-utils':
         specifier: workspace:*
@@ -925,6 +944,9 @@ importers:
       '@paperclipai/adapter-kimi-local':
         specifier: workspace:*
         version: link:../packages/adapters/kimi-local
+      '@paperclipai/adapter-openai-compatible':
+        specifier: workspace:*
+        version: link:../packages/adapters/openai-compatible
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -1136,6 +1158,9 @@ importers:
       '@paperclipai/adapter-kimi-local':
         specifier: workspace:*
         version: link:../packages/adapters/kimi-local
+      '@paperclipai/adapter-openai-compatible':
+        specifier: workspace:*
+        version: link:../packages/adapters/openai-compatible
       '@paperclipai/adapter-openclaw-gateway':
         specifier: workspace:*
         version: link:../packages/adapters/openclaw-gateway
@@ -7625,7 +7650,6 @@ packages:
 
   opencode-ai@1.18.34:
     resolution: {integrity: sha512-9WUS2T0t4HHDVzXvuwTHF0nvhXvZ9mQ0r+ozCvKdJu0LVoQpOzqAW4qWTC3ygNc5Oedcc7j+Oct24JYlQYnySA==}
-    cpu: [arm64, x64]
     os: [darwin, linux, win32]
     hasBin: true
 

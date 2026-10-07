@@ -27,6 +27,7 @@ When a heartbeat fires, Paperclip:
 | Pi | `pi_local` | Runs an embedded Pi agent locally |
 | Hermes | `hermes_local` | Runs the local Hermes CLI through `@paperclipai/hermes-paperclip-adapter` |
 | Hermes Gateway | `hermes_gateway` | Calls an already-running Hermes API server through `@paperclipai/hermes-paperclip-adapter/gateway` |
+| [OpenAI-compatible API](/adapters/openai-compatible) | `openai_compatible` | Runs a tool-calling loop against any OpenAI-compatible Chat Completions provider (API URL + model + key) |
 | OpenClaw Gateway | `openclaw_gateway` | Connects to an OpenClaw gateway endpoint |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |

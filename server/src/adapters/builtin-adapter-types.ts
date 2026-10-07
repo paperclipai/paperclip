@@ -14,6 +14,7 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "hermes_local",
   "kimi_local",
   "openclaw_gateway",
+  "openai_compatible",
   "opencode_local",
   "pi_local",
   "process",

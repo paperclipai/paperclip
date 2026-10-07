@@ -4,6 +4,7 @@ import { useAgentAppearanceDraft } from "../../hooks/useAgentAppearanceDraft";
 import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
+import { normalizeOpenAiCompatibleApiUrl } from "@paperclipai/adapter-openai-compatible";
 import {
   SETUP_CREDENTIAL_KEYS,
   SETUP_LOGIN_HINTS,
@@ -133,6 +134,8 @@ function Setup({
     chooseProvider || Boolean(SETUP_CREDENTIAL_KEYS[adapterType]);
   const showModel = !["cursor_cloud", "hermes_gateway"].includes(adapterType);
   const [gatewayUrl, setGatewayUrl] = useState("");
+  const [providerApiUrl, setProviderApiUrl] = useState("");
+  const isOpenAiCompatible = adapterType === "openai_compatible";
   const [kimiModel, setKimiModel] = useState("");
   const [kimiBaseUrl, setKimiBaseUrl] = useState("");
   const [kimiProtocol, setKimiProtocol] = useState("kimi");
@@ -375,6 +378,9 @@ function Setup({
         ...(branch.trim() ? { repoStartingRef: branch.trim() } : {}),
       });
     if (adapterType === "hermes_gateway") config.apiBaseUrl = gatewayUrl.trim();
+    if (isOpenAiCompatible)
+      config.apiUrl =
+        normalizeOpenAiCompatibleApiUrl(providerApiUrl) ?? providerApiUrl.trim();
     if (usingKimiApi) {
       // --model overrides Kimi's environment-defined model. Let KIMI_MODEL_NAME win.
       delete config.model;
@@ -416,6 +422,11 @@ function Setup({
       } catch {
         throw new Error("Enter the Hermes API base URL.");
       }
+    }
+    if (isOpenAiCompatible) {
+      if (!normalizeOpenAiCompatibleApiUrl(providerApiUrl))
+        throw new Error("Enter the provider API URL, e.g. https://openrouter.ai/api/v1.");
+      if (!model.trim()) throw new Error("Enter the provider model ID.");
     }
     if (usingKimiApi && !kimiModel.trim())
       throw new Error("Enter the Kimi API model name.");
@@ -624,7 +635,9 @@ function Setup({
       ? "Cursor Cloud"
       : adapterType === "hermes_gateway"
         ? "Hermes Gateway"
-        : confirmationEnvironment
+        : isOpenAiCompatible
+          ? "Paperclip server"
+          : confirmationEnvironment
           ? environmentDisplayLabel(confirmationEnvironment)
           : "Local machine";
   const setupError =
@@ -850,6 +863,22 @@ function Setup({
                           <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
                             onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest(); }} />
                         )}
+                        {isOpenAiCompatible && (
+                          <Field
+                            label="API URL"
+                            hint="OpenAI-compatible base URL. Paperclip calls {API URL}/chat/completions."
+                          >
+                            <Input
+                              aria-label="API URL"
+                              value={providerApiUrl}
+                              onChange={(event) => {
+                                setProviderApiUrl(event.target.value);
+                                resetTest();
+                              }}
+                              placeholder="https://openrouter.ai/api/v1"
+                            />
+                          </Field>
+                        )}
                         {(connectionModels ? connectionModels.error : models.error) && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
                         {((showModel && !usingKimiApi) ||
                           efforts.length > 0) && (
@@ -980,7 +1009,9 @@ function Setup({
                                               "hermes_gateway",
                                             ].includes(adapterType)
                                           ? "Required"
-                                          : "Optional if already configured"
+                                          : isOpenAiCompatible
+                                            ? "Required for hosted providers"
+                                            : "Optional if already configured"
                                     }
                                   />
                                   {adapterType === "cursor_cloud" && (
@@ -1119,7 +1150,7 @@ function Setup({
                           </div>
                         )}
                       </section>
-                      {!["cursor_cloud", "hermes_gateway"].includes(
+                      {!["cursor_cloud", "hermes_gateway", "openai_compatible"].includes(
                         adapterType,
                       ) && (
                         <section className="space-y-5">

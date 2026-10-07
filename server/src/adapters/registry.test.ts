@@ -71,6 +71,7 @@ describe("built-in runtime connection tool delivery", () => {
     ["hermes_local", "environment"],
     ["kimi_local", "environment"],
     ["openclaw_gateway", "invocation_context"],
+    ["openai_compatible", "invocation_context"],
     ["opencode_local", "environment"],
     ["paperclip_runner", "environment"],
     ["pi_local", "environment"],

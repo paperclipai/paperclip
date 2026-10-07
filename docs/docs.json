@@ -102,6 +102,7 @@
               "adapters/overview",
               "adapters/claude-local",
               "adapters/codex-local",
+              "adapters/openai-compatible",
               "adapters/process",
               "adapters/http",
               "adapters/external-adapters",
