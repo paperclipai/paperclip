@@ -59,11 +59,15 @@ export async function validateExecutionReconciliation(input: {
     review?.status === "pending" &&
     review.currentParticipant?.type === "agent" &&
     review.currentParticipant.agentId === run?.agentId;
+  const reassignmentStopConfirmed =
+    run?.status === "cancelled" &&
+    run.errorCode === "issue_reassigned" &&
+    run.resultJson?.reassignmentStopConfirmed === true;
   if (
     !run ||
     !task ||
     task.assigneeAgentId !== agentId ||
-    (run.agentId !== agentId && !isCurrentReviewer) ||
+    (run.agentId !== agentId && !isCurrentReviewer && !reassignmentStopConfirmed) ||
     (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== issueId ||
     !["failed", "interrupted", "timed_out", "cancelled"].includes(run.status)
   ) {

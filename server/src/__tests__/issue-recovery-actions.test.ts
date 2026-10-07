@@ -1836,6 +1836,87 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(recorded);
   });
 
+  async function seedReassignedRunRecovery(input: {
+    errorCode?: string;
+    reassignmentStopConfirmed?: boolean | null;
+  } = {}) {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    let resultJson: Record<string, unknown> = { reassignmentStopConfirmed: true };
+    if (input.reassignmentStopConfirmed === null) resultJson = {};
+    else if (input.reassignmentStopConfirmed !== undefined) {
+      resultJson = { reassignmentStopConfirmed: input.reassignmentStopConfirmed };
+    }
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      runtimeMode: "legacy",
+      status: "cancelled",
+      errorCode: input.errorCode ?? "issue_reassigned",
+      resultJson,
+      startedAt: new Date("2026-05-13T18:00:00.000Z"),
+      finishedAt: new Date("2026-05-13T18:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "active_run_watchdog",
+      ownerType: "board",
+      returnOwnerAgentId: managerId,
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy:${runId}`,
+      evidence: { runId },
+      nextAction: "Inspect the stopped execution and record its outcome.",
+    });
+    return { action, sourceIssueId, runId, managerId };
+  }
+
+  it("resolves a confirmed reassignment stop for the new assignee", async () => {
+    const { action, sourceIssueId, runId, managerId } = await seedReassignedRunRecovery();
+    const result = await request(createApp())
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        executionReconciliation: {
+          runId,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence: "The confirmed reassignment stop has no remaining provider effects.",
+        },
+      })
+      .expect(200);
+
+    expect(result.body.issue).toMatchObject({ status: "todo", assigneeAgentId: managerId });
+    expect(result.body.recoveryAction).toMatchObject({ id: action.id, status: "resolved" });
+  });
+
+  it.each([
+    { errorCode: "issue_reassigned", reassignmentStopConfirmed: null },
+    { errorCode: "issue_terminalized", reassignmentStopConfirmed: true },
+  ])("does not accept an unconfirmed or unrelated stop as reassignment evidence", async (input) => {
+    const { action, sourceIssueId, runId } = await seedReassignedRunRecovery(input);
+    await request(createApp())
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        executionReconciliation: {
+          runId,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence: "The recorded run outcome was inspected before reconciliation.",
+        },
+      })
+      .expect(409);
+  });
+
   async function seedReconciledDelivery() {
     const fixture = await seedCompany();
     const { companyId, coderId, sourceIssueId } = fixture;
