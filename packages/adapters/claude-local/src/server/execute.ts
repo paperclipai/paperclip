@@ -802,14 +802,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
   }
   if (
-    executionTargetIsRemote &&
     runtimeSessionId &&
     isValidUuid &&
     !hasMatchingExecutionTarget
   ) {
     await onLog(
       "stdout",
-      `[paperclip] Claude session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
+      `[paperclip] Claude session "${runtimeSessionId}" does not match the current execution target and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh session.\n`,
     );
   } else if (
     runtimeSessionId &&
