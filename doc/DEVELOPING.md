@@ -103,6 +103,11 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+**HTML artifacts** covers secure rendered/raw attachment previews, interactive
+reports, security probes, workspace previews, and opening a report from a task.
+See [HTML artifact previews](html-artifact-previews.md) for the security boundary,
+supported content, and browser verification command.
+
 **Composer → New task** includes agent/user/project/task mentions, skill and
 routine slash commands, and populated rich chips on desktop and mobile. Agent
 mentions use the same avatars in suggestions, inserted chips, and the mocked

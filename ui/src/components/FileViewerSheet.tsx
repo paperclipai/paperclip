@@ -47,6 +47,9 @@ import {
 } from "@/context/FileViewerContext";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { WorkspaceFileMarkdownBody } from "@/components/WorkspaceFileMarkdownBody";
+import { HtmlArtifactPreview } from "@/components/HtmlArtifactPreview";
+import { FilePreviewModeToggle, type FilePreviewMode } from "@/components/FilePreviewModeToggle";
+import { isHtmlPreview } from "@/lib/html-preview";
 import type {
   ResolvedWorkspaceResource,
   WorkspaceFileContent,
@@ -234,13 +237,16 @@ interface FileContentViewerProps {
   content: WorkspaceFileContent;
   highlightedLine: number | null;
   onLoaded?: (summary: string) => void;
+  htmlMode?: FilePreviewMode;
 }
 
 type MarkdownPreviewMode = "raw" | "rendered";
 
-export function FileContentViewer({ content, highlightedLine, onLoaded }: FileContentViewerProps) {
+export function FileContentViewer({ content, highlightedLine, onLoaded, htmlMode = "rendered" }: FileContentViewerProps) {
   const { resource } = content;
   const isMarkdown = resource.previewKind === "text" && content.content.encoding === "utf8" && isMarkdownResource(resource);
+  const isHtml = resource.previewKind === "text" && content.content.encoding === "utf8"
+    && isHtmlPreview(resource.contentType, resource.displayPath || resource.title);
   const [markdownMode, setMarkdownMode] = useState<MarkdownPreviewMode>("rendered");
   const lines = useMemo(() => {
     if (resource.previewKind === "text") {
@@ -265,7 +271,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
     if (markdownMode !== "raw") return;
     if (!highlightedLine || !highlightedLineRef.current) return;
     highlightedLineRef.current.scrollIntoView({ block: "center", behavior: "auto" });
-  }, [highlightedLine, markdownMode]);
+  }, [highlightedLine, markdownMode, htmlMode]);
 
   if (resource.previewKind === "image") {
     const dataUrl = content.content.encoding === "base64"
@@ -372,6 +378,10 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
       </pre>
     </div>
   );
+
+  if (isHtml) {
+    return htmlMode === "raw" ? rawSourceView : <HtmlArtifactPreview html={content.content.data} title={resource.title} />;
+  }
 
   if (!isMarkdown) {
     return rawSourceView;
@@ -493,6 +503,8 @@ export function FileViewerSheet({
     typeof openProp === "boolean" ? openProp : state !== null || showPromptWhenEmpty || viewer.browse;
 
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [htmlMode, setHtmlMode] = useState<FilePreviewMode>("rendered");
+  useEffect(() => setHtmlMode("rendered"), [state?.path, state?.workspace, state?.workspaceId, state?.projectId]);
   const [copiedField, setCopiedField] = useState<"content" | "link" | null>(null);
   const [copyingField, setCopyingField] = useState<"content" | "link" | null>(null);
   const [copyFeedback, setCopyFeedback] = useState("");
@@ -767,6 +779,10 @@ export function FileViewerSheet({
                   Back to files
                 </Button>
               ) : null}
+              {contentQuery.data?.resource.previewKind === "text" && contentQuery.data.content.encoding === "utf8"
+                && isHtmlPreview(contentQuery.data.resource.contentType, contentQuery.data.resource.displayPath || contentQuery.data.resource.title) ? (
+                  <FilePreviewModeToggle mode={htmlMode} onChange={setHtmlMode} label="HTML view" />
+                ) : null}
               {state ? (
                 downloadUrl ? (
                   <Button
@@ -887,6 +903,7 @@ export function FileViewerSheet({
                   elapsedMs={elapsedMs}
                   canPreview={canPreview}
                   highlightedLine={state.line ?? null}
+                  htmlMode={htmlMode}
                   onRetry={handleRetry}
                   onSetAnnouncement={setAnnouncement}
                   onFallbackToProject={
@@ -934,6 +951,7 @@ interface FileViewerBodyProps {
   onRetry: () => void;
   onSetAnnouncement: (message: string) => void;
   onFallbackToProject: null | (() => void);
+  htmlMode?: FilePreviewMode;
 }
 
 export function FileViewerBody({
@@ -945,6 +963,7 @@ export function FileViewerBody({
   onRetry,
   onSetAnnouncement,
   onFallbackToProject,
+  htmlMode,
 }: FileViewerBodyProps) {
   if (resolveQuery.isFetching && !resolveQuery.data) {
     return <LoadingView elapsedMs={elapsedMs} />;
@@ -1043,6 +1062,7 @@ export function FileViewerBody({
       content={contentQuery.data}
       highlightedLine={highlightedLine}
       onLoaded={onSetAnnouncement}
+      htmlMode={htmlMode}
     />
   );
 }

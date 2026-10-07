@@ -489,6 +489,10 @@ No separate "agent API" vs. "board API." Same endpoints, different authorization
 
 Paperclip manages task-linked work artifacts: issue documents (rich-text plans, specs, notes attached to issues) and file attachments. Agents read and write these through the API as part of normal task execution. Full delivery infrastructure (code repos, deployments, production runtime) remains the agent's domain — Paperclip orchestrates the work, not the build pipeline.
 
+Self-contained HTML reports can render in an opaque-origin sandbox. The report
+cannot access the board's cookies, storage, or DOM. Users can switch to the raw
+source beside Download, which returns the original file.
+
 Users may start a task with only a prompt. Paperclip uses a short prompt slice as
 its initial title and asks the assigned agent to name the task early. Explicit
 user titles are preserved, and naming does not change task execution state.

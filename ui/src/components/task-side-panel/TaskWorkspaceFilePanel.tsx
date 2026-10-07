@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Copy, Download } from "lucide-react";
 import { fileResourcesApi } from "@/api/file-resources";
 import { FileViewerBody, FileViewerMetadataRow } from "@/components/FileViewerSheet";
 import { Button } from "@/components/ui/button";
+import { FilePreviewModeToggle, type FilePreviewMode } from "@/components/FilePreviewModeToggle";
+import { isHtmlPreview } from "@/lib/html-preview";
 import type { FileViewerUrlState } from "@/context/FileViewerContext";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { queryKeys } from "@/lib/queryKeys";
@@ -22,6 +24,8 @@ export function TaskWorkspaceFilePanel({
 }) {
   const [copied, setCopied] = useState(false);
   const [announcement, setAnnouncement] = useState("");
+  const [htmlMode, setHtmlMode] = useState<FilePreviewMode>("rendered");
+  useEffect(() => setHtmlMode("rendered"), [payload.path, payload.workspace, payload.workspaceId, payload.projectId]);
   const state: FileViewerUrlState = {
     path: payload.path,
     workspace: payload.workspace,
@@ -72,6 +76,10 @@ export function TaskWorkspaceFilePanel({
               {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
             </Button>
           ) : null}
+          {contentQuery.data?.resource.previewKind === "text" && contentQuery.data.content.encoding === "utf8"
+            && isHtmlPreview(contentQuery.data.resource.contentType, contentQuery.data.resource.displayPath || contentQuery.data.resource.title) ? (
+              <FilePreviewModeToggle mode={htmlMode} onChange={setHtmlMode} label="HTML view" />
+            ) : null}
           {downloadUrl ? (
             <Button asChild variant="ghost" size="icon-sm">
               <a href={downloadUrl} download={resource?.title} aria-label="Download file" title="Download file">
@@ -95,6 +103,7 @@ export function TaskWorkspaceFilePanel({
           }}
           onSetAnnouncement={setAnnouncement}
           onFallbackToProject={onFallbackToProject ?? null}
+          htmlMode={htmlMode}
         />
       </div>
     </div>
