@@ -27,14 +27,18 @@ describe("sanitized Codex CLI control output", () => {
     return { proc, parsed: parseCodexProcessOutput(proc), logged: logged.join("") };
   }
 
-  it.each([false, true])("preserves completion and unaffected usage after numeric redaction (split=%s)", async (split) => {
+  it.each([false, true])("detects completion without recovering redacted counters after numeric redaction (split=%s)", async (split) => {
     const result = await completedTurn(123456, split);
     expect(result.proc.exitCode).toBe(0);
     expect(result.proc.timedOut).toBe(false);
     expect(result.proc.terminalResultCleanup).toBeNull();
+    // The streaming parser only reports usage when every counter is a valid
+    // count, so a redacted counter clears the whole usage block. Redacted
+    // numeric values are not recoverable; completion detection must survive.
     expect(result.parsed).toMatchObject({
       sessionId: "synthetic-thread", summary: "completed", sawProtocolTerminalEvent: true,
-      usage: { inputTokens: 0, outputTokens: 7, cachedInputTokens: 2 },
+      usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
+      usageComplete: false,
     });
     expect(result.proc.controlOutput?.stdout).not.toContain("123456");
     expect(result.proc.stdout).toContain('"input_tokens":***REDACTED***');
@@ -46,7 +50,8 @@ describe("sanitized Codex CLI control output", () => {
     const result = await completedTurn(123455);
     expect(result.proc.exitCode).toBe(0);
     expect(result.parsed.sawProtocolTerminalEvent).toBe(true);
-    expect(result.parsed.usage).toEqual({ inputTokens: 123455, outputTokens: 7, cachedInputTokens: 2 });
+    // The streaming parser reports input tokens net of cache hits.
+    expect(result.parsed.usage).toEqual({ inputTokens: 123453, outputTokens: 7, cachedInputTokens: 2 });
     expect(result.logged).toBe(result.proc.stdout);
   });
 

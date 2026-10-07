@@ -50,7 +50,8 @@ describe("sanitized Gemini CLI control output", () => {
   it("preserves the adjacent-counter positive control", async () => {
     const { proc, parsed, logged } = await capture(123455);
     expect(proc.exitCode).toBe(0);
-    expect(parsed.usage).toEqual({ inputTokens: 123455, outputTokens: 7, cachedInputTokens: 2 });
+    // The streaming parser reports input tokens net of cache hits.
+    expect(parsed.usage).toEqual({ inputTokens: 123453, outputTokens: 7, cachedInputTokens: 2 });
     expect(parsed.resultEvent?.status).toBe("success");
     expect(logged).toBe(proc.stdout);
   });
