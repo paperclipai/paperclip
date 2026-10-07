@@ -269,9 +269,9 @@ environment variables: `SENTRY_DSN_FRONTEND` for the browser and
 `SENTRY_DSN_BACKEND` for the server. Each variable is optional. A
 specific variable always wins for its own component; a legacy variable,
 `SENTRY_DSN`, supplies a component that has no specific value set. An
-empty string counts as absent for all three variables. The feature uses
-built-in Sentry options only. It adds no `beforeSend` hook and no custom
-filter code.
+empty string counts as absent for all three variables. SDK configuration uses
+built-in Sentry options only. It adds no `beforeSend` hook. The run-failure
+reporter selects reportable outcomes before calling the SDK, as described below.
 
 The server is inactive when the backend DSN resolves to `null`; then it
 imports no Sentry package. The browser is inactive when the front-end DSN
