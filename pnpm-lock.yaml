@@ -40,10 +40,10 @@ patchedDependencies:
     hash: vbylpnnxt5av2zdnuqmf6hjyjy
     path: patches/@discordjs__ws@1.2.3.patch
   acpx@0.12.0:
-    hash: zxns4omawae6bjvy7kkhcgweei
+    hash: 6st5fzvttegjv64llnfegwwpca
     path: patches/acpx@0.12.0.patch
   acpx@0.13.1:
-    hash: xinuppsghzi2pwhozdhfegto3m
+    hash: btis2ixbxfyq422xwpnza3ncle
     path: patches/acpx@0.13.1.patch
   embedded-postgres@18.1.0-beta.16:
     hash: 55uhvnotpqyiy37rn3pqpukhei
@@ -158,7 +158,7 @@ importers:
         version: link:../shared
       acpx:
         specifier: 0.12.0
-        version: 0.12.0(patch_hash=zxns4omawae6bjvy7kkhcgweei)
+        version: 0.12.0(patch_hash=6st5fzvttegjv64llnfegwwpca)
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -508,7 +508,7 @@ importers:
         version: 0.160.0
       acpx:
         specifier: 0.13.1
-        version: 0.13.1(patch_hash=xinuppsghzi2pwhozdhfegto3m)
+        version: 0.13.1(patch_hash=btis2ixbxfyq422xwpnza3ncle)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -898,6 +898,9 @@ importers:
       '@grpc/grpc-js':
         specifier: 1.14.5
         version: 1.14.5
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.30.0
+        version: 1.30.0(zod@4.4.3)
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.1
@@ -960,7 +963,7 @@ importers:
         version: 8.18.0
       acpx:
         specifier: 0.13.1
-        version: 0.13.1(patch_hash=xinuppsghzi2pwhozdhfegto3m)
+        version: 0.13.1(patch_hash=btis2ixbxfyq422xwpnza3ncle)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -1000,6 +1003,9 @@ importers:
       jsdom:
         specifier: ^30.0.1
         version: 30.0.1(@noble/hashes@2.4.0)
+      light-my-request:
+        specifier: ^6.6.0
+        version: 6.6.0
       multer:
         specifier: ^2.4.0
         version: 2.4.0
@@ -7019,6 +7025,9 @@ packages:
     engines: {node: '>=16'}
     hasBin: true
 
+  light-my-request@6.6.0:
+    resolution: {integrity: sha512-CHYbu8RtboSIoVsHZ6Ye4cj4Aw/yg2oAFimlF7mNvfDV192LR7nDiKtSIfCuLT7KokPSTn/9kfVLm5OGN0A28A==}
+
   lightningcss-android-arm64@1.32.0:
     resolution: {integrity: sha512-YK7/ClTt4kAK0vo6w3X+Pnm0D2cf2vPHbhOXdoNti1Ga0al1P4TBZhwjATvjNwLEBCnKvjJc2jQgHXH0NEwlAg==}
     engines: {node: '>= 12.0.0'}
@@ -7862,6 +7871,9 @@ packages:
   pretty-format@27.5.1:
     resolution: {integrity: sha512-Qb1gy5OrP5+zDf2Bvnzdl3jsTf1qXVMazbvCoKhtKqVs4/YK4ozX4gKQJJVyNe+cajNPn0KoC0MC3FUmaHWEmQ==}
     engines: {node: ^10.13.0 || ^12.13.0 || ^14.15.0 || >=15.0.0}
+
+  process-warning@4.0.1:
+    resolution: {integrity: sha512-3c2LzQ3rY9d0hc1emcsHhfT9Jwz0cChib/QN89oME2R451w5fy3f0afAhERFZAwrbDU43wk12d0ORBpDVME50Q==}
 
   process-warning@5.1.0:
     resolution: {integrity: sha512-jQSaVHsPgtyw60e1rQ/A+/ArPEj/S8pS/vFnyGa/gYFXrKk/6RuDkoqVDQ5NI5MmS01698ltlAk0NoDBNLujRw==}
@@ -13272,7 +13284,7 @@ snapshots:
 
   acorn@8.18.0: {}
 
-  acpx@0.12.0(patch_hash=zxns4omawae6bjvy7kkhcgweei):
+  acpx@0.12.0(patch_hash=6st5fzvttegjv64llnfegwwpca):
     dependencies:
       '@agentclientprotocol/sdk': 1.2.1(zod@4.4.3)
       commander: 15.0.0
@@ -13284,7 +13296,7 @@ snapshots:
       - bare-buffer
       - react-native-b4a
 
-  acpx@0.13.1(patch_hash=xinuppsghzi2pwhozdhfegto3m):
+  acpx@0.13.1(patch_hash=btis2ixbxfyq422xwpnza3ncle):
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       commander: 15.0.0
@@ -14768,6 +14780,12 @@ snapshots:
     dependencies:
       isomorphic.js: 0.2.5
 
+  light-my-request@6.6.0:
+    dependencies:
+      cookie: 1.1.1
+      process-warning: 4.0.1
+      set-cookie-parser: 2.7.2
+
   lightningcss-android-arm64@1.32.0:
     optional: true
 
@@ -15882,6 +15900,8 @@ snapshots:
       ansi-regex: 5.0.1
       ansi-styles: 5.2.0
       react-is: 17.0.2
+
+  process-warning@4.0.1: {}
 
   process-warning@5.1.0: {}
 
