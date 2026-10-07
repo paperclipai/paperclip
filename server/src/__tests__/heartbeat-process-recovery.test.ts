@@ -223,6 +223,7 @@ import {
   parseSandboxProviderPluginNotReadyFailureMessage,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
+  stripForeignContinuationReferences,
 } from "../services/heartbeat.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
 import {
@@ -1821,6 +1822,155 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     } finally {
       build.mockRestore();
     }
+  });
+
+  it.each([
+    "continuation_source_context_missing",
+    "continuation_user_authorization_missing",
+  ] as const)("settles guard-rejected continuation setup as benign-terminal: %s", async (code) => {
+    const { agentId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+    const build = vi.spyOn(executionContinuation, "buildExecutionContinuation")
+      .mockRejectedValueOnce(new executionContinuation.ContinuationGuardError(code));
+    try {
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      expect(build).toHaveBeenCalled();
+      // The guard is correct-by-design, but the payload is not retryable. The
+      // run settles as cancelled and the agent returns to idle instead of being
+      // stranded in `error` until an unrelated success clears the reason.
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", errorCode: code });
+      const [wakeup] = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId));
+      expect(wakeup.status).toBe("cancelled");
+      const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      expect(agent.status).not.toBe("error");
+      expect(agent.errorReason).toBeNull();
+      expect(mockAdapterExecute.mock.calls.some(
+        ([input]) => (input as { runId?: string } | undefined)?.runId === runId,
+      )).toBe(false);
+    } finally {
+      build.mockRestore();
+    }
+  });
+
+  it("strips a cross-issue interruptedRunId from a comment wake before it reaches setup", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const foreignIssueId = randomUUID();
+    const targetIssueId = randomUUID();
+    const foreignRunId = randomUUID();
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const issuePrefix = `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: foreignIssueId, companyId, title: "Foreign lane", status: "in_progress",
+        assigneeAgentId: agentId, responsibleUserId: "responsible-user",
+        issueNumber: 1, identifier: `${issuePrefix}-1`, startedAt: now,
+      },
+      {
+        id: targetIssueId, companyId, title: "Target lane", status: "in_progress",
+        assigneeAgentId: agentId, responsibleUserId: "responsible-user",
+        issueNumber: 2, identifier: `${issuePrefix}-2`, startedAt: now,
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: foreignRunId, companyId, agentId, status: "failed",
+      contextSnapshot: { issueId: foreignIssueId }, createdAt: now, updatedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const created = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: targetIssueId, commentId: randomUUID(), mutation: "comment" },
+      contextSnapshot: {
+        issueId: targetIssueId,
+        taskId: targetIssueId,
+        wakeReason: "issue_commented",
+        interruptedRunId: foreignRunId,
+        resumeFromRunId: foreignRunId,
+      },
+      allowRunCoalescing: false,
+    });
+    expect(created).not.toBeNull();
+    const contextSnapshot = (created as { contextSnapshot: Record<string, unknown> }).contextSnapshot;
+    expect(contextSnapshot.issueId).toBe(targetIssueId);
+    expect(contextSnapshot.interruptedRunId).toBeUndefined();
+    expect(contextSnapshot.resumeFromRunId).toBeUndefined();
+  });
+
+  it("keeps continuation references that belong to the woken task", async () => {
+    const { companyId, agentId, issueId } = await seedQueuedIssueRunFixture();
+    const sameIssueRunId = randomUUID();
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: sameIssueRunId, companyId, agentId, status: "failed",
+      contextSnapshot: { issueId }, createdAt: now, updatedAt: now,
+    });
+    const contextSnapshot: Record<string, unknown> = {
+      issueId,
+      interruptedRunId: sameIssueRunId,
+      resumeFromRunId: sameIssueRunId,
+    };
+    const payload: Record<string, unknown> = {
+      issueId,
+      interruptedRunId: sameIssueRunId,
+      resumeFromRunId: sameIssueRunId,
+    };
+    const stripped = await stripForeignContinuationReferences({
+      db,
+      companyId,
+      issueId,
+      contextSnapshot,
+      payload,
+    });
+    expect(stripped).toEqual([]);
+    expect(contextSnapshot.interruptedRunId).toBe(sameIssueRunId);
+    expect(contextSnapshot.resumeFromRunId).toBe(sameIssueRunId);
+  });
+
+  it("strips continuation references that cannot be resolved to the woken task", async () => {
+    const { companyId, issueId } = await seedQueuedIssueRunFixture();
+    const unknownRunId = randomUUID();
+    const contextSnapshot: Record<string, unknown> = {
+      issueId,
+      interruptedRunId: unknownRunId,
+    };
+    const payload: Record<string, unknown> = { issueId, resumeFromRunId: unknownRunId };
+    const stripped = await stripForeignContinuationReferences({
+      db,
+      companyId,
+      issueId,
+      contextSnapshot,
+      payload,
+    });
+    expect(stripped).toEqual([
+      "context.interruptedRunId",
+      "payload.resumeFromRunId",
+    ]);
+    expect(contextSnapshot.interruptedRunId).toBeUndefined();
+    expect(payload.resumeFromRunId).toBeUndefined();
   });
 
   it("does not immediately continue a low-trust preflight setup failure", async () => {

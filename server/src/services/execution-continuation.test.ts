@@ -15,7 +15,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
-import { StaleExecutionContinuationError, buildExecutionContinuation, currentContinuationOrigins, projectHumanInteractionResponse } from "./execution-continuation.js";
+import { StaleExecutionContinuationError, ContinuationGuardError, buildExecutionContinuation, currentContinuationOrigins, projectHumanInteractionResponse } from "./execution-continuation.js";
+import { stripForeignContinuationReferences } from "./heartbeat.js";
 
 const expectStaleContinuation = async (
   run: () => Promise<unknown>,
@@ -24,10 +25,12 @@ const expectStaleContinuation = async (
   await expect(run()).rejects.toThrow(StaleExecutionContinuationError);
   await expect(run()).rejects.toMatchObject({ code });
 };
-const expectMissingContinuationContext = async (run: () => Promise<unknown>) => {
-  const result = run();
-  await expect(result).rejects.toThrow("continuation_source_context_missing");
-  await expect(result).rejects.not.toBeInstanceOf(StaleExecutionContinuationError);
+const expectMissingContinuationContext = async (
+  run: () => Promise<unknown>,
+  code: ContinuationGuardError["code"] = "continuation_source_context_missing",
+) => {
+  await expect(run()).rejects.toThrow(ContinuationGuardError);
+  await expect(run()).rejects.toMatchObject({ code });
 };
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
@@ -201,6 +204,34 @@ const support = await getEmbeddedPostgresTestSupport();
           () => buildExecutionContinuation({ db, companyId, issueId, agentId,
             context: { interruptedRunId: runId }, summary: null, exposeLowTrustRaw: false }),
         );
+      } finally {
+        await db.update(heartbeatRuns).set({ contextSnapshot: source.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
+      }
+    });
+
+    it("accepts a cross-issue interruptedRunId once the wake builder strips it", async () => {
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID() } }).where(eq(heartbeatRuns.id, runId));
+      try {
+        // Reproduce the false positive: a comment wake for this task that still
+        // carries another task's run id would fail closed.
+        await expectMissingContinuationContext(
+          () => buildExecutionContinuation({ db, companyId, issueId, agentId,
+            context: { issueId, interruptedRunId: runId, wakeReason: "issue_commented" },
+            summary: null, exposeLowTrustRaw: false }),
+        );
+        // After the wake builder drops the foreign reference, dispatch succeeds.
+        const context: Record<string, unknown> = {
+          issueId, interruptedRunId: runId, wakeReason: "issue_commented",
+        };
+        const stripped = await stripForeignContinuationReferences({
+          db, companyId, issueId, contextSnapshot: context, payload: null,
+        });
+        expect(stripped).toEqual(["context.interruptedRunId"]);
+        await expect(
+          buildExecutionContinuation({ db, companyId, issueId, agentId,
+            context, summary: null, exposeLowTrustRaw: false }),
+        ).resolves.toMatchObject({ issueId });
       } finally {
         await db.update(heartbeatRuns).set({ contextSnapshot: source.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
       }

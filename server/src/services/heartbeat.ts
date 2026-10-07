@@ -71,7 +71,7 @@ import {
 import { executionFailureRetryCount, executionRetryAttemptCount, accountingForScheduledRetry } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
-import { buildExecutionContinuation, StaleExecutionContinuationError } from "./execution-continuation.js";
+import { buildExecutionContinuation, ContinuationGuardError, StaleExecutionContinuationError } from "./execution-continuation.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { isWorkspaceGitScanError, WorkspaceGitScanError, WORKSPACE_GIT_SCAN_ERROR_CODES } from "./workspace-git-operation-scheduler.js";
@@ -7234,6 +7234,75 @@ function externalAttachmentOmissionNotice(
     .map(([reason, count]) => `${reason.replaceAll("_", " ")}: ${count}`)
     .join(", ");
   return `Paperclip could not import every attachment from this exact external message: ${omitted} attachment${omitted === 1 ? " was" : "s were"} omitted (${reasons}). Treat omitted attachments as unavailable; do not infer their contents or substitute an older workspace file.`;
+}
+
+const CONTINUATION_REFERENCE_KEYS = [
+  "interruptedRunId",
+  "resumeFromRunId",
+] as const;
+
+/**
+ * A wake can inherit `interruptedRunId`/`resumeFromRunId` from an earlier run's
+ * context snapshot. Execution continuation only treats a referenced run as a
+ * continuation source when that run belongs to the issue being woken; a
+ * cross-task reference makes setup throw `continuation_source_context_missing`
+ * and strands the agent in `error` until an unrelated success clears it.
+ *
+ * Strip references that do not belong to this task so a plain comment wake is
+ * never misclassified as a continuation. Fail-closed: an unresolvable run id
+ * (wrong company, deleted, or malformed) is removed rather than trusted.
+ * Returns the stripped `object.key` labels for logging.
+ */
+export async function stripForeignContinuationReferences(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+  contextSnapshot: Record<string, unknown>;
+  payload: Record<string, unknown> | null;
+}): Promise<string[]> {
+  const { db, companyId, issueId, contextSnapshot, payload } = input;
+  const referenced = new Set<string>();
+  for (const key of CONTINUATION_REFERENCE_KEYS) {
+    const fromContext = readNonEmptyString(contextSnapshot[key]);
+    const fromPayload = readNonEmptyString(payload?.[key]);
+    if (fromContext) referenced.add(fromContext);
+    if (fromPayload) referenced.add(fromPayload);
+  }
+  if (referenced.size === 0) return [];
+  const runIds = [...referenced].filter((id) => isUuidLike(id));
+  const rows = runIds.length
+    ? await db
+        .select({
+          id: heartbeatRuns.id,
+          issueId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'issueId'`,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.id, runIds),
+          ),
+        )
+    : [];
+  const runIssueById = new Map(
+    rows.map((row) => [row.id, readNonEmptyString(row.issueId)]),
+  );
+  const belongsToTask = (id: string) =>
+    runIssueById.get(id) === issueId;
+  const stripped: string[] = [];
+  for (const key of CONTINUATION_REFERENCE_KEYS) {
+    const contextId = readNonEmptyString(contextSnapshot[key]);
+    if (contextId && !belongsToTask(contextId)) {
+      delete contextSnapshot[key];
+      stripped.push(`context.${key}`);
+    }
+    const payloadId = readNonEmptyString(payload?.[key]);
+    if (payload && payloadId && !belongsToTask(payloadId)) {
+      delete payload[key];
+      stripped.push(`payload.${key}`);
+    }
+  }
+  return stripped;
 }
 
 function enrichWakeContextSnapshot(input: {
@@ -26550,6 +26619,17 @@ export function heartbeatService(
           eventMessage: "stale execution continuation cancelled before dispatch",
           suppressImmediateRecovery: true,
         });
+      } else if (outerErr instanceof ContinuationGuardError) {
+        // A correct-by-design continuation guard rejected this wake payload
+        // (missing source context or unauthorized resume). The payload is not
+        // retryable, so settle the run as benign-terminal: skip the wake and
+        // return the agent to idle instead of stranding it in `error` until an
+        // unrelated successful run clears the reason.
+        await cancelRunInternal(run.id, outerErr.code, {
+          errorCode: outerErr.code,
+          eventMessage: "continuation setup guard rejected wake before dispatch",
+          suppressImmediateRecovery: true,
+        });
       } else if (isWorkspaceBusyDeferral(outerErr)) {
         // Expected contention on a shared project workspace, not a
         // failure: park the run as a bounded scheduled retry and leave the
@@ -27867,6 +27947,24 @@ export function heartbeatService(
               finishedAt: new Date(),
             });
             return { kind: "skipped" as const };
+          }
+
+          // A wake may carry a continuation reference inherited from a run on
+          // another task. Do not forward it: setup would reject the payload
+          // with `continuation_source_context_missing` and strand the agent in
+          // `error`. Drop foreign references while the issue row is locked.
+          const strippedContinuationRefs = await stripForeignContinuationReferences({
+            db: tx as unknown as Db,
+            companyId: issue.companyId,
+            issueId: issue.id,
+            contextSnapshot: enrichedContextSnapshot,
+            payload,
+          });
+          if (strippedContinuationRefs.length > 0) {
+            logger.warn(
+              { issueId: issue.id, agentId, reason, stripped: strippedContinuationRefs },
+              "stripped cross-issue continuation references from wake payload",
+            );
           }
 
           if (opts.failedRunId) {

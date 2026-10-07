@@ -24,6 +24,24 @@ export class StaleExecutionContinuationError extends Error {
   }
 }
 
+/**
+ * A correct-by-design setup guard rejected the wake payload: the referenced
+ * continuation context is absent, belongs to another task, or the caller was
+ * not authorized to resume it. The payload is not retryable, so dispatch must
+ * not classify it as an opaque provider/setup failure. Callers settle the run
+ * as benign-terminal instead of stranding the agent in `error`.
+ */
+export class ContinuationGuardError extends Error {
+  constructor(
+    readonly code:
+      | "continuation_source_context_missing"
+      | "continuation_user_authorization_missing",
+  ) {
+    super(code);
+    this.name = "ContinuationGuardError";
+  }
+}
+
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -213,10 +231,10 @@ export async function buildExecutionContinuation(input: {
   // belong to this task, and only task-scoped content can enter the envelope.
   const sourceRun = object(candidate?.context).issueId === issueId ? candidate : null;
   if ((sourceRunId && !candidate) || (resumeSourceRunId && !sourceRun))
-    throw new Error(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
+    throw new ContinuationGuardError(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
   const producer = producerRunId === sourceRunId ? candidate
     : producerRunId ? await loadRun(producerRunId) : null;
-  if (producerRunId && !producer) throw new Error("continuation_source_context_missing");
+  if (producerRunId && !producer) throw new ContinuationGuardError("continuation_source_context_missing");
   const producerIssueId = string(object(producer?.context).issueId);
   const producerOrigins = new Set(continuationOriginCommentIds(producer?.context));
   const recordedOrigins = triggerInteraction?.originCommentIds ?? [];
@@ -245,7 +263,7 @@ export async function buildExecutionContinuation(input: {
   ];
   // Missing source rows cannot silently become a claim of complete context.
   if (originCommentIds.some((id) => !rows.some((row) => row.id === id)))
-    throw new Error("continuation_source_context_missing");
+    throw new ContinuationGuardError("continuation_source_context_missing");
   const messages = rows.map((row) => {
     const safe = input.exposeLowTrustRaw
       ? row
@@ -414,7 +432,7 @@ export async function buildExecutionContinuation(input: {
                 : comment.authorUserId === value.actorId) &&
               !comment.createdByRunId && !comment.deletedAt));
     if (!predecessor || !authorization || explicitUserSource !== sourceRunId)
-      throw new Error("continuation_user_authorization_missing");
+      throw new ContinuationGuardError("continuation_user_authorization_missing");
   }
   const interruptedRunId = explicitUserSource ?? string(input.context.interruptedRunId) ?? (lastTerminal && lastTerminal.status !== "succeeded" &&
     (hasConversationContinuationPolicy(lastTerminal.result) ||
