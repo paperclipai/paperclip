@@ -5,6 +5,7 @@ import { agents, companies, createDb, environmentLeases, environments, heartbeat
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { recordLegacyWorkspaceRestoreFailure, legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { hasConversationContinuationPolicy, conversationRecoveryActionPredicate } from "../services/conversation-continuation.js";
+import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../services/legacy-workspace-restore-recovery.js";
 import { settleStopOnlyCleanup } from "../services/sandbox-stop-and-retain.js";
 import { hasRequiredWorkspaceRecovery } from "../services/workspace-restore-recovery-state.js";
 
@@ -138,11 +139,91 @@ const support = externalTestDatabaseUrl ? { supported: true } : await getEmbedde
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
   });
 
+  it.each([false, true])("keeps exact retained source IDs through a projected metadata update (merge=%s)", async mergeCurrent => {
+    const f = await seed();
+    await recordLegacyWorkspaceRestoreFailure(db, f.run, patch.resultJson);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const projection = { workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1" }, presentationDecision: "updated" };
+    const [updated] = await db.update(heartbeatRuns).set({ resultJson: preserveWorkspaceRestoreRecoveryMetadataSql(projection, mergeCurrent) })
+      .where(eq(heartbeatRuns.id, f.runId)).returning();
+    expect(updated.resultJson).toMatchObject({ presentationDecision: "updated", workspaceRestoreRecovery: run.resultJson!.workspaceRestoreRecovery });
+    expect(updated.resultJson?.workspaceRestoreFailure).toBe("restore_failed");
+  });
+
+  it("keeps ordinary metadata replacement and null semantics without a repair marker", async () => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ resultJson: { oldValue: true } }).where(eq(heartbeatRuns.id, f.runId));
+    const [replaced] = await db.update(heartbeatRuns).set({ resultJson: preserveWorkspaceRestoreRecoveryMetadataSql({ newValue: true }) })
+      .where(eq(heartbeatRuns.id, f.runId)).returning();
+    expect(replaced.resultJson).toEqual({ newValue: true });
+    const [cleared] = await db.update(heartbeatRuns).set({ resultJson: preserveWorkspaceRestoreRecoveryMetadataSql(null) })
+      .where(eq(heartbeatRuns.id, f.runId)).returning();
+    expect(cleared.resultJson).toBeNull();
+  });
+
   it("rolls back terminal status and retention together on a failed transaction", async () => {
     const f = await seed();
     await expect(db.transaction(async tx => { await terminalizeLegacyExecution({ db: tx as unknown as typeof db, run: f.run, status: "failed", patch }); throw new Error("outer transaction failed"); })).rejects.toThrow("outer transaction failed");
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("running");
     expect(await readLease(f.lease.id)).toMatchObject({ status: "active", leasePolicy: "ephemeral" });
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
+  });  it.each(["conversation_reset", "new_owner"])("late restore remains repair-blocked after %s", async scenario => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(),
+      contextSnapshot: { issueId: f.issueId, conversationSessionGeneration: 0 },
+      resultJson: { executionCancellation: { state: "acknowledged" }, conversationContinuation: "continue_conversation_v1" },
+    }).where(eq(heartbeatRuns.id, f.runId));
+    if (scenario === "conversation_reset") await db.update(issues).set({ conversationAgentId: f.run.agentId, conversationUserId: "board-review-fixture", conversationState: "active",
+      conversationSessionGeneration: scenario === "conversation_reset" ? 1 : 0,
+    }).where(eq(issues.id, f.issueId));
+    if (scenario === "new_owner") {
+      const id = randomUUID();
+      await db.insert(agents).values({ id, companyId: f.companyId, name: "New owner", role: "engineer", adapterType: "codex_local" });
+      await db.update(issues).set({ assigneeAgentId: id }).where(eq(issues.id, f.issueId));
+    }
+    await recordLegacyWorkspaceRestoreFailure(db, f.run, patch.resultJson);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(hasRequiredWorkspaceRecovery(run.resultJson)).toBe(true);
+    const lease = await readLease(f.lease.id);
+    expect(lease).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure" });
+    await settleStopOnlyCleanup(db, lease, { attemptId: String(lease.metadata?.pendingCleanupAttemptId),
+      receipt: { providerLeaseId: lease.providerLeaseId, state: "stopped" } });
+    const { getExecutionBlocker } = await import("../services/execution-blocker.js");
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({
+      recoveryActionId: expect.any(String), canRetry: false, canContinue: false,
+    });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId)))
+      .toHaveLength(1);
   });
+
+  it("keeps a late source hold alongside a newer incident without replacing its execution", async () => {
+    const f = await seed(), newerRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: newerRunId, companyId: f.companyId, agentId: f.run.agentId,
+      status: "running", runtimeMode: "legacy", contextSnapshot: { issueId: f.issueId } });
+    await db.update(issues).set({ executionRunId: newerRunId, checkoutRunId: newerRunId }).where(eq(issues.id, f.issueId));
+    const [newerAction] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", status: "active", cause: "another_incident", fingerprint: `newer:${newerRunId}`,
+      evidence: { runId: newerRunId }, nextAction: "Inspect the current incident." }).returning();
+    const failed = await terminalizeLegacyExecution({ db, run: f.run, status: "failed", patch });
+    await terminalizeLegacyExecution({ db, run: failed!, status: "failed", patch });
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(task).toMatchObject({ status: "in_progress", executionRunId: newerRunId, checkoutRunId: newerRunId });
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(actions).toHaveLength(2);
+    expect(actions.find(a => a.id === newerAction.id)).toEqual(newerAction);
+    const source = actions.find(a => a.evidence.runId === f.runId)!;
+    expect(source).toMatchObject({ status: "resolved", outcome: "blocked", ownerType: "board",
+      returnOwnerAgentId: null, attemptCount: 1, evidence: { automaticRecovery: { replay: "blocked" } } });
+    const { markExecutionReconciliation } = await import("../services/execution-recovery-resolution.js");
+    await markExecutionReconciliation(db, source, { runId: f.runId, providerStopped: true, actionOutcome: "mixed",
+      outcomeEvidence: "The original provider's actions were inspected.",
+      workspaceRepairEvidence: "The exact retained workspace was recovered and verified.",
+    }, "board-test", undefined, { workspaceRepairOnly: true });
+    await terminalizeLegacyExecution({ db, run: failed!, status: "failed", patch });
+    const [repaired] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, source.id));
+    expect(repaired.evidence.automaticRecovery).toBeUndefined();
+    expect(repaired.evidence.continuationDelivery).toBe("not_requested");
+    expect(repaired.evidence.executionReconciliation).toMatchObject({ runId: f.runId });
+  });
+
 });

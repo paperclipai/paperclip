@@ -1,3 +1,4 @@
+import { preserveWorkspaceRestoreRecoveryMetadataSql } from "./legacy-workspace-restore-recovery.js";
 import { preserveWorkspaceRestoreRecoveryMetadata } from "./workspace-restore-recovery-state.js";
 import { recordLegacyWorkspaceRestoreFailure } from "./legacy-execution-recovery.js";
 import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironmentProjection } from "../vendor/paperclip-runner/index.js";
@@ -13853,9 +13854,8 @@ export function heartbeatService(
         .update(heartbeatRuns)
         .set({
           livenessReason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
-          resultJson: withUnmanagedBackgroundTaskStopReason(
-            parseObject(run.resultJson),
-          ),
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+            ${JSON.stringify({ stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON })}::jsonb`,
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id));
@@ -15062,7 +15062,7 @@ export function heartbeatService(
       const updated = await db
         .update(heartbeatRuns)
         .set({
-          resultJson,
+          resultJson: preserveWorkspaceRestoreRecoveryMetadataSql(resultJson, true),
           error:
             run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.error,
           errorCode:
@@ -25880,7 +25880,9 @@ export function heartbeatService(
               .update(heartbeatRuns)
               .set({
                 ...finalRunPatch,
-                resultJson: cancellationResultJson(persistedRunWrite.run, status, finalRunPatch.resultJson, runErrorCode, runErrorMessage),
+                resultJson: preserveWorkspaceRestoreRecoveryMetadataSql(
+                  cancellationResultJson(persistedRunWrite.run, status, finalRunPatch.resultJson, runErrorCode, runErrorMessage) ?? null,
+                ),
 
                 usageJson: { ...parseObject(persistedRunWrite.run.usageJson), ...parseObject(finalRunPatch.usageJson) },
                 finishedAt:
@@ -29959,18 +29961,15 @@ export function heartbeatService(
               .set({
                 error: reason,
                 errorCode,
-                resultJson: {
-                  ...parseObject(run.resultJson),
+                // Stop may have read the row before adapter settlement saved
+                // a required-copyback receipt. Merge into current database JSON
+                // and leave those server-owned fields to the restore recorder.
+                resultJson: preserveWorkspaceRestoreRecoveryMetadataSql({
                   ...resultJson,
-                  ...(!running
-                    ? {
-                        executionCancellation: {
-                          state: "requested",
-                          requestedAt: new Date().toISOString(),
-                        },
-                      }
-                    : {}),
-                },
+                  ...(!running ? { executionCancellation: {
+                    state: "requested", requestedAt: new Date().toISOString(),
+                  } } : {}),
+                }, true),
                 updatedAt: new Date(),
               })
               .where(

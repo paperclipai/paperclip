@@ -1,6 +1,6 @@
-import { and, eq, isNotNull, ne, or, sql } from "drizzle-orm";
-import { environmentLeases, environments, type heartbeatRuns, type Db } from "@paperclipai/db";
-import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
+import { and, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
+import { environmentLeases, environments, heartbeatRuns, type Db } from "@paperclipai/db";
+import { hasWorkspaceRestoreFailure, WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
 import { prepareSandboxStopAndRetain } from "./sandbox-stop-and-retain.js";
 
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
@@ -59,4 +59,24 @@ export async function preserveLegacyWorkspaceRestoreSources(db: Db, run: Run): P
     retained.push(lease.id);
   }
   return retained;
+}
+
+/** Metadata writers may use safe projections or snapshots from before copy-back
+ * settled. Only the restore recorder owns these fields; preserve their current
+ * database values rather than a stale or schema-only incoming projection. */
+export function preserveWorkspaceRestoreRecoveryMetadataSql(
+  incoming: Record<string, unknown> | null,
+  mergeCurrent = false,
+) {
+  const payload = sql`${JSON.stringify(incoming)}::jsonb`;
+  const result = mergeCurrent
+    ? sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || coalesce(nullif(${payload}, 'null'::jsonb), '{}'::jsonb)`
+    : payload;
+  return sql`case when
+    ${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}
+    and ${inArray(sql`${heartbeatRuns.resultJson}->>'workspaceRestoreFailure'`, [...WORKSPACE_RESTORE_FAILURE_CODES])}
+    then coalesce(nullif(${result}, 'null'::jsonb), '{}'::jsonb) || jsonb_build_object(
+      'workspaceRestoreFailure', ${heartbeatRuns.resultJson}->'workspaceRestoreFailure',
+      'workspaceRestoreRecovery', ${heartbeatRuns.resultJson}->'workspaceRestoreRecovery')
+    else ${result} end`;
 }

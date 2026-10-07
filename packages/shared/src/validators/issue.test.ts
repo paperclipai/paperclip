@@ -314,6 +314,20 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
+  it.each(["backlog", "in_progress", "blocked", "cancelled"])("requires workspace evidence to record a repair at unchanged %s status", sourceIssueStatus => {
+    const input = { outcome: "restored", sourceIssueStatus };
+    expect(resolveIssueRecoveryActionSchema.safeParse(input).success).toBe(false);
+    expect(resolveIssueRecoveryActionSchema.safeParse({ ...input, executionReconciliation: {
+      runId: "11111111-1111-4111-8111-111111111111", providerStopped: true, actionOutcome: "mixed",
+      outcomeEvidence: "Observed and reconciled the source run action outcomes.",
+    } }).success).toBe(false);
+    expect(resolveIssueRecoveryActionSchema.safeParse({ ...input, executionReconciliation: {
+      runId: "11111111-1111-4111-8111-111111111111", providerStopped: true, actionOutcome: "mixed",
+      outcomeEvidence: "Observed and reconciled the source run action outcomes.",
+      workspaceRepairEvidence: "Copied the retained source files and verified the restored files.",
+    } }).success).toBe(true);
+  });
+
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({

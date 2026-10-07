@@ -5,7 +5,7 @@ import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { claimedAdapterType, hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
@@ -147,6 +147,40 @@ export async function terminalizeLegacyExecution(input: {
         .update(issues)
         .set({ checkoutRunId: null })
         .where(eq(issues.id, task.id));
+    if (task && hasRequiredWorkspaceRecovery(updated.resultJson)) {
+      // File recovery belongs to this exact source, even if cancellation let a
+      // newer owner or conversation generation start before copy-back settled.
+      // A resolved no-replay hold can coexist with another active incident; the
+      // one-active-action index must never make us supersede either obligation.
+      const [existing] = await tx.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, task.id),
+        eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
+      )).orderBy(desc(issueRecoveryActions.createdAt)).limit(1).for("update");
+      const decision = existing?.evidence.executionReconciliation as Record<string, unknown> | undefined;
+      if (hasRequiredWorkspaceRecovery(existing?.evidence) && decision?.runId === run.id) return updated;
+      const now = new Date();
+      const evidence = {
+        ...existing?.evidence,
+        runId: run.id,
+        originalFailureCode: updated.errorCode,
+        workspaceRestoreFailure: updated.resultJson!.workspaceRestoreFailure,
+        workspaceRestoreRecovery: updated.resultJson!.workspaceRestoreRecovery,
+        executionReconciliation: undefined,
+        continuationDelivery: "invalidated",
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: run.id, replay: "blocked",
+          actionOutcome: "unknown", recordedAt: now.toISOString() },
+      };
+      const values = { status: "resolved", outcome: "blocked", ownerType: "board", ownerAgentId: null,
+        ownerUserId: null, returnOwnerAgentId: null, evidence, resolvedAt: now, updatedAt: now,
+        wakePolicy: null, monitorPolicy: null,
+        nextAction: "The original sandbox is retained for workspace repair. Verify its exact stop receipt, recover the missing files, and record workspaceRepairEvidence without changing the current task. Repair does not replay the stopped run. Explicitly remove the retained allocation after recovery.",
+      };
+      if (existing) await tx.update(issueRecoveryActions).set(values).where(eq(issueRecoveryActions.id, existing.id));
+      else await tx.insert(issueRecoveryActions).values({ ...values, companyId: run.companyId,
+        sourceIssueId: task.id, kind: "active_run_watchdog", cause: LEGACY_RECOVERY_CAUSE,
+        fingerprint: `legacy-execution:${run.id}`, attemptCount: 1 });
+      return updated;
+    }
     const review = task?.status === "in_review" ? parseIssueExecutionState(task.executionState) : null;
     const isCurrentReviewer = review?.status === "pending" &&
       review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run.agentId;
@@ -178,25 +212,6 @@ export async function terminalizeLegacyExecution(input: {
           ),
         )).limit(1);
       if (reconciled) return updated;
-      // Observation and finalization are two writes for one failure, not two
-      // recovery attempts. Preserve the existing board decision and budget.
-      const [existingRestoreAction] = hasRequiredWorkspaceRecovery(updated.resultJson)
-        ? await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
-          eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, task.id),
-          eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
-          inArray(issueRecoveryActions.status, ["active", "escalated"]),
-        )).limit(1) : [];
-      if (existingRestoreAction) {
-        await tx.update(issueRecoveryActions).set({
-          evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({
-            workspaceRestoreFailure: updated.resultJson!.workspaceRestoreFailure,
-            workspaceRestoreRecovery: updated.resultJson!.workspaceRestoreRecovery,
-          })}::jsonb`,
-          nextAction: "The original sandbox is retained for workspace repair. Verify its stop receipt, recover the missing files, and record workspaceRepairEvidence before continuing.",
-          updatedAt: new Date(),
-        }).where(eq(issueRecoveryActions.id, existingRestoreAction.id));
-        return updated;
-      }
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
         companyId: run.companyId,
         sourceIssueId: task.id,

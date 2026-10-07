@@ -33,9 +33,11 @@ export async function validateExecutionReconciliation(input: {
   agentId: string | null;
   sourceRunId: unknown;
   decision: ExecutionReconciliation | undefined;
+  /** Board-only source repair: never authorize a continuation of this run. */
+  workspaceRepairOnly?: boolean;
 }) {
   const { db, companyId, issueId, agentId, decision } = input;
-  if (!decision || decision.runId !== input.sourceRunId || !agentId) {
+  if (!decision || decision.runId !== input.sourceRunId || (!agentId && !input.workspaceRepairOnly)) {
     throw conflict(
       "Reconcile the recorded execution and its action outcomes before continuing this task.",
     );
@@ -61,11 +63,13 @@ export async function validateExecutionReconciliation(input: {
     review?.status === "pending" &&
     review.currentParticipant?.type === "agent" &&
     review.currentParticipant.agentId === run?.agentId;
+  const retainedWorkspace = hasRequiredWorkspaceRecovery(run?.resultJson);
+  const repairOnly = input.workspaceRepairOnly === true && retainedWorkspace;
   if (
+    (input.workspaceRepairOnly && !retainedWorkspace) ||
     !run ||
     !task ||
-    task.assigneeAgentId !== agentId ||
-    (run.agentId !== agentId && !isCurrentReviewer) ||
+    (!repairOnly && (task.assigneeAgentId !== agentId || (run.agentId !== agentId && !isCurrentReviewer))) ||
     (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== issueId ||
     !["failed", "interrupted", "timed_out", "cancelled"].includes(run.status)
   ) {
@@ -77,7 +81,6 @@ export async function validateExecutionReconciliation(input: {
       (!decision.workspaceRepairEvidence || decision.workspaceRepairEvidence.trim().length < 20)) {
     throw conflict("Verify safe workspace staging or repair and record workspaceRepairEvidence before continuing this run.");
   }
-  const retainedWorkspace = hasRequiredWorkspaceRecovery(run.resultJson);
   let checkLocalProcesses = true;
   if (retainedWorkspace) {
     const leases = await db.select().from(environmentLeases).where(and(
@@ -145,11 +148,11 @@ export async function validateExecutionReconciliation(input: {
     throw conflict(
       "The previous execution environment has not finished releasing its authority.",
     );
-  await buildExecutionContinuation({
+  if (!repairOnly) await buildExecutionContinuation({
     db,
     companyId,
     issueId,
-    agentId,
+    agentId: agentId!,
     context: { previousRunId: run.id },
     summary: null,
     exposeLowTrustRaw: false,
@@ -167,7 +170,11 @@ export async function markExecutionReconciliation(
   decision: ExecutionReconciliation,
   actorId: string,
   deliveryOwner?: { kind: "chat_failed_run_retry"; actionId: string },
+  options?: { workspaceRepairOnly?: boolean },
 ) {
+  if (options?.workspaceRepairOnly && (deliveryOwner || !hasRequiredWorkspaceRecovery(action.evidence))) {
+    throw conflict("Workspace repair must target the retained source without a continuation owner.");
+  }
   if (deliveryOwner) {
     const [retry] = await db
       .select()
@@ -212,7 +219,7 @@ export async function markExecutionReconciliation(
           actorId,
           recordedAt: new Date().toISOString(),
         },
-        continuationDelivery: deliveryOwner ? "delegated" : "pending",
+        continuationDelivery: options?.workspaceRepairOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
         ...(deliveryOwner ? { continuationDeliveryOwner: deliveryOwner } : {}),
       },
     })
