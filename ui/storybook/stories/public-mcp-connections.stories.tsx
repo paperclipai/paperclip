@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { AssistantConnectionsPage } from "@/pages/McpConnect";
 import { installPublicMcpFixture } from "../fixtures/publicMcp";
 const meta = {
@@ -13,11 +13,14 @@ export const Connected: Story = {};
 export const Empty: Story = { parameters: { fixture: { empty: true } } };
 export const Loading: Story = { parameters: { fixture: { loading: true } } };
 export const Unavailable: Story = { parameters: { fixture: { unavailable: true } } };
-export const AlreadyRevoked: Story = { parameters: { fixture: { revoked: true } } };
+export const AlreadyRevoked: Story = { parameters: { fixture: { revoked: true } }, play: async ({ canvasElement }) => {
+  await expect(await within(canvasElement).findByText("No assistant connections.")).toBeVisible();
+} };
 export const Revoke: Story = { play: async ({ canvasElement }) => {
   const c = within(canvasElement);
   await userEvent.click((await c.findAllByRole("button", { name: "Revoke connection" }))[0]);
-  await c.findByText("Revoked");
+  await waitFor(() => expect(c.queryByText("Dotta’s Codex connection")).not.toBeInTheDocument());
+  await c.findByText("Dotta’s Claude connection");
   await expect(c.getAllByRole("button", { name: "Revoke connection" })).toHaveLength(1);
 } };
 export const RevokeFailed: Story = { parameters: { fixture: { mutationError: true } }, play: async ({ canvasElement }) => {

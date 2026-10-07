@@ -1216,7 +1216,7 @@ function invalidateHeartbeatQueries(
   queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+  queryClient.invalidateQueries({ queryKey: ["costs", companyId] });
   queryClient.invalidateQueries({
     queryKey: queryKeys.sidebarBadges(companyId),
   });
@@ -1492,10 +1492,11 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "cost_event") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+    queryClient.invalidateQueries({ queryKey: ["costs", companyId] });
     queryClient.invalidateQueries({
-      queryKey: queryKeys.usageByProvider(companyId),
+      queryKey: ["usage-by-provider", companyId],
     });
+    queryClient.invalidateQueries({ queryKey: ["usage-by-biller", companyId] });
     queryClient.invalidateQueries({
       queryKey: queryKeys.usageWindowSpend(companyId),
     });

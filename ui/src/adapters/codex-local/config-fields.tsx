@@ -226,11 +226,13 @@ export function CodexLocalConfigFields({
                   adapterSchemaValues: {
                     ...values!.adapterSchemaValues,
                     provider,
+                    acpxSessionMode: undefined,
                     ...(provider === "acpx" ? { acpxAgent: grok ? "grok" : "claude" } : {}),
                   },
                 });
               } else {
                 mark("adapterConfig", "provider", provider);
+                mark("adapterConfig", "acpxSessionMode", undefined);
                 mark("adapterConfig", "model", model);
                 if (provider === "acpx") {
                   mark("adapterConfig", "acpxAgent", grok ? "grok" : "claude");
@@ -251,15 +253,16 @@ export function CodexLocalConfigFields({
         </Field>
       )}
       {runnerManaged && runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") !== "grok" && (
-        <Field configSection="adapter" label="ACP agent" hint="Cursor, GitHub Copilot, and Pi are awaiting local and Daytona qualification.">
+        <Field configSection="adapter" label="ACP agent" hint="Cursor uses Paperclip questions; per-run cost is unavailable. GitHub Copilot and Pi await qualification.">
           <Select
             value={String(isCreate ? values!.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude"))}
             onValueChange={(value) => {
               const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === value);
+              const acpxSessionMode = profile?.value === "cursor" ? "agent" : undefined;
               if (!profile?.qualified) return;
               if (isCreate) set!({ model: profile.value === "claude" ? defaultAcpxClaudeModel : "",
-                adapterSchemaValues: { ...values!.adapterSchemaValues, acpxAgent: profile.value } });
-              else { mark("adapterConfig", "acpxAgent", profile.value); mark("adapterConfig", "model", profile.value === "claude" ? defaultAcpxClaudeModel : ""); }
+                adapterSchemaValues: { ...values!.adapterSchemaValues, acpxAgent: profile.value, acpxSessionMode } });
+              else { mark("adapterConfig", "acpxAgent", profile.value); mark("adapterConfig", "acpxSessionMode", acpxSessionMode); mark("adapterConfig", "model", profile.value === "claude" ? defaultAcpxClaudeModel : ""); }
             }}>
             <SelectTrigger className="w-full" aria-label="ACP agent"><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -271,6 +274,20 @@ export function CodexLocalConfigFields({
               ))}
             </SelectContent>
           </Select>
+        </Field>
+      )}
+      {runnerManaged && runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") === "cursor" && (
+        <Field configSection="adapter" label="Cursor mode" hint="Select Cursor's session mode. Permissions and company approval rules still apply.">
+          <select className={inputClass} aria-label="Cursor mode"
+            value={String(runnerSchemaValue("acpxSessionMode", "agent"))}
+            onChange={(event) => updateRunnerSchemaValue("acpxSessionMode", event.target.value)}>
+            {!["agent", "plan", "ask"].includes(String(runnerSchemaValue("acpxSessionMode", "agent"))) && (
+              <option value={String(runnerSchemaValue("acpxSessionMode", "agent"))} disabled>Unsupported saved mode — select Agent, Plan, or Ask</option>
+            )}
+            <option value="agent">Agent</option>
+            <option value="plan">Plan</option>
+            <option value="ask">Ask</option>
+          </select>
         </Field>
       )}
       {runnerManaged && runnerProvider === "claude_managed" && (

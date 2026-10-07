@@ -1,4 +1,4 @@
-import { probeAcpxClaudeInstallation } from "@paperclipai/paperclip-runner/live";
+import { probeAcpxClaudeInstallation, probeAcpxCursorInstallation } from "@paperclipai/paperclip-runner/live";
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { buildSandboxNpmInstallCommand } from "@paperclipai/adapter-utils";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -20,6 +20,7 @@ import {
 vi.mock("@paperclipai/paperclip-runner/live", () => ({
   probeAcpxClaudeInstallation: vi.fn(async () => undefined),
   probeAcpxGrokInstallation: vi.fn(async () => undefined),
+  probeAcpxCursorInstallation: vi.fn(async () => undefined),
 }));
 
 it("advertises tool-refresh recovery for the selected legacy harness", () => {
@@ -326,6 +327,22 @@ describe("server adapter registry", () => {
     });
   });
 
+  it.each([true, false])("checks ordinary Cursor runtime readiness (%s)", async (ready) => {
+    const probe = vi.mocked(probeAcpxCursorInstallation);
+    if (ready) probe.mockResolvedValueOnce(undefined);
+    else probe.mockRejectedValueOnce(new Error("Run paperclipai runtime setup cursor"));
+    const model = "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]";
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment({
+      companyId: "company-1", adapterType: "paperclip_runner",
+      config: { provider: "acpx", acpxAgent: "cursor", model },
+    });
+    expect(probe).toHaveBeenLastCalledWith(model);
+    expect(result).toMatchObject({
+      status: ready ? "pass" : "fail",
+      checks: [expect.objectContaining({ code: ready ? "acpx_runtime_ready" : "acpx_runtime_unavailable" })],
+    });
+  });
+
   it("keeps the ACPX Pi profile unavailable", async () => {
     const result = await requireServerAdapter("paperclip_runner").testEnvironment({
       companyId: "company-1",
@@ -345,11 +362,11 @@ describe("server adapter registry", () => {
   it("reports qualification-only readiness for an exact host-authorized candidate", async () => {
     const key = "PAPERCLIP_RUNNER_ACPX_QUALIFICATION";
     const previous = process.env[key];
-    process.env[key] = JSON.stringify([{ agent: "cursor", model: "exact-model" }]);
+    process.env[key] = JSON.stringify([{ agent: "copilot", model: "exact-model" }]);
     try {
       const result = await requireServerAdapter("paperclip_runner").testEnvironment({
         companyId: "company-1", adapterType: "paperclip_runner",
-        config: { provider: "acpx", acpxAgent: "cursor", model: "exact-model" },
+        config: { provider: "acpx", acpxAgent: "copilot", model: "exact-model" },
       });
       expect(result).toMatchObject({ status: "warn", checks: [{ code: "acpx_candidate_qualification_only" }] });
     } finally {

@@ -41,6 +41,12 @@ standard/Ask tasks early, while preserving user-supplied titles. Its oracle
 correlates browser creation, native tool receipts, durable titles, audit ownership,
 and the reloaded task UI; fixture prompts contain no naming instructions.
 
+The explicit-only [native connection guidance suite](../tests/runner-e2e/README.md#native-connection-guidance-explicit-only)
+adds neutral decline prompts, same-task run-attributed explanations, and measured
+no-use controls across three native local profiles. Its fifteen configured cells
+are preparation for future matched instruction comparisons, not a live result.
+Historical Everyday cases and production prompts are preserved.
+
 ## Selecting a family
 
 Use **Runner Evals** for a runner protocol, adapter, transport, native session,

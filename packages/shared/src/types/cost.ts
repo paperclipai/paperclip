@@ -10,6 +10,7 @@ export interface CostEvent {
   goalId: string | null;
   heartbeatRunId: string | null;
   billingCode: string | null;
+  idempotencyKey: string | null;
   provider: string;
   biller: string;
   billingType: BillingType;
@@ -19,13 +20,20 @@ export interface CostEvent {
   cachedInputTokens: number;
   outputTokens: number;
   costCents: number;
+  costCentsExact?: string;
   occurredAt: Date;
   createdAt: Date;
 }
 
 export interface CostSummary {
+  eventCount: number;
+  pendingRunCount: number;
+  unpricedEventCount: number;
+  estimatedEventCount?: number;
+  pricingComplete: boolean;
   companyId: string;
   spendCents: number;
+  spendCentsExact?: string;
   budgetCents: number;
   utilizationPercent: number;
 }
@@ -35,6 +43,7 @@ export interface IssueCostSummary {
   issueCount: number;
   includeDescendants: boolean;
   costCents: number;
+  costCentsExact?: string;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -45,13 +54,42 @@ export interface IssueCostSummary {
   runtimeMs: number;
 }
 
+export interface CostByUser {
+  /** The run's recorded responsible user; null means unattributed. */
+  userId: string | null;
+  userName: string | null;
+  userImage: string | null;
+  eventCount: number;
+  estimatedEventCount: number;
+  unpricedEventCount: number;
+  costCents: number;
+  costCentsExact: string;
+  /** Input excludes cached input, as in other cost reports. */
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  /** Distinct recorded runs with cost events in the selected period. */
+  runCount: number;
+}
+
+export interface CostByUserReport {
+  /** Active human members, excluding the synthetic local-board principal. */
+  activeUserCount: number;
+  /** Includes zero-spend active users, even in single-user companies. */
+  rows: CostByUser[];
+}
+
 export interface CostByAgent {
   agentId: string;
   agentName: string | null;
   agentAppearance?: AgentAppearance | null;
   avatarUrl?: string;
   agentStatus: string | null;
+  /** Ledger events in this group and selected date range, not distinct runs. */
+  eventCount: number;
+  estimatedEventCount: number;
   costCents: number;
+  costCentsExact?: string;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -68,6 +106,7 @@ export interface CostByProviderModel {
   billingType: BillingType;
   model: string;
   costCents: number;
+  costCentsExact?: string;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -81,6 +120,7 @@ export interface CostByProviderModel {
 export interface CostByBiller {
   biller: string;
   costCents: number;
+  costCentsExact?: string;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -103,7 +143,11 @@ export interface CostByAgentModel {
   biller: string;
   billingType: BillingType;
   model: string;
+  /** Ledger events in this group and selected date range, not distinct runs. */
+  eventCount: number;
+  estimatedEventCount: number;
   costCents: number;
+  costCentsExact?: string;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -118,6 +162,7 @@ export interface CostWindowSpendRow {
   /** rolling window duration in hours */
   windowHours: number;
   costCents: number;
+  costCentsExact?: string;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -128,6 +173,7 @@ export interface CostByProject {
   projectId: string | null;
   projectName: string | null;
   costCents: number;
+  costCentsExact?: string;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;

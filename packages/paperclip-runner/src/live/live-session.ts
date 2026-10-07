@@ -1,3 +1,4 @@
+import { normalizeProviderNotice } from "../drivers/provider-notices.js";
 import { liveRunResultFeedback } from "./run-result-feedback.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -901,7 +902,7 @@ export class CapabilityLiveSessionService {
 
   async create(input: CreateCapabilityLiveSessionInput = {}): Promise<CapabilityLiveSession> {
     if (input.provider === "acpx" && input.acpxAgent !== undefined
-      && ["pi", "cursor", "copilot"].includes(input.acpxAgent)
+      && ["pi", "copilot"].includes(input.acpxAgent)
       && this.#transportOptions.acpxCandidateProfile !== input.acpxAgent) {
       throw new Error("The candidate ACPX profile requires explicit evaluation opt-in");
     }
@@ -1828,7 +1829,7 @@ export class CapabilityLiveSession {
     const candidate = this.#config.acpxAgent;
     if (missingTokens && this.#config.provider === "acpx"
       && (candidate === "pi" || candidate === "cursor" || candidate === "copilot")
-      && this.#transportOptions.acpxCandidateProfile === candidate) {
+      && (candidate === "cursor" || this.#transportOptions.acpxCandidateProfile === candidate)) {
       // Native candidate wrappers can complete a turn without a usage receipt,
       // including entitlement-denied turns. Retain the actual result for the
       // oracle without inventing tokens, charges, or a successful model call.
@@ -2757,6 +2758,28 @@ export class CapabilityLiveSession {
 
   async #handleNotification(notification: CodexRpcNotification): Promise<void> {
     const params = notification.params;
+    if (notification.method === "paperclip/canonicalProviderEvent"
+      && params.eventType === "provider.notice.recorded") {
+      const notice = normalizeProviderNotice(params, {
+        provider: this.#config.provider, agent: this.#config.acpxAgent,
+        threadId: this.#providerThreadId, turnId: this.#activeTurnId,
+      });
+      if (notice && !this.#evidence.some(entry => entry.turnId === this.#activeTurnId
+        && entry.kind === "provider_event" && entry.data.canonical === true
+        && record(entry.data.payload).category === record(notice.payload).category)) {
+        this.#appendEvidence("provider_event", this.#activeTurnId, {
+          canonicalEventType: notice.eventType, itemId: notice.itemId, payload: notice.payload,
+        });
+        try {
+          await this.#persist();
+        } catch {
+          // These counters are optional diagnostics. Keep the evidence in the
+          // snapshot so #persist's recovered queue can retry on the next state
+          // transition. Authoritative terminal saves must still succeed.
+        }
+      }
+      return;
+    }
     const turn = record(params.turn);
     const item = record(params.item);
     const turnId = text(params.turnId, text(turn.id));

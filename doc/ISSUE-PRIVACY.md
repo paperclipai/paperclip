@@ -47,6 +47,15 @@ Every successful break-glass read writes both:
 The flag does not change the canonical read predicate, create a grant, or make
 future reads implicit. Non-admin members and agents cannot use it.
 
+Cloud customer-success inspection is a separate operator capability. When an
+operator enables it, the dedicated Cloud-signed permit can read private task
+content within its company scope. Ordinary users, agent API keys, and plugins
+cannot use that permit. Cloud enforces the inspection grant, expiration,
+revocation, replay protection, and audit trail; this path does not create a task
+grant or a task break-glass notice. Operators who require task ACLs on every
+content read must leave `PAPERCLIP_CUSTOMER_SUCCESS_INSPECTION_ENABLED` disabled.
+See [Cloud customer-success inspection support](CUSTOMER-SUCCESS-INSPECTION.md).
+
 ## Agent runs and shared-agent residual risk
 
 Issue-bound run detail, events, transcripts, logs, and workspace operations use
@@ -130,7 +139,7 @@ are read from the database without a cross-request positive cache.
 
 ## Migration and current runtime integration
 
-Migration `0312_private_task_access.sql` adds the task/project ACL tables and
+Migration `0313_private_task_access.sql` adds the task/project ACL tables and
 backfills privacy parent edges with indexed keyset batches. Run binding is derived
 from native task identity, explicit issue identity, or legacy `issueId`/`taskId` context. Missing
 source tasks remain issue-scoped tombstones. Context changes cannot turn those
@@ -138,7 +147,7 @@ runs into company-wide history. The migration is idempotent for preview installs
 existing explicit grants are preserved. Operators upgrading an unreleased preview
 should inspect root grants created under its former whole-tree sharing semantics.
 
-Migration `0313_private_task_draft_assets.sql` accompanies enforcement and binds
+Migration `0314_private_task_draft_assets.sql` accompanies enforcement and binds
 historical inline images to their first owned task. Unbound drafts remain
 uploader-only under the new asset-content guard.
 

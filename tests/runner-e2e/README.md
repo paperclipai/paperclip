@@ -22,6 +22,53 @@ scheduled execution gets
 a fresh Paperclip home, embedded Postgres database, instance configuration,
 port, workspace, company, encrypted secrets, environment, and agent.
 
+## Native connection guidance (explicit only)
+
+The manual-only native-connection-guidance suite separates connection-policy
+discovery from fixture instructions. It reuses five Everyday journeys on local
+native Codex, ACPX Claude and OpenCode: service approval/decline, new Notion
+setup decline, external-provider decline and choosing the second provider.
+Fifteen cells are configured, not live-qualified by their existence. Select an
+exact execution ID or this suite; --all and generic profile selectors exclude it.
+
+The three decline prompts define a brief explanation as the permitted fallback.
+They do not mention the future decline, name connection tools, prescribe a
+provider, or tell the model not to retry. The approval and second-provider
+prompts remain identical to the original stories. The historical
+everyday-workflows cases and their original grades remain unchanged.
+
+Each cell allows one attempt and expects two provider turns (three for choosing
+Arcade and then granting tool access). Each retains a twelve-run
+maximum and twelve-minute deadline, and verifies 1,000-cent company and agent
+hard stops through public records before task creation. All actual runs,
+usage/cost gaps, controller retries and cleanup must remain in the report.
+No real third-party mutation occurs. The external-provider decline includes
+the same deterministic company Arcade gateway as the positive control, with
+no agent install or allowed tool at task creation. Public effective-access
+readback verifies that precondition. The positive case selects Arcade, then
+approves its separate scoped access card through the browser. Only that grant
+permits the single HubSpot call. Decline has a real zero-call counter.
+The browser matches the task route and visible identifier, so agent title
+changes cannot invalidate the checkpoint.
+
+The new decline oracle requires the saved decision, exactly one interaction,
+unchanged connection identities, and an explanation after the decision from a
+successful run of the same agent on the same native task. The public comment createdByRunId field
+owns attribution; names, ordering or counts cannot substitute. Service/provider
+declines require observed zero fixture calls. Notion setup ends before
+credentials or a service invocation; it does not qualify real Notion access.
+The original lifecycle, native identity, approval and document checks still run.
+These fallback tasks expect Done; they do not qualify blocking when essential
+work remains, arbitrary setup success, independent work while waiting,
+explicit retry after decline, or general integration quality.
+
+Use the existing report publisher and retained artifact boundary. The suite
+definition digest includes its prompts, flow, graders, fixture setup and browser
+submission code. Compare frozen sources under identical fixture/model/budget
+controls before using it to qualify a production instruction change. See
+[the connection audit](../../doc/plans/2026-10-06-native-connection-guidance.md) and
+[the preserved baseline failures and repair](../../doc/plans/2026-10-07-native-connection-baseline-repair.md).
+
 ## Native procedure guidance comparison (explicit only)
 
 Select `--suite everyday-workflows --environment local --case hire-reuse --case delegate-feedback
@@ -803,7 +850,10 @@ Before an access-controlled evidence artifact is uploaded, the launcher:
 7. verifies that a passing attempt has its final-state screenshot.
 
 The temporary Paperclip home, embedded database, raw workspace, master key,
-and unredacted logs are removed after each attempt. Daytona teardown destroys
+and unredacted logs are removed after confirmed cleanup. If process or remote
+cleanup is unconfirmed, the harness retains the owner-only temporary root and
+its recovery database for reconciliation; that private state is never packaged
+as public evidence. Daytona teardown destroys
 the environment and any reusable leases through the public API; provider-side
 auto-stop/archive/delete values remain as cancellation backstops.
 
@@ -1637,3 +1687,44 @@ staff remains a separate follow-up qualification.
 The v3 hiring grader uses turn-accounting v2 in both executable guards. It requires complete per-run public event streams, exact native tool-use/result pairing and canonical execution IDs for completion actions. Only successful known GET issue/document/comment operations, verified reads/discovery, and attributed native chat finish are admitted. Writes, failed mutation attempts, incomplete streams and unknown actions cannot pass. Separate ACPX host request IDs and provider execution IDs are not joined by name/order/count; missing mapping is uncomparable action coverage, not a measured task failure. The original source-read and exact template checks remain unchanged.
 
 The live fixture retries entire bracketed observations, waits for both known task callbacks and attributed replies (including batching), checks untruncated pending-wake diagnostics, and requires two equal settled observations. Silence before outbox enqueue is not delivery. Five-turn generic accounting remains calibrated for no owed notifications; this delegated fixture owes two completions. All actual runs remain counted for usage and cost. Retained original, limited sidecar-v1, initial executable, and stricter v3 assessments remain separately versioned; no models are rerun by the repair.
+
+Recovery-state retention uses raw cleanup results before evidence publication. An owner-only resource-admission marker for Daytona cells also preserves state if the test worker dies before producing a result. Local worker crashes do not imply remote allocation; their process cleanup proof still applies independently. Confirmed bootstrap failures before allocation remove their temporary state and retain their original failure classification.
+
+## Public installed release smoke
+
+The shared task-creation helper uses the current prompt-only composer and binds
+each task to its actual HTTP creation response ID, since its generated title may
+change during execution. The provider-free `tests/e2e/runner-task-creation.spec.ts`
+regression verifies assignee, project, and all three work modes with paused agents.
+Explicit title-preservation and strict native permission cases use Search’s
+“Create task from this query” action to expose the normal title field, and verify
+that the creation response preserves it with `titleNeedsGeneration: false`.
+This keeps automatic title naming from introducing an unrelated permission
+request before the tested native write. Permission policy, provider prompts,
+command correlation, and no-effect assertions remain unchanged.
+
+Set `PAPERCLIP_RUNNER_E2E_INSTALLED_CLI` to the absolute public consumer's
+`paperclipai/dist/index.js` for an installed-product acceptance run. Install the
+public package graph and run its ordinary `runtime setup cursor` first. The
+supervisor launches that compiled CLI from its own package directory; repository
+server-entry patches, provider-bin shims, loader injection, provider packs and
+native binary overrides are removed from the server environment. Qualification
+admission is rejected, so this path requires production admission. Use the
+existing browser/API cases and encrypted company-secret fixture path.
+
+Install the public `@paperclipai/plugin-daytona` package separately for a Daytona
+smoke. Set `PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN` to its absolute installed
+package directory when it has its own dependency root. The fixture checks its
+compiled entries and release version before provisioning. The version must match
+the installed CLI by default. If the release uses independent plugin versions,
+set `PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN_VERSION` to the exact plugin
+version in the release record. Record the plugin tarball SHA-256 with that version;
+do not substitute a workspace build or an older installed plugin.
+
+For a diagnosed failure campaign, `PAPERCLIP_RUNNER_E2E_KEEP_FAILED_PRIVATE=1`
+retains the attempt's owner-only private directory after a failed case even
+when owned cleanup passed. This does not alter the case or cleanup outcome.
+Private traces and database files must not be published. Unconfirmed cleanup
+always preserves recovery state regardless of this optional diagnostic flag.
+
+The `file-edit-validate` fixture independently downloads the exact active artifact work product from the tested run. It requires the matching run-attributed attachment, filename, MIME type, recorded byte count and SHA-256, then compares the downloaded content to the expected bytes. A workspace file alone cannot satisfy this gate. Explicit failed-case diagnostic retention follows the final result after integrity, isolation and evidence checks, including incomplete publication.

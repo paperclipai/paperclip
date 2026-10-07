@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeAcpxPermission } from "../drivers/acpx/acp-permission-adapter.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
 import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
-import { ACPX_SIDECAR_PROTOCOL_VERSION } from "../drivers/acpx/sidecar-protocol.js";
+import { ACPX_SIDECAR_PROTOCOL_VERSION, stringifyAcpxSidecarFrame } from "../drivers/acpx/sidecar-protocol.js";
 import { canonicalProviderEventsFromAcpxRuntimeEvent } from "../provider-events.js";
 import {
   awaitSidecarCleanupWithin,
@@ -44,7 +44,7 @@ describe("qualified ACPX runtime sidecar", () => {
     const wait = new Function("permissions", "openParams", "normalizeAcpxPermission", "emit",
       `let turnId = "turn-1", requestSequence = 0; const MAX_PENDING_INPUTS = 512;
        const stableRequestId = () => "request-1"; const requireAcpxResponseDelivery = c => c.responseDelivery;
-       return async function(activeTurnId, request, context) { ${source.slice(start, end)}`)(
+       return async function(activeTurnId, request, context) { const agent = openParams.agent, toolEvidence = undefined; ${source.slice(start, end)}`)(
       permissions, { agent }, normalizeAcpxPermission, (_event: string, payload: { choices: Array<{ key: string }> }) => emitted.push(payload),
     );
     const abort = new AbortController();
@@ -558,7 +558,7 @@ describe("qualified ACPX runtime sidecar", () => {
     ["pi", "openrouter/deepseek/deepseek-v4-flash-0731"],
     ["cursor", "explicit-cursor-model"],
     ["copilot", "explicit-copilot-model"],
-  ] as const)("initializes the declared %s candidate without promoting its profile", async (agent, model) => {
+  ] as const)("initializes the declared %s profile with its current admission status", async (agent, model) => {
     const sidecar = startSidecar();
     sidecar.write(initializeRequest(1, agent, model));
     const frame = await sidecar.next((value) => value.id === 1);
@@ -566,7 +566,7 @@ describe("qualified ACPX runtime sidecar", () => {
     const result = frame.result as Record<string, unknown>;
     expect(result.profile).toEqual(resolveQualifiedAcpxProfile(agent, model));
     expect(result.profile).toMatchObject({ reportedModelId: model });
-    expect(ACPX_CAPABILITY_PROFILES[agent].qualification).toBe("pending");
+    expect(ACPX_CAPABILITY_PROFILES[agent].qualification).toBe(agent === "cursor" ? "qualified" : "pending");
   });
 
   it("fails closed after an unsupported provider bootstrap", async () => {
@@ -732,7 +732,7 @@ function loadWaitForTool(input: {
     );
   const factory = new Function(
     "boundedIdentity", "tools", "turnId", "emit", "PRP_COMPLETION_TOOL_NAME",
-    "PRP_BLOCK_TOOL_NAME", "validatePrpStructuredRunResult", "boundedSidecarValue", "record", "MAX_PENDING_TOOLS",
+    "PRP_BLOCK_TOOL_NAME", "validatePrpStructuredRunResult", "boundedSidecarValue", "record", "MAX_PENDING_TOOLS", "stringifyAcpxSidecarFrame",
     `return (${functionSource});`,
   );
   return factory(
@@ -749,5 +749,6 @@ function loadWaitForTool(input: {
     (value: unknown) => value,
     (value: unknown) => value,
     512,
+    stringifyAcpxSidecarFrame,
   );
 }

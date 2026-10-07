@@ -177,6 +177,7 @@ import {
   formatDurationMs,
   formatTokens,
   visibleRunCostUsd,
+  visibleRunTokenTotal,
 } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
@@ -2697,6 +2698,7 @@ function IssueDetailActivityTab({
     let input = 0;
     let output = 0;
     let cached = 0;
+    let totalTokens = 0;
     let cost = 0;
     let runtimeMs = 0;
     let runCount = 0;
@@ -2721,6 +2723,7 @@ function IssueDetailActivityTab({
       input += runInput;
       output += runOutput;
       cached += runCached;
+      totalTokens += visibleRunTokenTotal(usage);
       cost += runCost;
 
       if (run.startedAt) {
@@ -2744,7 +2747,7 @@ function IssueDetailActivityTab({
       output,
       cached,
       cost,
-      totalTokens: input + output,
+      totalTokens,
       hasCost,
       hasTokens,
       runtimeMs,
@@ -2754,6 +2757,7 @@ function IssueDetailActivityTab({
   }, [linkedRuns]);
   const issueTreeCostTokens =
     (issueTreeCostSummary?.inputTokens ?? 0) +
+    (issueTreeCostSummary?.cachedInputTokens ?? 0) +
     (issueTreeCostSummary?.outputTokens ?? 0);
   const hasIssueTreeCost =
     !!issueTreeCostSummary &&

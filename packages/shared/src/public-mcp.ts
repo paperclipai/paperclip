@@ -36,6 +36,8 @@ export interface McpConnection {
   companyId: string;
   clientName: string;
   companyName: string;
+  /** The signed-in person who authorized this connection; absent on older servers. */
+  user?: { name: string; image: string | null } | null;
   scopes: string[];
   createdAt: string;
   revokedAt: string | null;

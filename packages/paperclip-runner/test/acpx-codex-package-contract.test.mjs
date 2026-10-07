@@ -33,17 +33,8 @@ const claudePatch = await readFile(
   ),
   "utf8",
 );
-const qualifiedProfiles = await readFile(
-  new URL("../src/drivers/acpx/qualified-profiles.ts", import.meta.url),
-  "utf8",
-);
-const runnerdAcpxBackend = await readFile(
-  new URL(
-    "../runner/crates/runner-core/src/acpx_provider_backend.rs",
-    import.meta.url,
-  ),
-  "utf8",
-);
+const profiles = JSON.parse(await readFile(new URL("../acpx-profiles.json", import.meta.url), "utf8"));
+const runnerdProfiles = await readFile(new URL("../runner/crates/runner-core/src/generated_acpx_profiles.rs", import.meta.url), "utf8");
 const providerPackBuilder = await readFile(
   new URL("../scripts/build-provider-pack.mjs", import.meta.url),
   "utf8",
@@ -75,29 +66,16 @@ test("the runner pins every qualified ACPX production dependency", () => {
 });
 
 test("the patched Codex ACP executable digest stays aligned across launch boundaries", async () => {
-  const profileMatch =
-    /agent: "codex"[\s\S]*?commandDigest:\s*"(sha256:[a-f0-9]{64})"/.exec(
-      qualifiedProfiles,
-    );
-  assert.ok(profileMatch, "qualified Codex ACPX profile digest");
-  const digest = profileMatch[1];
+  const digest = profiles.profiles.codex.commandDigest;
   const packagePath = createRequire(import.meta.url).resolve("@agentclientprotocol/codex-acp/package.json");
   const installed = JSON.parse(await readFile(packagePath, "utf8"));
   const executable = await readFile(resolve(dirname(packagePath), installed.bin["codex-acp"]));
   assert.equal(digest, `sha256:${createHash("sha256").update(executable).digest("hex")}`,
     "the identity binds installed executable bytes, not the patch file");
 
-  assert.match(runnerdAcpxBackend, new RegExp(`"codex"[\\s\\S]*?${digest}`));
-  assert.match(
-    providerPackBuilder,
-    new RegExp(`acpxProfileDigests:[\\s\\S]*?codex:[\\s\\S]*?${digest}`),
-  );
-  assert.match(
-    nativeSessionExecutor,
-    new RegExp(
-      `REMOTE_PROVIDER_PACK_PROFILE_DIGESTS[\\s\\S]*?codex:[\\s\\S]*?${digest}`,
-    ),
-  );
+  assert.match(runnerdProfiles, new RegExp(`"codex"[\\s\\S]*?${digest}`));
+  assert.match(providerPackBuilder, /codex:\s*profiles\.profiles\.codex\.commandDigest/);
+  assert.match(nativeSessionExecutor, /codex:\s*QUALIFIED_ACPX_PROFILES\.codex\.commandDigest/);
 });
 
 test("the package exposes only the reviewed runner CLI binaries", () => {

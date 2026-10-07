@@ -1873,7 +1873,7 @@ describe("AI connection recovery delivery", () => {
       const account = await create(userId, `Recovered ${scenario}`);
       expect((await intents.setupOptions(pending.interactionId!)).existingConnections.map(connection => connection.id)).toEqual([account.connectionId]);
       await db.update(heartbeatRuns).set({ status: "failed", errorCode: "configuration_incomplete", resultJson: { configurationIncomplete: { reason,
-        ...(reason === "secret_binding_missing" ? { missingBindings: [{ bindingType: "user_secret_ref", envKey: "ANTHROPIC_API_KEY", configPath: "env.ANTHROPIC_API_KEY", errorCode: "user_secret_missing" }] } : {}),
+        ...(reason === "secret_binding_missing" ? { agentId: recoveringAgentId, missingBindings: [{ bindingType: "user_secret_ref", consumerType: "agent", consumerId: recoveringAgentId, envKey: "ANTHROPIC_API_KEY", configPath: "env.ANTHROPIC_API_KEY", errorCode: "user_secret_missing" }] } : {}),
       } } }).where(eq(heartbeatRuns.id, failedRunId));
       await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
       await issueRecoveryActionService(db).upsertSourceScoped({ companyId, sourceIssueId: issueId, kind: "configuration_validation", cause: "configuration_incomplete", fingerprint: `ai:${issueId}`, nextAction: "Reconnect", ownerType: "board", evidence: { latestRunId: failedRunId } });

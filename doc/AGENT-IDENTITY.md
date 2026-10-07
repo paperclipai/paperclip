@@ -98,3 +98,7 @@ have distinct identities.
 Native failure records and reports redact the assigned key before truncating diagnostics. Streaming output buffers settle at item or turn completion: short structural prefixes (such as a trailing dash) are preserved, longer interrupted key fragments become redaction markers, and pending buffers are cleared. Terminal events carry these settled `outputTails`; transcript projection displays them as deltas without changing the source event receipt.
 
 Codex shell delivery preserves its default `KEY`/`SECRET`/`TOKEN` name exclusions for other configured credentials. The exceptions are the three identity variables and `PAPERCLIP_API_KEY`: the latter is the short-lived, scoped run/bridge credential required by the Paperclip agent skill’s Bash/curl API calls. Disabling Codex’s automatic exclusions is paired with this explicit filtered allowlist; it does not admit arbitrary host environment variables. Provider authentication secrets can still reach the provider process without being newly exposed to shell commands by this feature.
+
+Cloud customer-success inspection can consume this existing identity together
+with strict active-run authority. See [inspection support](CUSTOMER-SUCCESS-INSPECTION.md).
+No additional agent keypair or private-key distribution is introduced.

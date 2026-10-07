@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { assistantClientNames, mcpAuthorizationHandoffInstructions, mcpInvitation, mcpSetupSteps, type AssistantClient } from "@paperclipai/shared";
+import { assistantClientNames, mcpAuthorizationHandoffInstructions, mcpInvitation, mcpSetupSteps, type AssistantClient, type McpConnection } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Copy, ExternalLink, Globe, Paperclip, Plug, Terminal } from "lucide-react";
 import { publicMcpApi } from "@/api/publicMcp";
@@ -8,6 +8,8 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Link } from "@/lib/router";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { deriveInitials, Identity } from "@/components/Identity";
+import { assistantConnectionDisplayName } from "./connection-owner";
 import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
@@ -32,13 +34,13 @@ export function useAssistantConnections(poll = false) {
     queryKey: connectionsKey, queryFn: publicMcpApi.connections, retry: false,
     enabled: Boolean(selectedCompanyId), refetchInterval: poll ? 5000 : false,
   });
-  return { ...query, rows: (query.data ?? []).filter(row => row.companyId === selectedCompanyId) };
+  return { ...query, rows: (query.data ?? []).filter(row => row.companyId === selectedCompanyId && !row.revokedAt) };
 }
 
 /** Inbound assistant access belongs beside the existing outbound connectors. */
 export function AssistantConnectionCard({ onNavigate }: { onNavigate: (href: string) => void }) {
   const connections = useAssistantConnections();
-  const active = connections.rows.filter(row => !row.revokedAt);
+  const active = connections.rows;
   const action = !connections.isSuccess ? "Open" : active.length ? "Manage" : "Set up";
   return <div role="listitem" data-app-slug="assistant-connection" data-connected={connections.isSuccess ? String(active.length > 0) : undefined} className="overflow-hidden rounded-xl border border-border">
     <div className="flex flex-wrap items-center gap-3 px-4 py-4">
@@ -55,9 +57,7 @@ export function AssistantConnectionCard({ onNavigate }: { onNavigate: (href: str
       <Button size="sm" variant="ghost" disabled={connections.isFetching} onClick={() => void connections.refetch()}>Try again</Button>
     </div>}
     {connections.isSuccess && active.length > 0 && <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-3 text-sm">
-      <Check className="size-4 text-muted-foreground" aria-hidden="true" />
-      <span>{active.map(row => row.clientName).join(", ")}</span>
-      <span className="text-xs text-muted-foreground">Connected as you</span>
+      {active.map(row => <Identity key={row.id} name={assistantConnectionDisplayName(row)} avatarUrl={row.user?.image} initials={deriveInitials(row.user?.name ?? "You")} size="sm" />)}
     </div>}
   </div>;
 }
@@ -92,7 +92,10 @@ export function AssistantConnection({ initialAssistant = "codex" }: { initialAss
   const [assistant, setAssistant] = useState<Assistant>(initialAssistant);
   const setup = useQuery({ queryKey: ["mcp-setup"], queryFn: publicMcpApi.setup, retry: false, refetchOnWindowFocus: "always", refetchOnMount: "always" });
   const connections = useAssistantConnections(setup.data?.enabled === true);
-  const revoke = useMutation({ mutationFn: publicMcpApi.revoke, onSuccess: () => client.invalidateQueries({ queryKey: connectionsKey }) });
+  const revoke = useMutation({ mutationFn: publicMcpApi.revoke, onSuccess: (_, id) => {
+    client.setQueryData<McpConnection[]>(connectionsKey, rows => rows?.filter(row => row.id !== id));
+    return client.invalidateQueries({ queryKey: connectionsKey });
+  } });
   useEffect(() => {
     setBreadcrumbs([{ label: "Connectors", href: "/apps" }, { label: "Assistant Connection (MCP)" }]);
     return () => setBreadcrumbs([]);
@@ -140,8 +143,8 @@ export function AssistantConnection({ initialAssistant = "codex" }: { initialAss
       {(connections.error || revoke.error) && <p role="alert" className="text-sm text-destructive">{revoke.error ? "Couldn’t revoke this connection. Try again." : "Couldn’t load your connections. Try again."} <button type="button" className="underline" onClick={() => void connections.refetch()}>Refresh</button></p>}
       {connections.isSuccess && connections.rows.length === 0 && <p className="text-sm text-muted-foreground">No assistants connected to {selectedCompany.name} yet.</p>}
       <div className="divide-y divide-border">{connections.rows.map(row => <div key={row.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-        <div className="space-y-1"><p className="text-sm font-medium">{row.clientName}</p><p className="text-xs text-muted-foreground">{row.revokedAt ? "Revoked" : `Connected as you · ${row.scopes.includes("paperclip:write") ? "Read and write" : "Read only"}${row.scopes.includes("paperclip:configure") ? " · Configure agents, projects and skills" : ""}`}</p></div>
-        {!row.revokedAt && <Button variant="outline" size="sm" disabled={revoke.isPending} onClick={() => revoke.mutate(row.id)} aria-label={`Revoke ${row.clientName} connection`}>Revoke</Button>}
+        <div className="min-w-0 flex-1 space-y-1"><Identity name={assistantConnectionDisplayName(row)} avatarUrl={row.user?.image} initials={deriveInitials(row.user?.name ?? "You")} className="font-medium" /><p className="text-xs text-muted-foreground">{`Connected as you · ${row.scopes.includes("paperclip:write") ? "Read and write" : "Read only"}${row.scopes.includes("paperclip:configure") ? " · Configure agents, projects and skills" : ""}`}</p></div>
+        <Button variant="outline" size="sm" disabled={revoke.isPending} onClick={() => revoke.mutate(row.id)} aria-label={`Revoke ${assistantConnectionDisplayName(row)}`}>Revoke</Button>
       </div>)}</div>
     </section>
     <footer className="flex items-center justify-between gap-3 border-t border-border pt-4"><Button variant="ghost" asChild><Link to="/apps">Back to Connections</Link></Button><a className="inline-flex items-center gap-1 text-xs text-muted-foreground underline" href={assistant === "opencode" ? "https://opencode.ai/docs/mcp-servers/" : assistant === "claude" ? "https://code.claude.com/docs/en/mcp" : "https://developers.openai.com/codex/mcp"} target="_blank" rel="noreferrer">Setup documentation <ExternalLink className="size-3" /></a></footer>

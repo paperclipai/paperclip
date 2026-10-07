@@ -1189,7 +1189,7 @@ Resolved result (`RequestCheckboxConfirmationResult`):
 Other outcomes match `request_confirmation`:
 
 - `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
-- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `done` or `cancelled` expires all pending interactions without continuation wakes; listing a terminal issue also performs a catch-up sweep for historical residue.
+- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `cancelled` expires all pending interactions without continuation wakes. Transitioning to `done` expires current questions and governed requests, but retains ordinary historical questions that precede newer human direction. An authorized human can answer a retained question after completion; this records history without reopening work or creating a response wake. Listing a terminal issue also applies these rules in its catch-up sweep.
 
 - `rejected` — `{ outcome: "rejected", reason, commentId }`. `selectedOptionIds` is absent.
 - `superseded_by_comment` — `{ outcome: "superseded_by_comment", commentId }`. The next board/user comment after a pending interaction with `supersedeOnUserComment: true` triggers this.

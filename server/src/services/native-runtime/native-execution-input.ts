@@ -1,4 +1,5 @@
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
+import { resolvePaperclipRunnerCursorMode } from "@paperclipai/adapter-utils";
 import { createHash } from "node:crypto";
 import { buildNativeContinuationPrompt } from "./native-continuation.js";
 import type {
@@ -72,6 +73,7 @@ export function buildNativeExecutionInput(input: {
   codexReasoningEffort?: string;
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
+  acpxSessionMode?: "agent" | "plan" | "ask";
   model?: string | null;
   managedProfile?: Extract<
     NativeExecutionInputV5["provider"],
@@ -103,6 +105,7 @@ export function buildNativeExecutionInput(input: {
   if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask") {
     throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, or ask");
   }
+  const mode = resolvePaperclipRunnerCursorMode(input.provider, input.acpxAgent, input.acpxSessionMode);
   const executionMode = input.executionMode
     ?? (input.issue.workMode === "planning" ? "plan" : "default");
   const acpxProfile = input.provider === "acpx"
@@ -265,6 +268,7 @@ export function buildNativeExecutionInput(input: {
           agent: acpxProfile!.agent,
           model: input.model,
           permissionMode: input.acpxPermissionMode ?? "approve-all",
+          ...(mode === undefined ? {} : { mode }),
           profile: {
             driverKind: acpxProfile!.driverKind,
             protocolVersion: acpxProfile!.protocolVersion,

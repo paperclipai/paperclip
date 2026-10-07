@@ -20832,6 +20832,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       trigger: "subscribed_message",
     });
 
+    // Keep this ordering assertion independent of database/CI wall-clock speed.
+    // The next drain below explicitly makes both deliveries due.
+    await db.update(chatDeliveries).set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(and(eq(chatDeliveries.endpointId, endpoint.id), inArray(chatDeliveries.state, ["received", "retry"])));
     await service.processPendingDeliveries();
     expect(wakeup).not.toHaveBeenCalled();
     await db

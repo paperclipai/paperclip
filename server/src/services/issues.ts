@@ -11323,11 +11323,24 @@ export function issueService(db: Db) {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
             // Every terminal transition funnels through here, including direct
             // service callers (tree control, recovery, pipelines, status cards)
-            // that never touch the HTTP routes, so pending interaction cards
-            // cannot outlive their issue. Dynamic import breaks the module
+            // that never touch the HTTP routes. Governed cards expire; ordinary
+            // historical questions remain answerable after completion.
+            // Dynamic import breaks the module
             // cycle (issue-thread-interactions.js imports issueService).
             const { issueThreadInteractionService } =
               await import("./issue-thread-interactions.js");
+            // Stop live question requests independently of card expiry. A
+            // historical question retained in the feed must not keep its
+            // source run waiting after the task closes.
+            const pendingQuestions = await tx
+              .select()
+              .from(issueThreadInteractions)
+              .where(and(
+                eq(issueThreadInteractions.companyId, updated.companyId),
+                eq(issueThreadInteractions.issueId, updated.id),
+                eq(issueThreadInteractions.kind, "ask_user_questions"),
+                eq(issueThreadInteractions.status, "pending"),
+              ));
             const expiredInteractions = await issueThreadInteractionService(
               tx,
             ).expirePendingInteractionsForTerminalIssue(updated, {
@@ -11338,31 +11351,31 @@ export function issueService(db: Db) {
               nativeQuestionCancellationIdentity,
               requestNativeQuestionRunCancellation,
             } = await import("./native-runtime/native-question-bridge.js");
-            for (const interaction of expiredInteractions) {
-              if (interaction.kind === "ask_user_questions") {
-                const nativeQuestion =
-                  nativeQuestionCancellationIdentity(interaction);
-                if (nativeQuestion) {
-                  if (dbOrTx !== db && !postCommitActions) {
-                    throw new Error(
-                      "Terminal native question updates in an external transaction require a post-commit action queue",
-                    );
-                  }
-                  const runId = await requestNativeQuestionRunCancellation(
-                    tx,
-                    nativeQuestion,
-                    { kind: "issue_terminal", issueStatus: updated.status },
+            for (const interaction of pendingQuestions) {
+              const nativeQuestion =
+                nativeQuestionCancellationIdentity(interaction);
+              if (nativeQuestion) {
+                if (dbOrTx !== db && !postCommitActions) {
+                  throw new Error(
+                    "Terminal native question updates in an external transaction require a post-commit action queue",
                   );
-                  if (runId) {
-                    queuedPostCommitActions.push({
-                      type: "cancel_native_question_run",
-                      runId,
-                      issueId: updated.id,
-                      issueStatus: updated.status,
-                    });
-                  }
+                }
+                const runId = await requestNativeQuestionRunCancellation(
+                  tx,
+                  nativeQuestion,
+                  { kind: "issue_terminal", issueStatus: updated.status },
+                );
+                if (runId) {
+                  queuedPostCommitActions.push({
+                    type: "cancel_native_question_run",
+                    runId,
+                    issueId: updated.id,
+                    issueStatus: updated.status,
+                  });
                 }
               }
+            }
+            for (const interaction of expiredInteractions) {
               await logActivity(tx as unknown as Db, {
                 companyId: updated.companyId,
                 actorType: actorAgentId

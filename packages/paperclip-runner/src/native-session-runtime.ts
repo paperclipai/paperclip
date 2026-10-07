@@ -1621,7 +1621,8 @@ function isZeroWorkAcpxUsage(payload: Record<string, unknown>): boolean {
   const usage = objectRecord(payload.usage);
   if (
     usage === null ||
-    Object.keys(usage).some((key) => key !== "total" && key !== "runDelta")
+    (Object.hasOwn(usage, "runDeltaComplete") && usage.runDeltaComplete !== true) ||
+    Object.keys(usage).some((key) => key !== "total" && key !== "runDelta" && key !== "runDeltaComplete")
   ) {
     return false;
   }

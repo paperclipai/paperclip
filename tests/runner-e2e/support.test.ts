@@ -1452,6 +1452,13 @@ describe("persisted final response selection", () => {
     expect(persistedFinalRunMessage(comments.slice(0, 1), run)).toBe("");
     expect(persistedFinalRunMessage(comments, { ...run, resultJson: { presentationDecision: { commentId: "other-run" } } })).toBe("");
   });
+  it("waits for the native response receipt and its selected comment, not an earlier attachment comment", () => {
+    const native = { ...run, runtimeMode: "native" };
+    expect(persistedFinalRunMessage(comments.slice(0, 1), { id: native.id, runtimeMode: "native" })).toBe("");
+    expect(persistedFinalRunMessage(comments, { id: native.id, runtimeMode: "native", resultJson: { summary: "FINAL" } })).toBe("");
+    expect(persistedFinalRunMessage(comments.slice(0, 1), native)).toBe("");
+    expect(persistedFinalRunMessage(comments, native)).toBe("FINAL");
+  });
   it("keeps legacy fallback and does not replace absent visible text with a summary", () => {
     expect(persistedFinalRunMessage(comments, { id: "run-1" })).toBe("Prepared file for this response.\nFINAL");
     expect(persistedFinalRunMessage([], { id: "run-1", resultJson: { summary: "FINAL" } })).toBe("");

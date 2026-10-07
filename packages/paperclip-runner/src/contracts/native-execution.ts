@@ -1,3 +1,6 @@
+import { QUALIFIED_ACPX_VERSION } from "../drivers/acpx/generated-profiles.js";
+import { isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
+import { isProviderMode } from "./provider-mode.js";
 import { createHash } from "node:crypto";
 import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeContextSnapshot } from "./runtime-context.js";
@@ -88,9 +91,9 @@ export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "ap
 export interface NativeAcpxProfileSnapshot {
   driverKind: "acpx_runtime";
   protocolVersion: 1;
-  acpxVersion: "0.13.1";
+  acpxVersion: typeof QUALIFIED_ACPX_VERSION;
   agent: NativeAcpxAgent;
-  agentProfileVersion: 1 | 2 | 3 | 4 | 5;
+  agentProfileVersion: AcpxProfileVersion;
   agentServerPackage: string;
   agentServerVersion: string;
   agentRuntimePackage: string | null;
@@ -123,6 +126,7 @@ export type NativeProviderConfig =
       agent: NativeAcpxAgent;
       model: string;
       permissionMode?: NativeAcpxPermissionMode;
+      mode?: string;
       /** Present only in persisted v1-v3 inputs. */
       permissionPolicy?: "interactive";
       profile: NativeAcpxProfileSnapshot;
@@ -137,6 +141,7 @@ export type NativeProviderConfigV4 =
       agent: NativeAcpxAgent;
       model: string;
       permissionMode: NativeAcpxPermissionMode;
+      mode?: string;
       profile: NativeAcpxProfileSnapshot;
     };
 
@@ -451,7 +456,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       : provider.kind === "aws_agentcore"
         ? ["kind", "model", "agentCoreProfile", "maxEstimatedSessionCostUsd", "invocationLimits"]
       : provider.kind === "acpx"
-        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile"]
+        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", ...(isV4 ? ["mode"] : [])]
       : provider.kind === "codex" && isV4
         ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort"] : [])]
         : provider.kind === "opencode" && isV4
@@ -571,6 +576,9 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       invocationLimits: { maxIterations, maxOutputTokens, timeoutSeconds },
     };
   } else if (provider.kind === "acpx") {
+    if (provider.mode !== undefined && !isProviderMode(provider.mode)) {
+      throw new NativeExecutionInputError("input.provider.mode must be a bounded nonempty provider mode identifier");
+    }
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for acpx");
     }
@@ -600,9 +608,9 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (
       profile.driverKind !== "acpx_runtime"
       || profile.protocolVersion !== 1
-      || profile.acpxVersion !== "0.13.1"
+      || profile.acpxVersion !== QUALIFIED_ACPX_VERSION
       || profile.agent !== provider.agent
-      || (profile.agentProfileVersion !== 1 && profile.agentProfileVersion !== 2 && profile.agentProfileVersion !== 3 && profile.agentProfileVersion !== 4 && profile.agentProfileVersion !== 5)
+      || !isSupportedAcpxProfileVersion(provider.agent, profile.agentProfileVersion)
     ) {
       throw new NativeExecutionInputError("input.provider.profile does not match the qualified ACPX v1 profile");
     }
@@ -618,10 +626,11 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       ...(isV4
         ? { permissionMode: provider.permissionMode as NativeAcpxPermissionMode }
         : { permissionPolicy: "interactive" as const }),
+      ...(provider.mode === undefined ? {} : { mode: provider.mode as string }),
       profile: {
         driverKind: "acpx_runtime",
         protocolVersion: 1,
-        acpxVersion: "0.13.1",
+        acpxVersion: QUALIFIED_ACPX_VERSION,
         agent: provider.agent,
         agentProfileVersion: profile.agentProfileVersion,
         agentServerPackage: text(profile.agentServerPackage, "input.provider.profile.agentServerPackage"),

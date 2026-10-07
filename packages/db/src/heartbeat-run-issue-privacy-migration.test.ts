@@ -8,7 +8,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0312_private_task_access.sql";
+const MIGRATION_FILE = "0313_private_task_access.sql";
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 if (!embeddedPostgresSupport.supported) console.warn(`Private-task migration checks unavailable: ${embeddedPostgresSupport.reason}`);

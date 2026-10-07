@@ -454,6 +454,8 @@ export interface AcpxSessionIdentity {
   effectiveModel: string;
   /** Missing on legacy snapshots; those used the historical approve-reads behavior. */
   permissionMode?: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
+  /** Effective provider mode identifier, bound to the session identity. */
+  mode?: string;
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 

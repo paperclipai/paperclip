@@ -609,6 +609,8 @@ export function ProjectDetail() {
       metric: "billed_cents",
       windowKind: "lifetime",
       amount: 0,
+      unpricedEventCount: 0, pendingRunCount: 0,
+      unpricedUsagePolicy: "block",
       observedAmount: 0,
       remainingAmount: 0,
       utilizationPercent: 0,

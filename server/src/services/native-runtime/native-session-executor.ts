@@ -1,8 +1,17 @@
+import { CURSOR_DISTRIBUTION_PINS, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION } from "../../vendor/paperclip-runner/index.js";
+import { isProviderMode } from "../../vendor/paperclip-runner/index.js";
+import { bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from "../../vendor/paperclip-runner/index.js";
+import { nativeRetryCancellationEligible, rethrowNativeCancellationLockConflict, assertCancellationRequest, cancellationIntentId as callerCancellationIntentId, cancellationRequestId } from "./native-cancellation-request.js";
+import { readNativePlanWait } from "./native-plan-wait.js";
+import { nativeProviderLifecycle } from "./provider-lifecycle.js";
+import { NativePermissionDeclinedError, readCompletedNativePermissionDecline } from "./native-permission-decline.js";
+import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { resolveAcpxQualification } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
 
+import { inferOpenAiCompatibleBiller, type AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import {
   isSupportedRemoteCodexVersion,
@@ -57,7 +66,7 @@ import type {
   AdapterExecutionResult,
   AdapterRuntimeEvent,
 } from "../../adapters/index.js";
-import type { NativeFinalizationResult } from "@paperclipai/shared";
+import { usdToUnits, type NativeFinalizationResult } from "@paperclipai/shared";
 import type {
   HarnessRuntimeRequestResolution,
   NativeExecutionInput,
@@ -140,7 +149,7 @@ import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
-import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
+import { nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { verifyRetainedMaintenanceNoLaunch } from "./native-maintenance-no-launch.js";
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
@@ -157,7 +166,7 @@ import {
   type NativeAuthoritativeIssueStatus,
   type NativeStatusDecision,
 } from "./status-arbiter.js";
-import { HttpError } from "../../errors.js";
+import { conflict, HttpError } from "../../errors.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { resolvePaperclipRunnerBinary } from "./native-codex-runner.js";
 import {
@@ -5275,6 +5284,7 @@ function nativeSessionConfigDigest(
         // without newly required tools.
         nativeToolContractFingerprint:
           nativeToolContractFingerprintForTarget(executionTargetKind),
+        runtimeContract: nativeRuntimeContractForProvider(execution.provider),
       }),
     )
     .digest("hex")}`;
@@ -5495,6 +5505,7 @@ export function providerSessionIdentityFromDurableProviderState(input: {
         identity.requestedModel !== expectedModel ||
         identity.effectiveModel !== expectedModel ||
         identity.permissionMode !== input.execution.provider.permissionMode ||
+        !acpxRecoveryModeMatches(input.execution.provider, descriptor.mode, identity.mode) ||
         !["approve-all", "approve-paperclip", "approve-reads", "deny-all"].includes(
           String(identity.permissionMode),
         ) ||
@@ -5579,11 +5590,39 @@ function providerSessionIdentityIsPresent(value: unknown): boolean {
   );
 }
 
+/** Closed diagnostic categories; durable state may contain private provider data. */
+export function durableProviderCheckpointFailureReason(execution: NativeExecutionInput, providerState: unknown): string {
+  if (execution.provider.kind !== "acpx") return "identity_binding";
+  const state = record(providerState);
+  if (state.schema !== ACPX_PROVIDER_STATE_SCHEMA) return "state_schema";
+  if (state.lifecycle !== "suspended") return "provider_not_suspended";
+  if (state.providerExitUnconfirmed !== false) return "provider_exit_unconfirmed";
+  if (state.activeTurnId !== null) return "provider_turn_unsettled";
+  if (!acpxRecoveryModeMatches(execution.provider, record(state.descriptor).mode, record(state.identity).mode)) return "mode_binding";
+  return "identity_binding";
+}
+
+// Recovery consumes observed identities; it must never apply the fresh-config
+// default to a missing persisted mode. Provider capability checks belong to admission.
+function acpxRecoveryModeMatches(
+  provider: NativeExecutionInput["provider"],
+  ...observedModes: unknown[]
+): boolean {
+  const expected = record(provider).mode;
+  return (expected === undefined || isProviderMode(expected))
+    && observedModes.every(mode => mode === expected);
+}
+
 export function providerSessionIdentityTransitionIsAllowed(input: {
   execution: NativeExecutionInput;
   previous: unknown;
   current: unknown;
 }): boolean {
+  if (input.execution.provider.kind === "acpx" && !acpxRecoveryModeMatches(
+    input.execution.provider,
+    record(record(input.previous).providerSessionIdentity).mode,
+    record(record(input.current).providerSessionIdentity).mode,
+  )) return false;
   if (canonicalJson(input.previous) === canonicalJson(input.current)) {
     return true;
   }
@@ -6029,12 +6068,13 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_session_cleanup_quarantined" ||
     sourceFailureCode === "native_adopted_runner_authentication_timeout" ||
     sourceFailureCode === "native_provider_usage_limit";
-  const exhausted = permanentFailure || attempt >= 3;
+  const permissionDeclined = sourceFailureCode === "native_permission_declined";
+  const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
     phase: exhausted
       ? ("terminal_failure" as const)
       : ("retryable_failure" as const),
-    failureCode: permanentFailure
+    failureCode: permanentFailure || permissionDeclined
       ? sourceFailureCode!
       : exhausted
         ? ("native_session_retry_exhausted" as const)
@@ -6071,6 +6111,7 @@ export function nativeSessionRecoveryProjection(input: {
 export function nativeSessionFailureSourceCode(
   error: unknown,
 ):
+  | "native_permission_declined"
   | "native_provider_terminal_failed"
   | "native_provider_approval_required"
   | "native_provider_usage_limit"
@@ -6094,6 +6135,7 @@ export function nativeSessionFailureSourceCode(
   | "native_current_wake_comments_unread"
   | "native_current_wake_comments_changed_after_read"
   | "native_session_interrupted" {
+  if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
   if (error instanceof NativeProviderTerminalFailure) {
     if (error.providerCode === "approval_required") return "native_provider_approval_required";
     // Failed terminals retain their security meaning across the provider facade.
@@ -6572,6 +6614,7 @@ export function cancelNativeSession(
     db: Db;
     scope?: "turn" | "run" | "issue";
     replacementAccepted?: boolean;
+    cancellationRequestId?: string;
   },
 ): Promise<{
   dispatched: boolean;
@@ -6586,6 +6629,7 @@ export async function cancelNativeSession(
     db: Db;
     scope?: "turn" | "run" | "issue";
     replacementAccepted?: boolean;
+    cancellationRequestId?: string;
   },
 ): Promise<
   | boolean
@@ -6712,8 +6756,10 @@ export async function cancelNativeSession(
       }
       if (isNativeRunnerOwnershipHeld(lockedRun))
         throw new NativeRunnerOwnershipUnverifiedError();
-      const coordinator = await tx
-        .select({ runId: nativeRunFinalizations.runId })
+      const retryCancellation = lockedRun.status === "failed"
+        || record(record(lockedRun.resultJson).startupCancellation).retryCancellation === true;
+      const coordinatorQuery = tx
+        .select({ runId: nativeRunFinalizations.runId, phase: nativeRunFinalizations.phase, failureCode: nativeRunFinalizations.failureCode })
         .from(nativeRunFinalizations)
         .where(
           and(
@@ -6721,13 +6767,25 @@ export async function cancelNativeSession(
             eq(nativeRunFinalizations.companyId, cancellationContext.companyId),
             eq(nativeRunFinalizations.issueId, cancellationContext.issueId),
           ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
+        );
+      // Recheck after reservation, at the same transaction that records intent
+      // and disables the retry. NOWAIT avoids coordinator -> run lock inversion.
+      const coordinator = await (retryCancellation
+        ? coordinatorQuery.for("update", { noWait: true }) : coordinatorQuery)
+        .limit(1).then((rows) => rows[0] ?? null);
       if (!coordinator)
         throw new Error("native_cancellation_coordinator_missing");
 
       const resultJson = record(lockedRun.resultJson);
+      // A default Stop joins an already reserved caller intent; it cannot
+      // replace that intent while the originating request is still dispatching.
+      const requestedId = options.cancellationRequestId
+        ?? cancellationRequestId(record(resultJson.startupCancellation).cancellationRequestId);
+      if (requestedId) assertCancellationRequest(resultJson, requestedId);
+      if (retryCancellation && !nativeRetryCancellationEligible({
+        runId, companyId: cancellationContext.companyId, issueId: cancellationContext.issueId,
+        resultJson, requestId: requestedId, scope: options.scope ?? "run",
+      }, coordinator)) throw conflict("Native retry is no longer cancellable");
       const existing = record(resultJson.nativeCancellation);
       const existingIntentId =
         typeof existing.intentId === "string" && existing.intentId.length > 0
@@ -6768,7 +6826,9 @@ export async function cancelNativeSession(
         };
       }
 
-      const intentId = `native-cancellation:${randomUUID()}`;
+      const intentId = requestedId
+        ? callerCancellationIntentId(requestedId)
+        : `native-cancellation:${randomUUID()}`;
       const activity = await persistActivity(tx as unknown as Db, {
         companyId: cancellationContext.companyId,
         actorType: "system",
@@ -6855,7 +6915,7 @@ export async function cancelNativeSession(
         priorCoordinatorDecisionId: cancellationContext.coordinatorDecisionId,
         existing: false,
       };
-    });
+    }).catch(rethrowNativeCancellationLockConflict);
     if (intentPublication) publishActivity(intentPublication);
     cancellationIntentId = intent.intentId;
     auditId = intent.auditId;
@@ -7261,6 +7321,7 @@ export async function executePaperclipNativeSession(input: {
     collectStopped: () => Promise<void>;
   };
   /** Persist task-level continuity before a durable goal can outlive this run. */
+  onUsage?: (receipt: AdapterUsageCheckpoint) => Promise<void>;
   onGoalCheckpoint?: (snapshot: PersistedNativeSession) => Promise<void>;
   sessionGoalControl?: NativeSessionGoalControl | null;
   resumeSessionGoalHeartbeat?: boolean;
@@ -7272,6 +7333,7 @@ export async function executePaperclipNativeSession(input: {
   /** Private grant materialization; never a user-configured host path. */
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
+  billingIdentity?: Pick<AdapterExecutionResult, "provider" | "biller" | "billingType">;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   /** Resolved per-run authorization; not an independent instance setting. */
   runnerIngressAuthorized?: boolean;
@@ -7461,7 +7523,7 @@ async function executePaperclipNativeSessionWithinScope(
   }
   if (
     input.execution.provider.kind === "acpx" &&
-    ["pi", "cursor", "copilot"].includes(input.execution.provider.agent) &&
+    ["pi", "copilot"].includes(input.execution.provider.agent) &&
     !resolveAcpxQualification(input.execution.provider, process.env)
   ) {
     throw new Error(
@@ -7853,6 +7915,76 @@ async function executePaperclipNativeSessionWithinScope(
     binding: { ...input.execution.binding, normalizedSessionId: nativeSessionKey(input.execution), runnerSourceInstanceId: effectiveRunnerInstanceId },
     resolve: resolveNativeRuntimeRequest,
   });
+  let observedAccountingUsage: Record<string, unknown> | null = null;
+  let observedAccountingTurn: string | undefined;
+  let nativeAccountingComplete = false;
+  // OpenCode and ACPX report their current turn; Codex reports a cumulative run delta.
+  // Rebuild per-turn state from the durable event log when a controller resumes.
+  const turnAccounting = ["opencode", "acpx"].includes(input.execution.provider.kind) ? createNativeTurnAccounting(input.execution.provider) : null;
+  if (turnAccounting) {
+    const history = await input.db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, input.execution.binding.companyId), eq(heartbeatRunEvents.runId, input.execution.binding.runId),
+      or(sql`${heartbeatRunEvents.payload}->'prpEvent'->'payload'->>'kind' = 'usage'`,
+        inArray(heartbeatRunEvents.eventType, ["turn.started", "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"])),
+    )).orderBy(heartbeatRunEvents.seq);
+    for (const row of history) turnAccounting.observe(record(row.payload).prpEvent as PrpEvent);
+  }
+  const persistAccountingUsage = async (usage: Record<string, unknown> | null, complete: boolean) => {
+    const accountingUsage = normalizeNativeUsage(usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" });
+    const accountingCost = accountingUsage ? nativeUsageCostUsd(usage, input.execution.provider) : undefined;
+    complete = complete && accountingUsage !== undefined;
+    const costStatus = complete && usage?.accountingCostIncomplete !== true
+      ? input.execution.provider.kind === "aws_agentcore" ? "estimated" as const : undefined
+      : "unpriced" as const;
+    const billing = resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity);
+    const costUsdExact = typeof usage?.accountingCostUsdExact === "string" ? usage.accountingCostUsdExact : undefined;
+    await input.onUsage?.({ usage: accountingUsage, ...billing, complete, usageBasis: "per_run", costUsdExact,
+      model: input.execution.provider.model ?? "unknown", costUsd: accountingCost ?? null, costStatus });
+    if (!input.onUsage) await input.db.update(heartbeatRuns).set({
+      costAccountingPending: true,
+      usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({
+        ...accountingUsage, ...billing, accountingReceiptReady: complete, model: input.execution.provider.model ?? "unknown",
+        costUsd: accountingCost ?? null, costUsdExact: costUsdExact ?? null, costStatus: costStatus ?? null, usageSource: "per_run",
+      })}::jsonb`,
+    }).where(and(eq(heartbeatRuns.id, input.execution.binding.runId), eq(heartbeatRuns.companyId, input.execution.binding.companyId), isNull(heartbeatRuns.costAccountedAt)));
+  };
+  // appendEvent awaits this receipt before the runtime may commit completeRun.
+  // Replayed events must rebuild it too after a stop between event and receipt.
+  const observeAccountingEvent = async (event: PrpEvent) => {
+    if (turnAccounting) {
+      if (!turnAccounting.observe(event)) return;
+      const snapshot = turnAccounting.snapshot();
+      observedAccountingUsage = snapshot.usage;
+      observedAccountingTurn = snapshot.turnId;
+      await persistAccountingUsage(snapshot.usage, snapshot.complete);
+      return;
+    }
+    const payload = record(event.payload);
+    const usage = record(payload.usage);
+    const delta = record(usage.runDelta);
+    if (event.eventType === "turn.started") {
+      observedAccountingTurn = undefined;
+      if (observedAccountingUsage) await persistAccountingUsage(observedAccountingUsage, false);
+    }
+    // A warm attachment seeds a zero snapshot before any provider report.
+    // Only a fresh run delta for this turn can close its accounting. A later
+    // malformed report invalidates completeness instead of retaining a
+    // smaller earlier total or falling back to cumulative session usage.
+    if (payload.kind === "usage") {
+      observedAccountingTurn = undefined;
+      if (Object.hasOwn(usage, "runDelta")) {
+        observedAccountingUsage = { runDelta: delta, runDeltaComplete: usage.runDeltaComplete };
+        if (normalizeNativeUsage(observedAccountingUsage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" })) {
+          observedAccountingTurn = event.turnId;
+        }
+      }
+      if (observedAccountingUsage) await persistAccountingUsage(observedAccountingUsage, false);
+    }
+    if (["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(event.eventType)
+      && observedAccountingUsage && observedAccountingTurn !== undefined && event.turnId === observedAccountingTurn) {
+      await persistAccountingUsage(observedAccountingUsage, true);
+    }
+  };
   let completedConversationReply: PrpEvent | null = null;
   const controlPlane = new PaperclipControlPlanePort(
     input.db,
@@ -7870,6 +8002,7 @@ async function executePaperclipNativeSessionWithinScope(
     {
       privateKeyPem: input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY,
       onCommittedEvent: async (event) => {
+        await observeAccountingEvent(event);
         await toolTrace.observe(event);
         if (event.eventType === "item.completed" &&
             record(event.payload).kind === "agentMessage" &&
@@ -8077,6 +8210,7 @@ async function executePaperclipNativeSessionWithinScope(
         );
       },
       onDuplicateEvent: async (event) => {
+        await observeAccountingEvent(event);
         // A crash can happen after the event commit but before its callback
         // finishes. Recover only idempotent durable projections here; activity,
         // publication, logging, trace, and metric effects remain committed-only.
@@ -8237,6 +8371,7 @@ async function executePaperclipNativeSessionWithinScope(
               : []),
           ),
           eq(issueThreadInteractions.status, "pending"),
+          activeIssueInteractionCondition(),
           // Live provider questions resume their current turn; only durable
           // wake-based cards park it. A timeout creates a separate fallback.
           sql`not (${issueThreadInteractions.kind} = 'ask_user_questions' and ${issueThreadInteractions.continuationPolicy} = 'none' and coalesce(${issueThreadInteractions.idempotencyKey}, '') like 'paperclip-runner-question:%')`,
@@ -8403,6 +8538,13 @@ async function executePaperclipNativeSessionWithinScope(
               if (terminalEvent.eventType !== "turn.completed") return null;
               const governedWait = await resolvePendingGovernedWait();
               if (governedWait) return governedWait;
+              if (nativeProviderLifecycle(input.execution.provider)?.planWait) {
+                const planWait = await readNativePlanWait(input.db, input.execution.binding);
+                if (planWait?.source.terminalEventId === terminalEvent.sourceEventId) return planWait.result;
+              }
+              if (await readCompletedNativePermissionDecline(input.db, input.execution.binding, terminalEvent, input.execution.provider)) {
+                throw new NativePermissionDeclinedError();
+              }
               const [conversation] = await input.db
                 .select({ agentId: issues.conversationAgentId })
                 .from(issues)
@@ -8620,6 +8762,19 @@ async function executePaperclipNativeSessionWithinScope(
       },
       { parentName: "task.run" },
     );
+    // Persist provider accounting before any workspace/issue finalization. A
+    // detached controller or failed finalizer must not lose a completed turn.
+    // session.usage() may be an attachment baseline, a partial report, or a
+    // cumulative session total. Use the observed run delta, and require its
+    // turn to match the terminal result before certifying it as complete.
+    if (turnAccounting) {
+      const snapshot = turnAccounting.finish(native.turnId);
+      observedAccountingUsage = snapshot.usage;
+      nativeAccountingComplete = snapshot.complete && snapshot.turnId === native.turnId;
+    } else nativeAccountingComplete = observedAccountingUsage !== null
+      && observedAccountingTurn !== undefined && observedAccountingTurn === native.turnId;
+    native = { ...native, usage: observedAccountingUsage };
+    await persistAccountingUsage(native.usage, nativeAccountingComplete);
     try {
       await completeManagedNativeCredentialTurn(managedCredentialSession);
     } catch {
@@ -8720,7 +8875,7 @@ async function executePaperclipNativeSessionWithinScope(
       // another turn to perform completion bookkeeping.
       const stoppedBeforeFirstTurn = error instanceof Error && error.message === "native_session_cancelled";
       if (protocolIntegrityFailure === null && error instanceof Error &&
-          (stoppedBeforeFirstTurn || error.message === "native_finalization_missing: session returned no semantic result")) {
+          (stoppedBeforeFirstTurn || error instanceof NativePermissionDeclinedError || error.message === "native_finalization_missing: session returned no semantic result")) {
         const [stoppedRun] = await input.db.select().from(heartbeatRuns).where(and(
           eq(heartbeatRuns.id, input.execution.binding.runId),
           eq(heartbeatRuns.companyId, input.execution.binding.companyId),
@@ -8863,7 +9018,9 @@ async function executePaperclipNativeSessionWithinScope(
               checkpointExists: recoveryEvidence.checkpointExists,
               recoveryOwner: recoveryProjection.recoveryOwner,
               nextAction:
-                sourceFailureCode === "native_provider_approval_required"
+                sourceFailureCode === "native_permission_declined"
+                  ? "Provider permission was declined. Inspect the task and give explicit direction before starting further provider work. Automatic recovery is stopped."
+                  : sourceFailureCode === "native_provider_approval_required"
                   ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
                   : sourceFailureCode === "native_session_cleanup_quarantined"
                   ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
@@ -9038,7 +9195,9 @@ async function executePaperclipNativeSessionWithinScope(
               recoveryEvidence.providerSessionEstablished,
           },
           nextAction:
-            sourceFailureCode === "native_provider_approval_required"
+            sourceFailureCode === "native_permission_declined"
+              ? "Provider permission was declined. Inspect the task and give explicit direction before starting further provider work. Automatic recovery is stopped."
+              : sourceFailureCode === "native_provider_approval_required"
               ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
               : sourceFailureCode === "native_session_cleanup_quarantined"
               ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
@@ -9254,10 +9413,16 @@ async function executePaperclipNativeSessionWithinScope(
     summary: native.result.summary,
     sessionId: native.normalizedSessionId,
     sessionDisplayId: native.providerSessionId ?? native.normalizedSessionId,
-    provider: nativeUsageBiller(input.execution.provider),
+    ...resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity),
     model: input.execution.provider.model,
-    usage: normalizeNativeUsage(native.usage),
-    costUsd: nativeUsageCostUsd(native.usage, input.execution.provider),
+    usage: normalizeNativeUsage(native.usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" }),
+    costUsd: normalizeNativeUsage(native.usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" })
+      ? nativeUsageCostUsd(native.usage, input.execution.provider) ?? null : null,
+    costUsdExact: typeof native.usage?.accountingCostUsdExact === "string" ? native.usage.accountingCostUsdExact : undefined,
+    costStatus: nativeAccountingComplete && native.usage?.accountingCostIncomplete !== true
+      ? input.execution.provider.kind === "aws_agentcore" ? "estimated" : undefined
+      : "unpriced",
+    usageComplete: nativeAccountingComplete,
     usageBasis: "per_run",
     nativeFinalization: finalization,
   };
@@ -9288,6 +9453,9 @@ function numericUsageField(
 
 function nativeUsageMeasurement(usage: Record<string, unknown>) {
   const nestedUsage = record(usage.usage);
+  // An explicit partial delta must not fall through to a full session total.
+  if (Object.hasOwn(usage, "runDelta")) return record(usage.runDelta);
+  if (Object.hasOwn(nestedUsage, "runDelta")) return record(nestedUsage.runDelta);
   const candidates = [
     record(usage.runDelta),
     record(nestedUsage.runDelta),
@@ -9322,6 +9490,74 @@ export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): s
   return "openai";
 }
 
+function createNativeTurnAccounting(provider: NativeExecutionInput["provider"]) {
+  const turns = new Map<string, { usage: Record<string, unknown> | null; terminal: boolean }>();
+  const sequences = new Map<string, number>();
+  let currentTurn: string | undefined;
+  const terminalTypes = ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"];
+  const snapshot = () => {
+    if (turns.size === 0) return { usage: null, turnId: undefined, complete: false };
+    let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0;
+    let cost = 0n, costKnown = false, costIncomplete = false, complete = true;
+    for (const [turnId, turn] of turns) {
+      const normalized = normalizeNativeUsage(turn.usage);
+      complete &&= turnId !== "unattributed" && turn.terminal && normalized !== undefined;
+      inputTokens += (normalized?.inputTokens ?? 0) - (normalized?.cacheWriteTokens ?? 0);
+      outputTokens += normalized?.outputTokens ?? 0;
+      cacheReadTokens += normalized?.cachedInputTokens ?? 0;
+      cacheWriteTokens += normalized?.cacheWriteTokens ?? 0;
+      const price = nativeUsageCostUsd(turn.usage, provider);
+      if (price === undefined) costIncomplete = true;
+      else { cost += usdToUnits(price); costKnown = true; }
+    }
+    // A free empty attempt contributes no price evidence for later paid work.
+    // Keep an incomplete zero subtotal absent so complete aggregate tokens can
+    // still receive an estimate. Preserve positive known spend and true zero totals.
+    const retainCost = costKnown && (!costIncomplete || cost > 0n);
+    const runDelta = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+      ...(retainCost ? { providerCostUsd: Number(cost) / 1_000_000_000 } : {}) };
+    const current = currentTurn ? turns.get(currentTurn) : undefined;
+    return { usage: { runDelta, accountingCostIncomplete: costIncomplete,
+      ...(retainCost ? { accountingCostUsdExact: `${cost / 1_000_000_000n}.${String(cost % 1_000_000_000n).padStart(9, "0")}` } : {}) },
+      turnId: current && normalizeNativeUsage(current.usage) ? currentTurn : undefined, complete };
+  };
+  return {
+    observe(event: PrpEvent) {
+      if (!event) return false;
+      const payload = record(event.payload);
+      const terminal = terminalTypes.includes(event.eventType);
+      if (payload.kind !== "usage" && event.eventType !== "turn.started" && !terminal) return false;
+      // Historical replay can revisit an earlier report after restoration.
+      // Re-persist its aggregate, but never rewind or count that report twice.
+      if (event.sourceInstanceId && Number.isSafeInteger(event.sourceSeq)) {
+        if (event.sourceSeq <= (sequences.get(event.sourceInstanceId) ?? -1)) return true;
+        sequences.set(event.sourceInstanceId, event.sourceSeq);
+      }
+      const key = event.turnId ?? "unattributed";
+      const turn = turns.get(key) ?? { usage: null, terminal: false };
+      if (event.eventType === "turn.started") {
+        currentTurn = event.turnId;
+        turn.usage = null;
+        turn.terminal = false;
+      } else if (payload.kind === "usage" && (!currentTurn || !turns.has(key))) currentTurn = event.turnId;
+      if (payload.kind === "usage") {
+        const usage = record(payload.usage);
+        turn.usage = Object.hasOwn(usage, "runDelta")
+          ? { runDelta: record(usage.runDelta), runDeltaComplete: usage.runDeltaComplete } : null;
+      }
+      if (terminal) turn.terminal = true;
+      turns.set(key, turn);
+      return true;
+    },
+    snapshot,
+    finish(turnId: string | null) {
+      const turn = turnId ? turns.get(turnId) : undefined;
+      if (turn) turn.terminal = true;
+      return snapshot();
+    },
+  };
+}
+
 export function nativeUsageCostUsd(
   usage: Record<string, unknown> | null,
   provider?: NativeExecutionInput["provider"],
@@ -9332,50 +9568,73 @@ export function nativeUsageCostUsd(
   if (provider?.kind === "acpx" && ["cursor", "copilot", "pi"].includes(provider.agent)) return undefined;
   if (!usage) return undefined;
   const measurement = nativeUsageMeasurement(usage);
-  const direct =
-    numericUsageField(usage, [
-      "providerCostUsd",
-      "cacheAdjustedCostUsd",
-      "costUsd",
-    ]) ??
-    numericUsageField(measurement, [
-      "providerCostUsd",
-      "cacheAdjustedCostUsd",
-      "costUsd",
-    ]);
-  if (direct !== undefined) return direct;
-  const cost = record(usage.cost);
+  const hasRunDelta = Object.hasOwn(usage, "runDelta") || Object.hasOwn(record(usage.usage), "runDelta");
+  const direct = numericUsageField(measurement, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd"])
+    ?? (hasRunDelta ? undefined : numericUsageField(usage, ["cacheAdjustedCostUsd", "providerCostUsd", "costUsd"]));
+  // PRP currently defaults an absent providerCostUsd to zero. That zero is
+  // not proof of a free request when the runtime observed token consumption.
+  if (direct !== undefined && direct > 0) return direct;
+  const normalized = normalizeNativeUsage(usage);
+  if (direct === 0 && normalized && Object.values(normalized).every(value => value === 0)) return 0;
+  const cost = record(hasRunDelta ? measurement.cost : usage.cost);
   const currency =
     typeof cost.currency === "string" ? cost.currency.toUpperCase() : "USD";
   if (currency !== "USD") return undefined;
   return numericUsageField(cost, ["amount", "total"]);
 }
 
-export function normalizeNativeUsage(usage: Record<string, unknown> | null) {
-  if (!usage) return undefined;
+/** Billing identity follows the selected runtime and resolved credentials.
+ * Unknown authentication remains unknown; a provider name does not prove billing mode. */
+export function resolveNativeBilling(provider: NativeExecutionInput["provider"], env: NodeJS.ProcessEnv = {}, identity?: Pick<AdapterExecutionResult, "provider" | "biller" | "billingType">): Pick<AdapterExecutionResult, "provider" | "biller" | "billingType"> {
+  if (identity) return identity.provider === "openai" && identity.billingType === "metered_api"
+    ? { ...identity, biller: inferOpenAiCompatibleBiller(env, identity.biller ?? "unknown") }
+    : identity;
+  if (provider.kind === "claude_managed") return { provider: "anthropic", biller: "anthropic", billingType: "metered_api" };
+  if (provider.kind === "aws_agentcore") return { provider: "aws_agentcore", biller: "aws_agentcore", billingType: "metered_api" };
+  if (provider.kind === "acpx" && ["cursor", "copilot"].includes(provider.agent)) {
+    const biller = nativeUsageBiller(provider);
+    return { provider: biller, biller, billingType: "unknown" };
+  }
+  if (provider.kind === "acpx" && provider.agent === "claude") {
+    if (env.CLAUDE_CODE_USE_BEDROCK === "1") return { provider: "anthropic", biller: "aws_bedrock", billingType: "metered_api" };
+    return { provider: "anthropic", biller: "anthropic", billingType: env.ANTHROPIC_API_KEY ? "metered_api" : env.CLAUDE_CODE_OAUTH_TOKEN ? "subscription_included" : "unknown" };
+  }
+  if (provider.kind === "opencode" || (provider.kind === "acpx" && provider.agent === "pi")) {
+    const parts = (provider.model ?? "").split("/");
+    const biller = parts.length > 1 ? parts[0] : provider.kind === "acpx" ? nativeUsageBiller(provider) : "unknown";
+    const modelProvider = biller === "openrouter" && parts.length > 2 ? parts[1] : biller;
+    return { provider: modelProvider, biller, billingType: "unknown" };
+  }
+  if (provider.kind !== "codex" && !(provider.kind === "acpx" && provider.agent === "codex"))
+    return { provider: "unknown", biller: "unknown", billingType: "unknown" };
+  return { provider: "openai", biller: env.OPENAI_API_KEY ? inferOpenAiCompatibleBiller(env, "openai") : "unknown", billingType: env.OPENAI_API_KEY ? "metered_api" : "unknown" };
+}
+
+export function normalizeNativeUsage(usage: Record<string, unknown> | null, options: { inputIncludesCacheReads?: boolean } = {}) {
+  if (!usage || usage.runDeltaComplete === false || record(usage.usage).runDeltaComplete === false) return undefined;
   const measurement = nativeUsageMeasurement(usage);
   const cache = record(measurement.cache);
-  const cachedInputTokens =
-    numericUsageField(measurement, [
-      "cachedInputTokens",
-      "cacheReadInputTokens",
-      "cacheReadTokens",
-      "cachedReadTokens",
-    ]) ?? numericUsageField(cache, ["read"]);
+  const count = (source: Record<string, unknown>, keys: string[]) => {
+    for (const key of keys) {
+      if (source[key] === undefined) continue;
+      const value = source[key];
+      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : NaN;
+    }
+    return undefined;
+  };
+  const input = count(measurement, ["inputTokens", "input", "promptTokens"]);
+  const outputTokens = count(measurement, ["outputTokens", "output", "completionTokens"]);
+  const cachedInputTokens = count(measurement, ["cachedInputTokens", "cacheReadInputTokens", "cacheReadTokens", "cachedReadTokens"]) ?? count(cache, ["read"]);
+  const cacheWriteTokens = count(measurement, ["cacheWriteTokens", "cacheCreationInputTokens", "cachedWriteTokens"]) ?? count(cache, ["write"]);
+  if (input === undefined || outputTokens === undefined
+    || ![input, outputTokens, cachedInputTokens ?? 0, cacheWriteTokens ?? 0].every(Number.isSafeInteger)) return undefined;
+  const inputTokens = input - (options.inputIncludesCacheReads ? cachedInputTokens ?? 0 : 0)
+    + (options.inputIncludesCacheReads ? 0 : cacheWriteTokens ?? 0);
+  if (!Number.isSafeInteger(inputTokens) || inputTokens < (cacheWriteTokens ?? 0)) return undefined;
   return {
-    inputTokens:
-      numericUsageField(measurement, [
-        "inputTokens",
-        "input",
-        "promptTokens",
-      ]) ?? 0,
-    outputTokens:
-      numericUsageField(measurement, [
-        "outputTokens",
-        "output",
-        "completionTokens",
-      ]) ?? 0,
+    inputTokens, outputTokens,
     ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
   };
 }
 
@@ -9441,19 +9700,19 @@ const RUNNERD_BINARY_CONTRACT_VERSION = 2;
 const REMOTE_PROVIDER_PACK_SCHEMA = "paperclip-runner/remote-provider-pack/v1";
 const REMOTE_PROVIDER_PACK_PINS = {
   nodeMinimum: "24.11.0",
-  codex: "0.160.0",
+  codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion,
   opencode: "1.18.34",
-  acpx: "0.13.1",
-  claudeAcp: "0.73.0",
-  codexAcp: "1.6.2",
-  grok: "1.0.13",
+  acpx: QUALIFIED_ACPX_VERSION,
+  claudeAcp: QUALIFIED_ACPX_PROFILES.claude.agentServerVersion,
+  codexAcp: QUALIFIED_ACPX_PROFILES.codex.agentServerVersion,
+  grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion,
 } as const;
 const REMOTE_PROVIDER_PACK_PROFILE_DIGESTS = {
-  grok: "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
+  grok: QUALIFIED_ACPX_PROFILES.grok.commandDigest,
   claude:
-    "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
+    QUALIFIED_ACPX_PROFILES.claude.commandDigest,
   codex:
-    "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
+    QUALIFIED_ACPX_PROFILES.codex.commandDigest,
 } as const;
 const REMOTE_PROVIDER_PACK_ARTIFACT_PATHS = {
   grokLauncher: "dist/providers/grok/launcher.cjs",
@@ -9475,8 +9734,12 @@ type RemoteProviderPackManifest = {
     distDigest: string;
     bridgeDigest: string;
     acpxProfileDigests: typeof REMOTE_PROVIDER_PACK_PROFILE_DIGESTS;
+    providers?: Partial<Record<"cursor", {
+      version: string; profileDigest: string; closureDigest: string; qualification: "qualified" | "pending";
+      path: string; sha256: string;
+    }>>;
     candidateProviders?: Partial<Record<"cursor" | "copilot" | "pi", {
-      version: string; profileDigest: string; closureDigest: string; qualification: "pending";
+      version: string; profileDigest: string; closureDigest: string; qualification: "qualified" | "pending";
       path: string; sha256: string;
     }>>;
     artifacts: {
@@ -9540,9 +9803,19 @@ function providerPackRelativePath(value: unknown, field: string): string {
   return value;
 }
 
-export function readRemoteProviderPackManifest(
-  packRoot: string,
-): RemoteProviderPackManifest {
+export function readRemoteProviderPackManifest(packRoot: string): RemoteProviderPackManifest {
+  return readRemoteProviderPackIdentity(packRoot, true);
+}
+
+export function readBundledRemoteProviderPackManifest(manifestPath = bundledRemoteProviderPackManifestPath()): RemoteProviderPackManifest {
+  const manifest = readRemoteProviderPackIdentity(dirname(manifestPath), false);
+  if (manifest.payload.target.platform !== "linux" || manifest.payload.target.architecture !== "x64") {
+    throw new Error("runner_remote_provider_artifact_incompatible: bundled image pack must target Linux x64");
+  }
+  return manifest;
+}
+
+function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles: boolean): RemoteProviderPackManifest {
   let manifest: RemoteProviderPackManifest;
   try {
     manifest = JSON.parse(
@@ -9630,29 +9903,29 @@ export function readRemoteProviderPackManifest(
       );
     }
     if (
-      typeof artifact?.sha256 !== "string" ||
-      sha256File(resolve(packRoot, artifactPath)) !== artifact.sha256
+      !/^sha256:[a-f0-9]{64}$/.test(artifact?.sha256 ?? "") ||
+      (verifyControllerFiles && sha256File(resolve(packRoot, artifactPath)) !== artifact.sha256)
     ) {
       throw new Error(
         `runner_remote_provider_artifact_incompatible: ${label} digest mismatch`,
       );
     }
   }
-  if (sha256DirectoryTree(resolve(packRoot, "dist")) !== payload.distDigest) {
+  if (verifyControllerFiles && sha256DirectoryTree(resolve(packRoot, "dist")) !== payload.distDigest) {
     throw new Error(
       "runner_remote_provider_artifact_incompatible: provider dist tree digest mismatch",
     );
   }
-  if (payload.candidateProviders !== undefined) {
-    const candidates = payload.candidateProviders;
+  for (const [inventory, candidates] of [["providers", payload.providers], ["candidateProviders", payload.candidateProviders]] as const) {
+    if (candidates === undefined) continue;
     if (!candidates || typeof candidates !== "object" || Array.isArray(candidates) || Object.keys(candidates).length > 3) {
       throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate inventory");
     }
     for (const [provider, candidate] of Object.entries(candidates)) {
       const expectedPath = `provider-assets/${provider}/${payload.target.platform}-${payload.target.architecture}`;
-      if (!["cursor", "copilot", "pi"].includes(provider) || !candidate
+      if (!(inventory === "providers" ? ["cursor"] : ["cursor", "copilot", "pi"]).includes(provider) || !candidate
         || Object.keys(candidate).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
-        || candidate.qualification !== "pending" || candidate.path !== expectedPath
+        || candidate.qualification !== (provider === "cursor" ? "qualified" : "pending") || candidate.path !== expectedPath
         || typeof candidate.version !== "string" || !candidate.version || candidate.version.length > 120
         || !/^sha256:[a-f0-9]{64}$/.test(candidate.profileDigest)
         || !/^sha256:[a-f0-9]{64}$/.test(candidate.closureDigest)
@@ -9660,7 +9933,17 @@ export function readRemoteProviderPackManifest(
         throw new Error("runner_remote_provider_artifact_incompatible: invalid candidate identity");
       }
       const candidatePath = providerPackRelativePath(candidate.path, "candidate assets");
-      if (sha256DirectoryTree(resolve(packRoot, candidatePath)) !== candidate.sha256) {
+      if (provider === "cursor") {
+        const target = `${payload.target.platform}-${payload.target.architecture}`;
+        const distribution = Object.hasOwn(CURSOR_DISTRIBUTION_PINS, target)
+          ? CURSOR_DISTRIBUTION_PINS[target as keyof typeof CURSOR_DISTRIBUTION_PINS] : undefined;
+        if (!distribution || candidate.version !== QUALIFIED_ACPX_PROFILES.cursor.agentServerVersion
+          || candidate.profileDigest !== QUALIFIED_ACPX_PROFILES.cursor.commandDigest
+          || candidate.closureDigest !== `sha256:${distribution.closureSha256}`) {
+          throw new Error("runner_remote_provider_artifact_incompatible: Cursor profile or closure does not match this release");
+        }
+      }
+      if (verifyControllerFiles && sha256DirectoryTree(resolve(packRoot, candidatePath)) !== candidate.sha256) {
         throw new Error("runner_remote_provider_artifact_incompatible: candidate asset tree digest mismatch");
       }
     }
@@ -10876,7 +11159,11 @@ async function createRunnerdBackendWithinSessionClaim(
   const configuredProviderPackRoot =
     input.runnerRemoteProviderPackPath?.trim() || null;
   let expectedProviderPackManifest: RemoteProviderPackManifest | null = null;
-  if (requiresRemoteProviderPack) {
+  const useBundledCursorImageAssets = requiresRemoteProviderPack && !configuredProviderPackRoot &&
+    input.execution.provider.kind === "acpx" && input.execution.provider.agent === "cursor";
+  if (useBundledCursorImageAssets) {
+    expectedProviderPackManifest = readBundledRemoteProviderPackManifest();
+  } else if (requiresRemoteProviderPack) {
     if (
       !configuredProviderPackRoot ||
       !existsSync(configuredProviderPackRoot) ||
@@ -10903,7 +11190,7 @@ async function createRunnerdBackendWithinSessionClaim(
   // When an explicit remote artifact is configured, prepareRemoteRunner stages
   // these exact bytes at remoteBinary before launch.
   const controllerRunnerBinary = remoteTarget
-    ? input.runnerRemoteBinaryPath?.trim() || resolvePaperclipRunnerBinary()
+    ? input.runnerRemoteBinaryPath?.trim() || (useBundledCursorImageAssets ? bundledRemoteRunnerBinary() : resolvePaperclipRunnerBinary())
     : resolvePaperclipRunnerBinary();
   const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
   const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
@@ -11073,7 +11360,7 @@ async function createRunnerdBackendWithinSessionClaim(
       "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
       "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
       "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
-      "for(const candidate of Object.values(manifest.payload.candidateProviders||{})){if(tree(path.join(root,candidate.path))!==candidate.sha256)throw new Error('candidate asset tree digest mismatch')}",
+      "for(const candidate of Object.values({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(tree(path.join(root,candidate.path))!==candidate.sha256)throw new Error('candidate asset tree digest mismatch')}",
       "const version=process.versions.node.split('.').map(Number)",
       "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
       "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
@@ -11431,7 +11718,7 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     if (
       requiresRemoteProviderPack &&
-      configuredProviderPackRoot &&
+      expectedProviderPackManifest &&
       stagedRemoteProviderPackRoot
     ) {
       const packSource = await prepareVerifiedRemoteProviderPack({
@@ -11487,6 +11774,9 @@ async function createRunnerdBackendWithinSessionClaim(
           return preinstalledProviderPack !== null;
         },
         stageAndVerify: async () => {
+          if (!configuredProviderPackRoot) {
+            throw new Error("runner_remote_provider_artifact_incompatible: install the matching Paperclip package and Daytona image; the image provider pack did not match the bundled release identity");
+          }
           if (!remoteCommandRunner.syncIn) {
             throw new Error(
               "runner_remote_provider_artifact_incompatible: this remote transport cannot stage a provider pack; preinstall the exact manifest-matched pack",
@@ -11619,7 +11909,7 @@ async function createRunnerdBackendWithinSessionClaim(
         providerState,
       });
     if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
-      throw new Error("runner_harness_state_mismatch: provider_identity_incomplete");
+      throw new Error(`runner_harness_state_mismatch: provider_identity_incomplete (${durableProviderCheckpointFailureReason(input.execution, providerState)})`);
     }
     const previousManifest = compatibleNativeHarnessBackupManifests({
       root,
@@ -12532,6 +12822,7 @@ async function createRunnerdBackendWithinSessionClaim(
               // Read only the server operator environment, never agent/runtime env.
               acpxCandidateProfile: resolveAcpxQualification(input.execution.provider, process.env),
               acpxPermissionMode: input.execution.provider.permissionMode,
+              acpxMode: input.execution.provider.mode,
               acpxPermissionModePinned:
                 input.execution.schema === "paperclip.native-execution-input.v4" ||
                 input.execution.schema === "paperclip.native-execution-input.v5",
@@ -12644,6 +12935,7 @@ async function createRunnerdBackendWithinSessionClaim(
             ? input.execution.runtimeContext
             : null,
         runnerRuntimeContext: remoteRuntimeContext,
+        baseInstructions: recoveryContext?.baseInstructions,
         runnerFilesystemRoot: remoteRunnerFilesystemRoot ?? undefined,
         resumeWorkingDirectory: runnerExecution.workspace.cwd,
         externallySandboxed: remoteTarget?.transport === "sandbox",

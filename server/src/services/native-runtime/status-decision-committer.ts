@@ -1,3 +1,6 @@
+import { readNativePlanWait, type NativePlanWaitSource } from "./native-plan-wait.js";
+import { activeIssueInteractionCondition } from "../issue-question-context.js";
+import { isConversation } from "../agent-conversations.js";
 import { hasPendingNativeChildCompletion, type NativeChildCompletionRecipient } from "./native-child-completion-delivery.js";
 import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -469,6 +472,8 @@ async function validateGovernanceGate(
       Extract<NativeStatusEffect, { kind: "create_interaction" }>["gate"]
     >;
     executionState: unknown;
+    runId: string;
+    conversationMode: boolean;
   },
 ) {
   if (input.gate.kind === "execution_stage") {
@@ -490,6 +495,7 @@ async function validateGovernanceGate(
           eq(issueThreadInteractions.companyId, input.companyId),
           eq(issueThreadInteractions.issueId, input.issueId),
           eq(issueThreadInteractions.status, "pending"),
+          activeIssueInteractionCondition(input),
         ),
       )
       .limit(1)
@@ -537,6 +543,8 @@ async function materializeDecisionEffect(input: {
         issueId: input.issue.id,
         gate: effect.gate,
         executionState: input.issue.executionState,
+        runId: input.runId,
+        conversationMode: isConversation(input.issue),
       });
       return {
         effectKind: effect.kind,
@@ -1547,6 +1555,7 @@ export async function commitNativeStatusDecision(input: {
   preMaterializedEffects?: NativeMaterializedStatusEffect[];
   supersedesCommittedDecisionId?: string;
   requireExternalChatResponseWaitAuthorization?: { agentId: string };
+  requirePlanWaitSource?: NativePlanWaitSource;
   requireNoPendingChildCompletion?: NativeChildCompletionRecipient;
   requireModelRejectionOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
   requireProviderFailureOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
@@ -1684,6 +1693,32 @@ export async function commitNativeStatusDecision(input: {
     const passiveBoardResponseWait =
       reasonCode === "board_response_waiting" ||
       reasonCode === "board_response_wait_superseded";
+    let planWait: Awaited<ReturnType<typeof readNativePlanWait>> = null;
+    let planWaitResult: { resultId: string; resultSha256: string } | null = null;
+    if (reasonCode === "native_plan_accepted_waiting_for_continuation") {
+      const expected = input.requirePlanWaitSource;
+      if (!expected || expected.companyId !== input.companyId || expected.issueId !== input.issueId || expected.runId !== input.runId || input.decision.effects.length !== 0 || input.decision.statusAction !== "in_progress" || input.decision.toStatus !== "in_progress") throw new NativeStatusRaceError();
+      try {
+        planWait = await readNativePlanWait(tx as unknown as Db, expected, true);
+        if (!planWait || nativeSha256(planWait.source) !== nativeSha256(expected)) throw new NativeStatusRaceError();
+        // Recheck the committed semantic result too: an arbitrary caller cannot
+        // use a genuine plan receipt to authorize a different finalization.
+        const [accepted] = await tx.select().from(nativeRunResults).where(and(
+          eq(nativeRunResults.id, coordinator!.resultId!), eq(nativeRunResults.companyId, input.companyId),
+          eq(nativeRunResults.issueId, input.issueId), eq(nativeRunResults.runId, input.runId), eq(nativeRunResults.schemaStatus, "accepted"),
+        )).for("share", { noWait: true });
+        const envelope = record(accepted?.resultJson), terminal = record(envelope.terminal);
+        if (!accepted || accepted.completionContractId !== planWait.source.contractId || accepted.turnId !== planWait.source.turnId ||
+          nativeSha256(envelope.result) !== nativeSha256(planWait.result) ||
+          terminal.schema !== "paperclip.prp.terminal.v1" || terminal.runTerminalState !== "succeeded" || terminal.turnTerminalState !== "completed" || terminal.reportedWorkDisposition !== "yielded") throw new NativeStatusRaceError();
+        // completeRun hashes its full private binding, not the stored resultJson.
+        // Preserve that accepted identity instead of inventing a new digest.
+        planWaitResult = { resultId: accepted.id, resultSha256: accepted.canonicalSha256 };
+      } catch (error) {
+        if (isExternalChatWaitAuthorizationContention(error)) throw new NativeStatusRaceError();
+        throw error;
+      }
+    }
     let boardResponseWaitOrigin: NativeBoardResponseWaitOrigin | null = null;
     if (
       passiveBoardResponseWait ||
@@ -1827,6 +1862,7 @@ export async function commitNativeStatusDecision(input: {
         ? { boardResponseWait: boardResponseWait.source }
         : {}),
       ...(boardResponseWaitOrigin ? { boardResponseWaitOrigin } : {}),
+      ...(planWait ? { planWait: planWait.source, planWaitResult } : {}),
       priorStatusVersion: input.priorStatusVersion,
       projectedStatusVersion:
         input.decision.statusAction === "preserve"
@@ -1898,6 +1934,12 @@ export async function commitNativeStatusDecision(input: {
     }
     if (!decisionRow) throw new Error("native_status_decision_not_persisted");
 
+    if (planWait) {
+      await issueService(tx as unknown as Db).addComment(
+        input.issueId, planWait.result.summary,
+        { agentId: planWait.source.agentId, runId: input.runId }, undefined, tx,
+      );
+    }
     if (boardResponseWait && reasonCode === "board_response_waiting") {
       // The answer and passive-wait receipt commit together. In particular,
       // no chat presentation authorization is supplied: this is Board-only.

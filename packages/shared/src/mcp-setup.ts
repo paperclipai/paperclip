@@ -10,7 +10,7 @@ export function mcpSetupUrl(serverUrl: string, companyId?: string) {
   return url.toString();
 }
 export function mcpInvitation(serverUrl: string, company?: { id: string; name: string }) {
-  return `Connect to my ${company ? `${company.name} ` : ""}Paperclip organization using the instructions at ${mcpSetupUrl(serverUrl, company?.id)}. Start authorization, give me the approval link, and verify the connection after I approve. This connects as me, not as a Paperclip agent.`;
+  return `Connect to my ${company ? `${company.name} ` : ""}Paperclip organization using the instructions at ${mcpSetupUrl(serverUrl, company?.id)}. Start authorization, give me the approval link, and verify the connection after I approve.`;
 }
 export function mcpSetupSteps(serverUrl: string, assistant: AssistantClient) {
   const quoted = `'${serverUrl.replaceAll("'", "'\"'\"'")}'`;

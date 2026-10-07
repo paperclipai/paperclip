@@ -1,3 +1,4 @@
+import { activeIssueInteractionCondition, historicalQuestionCondition } from "./issue-question-context.js";
 import {
   currentContinuationOrigins,
   deliveredContinuationCommentIds,
@@ -4744,6 +4745,9 @@ export function issueThreadInteractionService(
             eq(issueThreadInteractions.companyId, issue.companyId),
             eq(issueThreadInteractions.issueId, issue.id),
             eq(issueThreadInteractions.status, "pending"),
+            // Completed work retains ordinary historical questions for later
+            // human answers. Cancellation and governed requests still expire.
+            issue.status === "done" ? activeIssueInteractionCondition() : undefined,
           ),
         );
       if (rows.length === 0) return [];
@@ -4925,7 +4929,6 @@ export function issueThreadInteractionService(
       actor: InteractionActor,
       mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
-      assertIssueOpenForInteractionResolution(issue);
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -4968,6 +4971,21 @@ export function issueThreadInteractionService(
       }
 
       const updated = await db.transaction(async (tx) => {
+        // Serialize against task completion/cancellation and use the persisted
+        // status, including when the caller read the task before it closed.
+        const [issueRow] = await tx.select({ status: issues.status }).from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId))).for("update");
+        if (!issueRow) throw interactionNotFoundError();
+        let historicalAnswer = false;
+        if (isTerminalIssueStatus(issueRow.status)) {
+          if (issueRow.status === "done" && actor.userId && !actor.agentId && !actor.runId && !actor.systemId) {
+            historicalAnswer = (await tx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions)
+              .where(and(eq(issueThreadInteractions.id, interactionId),
+                eq(issueThreadInteractions.companyId, issue.companyId), eq(issueThreadInteractions.issueId, issue.id),
+                historicalQuestionCondition())).limit(1)).length > 0;
+          }
+          if (!historicalAnswer) throw interactionIssueClosedError();
+        }
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         await mutationOptions.beforeResolveInTransaction?.(tx);
         const resolvedAt = new Date();
@@ -4996,9 +5014,13 @@ export function issueThreadInteractionService(
 
         if (!row) throw interactionAlreadyResolvedError();
         const answered = hydrateInteraction(row) as AskUserQuestionsInteraction;
-        await tx
-          .insert(issueQuestionResponseDeliveries)
-          .values(questionResponseDeliveryValues(answered));
+        // This answer updates conversation history only. It must not resume
+        // the completed source run or enqueue new work for the closed task.
+        if (!historicalAnswer) {
+          await tx
+            .insert(issueQuestionResponseDeliveries)
+            .values(questionResponseDeliveryValues(answered));
+        }
         // Provider callbacks use this hook to atomically claim and complete
         // the action that resolved the interaction. Settle all remaining
         // provider controls only after that winner is durable; otherwise the

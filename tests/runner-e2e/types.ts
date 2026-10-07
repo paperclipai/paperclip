@@ -33,7 +33,10 @@ export type RunnerTaskFlow =
   | "question_resume_completion"
   | "plan_approval_completion"
   | "warm_three_turn"
-  | "instruction_persistence";
+  | "instruction_persistence"
+  | "native_active_stop"
+  | "native_provider_loss"
+  | "cursor_native";
 
 export interface SecretReference {
   type: "secret_ref";
@@ -130,6 +133,7 @@ export type Matcher =
   | { kind: "file_exact"; path: string; expected: string }
   | { kind: "file_contains"; path: string; expected: string }
   | { kind: "artifact_exists"; name: string; mimeType?: string }
+  | { kind: "artifact_exact"; name: string; expected: string; mimeType?: string }
   | { kind: "json_path"; path: string; expected: unknown }
   | { kind: "json_schema"; schema: Record<string, unknown> };
 

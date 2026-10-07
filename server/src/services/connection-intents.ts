@@ -28,7 +28,7 @@ import {
 import {
   APP_STORE_DEFINITIONS,
   AGGREGATOR_PRIORITY, AGGREGATOR_NAMES, AGGREGATOR_CATALOG_SOURCES,
-  findAggregatorService, searchAggregatorServices, prepareConnectionSearch, scoreConnectionSearch, explicitAggregatorQuery, normalizeConnectionQuery, parseAggregatorRoute, aggregatorProviderQuestion,
+  findAggregatorService, searchAggregatorServices, prepareConnectionSearch, scoreConnectionSearch, explicitAggregatorQuery, normalizeConnectionQuery, parseAggregatorRoute, aggregatorProviderQuestion, aggregatorProviderQuestionSet,
   aggregatorContinuationInstruction, isRemoteMcpConnectorId, askUserQuestionsPayloadSchema, askUserQuestionsResultSchema,
   CONNECTABLE_APP_DEFINITIONS,
   connectionIntentPayloadSchema,
@@ -580,8 +580,9 @@ export function connectionIntentService(db: Db) {
     // the sole confirmation option unless a saved user message proves consent.
     const offered = explicit ? alternatives.filter(item => item.aggregator?.provider === explicit.provider) : alternatives;
     if (!offered.length) return { version: 1, query, results: [], instruction: "The requested external provider is unavailable. Do not switch providers automatically." };
-    return { version: 1, query, results: offered, providerQuestion: aggregatorProviderQuestion(targetService, targetName, offered),
-      instruction: "No matching built-in Paperclip connection was found. Ask the responsible user with providerQuestion exactly as returned (including its id, full prompt, and options). With native request_human_input, use interactionKind questions, continuationPolicy wake_assignee, and payload {version:1, questions:[providerQuestion]}; do not add questionSet. Otherwise use ask_user_questions with the same questions payload. These are external services. Wait for the saved answer; then call connection_request with the selected service identifier and selectionInteractionId set to the answered question interaction ID. None for now means do not connect. Do not claim app access yet." };
+    const providerQuestion = aggregatorProviderQuestion(targetService, targetName, offered);
+    return { version: 1, query, results: offered, providerQuestion, providerQuestionSet: aggregatorProviderQuestionSet(providerQuestion),
+      instruction: "No matching built-in Paperclip connection was found. Ask the responsible user with providerQuestion exactly as returned (including its id, full prompt, and options). With native request_human_input, use interactionKind questions, continuationPolicy wake_assignee, and payload {version:1, questionSet:providerQuestionSet} exactly as returned. Otherwise use ask_user_questions with payload {version:1, questions:[providerQuestion]}. These are external services. Wait for the saved answer; then call connection_request with the selected service identifier and selectionInteractionId set to the answered question interaction ID. None for now means do not connect. Do not claim app access yet." };
 
     function discoverySuggestions(results: ConnectionSearchResultItem[]): ConnectionsSearchResult {
       return { version: 1, query, results: results.slice(0, 40),

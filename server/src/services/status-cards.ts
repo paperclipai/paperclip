@@ -185,7 +185,7 @@ export function statusCardService(
         : Promise.resolve(null),
       db.select({
         tokens: sql<number>`coalesce(sum(coalesce(${statusCardUpdates.inputTokens}, 0) + coalesce(${statusCardUpdates.outputTokens}, 0)), 0)::int`,
-        costCents: sql<number>`coalesce(sum(${statusCardUpdates.costCents}), 0)::int`,
+        costCents: sql<number>`coalesce(sum(${statusCardUpdates.costCents}), 0)::double precision`,
       })
         .from(statusCardUpdates)
         .where(and(eq(statusCardUpdates.cardId, card.id), gte(statusCardUpdates.startedAt, dayStart)))
@@ -897,7 +897,7 @@ export function statusCardService(
         ? await tx.select({
           inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
           outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
-          costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+          costCents: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
         }).from(costEvents).where(eq(costEvents.heartbeatRunId, actor.runId))
         : [];
       const existingUpdate = await tx.select().from(statusCardUpdates)
@@ -912,7 +912,7 @@ export function statusCardService(
         changeSummary: input.changeSummary,
         inputTokens: Number(usage[0]?.inputTokens ?? 0),
         outputTokens: Number(usage[0]?.outputTokens ?? 0),
-        costCents: Number(usage[0]?.costCents ?? 0),
+        costCents: sql`${usage[0]?.costCents ?? "0"}::numeric`,
       };
       if (existingUpdate) {
         await tx.update(statusCardUpdates).set(updateValues).where(eq(statusCardUpdates.id, existingUpdate.id));

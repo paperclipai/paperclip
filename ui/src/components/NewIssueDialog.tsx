@@ -398,6 +398,11 @@ export function NewIssueDialog() {
   });
   const parentPrivacyUnresolved = isSubIssueMode && !privacyParent;
   const inheritsPrivateAccess = privacyParent?.visibility === "private" || privacyParent?.project?.visibility === "private";
+  const privateParentProject = privacyParent?.project?.visibility === "private" ? privacyParent.project : null;
+  const inheritedPrivateProject = privateParentProject ?? (!isPrivate && currentProject?.visibility === "private" ? currentProject : null);
+  const inheritedPrivacyReason = privacyParent?.visibility === "private"
+    ? `Subtask of private task ${privacyParent.title || newIssueDefaults.parentTitle || parentIssueLabel}`
+    : inheritedPrivateProject ? `In private project ${inheritedPrivateProject.name}` : undefined;
   const effectivePrivate = isPrivate || inheritsPrivateAccess
     || orderedProjects.some(project => project.id === projectId && project.visibility === "private");
 
@@ -1177,7 +1182,7 @@ export function NewIssueDialog() {
                 onSubmit: handleSubmit,
                 privacy: parentPrivacyUnresolved ? undefined : {
                   private: effectivePrivate,
-                  inherited: inheritsPrivateAccess ? "Inherited from parent" : !isPrivate && currentProject?.visibility === "private" ? "Inherited from project" : undefined,
+                  inherited: inheritedPrivacyReason,
                   onChange: (checked) => {
                     setIsPrivate(checked);
                     if (!checked && currentProject?.visibility === "private") handleProjectChange("");

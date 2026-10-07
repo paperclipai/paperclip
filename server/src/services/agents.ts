@@ -1,3 +1,6 @@
+import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
+import { withAccountingTransaction } from "./accounting-transaction.js";
+import type { ActivityPublication } from "./activity-log.js";
 import { agentAppearanceSchema, randomAgentAppearance, resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
@@ -342,7 +345,7 @@ export function deduplicateAgentName(
   return `${candidateName} ${Date.now()}`;
 }
 
-export function agentService(db: Db) {
+export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const secretsSvc = secretService(db);
 
   function currentUtcMonthWindow(now = new Date()) {
@@ -791,7 +794,7 @@ export function agentService(db: Db) {
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
     type AgentUpdateResult = Awaited<ReturnType<typeof getById>>;
-    const applyUpdate = async (txDb: Db): Promise<AgentUpdateResult> => {
+    const applyUpdate = async (txDb: Db, publications: ActivityPublication[] = []): Promise<AgentUpdateResult> => {
       const current = data.status !== undefined
         ? await txDb.select().from(agents).where(eq(agents.id, id)).for("update").then(rows => rows[0] ?? null)
         : existing;
@@ -843,6 +846,11 @@ export function agentService(db: Db) {
         );
       }
 
+      if (normalizedPatch.budgetMonthlyCents !== undefined) {
+        await budgetServiceInTransaction(txDb, publications).upsertPolicy(existing.companyId, {
+          scopeType: "agent", scopeId: id, amount: normalizedPatch.budgetMonthlyCents, isActive: normalizedPatch.budgetMonthlyCents > 0, windowKind: "calendar_month_utc",
+        }, options?.recordRevision?.createdByUserId ?? null);
+      }
       const normalizedUpdated = await agentService(txDb).getById(updated.id);
       if (!normalizedUpdated) {
         throw notFound("Agent not found");
@@ -868,6 +876,12 @@ export function agentService(db: Db) {
 
       return normalizedUpdated;
     };
+
+    if (normalizedPatch.budgetMonthlyCents !== undefined) {
+      const result = await withAccountingTransaction(db, existing.companyId, applyUpdate);
+      await deliverBudgetEnforcement(db, budgetHooks, existing.companyId);
+      return result;
+    }
 
     const transaction = (db as unknown as {
       transaction?: (callback: (tx: unknown) => Promise<AgentUpdateResult>) => Promise<AgentUpdateResult>;
@@ -1075,7 +1089,7 @@ export function agentService(db: Db) {
         });
       }
 
-      return db.transaction(async (tx) => {
+      return withAccountingTransaction(db, existing.companyId, async (tx) => {
         await tx
           .select({ id: agents.id })
           .from(agents)

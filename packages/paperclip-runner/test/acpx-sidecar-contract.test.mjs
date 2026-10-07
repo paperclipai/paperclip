@@ -135,3 +135,16 @@ test("turn control schema preserves explicit modes and rejects open-ended dispat
     assert.equal(validate({ ...message, params }), false);
   }
 });
+
+// Runtime payloads are provider-owned; the sidecar envelope stays closed.
+// Pi validates native provenance before creating these boundary/history fields.
+test("Pi native empty message boundaries and replay history fit the strict sidecar envelope", () => {
+  for (const payload of [
+    { type: "text_delta", stream: "output", text: "", messageId: "message-1", piMessageBoundary: { phase: "start" } },
+    { type: "text_delta", stream: "output", text: "", messageId: "message-1", piMessageBoundary: { phase: "end", stopReason: "toolUse" } },
+    { type: "text_delta", stream: "output", text: "Prior assistant reply", messageId: "history-1", piMessageHistory: true },
+  ]) {
+    assert.equal(validate({ ...messages[2], payload }), true, JSON.stringify(validate.errors));
+    assert.equal(validate({ ...messages[2], payload, piMessageBoundary: { phase: "start" } }), false);
+  }
+});

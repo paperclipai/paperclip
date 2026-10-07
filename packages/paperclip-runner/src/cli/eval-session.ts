@@ -40,6 +40,7 @@ interface EvalSessionCliOptions {
   requestPath: string;
   outputPath: string;
   candidateProfile?: EvalCandidateProfile;
+  expectedAcpxProfile?: Record<string, unknown>;
 }
 
 function argument(args: string[], name: string): string {
@@ -50,7 +51,7 @@ function argument(args: string[], name: string): string {
 }
 
 export function parseEvalSessionCliArgs(args: string[]): EvalSessionCliOptions {
-  const allowed = new Set(["--request", "--output", "--candidate-profile"]);
+  const allowed = new Set(["--request", "--output", "--candidate-profile", "--expected-acpx-profile"]);
   const seen = new Set<string>();
   for (let index = 0; index < args.length; index += 2) {
     if (!allowed.has(args[index] ?? "")) {
@@ -65,8 +66,28 @@ export function parseEvalSessionCliArgs(args: string[]): EvalSessionCliOptions {
   if (candidateProfile !== undefined && candidateProfile !== "pi" && candidateProfile !== "cursor" && candidateProfile !== "copilot") {
     throw new Error("--candidate-profile must be pi, cursor, or copilot");
   }
+  const expectedIndex = args.indexOf("--expected-acpx-profile");
+  const expectedText = expectedIndex < 0 ? undefined : args[expectedIndex + 1];
+  if (candidateProfile !== undefined && expectedText === undefined) {
+    throw new Error("Candidate evals require --expected-acpx-profile before provider execution");
+  }
+  let expectedAcpxProfile: Record<string, unknown> | undefined;
+  if (expectedText !== undefined) {
+    if (Buffer.byteLength(expectedText, "utf8") > 4_096) {
+      throw new Error("--expected-acpx-profile exceeds its 4096-byte bound");
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(expectedText); } catch {
+      throw new Error("--expected-acpx-profile must be a JSON object");
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("--expected-acpx-profile must be a JSON object");
+    }
+    expectedAcpxProfile = parsed as Record<string, unknown>;
+  }
   return {
     ...(candidateProfile === undefined ? {} : { candidateProfile }),
+    ...(expectedAcpxProfile === undefined ? {} : { expectedAcpxProfile }),
     requestPath: argument(args, "--request"),
     outputPath: argument(args, "--output"),
   };
@@ -324,6 +345,20 @@ export async function runEvalSessionCli(
     JSON.parse(await readFile(cli.requestPath, "utf8")),
     { candidateProfile: cli.candidateProfile },
   );
+  // Check the built CLI's profile before constructing any runtime context,
+  // transport or service. Scoring after a paid turn is too late for admission.
+  if (cli.expectedAcpxProfile !== undefined) {
+    if (request.provider !== "acpx") {
+      throw new Error("--expected-acpx-profile requires an ACPX request");
+    }
+    const actualProfile = resolveQualifiedAcpxProfile(request.acpxAgent ?? "codex", request.model);
+    const entries = Object.entries(actualProfile);
+    if (Object.keys(cli.expectedAcpxProfile).length !== entries.length || entries.some(
+      ([key, value]) => !Object.hasOwn(cli.expectedAcpxProfile!, key) || cli.expectedAcpxProfile![key] !== value,
+    )) {
+      throw new Error("--expected-acpx-profile does not match the built runner profile");
+    }
+  }
   const runnerdPath = resolve(request.runnerd.path);
   const actualDigest = await sha256(runnerdPath);
   if (actualDigest !== request.runnerd.sha256.replace(/^sha256:/, "")) {

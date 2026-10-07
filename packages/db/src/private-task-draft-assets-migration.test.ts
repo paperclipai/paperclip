@@ -12,7 +12,7 @@ itEmbeddedPostgres("backfills owned draft images without attaching another uploa
   const database = await startEmbeddedPostgresTestDatabase("paperclip-draft-privacy-");
   const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
   try {
-    const migration = await fs.readFile(new URL("./migrations/0313_private_task_draft_assets.sql", import.meta.url), "utf8");
+    const migration = await fs.readFile(new URL("./migrations/0314_private_task_draft_assets.sql", import.meta.url), "utf8");
     const hash = createHash("sha256").update(migration).digest("hex");
     const company = randomUUID(), task = randomUUID(), owned = randomUUID(), foreign = randomUUID();
     await sql`INSERT INTO companies (id, name, issue_prefix) VALUES (${company}, 'Draft privacy', 'DRAFT')`;

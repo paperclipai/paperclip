@@ -722,8 +722,11 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "AGENT_STARTUP_FAILED.EXIT_NONZERO" => return "agent_startup_exit_nonzero",
         "AGENT_STARTUP_FAILED.OTHER" => return "agent_startup_other",
         "AGENT_DISCONNECTED" => return "agent_disconnected",
+        "ACPX_TOOL_CALL_STALE" => return "provider_tool_call_retired",
         "AUTH_REQUIRED" => return "authentication_required",
         "COPILOT_AUTH_REQUIRED" => return "authentication_required",
+        "COPILOT_POLICY_VIOLATION" => return "copilot_policy_violation",
+        "COPILOT_DETACHED_WORK_UNSUPPORTED" => return "copilot_detached_work_unsupported",
         "COPILOT_ENTITLEMENT_DENIED" => return "provider_entitlement_denied",
         "COPILOT_MODEL_UNAVAILABLE" => return "requested_model_unsupported",
         "SESSION_RESUME_REQUIRED" => return "session_resume_required",
@@ -839,6 +842,8 @@ mod tests {
     #[test]
     fn candidate_auth_diagnostics_use_only_closed_codes_and_never_provider_text() {
         for (code, expected) in [
+            ("ACPX_TOOL_CALL_STALE", "provider_tool_call_retired"),
+            ("ACPX_TOOL_CALL_STALE_EXTRA", "unclassified"),
             ("COPILOT_AUTH_REQUIRED", "authentication_required"),
             ("COPILOT_ENTITLEMENT_DENIED", "provider_entitlement_denied"),
             ("COPILOT_MODEL_UNAVAILABLE", "requested_model_unsupported"),
@@ -915,6 +920,11 @@ mod tests {
             "provider_lifetime_owned"
         );
         let admission_failures = [
+            ("COPILOT_POLICY_VIOLATION", "copilot_policy_violation"),
+            (
+                "COPILOT_DETACHED_WORK_UNSUPPORTED",
+                "copilot_detached_work_unsupported",
+            ),
             (
                 "ACPX_RUNTIME_ADMISSION_VERIFICATION_TIMEOUT",
                 "runtime_admission_verification_timeout",

@@ -745,7 +745,7 @@ describe("NewIssueDialog", () => {
   });
 
   it("locks inherited privacy and submits the child as private", async () => {
-    mockIssuesApi.get.mockResolvedValue({ id: "issue-1", visibility: "private" });
+    mockIssuesApi.get.mockResolvedValue({ id: "issue-1", visibility: "private", title: "Board briefing" });
     dialogState.newIssueDefaults = { parentId: "issue-1", title: "Private child" };
     const { root } = renderDialog(container);
     await flush();
@@ -753,7 +753,7 @@ describe("NewIssueDialog", () => {
     const toggle = container.querySelector<HTMLButtonElement>('button[data-testid="composer-private-chip"]')!;
     await waitForAssertion(() => expect(toggle).not.toBeNull());
     expect(toggle.disabled).toBe(true);
-    expect(toggle.title).toBe("Inherited from parent");
+    expect(toggle.title).toBe("Subtask of private task Board briefing");
     await typeTextareaValue(container.querySelector('textarea')!, "Private child draft");
     // Saving this form must retain only the explicit toggle choice. A later
     // standalone draft must not acquire a sticky private flag from its parent.
@@ -763,6 +763,19 @@ describe("NewIssueDialog", () => {
     await act(async () => submit.click());
     await flush();
     expect(mockIssuesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ parentId: "issue-1", visibility: "private" }));
+    act(() => root.unmount());
+  });
+
+  it("names the private project inherited through an open parent", async () => {
+    mockIssuesApi.get.mockResolvedValue({ id: "issue-1", visibility: "open", title: "Board briefing", project: { id: "private-project", name: "Executive planning", visibility: "private" } });
+    dialogState.newIssueDefaults = { parentId: "issue-1", title: "Private child" };
+    const { root } = renderDialog(container);
+    await flush();
+    await waitForAssertion(() => {
+      const chip = container.querySelector<HTMLButtonElement>('[data-testid="composer-private-chip"]');
+      expect(chip?.disabled).toBe(true);
+      expect(chip?.title).toBe("In private project Executive planning");
+    });
     act(() => root.unmount());
   });
 

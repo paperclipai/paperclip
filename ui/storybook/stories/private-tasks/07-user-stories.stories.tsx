@@ -15,6 +15,7 @@ import {
   choosePrivateTask,
   privacyDecorator,
   privacyParameters,
+  mobile,
 } from "./PrivacyStory";
 
 // Reuse the same real-component canvases. Each play is a complete user journey,
@@ -22,7 +23,7 @@ import {
 const meta = {
   title: "Private tasks/07 User stories",
   decorators: [privacyDecorator],
-  parameters: privacyParameters,
+  parameters: { ...privacyParameters, waitForViewport: true },
 } satisfies Meta;
 export default meta;
 type Story = StoryObj;
@@ -43,6 +44,12 @@ export const CeoCreatesPrivateTask: Story = {
       ).not.toBeInTheDocument();
     });
   },
+};
+export const MobileCeoCreatesPrivateTask: Story = {
+  ...CeoCreatesPrivateTask,
+  name: "CEO · Create a private task on mobile",
+  globals: mobile,
+  parameters: { docs: { description: { story: "Use the actual new-task composer in the mobile shell: choose Private task from +, review the lock chip, and save the private briefing." } } },
 };
 export const CeoSharesOnlyChild: Story = {
   name: "CEO · Share only a child",

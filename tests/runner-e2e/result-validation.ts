@@ -139,6 +139,7 @@ const matcher: Rule = (value, at) => {
     file_exact: shape({ path: string, expected: string }),
     file_contains: shape({ path: string, expected: string }),
     artifact_exists: shape({ name: string, mimeType: optional(string) }),
+    artifact_exact: shape({ name: string, expected: string, mimeType: optional(string) }),
     json_path: shape({ path: string }),
     json_schema: shape({ schema: object }),
   };

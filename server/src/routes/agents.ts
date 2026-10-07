@@ -4,6 +4,7 @@ import { aiConnectionRouterService, poolMemberRuntimeConfig } from "../services/
 import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { completeConnectionIntentSchema } from "@paperclipai/shared";
+import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
 import { agentFileStore, agentFileTokenFromHash } from "../services/agent-file-store.js";
 import { pipeline } from "node:stream/promises";
 import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
@@ -556,7 +557,7 @@ export function agentRoutes(
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
   const router = Router();
-  const svc = agentService(db);
+  const svc = agentService(db, { cancelWorkForScope: scope => heartbeat.cancelBudgetScopeWork(scope) });
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -7239,10 +7240,12 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
     if (!(await assertRunReadAllowed(req, res, existing))) return;
+    const requestId = cancellationRequestId(req.body?.cancellationRequestId);
     // Stamp the cancellation as operator-initiated (this route is board-only).
     // Recovery reads this to stand down instead of classifying the cancelled
     // run as agent stranding and re-waking the agent the operator just stopped.
     const run = await heartbeat.cancelRun(runId, "Cancelled by a board operator", {
+      ...(requestId ? { cancellationRequestId: requestId, cancellationRequestedByUserId: req.actor.userId ?? null } : {}),
       resultJson: {
         cancelledByActorType: "user",
         cancelledByUserId: req.actor.userId ?? null,

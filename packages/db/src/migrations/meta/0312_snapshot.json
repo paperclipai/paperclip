@@ -1,9 +1,1079 @@
 {
-  "id": "e4c03d22-6ac5-4109-99b7-8c51604072a3",
+  "id": "9134843c-7e84-421e-915b-beab3c30acb3",
   "prevId": "53940222-21d7-4ccc-8b24-d8db300f4ec3",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
+    "public.accounting_runtime_baselines": {
+      "name": "accounting_runtime_baselines",
+      "schema": "",
+      "columns": {
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cost_cents": {
+          "name": "cost_cents",
+          "type": "numeric(24, 7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_tokens": {
+          "name": "input_tokens",
+          "type": "numeric(30, 0)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cached_input_tokens": {
+          "name": "cached_input_tokens",
+          "type": "numeric(30, 0)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "output_tokens": {
+          "name": "output_tokens",
+          "type": "numeric(30, 0)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "accounting_runtime_baselines_company_idx": {
+          "name": "accounting_runtime_baselines_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "accounting_runtime_baselines_agent_id_agents_id_fk": {
+          "name": "accounting_runtime_baselines_agent_id_agents_id_fk",
+          "tableFrom": "accounting_runtime_baselines",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "accounting_runtime_baselines_company_id_companies_id_fk": {
+          "name": "accounting_runtime_baselines_company_id_companies_id_fk",
+          "tableFrom": "accounting_runtime_baselines",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.billing_invoice_lines": {
+      "name": "billing_invoice_lines",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invoice_id": {
+          "name": "invoice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "external_id": {
+          "name": "external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_cents": {
+          "name": "amount_cents",
+          "type": "numeric(24, 7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cost_event_id": {
+          "name": "cost_event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_request_id": {
+          "name": "provider_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pricing": {
+          "name": "pricing",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        }
+      },
+      "indexes": {
+        "billing_invoice_lines_identity_idx": {
+          "name": "billing_invoice_lines_identity_idx",
+          "columns": [
+            {
+              "expression": "invoice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "external_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "billing_invoice_lines_company_idx": {
+          "name": "billing_invoice_lines_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "invoice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "billing_invoice_lines_company_id_companies_id_fk": {
+          "name": "billing_invoice_lines_company_id_companies_id_fk",
+          "tableFrom": "billing_invoice_lines",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "billing_invoice_lines_invoice_id_billing_invoices_id_fk": {
+          "name": "billing_invoice_lines_invoice_id_billing_invoices_id_fk",
+          "tableFrom": "billing_invoice_lines",
+          "tableTo": "billing_invoices",
+          "columnsFrom": [
+            "invoice_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "billing_invoice_lines_cost_event_id_cost_events_id_fk": {
+          "name": "billing_invoice_lines_cost_event_id_cost_events_id_fk",
+          "tableFrom": "billing_invoice_lines",
+          "tableTo": "cost_events",
+          "columnsFrom": [
+            "cost_event_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "billing_invoice_lines_amount_check": {
+          "name": "billing_invoice_lines_amount_check",
+          "value": "\"billing_invoice_lines\".\"amount_cents\" >= 0"
+        },
+        "billing_invoice_lines_kind_check": {
+          "name": "billing_invoice_lines_kind_check",
+          "value": "\"billing_invoice_lines\".\"kind\" in ('inference', 'fee', 'credit')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.billing_invoices": {
+      "name": "billing_invoices",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "biller": {
+          "name": "biller",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "external_id": {
+          "name": "external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "currency": {
+          "name": "currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receipt_hash": {
+          "name": "receipt_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "imported_by": {
+          "name": "imported_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "billing_invoices_identity_idx": {
+          "name": "billing_invoices_identity_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "biller",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "external_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "billing_invoices_company_id_companies_id_fk": {
+          "name": "billing_invoices_company_id_companies_id_fk",
+          "tableFrom": "billing_invoices",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.budget_reservations": {
+      "name": "budget_reservations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "amount_cents": {
+          "name": "amount_cents",
+          "type": "numeric(24, 7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'held'"
+        },
+        "provider_started_at": {
+          "name": "provider_started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "budget_reservations_run_idx": {
+          "name": "budget_reservations_run_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "budget_reservations_active_idx": {
+          "name": "budget_reservations_active_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"budget_reservations\".\"state\" = 'held'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "budget_reservations_company_id_companies_id_fk": {
+          "name": "budget_reservations_company_id_companies_id_fk",
+          "tableFrom": "budget_reservations",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "budget_reservations_run_id_heartbeat_runs_id_fk": {
+          "name": "budget_reservations_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "budget_reservations",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "budget_reservations_agent_id_agents_id_fk": {
+          "name": "budget_reservations_agent_id_agents_id_fk",
+          "tableFrom": "budget_reservations",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "budget_reservations_state_check": {
+          "name": "budget_reservations_state_check",
+          "value": "\"budget_reservations\".\"state\" in ('held', 'settled', 'released')"
+        },
+        "budget_reservations_amount_check": {
+          "name": "budget_reservations_amount_check",
+          "value": "\"budget_reservations\".\"amount_cents\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.cost_adjustments": {
+      "name": "cost_adjustments",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cost_event_id": {
+          "name": "cost_event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invoice_line_id": {
+          "name": "invoice_line_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receipt_hash": {
+          "name": "receipt_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_cents": {
+          "name": "previous_cents",
+          "type": "numeric(24, 7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "corrected_cents": {
+          "name": "corrected_cents",
+          "type": "numeric(24, 7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_status": {
+          "name": "previous_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_pricing": {
+          "name": "previous_pricing",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pricing": {
+          "name": "pricing",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "cost_adjustments_receipt_idx": {
+          "name": "cost_adjustments_receipt_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "cost_adjustments_event_idx": {
+          "name": "cost_adjustments_event_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "cost_event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "cost_adjustments_invoice_line_idx": {
+          "name": "cost_adjustments_invoice_line_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "invoice_line_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "cost_adjustments_company_id_companies_id_fk": {
+          "name": "cost_adjustments_company_id_companies_id_fk",
+          "tableFrom": "cost_adjustments",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "cost_adjustments_cost_event_id_cost_events_id_fk": {
+          "name": "cost_adjustments_cost_event_id_cost_events_id_fk",
+          "tableFrom": "cost_adjustments",
+          "tableTo": "cost_events",
+          "columnsFrom": [
+            "cost_event_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "cost_adjustments_invoice_line_id_billing_invoice_lines_id_fk": {
+          "name": "cost_adjustments_invoice_line_id_billing_invoice_lines_id_fk",
+          "tableFrom": "cost_adjustments",
+          "tableTo": "billing_invoice_lines",
+          "columnsFrom": [
+            "invoice_line_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "cost_adjustments_amount_check": {
+          "name": "cost_adjustments_amount_check",
+          "value": "\"cost_adjustments\".\"previous_cents\" >= 0 and \"cost_adjustments\".\"corrected_cents\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.provider_billing_snapshots": {
+      "name": "provider_billing_snapshots",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scope_id": {
+          "name": "scope_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "day": {
+          "name": "day",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_cents": {
+          "name": "amount_cents",
+          "type": "numeric(24, 7)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "provider_billing_snapshots_identity_idx": {
+          "name": "provider_billing_snapshots_identity_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "scope_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "day",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "provider_billing_snapshots_company_id_companies_id_fk": {
+          "name": "provider_billing_snapshots_company_id_companies_id_fk",
+          "tableFrom": "provider_billing_snapshots",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "provider_billing_snapshots_amount_check": {
+          "name": "provider_billing_snapshots_amount_check",
+          "value": "\"provider_billing_snapshots\".\"amount_cents\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.run_usage_receipts": {
+      "name": "run_usage_receipts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_id": {
+          "name": "source_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receipt_hash": {
+          "name": "receipt_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receipt_json": {
+          "name": "receipt_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "complete": {
+          "name": "complete",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "run_usage_receipts_source_sequence_idx": {
+          "name": "run_usage_receipts_source_sequence_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sequence",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "run_usage_receipts_run_latest_idx": {
+          "name": "run_usage_receipts_run_latest_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "received_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "run_usage_receipts_company_id_companies_id_fk": {
+          "name": "run_usage_receipts_company_id_companies_id_fk",
+          "tableFrom": "run_usage_receipts",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "run_usage_receipts_run_id_heartbeat_runs_id_fk": {
+          "name": "run_usage_receipts_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "run_usage_receipts",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "run_usage_receipts_positive_sequence": {
+          "name": "run_usage_receipts_positive_sequence",
+          "value": "\"run_usage_receipts\".\"sequence\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.activity_log": {
       "name": "activity_log",
       "schema": "",
@@ -1820,7 +2890,7 @@
         },
         "total_cost_cents": {
           "name": "total_cost_cents",
-          "type": "bigint",
+          "type": "numeric(24, 7)",
           "primaryKey": false,
           "notNull": true,
           "default": 0
@@ -2859,9 +3929,15 @@
           "notNull": true,
           "default": 0
         },
+        "spend_month_utc": {
+          "name": "spend_month_utc",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "spent_monthly_cents": {
           "name": "spent_monthly_cents",
-          "type": "integer",
+          "type": "numeric(24, 7)",
           "primaryKey": false,
           "notNull": true,
           "default": 0
@@ -5262,7 +6338,7 @@
         },
         "amount_observed": {
           "name": "amount_observed",
-          "type": "integer",
+          "type": "numeric(24, 7)",
           "primaryKey": false,
           "notNull": true
         },
@@ -5378,7 +6454,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"budget_incidents\".\"status\" <> 'dismissed'",
+          "where": "\"budget_incidents\".\"status\" = 'open'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -5480,6 +6556,13 @@
           "notNull": true,
           "default": 0
         },
+        "reservation_cents": {
+          "name": "reservation_cents",
+          "type": "numeric(24, 7)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
         "warn_percent": {
           "name": "warn_percent",
           "type": "integer",
@@ -5494,6 +6577,13 @@
           "notNull": true,
           "default": true
         },
+        "unpriced_usage_policy": {
+          "name": "unpriced_usage_policy",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'block'"
+        },
         "notify_enabled": {
           "name": "notify_enabled",
           "type": "boolean",
@@ -5507,6 +6597,20 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "enforcement_version": {
+          "name": "enforcement_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "enforcement_delivered_version": {
+          "name": "enforcement_delivered_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "created_by_user_id": {
           "name": "created_by_user_id",
@@ -5654,7 +6758,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "budget_policies_reservation_nonnegative": {
+          "name": "budget_policies_reservation_nonnegative",
+          "value": "\"budget_policies\".\"reservation_cents\" >= 0"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.built_in_managed_resources": {
@@ -11306,9 +12415,15 @@
           "notNull": true,
           "default": 0
         },
+        "spend_month_utc": {
+          "name": "spend_month_utc",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "spent_monthly_cents": {
           "name": "spent_monthly_cents",
-          "type": "integer",
+          "type": "numeric(24, 7)",
           "primaryKey": false,
           "notNull": true,
           "default": 0
@@ -16201,6 +17316,36 @@
           "primaryKey": false,
           "notNull": false
         },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "receipt_hash": {
+          "name": "receipt_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_request_id": {
+          "name": "provider_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reported_cost_cents": {
+          "name": "reported_cost_cents",
+          "type": "numeric(24, 7)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pricing_provenance": {
+          "name": "pricing_provenance",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "provider": {
           "name": "provider",
           "type": "text",
@@ -16257,7 +17402,7 @@
         },
         "cost_cents": {
           "name": "cost_cents",
-          "type": "integer",
+          "type": "numeric(24, 7)",
           "primaryKey": false,
           "notNull": true
         },
@@ -16276,6 +17421,109 @@
         }
       },
       "indexes": {
+        "cost_events_company_receipt_idx": {
+          "name": "cost_events_company_receipt_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "cost_events_provider_request_idx": {
+          "name": "cost_events_provider_request_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "biller",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "cost_events_company_project_occurred_idx": {
+          "name": "cost_events_company_project_occurred_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "cost_events_unpriced_idx": {
+          "name": "cost_events_unpriced_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"cost_events\".\"cost_status\" = 'unpriced' and \"cost_events\".\"billing_type\" <> 'subscription_included'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "cost_events_company_occurred_idx": {
           "name": "cost_events_company_occurred_idx",
           "columns": [
@@ -16483,7 +17731,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "cost_events_nonnegative_amounts": {
+          "name": "cost_events_nonnegative_amounts",
+          "value": "\"cost_events\".\"cost_cents\" >= 0 and \"cost_events\".\"input_tokens\" >= 0 and \"cost_events\".\"cached_input_tokens\" >= 0 and \"cost_events\".\"output_tokens\" >= 0"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.decision_archive_notification_outbox": {
@@ -23721,6 +24974,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "receipt_hash": {
+          "name": "receipt_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "billing_code": {
           "name": "billing_code",
           "type": "text",
@@ -23796,7 +25061,7 @@
         },
         "amount_cents": {
           "name": "amount_cents",
-          "type": "integer",
+          "type": "numeric(24, 7)",
           "primaryKey": false,
           "notNull": true
         },
@@ -23841,6 +25106,27 @@
         }
       },
       "indexes": {
+        "finance_events_company_receipt_idx": {
+          "name": "finance_events_company_receipt_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "finance_events_company_occurred_idx": {
           "name": "finance_events_company_occurred_idx",
           "columns": [
@@ -24987,19 +26273,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "scope_kind": {
-          "name": "scope_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'company'"
-        },
-        "issue_id": {
-          "name": "issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "invocation_source": {
           "name": "invocation_source",
           "type": "text",
@@ -25079,6 +26352,44 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "cost_accounting_pending": {
+          "name": "cost_accounting_pending",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "cost_accounted_at": {
+          "name": "cost_accounted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accounting_projection_version": {
+          "name": "accounting_projection_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accounting_last_attempt_at": {
+          "name": "accounting_last_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accounting_last_error": {
+          "name": "accounting_last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accounting_attempt_count": {
+          "name": "accounting_attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "usage_json": {
           "name": "usage_json",
@@ -25416,6 +26727,28 @@
         }
       },
       "indexes": {
+        "heartbeat_runs_cost_accounting_pending_idx": {
+          "name": "heartbeat_runs_cost_accounting_pending_idx",
+          "columns": [
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"cost_accounting_pending\" = true",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_execution_status_delivery_idx": {
           "name": "heartbeat_runs_execution_status_delivery_idx",
           "columns": [
@@ -25487,33 +26820,6 @@
             },
             {
               "expression": "started_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "heartbeat_runs_company_issue_created_idx": {
-          "name": "heartbeat_runs_company_issue_created_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -25762,19 +27068,6 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "heartbeat_runs_issue_id_issues_id_fk": {
-          "name": "heartbeat_runs_issue_id_issues_id_fk",
-          "tableFrom": "heartbeat_runs",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
         "heartbeat_runs_wakeup_request_id_agent_wakeup_requests_id_fk": {
           "name": "heartbeat_runs_wakeup_request_id_agent_wakeup_requests_id_fk",
           "tableFrom": "heartbeat_runs",
@@ -25825,12 +27118,7 @@
         }
       },
       "policies": {},
-      "checkConstraints": {
-        "heartbeat_runs_scope_binding_check": {
-          "name": "heartbeat_runs_scope_binding_check",
-          "value": "(\"heartbeat_runs\".\"scope_kind\" = 'company' AND \"heartbeat_runs\".\"issue_id\" IS NULL)\n        OR \"heartbeat_runs\".\"scope_kind\" = 'issue'"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.inbox_dismissals": {
@@ -27271,166 +28559,6 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.issue_access_grants": {
-      "name": "issue_access_grants",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "issue_id": {
-          "name": "issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "subject_type": {
-          "name": "subject_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "subject_id": {
-          "name": "subject_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "granted_by_user_id": {
-          "name": "granted_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "granted_by_agent_id": {
-          "name": "granted_by_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "revoked_at": {
-          "name": "revoked_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "issue_access_grants_subject_active_issue_idx": {
-          "name": "issue_access_grants_subject_active_issue_idx",
-          "columns": [
-            {
-              "expression": "subject_type",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "revoked_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issue_access_grants_issue_idx": {
-          "name": "issue_access_grants_issue_idx",
-          "columns": [
-            {
-              "expression": "issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "issue_access_grants_issue_id_issues_id_fk": {
-          "name": "issue_access_grants_issue_id_issues_id_fk",
-          "tableFrom": "issue_access_grants",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "issue_access_grants_granted_by_agent_id_agents_id_fk": {
-          "name": "issue_access_grants_granted_by_agent_id_agents_id_fk",
-          "tableFrom": "issue_access_grants",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "granted_by_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "issue_access_grants_subject_type_check": {
-          "name": "issue_access_grants_subject_type_check",
-          "value": "\"issue_access_grants\".\"subject_type\" in ('user', 'agent')"
-        },
-        "issue_access_grants_source_check": {
-          "name": "issue_access_grants_source_check",
-          "value": "\"issue_access_grants\".\"source\" in ('explicit', 'assignment', 'project')"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.issue_approvals": {
@@ -32305,25 +33433,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "visibility": {
-          "name": "visibility",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'open'"
-        },
-        "privacy_root_issue_id": {
-          "name": "privacy_root_issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "privacy_parent_issue_id": {
-          "name": "privacy_parent_issue_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "title": {
           "name": "title",
           "type": "text",
@@ -32798,48 +33907,6 @@
             },
             {
               "expression": "parent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issues_company_privacy_parent_idx": {
-          "name": "issues_company_privacy_parent_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "privacy_parent_issue_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "issues_company_privacy_root_idx": {
-          "name": "issues_company_privacy_root_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "privacy_root_issue_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -33419,32 +34486,6 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "issues_privacy_root_issue_id_issues_id_fk": {
-          "name": "issues_privacy_root_issue_id_issues_id_fk",
-          "tableFrom": "issues",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "privacy_root_issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "issues_privacy_parent_issue_id_issues_id_fk": {
-          "name": "issues_privacy_parent_issue_id_issues_id_fk",
-          "tableFrom": "issues",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "privacy_parent_issue_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
         "issues_assignee_agent_id_agents_id_fk": {
           "name": "issues_assignee_agent_id_agents_id_fk",
           "tableFrom": "issues",
@@ -33524,10 +34565,6 @@
       },
       "policies": {},
       "checkConstraints": {
-        "issues_visibility_check": {
-          "name": "issues_visibility_check",
-          "value": "\"issues\".\"visibility\" in ('open', 'private')"
-        },
         "issues_conversation_identity_check": {
           "name": "issues_conversation_identity_check",
           "value": "(\n      \"issues\".\"conversation_agent_id\" is null and \"issues\".\"conversation_user_id\" is null and \"issues\".\"conversation_state\" is null\n    ) or (\n      \"issues\".\"conversation_agent_id\" is not null and \"issues\".\"conversation_user_id\" is not null\n      and \"issues\".\"assignee_agent_id\" = \"issues\".\"conversation_agent_id\" and \"issues\".\"assignee_agent_id\" is not null\n      and \"issues\".\"assignee_user_id\" is null and \"issues\".\"conversation_state\" is not null\n      and \"issues\".\"conversation_state\" in ('active', 'waiting')\n      and \"issues\".\"status\" not in ('done', 'cancelled')\n    )"
@@ -38817,150 +39854,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.project_access_members": {
-      "name": "project_access_members",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "subject_type": {
-          "name": "subject_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "subject_id": {
-          "name": "subject_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "project_access_members_project_subject_uq": {
-          "name": "project_access_members_project_subject_uq",
-          "columns": [
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_type",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "project_access_members_subject_lookup_idx": {
-          "name": "project_access_members_subject_lookup_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_type",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "subject_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "project_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "project_access_members_company_id_companies_id_fk": {
-          "name": "project_access_members_company_id_companies_id_fk",
-          "tableFrom": "project_access_members",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "project_access_members_project_id_projects_id_fk": {
-          "name": "project_access_members_project_id_projects_id_fk",
-          "tableFrom": "project_access_members",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "project_access_members_subject_type_check": {
-          "name": "project_access_members_subject_type_check",
-          "value": "\"project_access_members\".\"subject_type\" in ('user', 'agent')"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.project_goals": {
       "name": "project_goals",
       "schema": "",
@@ -39590,25 +40483,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "visibility": {
-          "name": "visibility",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'open'"
-        },
-        "privacy_owner_user_id": {
-          "name": "privacy_owner_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "personal_owner_user_id": {
-          "name": "personal_owner_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "status": {
           "name": "status",
           "type": "text",
@@ -39700,28 +40574,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "projects_company_personal_owner_uq": {
-          "name": "projects_company_personal_owner_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "personal_owner_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"projects\".\"personal_owner_user_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -39768,12 +40620,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "projects_visibility_check": {
-          "name": "projects_visibility_check",
-          "value": "\"projects\".\"visibility\" in ('open', 'private')"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.provider_trace_records": {
@@ -42889,7 +43736,7 @@
         },
         "cost_cents": {
           "name": "cost_cents",
-          "type": "integer",
+          "type": "numeric(24, 7)",
           "primaryKey": false,
           "notNull": true,
           "default": 0

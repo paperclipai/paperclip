@@ -179,8 +179,8 @@ export async function runContextIntegrityFlow(input: {
       ? `${scenario.prompt}\n\nUse /${scenario.skillKey} for this request.`
       : scenario.prompt;
     skillRequestText = taskPrompt;
-    await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title: execution.task.buildTitle(nonce), prompt: taskPrompt, workMode: "standard" });
-    issue = await pollUntil({ label: "context-integrity task created", deadlineAt: input.deadlineAt, load: async () => (await api.get<Row[]>(`${companyPath}/issues?limit=100`)).find((row) => row.title === execution.task.buildTitle(nonce)), accept: Boolean });
+    const createdTask = await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title: execution.task.buildTitle(nonce), prompt: taskPrompt, workMode: "standard" });
+    issue = await pollUntil({ label: "context-integrity task created", deadlineAt: input.deadlineAt, load: async () => (await api.get<Row[]>(`${companyPath}/issues?limit=100`)).find((row) => row.id === createdTask.issueId), accept: Boolean });
     if (!issue) throw new Error("Missing context-integrity task");
     if (scenario.id === "ordered-comment-continuation") {
       await pollUntil({

@@ -4916,6 +4916,18 @@ mod tests {
         assert!(block_message.len() <= 512);
         assert!(!block_message.chars().any(char::is_control));
 
+        let question_result = schema_rejection(
+            "request_human_input",
+            json!({"PRIVATE_FIELD": "PRIVATE_VALUE"}),
+        );
+        let question_message = question_result.result["error"]["message"].as_str().unwrap();
+        assert!(question_message.contains("payload.questionSet"));
+        assert!(question_message.contains("/required (missing \"requiredField\")"));
+        assert!(!question_message.contains("PRIVATE_FIELD"));
+        assert!(!question_result.result.to_string().contains("PRIVATE_VALUE"));
+        assert!(question_message.len() <= 512);
+        assert_eq!(question_result.result["error"]["retryable"], false);
+
         let ordinary_result = schema_rejection("get_task_context", json!({}));
         assert_eq!(
             ordinary_result.result["error"]["message"],

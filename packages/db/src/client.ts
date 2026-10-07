@@ -466,8 +466,8 @@ async function recordMigrationHistoryEntry(
 // blocks. Execute each statement at top level so DDL locks and completed batches
 // are released before the next batch. History is recorded only after completion.
 const MIGRATIONS_WITH_BATCH_COMMITS = new Set([
-  "0312_private_task_access.sql",
-  "0313_private_task_draft_assets.sql",
+  "0313_private_task_access.sql",
+  "0314_private_task_draft_assets.sql",
 ]);
 
 async function applyPendingMigrationsManually(

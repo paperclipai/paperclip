@@ -1,5 +1,7 @@
 import type { AcpPermissionDecision, AcpPermissionRequest } from "acpx/runtime";
 import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
+import { cursorToolIdentity } from "./cursor-plan-tool-identity.js";
+
 
 export type AcpxPermissionAction = "accept" | "accept_for_session" | "decline" | "cancel";
 export interface NormalizedAcpxPermission {
@@ -11,7 +13,7 @@ export interface NormalizedAcpxPermission {
 }
 
 /** Provider options describe choices, never authority to execute an operation. */
-export function normalizeAcpxPermission(request: AcpPermissionRequest, options: { allowAlwaysScope?: "session" } = {}): NormalizedAcpxPermission {
+export function normalizeAcpxPermission(request: AcpPermissionRequest, options: { allowAlwaysScope?: "session"; provider?: string; workingDirectory?: string } = {}): NormalizedAcpxPermission {
   const raw = request.raw;
   if (!raw || !Array.isArray(raw.options) || raw.options.length > 32) {
     throw new Error("ACP permission request has invalid options");
@@ -29,6 +31,11 @@ export function normalizeAcpxPermission(request: AcpPermissionRequest, options: 
     ids.add(option.optionId);
     byKind.set(option.kind, { optionId: option.optionId, name: option.name });
   }
+  const call = raw.toolCall;
+  if (!call || typeof call.toolCallId !== "string" || !call.toolCallId || call.toolCallId.length > 240
+    || (options.provider === "cursor" && !call.toolCallId.trim())) {
+    throw new Error("ACP permission request omitted its tool identity");
+  }
   const bindings = new Map<AcpxPermissionAction, AcpPermissionDecision["outcome"]>();
   const choices: NormalizedAcpxPermission["choices"] = [];
   for (const [key, kind, label] of [
@@ -42,15 +49,13 @@ export function normalizeAcpxPermission(request: AcpPermissionRequest, options: 
   // A permanent rejection is not silently substituted for a one-time denial.
   bindings.set("cancel", "cancel");
   choices.push({ key: "cancel", label: "Cancel" });
-  const call = raw.toolCall;
-  if (!call || typeof call.toolCallId !== "string" || !call.toolCallId || call.toolCallId.length > 240) {
-    throw new Error("ACP permission request omitted its tool identity");
-  }
   return {
     title: typeof call.title === "string" && call.title.trim()
       ? call.title.slice(0, 4_000) : "Approve provider operation",
     kind: request.inferredKind ?? "other",
-    toolCallId: call.toolCallId,
+    // Display/durable identity must match the tool-event boundary. Leave the
+    // original request intact for ACPX's exact native response correlation.
+    toolCallId: options.provider === "cursor" ? cursorToolIdentity(call.toolCallId) : call.toolCallId,
     choices,
     resolve(resolution) {
       const outcome = bindings.get(resolution.action as AcpxPermissionAction);

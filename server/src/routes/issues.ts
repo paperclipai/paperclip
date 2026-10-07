@@ -1,5 +1,6 @@
 import type { IssuePrivacyConstraints } from "@paperclipai/shared";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
+import { activeIssueInteractionCondition, readTaskQuestionContext } from "../services/issue-question-context.js";
 import { setIssueTitle } from "../services/issue-title.js";
 import { setIssueTitleSchema } from "@paperclipai/shared";
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
@@ -9056,6 +9057,11 @@ export function issueRoutes(
         : null,
       planReviewContext,
       documentReviewContext,
+      taskQuestionContext: await readTaskQuestionContext(db, {
+        companyId: issue.companyId, issueId: issue.id,
+        runId: req.actor.type === "agent" ? req.actor.runId : undefined,
+        conversationMode: isConversation(issue),
+      }),
       currentExecutionWorkspace: compactIssueExecutionWorkspace(
         currentExecutionWorkspace,
       ),
@@ -9685,6 +9691,7 @@ export function issueRoutes(
               eq(issueThreadInteractions.companyId, lockedIssue.companyId),
               eq(issueThreadInteractions.issueId, lockedIssue.id),
               eq(issueThreadInteractions.status, "pending"),
+              activeIssueInteractionCondition(),
             ))
             .limit(1);
           if (pendingInteraction) {
@@ -13953,6 +13960,7 @@ export function issueRoutes(
                 eq(issueThreadInteractions.companyId, existing.companyId),
                 eq(issueThreadInteractions.issueId, existing.id),
                 eq(issueThreadInteractions.status, "pending"),
+                activeIssueInteractionCondition(),
               ),
             )
             .limit(1)

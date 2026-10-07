@@ -58,9 +58,10 @@
   "sideEffects": false,
   "scripts": {
     "build": "pnpm run check:protocol-manifest && pnpm run build:typescript && pnpm run check:capability-contract && pnpm run check:capability-inventory && pnpm run check:protocol-coverage && pnpm run check:semantic-contracts && pnpm run check:runner-workflow-traceability && pnpm run build:binary && node scripts/generate-replay-goldens.mjs --check && node scripts/generate-semantic-action-catalog.mjs --check",
-    "build:typescript": "pnpm run ensure:eval-build-deps && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json && node scripts/build-verified-provider-entrypoints.mjs",
+    "build:typescript": "pnpm run check:acpx-profiles && pnpm run ensure:eval-build-deps && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json && node scripts/build-verified-provider-entrypoints.mjs",
     "build:rust": "cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins",
     "build:binary": "cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/stage-runner-binary.mjs",
+    "stage:release-binaries": "node scripts/stage-release-runner-binaries.mjs",
     "build:provider-pack": "pnpm run build:typescript && node scripts/build-provider-pack.mjs",
     "build:runner-binaries": "cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins",
     "build:browser": "vite build --config vite.config.ts",
@@ -69,12 +70,12 @@
     "build:scenarios": "vite build --config vite.scenarios.config.ts && node scripts/check-capability-csp-bundle.mjs",
     "build:issue-thread": "vite build --config vite.issue-thread.config.ts",
     "typecheck": "pnpm run typecheck:typescript && pnpm run typecheck:rust",
-    "typecheck:typescript": "pnpm run ensure:eval-build-deps && node --check scripts/protocol-contract.mjs && node --check scripts/generate-protocol-manifest.mjs && node --check scripts/generate-protocol-schema-module.mjs && node --check scripts/generate-acpx-sidecar-contract.mjs && node --check scripts/generate-replay-goldens.mjs && node --check scripts/generate-semantic-action-catalog.mjs && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json --noEmit",
-    "typecheck:rust": "cargo fmt --manifest-path runner/Cargo.toml --all -- --check && cargo check --manifest-path runner/Cargo.toml --locked --workspace",
+    "typecheck:typescript": "pnpm run check:acpx-profiles && pnpm run ensure:eval-build-deps && node --check scripts/protocol-contract.mjs && node --check scripts/generate-protocol-manifest.mjs && node --check scripts/generate-protocol-schema-module.mjs && node --check scripts/generate-acpx-sidecar-contract.mjs && node --check scripts/generate-replay-goldens.mjs && node --check scripts/generate-semantic-action-catalog.mjs && pnpm run check:protocol-types && node ./node_modules/typescript/bin/tsc --version && node ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit && node ./node_modules/typescript/bin/tsc -p tsconfig.surfaces.json --noEmit",
+    "typecheck:rust": "pnpm run check:acpx-profiles && cargo fmt --manifest-path runner/Cargo.toml --all -- --check && cargo check --manifest-path runner/Cargo.toml --locked --workspace",
     "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit",
     "test": "pnpm run test:typescript && pnpm run test:rust",
     "test:typescript": "pnpm run test:typescript:prep && vitest run",
-    "test:typescript:prep": "pnpm run ensure:eval-build-deps && pnpm run build:rust && node --test test/protocol-contract.test.mjs test/acpx-sidecar-contract.test.mjs test/acpx-codex-package-contract.test.mjs test/acpx-rich-extensions-package-contract.test.mjs test/acpx-pi-receipt-package-contract.test.mjs test/acpx-response-delivery-package-contract.test.mjs scripts/candidate-provider-pack.test.mjs scripts/aws-agentcore-provisioning.test.mjs scripts/build-verified-provider-entrypoints.test.mjs scripts/local-provider-smoke-environment.test.mjs scripts/materialize-opencode-binary.test.mjs",
+    "test:typescript:prep": "pnpm run ensure:eval-build-deps && pnpm run build:rust && node --test test/protocol-contract.test.mjs test/acpx-sidecar-contract.test.mjs test/acpx-codex-package-contract.test.mjs test/acpx-model-selection-package-contract.test.mjs test/acpx-rich-extensions-package-contract.test.mjs test/acpx-pi-receipt-package-contract.test.mjs test/acpx-response-delivery-package-contract.test.mjs scripts/candidate-provider-pack.test.mjs scripts/cursor-provisioner-layout.test.mjs scripts/release-provider-pack.test.mjs scripts/aws-agentcore-provisioning.test.mjs scripts/build-verified-provider-entrypoints.test.mjs scripts/local-provider-smoke-environment.test.mjs scripts/materialize-opencode-binary.test.mjs",
     "test:typescript:vitest": "node ./scripts/run-pr-vitest-lane.mjs",
     "test:rust": "cargo test --release --manifest-path runner/Cargo.toml --locked --workspace",
     "test:codex": "cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --test codex_provider",
@@ -160,7 +161,9 @@
     "browser:preview": "vite preview --config vite.config.ts",
     "verify": "pnpm run build && pnpm run typecheck && pnpm run check:replay-goldens && pnpm run test && pnpm run test:sdk && pnpm run test:scenarios && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run test:browser:sdk && pnpm run test:browser:scenarios && pnpm run check:forbidden-imports && pnpm run check:tracked-imports && pnpm run check:numbered-milestones && pnpm run check:package-boundaries && pnpm run check:clean-consumers && pnpm run docs:validate && pnpm run check:conformance-parity && pnpm run check:replay-parity && pnpm run trace:conformance && pnpm run replay:fixture && pnpm run trace:local-runner -- --quiet",
     "verify:rootless": "bash scripts/verify-rootless-linux.sh",
-    "test:opencode:qualification": "PAPERCLIP_OPENCODE_QUALIFY=1 node --test scripts/qualify-opencode-runtime.test.mjs"
+    "test:opencode:qualification": "PAPERCLIP_OPENCODE_QUALIFY=1 node --test scripts/qualify-opencode-runtime.test.mjs",
+    "generate:acpx-profiles": "node scripts/generate-acpx-profiles.mjs",
+    "check:acpx-profiles": "node scripts/generate-acpx-profiles.mjs --check"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.73.0",

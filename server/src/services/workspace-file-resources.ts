@@ -334,6 +334,11 @@ function throwIfDenied(segments: string[]) {
   }
 }
 
+/** Apply the existing file-path policy to other read-only file surfaces. */
+export function assertWorkspaceFilePathAllowed(relativePath: string): void {
+  throwIfDenied(normalizeWorkspaceRelativePath(relativePath).segments);
+}
+
 function shouldPruneSegments(segments: string[]) {
   return denyReasonForPathSegments(segments) != null;
 }

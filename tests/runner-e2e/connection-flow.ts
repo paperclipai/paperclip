@@ -290,7 +290,7 @@ export async function runConnectionFlow(input: ConnectionFlowInput) {
   // every harness can decode them with its actual tools.
   evidence.inputTransport = "prompt_base64";
   const title = `Connection artifact ${input.nonce}`;
-  await createTaskThroughUi({ page, issuePrefix: company.issuePrefix, agentName, title, workMode: "standard", prompt: [
+  const createdTask = await createTaskThroughUi({ page, issuePrefix: company.issuePrefix, agentName, title, workMode: "standard", prompt: [
     "Complete this bounded connection acceptance task. Using your actual tools, decode the following base64 into connection-input.json and read the file. Preserve the exact decoded bytes, including the final newline.",
     `Input bytes (base64): ${Buffer.from(proof.input, "utf8").toString("base64")}`,
     "Create the input and output files inside your current workspace using relative filenames. Do not put them in /tmp or another directory outside the workspace.",
@@ -298,13 +298,8 @@ export async function runConnectionFlow(input: ConnectionFlowInput) {
     "Deliver connection-proof.json as a downloadable attachment on this task. Use the normal Paperclip artifact/attachment workflow and include its download link in your final response. Then mark this task done. Do not create other tasks, read credentials, or inspect unrelated files.",
     execution.profile.generation === "native" ? "Use your native register_deliverable tool with workspace-relative contentRef connection-proof.json and the exact byteSize and SHA-256 of that output file. Never submit an absolute contentRef." : "",
   ].join("\n") });
-  let issue: Row | undefined;
-  const createdDeadline = Date.now() + 30_000;
-  while (!issue && Date.now() < createdDeadline) {
-    issue = (await api.get<Row[]>(`/api/companies/${company.id}/issues`)).find(row => row.title === title);
-    if (!issue) await connectionDelay(500);
-  }
-  if (!issue) throw new ConnectionFailure("task_creation_failed");
+  const issue = await api.get<Row>(`/api/issues/${createdTask.issueId}`);
+  if (issue.companyId !== company.id) throw new ConnectionFailure("task_creation_failed");
   const runs = new Map<string, Row>();
   async function completedRun(after: Set<string>, filename: string) {
     const deadline = Date.now() + config.turnTimeoutMs;

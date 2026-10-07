@@ -1,4 +1,5 @@
 import { dismissAutomaticCompletionReviews } from "../services/native-runtime/automatic-completion-reviews.js";
+import * as childCompletionDelivery from "../services/native-runtime/native-child-completion-delivery.js";
 import { nativeCompletionFeedback } from "../services/native-runtime/native-completion-feedback.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -2075,6 +2076,89 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect(decisions.some((entry) => entry.reasonCode === "completion_claim_policy_accepted")).toBe(true);
     await reconcileNativeFinalizations(db, [seeded.runId]);
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toEqual(decisions);
+  }, 30_000);
+
+  it.each(["queued", "claimed", "deferred_issue_execution", "current_run", "current_intent", "consumed"])(
+    "automatic review reconciliation preserves unread child results (%s)", async (delivery) => {
+      const seeded = await seedAutomaticReview();
+      const intentId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: intentId, companyId, agentId, source: "automation", triggerDetail: "system",
+        reason: delivery === "deferred_issue_execution" ? "issue_execution_deferred" : "issue_children_completed",
+        requestedByActorType: "system", requestedByActorId: delivery === "deferred_issue_execution"
+          ? `native-status-wake-dispatch:${randomUUID()}` : "native-status-committer",
+        status: delivery.startsWith("current_") ? "claimed" : delivery,
+        runId: delivery === "current_run" ? seeded.runId : null,
+        payload: { issueId: seeded.issueId, _paperclipWakeContext: {
+          wakeReason: "issue_children_completed", nativeChildCompletionDecisionId: randomUUID(),
+        } },
+      });
+      if (delivery === "current_intent") await db.update(heartbeatRuns)
+        .set({ contextSnapshot: { issueId: seeded.issueId, nativeStatusWakeIntentId: intentId } })
+        .where(eq(heartbeatRuns.id, seeded.runId));
+      const unread = ["queued", "claimed", "deferred_issue_execution"].includes(delivery);
+      await reconcileNativeFinalizations(db, [seeded.runId]);
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe(unread ? "in_progress" : "done");
+      const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId));
+      expect(decisions).toHaveLength(2);
+      expect(decisions.some((entry) => entry.reasonCode === (unread
+        ? "native_child_completion_pending" : "completion_claim_policy_accepted"))).toBe(true);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, intentId)))
+        .toMatchObject([{ status: delivery.startsWith("current_") ? "claimed" : delivery }]);
+      await reconcileNativeFinalizations(db, [seeded.runId]);
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toEqual(decisions);
+    }, 30_000,
+  );
+
+  it("rechecks child delivery under the status lock during automatic review reconciliation", async () => {
+    const seeded = await seedAutomaticReview();
+    const original = childCompletionDelivery.hasPendingNativeChildCompletion;
+    const check = vi.spyOn(childCompletionDelivery, "hasPendingNativeChildCompletion").mockImplementationOnce(async (...args) => {
+      const pending = await original(...args);
+      expect(pending).toBe(false);
+      await db.insert(agentWakeupRequests).values({
+        companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_children_completed",
+        requestedByActorType: "system", requestedByActorId: "native-status-committer", status: "queued",
+        payload: { issueId: seeded.issueId, _paperclipWakeContext: { nativeChildCompletionDecisionId: randomUUID() } },
+      });
+      return pending;
+    });
+    try {
+      await reconcileNativeFinalizations(db, [seeded.runId]);
+      expect(check).toHaveBeenCalledTimes(2);
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_review");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(1);
+      await reconcileNativeFinalizations(db, [seeded.runId]);
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_progress");
+    } finally {
+      check.mockRestore();
+    }
+  }, 30_000);
+
+  it("new evidence cannot complete reconciliation before a pending child result is consumed", () => {
+    expect(resolveNativeReconciliationStatus({
+      facts: { newEvidenceSatisfiesContract: true, hasPendingChildCompletion: true },
+      priorIssueStatus: "in_review", agentId,
+    })).toMatchObject({ statusAction: "in_progress", reasonCode: "native_child_completion_pending",
+      effects: [{ kind: "release_checkout" }] });
+  });
+
+  it.each(["queued", "consumed"])("new-evidence reconciliation respects %s child delivery", async (delivery) => {
+    const seeded = await seedAutomaticReview();
+    // No retired-review receipt: this must use the new-evidence path.
+    await db.update(issueThreadInteractions).set({ status: "cancelled", result: {} })
+      .where(eq(issueThreadInteractions.id, seeded.interaction.id));
+    await db.update(issueWorkProducts).set({ updatedAt: new Date(Date.now() + 1_000) })
+      .where(eq(issueWorkProducts.id, seeded.workProductId));
+    await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "automation", triggerDetail: "system", reason: "issue_children_completed",
+      requestedByActorType: "system", requestedByActorId: "native-status-committer", status: delivery,
+      payload: { issueId: seeded.issueId, _paperclipWakeContext: { nativeChildCompletionDecisionId: randomUUID() } },
+    });
+    const results = await reconcileNativeFinalizations(db, [seeded.runId]);
+    expect(results).toEqual([expect.objectContaining({ reconciliationAction: delivery === "queued"
+      ? "native_child_completion_pending" : "decision_superseded_by_new_evidence" })]);
+    expect((await issueService(db).getById(seeded.issueId))!.status).toBe(delivery === "queued" ? "in_progress" : "done");
   }, 30_000);
 
   it("completes a new merge run after an old CI review and bounds repeated incomplete results", async () => {

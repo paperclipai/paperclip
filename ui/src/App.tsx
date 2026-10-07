@@ -53,6 +53,7 @@ import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { CompanyActivity } from "./pages/audit/CompanyActivity";
 import { AuditHub } from "./pages/audit/AuditHub";
+import { Costs } from "./pages/Costs";
 import { Inbox } from "./pages/Inbox";
 import { useCombinedInboxTasksEnabled } from "./hooks/useCombinedInboxTasksEnabled";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
@@ -137,9 +138,6 @@ const ProductionCompanySkills = lazy(() =>
 );
 const ProductionCompanyActivity = lazy(() =>
   import("./pages/audit/CompanyActivity.production").then((module) => ({ default: module.CompanyActivity })),
-);
-const ProductionCosts = lazy(() =>
-  import("./pages/Costs.production").then((module) => ({ default: module.Costs })),
 );
 const ProductionOrgChart = lazy(() =>
   import("./pages/OrgChart.production").then((module) => ({ default: module.OrgChart })),
@@ -424,7 +422,7 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
         </>
       ) : (
         <>
-          <Route path="costs" element={<ProductionSurface><ProductionCosts /></ProductionSurface>} />
+          <Route path="costs" element={<Costs />} />
           <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
         </>
       )}

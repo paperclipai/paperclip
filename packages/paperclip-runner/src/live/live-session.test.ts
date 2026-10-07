@@ -26,7 +26,7 @@ import { defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
 import { captureTurnRejection } from "../../test/capture-turn-rejection.js";
 import * as workspaceDiff from "./workspace-diff.js";
 
-it.each(["pi", "cursor", "copilot"] as const)("requires separately bound evaluation opt-in for %s", async (acpxAgent) => {
+it.each(["pi", "copilot"] as const)("requires separately bound evaluation opt-in for %s", async (acpxAgent) => {
   const service = new CapabilityLiveSessionService();
   await expect(service.create({ provider: "acpx", acpxAgent, requestedModel: "explicit-model" }))
     .rejects.toThrow("explicit evaluation opt-in");
@@ -1182,7 +1182,7 @@ describe("Capability live runnerd and Codex session", () => {
     });
     const session = await service.create({
       provider: "acpx", acpxAgent,
-      requestedModel: acpxAgent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : "exact-model",
+      requestedModel: "explicit-test-model",
     });
     const result = await session.sendMessage("Orient to this task.");
     expect(result.status).toBe("completed");

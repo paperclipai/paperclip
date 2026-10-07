@@ -63,7 +63,7 @@ import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 import { tryCreateWebSocket } from "../lib/websocket";
-import { formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { RunRetryDetails } from "../components/RunRetryDetails";
 import { Button } from "@/components/ui/button";
@@ -383,7 +383,7 @@ function runMetrics(run: HeartbeatRun) {
     output,
     cached,
     cost,
-    totalTokens: input + output,
+    totalTokens: visibleRunTokenTotal(usage),
     provider,
     model,
   };
