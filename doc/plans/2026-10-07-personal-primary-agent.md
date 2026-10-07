@@ -173,3 +173,8 @@ the primary is their fallback when no eligible recent choice or draft exists.
   An authenticated cross-user activity endpoint test covers this boundary.
 - Review fixes pass 96 database/permission-route tests and 127 provider,
   live-update, and skill-route tests. Final merge requires fresh-head CI and review.
+- The affected browser suites pass all 10 tests, including onboarding, archived
+  company navigation, Chat fallback without execution, and slow-CPU reloads.
+- The second PR run passed 52 checks and Greptile 5/5, with one OpenAPI inventory
+  failure. Both personal endpoints now have board-only request/response contracts
+  in OpenAPI. Its 14 tests and the remaining 28 tests in that shard pass locally.
