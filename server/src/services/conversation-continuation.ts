@@ -98,21 +98,29 @@ function processMayBeAlive(pid: number): boolean {
  * Other adapters keep their existing bootstrap and ownership protocols.
  */
 export async function getConversationOwnershipBlocker(db: Db, companyId: string, issueId: string) {
+  return (await getConversationOwnershipBlockers(db, companyId, [issueId])).get(issueId) ?? null;
+}
+
+/** Share the ownership proof across admission and subtree scans with one database read. */
+export async function getConversationOwnershipBlockers(db: Db, companyId: string, issueIds: string[]) {
+  const blockers = new Map<string, { runId: string; agentId: string; cause: string; nextAction: string }>();
+  if (issueIds.length === 0) return blockers;
   const activeLease = sql`exists (select 1 from ${environmentLeases}
     where ${environmentLeases.companyId} = "heartbeat_runs"."company_id"
       and ${environmentLeases.heartbeatRunId} = "heartbeat_runs"."id"
       and (${environmentLeases.releasedAt} is null
         or ${environmentLeases.status} = 'pending_cleanup'
         or ${environmentLeases.cleanupStatus} = 'failed'))`;
-  const candidates = await db.select({ run: heartbeatRuns, activeLease }).from(heartbeatRuns)
+  const candidates = await db.select({ run: heartbeatRuns, activeLease, issueId: sql<string>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')` }).from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),
-      sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+      inArray(sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`, issueIds),
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
       or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease),
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
-  for (const { run, activeLease: leaseHeld } of candidates) {
+  for (const { run, activeLease: leaseHeld, issueId } of candidates) {
+    if (blockers.has(issueId)) continue;
     let pidAlive = run.processPid !== null && processMayBeAlive(run.processPid);
     if (pidAlive && run.processStartedAt) {
       // A recycled PID cannot keep an old task blocked. An unreadable identity
@@ -122,15 +130,15 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
     }
     const groupAlive = run.processGroupId !== null && processMayBeAlive(-run.processGroupId);
     if (pidAlive || groupAlive || leaseHeld) {
-      return {
+      blockers.set(issueId, {
         runId: run.id,
         agentId: run.agentId,
         cause: "execution_owner_active",
         nextAction: pidAlive || groupAlive
           ? "The previous provider process is still running. Stop it before continuing this task."
           : "The previous execution has not released its environment lease. Wait for cleanup before continuing this task.",
-      };
+      });
     }
   }
-  return null;
+  return blockers;
 }

@@ -19,6 +19,7 @@ import type { IssueWatchdog, IssueWatchdogSummary } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { logActivity } from "./activity-log.js";
+import { getExecutionBlockedIssueIds } from "./execution-blocker.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -190,6 +191,7 @@ export type TaskWatchdogClassifierInput = {
   issues: TaskWatchdogClassifierIssue[];
   activeRuns?: TaskWatchdogClassifierPath[];
   queuedWakeRequests?: TaskWatchdogClassifierPath[];
+  executionBlockedIssueIds?: string[];
   blockers?: TaskWatchdogClassifierRelation[];
   pendingInteractions?: TaskWatchdogClassifierWaitingPath[];
   pendingApprovals?: TaskWatchdogClassifierWaitingPath[];
@@ -408,9 +410,16 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
 
   const includedIds = included.map((issue) => issue.id);
   const includedIdSet = new Set(includedIds);
+  const executionBlockedIssueIds = new Set(input.executionBlockedIssueIds ?? []);
+  const liveWakeRequests = input.queuedWakeRequests?.filter((wake) => {
+    if (wake.status !== "deferred_issue_execution") return true;
+    // A saved wake behind an execution recovery/stop-proof gate cannot
+    // advance this subtree by itself. It must not silence its watchdog.
+    return !executionBlockedIssueIds.has(wake.issueId ?? "");
+  });
   const liveIssueIds = [
     ...pathIssueIds(input.activeRuns, input.watchdog.companyId),
-    ...pathIssueIds(input.queuedWakeRequests, input.watchdog.companyId),
+    ...pathIssueIds(liveWakeRequests, input.watchdog.companyId),
   ].filter((issueId) => includedIdSet.has(issueId));
   const uniqueLiveIssueIds = [...new Set(liveIssueIds)].sort();
   if (uniqueLiveIssueIds.length > 0) {
@@ -1074,6 +1083,14 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         ))
         .groupBy(issueWorkProducts.issueId),
     ]);
+    // Only current admission holds suppress liveness. Saved wait reasons can
+    // outlive their hold; bulk reads avoid per-issue presentation queries.
+    const subtreeIssueIdSet = new Set(subtreeIssueIds);
+    const deferredIssueIds = [...new Set(wakeRows
+      .filter((row) => row.status === "deferred_issue_execution")
+      .map((row) => issueIdFromWakePayload(row.payload))
+      .filter((issueId): issueId is string => Boolean(issueId && subtreeIssueIdSet.has(issueId))))];
+    const executionBlockedIssueIds = await getExecutionBlockedIssueIds(db, companyId, deferredIssueIds);
     const latestCommentByIssueId = new Map(commentActivityRows.map((row) => [row.issueId, row.latestAt]));
     const latestDocumentByIssueId = new Map(documentActivityRows.map((row) => [row.issueId, row.latestAt]));
     const latestWorkProductByIssueId = new Map(workProductActivityRows.map((row) => [row.issueId, row.latestAt]));
@@ -1115,6 +1132,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         status: row.status,
         issueId: issueIdFromWakePayload(row.payload),
       })),
+      executionBlockedIssueIds,
       blockers: blockerRows,
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,

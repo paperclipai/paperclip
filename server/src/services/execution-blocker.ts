@@ -1,6 +1,6 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
-import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
-import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
+import { and, desc, eq, gt, inArray, isNull, isNotNull, not, or, sql } from "drizzle-orm";
+import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker, getConversationOwnershipBlockers } from "./conversation-continuation.js";
 import { z } from "zod";
 import { agentWakeupRequests, chatConversations, chatEndpoints, heartbeatRuns, issueComments, issues, issueRecoveryActions, toolConnections, type Db } from "@paperclipai/db";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
@@ -16,6 +16,27 @@ export function executionBlockerPredicate() {
     or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
       sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
   );
+}
+
+/** Current admission holds for a subtree, without building per-issue UI details. */
+export async function getExecutionBlockedIssueIds(db: Db, companyId: string, issueIds: string[]): Promise<string[]> {
+  if (issueIds.length === 0) return [];
+  const [actions, ownership] = await Promise.all([
+    db.select({ issueId: issueRecoveryActions.sourceIssueId }).from(issueRecoveryActions)
+      .innerJoin(issues, and(eq(issues.companyId, issueRecoveryActions.companyId), eq(issues.id, issueRecoveryActions.sourceIssueId)))
+      .leftJoin(issueComments, and(
+        eq(issueComments.companyId, issues.companyId), eq(issueComments.issueId, issues.id),
+        eq(issueComments.id, issues.conversationBoundaryCommentId), isNotNull(issues.conversationAgentId),
+      ))
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, issueIds),
+        executionBlockerPredicate(),
+        or(sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
+          isNull(issueComments.id), gt(issueRecoveryActions.createdAt, issueComments.createdAt)),
+      )),
+    getConversationOwnershipBlockers(db, companyId, issueIds),
+  ]);
+  return [...new Set([...actions.map(action => action.issueId), ...ownership.keys()])];
 }
 
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: { conversationResetCommentId?: string | null }): Promise<ExecutionBlocker | null> {
