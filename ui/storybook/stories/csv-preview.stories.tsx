@@ -1,3 +1,7 @@
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { TaskWorkspaceFilePanel } from "@/components/task-side-panel/TaskWorkspaceFilePanel";
+import { queryKeys } from "@/lib/queryKeys";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { TextAttachmentPreview } from "@/components/task-side-panel/TaskAttachmentPanel";
 
@@ -20,3 +24,18 @@ export const RevenueExport: Story = {
 };
 export const Empty: Story = { args: { ...RevenueExport.args, text: "" } };
 export const Invalid: Story = { args: { ...RevenueExport.args, text: 'Name,Notes\nSam,"unfinished' } };
+
+// Exercise the same CSV renderer through the workspace tab query boundary.
+function WorkspaceCsvTab() {
+  const client = useQueryClient();
+  const payload = { kind: "workspace-file" as const, path: "reports/monthly-revenue.csv", workspace: "auto" as const, projectId: null, workspaceId: null, line: null, column: null };
+  const { kind: _kind, ...state } = payload;
+  useState(() => {
+    const resource = { kind: "file", provider: "git_worktree", title: "monthly-revenue.csv", displayPath: payload.path, workspaceLabel: "Report workspace", workspaceKind: "execution_workspace", workspaceId: "csv-story-workspace", contentType: "text/csv", byteSize: 512, previewKind: "text", capabilities: { preview: true, download: true, listChildren: false } };
+    client.setQueryData(queryKeys.issues.fileResource("csv-story-task", state), resource);
+    client.setQueryData(queryKeys.issues.fileResourceContent("csv-story-task", state), { resource, content: { encoding: "utf8", data: RevenueExport.args!.text } });
+    return true;
+  });
+  return <TaskWorkspaceFilePanel issueId="csv-story-task" payload={payload} />;
+}
+export const WorkspaceTab: Story = { render: () => <WorkspaceCsvTab /> };
