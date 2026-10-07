@@ -469,6 +469,60 @@ describe("AppDefinition catalog", () => {
     });
   });
 
+  it("connects a self-hosted Home Assistant Assist MCP over HTTPS with a long-lived token", () => {
+    const app = CONNECTABLE_APP_DEFINITIONS.find(
+      (entry) => entry.slug === "home-assistant",
+    )!;
+    expect(app).toBeDefined();
+    expect(APP_STORE_HIDDEN_SLUGS.has("home-assistant")).toBe(false);
+    expect(APP_STORE_DEFINITIONS.some((entry) => entry.slug === "home-assistant")).toBe(true);
+    expect(app.branding.logoUrl).toBe("/brands/apps/home-assistant.svg");
+    expect(
+      getAppDefinitionForUrl("https://abcdef123456.ui.nabu.casa/api/mcp/assist")?.slug,
+    ).toBe("home-assistant");
+    expect(app.methods.map((method) => method.key)).toEqual(["mcp-access-token"]);
+    const [method] = app.methods;
+    expect(method).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      grantKinds: ["organization"],
+      riskTier: "S3",
+      defaults: { serverUrlTemplate: "https://{haHost}:{haPort}/api/mcp/assist" },
+      credentialFields: [
+        { key: "authorization", type: "password", required: true, secret: true },
+      ],
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
+    expect(method.credentialFields?.[0]?.helperMd).toMatch(/not scoped/);
+    expect(method.warnings?.some((warning) => /dedicated non-admin/.test(warning))).toBe(true);
+    expect(method.warnings?.some((warning) => /no read-only Assist mode/.test(warning))).toBe(true);
+    expect(app.setupPrerequisite?.steps?.length).toBeGreaterThan(0);
+
+    expect(
+      resolveConnectionMethodServerUrl(method, { haHost: "abcdef123456.ui.nabu.casa", haPort: "443" }),
+    ).toBe("https://abcdef123456.ui.nabu.casa/api/mcp/assist");
+    expect(
+      resolveConnectionMethodServerUrl(method, { haHost: "ha.example.com", haPort: "8123" }),
+    ).toBe("https://ha.example.com:8123/api/mcp/assist");
+    expect(resolveConnectionMethodServerUrl(method, { haPort: "443" })).toBeNull();
+
+    const host = new RegExp(method.tenantFields!.find((entry) => entry.key === "haHost")!.validation!.pattern!);
+    for (const value of ["abcdef123456.ui.nabu.casa", "ha.example.com", "homeassistant"])
+      expect(host.test(value), value).toBe(true);
+    for (const value of ["https://ha.example.com", "ha.example.com/api", "ha.example.com:8123", "user@ha.example.com", "-bad.example.com"])
+      expect(host.test(value), value).toBe(false);
+    const port = method.tenantFields!.find((entry) => entry.key === "haPort")!;
+    expect(port.defaultValue).toBe("443");
+    expect(new RegExp(port.validation!.pattern!).test("8123")).toBe(true);
+    expect(new RegExp(port.validation!.pattern!).test("0")).toBe(false);
+
+    expect(recommendedDefaultsForApp(app, method.key)).toEqual({
+      access: "all_agents",
+      askFirstRiskLevels: ["write", "destructive"],
+    });
+  });
+
   it("supports organization tokens and OAuth for the official read-only Enterpret MCP", () => {
     const app = CONNECTABLE_APP_DEFINITIONS.find(
       (entry) => entry.slug === "enterpret",
@@ -735,10 +789,10 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === "hugging-face")?.methods[0]
         ?.defaults?.scopesHint,
     ).toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]));
-  it("defaults every new connection action to allowed except Enterpret writes", () => {
+  it("defaults every new connection action to allowed except Enterpret and Home Assistant writes", () => {
     for (const app of APP_DEFINITIONS)
       for (const method of app.methods) {
-        if (app.slug === "enterpret") {
+        if (app.slug === "enterpret" || app.slug === "home-assistant") {
           expect(recommendedDefaultsForApp(app, method.key)).toEqual({
             access: "all_agents",
             askFirstRiskLevels: ["write", "destructive"],
@@ -845,7 +899,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(68);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(69);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1193,6 +1247,7 @@ describe("AppDefinition catalog", () => {
     ).sort();
     expect(required).toEqual([
       "clickhouse:mcp-oauth:serviceId",
+      "home-assistant:mcp-access-token:haHost",
       "honcho:mcp-api-key:workspaceId",
       "shopify:storefront-mcp:storeDomain",
       "shopify:ucp-commerce:storeDomain",

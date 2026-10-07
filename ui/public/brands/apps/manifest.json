@@ -224,6 +224,12 @@
       ]
     },
     {
+      "slug": "home-assistant",
+      "provider": "Home Assistant",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/home-assistant.svg"
+    },
+    {
       "slug": "hugging-face",
       "provider": "Hugging Face",
       "catalogVisible": true,

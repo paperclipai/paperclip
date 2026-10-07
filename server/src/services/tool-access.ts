@@ -2364,10 +2364,38 @@ const AGGREGATOR_READ_TOOLS = new Map<string, ReadonlySet<string>>([
   ["zapier", new Set()],
 ]);
 
+// Home Assistant's Assist API mixes reads with device control, and exposed
+// scripts become arbitrarily named `script__<id>` tools. HA also defaults
+// unannotated tools (and even some reads) to destructiveHint: true. Only these
+// exact, source-reviewed names are reads; every other tool is a write or
+// destructive. Names are matched exactly so a script cannot pose as a read.
+const HOME_ASSISTANT_READ_TOOLS = new Set([
+  "GetLiveContext",
+  "homeassistant__GetLiveContext",
+  "GetDateTime",
+  "llm__GetDateTime",
+  "HassTimerStatus",
+  "intent__HassTimerStatus",
+  "todo_get_items",
+  "todo__get_items",
+  "calendar_get_events",
+  "calendar__get_events",
+  "search_media",
+  "media_player__search_media",
+]);
+
+function homeAssistantRisk(tool: McpToolDescriptor): ToolRiskLevel {
+  const annotations = tool.annotations ?? {};
+  if (HOME_ASSISTANT_READ_TOOLS.has(tool.name))
+    return annotations.readOnlyHint === false || annotations.writeHint === true ? "write" : "read";
+  return annotations.destructiveHint === true || annotations.destructive === true ? "destructive" : "write";
+}
+
 export function classifyRisk(
   tool: McpToolDescriptor,
   sourceTemplateKey?: string | null,
 ): ToolRiskLevel {
+  if (sourceTemplateKey === "home-assistant") return homeAssistantRisk(tool);
   const annotations = tool.annotations ?? {};
   if (annotations.destructiveHint === true || annotations.destructive === true)
     return "destructive";
@@ -7790,7 +7818,7 @@ export function toolAccessService(
         ? googleProfileValue
         : null;
     const preserveReviewedCatalog =
-      (isRailwayEndpoint(connection.config.url) || sourceTemplateKey === "enterpret") &&
+      (isRailwayEndpoint(connection.config.url) || sourceTemplateKey === "enterpret" || sourceTemplateKey === "home-assistant") &&
       existingRows.length > 0;
     const quarantineOnRefresh =
       (!refreshOptions.enableAllByDefault || preserveReviewedCatalog) &&
@@ -12756,7 +12784,7 @@ export function toolAccessService(
           // Grant-backed setup keeps the full discovered catalog selectable;
           // the wizard projects the app's action defaults into policies at
           // finish time instead of using catalog quarantine as access state.
-          quarantineNewEntries: galleryEntry.slug === "railway" || galleryEntry.slug === "enterpret",
+          quarantineNewEntries: ["railway", "enterpret", "home-assistant"].includes(galleryEntry.slug),
           ...(remoteMcpConnector ? {
             mcpSessionRequired: true,
             mcpAuthMode: input.authMode ?? "auto",

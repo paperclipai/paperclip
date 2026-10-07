@@ -5175,6 +5175,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "github-code-review-bot",
         "youcom",
         "enterpret",
+        "home-assistant",
         "openrouter",
         "bedrock",
         "responses-api",
@@ -5184,7 +5185,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "telem",
       ]),
     );
-    expect(res.body.apps).toHaveLength(68);
+    expect(res.body.apps).toHaveLength(69);
     for (const slug of ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
       expect(res.body.apps.find((app: { slug: string }) => app.slug === slug).tags).toContain("model-provider");
     }
@@ -5347,6 +5348,101 @@ describeEmbeddedPostgres("tool access service", () => {
         }),
       ]),
     );
+  });
+
+  it("connects Home Assistant with Ask-first device control and quarantines later tools", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    // HA defaults unannotated tools, and even its reads, to destructiveHint: true.
+    const haDefaults = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
+    const fetchMock = mockToolsList([
+      { name: "GetLiveContext", annotations: { readOnlyHint: true, destructiveHint: true, openWorldHint: false } },
+      { name: "HassTurnOn", annotations: haDefaults },
+      { name: "script__get_live_context", annotations: haDefaults },
+    ]);
+
+    const result = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "home-assistant",
+        connectionMethodKey: "mcp-access-token",
+        configValues: { haHost: "ha.example.com" },
+        credentialValues: { "credentials.authorization": "ha-llat-secret" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://ha.example.com/api/mcp/assist");
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get("authorization")).toBe("Bearer ha-llat-secret");
+    expect(result.connection.config).toMatchObject({
+      sourceTemplateKey: "home-assistant",
+      quarantineNewEntries: true,
+      methodConfig: { haHost: "ha.example.com", haPort: "443" },
+    });
+    expect(JSON.stringify(result.connection.config)).not.toContain("ha-llat-secret");
+    expect(JSON.stringify(result.connection.transportConfig ?? {})).not.toContain("ha-llat-secret");
+    const risks = Object.fromEntries(result.catalog.map((entry) => [entry.toolName, entry.riskLevel]));
+    expect(risks).toEqual({
+      GetLiveContext: "read",
+      HassTurnOn: "destructive",
+      script__get_live_context: "destructive",
+    });
+
+    await service.finishGalleryAppConnection(company.id, result.connectionId, {
+      enabledCatalogEntryIds: result.catalog.map((entry) => entry.id),
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
+    fetchMock.mockResolvedValueOnce(
+      mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: {
+          tools: [
+            { name: "GetLiveContext", annotations: { readOnlyHint: true, destructiveHint: true, openWorldHint: false } },
+            { name: "HassTurnOn", annotations: haDefaults },
+            { name: "script__get_live_context", annotations: haDefaults },
+            { name: "script__unlock_front_door", annotations: haDefaults },
+          ],
+        },
+      }),
+    );
+    const refreshed = await service.refreshCatalog(result.connectionId, {
+      actorType: "user",
+      actorId: "board",
+    });
+    expect(refreshed.catalog).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolName: "GetLiveContext", status: "active" }),
+        expect.objectContaining({
+          toolName: "script__unlock_front_door",
+          status: "quarantined",
+          quarantineReason: "pending_review",
+          riskLevel: "destructive",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects Home Assistant hosts that try to smuggle a scheme, path, or port", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    mockToolsList([{ name: "GetLiveContext", annotations: { readOnlyHint: true } }]);
+    for (const haHost of ["http://ha.example.com", "ha.example.com/api", "ha.example.com:8123"]) {
+      await expect(
+        service.connectGalleryApp(
+          company.id,
+          {
+            galleryKey: "home-assistant",
+            connectionMethodKey: "mcp-access-token",
+            configValues: { haHost },
+            credentialValues: { "credentials.authorization": "ha-llat-secret" },
+          },
+          { actorType: "user", actorId: "board" },
+        ),
+        haHost,
+      ).rejects.toThrow("Home Assistant host has an invalid value");
+    }
   });
 
   it("exposes managed Google methods only for profiles signed for this enrolled instance", async () => {
@@ -19321,6 +19417,28 @@ describe("classifyRisk", () => {
     expect(classifyRisk({ name: "validate_agent_rule", annotations: { readOnlyHint: true } }, "superagent")).toBe("read");
     // Without the provider rule, the generic classifier treats these as reads.
     expect(classifyRisk({ name: "triage_finding" })).toBe("read");
+  });
+
+  it("treats only reviewed Home Assistant tools as reads", () => {
+    const haDefaults = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
+    const haRead = { readOnlyHint: true, destructiveHint: true, openWorldHint: false };
+    for (const name of [
+      "GetLiveContext", "homeassistant__GetLiveContext", "GetDateTime", "llm__GetDateTime",
+      "HassTimerStatus", "intent__HassTimerStatus", "todo_get_items", "todo__get_items",
+      "calendar_get_events", "calendar__get_events", "search_media", "media_player__search_media",
+    ]) {
+      expect(classifyRisk({ name, annotations: haRead }, "home-assistant"), name).toBe("read");
+      expect(classifyRisk({ name }, "home-assistant"), name).toBe("read");
+    }
+    expect(classifyRisk({ name: "GetLiveContext", annotations: { readOnlyHint: false } }, "home-assistant")).toBe("write");
+    for (const name of ["HassTurnOn", "intent__HassTurnOn", "HassLightSet", "script__get_live_context", "script__GetLiveContext", "todo__add_item"]) {
+      expect(classifyRisk({ name, annotations: haDefaults }, "home-assistant"), name).toBe("destructive");
+      // Unreviewed tools stay writes even when HA omits or misreports annotations.
+      expect(classifyRisk({ name }, "home-assistant"), name).toBe("write");
+      expect(classifyRisk({ name, annotations: { readOnlyHint: true } }, "home-assistant"), name).toBe("write");
+    }
+    // Without the provider rule, the generic classifier reads HassTurnOn as a read.
+    expect(classifyRisk({ name: "HassTurnOn" })).toBe("read");
   });
 
   it("classifies Enterpret run_graph_query as write despite readOnlyHint", () => {

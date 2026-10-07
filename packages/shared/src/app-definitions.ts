@@ -11,6 +11,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "cognee",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "enterpret",
+  "home-assistant",
   "zapier",
   "arcade",
   "executor",
@@ -265,7 +266,9 @@ export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string
   // and has not been established as read-only. Classify it as write (server
   // classifyRisk) and require Ask first so new token connections do not ship
   // that action as Allowed.
-  if (app.slug === "enterpret") {
+  // Home Assistant's Assist tools control physical devices and run exposed
+  // scripts; only reviewed reads start Allowed (server classifyRisk).
+  if (app.slug === "enterpret" || app.slug === "home-assistant") {
     return {
       access: "all_agents",
       askFirstRiskLevels: ["write", "destructive"],
