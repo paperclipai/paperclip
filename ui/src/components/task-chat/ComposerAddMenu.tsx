@@ -118,7 +118,8 @@ export function ComposerPrivacyChip({ inherited, onRemove, disabled }: { inherit
   const explanation = inherited ?? "Only you and people you share with can read this task";
   return <TooltipProvider><Tooltip open={hintOpen} onOpenChange={setHintOpen}>
     <TooltipTrigger asChild>
-      <span className="inline-flex shrink-0" tabIndex={inherited ? 0 : undefined} aria-label={inherited ? explanation : undefined}
+      <span className="inline-flex shrink-0" role={inherited ? "button" : undefined}
+        tabIndex={inherited ? 0 : undefined} aria-label={inherited ? explanation : undefined}
         onClick={inherited ? (event) => { event.preventDefault(); setHintOpen(true); } : undefined}
         onKeyDown={inherited ? (event) => {
           if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setHintOpen(true); }
