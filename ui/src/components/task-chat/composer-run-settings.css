@@ -96,3 +96,15 @@
   .composer-run-effort-range:focus-visible::-moz-range-thumb,
   .composer-run-effort-range:active::-moz-range-thumb { transition: none; transform: none; }
 }
+
+/* Forced colors suppress shadows, so keep keyboard focus on the thumb. */
+@media (forced-colors: active) {
+  .composer-run-effort-range:focus-visible::-webkit-slider-thumb {
+    outline: calc(var(--spacing) * 0.5) solid Highlight;
+    outline-offset: calc(var(--spacing) * 0.5);
+  }
+  .composer-run-effort-range:focus-visible::-moz-range-thumb {
+    outline: calc(var(--spacing) * 0.5) solid Highlight;
+    outline-offset: calc(var(--spacing) * 0.5);
+  }
+}
