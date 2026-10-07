@@ -1579,9 +1579,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           ? (err as any).code
           : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
 
+      // Action/data handlers can rethrow an already structured host refusal.
+      const handlerErrorData =
+        (method === "performAction" || method === "getData") && err instanceof JsonRpcCallError
+          ? err.data
+          : undefined;
       sendMessage(createErrorResponse(id, errorCode, errorMessage,
         method === "environmentAcquireLease" || method === "environmentDestroyLease"
-          ? environmentCreationCleanupErrorData(err) : undefined));
+          ? environmentCreationCleanupErrorData(err) : handlerErrorData));
     }
   }
 
