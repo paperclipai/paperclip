@@ -343,6 +343,12 @@ the enclosing workspace task. The original error and restore safety policy are
 unchanged. These lines stay in the instance run log and its configured durable
 storage, and are not new first-party telemetry events.
 
+Native sandbox `environmentSyncOut` errors preserve allowlisted error codes and
+bounded HTTP/exit statuses across worker RPC for this diagnostic line. The host
+revalidates the envelope and keeps the original failure and recovery policy.
+Provider messages, paths, response bodies, credentials, and arbitrary error data
+are not copied into the new envelope. Older workers can still report `unknown`.
+
 The optional `step` identifies the failed restore operation. For
 `phase=workspace` and `step=git_integration`, `gitCommand` identifies one fixed
 command family (`rev_parse`, `symbolic_ref`, `merge_base`, `merge_tree`,

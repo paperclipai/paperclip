@@ -554,6 +554,13 @@ integers from 1 through 255. These fields accompany a known restore failure code
 only. They omit error messages, raw command lines, paths, process output, and arbitrary
 cause data. Git error wrappers preserve only these safe codes and numbers for
 diagnostics, without adding the original error as a cause.
+Native sandbox `environmentSyncOut` failures carry the same allowlisted codes
+and bounded HTTP/exit statuses across the plugin worker RPC boundary. The host
+revalidates that optional envelope and retains it only for restore diagnostics.
+The envelope excludes provider messages, response bodies, names, paths, and
+credentials. The existing RPC error message and code remain unchanged, as do
+restore classification, retries, and source retention. Older workers without the
+envelope still report `unknown` when no structured cause is available.
 For `git_integration`, optional `workspaceRestoreGitCommand` identifies the fixed
 command family: `rev_parse`, `symbolic_ref`, `merge_base`, `merge_tree`,
 `commit_tree`, `update_ref`, or `log`. `workspaceRestoreGitFailureKind` is
