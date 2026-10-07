@@ -88,7 +88,9 @@ or refetching does not undo a write-access opt-out. Nothing is authorized until
 
 Return to the same Connections entry to see your connected assistants, their
 read/write access, and revoke access. The list refreshes after consent and only
-shows your grants for the selected organization. The legacy
+shows your active grants for the selected organization. Each connection shows your
+profile avatar and defaults to a name such as “Dotta’s Codex connection.” Revoked
+connections disappear from the list; their audit records remain. The legacy
 `/assistant-connections` URL remains available for account-wide management.
 
 `GET /api/mcp/setup` returns the live experimental gate, canonical endpoint,

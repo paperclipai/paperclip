@@ -7,7 +7,7 @@ import { Browse } from "@/pages/apps/Browse";
 import { AssistantConnection } from "@/pages/apps/AssistantConnection";
 import { InstanceExperimentalSettings } from "@/pages/InstanceExperimentalSettings";
 import { PublicMcpPresenter } from "./public-mcp-presenter";
-import { installPublicMcpFixture } from "../fixtures/publicMcp";
+import { connectedUser, installPublicMcpFixture } from "../fixtures/publicMcp";
 
 function ConnectionJourney({ assistant = "opencode" }: { assistant?: "codex" | "claude" | "opencode" | "other" }) {
   return <PluginLauncherProvider><Routes>
@@ -39,7 +39,7 @@ export const OpenCodeSetup: Story = { parameters: { initialEntries: ["/PAP/apps/
 export const CodexSetup: Story = { ...OpenCodeSetup, args: { assistant: "codex" } };
 export const ClaudeSetup: Story = { ...OpenCodeSetup, args: { assistant: "claude" } };
 export const Connected: Story = { parameters: { initialEntries: ["/PAP/apps/assistant-connection"], fixture: { enabled: true, empty: false, connections: [
-  { id: "opencode", companyId: "company-storybook", companyName: "Paperclip", clientName: "OpenCode", scopes: ["paperclip:read", "paperclip:write", "offline_access"], createdAt: "2026-10-05T12:00:00Z", revokedAt: null },
+  { id: "opencode", companyId: "company-storybook", companyName: "Paperclip", clientName: "OpenCode", user: connectedUser, scopes: ["paperclip:read", "paperclip:write", "offline_access"], createdAt: "2026-10-05T12:00:00Z", revokedAt: null },
   { id: "other-org", companyId: "another-company", companyName: "Other organization", clientName: "Private other client", scopes: ["paperclip:read"], createdAt: "2026-10-05T12:00:00Z", revokedAt: null },
 ] } } };
 export const Unavailable: Story = { parameters: { initialEntries: ["/PAP/apps/assistant-connection"], fixture: { unavailable: true } } };
@@ -65,3 +65,10 @@ export const InvitationCopied: Story = { ...OpenCodeSetup, play: async ({ canvas
   await expect(await navigator.clipboard.readText()).toContain("/mcp/setup?company=");
 } };
 export const ManualSetup: Story = { ...OpenCodeSetup, play: async ({ canvasElement }) => { await userEvent.click(await within(canvasElement).findByText("Set up manually")); } };
+
+export const RevokeConnection: Story = { ...Connected, play: async ({ canvasElement }) => {
+  const c = within(canvasElement);
+  await userEvent.click(await c.findByRole("button", { name: "Revoke Dotta’s OpenCode connection" }));
+  await expect(await c.findByText("No assistants connected to Paperclip Storybook yet.")).toBeVisible();
+  await expect(c.queryByText("Dotta’s OpenCode connection")).not.toBeInTheDocument();
+} };

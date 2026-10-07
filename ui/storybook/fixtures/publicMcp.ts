@@ -1,6 +1,9 @@
 import { instanceExperimentalSettingsSchema, type InstanceExperimentalSettingsWithManaged, type McpConnection, type McpConnectionRequest } from "@paperclipai/shared";
 import { fn } from "storybook/test";
 
+// Local portrait fixture keeps avatar previews independent of third-party image hosts.
+export const connectedUser = { name: "Dotta", image: `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="#626972"/><circle cx="32" cy="24" r="12" fill="#eef0f2"/><path d="M10 64v-8a22 22 0 0 1 44 0v8" fill="#eef0f2"/></svg>')}` };
+
 export const consentSubmission = fn();
 export const request: McpConnectionRequest = {
   id: "storybook-request", clientName: "Codex", redirectOrigin: "https://chatgpt.com",
@@ -11,8 +14,8 @@ export const request: McpConnectionRequest = {
   ], setupUrl: null,
 };
 const connections: McpConnection[] = [
-  { id: "codex", companyId: request.companies[0].id, companyName: "Acme Research", clientName: "Codex", scopes: ["paperclip:read", "paperclip:write"], createdAt: "2020-01-01T00:00:00Z", revokedAt: null },
-  { id: "claude", companyId: request.companies[1].id, companyName: "Design Partners", clientName: "Claude", scopes: ["paperclip:read"], createdAt: "2020-01-01T00:00:00Z", revokedAt: null },
+  { id: "codex", companyId: request.companies[0].id, companyName: "Acme Research", clientName: "Codex", user: connectedUser, scopes: ["paperclip:read", "paperclip:write"], createdAt: "2020-01-01T00:00:00Z", revokedAt: null },
+  { id: "claude", companyId: request.companies[1].id, companyName: "Design Partners", clientName: "Claude", user: connectedUser, scopes: ["paperclip:read"], createdAt: "2020-01-01T00:00:00Z", revokedAt: null },
 ];
 export interface PublicMcpFixture {
   request?: Partial<McpConnectionRequest>;
@@ -33,7 +36,7 @@ export interface PublicMcpFixture {
 export function installPublicMcpFixture(fixture: PublicMcpFixture = {}) {
   consentSubmission.mockClear();
   const original = window.fetch;
-  let rows = fixture.empty ? [] : (fixture.connections ?? connections).map(row => ({ ...row, revokedAt: fixture.revoked ? "2020-01-02T00:00:00Z" : null }));
+  let rows = fixture.empty ? [] : (fixture.connections ?? connections).map(row => ({ ...row, revokedAt: fixture.revoked ? "2020-01-02T00:00:00Z" : row.revokedAt }));
   let settings: InstanceExperimentalSettingsWithManaged = { ...instanceExperimentalSettingsSchema.parse({}), enablePublicMcp: Boolean(fixture.enabled), managedKeys: fixture.managed ? { enablePublicMcp: { managed: true, managedBy: "paperclip-cloud" } } : {} };
   const error = (message: string, status = 503) => Response.json({ error: message }, { status });
   window.fetch = async (input, init) => {

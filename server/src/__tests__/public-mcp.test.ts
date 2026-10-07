@@ -120,6 +120,19 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     return { actor, company: company!, membership: membership!, client, tokens, exchange };
   }
 
+  it("returns only the authorizing person’s profile with their connection list", async () => {
+    const f = await fixture();
+    const other = await fixture();
+    await db.update(authUsers).set({ name: "Dotta", image: "https://avatars.example/dotta.png" }).where(eq(authUsers.id, f.actor.userId!));
+    const rows = await oauth.listConnections(f.actor.userId!);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ companyId: f.company.id, user: { name: "Dotta", image: "https://avatars.example/dotta.png" } });
+    expect(JSON.stringify(rows)).not.toContain(other.actor.userId!);
+    expect(JSON.stringify(rows)).not.toContain("@example.com");
+    await oauth.revokeConnection(rows[0]!.id, f.actor.userId!);
+    expect((await oauth.listConnections(f.actor.userId!))[0]?.revokedAt).not.toBeNull();
+  });
+
   async function deviceFixture() {
     const f = await fixture();
     const client = await oauth.register({ client_name: "Device client", redirect_uris: [], grant_types: [DEVICE_GRANT, "refresh_token"], response_types: [] }, randomUUID());

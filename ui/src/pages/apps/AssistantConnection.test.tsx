@@ -12,7 +12,7 @@ vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompan
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
 vi.mock("@/lib/router", () => ({ Link: ({ children, to, ...props }: { children: React.ReactNode; to: string }) => <a href={to} {...props}>{children}</a> }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-const grant = { id: "grant", companyId: "butter", companyName: "Butter", clientName: "OpenCode", scopes: ["paperclip:read", "paperclip:write"], createdAt: "2026-10-05T00:00:00Z", revokedAt: null };
+const grant = { id: "grant", companyId: "butter", companyName: "Butter", clientName: "OpenCode", user: { name: "Dotta", image: "/avatar.jpg" }, scopes: ["paperclip:read", "paperclip:write"], createdAt: "2026-10-05T00:00:00Z", revokedAt: null };
 let root: Root, container: HTMLDivElement, client: QueryClient;
 async function flush() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); }); }
 async function render(element: React.ReactNode = <AssistantConnection initialAssistant="opencode" />) {
@@ -72,12 +72,50 @@ describe("assistant setup from Connections", () => {
     await render();
     expect(container.textContent).not.toContain("Other secret client");
     expect(container.textContent).toContain("Connected as you · Read and write");
+    expect(container.textContent).toContain("Dotta’s OpenCode connection");
+    expect(container.querySelector('[data-slot="avatar"]')).not.toBeNull();
     mocks.connections.mockResolvedValue([{ ...grant, revokedAt: "2026-10-05T00:00:00Z" }]);
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Revoke OpenCode connection"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Revoke Dotta’s OpenCode connection"]')!.click());
     await flush();
     expect(mocks.revoke.mock.calls[0]?.[0]).toBe("grant");
-    expect(container.textContent).toContain("Revoked");
+    expect(container.textContent).not.toContain("Revoked");
+    expect(container.textContent).not.toContain("Dotta’s OpenCode connection");
+    expect(container.querySelector('[data-slot="avatar"]')).toBeNull();
+    expect(container.textContent).toContain("No assistants connected to Butter yet");
     expect(container.querySelector('[aria-label="Copy first prompt"]')).toBeNull();
+  });
+  it("hides retained revoked grants in both the page and catalog card", async () => {
+    mocks.connections.mockResolvedValue([{ ...grant, revokedAt: "2026-10-05T00:00:00Z" }]);
+    await render();
+    expect(container.textContent).toContain("No assistants connected to Butter yet");
+    expect(container.textContent).not.toContain("Dotta’s OpenCode connection");
+    await render(<AssistantConnectionCard onNavigate={vi.fn()} />);
+    expect(container.querySelector('[aria-label="Set up Assistant Connection (MCP)"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Dotta’s OpenCode connection");
+  });
+  it("keeps an older server’s connection usable without profile metadata", async () => {
+    mocks.connections.mockResolvedValue([{ ...grant, user: undefined }]);
+    await render();
+    expect(container.textContent).toContain("OpenCode connection");
+    expect(container.querySelector('[aria-label="Revoke OpenCode connection"]')).not.toBeNull();
+  });
+  it("retains the connection when revocation fails", async () => {
+    mocks.connections.mockResolvedValue([grant]);
+    mocks.revoke.mockRejectedValueOnce(new Error("offline"));
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Revoke Dotta’s OpenCode connection"]')!.click());
+    await flush();
+    expect(container.textContent).toContain("Couldn’t revoke this connection");
+    expect(container.textContent).toContain("Dotta’s OpenCode connection");
+  });
+  it("hides a successfully revoked connection even if the follow-up refresh fails", async () => {
+    mocks.connections.mockResolvedValue([grant]);
+    await render();
+    mocks.connections.mockRejectedValue(new Error("offline"));
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Revoke Dotta’s OpenCode connection"]')!.click());
+    await flush();
+    expect(mocks.revoke).toHaveBeenCalledWith("grant", expect.anything());
+    expect(container.textContent).not.toContain("Dotta’s OpenCode connection");
   });
   it("shows a real grant when the list refreshes after assistant sign-in", async () => {
     await render();
