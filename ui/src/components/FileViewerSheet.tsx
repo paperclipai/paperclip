@@ -246,7 +246,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
   const isMarkdown = resource.previewKind === "text" && content.content.encoding === "utf8" && isMarkdownResource(resource);
   const isCsv = resource.previewKind === "text" && content.content.encoding === "utf8" && isCsvFile(resource.displayPath || resource.title, resource.contentType ?? "");
   const [localMode, setMarkdownMode] = useState<MarkdownPreviewMode>("rendered");
-  const markdownMode = previewMode ?? localMode;
+  const markdownMode = isMarkdown || isCsv ? (previewMode ?? localMode) : "raw";
   const previewLabel = isCsv ? "CSV" : "Markdown";
   const lines = useMemo(() => {
     if (resource.previewKind === "text") {

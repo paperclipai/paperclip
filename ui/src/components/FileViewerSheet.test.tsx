@@ -185,3 +185,34 @@ describe("workspace CSV content", () => {
     expect(raw).not.toContain("<table");
   });
 });
+
+
+describe("CSV preview limits", () => {
+  it.each([[500, 2], [501, 2], [1, 100], [1, 101]])(
+    "bounds a file with %i rows and %i columns and preserves raw source",
+    (rowCount, columnCount) => {
+      const header = Array.from({ length: columnCount }, (_, i) => `Header${i}`).join(",");
+      const row = Array.from({ length: columnCount }, (_, i) => `Value${i}`).join(",");
+      const source = [header, ...Array.from({ length: rowCount }, () => row)].join("\n");
+      const content: WorkspaceFileContent = {
+        resource: { kind: "file", provider: "git_worktree", title: "limits.csv", displayPath: "limits.csv", workspaceLabel: "Workspace", workspaceKind: "execution_workspace", workspaceId: "ws", contentType: "text/csv", byteSize: source.length, previewKind: "text", capabilities: { preview: true, download: true, listChildren: false } },
+        content: { encoding: "utf8", data: source },
+      };
+      const rendered = renderToStaticMarkup(<FileContentViewer content={content} highlightedLine={null} previewMode="rendered" />);
+      expect((rendered.match(/<td /g) ?? []).length).toBe(Math.min(rowCount, 500) * Math.min(columnCount, 100));
+      expect((rendered.match(/scope="col"/g) ?? []).length).toBe(Math.min(columnCount, 100) + 1);
+      expect(rendered).toContain(`${rowCount} ${rowCount === 1 ? "row" : "rows"}`);
+      expect(rendered).toContain(`${columnCount} columns`);
+      if (rowCount > 500 || columnCount > 100) {
+        expect(rendered).toContain(`Showing the first ${Math.min(rowCount, 500)} rows and ${Math.min(columnCount, 100)} columns.`);
+      } else {
+        expect(rendered).not.toContain("Showing the first");
+      }
+      const raw = renderToStaticMarkup(<FileContentViewer content={content} highlightedLine={null} previewMode="raw" />);
+      expect(raw).not.toContain("<table");
+      expect((raw.match(/Value0/g) ?? []).length).toBe(rowCount);
+      expect(raw).toContain(row);
+      expect(raw).toContain(header);
+    },
+  );
+});
