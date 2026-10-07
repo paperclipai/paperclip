@@ -27,7 +27,10 @@ function resolveClaudeSkillsHome(config: Record<string, unknown>): { skillsHome:
   // The agent env overrides the host env, the same as for the spawned process.
   const configDir = asString(env.CLAUDE_CONFIG_DIR) ?? asString(process.env.CLAUDE_CONFIG_DIR);
   if (configDir) {
-    const skillsHome = path.join(path.resolve(configDir), "skills");
+    // Claude resolves a relative value against its working directory. The run uses
+    // config.cwd when no issue workspace overrides it, so resolve against that.
+    const baseDir = asString(config.cwd) ?? process.cwd();
+    const skillsHome = path.join(path.resolve(baseDir, configDir), "skills");
     return { skillsHome, locationLabel: skillsHome };
   }
   const configuredHome = asString(env.HOME);
