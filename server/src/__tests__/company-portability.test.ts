@@ -1897,7 +1897,7 @@ describe("company portability", () => {
           },
         },
       }),
-    }));
+    }), { createdByUserId: "user-1" });
     expect(secretSvc.syncEnvBindingsForTarget).toHaveBeenCalledWith(
       "company-1",
       { targetType: "agent", targetId: "agent-imported" },
@@ -2889,7 +2889,7 @@ describe("company portability", () => {
       // a scoped resume; "system" stays for platform-managed pauses.
       pauseReason: "import",
       pausedAt: expect.any(Date),
-    }));
+    }), { createdByUserId: "user-1" });
     expect(routineSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       title: "Monday Review",
       status: "paused",
@@ -3204,7 +3204,7 @@ describe("company portability", () => {
     expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       name: "ClaudeCoder",
       adapterType: "process",
-    }));
+    }), { createdByUserId: "user-1" });
   });
 
   it("preserves agent role from frontmatter when extension block omits it", async () => {
@@ -3383,7 +3383,7 @@ describe("company portability", () => {
           desiredSkills: [paperclipKey],
         },
       }),
-    }));
+    }), { createdByUserId: "user-1" });
   });
 
   it("imports a packaged company logo and attaches it to the target company", async () => {
@@ -3677,7 +3677,7 @@ describe("company portability", () => {
           maxConcurrentRuns: 20,
         },
       },
-    }));
+    }), { createdByUserId: "user-1" });
     expect(result.company.action).toBe("unchanged");
     expect(result.agents).toEqual([
       {
@@ -3748,13 +3748,13 @@ describe("company portability", () => {
       adapterConfig: expect.objectContaining({
         dangerouslyBypassApprovalsAndSandbox: true,
       }),
-    }));
+    }), { createdByUserId: "user-1" });
     expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       adapterConfig: expect.not.objectContaining({
         instructionsFilePath: expect.anything(),
         promptTemplate: expect.anything(),
       }),
-    }));
+    }), { createdByUserId: "user-1" });
     expect(agentInstructionsSvc.materializeManagedBundle).toHaveBeenCalledWith(
       expect.objectContaining({ name: "ClaudeCoder" }),
       expect.objectContaining({
@@ -3856,7 +3856,7 @@ describe("company portability", () => {
         extraArgs: ["--skip-git-repo-check"],
         args: ["--legacy-arg"],
       }),
-    }));
+    }), { createdByUserId: "user-1" });
     const lastCreateInput = agentSvc.create.mock.calls.at(-1)?.[1] as Record<string, any>;
     expect(lastCreateInput?.adapterConfig).toBeTruthy();
     expect(lastCreateInput.adapterConfig?.dangerouslyBypassApprovalsAndSandbox).toBeUndefined();
@@ -5785,7 +5785,7 @@ describe("company portability", () => {
         normalized: true,
       }),
       status: "idle",
-    }));
+    }), { createdByUserId: "user-1" });
     expect(companySvc.create).toHaveBeenCalledWith(expect.objectContaining({
       requireBoardApprovalForNewAgents: false,
     }));
@@ -6080,13 +6080,13 @@ describe("company portability", () => {
     expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       adapterType: "paperclip_runner",
       adapterConfig: expect.objectContaining({ provider: "opencode" }),
-    }));
+    }), { createdByUserId: "user-1" });
 
     await portability.importBundle(request, "user-1");
     expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       adapterType: "paperclip_runner",
       adapterConfig: expect.objectContaining({ provider: "codex" }),
-    }));
+    }), { createdByUserId: "user-1" });
 
     await portability.importBundle({
       ...request,

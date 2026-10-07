@@ -30,6 +30,7 @@ type ApprovalRecord = {
   status: string;
   payload: Record<string, unknown>;
   requestedByAgentId: string | null;
+  requestedByUserId?: string | null;
 };
 
 function createApproval(status: string): ApprovalRecord {
@@ -128,9 +129,14 @@ describe("approvalService resolution idempotency", () => {
     expect(mockNotifyHireApproved).not.toHaveBeenCalled();
   });
 
-  it("creates the agent from payload when approval does not reference a pending agent", async () => {
+  it.each([
+    { requestedByAgentId: "requester-1", requestedByUserId: "on-behalf-user", expectedCreator: null },
+    { requestedByAgentId: null, requestedByUserId: "original-creator", expectedCreator: "original-creator" },
+  ])("creates a legacy approved hire with its original human attribution ($expectedCreator)", async ({ requestedByAgentId, requestedByUserId, expectedCreator }) => {
     const approved = {
       ...createApproval("approved"),
+      requestedByAgentId,
+      requestedByUserId,
       payload: {
         name: "New Agent",
         adapterConfig: {
@@ -155,6 +161,7 @@ describe("approvalService resolution idempotency", () => {
       expect.objectContaining({
         adapterConfig: approved.payload.adapterConfig,
       }),
+      { createdByUserId: expectedCreator },
     );
   });
 });

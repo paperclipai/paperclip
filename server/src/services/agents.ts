@@ -61,6 +61,7 @@ import {
 } from "./built-in-agent-metadata.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 
+import { clearPrimaryAgent, initializePrimaryAgent } from "./primary-agent.js";
 import { agentIdentityService } from "./agent-identity.js";
 
 function hashToken(token: string) {
@@ -133,6 +134,7 @@ interface UpdateAgentOptions {
 }
 
 interface CreateAgentOptions {
+  createdByUserId?: string | null;
   aiConnectionInstall?: { connectionId: string; memberConnectionIds?: string[]; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
@@ -812,6 +814,9 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
+      if (updated.status === "terminated") {
+        await clearPrimaryAgent(txDb, updated.companyId, id);
+      }
       if (data.status !== undefined) {
         await recordAgentStatusEvent(txDb, updated.companyId, id, current.status, updated.status);
       }
@@ -986,6 +991,9 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           }))).onConflictDoNothing();
         }
         await syncAgentSecretBindings(created, txDb);
+        if (options?.createdByUserId && !readBuiltInAgentMarker(created.metadata)) {
+          await initializePrimaryAgent(txDb, companyId, options.createdByUserId, created.id);
+        }
         if (created.status !== "pending_approval" && created.status !== "terminated") {
           await recordResourceCreationEvent(txDb, companyId, "agent", created.id);
         }
