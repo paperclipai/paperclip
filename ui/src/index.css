@@ -99,6 +99,9 @@
   --native-select-caret-inset: calc(var(--spacing) * 3);
   --native-select-caret-stroke: 1.5px;
   --native-select-end-padding: calc(var(--spacing) * 9);
+  --org-chart-drag-line-width: 2px;
+  --org-chart-drag-line-dash: 6px 4px;
+  --org-chart-drag-handle-radius: 5px;
   --radius: 0.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -397,6 +400,15 @@
   --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
+}
+
+.org-chart-drag-indicator-line {
+  stroke-width: var(--org-chart-drag-line-width);
+  stroke-dasharray: var(--org-chart-drag-line-dash);
+}
+
+.org-chart-drag-indicator-handle {
+  r: var(--org-chart-drag-handle-radius);
 }
 
 .dark {

@@ -5,11 +5,12 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
-import { OrgChart } from "./OrgChart";
+import { hierarchyChangeIssue, OrgChart } from "./OrgChart";
 
 const navigateMock = vi.fn();
 const orgMock = vi.fn();
 const listMock = vi.fn();
+const updateMock = vi.fn();
 
 vi.mock("@/lib/router", () => ({
   Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a>,
@@ -28,6 +29,7 @@ vi.mock("../api/agents", () => ({
   agentsApi: {
     org: () => orgMock(),
     list: () => listMock(),
+    update: (...args: unknown[]) => updateMock(...args),
   },
 }));
 
@@ -106,6 +108,18 @@ const agents = [
     permissions: null,
   },
 ];
+
+describe("hierarchyChangeIssue", () => {
+  it("permits a new manager and moving an agent to board level", () => {
+    expect(hierarchyChangeIssue(agents, "agent-2", "agent-1")).toBe("unchanged");
+    expect(hierarchyChangeIssue(agents, "agent-2", null)).toBeNull();
+  });
+
+  it("rejects self-references and reporting cycles before saving", () => {
+    expect(hierarchyChangeIssue(agents, "agent-1", "agent-1")).toBe("self");
+    expect(hierarchyChangeIssue(agents, "agent-1", "agent-2")).toBe("cycle");
+  });
+});
 
 function createTouchEvent(type: string, touches: Array<{ clientX: number; clientY: number }>) {
   const event = new Event(type, { bubbles: true, cancelable: true });
@@ -238,6 +252,19 @@ describe("OrgChart mobile gestures", () => {
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
+  it("suppresses a delayed click after a touch pan from an agent card", async () => {
+    const { viewport } = await renderOrgChart();
+    const card = container.querySelector("[data-org-card]") as HTMLDivElement;
+    await act(async () => {
+      card.dispatchEvent(createTouchEvent("touchstart", [{ clientX: 100, clientY: 100 }]));
+      viewport.dispatchEvent(createTouchEvent("touchmove", [{ clientX: 130, clientY: 145 }]));
+      viewport.dispatchEvent(createTouchEvent("touchend", []));
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 10));
+    await act(async () => { card.click(); });
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
   it("allows card navigation after a touch tap without movement", async () => {
     const { viewport } = await renderOrgChart();
     const card = container.querySelector("[data-org-card]") as HTMLDivElement;
@@ -249,6 +276,79 @@ describe("OrgChart mobile gestures", () => {
     });
 
     expect(navigateMock).toHaveBeenCalledWith("/agents/ceo");
+  });
+
+  it("cancels a touch hierarchy drag without opening a save dialog", async () => {
+    const { viewport } = await renderOrgChart();
+    const source = container.querySelector("[data-org-report-source]") as HTMLButtonElement;
+
+    await act(async () => {
+      source.dispatchEvent(createTouchEvent("touchstart", [{ clientX: 100, clientY: 100 }]));
+      viewport.dispatchEvent(createTouchEvent("touchcancel", []));
+    });
+
+    expect(container.textContent).not.toContain("Save reporting line?");
+    expect(updateMock).not.toHaveBeenCalled();
+  });
+
+  it("saves only after confirming a move to board level", async () => {
+    await renderOrgChart();
+    updateMock.mockResolvedValue(agents[1]);
+    await act(async () => {
+      (container.querySelector('[aria-label="Move to board level"]') as HTMLButtonElement).click();
+    });
+    expect(updateMock).not.toHaveBeenCalled();
+    const confirm = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Confirm")!;
+    await act(async () => { confirm.click(); });
+    await flushReact();
+    expect(updateMock).toHaveBeenCalledWith("agent-2", { reportsTo: null }, "company-1");
+  });
+
+  it("does not save a cancelled confirmation", async () => {
+    await renderOrgChart();
+    await act(async () => {
+      (container.querySelector('[aria-label="Move to board level"]') as HTMLButtonElement).click();
+    });
+    const cancel = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Cancel")!;
+    await act(async () => { cancel.click(); });
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("Save reporting line?");
+  });
+
+  it("does not open a board confirmation after panning from its button", async () => {
+    const { viewport } = await renderOrgChart();
+    const button = container.querySelector('[aria-label="Move to board level"]') as HTMLButtonElement;
+    await act(async () => {
+      button.dispatchEvent(createTouchEvent("touchstart", [{ clientX: 100, clientY: 100 }]));
+      viewport.dispatchEvent(createTouchEvent("touchmove", [{ clientX: 130, clientY: 145 }]));
+      viewport.dispatchEvent(createTouchEvent("touchend", []));
+    });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 10));
+    await act(async () => { button.click(); });
+    expect(document.body.textContent).not.toContain("Save reporting line?");
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      button.dispatchEvent(createTouchEvent("touchstart", [{ clientX: 100, clientY: 100 }]));
+      viewport.dispatchEvent(createTouchEvent("touchend", []));
+    });
+    await act(async () => { button.click(); });
+    expect(document.body.textContent).toContain("Save reporting line?");
+  });
+
+  it("rejects a cyclic connection selected with the keyboard", async () => {
+    await renderOrgChart();
+    const source = container.querySelector('[data-agent-id="agent-1"] [data-org-report-source]')!;
+    const target = container.querySelector('[data-org-manager-port][data-agent-id="agent-2"]') as HTMLButtonElement;
+    await act(async () => {
+      source.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await act(async () => { target.click(); });
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("Save reporting line?");
+    expect(container.textContent).toContain("reporting cycle");
   });
   it("pinch-zooms toward the touch center", async () => {
     const { viewport, layer } = await renderOrgChart();
