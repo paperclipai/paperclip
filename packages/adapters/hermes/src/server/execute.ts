@@ -20,7 +20,6 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { stripVTControlCharacters } from "node:util";
 
 import type {
   AdapterExecutionContext,
@@ -475,6 +474,10 @@ export async function execute(
   // system is designed for human-attended interactive sessions.
   args.push("--yolo");
 
+  // Failed resumes remain failures. Do not infer a safe restart from CLI text.
+  if (sessionId) args.push("--resume", sessionId);
+  if (extraArgs?.length) args.push(...extraArgs);
+
   // ── Build environment ──────────────────────────────────────────────────
   const userEnv = config.env as Record<string, string> | undefined;
   const env: Record<string, string> = {
@@ -562,31 +565,14 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const runAttempt = async (resumeId: string | undefined) => {
-    const attemptArgs = [...args];
-    if (resumeId) attemptArgs.push("--resume", resumeId);
-    else attemptArgs[2] = buildPrompt(ctx, config, { resumedSession: false });
-    if (extraArgs?.length) attemptArgs.push(...extraArgs);
-    return runChildProcess(ctx.runId, hermesCmd, attemptArgs, {
-      cwd,
-      env,
-      timeoutSec,
-      graceSec,
-      onLog: wrappedOnLog,
-      onSpawn: ctx.onSpawn,
-    });
-  };
-
-  let result = await runAttempt(sessionId);
-  let missingSession = false;
-  // Retry only an explicit missing-session failure, never a provider error,
-  // cancellation, timeout, or arbitrary failure after work may have started.
-  if (sessionId && !result.timedOut && !result.signal && typeof result.exitCode === "number" && result.exitCode !== 0 &&
-    /^(?:Error:\s*)?(?:Session\b[^\n]*\bnot found\b|Unknown session\b|No session found\b)/im.test(stripVTControlCharacters(`${result.stdout}\n${result.stderr}`))) {
-    missingSession = true;
-    await ctx.onLog("stdout", "[hermes] Saved session was not found; retrying with current instructions and full task context.\n");
-    result = await runAttempt(undefined);
-  }
+  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
+    cwd,
+    env,
+    timeoutSec,
+    graceSec,
+    onLog: wrappedOnLog,
+    onSpawn: ctx.onSpawn,
+  });
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
@@ -640,7 +626,6 @@ export async function execute(
     executionResult.sessionParams = { sessionId: parsed.sessionId };
     executionResult.sessionDisplayId = parsed.sessionId.slice(0, 16);
   }
-  if (missingSession && !executionResult.sessionParams) executionResult.clearSession = true;
 
   return executionResult;
 }

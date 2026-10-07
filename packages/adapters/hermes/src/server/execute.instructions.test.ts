@@ -36,12 +36,13 @@ fs.appendFileSync(process.env.CAPTURE_PATH, JSON.stringify({
   systemPrompt: process.env.HERMES_EPHEMERAL_SYSTEM_PROMPT ?? null,
   runId: process.env.PAPERCLIP_RUN_ID,
 }) + "\\n");
+if (process.env.FIXTURE_STDOUT) console.log(process.env.FIXTURE_STDOUT);
 if (args.includes("missing-session")) {
   console.error("\\u001b[1;31mSession missing-session not found.\\u001b[0m");
   process.exit(1);
 }
 if (process.env.FIXTURE_PROVIDER_ERROR) {
-  console.error("Error: provider unavailable");
+  console.error(process.env.FIXTURE_PROVIDER_ERROR);
   process.exit(1);
 }
 console.log("Fixture completed\\nsession_id: ${SESSION_ID}");
@@ -165,26 +166,36 @@ console.log("Fixture completed\\nsession_id: ${SESSION_ID}");
     expect(invocation.systemPrompt).toContain(INSTRUCTIONS);
   });
 
-  it("bootstraps a missing session once with full current task context", async () => {
+  it("surfaces a missing session without automatically restarting work", async () => {
     const ctx = context();
     const result = await execute({ ...ctx, runtime: { ...ctx.runtime, sessionParams: { sessionId: "missing-session" } } });
     const calls = await invocations();
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
     expect(calls[0].args).toContain("--resume");
-    expect(calls[1].args).not.toContain("--resume");
-    expect(query(calls[1])).toContain("## Paperclip Wake Payload");
-    expect(query(calls[1])).toContain("Complete current synthetic task.");
-    expect(calls[1].systemPrompt).toContain(INSTRUCTIONS);
-    expect(result.exitCode).toBe(0);
-    expect(result.sessionParams?.sessionId).toBe(SESSION_ID);
+    expect(calls[0].systemPrompt).toContain(INSTRUCTIONS);
+    expect(result.exitCode).toBe(1);
+    expect(result.sessionParams).toBeUndefined();
   });
 
   it("does not retry provider failures as a missing session", async () => {
     const ctx = context();
-    const result = await execute({ ...ctx, config: { ...ctx.config, env: { CAPTURE_PATH: capturePath, FIXTURE_PROVIDER_ERROR: "1" } }, runtime: { ...ctx.runtime, sessionParams: { sessionId: SESSION_ID } } });
+    const result = await execute({ ...ctx, config: { ...ctx.config, env: { CAPTURE_PATH: capturePath, FIXTURE_PROVIDER_ERROR: "Error: provider unavailable" } }, runtime: { ...ctx.runtime, sessionParams: { sessionId: SESSION_ID } } });
     expect(await invocations()).toHaveLength(1);
     expect(result.exitCode).toBe(1);
     expect(result.errorMessage).toBe("Error: provider unavailable");
+  });
+
+  it("preserves failed work even when its output contains a missing-session diagnostic", async () => {
+    const ctx = context();
+    const result = await execute({ ...ctx, config: { ...ctx.config, env: {
+      CAPTURE_PATH: capturePath,
+      FIXTURE_STDOUT: `Already updated the task.\nSession ${SESSION_ID} not found.`,
+      FIXTURE_PROVIDER_ERROR: "Error: provider unavailable after tool execution",
+    } }, runtime: { ...ctx.runtime, sessionParams: { sessionId: SESSION_ID } } });
+    expect(await invocations()).toHaveLength(1);
+    expect(result.exitCode).toBe(1);
+    expect(result.summary).toContain("Already updated the task.");
+    expect(result.errorMessage).toBe("Error: provider unavailable after tool execution");
   });
 
   it("removes an obsolete instruction overlay when the bundle is removed", async () => {

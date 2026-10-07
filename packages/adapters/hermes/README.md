@@ -324,8 +324,9 @@ a Hermes CLI that supports the [documented environment hook](https://github.com/
 Fresh sessions, resumed sessions, and session resets all receive the current
 bundle. Edits take effect on the next run; removing the bundle removes it from
 the next overlay. The server's session compatibility and conversation generation
-checks still control session reuse. An explicitly missing session is retried once
-with full current task context; other failures retain their normal handling.
+checks still control session reuse. A missing or failed resume remains a failed
+run and requires an explicit session reset; it does not automatically restart
+work. The next fresh run receives the complete current instruction overlay.
 
 The `-q` user turn contains current runtime identity, task/wake context, handoff
 content, and the rendered custom `promptTemplate`, if configured. Custom templates
