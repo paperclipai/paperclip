@@ -3693,18 +3693,32 @@ export function issueThreadInteractionService(
             })
             .returning();
 
-          // An agent replacing its own still-pending card supersedes the older
+          // An actor replacing its own still-pending card supersedes the older
           // one so the thread never accumulates stale sibling cards. This covers
-          // request_confirmation drafts and ordinary task questions. Agent Chat
-          // questions remain answerable in history even when another is asked.
-          // Scoped to the same agent + issue + kind; other actors are untouched.
+          // request_confirmation drafts and ask_user_questions (PAP-437: probe
+          // question cards that agents never withdrew; INUA-8412: board users
+          // double-submitting the same card). Agent Chat questions remain
+          // answerable in history even when another is asked. Scoped strictly
+          // to the same creator + issue + kind; other actors are untouched.
           const canSupersedeSiblingCards =
             options.supersedePendingSiblingInteractions !== false &&
             ((data.kind === "request_confirmation" &&
               data.payload.toolAction === undefined &&
               data.payload.secretProposal === undefined) ||
               (data.kind === "ask_user_questions" && (!issueRow.conversationAgentId || !issueRow.conversationUserId)));
-          if (!actor.agentId || !canSupersedeSiblingCards) {
+          // Build a per-creator filter: agents filter by createdByAgentId,
+          // board users filter by createdByUserId. If neither is set (system
+          // actor with no identity), skip supersede.
+          // Board users may address independent questions to different agents on
+          // the same issue; superseding across different addressees would expire
+          // the first agent's pending ask. Limit user-actor supersede to
+          // request_confirmation (the double-submit case) only.
+          const actorCreatorFilter = actor.agentId
+            ? eq(issueThreadInteractions.createdByAgentId, actor.agentId)
+            : actor.userId && data.kind === "request_confirmation"
+              ? eq(issueThreadInteractions.createdByUserId, actor.userId)
+              : null;
+          if (!actorCreatorFilter || !canSupersedeSiblingCards) {
             await enqueueIssueInteractionChatPublications(
               tx as unknown as Db,
               hydrateInteraction(row),
@@ -3722,7 +3736,7 @@ export function issueThreadInteractionService(
             .set({
               status: "expired",
               result: supersededResult,
-              resolvedByAgentId: actor.agentId,
+              resolvedByAgentId: actor.agentId ?? null,
               resolvedByUserId: actor.userId ?? null,
               resolvedAt: now,
               updatedAt: now,
@@ -3732,7 +3746,7 @@ export function issueThreadInteractionService(
                 eq(issueThreadInteractions.companyId, issue.companyId),
                 eq(issueThreadInteractions.issueId, issue.id),
                 eq(issueThreadInteractions.kind, data.kind),
-                eq(issueThreadInteractions.createdByAgentId, actor.agentId),
+                actorCreatorFilter,
                 eq(issueThreadInteractions.status, "pending"),
                 ne(issueThreadInteractions.id, row.id),
 
