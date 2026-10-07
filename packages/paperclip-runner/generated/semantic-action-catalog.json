@@ -2608,7 +2608,6 @@
             },
             "nextCheckAt": {
               "description": "Future UTC timestamp for the next check. This is one shot, not a recurring interval.",
-              "format": "date-time",
               "type": "string"
             },
             "notes": {
@@ -2639,7 +2638,6 @@
             },
             "timeoutAt": {
               "description": "Optional deadline later than nextCheckAt.",
-              "format": "date-time",
               "type": [
                 "string",
                 "null"

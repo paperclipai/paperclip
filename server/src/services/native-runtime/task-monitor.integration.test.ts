@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agents, authUsers, companyMemberships, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { buildIssueMonitorTriggeredPatch, normalizeIssueExecutionPolicy } from "../issue-execution-policy.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 
@@ -95,6 +96,19 @@ describe("native task monitors", () => {
     await expect(value.call({ ...original, monitor: replacement })).rejects.toThrow("idempotency_conflict");
     const audits = await db.select().from(activityLog).where(eq(activityLog.entityId, value.issueId));
     expect(audits.filter(row => row.action.startsWith("issue.monitor_"))).toHaveLength(3);
+  });
+
+  it("exposes consumed monitor instructions to a resumed task and does not re-arm them on retry", async () => {
+    const value = await fixture();
+    const input = { idempotencyKey: "consumed", monitor: value.monitor };
+    await value.call(input);
+    const scheduled = await value.read();
+    await db.update(issues).set(buildIssueMonitorTriggeredPatch({ issue: scheduled,
+      policy: normalizeIssueExecutionPolicy(scheduled.executionPolicy), triggeredAt: new Date() })).where(eq(issues.id, value.issueId));
+    expect(await value.authority.execute({ tool: "get_task_context", callId: randomUUID(), arguments: {} }))
+      .toMatchObject({ activeTask: { monitor: { status: "triggered", nextCheckAt: null, notes: value.monitor.notes, attemptCount: 1 } } });
+    expect(await value.call(input)).toMatchObject({ replayed: true, monitor: { nextCheckAt: null, status: "triggered" } });
+    expect((await value.read()).monitorNextCheckAt).toBeNull();
   });
 
   it("keeps a cleared schedule cleared when a successor run retries the original key", async () => {

@@ -13,12 +13,12 @@ export const setTaskMonitorInputSchema = {
       additionalProperties: false,
       required: ["nextCheckAt", "notes"],
       properties: {
-        nextCheckAt: { type: "string", format: "date-time", description: "Future UTC timestamp for the next check. This is one shot, not a recurring interval." },
+        nextCheckAt: { type: "string", description: "Future UTC timestamp for the next check. This is one shot, not a recurring interval." },
         notes: { type: "string", minLength: 1, maxLength: 500, description: "What to check on the next run; do not include secrets." },
         kind: { type: ["string", "null"], enum: ["external_service", null] },
         serviceName: { type: ["string", "null"], minLength: 1, maxLength: 120 },
         externalRef: { type: ["string", "null"], minLength: 1, maxLength: 500 },
-        timeoutAt: { type: ["string", "null"], format: "date-time", description: "Optional deadline later than nextCheckAt." },
+        timeoutAt: { type: ["string", "null"], description: "Optional deadline later than nextCheckAt." },
         maxAttempts: { type: ["integer", "null"], minimum: 1, maximum: 100, description: "Optional cumulative attempt limit for this task's monitor." },
         recoveryPolicy: { type: ["string", "null"], enum: ["wake_owner", "create_recovery_issue", "escalate_to_board", null] },
       },
@@ -30,7 +30,7 @@ export const setTaskMonitorAction = {
   id: "set_task_monitor",
   canonical: {
     operationId: "set_task_monitor", surfaces: ["live"], placement: "optional_agent_tool",
-    optionalGroup: "delegation_dependencies", requiredClaims: [], taskModes: ["standard"],
+    optionalGroup: "wake_scheduling", requiredClaims: [], taskModes: ["standard"],
     sideEffectClass: "task_write", idempotency: "required", disabledByDefault: false,
     realBindingStatus: "live_codex", realServiceBinding: "prepareIssueMonitorUpdate",
     prpEvidence: "Transactional persisted issue monitor, audit activity and idempotent run receipt.",

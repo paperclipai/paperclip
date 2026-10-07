@@ -2117,6 +2117,9 @@ function redactedTask(task: typeof issues.$inferSelect) {
     workMode: task.workMode,
     assigneeAgentId: task.assigneeAgentId,
     executionRunId: task.executionRunId,
+    ...(task.monitorNextCheckAt || task.monitorLastTriggeredAt ? {
+      monitor: summarizeIssueMonitor(task, normalizeIssueExecutionPolicy(task.executionPolicy)),
+    } : {}),
     parentId: task.parentId,
     projectId: task.projectId,
     goalId: task.goalId,
