@@ -38,6 +38,7 @@ submission.
 - `packages/skills-catalog/`: app-shipped skills catalog (`@paperclipai/skills-catalog`)
 - `packages/teams-catalog/`: app-shipped teams catalog (`@paperclipai/teams-catalog`)
 - `cli/`: `paperclipai` CLI package (published bin, agent-facing commands)
+- `desktop/`: Tauri desktop shell (experimental). Owns the server process and shows the board. Not a pnpm workspace member; see `desktop/README.md`.
 - `skills/`: Paperclip runtime/operational skills (not part of the app catalog)
 - `doc/`: operational and product docs
 

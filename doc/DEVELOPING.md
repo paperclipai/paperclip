@@ -92,6 +92,19 @@ The vite dev server serves an unbundled module graph. This is fast to reload on 
 
 The preview server binds `0.0.0.0` and accepts any Host, so a tailnet or LAN address (e.g. `http://<host>.ts.net:3101/`) works out of the box. The `/api` proxy sets `x-forwarded-host` and `x-forwarded-proto`, which the server's board mutation guard uses to trust the browser's Origin — mutations from `:3101` succeed against the API on `:3100` without further configuration. An HTTPS tunnel in front of the preview server (ngrok, tailscale funnel) is also supported: the tunnel's `x-forwarded-proto` header is preserved when set.
 
+## Desktop app (Tauri)
+
+`desktop/` holds a Tauri shell that runs the Paperclip server on the user's machine and shows the board in a native window. It follows unsloth-studio's shape — the shell owns the backend process, waits for `/api/health`, then reveals the app — except that Paperclip's server serves its own UI, so the window navigates to the server origin instead of loading a second bundled frontend.
+
+```sh
+pnpm desktop:install        # installs the Tauri CLI (desktop/ is not a pnpm workspace member)
+pnpm --filter @paperclipai/server build
+pnpm desktop:dev            # run the shell against that server
+pnpm desktop:build          # bundle (NSIS / AppImage / deb / dmg)
+```
+
+The shell binds the server to loopback only and picks the first free port at or above `3100`. `desktop/README.md` documents server resolution (`PAPERCLIP_DESKTOP_SERVER`, `PAPERCLIP_DESKTOP_SERVER_ENTRY`, a repo checkout, or `paperclipai` on `PATH`), the log location, and how the child process is reaped on quit.
+
 ## Storybook
 
 The board UI Storybook keeps stories and Storybook config under `ui/storybook/` so component review files stay out of the app source routes.

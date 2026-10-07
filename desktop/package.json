@@ -1,0 +1,20 @@
+{
+  "name": "paperclip-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tauri shell that runs the Paperclip server and shows its board",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "check": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml",
+    "icons": "node scripts/generate-icons.mjs",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1"
+  }
+}

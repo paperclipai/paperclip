@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paperclip</title>
+    <style>
+      /*
+       * Tokens mirror the board's neutrals rather than inventing a second
+       * palette: the boot window is the same product for the few seconds it is
+       * on screen, and a flash of a different theme is what makes a desktop app
+       * feel like a wrapper instead of the app.
+       */
+      :root {
+        color-scheme: light dark;
+        --bg: #0b0e14;
+        --fg: #e8ecf4;
+        --muted: #96a0b5;
+        --accent: #7aa2f7;
+        --danger: #f7768e;
+        --panel: #131824;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f7f8fb;
+          --fg: #131824;
+          --muted: #5c667e;
+          --accent: #3b6fd4;
+          --danger: #c33a52;
+          --panel: #ffffff;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(560px, 90vw);
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        padding: 32px;
+        border-radius: 14px;
+        background: var(--panel);
+        border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--accent);
+        flex: 0 0 auto;
+      }
+
+      .dot.failed {
+        background: var(--danger);
+      }
+
+      .dot.ready {
+        background: #4ec9a5;
+      }
+
+      .spinner {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+        border-top-color: var(--accent);
+        animation: spin 0.9s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .spinner {
+          animation-duration: 3s;
+        }
+      }
+
+      pre {
+        margin: 0;
+        max-height: 40vh;
+        overflow: auto;
+        padding: 12px;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--fg) 6%, transparent);
+        color: var(--fg);
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      button {
+        align-self: flex-start;
+        padding: 8px 14px;
+        border-radius: 999px;
+        border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent);
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Starting Paperclip</h1>
+      <div class="row">
+        <span class="dot" id="dot"></span>
+        <span class="spinner" id="spinner"></span>
+        <p id="detail">Launching the control plane…</p>
+      </div>
+      <pre id="error" hidden></pre>
+      <div class="row">
+        <button id="retry" type="button" hidden>Try again</button>
+        <button id="open-log" type="button">Open logs</button>
+      </div>
+      <p id="logpath"></p>
+    </main>
+
+    <script type="module">
+      const invoke = window.__TAURI__?.core?.invoke;
+      const listen = window.__TAURI__?.event?.listen;
+
+      const dot = document.getElementById("dot");
+      const spinner = document.getElementById("spinner");
+      const detail = document.getElementById("detail");
+      const error = document.getElementById("error");
+      const retry = document.getElementById("retry");
+      const openLog = document.getElementById("open-log");
+      const logPath = document.getElementById("logpath");
+
+      function render(status) {
+        if (!status) return;
+        const failed = status.state === "failed";
+        dot.className = failed ? "dot failed" : status.state === "ready" ? "dot ready" : "dot";
+        spinner.hidden = !failed && status.state === "ready";
+        if (failed) {
+          detail.textContent = "Paperclip could not start.";
+          error.hidden = false;
+          error.textContent = status.detail ?? "Unknown error.";
+          retry.hidden = false;
+        } else if (status.detail) {
+          detail.textContent = status.detail;
+        }
+      }
+
+      // The shell emits progress while it boots; the window navigates to the
+      // board on its own once the server answers, so this page only ever paints
+      // the in-between states.
+      if (listen) {
+        listen("paperclip://server-status", (event) => render(event.payload));
+      }
+      if (invoke) {
+        invoke("boot_info").then((info) => {
+          render(info.status);
+          logPath.textContent = `Log: ${info.logPath}`;
+        });
+      }
+
+      retry.addEventListener("click", () => {
+        error.hidden = true;
+        retry.hidden = true;
+        detail.textContent = "Restarting…";
+        // The handler hides the error block and this button before the command
+        // runs, so a rejection has to put both back. Without this the page
+        // reads "Restarting…" forever with nothing to press.
+        Promise.resolve(invoke?.("restart_server")).catch((err) => {
+          detail.textContent = "Paperclip could not restart.";
+          error.hidden = false;
+          error.textContent = String(err?.message ?? err);
+          retry.hidden = false;
+        });
+      });
+
+      openLog.addEventListener("click", () => {
+        invoke?.("open_log_folder");
+      });
+    </script>
+  </body>
+</html>

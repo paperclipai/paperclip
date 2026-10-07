@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the Paperclip boot page only. The boot window is navigated to the Paperclip origin once the server is healthy, so this capability is pinned to the app's own protocol: without the pin, the loaded board would inherit the shell's IPC and the opener permission. Nothing in the board needs either.",
+  "windows": ["boot"],
+  "remote": {
+    "urls": ["http://tauri.localhost/*"]
+  },
+  "permissions": ["core:default", "opener:allow-open-path", "opener:allow-reveal-item-in-dir"]
+}

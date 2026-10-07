@@ -82,3 +82,9 @@ test-results/
 
 # Retained local lifecycle behavior measurements
 .lifecycle-baseline/
+
+# Desktop (Tauri) build output and dependencies. The Rust tree keeps its
+# own Cargo.lock committed; the JS side only holds the Tauri CLI.
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/schemas/
