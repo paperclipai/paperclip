@@ -129,6 +129,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     runError: runError?.slice(0, 1024) ?? null,
     canContinue: eligibleContinuation && !chatBinding,
     canRetry: canRetry && !chatBinding,
+    ...(restoreHold ? { workspaceRepairRequired: true } : {}),
     savedMessageCount: saved.length,
   };
 }

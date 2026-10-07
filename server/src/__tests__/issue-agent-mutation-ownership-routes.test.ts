@@ -359,6 +359,9 @@ function createRunContextDb(
       orderBy: vi.fn(async () => []),
       limit: vi.fn(() => ({
         then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        for: vi.fn(() => ({
+          then: async (resolve: (lockedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        })),
       })),
       for: vi.fn(() => ({
         then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),

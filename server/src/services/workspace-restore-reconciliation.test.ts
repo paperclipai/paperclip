@@ -71,7 +71,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const blocker = await getExecutionBlocker(db, f.companyId, f.issueId,
       scenario === "reset_command" ? { conversationResetCommentId: commentId } : undefined);
     expect(blocker).toMatchObject({ recoveryActionId: f.actionId, runId: f.sourceRunId,
-      canRetry: false, canContinue: false, nextAction: "Recover the missing workspace files and record repair evidence." });
+      canRetry: false, canContinue: false, workspaceRepairRequired: true, nextAction: "Recover the missing workspace files and record repair evidence." });
   });
 
   it("accepts verified repair after exact remote stop without interpreting the sandbox PID on this server", async () => {

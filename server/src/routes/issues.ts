@@ -9493,14 +9493,14 @@ export function issueRoutes(
             workspaceRepairOnly: true,
           });
           if (workspaceRepairAction.evidence.executionReconciliation) {
-            return { issue: lockedIssue, recoveryAction: workspaceRepairAction, replayed: true };
+            return { issue: lockedIssue, recoveryAction: workspaceRepairAction, replayed: true, workspaceRepairOnly: true };
           }
           await markExecutionReconciliation(tx as unknown as Db, workspaceRepairAction,
             executionReconciliation!, actor.actorId, undefined, { workspaceRepairOnly: true });
           const [recoveryAction] = await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored",
             resolutionNote: resolutionNote ?? null, resolvedAt: new Date(), updatedAt: new Date(),
           }).where(eq(issueRecoveryActions.id, workspaceRepairAction.id)).returning();
-          return { issue: lockedIssue, recoveryAction, chatRetry: null };
+          return { issue: lockedIssue, recoveryAction, chatRetry: null, workspaceRepairOnly: true };
         }
 
         let activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
@@ -9883,7 +9883,9 @@ export function issueRoutes(
       });
       if (result.replayed) {
         res.json({
-          issue: { ...result.issue, activeRecoveryAction: await recoveryActionsSvc.getActiveForIssue(result.issue.companyId, result.issue.id) },
+          issue: "workspaceRepairOnly" in result
+            ? { ...result.issue, activeRecoveryAction: await recoveryActionsSvc.getActiveForIssue(result.issue.companyId, result.issue.id) }
+            : result.issue,
           recoveryAction: result.recoveryAction,
         });
         return;
@@ -9992,7 +9994,9 @@ export function issueRoutes(
       res.json({
         issue: {
           ...result.issue,
-          activeRecoveryAction: await recoveryActionsSvc.getActiveForIssue(result.issue.companyId, result.issue.id),
+          activeRecoveryAction: "workspaceRepairOnly" in result
+            ? await recoveryActionsSvc.getActiveForIssue(result.issue.companyId, result.issue.id)
+            : null,
         },
         recoveryAction: result.recoveryAction,
       });

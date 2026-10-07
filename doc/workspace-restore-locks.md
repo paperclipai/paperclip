@@ -74,12 +74,17 @@ alongside any newer active incident, including the original lease IDs. Inspect
 those exact leases through `GET /api/environment-leases/:leaseId`,
 confirm that cleanup stopped them, recover the missing files, and record
 `workspaceRepairEvidence` through the existing recovery-action resolution API.
-Use the exact recovery action ID, `outcome: "restored"`, the task's **unchanged**
+Send `POST /api/issues/:id/recovery-actions/resolve` with the exact recovery action
+ID, `outcome: "restored"`, the task's **unchanged**
 `sourceIssueStatus`, and `executionReconciliation` for the recorded source run.
 Only a board operator can record this repair. It preserves the current task
 owner, conversation generation, status, and execution locks. It does not queue a
 continuation or replay the stopped run; after repair, any new work still follows
 the normal admission rules.
+The board currently shows repair guidance and an Inspect run link, not a repair
+form. Recording the decision is an operator API/runbook workflow; the recovery
+API response contains the exact action and lease IDs. Provider access may require
+an instance administrator or Cloud support. This change does not add a repair UI.
 Then use the provider's operator console to remove that exact retained
 allocation when its files are no longer needed. Verify its immutable provider
 allocation ID against the recorded lease before removal. The ordinary reusable
