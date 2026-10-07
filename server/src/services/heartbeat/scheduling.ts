@@ -45,6 +45,7 @@ import { logActivity, publishActivity, type ActivityPublication } from "../activ
 import {
   normalizeIssueExecutionPolicy,
   buildIssueMonitorClearedPatch,
+  buildIssueMonitorDeferredPatch,
   parseIssueExecutionState,
   buildIssueMonitorTriggeredPatch,
 } from "../issue-execution-policy.js";
@@ -208,6 +209,20 @@ export function createHeartbeatScheduling(
       return "max_attempts_exhausted";
     }
     return null;
+  }
+
+  const MONITOR_DISPATCH_DEFER_BASE_MS = 5 * 60 * 1000;
+  const MONITOR_DISPATCH_DEFER_MAX_MS = 60 * 60 * 1000;
+
+  /** Backoff for a scheduled dispatch deferred by a transient client error:
+   * 5 min, 10, 20, 40, capped at 60 min. `attemptCount` is 1-indexed (the
+   * attempt that just failed). */
+  function monitorDispatchDeferDelayMs(attemptCount: number) {
+    const exponent = Math.max(0, attemptCount - 1);
+    return Math.min(
+      MONITOR_DISPATCH_DEFER_BASE_MS * 2 ** exponent,
+      MONITOR_DISPATCH_DEFER_MAX_MS,
+    );
   }
 
   function monitorRecoveryPolicy(
@@ -578,6 +593,19 @@ export function createHeartbeatScheduling(
     };
   }
 
+  function monitorDeferDispatchPatch(patch: ReturnType<typeof buildIssueMonitorDeferredPatch>) {
+    // Same rationale as monitorOnlyDispatchPatch above: admission and
+    // consumption are separate transactions, so merge only the monitor path
+    // of each JSONB column instead of overwriting the whole column.
+    const monitorPolicyValue = (patch.executionPolicy as { monitor?: unknown } | null)?.monitor ?? null;
+    return {
+      ...patch,
+      executionPolicy: sql`jsonb_set(coalesce(${issues.executionPolicy}, '{}'::jsonb), '{monitor}', ${JSON.stringify(monitorPolicyValue)}::jsonb)`,
+      executionState: sql`jsonb_set(coalesce(${issues.executionState}, ${JSON.stringify(patch.executionState)}::jsonb),
+        '{monitor}', ${JSON.stringify(patch.executionState?.monitor ?? null)}::jsonb)`,
+    };
+  }
+
   function issueMonitorClaimCondition(claimed: IssueMonitorDispatchRow) {
     return and(eq(issues.id, claimed.id), eq(issues.companyId, claimed.companyId),
       eq(issues.assigneeAgentId, claimed.assigneeAgentId!), isNull(issues.assigneeUserId),
@@ -870,21 +898,52 @@ export function createHeartbeatScheduling(
     } catch (err) {
       if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
         if (input.clearOnClientError) {
-          await db.transaction(async tx => {
-            await notifyIssueReviewState(tx, { companyId: claimed.companyId, issueId: claimed.id });
-            await tx
+          // A 4xx here is usually transient (most commonly the assignee
+          // being momentarily paused/quota-throttled), not a terminal
+          // condition for a monitor that may be scheduled weeks out.
+          // Defer with backoff instead of destroying it outright; only
+          // actually clear once the monitor's own bounds are exhausted, via
+          // the same recovery path a successful-dispatch exhaustion uses
+          // (which also carries the review-state renotify this clear needs).
+          const deferClearReason = issueMonitorLimitClearReason({
+            monitor,
+            nextAttemptCount,
+            now: input.now,
+          });
+          if (deferClearReason) {
+            return clearIssueMonitorAndRecover({
+              claimed,
+              policy,
+              scheduledAtIso,
+              nextAttemptCount,
+              clearReason: deferClearReason,
+              recoveryPolicy,
+              monitor,
+              now: input.now,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              activitySource: input.activitySource,
+            });
+          }
+
+          const deferDelayMs = monitorDispatchDeferDelayMs(nextAttemptCount);
+          const deferredTo = new Date(input.now.getTime() + deferDelayMs);
+          const deferred = await db
             .update(issues)
             .set({
-              ...monitorOnlyDispatchPatch(buildIssueMonitorClearedPatch({
+              ...monitorDeferDispatchPatch(buildIssueMonitorDeferredPatch({
                 issue: claimed,
                 policy,
-                clearReason: "dispatch_skipped",
-                clearedAt: input.now,
+                nextCheckAt: deferredTo,
+                attemptCount: nextAttemptCount,
               })),
               updatedAt: new Date(),
             })
-            .where(issueMonitorClaimCondition(claimed));
-          });
+            .where(issueMonitorClaimCondition(claimed))
+            .returning({ id: issues.id });
+          if (deferred.length === 0) return { outcome: "skipped" as const, reason: "monitor_replaced" };
 
           await logActivity(db, {
             companyId: claimed.companyId,
@@ -902,6 +961,11 @@ export function createHeartbeatScheduling(
               notes: claimed.monitorNotes ?? null,
               reason: err.message,
               source: input.activitySource,
+              outcome: "deferred",
+              deferredTo: deferredTo.toISOString(),
+              deferDelayMs,
+              timeoutAt: monitor?.timeoutAt ?? null,
+              maxAttempts: monitor?.maxAttempts ?? null,
             },
           });
 

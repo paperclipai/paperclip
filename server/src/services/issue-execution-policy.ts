@@ -1204,6 +1204,49 @@ export function buildIssueMonitorTriggeredPatch(input: {
   };
 }
 
+/**
+ * A scheduled dispatch attempt failed with a transient client error (e.g. the
+ * assignee is momentarily paused). Unlike `buildIssueMonitorClearedPatch`,
+ * this keeps the monitor policy alive and reschedules it (with backoff),
+ * consuming an attempt so `maxAttempts`/`timeoutAt` still bound the retries.
+ */
+export function buildIssueMonitorDeferredPatch(input: {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+  nextCheckAt: Date;
+  attemptCount: number;
+}) {
+  const existingState = parseIssueExecutionState(input.issue.executionState);
+  const currentMonitorState = derivePersistedMonitorState({
+    issue: input.issue,
+    state: existingState,
+    policy: input.policy,
+  });
+  const monitor = input.policy?.monitor ?? null;
+  const nextMonitorState: IssueExecutionMonitorState = {
+    status: "scheduled",
+    nextCheckAt: input.nextCheckAt.toISOString(),
+    lastTriggeredAt: currentMonitorState?.lastTriggeredAt ?? null,
+    attemptCount: input.attemptCount,
+    notes: currentMonitorState?.notes ?? null,
+    scheduledBy: currentMonitorState?.scheduledBy ?? null,
+    ...(monitor ? monitorMetadataFromPolicy(monitor) : monitorMetadataFromState(currentMonitorState)),
+    clearedAt: null,
+    clearReason: null,
+  };
+  const nextPolicy = monitor
+    ? { ...input.policy!, monitor: { ...monitor, nextCheckAt: input.nextCheckAt.toISOString() } }
+    : (input.policy ?? null);
+
+  return {
+    executionPolicy: nextPolicy as Record<string, unknown> | null,
+    executionState: executionStateWithMonitor(existingState, nextMonitorState) as Record<string, unknown> | null,
+    monitorNextCheckAt: input.nextCheckAt,
+    monitorWakeRequestedAt: null,
+    monitorAttemptCount: input.attemptCount,
+  };
+}
+
 export function buildIssueMonitorClearedPatch(input: {
   issue: IssueLike;
   policy: IssueExecutionPolicy | null;

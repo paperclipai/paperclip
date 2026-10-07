@@ -635,8 +635,49 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
   });
 
-  it("clears due monitors that cannot be dispatched and records a skip", async () => {
-    const { issueId } = await seedFixture({ agentStatus: "paused" });
+  it("defers (not clears) a due monitor that hits a transient dispatch error, with backoff", async () => {
+    const { issueId, agentId } = await seedFixture({ agentStatus: "paused" });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    // A transient 4xx (agent momentarily paused) must not destroy a monitor
+    // that may be scheduled weeks out: it stays armed, with backoff and a
+    // consumed attempt, not nulled/cleared.
+    expect(issue.monitorNextCheckAt).toEqual(new Date(tickAt.getTime() + 5 * 60 * 1000));
+    expect(issue.monitorAttemptCount).toBe(1);
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor?.nextCheckAt)
+      .toBe(new Date(tickAt.getTime() + 5 * 60 * 1000).toISOString());
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      attemptCount: 1,
+      nextCheckAt: new Date(tickAt.getTime() + 5 * 60 * 1000).toISOString(),
+    });
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(activity).toContain("issue.monitor_skipped");
+    expect(activity).not.toContain("issue.monitor_exhausted");
+
+    // The deferred check-in is itself due later and dispatches normally once
+    // the agent is active again, proving the monitor is still alive.
+    await db.update(agents).set({ status: "active" }).where(eq(agents.id, agentId));
+    const second = await heartbeat.tickTimers(new Date(tickAt.getTime() + 5 * 60 * 1000 + 1000));
+    expect(second.enqueued).toBe(1);
+  });
+
+  it("exhausts (not endlessly defers) a monitor whose maxAttempts is reached via a transient dispatch error", async () => {
+    const { issueId, agentId } = await seedFixture({
+      agentStatus: "paused",
+      monitor: { maxAttempts: 1, recoveryPolicy: "wake_owner" },
+    });
     const heartbeat = heartbeatService(db);
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
 
@@ -648,15 +689,43 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(issue.monitorNextCheckAt).toBeNull();
     expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
       status: "cleared",
-      clearReason: "dispatch_skipped",
+      clearReason: "max_attempts_exhausted",
     });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.reason).toBe("issue_monitor_recovery");
 
     const activity = await db
       .select()
       .from(activityLog)
       .where(eq(activityLog.entityId, issueId))
       .then((rows) => rows.map((row) => row.action));
-    expect(activity).toContain("issue.monitor_skipped");
+    expect(activity).toContain("issue.monitor_exhausted");
+    expect(activity).toContain("issue.monitor_recovery_wake_queued");
+  });
+
+  it("exhausts (not endlessly defers) a monitor whose timeoutAt has already passed via a transient dispatch error", async () => {
+    const { issueId } = await seedFixture({
+      agentStatus: "paused",
+      monitor: { timeoutAt: "2026-04-11T12:00:00.000Z" },
+    });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "cleared",
+      clearReason: "timeout_exceeded",
+    });
   });
 
   it("clears exhausted monitors and queues bounded owner recovery instead of another due check", async () => {
