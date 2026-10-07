@@ -42,6 +42,49 @@ afterEach(async () => {
 });
 
 describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", () => {
+  it("sends only bounded process-loss evidence without leaking it into another capture", async () => {
+    const Sentry = sentryPackage!;
+    const events: Array<Record<string, unknown>> = [];
+    vi.stubEnv("SENTRY_DSN_BACKEND", "https://public@example.invalid/1");
+    vi.doMock("../peer-version-check.js", () => ({ checkExactPeerVersions: () => ({ ok: true }) }));
+    vi.doMock("@sentry/node", () => ({
+      ...Sentry,
+      init: (options: Record<string, unknown>) => Sentry.init({
+        ...options,
+        transport: () => ({ send: async () => ({}), flush: async () => true }),
+        beforeSend: (event: Record<string, unknown>) => { events.push(event); return event; },
+      }),
+    }));
+    vi.resetModules();
+    const { sentryReady, captureRunFailure, captureException } = await import("../sentry.js");
+    await sentryReady;
+    const diagnostics = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics({
+      errorCode: "process_lost", resultJson: { processLossDiagnostic: {
+        pidRecorded: true, groupRecorded: false, localCheck: "not_observed_alive", retryEligible: true,
+        runPredatesObserver: true, observerUptimeMs: 30_000, lastOutputAgeMs: 120_000,
+        pid: "private-process-identity", path: "/private-process-path", prompt: "private-process-prompt",
+      } },
+    } as unknown as typeof heartbeatRuns.$inferSelect, {}));
+    captureRunFailure({
+      taskId: "11111111-1111-4111-8111-111111111111", runId: "22222222-2222-4222-8222-222222222222",
+      errorMessage: "Process lost -- server may have restarted", errorCode: "process_lost",
+      agentAdapter: "fixture-adapter", runStatus: "failed", exitCode: null, signal: null, diagnostics,
+    });
+    captureException(new Error("unrelated process-loss fixture"));
+    await Sentry.flush(2000);
+    expect(events).toHaveLength(2);
+    const failure = events.find(event => (event.tags as Record<string, unknown>)?.error_code === "process_lost");
+    expect(failure).toMatchObject({ contexts: { run_execution: {
+      processLossPidRecorded: true, processLossGroupRecorded: false, processLossLocalCheck: "not_observed_alive",
+      processLossRetryEligible: true, processLossRunPredatesObserver: true,
+      processLossObserverUptimeMs: 30_000, processLossLastOutputAgeMs: 120_000,
+    } } });
+    expect(JSON.stringify(events)).not.toContain("private-process-");
+    const unrelated = events.find(event => event !== failure);
+    expect(unrelated).not.toHaveProperty("contexts.run_execution");
+    expect(unrelated).not.toHaveProperty("contexts.run_failure");
+  });
+
   it("keeps portfolio diagnostics bounded and isolated from unrelated captures", async () => {
     const Sentry = sentryPackage!;
     const events: Array<Record<string, unknown>> = [];

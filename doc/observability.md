@@ -515,6 +515,19 @@ and native runs:
 - `run_exception_0` through `run_exception_3`: exception names, codes, HTTP
   statuses, and request IDs for a caught exception and up to three causes.
 
+The orphan reaper records a bounded `processLossDiagnostic` before status writes
+or cleanup. For `process_lost` failures, `run_execution` includes
+`processLossPidRecorded`, `processLossGroupRecorded`, and `processLossLocalCheck`
+(`not_observed_alive`, `not_checked`, or `no_identifiers`). It also includes
+`processLossRunPredatesObserver`, `processLossObserverUptimeMs`, and
+`processLossLastOutputAgeMs` when the timestamps are available and valid. Ages
+above seven days are omitted. These are observations, not proof of an OOM,
+provider failure, or deployment. The last-output age can include system output.
+`processLossRetryEligible` records eligibility for the existing process-loss retry
+at detection; it does not claim that a retry was queued or succeeded. This data
+contains no process IDs, task text, paths, or credentials and changes no recovery
+or ownership decisions.
+
 ACP turns record `acpLastEventAgeMs`, `acpObservedEventCount`,
 `acpPendingToolCount`, and `acpToolInventoryComplete` at finalization, before
 usage reads, error logging, and cleanup. The age measures time since the last

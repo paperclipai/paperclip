@@ -2716,6 +2716,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       stopReason: "process_lost",
       timeoutConfigured: false,
       timeoutFired: false,
+      processLossDiagnostic: {
+        pidRecorded: true, groupRecorded: false, localCheck: "not_observed_alive", retryEligible: true,
+        observerUptimeMs: expect.any(Number), runPredatesObserver: true,
+      },
     });
     // The legacy engine writes this terminal status through the same
     // guarded emitter that reports a genuine failed transition to Sentry.
@@ -2725,6 +2729,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         runId,
         errorCode: "process_lost",
         runStatus: "failed",
+        diagnostics: expect.objectContaining({ execution: expect.objectContaining({
+          processLossPidRecorded: true, processLossGroupRecorded: false, processLossLocalCheck: "not_observed_alive",
+          processLossRetryEligible: true, processLossRunPredatesObserver: true,
+        }) }),
       }),
     );
     const [action] = await db

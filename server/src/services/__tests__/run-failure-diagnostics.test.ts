@@ -7,6 +7,19 @@ const run = (overrides: Partial<Run> = {}) => ({ resultJson: null, ...overrides 
 const collect = (error: unknown) => collectRunFailureDiagnostics(run(), { error });
 
 describe("run failure diagnostics", () => {
+  it("exports bounded orphan evidence only for a process-loss failure", () => {
+    const processLossDiagnostic = { pidRecorded: false, groupRecorded: false, localCheck: "no_identifiers",
+      retryEligible: false, runPredatesObserver: true, observerUptimeMs: 30_000, lastOutputAgeMs: 120_000,
+      pid: 123, path: "/private-path", prompt: "private-prompt" };
+    const resultJson = { processLossDiagnostic };
+    expect(collectRunFailureDiagnostics(run({ errorCode: "process_lost", resultJson }), {}).execution).toEqual({
+      processLossPidRecorded: false, processLossGroupRecorded: false, processLossLocalCheck: "no_identifiers",
+      processLossRetryEligible: false, processLossRunPredatesObserver: true,
+      processLossObserverUptimeMs: 30_000, processLossLastOutputAgeMs: 120_000,
+    });
+    expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed", resultJson }), {}).execution).toEqual({});
+  });
+
   it("exports only the closed native model/auth rejection vocabulary", () => {
     const diagnostic = { provider: "codex", category: "model_auth_incompatible", status: 400, authMode: "chatgpt" };
     const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {

@@ -351,6 +351,8 @@ import {
   emitAgentTaskRunById,
 } from "./agent-task-run-telemetry.js";
 import { reportRunFailure } from "./run-failure-report.js";
+import { performance } from "node:perf_hooks";
+import { buildProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { collectRunFailureSecretValues, type RunFailureReportOptions } from "./run-failure-diagnostics.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, withCurrentBudgetEnforcement, type BudgetEnforcementScope } from "./budgets.js";
@@ -19617,6 +19619,13 @@ export function heartbeatService(
           monitorDispatchLostWithoutFutureWake);
       if (!(await revokeExpiredLegacyController(db, run))) continue;
       const baseMessage = buildProcessLossMessage(run);
+      const processLossDiagnostic = buildProcessLossDiagnostic({
+        run,
+        nowMs: Date.now(),
+        observerStartedAtMs: performance.timeOrigin,
+        checksPersistedChildLiveness,
+        retryEligible: shouldRetry,
+      });
       const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
 
       const failureWrite = await setRunStatusFromLive(
@@ -19633,7 +19642,7 @@ export function heartbeatService(
               "failed",
               {
                 conversationContinuationEligible,
-                resultJson: parseObject(run.resultJson),
+                resultJson: { ...parseObject(run.resultJson), processLossDiagnostic },
                 errorCode: "process_lost",
                 errorMessage: shouldRetry
                   ? `${baseMessage}; retrying once`
