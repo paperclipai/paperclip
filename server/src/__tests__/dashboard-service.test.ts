@@ -93,6 +93,59 @@ describeEmbeddedPostgres("dashboard service", () => {
     ]);
   });
 
+  it("collapses task cards on native issue id before context issue or task id", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const nativeIssueId = randomUUID();
+    const staleContextIssueId = randomUUID();
+    const taskId = randomUUID();
+    const otherIssueId = randomUUID();
+    const activeNativeRunId = randomUUID();
+    const newerNativeRunId = randomUUID();
+    const newerTaskRunId = randomUUID();
+    const olderTaskRunId = randomUUID();
+    const otherIssueRunId = randomUUID();
+
+    await db.insert(companies).values({ id: companyId, name: "Native cards", issuePrefix: "NAT" });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Builder", role: "engineer", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: activeNativeRunId, companyId, agentId, status: "running", nativeIssueId,
+        contextSnapshot: { taskId: randomUUID() },
+        createdAt: new Date("2026-04-10T08:00:00.000Z"),
+      },
+      {
+        // Sorts ahead of the distinct issue. Without nativeIssueId this occupies a slot.
+        id: newerNativeRunId, companyId, agentId, status: "succeeded", nativeIssueId,
+        contextSnapshot: { issueId: staleContextIssueId },
+        createdAt: new Date("2026-04-10T09:40:00.000Z"),
+      },
+      {
+        // Sorts ahead of the older run for the same task. Without taskId both are kept.
+        id: newerTaskRunId, companyId, agentId, status: "succeeded",
+        contextSnapshot: { taskId },
+        createdAt: new Date("2026-04-10T09:35:00.000Z"),
+      },
+      {
+        id: olderTaskRunId, companyId, agentId, status: "succeeded",
+        contextSnapshot: { taskId },
+        createdAt: new Date("2026-04-10T09:20:00.000Z"),
+      },
+      {
+        id: otherIssueRunId, companyId, agentId, status: "succeeded",
+        contextSnapshot: { issueId: otherIssueId },
+        createdAt: new Date("2026-04-10T09:10:00.000Z"),
+      },
+    ]);
+
+    expect(await selectDashboardRunIds(db, companyId, 3)).toEqual([
+      activeNativeRunId, newerTaskRunId, otherIssueRunId,
+    ]);
+  });
+
   it("aggregates the full 14-day run activity window without recent-run truncation", async () => {
     const companyId = randomUUID();
     const otherCompanyId = randomUUID();
