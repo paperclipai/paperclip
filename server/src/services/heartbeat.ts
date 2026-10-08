@@ -3725,6 +3725,20 @@ function appendExcerpt(prev: string, chunk: string) {
   return appendWithByteCap(prev, chunk, MAX_EXCERPT_BYTES);
 }
 
+const MAX_RUN_ERROR_MESSAGE_CHARS = 1024;
+
+export function extractStderrExcerptTail(
+  excerpt: string | null | undefined,
+): string | null {
+  const trimmed = excerpt?.trim();
+  if (!trimmed) return null;
+  const lines = trimmed.split("\n");
+  const tail = lines.slice(-16).join("\n");
+  return tail.length > MAX_RUN_ERROR_MESSAGE_CHARS
+    ? `${tail.slice(-MAX_RUN_ERROR_MESSAGE_CHARS)}`
+    : tail;
+}
+
 function truncateRunEventString(value: string) {
   if (value.length <= MAX_RUN_EVENT_PAYLOAD_STRING_CHARS) return value;
   const omittedChars = value.length - MAX_RUN_EVENT_PAYLOAD_STRING_CHARS;
@@ -25947,14 +25961,34 @@ export function heartbeatService(
           usageBasis: adapterResult.usageBasis ?? null,
         });
         const normalizedUsage = sessionUsageResolution.normalizedUsage;
+        // A redaction or capture bug must never be able to throw away the run
+        // record: extractStderrExcerptTail bounds its own output, and the
+        // whole fallback still degrades to the generic outcome label.
+        let stderrExcerptTail: string | null = null;
+        try {
+          stderrExcerptTail = extractStderrExcerptTail(stderrExcerpt);
+        } catch (error) {
+          logger.warn(
+            { error, runId: run.id },
+            "stderr excerpt failure-tail extraction failed; using generic outcome label",
+          );
+        }
         const runErrorMessage =
           outcome === "cancelled"
-            ? redactCurrentUserText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled", currentUserRedactionOptions)
+            ? redactCurrentUserText(
+                latestRun?.error ??
+                  adapterResult.errorMessage ??
+                  stderrExcerptTail ??
+                  "Cancelled",
+                currentUserRedactionOptions,
+              )
             : outcome === "succeeded"
               ? null
               : redactCurrentUserText(
                   adapterResult.errorMessage ??
-                    (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                    (outcome === "timed_out"
+                      ? (stderrExcerptTail ?? "Timed out")
+                      : (stderrExcerptTail ?? "Adapter failed")),
                   currentUserRedactionOptions,
                 );
         const recordedResponsibleUserDenialCode =
