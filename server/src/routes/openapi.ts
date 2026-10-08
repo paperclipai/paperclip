@@ -2985,7 +2985,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/agents/{agentId}/avatar",
   tags: ["agents"],
   summary: "Upload or reset an agent profile avatar",
-  description: "Operators can update company agent avatars. Agents can update only their own avatar. Task bridge and skill test credentials cannot change profiles. Upload a base64 raster image, or null to restore the preset portrait. Stored avatars use company-scoped private assets.",
+  description: "Board users require agent_config:update permission to change company agent avatars. Agents can update only their own avatar. Task bridge and skill test credentials cannot change profiles. Upload a base64 raster image, or null to restore the preset portrait. Stored avatars use company-scoped private assets.",
   request: {
     params: z.object({ companyId: z.string().uuid(), agentId: z.string().uuid() }),
     body: jsonBody(setAgentAvatarSchema),

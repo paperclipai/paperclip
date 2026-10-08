@@ -7,7 +7,7 @@ import request from "supertest";
 import sharp from "sharp";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { createDb, agents, companies, assets, activityLog, authUsers, companyMemberships, mcpOauthClients, mcpOauthGrants, dotAgentBindings } from "@paperclipai/db";
+import { createDb, agents, companies, assets, activityLog, authUsers, companyMemberships, mcpOauthClients, mcpOauthGrants, dotAgentBindings, principalPermissionGrants } from "@paperclipai/db";
 import { appearanceForPalette, MAX_AGENT_AVATAR_BYTES } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -85,6 +85,23 @@ it("rejects other agents, companies, viewers, and foreign asset references", asy
   const foreign = await setAgentProfileAvatar(db, storage, other.company.id, other.agent.id, { imageBase64 }, other.actor);
   await expect(agentService(db).update(f.agent.id, { appearance: foreign.appearance })).rejects.toThrow("avatar upload");
   await request(appFor({ type: "agent", agentId: f.agent.id, companyId: f.company.id })).get(foreign.avatarUrl).expect(404);
+});
+
+it("requires an agent configuration grant for board avatar changes", async () => {
+  const f = await fixture();
+  const userId = randomUUID();
+  await db.insert(authUsers).values({ id: userId, name: "Member", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+  await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: userId, membershipRole: "member", status: "active" });
+  const app = appFor({ type: "board", source: "session", userId, companyIds: [f.company.id], memberships: [{ companyId: f.company.id, status: "active", membershipRole: "member" }] });
+  const path = `/api/companies/${f.company.id}/agents/${f.agent.id}/avatar`;
+  await request(app).put(path).send({ imageBase64 }).expect(403);
+  await request(app).put(path).send({ imageBase64: null }).expect(403);
+  expect(await db.select().from(assets).where(eq(assets.companyId, f.company.id))).toHaveLength(0);
+  await db.insert(principalPermissionGrants).values({ companyId: f.company.id, principalType: "user", principalId: userId, permissionKey: "agents:suggest-changes" });
+  await request(app).put(path).send({ imageBase64 }).expect(403);
+  await db.insert(principalPermissionGrants).values({ companyId: f.company.id, principalType: "user", principalId: userId, permissionKey: "agents:configure" });
+  await request(app).put(path).send({ imageBase64 }).expect(200);
+  await request(app).put(path).send({ imageBase64: null }).expect(200);
 });
 
 it.each([
