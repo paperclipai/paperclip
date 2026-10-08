@@ -927,6 +927,7 @@ export type {
   ManagedExperimentalFeatureKey,
   ManagedSettingMetadata,
   BackupRetentionPolicy,
+  DatabaseBackupRetentionPolicy,
   Agent,
   AgentAccessState,
   AgentChainOfCommandEntry,
@@ -1779,10 +1780,12 @@ export {
 } from "./types/feedback.js";
 
 export {
+  HOURLY_RETENTION_PRESETS,
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
+  formatBackupRetentionPolicy,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./types/instance.js";
 
@@ -1819,6 +1822,8 @@ export {
 export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
+  backupRetentionPolicySchema,
+  patchBackupRetentionPolicySchema,
   patchInstanceGeneralSettingsSchema,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,

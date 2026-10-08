@@ -58,7 +58,7 @@ describe("InstanceGeneralSettings sign-out", () => {
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
       feedbackDataSharingPreference: "not_allowed",
-      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      backupRetention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
     });
     mockInstanceSettingsApi.updateGeneral.mockResolvedValue(undefined);
     mockAuthApi.signOut.mockResolvedValue({ success: true });
@@ -203,6 +203,24 @@ describe("InstanceGeneralSettings sign-out", () => {
     resolveSettings?.();
     await vi.waitFor(() => expect(signOutButton()?.disabled).toBe(false));
   });
+
+  it("updates the hourly retention tier", async () => {
+    await renderPage(SELF_HOSTED_HEALTH);
+    const twelveHoursButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "12 hours");
+
+    flushSync(() => twelveHoursButton?.click());
+
+    await vi.waitFor(() => expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledOnce());
+    expect(mockInstanceSettingsApi.updateGeneral.mock.calls[0]?.[0]).toEqual({
+      backupRetention: {
+        hourlyHours: 12,
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
+    });
+  });
 });
 
 describe("InstanceGeneralSettings operator-hidden sections", () => {
@@ -218,7 +236,7 @@ describe("InstanceGeneralSettings operator-hidden sections", () => {
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
       feedbackDataSharingPreference: "not_allowed",
-      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      backupRetention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
     });
   });
 

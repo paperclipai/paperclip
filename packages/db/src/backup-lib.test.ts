@@ -4,7 +4,12 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  createBufferedTextFileWriter,
+  pruneOldBackups,
+  runDatabaseBackup,
+  runDatabaseRestore,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -36,6 +41,14 @@ async function createSiblingDatabase(connectionString: string, databaseName: str
   const targetUrl = new URL(connectionString);
   targetUrl.pathname = `/${databaseName}`;
   return targetUrl.toString();
+}
+
+function writeBackupFixture(backupDir: string, name: string, timestamp: string): string {
+  const filePath = path.join(backupDir, `paperclip-test-${name}.sql.gz`);
+  const date = new Date(timestamp);
+  fs.writeFileSync(filePath, name);
+  fs.utimesSync(filePath, date, date);
+  return filePath;
 }
 
 afterEach(async () => {
@@ -72,6 +85,108 @@ describe("createBufferedTextFileWriter", () => {
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
   });
+});
+
+describe("pruneOldBackups", () => {
+  it("keeps the newest backup at hourly, daily, weekly, and monthly boundaries", () => {
+    const backupDir = createTempDir("paperclip-db-backup-tier-boundaries-");
+    const nowMs = Date.parse("2026-09-16T12:00:00.000Z");
+    const files = {
+      hourlyNewest: writeBackupFixture(backupDir, "hourly-newest", "2026-09-16T11:50:00.000Z"),
+      hourlyOlder: writeBackupFixture(backupDir, "hourly-older", "2026-09-16T11:10:00.000Z"),
+      hourlyCutoff: writeBackupFixture(backupDir, "hourly-cutoff", "2026-09-15T13:00:00.000Z"),
+      dailyNewest: writeBackupFixture(backupDir, "daily-newest", "2026-09-14T18:00:00.000Z"),
+      dailyOlder: writeBackupFixture(backupDir, "daily-older", "2026-09-14T10:00:00.000Z"),
+      dailyCutoff: writeBackupFixture(backupDir, "daily-cutoff", "2026-09-09T12:00:00.000Z"),
+      weeklyNewest: writeBackupFixture(backupDir, "weekly-newest", "2026-09-08T18:00:00.000Z"),
+      weeklyOlder: writeBackupFixture(backupDir, "weekly-older", "2026-09-07T10:00:00.000Z"),
+      weeklyCutoff: writeBackupFixture(backupDir, "weekly-cutoff", "2026-08-19T12:00:00.000Z"),
+      monthlyNewest: writeBackupFixture(backupDir, "monthly-newest", "2026-08-18T18:00:00.000Z"),
+      monthlyOlder: writeBackupFixture(backupDir, "monthly-older", "2026-08-10T10:00:00.000Z"),
+      monthlyCutoff: writeBackupFixture(backupDir, "monthly-cutoff", "2026-07-01T00:00:00.000Z"),
+      expired: writeBackupFixture(backupDir, "expired", "2026-06-30T23:59:59.000Z"),
+    };
+
+    const prunedCount = pruneOldBackups(
+      backupDir,
+      { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+      "paperclip-test",
+      nowMs,
+    );
+
+    expect(prunedCount).toBe(5);
+    expect(fs.existsSync(files.hourlyNewest)).toBe(true);
+    expect(fs.existsSync(files.hourlyOlder)).toBe(false);
+    expect(fs.existsSync(files.hourlyCutoff)).toBe(true);
+    expect(fs.existsSync(files.dailyNewest)).toBe(true);
+    expect(fs.existsSync(files.dailyOlder)).toBe(false);
+    expect(fs.existsSync(files.dailyCutoff)).toBe(true);
+    expect(fs.existsSync(files.weeklyNewest)).toBe(true);
+    expect(fs.existsSync(files.weeklyOlder)).toBe(false);
+    expect(fs.existsSync(files.weeklyCutoff)).toBe(true);
+    expect(fs.existsSync(files.monthlyNewest)).toBe(true);
+    expect(fs.existsSync(files.monthlyOlder)).toBe(false);
+    expect(fs.existsSync(files.monthlyCutoff)).toBe(true);
+    expect(fs.existsSync(files.expired)).toBe(false);
+  });
+
+  it("reduces the measured 55-file shape to 32 retained anchors", () => {
+    const backupDir = createTempDir("paperclip-db-backup-measured-shape-");
+    const nowMs = Date.parse("2026-09-16T12:00:00.000Z");
+    const timestamps: string[] = [];
+
+    for (let hoursAgo = 0; hoursAgo < 24; hoursAgo += 1) {
+      timestamps.push(new Date(nowMs - hoursAgo * 60 * 60 * 1000).toISOString());
+    }
+    for (const day of [14, 13, 12, 11]) {
+      for (const hour of [20, 15, 10, 5]) {
+        timestamps.push(new Date(Date.UTC(2026, 8, day, hour)).toISOString());
+      }
+    }
+    for (const day of [8, 1]) {
+      for (const hour of [20, 15, 10, 5]) {
+        timestamps.push(new Date(Date.UTC(2026, 8, day, hour)).toISOString());
+      }
+    }
+    for (const hour of [20, 15, 10, 5]) {
+      timestamps.push(new Date(Date.UTC(2026, 7, 25, hour)).toISOString());
+    }
+    for (const day of [18, 10, 2]) {
+      timestamps.push(new Date(Date.UTC(2026, 7, day, 12)).toISOString());
+    }
+
+    expect(timestamps).toHaveLength(55);
+    timestamps.forEach((timestamp, index) => {
+      writeBackupFixture(backupDir, `measured-${String(index).padStart(2, "0")}`, timestamp);
+    });
+
+    const prunedCount = pruneOldBackups(
+      backupDir,
+      { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      "paperclip-test",
+      nowMs,
+    );
+
+    expect(prunedCount).toBe(23);
+    expect(fs.readdirSync(backupDir)).toHaveLength(32);
+  });
+
+  it("does not prune existing files when the new backup fails", async () => {
+    const backupDir = createTempDir("paperclip-db-backup-failed-run-");
+    const existing = writeBackupFixture(backupDir, "existing", "2026-01-01T00:00:00.000Z");
+
+    await expect(runDatabaseBackup({
+      connectionString: "postgres://paperclip:paperclip@127.0.0.1:1/paperclip",
+      backupDir,
+      retention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      filenamePrefix: "paperclip-test",
+      connectTimeoutSeconds: 1,
+      backupEngine: "javascript",
+    })).rejects.toThrow();
+
+    expect(fs.existsSync(existing)).toBe(true);
+    expect(fs.readdirSync(backupDir)).toEqual([path.basename(existing)]);
+  }, 10_000);
 });
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
@@ -111,23 +226,28 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       const realDateNow = Date.now;
       Date.now = () => Date.UTC(2026, 2, 31, 12, 0, 0);
 
-      const janNewest = path.join(backupDir, "paperclip-test-2026-01-28T12-00-00.sql.gz");
-      const janOlder = path.join(backupDir, "paperclip-test-2026-01-10T12-00-00.sql.gz");
-      const decOld = path.join(backupDir, "paperclip-test-2025-12-15T12-00-00.sql.gz");
+      const janNewest = writeBackupFixture(
+        backupDir,
+        "2026-01-28T12-00-00",
+        "2026-01-28T12:00:00Z",
+      );
+      const janOlder = writeBackupFixture(
+        backupDir,
+        "2026-01-10T12-00-00",
+        "2026-01-10T12:00:00Z",
+      );
+      const decOld = writeBackupFixture(
+        backupDir,
+        "2025-12-15T12-00-00",
+        "2025-12-15T12:00:00Z",
+      );
 
       try {
-        fs.writeFileSync(janNewest, "jan-newest");
-        fs.writeFileSync(janOlder, "jan-older");
-        fs.writeFileSync(decOld, "dec-old");
-
-        fs.utimesSync(janNewest, new Date("2026-01-28T12:00:00Z"), new Date("2026-01-28T12:00:00Z"));
-        fs.utimesSync(janOlder, new Date("2026-01-10T12:00:00Z"), new Date("2026-01-10T12:00:00Z"));
-        fs.utimesSync(decOld, new Date("2025-12-15T12:00:00Z"), new Date("2025-12-15T12:00:00Z"));
 
         const result = await runDatabaseBackup({
           connectionString: sourceConnectionString,
           backupDir,
-          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
+          retention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 2 },
           filenamePrefix: "paperclip-test",
         });
 
@@ -208,7 +328,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         const result = await runDatabaseBackup({
           connectionString: sourceConnectionString,
           backupDir,
-          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          retention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
           filenamePrefix: "paperclip-test",
           backupEngine: "javascript",
         });
@@ -344,7 +464,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         const result = await runDatabaseBackup({
           connectionString: sourceConnectionString,
           backupDir,
-          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          retention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
           filenamePrefix: "paperclip-full-logical-test",
           backupEngine: "javascript",
           excludeTables: ["plugin_rows"],
@@ -455,7 +575,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         const result = await runDatabaseBackup({
           connectionString: sourceConnectionString,
           backupDir,
-          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          retention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
           filenamePrefix: "paperclip-composite-fk-test",
           backupEngine: "javascript",
         });
@@ -545,7 +665,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         const result = await runDatabaseBackup({
           connectionString: sourceConnectionString,
           backupDir,
-          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          retention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
           filenamePrefix: "paperclip-copy-fk-test",
           backupEngine: "auto",
         });

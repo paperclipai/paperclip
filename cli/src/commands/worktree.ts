@@ -21,6 +21,7 @@ import { createServer } from "node:net";
 import { Readable } from "node:stream";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
+import { DEFAULT_BACKUP_RETENTION } from "@paperclipai/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   resolveCanonicalWorktreeSeedSource,
@@ -1697,7 +1698,7 @@ async function seedWorktreeDatabase(input: {
     const backup = await runDatabaseBackup({
       connectionString: sourceConnectionString,
       backupDir: path.resolve(input.targetPaths.backupDir, "seed"),
-      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      retention: DEFAULT_BACKUP_RETENTION,
       filenamePrefix: `${input.instanceId}-seed`,
       backupEngine: resolveWorktreeSeedBackupEngine(seedPlan),
       includeMigrationJournal: true,
@@ -4247,7 +4248,12 @@ async function backupWorktreeReseedTarget(input: {
     const result = await runDatabaseBackup({
       connectionString: `postgres://paperclip:paperclip@127.0.0.1:${targetHandle.port}/paperclip`,
       backupDir: path.resolve(input.targetPaths.backupDir, "repair"),
-      retention: { dailyDays: 30, weeklyWeeks: 12, monthlyMonths: 12 },
+      retention: {
+        ...DEFAULT_BACKUP_RETENTION,
+        dailyDays: 30,
+        weeklyWeeks: 12,
+        monthlyMonths: 12,
+      },
       filenamePrefix: `${input.targetPaths.instanceId}-pre-repair`,
       backupEngine: "auto",
       includeMigrationJournal: true,

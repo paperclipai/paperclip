@@ -231,6 +231,7 @@ function makeInstanceSettings({
       censorUsernameInLogs: true,
       feedbackDataSharingPreference: "prompt",
       backupRetention: {
+        hourlyHours: 24,
         dailyDays: 7,
         weeklyWeeks: 4,
         monthlyMonths: 1,

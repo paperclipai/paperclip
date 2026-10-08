@@ -813,18 +813,18 @@ describe("instance settings routes", () => {
       mockInstanceSettingsService.getGeneral.mockResolvedValue({
         censorUsernameInLogs: false,
         feedbackDataSharingPreference: "prompt",
-        backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        backupRetention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       });
       const app = await createApp(adminActor);
 
       const echo = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 } });
+        .send({ backupRetention: { hourlyHours: 24, dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 } });
       expect(echo.status).toBe(200);
 
       const change = await request(app)
         .patch("/api/instance/settings/general")
-        .send({ backupRetention: { dailyDays: 14, weeklyWeeks: 4, monthlyMonths: 1 } });
+        .send({ backupRetention: { hourlyHours: 24, dailyDays: 14, weeklyWeeks: 4, monthlyMonths: 1 } });
       expect(change.status).toBe(403);
       expect(change.body.details).toMatchObject({ code: "settings_operator_managed" });
     });

@@ -1,6 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
-import type { BindMode, DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import {
+  formatBackupRetentionPolicy,
+  type BackupRetentionPolicy,
+  type BindMode,
+  type DeploymentExposure,
+  type DeploymentMode,
+} from "@paperclipai/shared";
 
 import { parse as parseEnvFileContents } from "dotenv";
 
@@ -32,7 +38,7 @@ type StartupBannerOptions = {
   heartbeatSchedulerIntervalMs: number;
   databaseBackupEnabled: boolean;
   databaseBackupIntervalMinutes: number;
-  databaseBackupRetentionDays: number;
+  databaseBackupRetention: BackupRetentionPolicy | null;
   databaseBackupDir: string;
 };
 
@@ -130,8 +136,9 @@ export function printStartupBanner(opts: StartupBannerOptions): void {
   const heartbeat = opts.heartbeatSchedulerEnabled
     ? `enabled ${color(`(${opts.heartbeatSchedulerIntervalMs}ms)`, "dim")}`
     : color("disabled", "yellow");
-  const dbBackup = opts.databaseBackupEnabled
-    ? `enabled ${color(`(every ${opts.databaseBackupIntervalMinutes}m, keep ${opts.databaseBackupRetentionDays}d)`, "dim")}`
+  const retention = opts.databaseBackupRetention;
+  const dbBackup = opts.databaseBackupEnabled && retention
+    ? `enabled ${color(`(every ${opts.databaseBackupIntervalMinutes}m; keep ${formatBackupRetentionPolicy(retention)})`, "dim")}`
     : color("disabled", "yellow");
 
   const art = [

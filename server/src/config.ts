@@ -77,7 +77,6 @@ export interface Config {
   embeddedPostgresPort: number;
   databaseBackupEnabled: boolean;
   databaseBackupIntervalMinutes: number;
-  databaseBackupRetentionDays: number;
   databaseBackupDir: string;
   workspaceReaperCooldownDays: number;
   serveUi: boolean;
@@ -266,12 +265,6 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.intervalMinutes ||
       60,
   );
-  const databaseBackupRetentionDays = Math.max(
-    1,
-    Number(process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS) ||
-      fileDatabaseBackup?.retentionDays ||
-      7,
-  );
   const databaseBackupDir = resolveHomeAwarePath(
     process.env.PAPERCLIP_DB_BACKUP_DIR ??
       fileDatabaseBackup?.dir ??
@@ -280,9 +273,7 @@ export function loadConfig(): Config {
   // The terminal-workspace reaper waits this many days after an issue tree
   // becomes terminal before it archives the workspace. A person can reopen the
   // work inside this window. A value of 0 disables the cooldown and restores
-  // immediate reaping. A negative or non-numeric value falls back to the
-  // default. The day granularity and the default of 7 obey the
-  // PAPERCLIP_DB_BACKUP_RETENTION_DAYS precedent above.
+  // immediate reaping. A negative or non-numeric value falls back to the default.
   const workspaceReaperCooldownDaysEnv =
     process.env.PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS?.trim();
   const workspaceReaperCooldownDaysRaw = Number(workspaceReaperCooldownDaysEnv);
@@ -335,7 +326,6 @@ export function loadConfig(): Config {
     embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54329,
     databaseBackupEnabled,
     databaseBackupIntervalMinutes,
-    databaseBackupRetentionDays,
     databaseBackupDir,
     workspaceReaperCooldownDays,
     serveUi:

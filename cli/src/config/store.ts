@@ -69,6 +69,13 @@ function migrateLegacyConfig(raw: unknown): unknown {
     }
   }
 
+  const backupRaw = database.backup;
+  if (typeof backupRaw === "object" && backupRaw !== null && !Array.isArray(backupRaw)) {
+    const backup = { ...(backupRaw as Record<string, unknown>) };
+    delete backup.retentionDays;
+    database.backup = backup;
+  }
+
   config.database = database;
   return config;
 }
@@ -195,9 +202,15 @@ export function writeConfig(
   let nextConfig = paperclipConfigSchema.parse(config);
   if (fs.existsSync(filePath)) {
     try {
-      const source = paperclipConfigSchema.parse(migrateLegacyConfig(parseJson(filePath)));
+      const rawSource = parseJson(filePath);
+      const migratedSource = migrateLegacyConfig(rawSource);
+      // Migration itself is a change worth persisting: the schema passes unknown keys
+      // through, so a retired key such as database.backup.retentionDays survives on disk
+      // forever unless a legacy-only rewrite counts as a write.
+      const migrationRewroteSource = !isDeepStrictEqual(rawSource, migratedSource);
+      const source = paperclipConfigSchema.parse(migratedSource);
       nextConfig = paperclipConfigSchema.parse(mergePaperclipConfig(source, nextConfig));
-      if (isDeepStrictEqual(effectiveConfig(source), effectiveConfig(nextConfig))) {
+      if (!migrationRewroteSource && isDeepStrictEqual(effectiveConfig(source), effectiveConfig(nextConfig))) {
         return false;
       }
     } catch (error) {

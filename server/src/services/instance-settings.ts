@@ -538,12 +538,18 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
       const storedGeneral = normalizeGeneralSettings(current.general);
+      // Deep-merge backupRetention so an older client that omits hourlyHours
+      // (or any tier) keeps the stored value instead of resetting to default.
+      const mergedPatch = { ...patch };
+      if (patch.backupRetention) {
+        mergedPatch.backupRetention = { ...storedGeneral.backupRetention, ...patch.backupRetention };
+      }
       // A full-GET echo carries the overlaid operator value for a field the
       // user never chose; stripping it keeps the overlay strictly read-time,
       // so changing or unsetting the variable later still takes effect.
       const nextGeneral = stripOperatorGeneralEchoes(
         storedGeneral,
-        normalizeGeneralSettings({ ...storedGeneral, ...patch }),
+        normalizeGeneralSettings({ ...storedGeneral, ...mergedPatch }),
         operatorDefaults,
       );
       const now = new Date();

@@ -95,11 +95,11 @@ describe("promptDatabase accepts defaults", () => {
     expect(db.embeddedPostgresPort).toBe(54329);
     expect(db.embeddedPostgresDataDir).toBeTruthy();
     expect(db.backup.intervalMinutes).toBe(60);
-    expect(db.backup.retentionDays).toBe(30);
+    expect(db.backup).not.toHaveProperty("retentionDays");
     expect(db.backup.dir).toBeTruthy();
   });
 
-  it("keeps real validation for typed port, interval, and retention input", async () => {
+  it("keeps real validation for typed port and interval input", async () => {
     queueSelects(["embedded-postgres"]);
     await promptDatabase();
 
@@ -116,12 +116,6 @@ describe("promptDatabase accepts defaults", () => {
     expect(interval("60")).toBeUndefined();
     expect(interval("0")).toBeTruthy();
     expect(interval("999999")).toBeTruthy();
-
-    const retention = validatorFor("Backup retention (days)");
-    expect(retention("")).toBeUndefined();
-    expect(retention("30")).toBeUndefined();
-    expect(retention("0")).toBeTruthy();
-    expect(retention("99999")).toBeTruthy();
 
     const backupDir = validatorFor("Backup directory");
     expect(backupDir("")).toBeUndefined();
