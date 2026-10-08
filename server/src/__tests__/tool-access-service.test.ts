@@ -15468,6 +15468,52 @@ describeEmbeddedPostgres("tool access service", () => {
   );
 
   it.each([
+    ["initialize reset", false],
+    ["initialize parser", true],
+    ["initialize internal reader", true],
+    ["notification 503", false],
+    ["notification 400", true],
+  ] as const)("preserves session-required MCP failure reporting: %s", async (scenario, reportable) => {
+    const company = await createCompany(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id, applicationKey: `session-status-${randomUUID()}`,
+      name: "MCP session fixture", type: "mcp_http", status: "active",
+    }).returning();
+    const config = { url: "https://session-status.example.test/mcp", mcpSessionRequired: true };
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id, applicationId: application!.id, name: "MCP session fixture",
+      uid: `test/${randomUUID()}`, transport: "mcp_remote", status: "draft", enabled: false,
+      config, transportConfig: config,
+    }).returning();
+    const methods: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      methods.push(request.method);
+      if (request.method === "notifications/initialized") return new Response(null, { status: scenario === "notification 503" ? 503 : 400 });
+      expect(request.method).toBe("initialize");
+      if (scenario === "initialize parser") return new Response("not JSON");
+      if (scenario === "initialize reset" || scenario === "initialize internal reader") {
+        const error = scenario === "initialize reset"
+          ? new TypeError("body terminated", { cause: { code: "ECONNRESET" } })
+          : new TypeError("internal reader failed");
+        return new Response(new ReadableStream({ start(controller) { controller.error(error); } }));
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2025-06-18" } }));
+    });
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    const response = await request(createRouteApp(db)).post(`/api/tool-connections/${connection!.id}/catalog/refresh`);
+    expect(response.status).toBe(502);
+    expect(response.body.error).toBeTruthy();
+    expect(capture).toHaveBeenCalledTimes(reportable ? 1 : 0);
+    expect(methods).toEqual(scenario.startsWith("notification") ? ["initialize", "notifications/initialized"] : ["initialize"]);
+    const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+    expect(updated?.healthStatus).toBe("error");
+    expect(updated?.healthMessage).toBe(response.body.error);
+    await expect(db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.connectionId, connection!.id)))
+      .resolves.toEqual(expect.arrayContaining([expect.objectContaining({ outcome: "failure", action: "tool_connection.catalog_refresh" })]));
+  });
+
+  it.each([
     ["known transport", () => { throw new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } }); }, false],
     ["direct transport", () => { throw Object.assign(new Error("connection reset"), { code: "ECONNRESET" }); }, false],
     ["unknown transport", () => { throw new TypeError("ECONNREFUSED"); }, true],

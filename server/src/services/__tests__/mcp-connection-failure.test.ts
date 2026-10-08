@@ -2,8 +2,25 @@ import { describe, expect, it } from "vitest";
 import { HttpError } from "../../errors.js";
 import { isExpectedMcpConnectionFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "../mcp-connection-failure.js";
 import { assertPublicRemoteHttpEndpoint } from "../remote-http-endpoint-guard.js";
+import { classifyRemoteConnectionError, markRemoteConnectionFailure, readRemoteConnectionFailure, recordRemoteConnectionAttempts } from "../remote-connection-failure.js";
 
 describe("MCP outbound failure provenance", () => {
+  it("lets an unknown address override existing MCP and owned-timeout receipts on the final error", async () => {
+    const last = markRemoteConnectionFailure(Object.assign(new HttpError(502, "last address timed out"), { code: "ETIMEDOUT" }), "connection_timeout");
+    await expect(withMcpConnectionFailure(async () => { throw last; })).rejects.toBe(last);
+    expect(isExpectedMcpConnectionFailure(last)).toBe(true);
+    expect(isExpectedMcpConnectionFailure(retainMcpConnectionFailure(last, new HttpError(502, last.message)))).toBe(true);
+    const unknown = Object.assign(new Error("first address exhausted file descriptors"), { code: "EMFILE" });
+    expect(recordRemoteConnectionAttempts(last, [unknown, last])).toBe(last);
+    expect(readRemoteConnectionFailure(last)).toBeNull();
+    expect(classifyRemoteConnectionError(last)).toBeNull();
+    expect(classifyRemoteConnectionError(new TypeError("wrapped", { cause: last }))).toBeNull();
+    expect(isExpectedMcpConnectionFailure(last)).toBe(false);
+    expect(isExpectedMcpConnectionFailure(retainMcpConnectionFailure(last, new HttpError(502, last.message)))).toBe(false);
+    await expect(withMcpConnectionFailure(async () => { throw last; })).rejects.toBe(last);
+    expect(isExpectedMcpConnectionFailure(retainMcpConnectionFailure(last, new HttpError(502, last.message)))).toBe(false);
+  });
+
   it.each([
     "ECONNREFUSED", "ENOTFOUND", "ENODATA", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH",
     "ECONNRESET", "EPIPE", "UND_ERR_SOCKET", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT",

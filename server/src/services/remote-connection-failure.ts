@@ -3,6 +3,25 @@ export type RemoteConnectionFailureReason = "connection_refused" | "dns_failure"
   | "connection_reset" | "connection_timeout" | "tls_failure";
 type Reason = RemoteConnectionFailureReason;
 const failures = new WeakMap<Error, Reason>();
+const failedAttempts = new WeakMap<Error, readonly (Reason | null)[]>();
+
+function attemptFailureReason(reasons: readonly (Reason | null)[]): Reason | null {
+  return reasons.length > 0 && reasons.every((reason) => reason !== null) ? reasons[reasons.length - 1]! : null;
+}
+
+/** Keep every address's classification without changing the final thrown value. */
+export function recordRemoteConnectionAttempts<T>(error: T, causes: readonly unknown[]): T {
+  if (error instanceof Error) {
+    const reasons = causes.map((cause) => readRemoteConnectionFailure(cause) ?? classifyRemoteConnectionError(cause));
+    failedAttempts.set(error, Object.freeze(reasons));
+  }
+  return error;
+}
+
+export function hasUnclassifiedRemoteConnectionAttempts(error: unknown): boolean {
+  const attempts = error instanceof Error ? failedAttempts.get(error) : undefined;
+  return attempts !== undefined && attemptFailureReason(attempts) === null;
+}
 
 export function markRemoteConnectionFailure<T extends Error>(error: T, reason: Reason): T {
   failures.set(error, reason);
@@ -10,7 +29,10 @@ export function markRemoteConnectionFailure<T extends Error>(error: T, reason: R
 }
 
 export function readRemoteConnectionFailure(error: unknown): Reason | null {
-  return error instanceof Error ? failures.get(error) ?? null : null;
+  if (!(error instanceof Error)) return null;
+  const attempts = failedAttempts.get(error);
+  // An explicit unknown attempt overrides even a known final owned deadline.
+  return attempts ? attemptFailureReason(attempts) : failures.get(error) ?? null;
 }
 
 const transportReasons: Readonly<Record<string, Reason>> = {
@@ -38,6 +60,9 @@ const transportReasons: Readonly<Record<string, Reason>> = {
 
 export function classifyRemoteConnectionError(value: unknown, depth = 0): Reason | null {
   if (!value || typeof value !== "object" || Array.isArray(value) || depth > 2) return null;
+  const attempts = value instanceof Error ? failedAttempts.get(value) : undefined;
+  // Do not fall back to the last error's code/cause after mixed attempts.
+  if (attempts) return attemptFailureReason(attempts);
   const error = value as Record<string, unknown>;
   if (error.name === "AbortError") return null;
   const reason = typeof error.code === "string" && Object.hasOwn(transportReasons, error.code)

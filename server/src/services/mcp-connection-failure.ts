@@ -1,6 +1,6 @@
 import type { ConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
 import { HttpError } from "../errors.js";
-import { classifyRemoteConnectionError, readRemoteConnectionFailure } from "./remote-connection-failure.js";
+import { classifyRemoteConnectionError, hasUnclassifiedRemoteConnectionAttempts, readRemoteConnectionFailure } from "./remote-connection-failure.js";
 
 type McpConnectionFailure = Extract<ConnectionFailure, { provider: "mcp_http" }>;
 type Reason = McpConnectionFailure["reason"];
@@ -19,6 +19,7 @@ export async function withMcpConnectionFailure<T>(request: () => Promise<T>): Pr
     return await request();
   } catch (error) {
     if (error instanceof Error) {
+      if (hasUnclassifiedRemoteConnectionAttempts(error)) failures.delete(error);
       const reason = readRemoteConnectionFailure(error) ?? classifyRemoteConnectionError(error);
       if (reason) remember(error, reason);
     }
@@ -28,7 +29,11 @@ export async function withMcpConnectionFailure<T>(request: () => Promise<T>): Pr
 
 /** Preserve the existing HTTP failure; classify only the actual remote status. */
 export function mcpDiscoveryHttpFailure(response: Response, message: string): HttpError {
-  const error = new HttpError(502, message, { status: response.status });
+  return markMcpHttpResponseFailure(response, new HttpError(502, message, { status: response.status }));
+}
+
+/** Only an actual MCP response can attach this evidence to a protocol wrapper. */
+export function markMcpHttpResponseFailure<T extends Error>(response: Response, error: T): T {
   const status = response.status;
   const reason: Reason | null = status === 401 || status === 403 ? "authentication_failed"
     : status === 404 ? "endpoint_not_found"
@@ -39,7 +44,11 @@ export function mcpDiscoveryHttpFailure(response: Response, message: string): Ht
 }
 
 /** Rewrapping a known error must not classify unrelated persistence failures. */
-export function retainMcpConnectionFailure(source: unknown, target: HttpError): HttpError {
+export function retainMcpConnectionFailure<T extends Error>(source: unknown, target: T): T {
+  if (hasUnclassifiedRemoteConnectionAttempts(source)) {
+    failures.delete(target);
+    return target;
+  }
   const failure = source instanceof Error ? failures.get(source) : undefined;
   if (failure) failures.set(target, failure);
   else {
@@ -50,5 +59,5 @@ export function retainMcpConnectionFailure(source: unknown, target: HttpError): 
 }
 
 export function isExpectedMcpConnectionFailure(error: unknown): boolean {
-  return error instanceof HttpError && error.status === 502 && failures.has(error);
+  return error instanceof HttpError && error.status === 502 && !hasUnclassifiedRemoteConnectionAttempts(error) && failures.has(error);
 }

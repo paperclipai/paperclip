@@ -4,7 +4,7 @@ import { connect as netConnect, isIP, type Socket } from "node:net";
 import { Readable } from "node:stream";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
-import { classifyRemoteConnectionError, markRemoteConnectionFailure } from "./remote-connection-failure.js";
+import { classifyRemoteConnectionError, markRemoteConnectionFailure, recordRemoteConnectionAttempts } from "./remote-connection-failure.js";
 
 import {
   isAlwaysDeniedLinkLocalIp,
@@ -191,17 +191,21 @@ async function dialApprovedAddress(input: {
   options: GuardedRemoteHttpFetchOptions;
 }): Promise<Socket | TLSSocket> {
   let lastReason: unknown;
+  const failedAttempts: unknown[] = [];
   for (const address of input.approved) {
     input.signal?.throwIfAborted?.();
     try {
       return await openVerifiedSocket({ ...input, address });
     } catch (error) {
-      if (!(error instanceof UnreachableAddressError)) throw error;
+      if (!(error instanceof UnreachableAddressError)) {
+        throw recordRemoteConnectionAttempts(error, [...failedAttempts, error]);
+      }
       lastReason = error.reason;
+      failedAttempts.push(error.reason);
     }
   }
-  throw lastReason
-    ?? input.options.error("Remote MCP endpoint could not be reached", "remote_http_connect_failed");
+  throw recordRemoteConnectionAttempts(lastReason
+    ?? input.options.error("Remote MCP endpoint could not be reached", "remote_http_connect_failed"), failedAttempts);
 }
 
 /**
