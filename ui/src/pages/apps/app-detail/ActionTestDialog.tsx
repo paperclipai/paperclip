@@ -38,7 +38,6 @@ import {
 import {
   JsonSchemaForm,
   getDefaultValues,
-  resolveType,
   validateJsonSchemaForm,
   type JsonSchemaNode,
 } from "@/components/JsonSchemaForm";
@@ -407,51 +406,6 @@ function splitRequiredOptional(schema: JsonSchemaNode): JsonSchemaNode {
   return { ...schema, properties: next };
 }
 
-/**
- * Remove optional object branches that contain only blank form values.
- * Expanding an object editor does not add values, so an untouched optional
- * branch remains absent; once it contains any nonblank value, preserve that
- * value (including values equal to schema defaults) and validate descendants.
- */
-export function prepareActionTestParameters(
-  schema: JsonSchemaNode,
-  values: Record<string, unknown>,
-): { parameters: Record<string, unknown>; errors: Record<string, string> } {
-  const cleanObject = (
-    objectSchema: JsonSchemaNode,
-    objectValues: Record<string, unknown>,
-  ): Record<string, unknown> => {
-    const properties = objectSchema.properties ?? {};
-    const required = new Set(objectSchema.required ?? []);
-    const cleaned: Record<string, unknown> = {};
-
-    for (const [key, value] of Object.entries(objectValues)) {
-      const propertySchema = properties[key];
-      if (!propertySchema) {
-        if (value !== undefined) cleaned[key] = value;
-        continue;
-      }
-
-      if (resolveType(propertySchema) === "object" && value && typeof value === "object" && !Array.isArray(value)) {
-        const nested = cleanObject(propertySchema, value as Record<string, unknown>);
-        const hasValue = Object.values(nested).some(
-          (nestedValue) => nestedValue !== undefined && nestedValue !== null && nestedValue !== "",
-        );
-        if (required.has(key) || hasValue) cleaned[key] = nested;
-        continue;
-      }
-
-      if (value === undefined || value === null || value === "") continue;
-      cleaned[key] = value;
-    }
-
-    return cleaned;
-  };
-
-  const parameters = cleanObject(schema, values);
-  return { parameters, errors: validateJsonSchemaForm(schema, parameters) };
-}
-
 const GUT_CHECK: Record<ToolConnectionTestDecision, (app: string, agent: string) => string> = {
   allowed: (app, agent) => `This runs a real call against ${app} as ${agent}.`,
   ask_first: () => `Waiting for your OK before this call leaves Paperclip.`,
@@ -534,16 +488,15 @@ function ActionTester({
   });
 
   const onRun = () => {
-    const prepared = prepareActionTestParameters(rawSchema, values);
-    setErrors(prepared.errors);
-    if (Object.keys(prepared.errors).length > 0) return;
-    setValues(prepared.parameters);
+    const validationErrors = validateJsonSchemaForm(rawSchema, values);
+    setErrors(validationErrors);
+    if (Object.keys(validationErrors).length > 0) return;
     cancelledRef.current = false;
     startedAtRef.current = Date.now();
     setElapsedMs(0);
     setOutcome(null);
     setRunning(true);
-    run.mutate(prepared.parameters);
+    run.mutate(values);
   };
 
   const onReset = () => {

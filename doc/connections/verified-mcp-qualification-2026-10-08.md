@@ -52,3 +52,13 @@ separate local checkpoint branch and are outside this PR.
 Repository validation is recorded in the PR description after checks complete.
 Browser proof establishes these reads, not expiry refresh, provider writes, or
 execution through an actual agent adapter.
+
+## PR UI retest
+
+The PR checkout UI was previewed on a separate loopback port against the existing, authorized local qualification server. This retest covers frontend behavior; it is not a new live proof of the revised server OAuth recovery path. Calendly appeared connected in the catalog and its setup screen displayed before authorization. The Firecrawl scrape tester succeeded after expanding More options, entering only the public `https://paperclip.ing` URL, and leaving nested optional inputs untouched. No new provider authorization or agent heartbeat was started.
+
+- [Calendly catalog](verified-mcp-qualification-2026-10-08/calendly-catalog.jpg)
+- [Calendly setup before authorization](verified-mcp-qualification-2026-10-08/calendly-setup.jpg)
+- [Firecrawl successful read](verified-mcp-qualification-2026-10-08/firecrawl-read.jpg)
+
+OAuth recovery now refreshes credentials after an upstream 401 and returns `oauth_refreshed_retry_required` without replaying the tool call. The caller must retry explicitly; that invocation creates a session with refreshed credentials when required. The regression test verifies single dispatch on each invocation and fresh session/protocol headers on explicit retry. This behavior also applies to the existing managed and Vercel OAuth gateway paths.

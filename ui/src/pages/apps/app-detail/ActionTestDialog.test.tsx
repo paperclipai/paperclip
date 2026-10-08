@@ -6,8 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolCatalogEntry } from "@paperclipai/shared";
-import type { JsonSchemaNode } from "@/components/JsonSchemaForm";
-import { ActionTestDialog, errorHints, prepareActionTestParameters } from "./ActionTestDialog";
+import { ActionTestDialog, errorHints } from "./ActionTestDialog";
 
 const listTestAgentsMock = vi.hoisted(() => vi.fn());
 const getTestAgentAccessMock = vi.hoisted(() => vi.fn());
@@ -158,153 +157,96 @@ afterEach(async () => {
 });
 
 describe("Permissions action Test dialog", () => {
-  it("omits blank optional Firecrawl branches before ActionTester validation", () => {
-    const schema: JsonSchemaNode = {
-      type: "object",
-      properties: {
-        url: { type: "string" },
-        profile: {
-          type: "object",
-          required: ["name"],
-          properties: { name: { type: "string" } },
-        },
-        queryOptions: {
-          type: "object",
-          required: ["prompt"],
-          properties: {
-            mode: { type: "string", enum: ["directQuote", "freeform"], default: "freeform" },
-            prompt: { type: "string" },
-          },
-        },
-        screenshotOptions: {
-          type: "object",
-          properties: {
-            viewport: {
-              type: "object",
-              required: ["width", "height"],
-              properties: { width: { type: "number" }, height: { type: "number" } },
+  it("forwards an explicitly cleared optional text field", async () => {
+    const textEntry = {
+      ...entry,
+      inputSchema: { type: "object", properties: { update_text: { type: "string" } } },
+    } as ToolCatalogEntry;
+    runTestCallMock.mockResolvedValue({ decision: "allowed", invocationId: "empty-text" });
+
+    await renderDialog(textEntry);
+    const moreOptions = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "More options");
+    expect(moreOptions).toBeTruthy();
+    await act(() => moreOptions!.click());
+    const input = document.body.querySelector<HTMLInputElement>('input[aria-label="Update Text"]');
+    expect(input).toBeTruthy();
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    await act(() => {
+      setValue!.call(input, "draft");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(() => {
+      setValue!.call(input, "");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const runButton = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Run");
+    await act(() => runButton!.click());
+    await flushReact();
+
+    expect(runTestCallMock).toHaveBeenCalledWith("conn-1", {
+      agentId: "agent-ceo",
+      toolName: "list_projects",
+      parameters: { update_text: "" },
+    });
+  });
+
+  it("forwards false, zero, and an explicit object default without normalization", async () => {
+    const defaultsEntry = {
+      ...entry,
+      inputSchema: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", default: false },
+          count: { type: "integer", default: 0 },
+          options: {
+            type: "object",
+            default: { enabled: false, count: 0 },
+            required: ["enabled", "count"],
+            properties: {
+              enabled: { type: "boolean" },
+              count: { type: "integer" },
             },
           },
         },
       },
-    };
+    } as ToolCatalogEntry;
+    runTestCallMock.mockResolvedValue({ decision: "allowed", invocationId: "defaults" });
 
-    const prepared = prepareActionTestParameters(schema, {
-      url: "https://paperclip.ing",
-      profile: { name: "" },
-      queryOptions: { prompt: "" },
-      screenshotOptions: { viewport: { width: undefined, height: undefined } },
-    });
+    await renderDialog(defaultsEntry);
+    const runButton = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Run");
+    await act(() => runButton!.click());
+    await flushReact();
 
-    expect(prepared).toEqual({
-      parameters: { url: "https://paperclip.ing" },
-      errors: {},
-    });
-  });
-
-  it("still validates required descendants after an optional Firecrawl branch has user input", () => {
-    const schema: JsonSchemaNode = {
-      type: "object",
-      properties: {
-        queryOptions: {
-          type: "object",
-          required: ["prompt"],
-          properties: {
-            mode: { type: "string", default: "freeform" },
-            prompt: { type: "string" },
-          },
-        },
-        screenshotOptions: {
-          type: "object",
-          properties: {
-            viewport: {
-              type: "object",
-              required: ["width", "height"],
-              properties: { width: { type: "number" }, height: { type: "number" } },
-            },
-          },
-        },
-      },
-    };
-
-    expect(prepareActionTestParameters(schema, {
-      queryOptions: { mode: "freeform", prompt: "Extract the title" },
-      screenshotOptions: { viewport: { width: 1280 } },
-    })).toEqual({
-      parameters: {
-        queryOptions: { mode: "freeform", prompt: "Extract the title" },
-        screenshotOptions: { viewport: { width: 1280 } },
-      },
-      errors: { "/screenshotOptions/viewport/height": "This field is required" },
+    expect(runTestCallMock).toHaveBeenCalledWith("conn-1", {
+      agentId: "agent-ceo",
+      toolName: "list_projects",
+      parameters: { enabled: false, count: 0, options: { enabled: false, count: 0 } },
     });
   });
 
-  it("preserves explicit false, zero, and string values equal to schema defaults", () => {
-    const schema: JsonSchemaNode = {
-      type: "object",
-      properties: {
-        options: {
-          type: "object",
-          required: ["enabled", "count", "label"],
-          properties: {
-            enabled: { type: "boolean", default: false },
-            count: { type: "integer", default: 0 },
-            label: { type: "string", default: "default label" },
+  it("rejects an explicitly supplied empty optional object with required children", async () => {
+    const objectEntry = {
+      ...entry,
+      inputSchema: {
+        type: "object",
+        properties: {
+          options: {
+            type: "object",
+            default: {},
+            required: ["name"],
+            properties: { name: { type: "string" } },
           },
         },
       },
-    };
+    } as ToolCatalogEntry;
 
-    expect(prepareActionTestParameters(schema, {
-      options: { enabled: false, count: 0, label: "default label" },
-    })).toEqual({
-      parameters: { options: { enabled: false, count: 0, label: "default label" } },
-      errors: {},
-    });
-  });
+    await renderDialog(objectEntry);
+    const runButton = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Run");
+    await act(() => runButton!.click());
+    await flushReact();
 
-  it("validates required descendants when a nonblank default populates an optional object", () => {
-    const schema: JsonSchemaNode = {
-      type: "object",
-      properties: {
-        options: {
-          type: "object",
-          required: ["enabled", "prompt"],
-          properties: {
-            enabled: { type: "boolean", default: false },
-            prompt: { type: "string" },
-          },
-        },
-      },
-    };
-
-    expect(prepareActionTestParameters(schema, {
-      options: { enabled: false, prompt: "" },
-    })).toEqual({
-      parameters: { options: { enabled: false } },
-      errors: { "/options/prompt": "This field is required" },
-    });
-  });
-
-  it("retains and validates an explicit object default", () => {
-    const schema: JsonSchemaNode = {
-      type: "object",
-      properties: {
-        options: {
-          type: "object",
-          default: { enabled: false },
-          required: ["enabled"],
-          properties: { enabled: { type: "boolean", default: false } },
-        },
-      },
-    };
-
-    expect(prepareActionTestParameters(schema, {
-      options: { enabled: false },
-    })).toEqual({
-      parameters: { options: { enabled: false } },
-      errors: {},
-    });
+    expect(document.body.textContent).toContain("This field is required");
+    expect(runTestCallMock).not.toHaveBeenCalled();
   });
 
   it("runs the actual ActionTester with Firecrawl's minimal URL input after opening More options", async () => {

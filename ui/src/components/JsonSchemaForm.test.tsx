@@ -659,7 +659,12 @@ describe("JsonSchemaForm optional nested objects", () => {
         queryOptions: {},
         screenshotOptions: { viewport: {} },
       }),
-    ).toEqual({});
+    ).toEqual({
+      "/profile/Name": "This field is required",
+      "/queryOptions/Prompt": "This field is required",
+      "/screenshotOptions/viewport/Width": "This field is required",
+      "/screenshotOptions/viewport/Height": "This field is required",
+    });
 
     const nestedSchema: JsonSchemaNode = {
       type: "object",

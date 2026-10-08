@@ -302,8 +302,7 @@ export function validateJsonSchemaForm(
       type === "object" &&
       propSchema.properties &&
       typeof value === "object" &&
-      value !== null &&
-      (isRequired || Object.keys(value).length > 0)
+      value !== null
     ) {
       Object.assign(
         errors,
