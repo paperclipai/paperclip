@@ -230,10 +230,13 @@ function loadActualRoutes() {
       }
     }
     if (file === "dot-runner.ts") {
-      const basePath = /const path = "([^"]+)"/.exec(source)?.[1];
-      if (!basePath) throw new Error("Dot binding route prefix is missing");
-      for (const match of source.matchAll(/router\.(get|post|delete)\(path(?: \+ "([^"]+)")?/g)) {
-        routes.add(`${match[1].toUpperCase()} ${normalizeExpressPath(prefix + basePath + (match[2] ?? ""))}`);
+      for (const name of ["path", "invitePath"]) {
+        const basePath = new RegExp(`const ${name} = "([^"]+)"`).exec(source)?.[1];
+        if (!basePath) throw new Error(`Dot ${name} route prefix is missing`);
+        const methods = new RegExp(`router\\.(get|post|delete)\\(${name}(?: \\+ "([^"]+)")?`, "g");
+        for (const match of source.matchAll(methods)) {
+          routes.add(`${match[1].toUpperCase()} ${normalizeExpressPath(prefix + basePath + (match[2] ?? ""))}`);
+        }
       }
     }
 
@@ -857,6 +860,19 @@ describe("openapi routes", () => {
       properties: { primaryAgentId: { type: "string", format: "uuid" } },
     });
     expect(path.put.responses["422"]).toBeDefined();
+  });
+
+  it("documents operator Dot invitations and current pairing and event-test fields", () => {
+    const { spec } = loadSpecRoutes();
+    const invitations = spec.paths["/api/companies/{companyId}/dot-invitations"];
+    for (const operation of [invitations.get, invitations.post]) {
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.responses["200"]).toBeDefined();
+    }
+    expect(invitations.post.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
+    const base = "/api/companies/{companyId}/agents/{agentId}/dot-binding";
+    expect(spec.paths[base].post.requestBody.content["application/json"].schema.properties.replaceBindingId).toMatchObject({ type: "string", format: "uuid" });
+    expect(spec.paths[base + "/event-test"].post.requestBody.content["application/json"].schema.properties.bindingId).toMatchObject({ type: "string", format: "uuid" });
   });
 
   it("documents board-only repository discovery and selection", () => {

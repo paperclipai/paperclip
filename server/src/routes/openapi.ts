@@ -1715,6 +1715,7 @@ function resolveOperationAuthLevel(
       || key === "POST /api/mcp/requests/{id}/dot-pairing/preview") return "public";
   if (path === "/api/mcp/setup" || path === "/api/mcp/device/consent" || path.startsWith("/api/mcp/requests/") || path.startsWith("/api/mcp/connections")) return "board";
   if (/^\/api\/companies\/\{companyId\}\/agents\/\{agentId\}\/dot-binding(?:\/event-test)?$/.test(path)) return "board";
+  if (path === "/api/companies/{companyId}/dot-invitations") return "board";
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
@@ -11754,6 +11755,27 @@ registerCurrentRoute({
   },
 });
 
+const dotInvitationResponseSchema = z.object({
+  agent: z.object({ id: z.string().uuid(), name: z.string(), status: z.string() }),
+  approvalId: z.string().uuid().nullable(),
+  binding: z.object({
+    id: z.string().uuid(), status: z.string(), connected: z.boolean(),
+    subscriptionVerified: z.boolean(), hasPendingChallenge: z.boolean(),
+    pairingExpiresAt: z.string().datetime().nullable(), challengeExpiresAt: z.string().datetime().nullable(),
+  }).nullable(),
+});
+registerCurrentRoute({
+  method: "get", path: "/api/companies/{companyId}/dot-invitations", tags: ["agents"],
+  summary: "Resume the signed-in operator's unfinished Dot invitation",
+  responses: { 200: r.ok(dotInvitationResponseSchema.nullable()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+registerCurrentRoute({
+  method: "post", path: "/api/companies/{companyId}/dot-invitations", tags: ["agents"],
+  summary: "Create or resume a Dot invitation with company hire approval gates",
+  body: z.object({}).strict(),
+  responses: { 200: r.ok(dotInvitationResponseSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
 registerCurrentRoute({
   method: "get", path: "/api/companies/{companyId}/agents/{agentId}/dot-binding", tags: ["agents"],
   summary: "Read the experimental Dot agent connection and event readiness",
@@ -11762,13 +11784,14 @@ registerCurrentRoute({
 registerCurrentRoute({
   method: "post", path: "/api/companies/{companyId}/agents/{agentId}/dot-binding", tags: ["agents"],
   summary: "Create a one-use Dot pairing code as a company operator",
-  body: z.object({ dotUrl: z.string().max(2048).optional() }).strict(),
+  body: z.object({ dotUrl: z.string().max(2048).optional(), replaceBindingId: z.string().uuid().optional() }).strict(),
   responses: { 201: r.ok(z.object({ bindingId: z.string().uuid(), pairingCode: z.string(), expiresAt: z.string().datetime(), instructions: z.string() })),
     400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 registerCurrentRoute({
   method: "post", path: "/api/companies/{companyId}/agents/{agentId}/dot-binding/event-test", tags: ["agents"],
   summary: "Request a harmless Dot readiness challenge as a company operator",
+  body: z.object({ bindingId: z.string().uuid().optional() }).strict(),
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 registerCurrentRoute({
