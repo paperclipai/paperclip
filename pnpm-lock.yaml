@@ -527,6 +527,16 @@ importers:
       smol-toml:
         specifier: ^1.4.2
         version: 1.8.0
+    optionalDependencies:
+      '@github/copilot-darwin-arm64':
+        specifier: 1.0.88
+        version: 1.0.88
+      '@github/copilot-darwin-x64':
+        specifier: 1.0.88
+        version: 1.0.88
+      '@github/copilot-linux-x64':
+        specifier: 1.0.88
+        version: 1.0.88
     devDependencies:
       '@paperclipai/paperclip-eval-kernel':
         specifier: workspace:*
@@ -1057,6 +1067,16 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+    optionalDependencies:
+      '@github/copilot-darwin-arm64':
+        specifier: 1.0.88
+        version: 1.0.88
+      '@github/copilot-darwin-x64':
+        specifier: 1.0.88
+        version: 1.0.88
+      '@github/copilot-linux-x64':
+        specifier: 1.0.88
+        version: 1.0.88
     devDependencies:
       '@paperclipai/paperclip-runner':
         specifier: workspace:*
@@ -2578,6 +2598,24 @@ packages:
 
   '@floating-ui/utils@0.2.12':
     resolution: {integrity: sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==}
+
+  '@github/copilot-darwin-arm64@1.0.88':
+    resolution: {integrity: sha512-gt52dl+ja+G88RjLuSec59fA8C9HNfdGxKwwqE7eAIJXZYSKwKvuMy4B79WlCtlpnH/QKbs5Z9VsU0BTxe3EAg==}
+    cpu: [arm64]
+    os: [darwin]
+    hasBin: true
+
+  '@github/copilot-darwin-x64@1.0.88':
+    resolution: {integrity: sha512-GO5KwVR5vD1vNRe0jDDXFdpOHpS780ytVSRklk0DT6bK6HIpWXqbfnOasP9OZpPClaAYO4CShkGMhHv6vKRxaA==}
+    cpu: [x64]
+    os: [darwin]
+    hasBin: true
+
+  '@github/copilot-linux-x64@1.0.88':
+    resolution: {integrity: sha512-wNigl8rqixvtYoRtygNf1NQIXx77MWC6XyqoV7fcfvSwWI3GJCltnczaNLbC611K9Hex39KyiUR5ZmGhQ+LzLw==}
+    cpu: [x64]
+    os: [linux]
+    hasBin: true
 
   '@grpc/grpc-js@1.14.5':
     resolution: {integrity: sha512-7VZM+SVdEcUUqSQeNI3zM8Qs/BhQKZndPo2h5VkYkAM8Iz0wJIa8mKV5ekQGqG8UUsnkQ0NMxIxwkIHYvj0qOw==}
@@ -10480,6 +10518,15 @@ snapshots:
       tabbable: 6.5.0
 
   '@floating-ui/utils@0.2.12': {}
+
+  '@github/copilot-darwin-arm64@1.0.88':
+    optional: true
+
+  '@github/copilot-darwin-x64@1.0.88':
+    optional: true
+
+  '@github/copilot-linux-x64@1.0.88':
+    optional: true
 
   '@grpc/grpc-js@1.14.5':
     dependencies:
