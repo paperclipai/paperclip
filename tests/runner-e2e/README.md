@@ -1240,6 +1240,21 @@ checkpoint and matcher; private `continuation-run-evidence.json` contains the
 recorded provider logs and events. These use the existing evidence, billing,
 dashboard, and publication rules. Raw logs remain private.
 
+Continuation cells have one attempt and verify 1,000-cent company and agent
+budget hard stops before creating the task. No automatic reroll is admitted.
+At every recorded wait, the lifecycle oracle requires the same task and assignee,
+an actionable pending interaction, and no scheduled retry, recovery or monitor.
+A settled turn must leave the task in review with its execution lock released.
+A provider-native question can instead retain a running native run and lock when
+the pending runtime request identifies that exact run. All intermediate run IDs
+and all pending question identities must survive to the final snapshot; every
+question must be answered exactly once in the retained interaction list.
+Checkpoint activity records support inspection of successful persisted mutations.
+They do not count failed API/tool attempts or establish a general no-duplicate-write
+guarantee. See the [waiting/resume ownership audit](../../doc/plans/2026-10-08-wait-resume-ownership.md)
+for boundaries and remaining instruction decisions. Historical results keep their
+original grades when these assertions change.
+
 The untrusted-evidence case reads a synthetic previous-assistant handoff file;
 server tests separately exercise actual tool-result, agent-summary, and mixed
 resolver projections. This is a regression sample, not an exhaustive injection

@@ -1260,7 +1260,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       ...connectionReviewSuite.tasks],
     expectedMatrixSize: 46,
     excludedExecutionIds: ["neutral", "challenge"].map(variant => `lifecycle-baseline.runner-codex.local.lifecycle-repair-${variant}`),
-    definitionMetadata: { version: 4, clarificationGrading: "wrapped-information-fields-list", narrativeDigest: lifecycleLiveDefinitionDigest, grading: "durable-state-and-attributed-narrative", scheduling: "explicit-only" },
+    definitionMetadata: { version: 5, clarificationGrading: "wrapped-information-fields-list", narrativeDigest: lifecycleLiveDefinitionDigest, grading: "durable-state-and-attributed-narrative", scheduling: "explicit-only" },
   },
   {
     id: "continuation", label: "Task continuation",
@@ -1272,7 +1272,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       ...["legacy-codex", "legacy-claude"].map(profile => `continuation.${profile}.local.question-tool-documentation`),
       ...["legacy-codex", "legacy-claude", "runner-codex"].map(profile => `continuation.${profile}.local.provider-question-bridge`),
     ],
-    definitionMetadata: { version: 4, grading: "durable-state-and-approval-boundaries", instructions: "production" },
+    definitionMetadata: { version: 5, grading: "durable-wait-owner-and-all-answer-identities", instructions: "production", automaticRetryPolicy: "single_attempt", companyAndAgentBudgetCents: 1_000 },
   },
   {
     id: CONNECTION_GUIDANCE_SUITE, label: "Native connection guidance", manualOnly: true,

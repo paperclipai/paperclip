@@ -59,6 +59,7 @@ export const continuationTasks: readonly RunnerTaskFixture[] =
     groups: [],
     workMode: "standard",
     flow: "continuation",
+    automaticRetryPolicy: "single_attempt",
     expectedRunCount:
       id === "provider-question-bridge" ? 1 : id === "completed-action-resume"
         ? 4

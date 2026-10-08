@@ -3,7 +3,7 @@ import { gradeQuestionDocumentation } from "./question-documentation-scoring.js"
 import type { ContinuationCase } from "./continuation-cases.js";
 export interface ContinuationCheckpoint {
   phase: "initial" | "answered" | "revised" | "final";
-  issue: { id: string; status: string };
+  issue: { id: string; status: string; assigneeAgentId?: string | null };
   children: Array<{
     id: string;
     title: string;
