@@ -382,6 +382,7 @@ No source invokes adapters directly.
    - coalesce duplicate wakeups
    - increment `coalescedCount`
    - preserve latest reason/source metadata
+2a. Equivalent issue wakes for the same company, agent, and issue also coalesce for 5 seconds into a request that still has pending execution ownership (`queued`, `claimed`, or `deferred_issue_execution`). A completed or already-coalesced wake never absorbs a later request. Equivalence is the fingerprint of owner, issue status, issue status version, blocker state, and material payload. The increment is conditional on the target still being pending, and a terminal run is never reused. Explicit user wakes, failure retries, durable receipts, interaction continuations, and `allowRunCoalescing: false` always admit. A coalesced request is returned on the existing run and logged as `wakeup.coalesced` without payload text.
 3. Queue is DB-backed for restart safety.
 4. Coordinator uses FIFO by `requested_at`, with optional priority:
    - `on_demand` > `assignment` > `timer`/`automation`
