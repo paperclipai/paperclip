@@ -693,6 +693,11 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       status: "cleared",
       clearReason: "max_attempts_exhausted",
     });
+    // The failed dispatch that triggered this exhaustion was itself a real,
+    // consumed attempt (maxAttempts: 1, so this is attempt #1) — the cleared
+    // monitor must record that, not leave the column at its pre-dispatch
+    // value as if the attempt never happened.
+    expect(issue.monitorAttemptCount).toBe(1);
 
     // The owner is the same agent the monitor failed to dispatch to (still
     // paused), so recovery cannot wake them either — it should fall back to

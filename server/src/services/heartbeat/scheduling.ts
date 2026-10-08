@@ -582,7 +582,11 @@ export function createHeartbeatScheduling(
       await notifyIssueReviewState(tx, { companyId: input.claimed.companyId, issueId: input.claimed.id });
       const rows = await tx.update(issues).set({
         ...monitorOnlyDispatchPatch(buildIssueMonitorClearedPatch({
-          issue: input.claimed, policy: input.policy, clearReason: input.clearReason, clearedAt: input.now,
+          issue: input.claimed,
+          policy: input.policy,
+          clearReason: input.clearReason,
+          clearedAt: input.now,
+          nextAttemptCount: input.nextAttemptCount,
         })),
         updatedAt: input.now,
       }).where(issueMonitorClaimCondition(input.claimed)).returning({ id: issues.id });

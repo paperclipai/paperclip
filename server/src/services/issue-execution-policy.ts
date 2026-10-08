@@ -1268,6 +1268,16 @@ export function buildIssueMonitorClearedPatch(input: {
   policy: IssueExecutionPolicy | null;
   clearReason: IssueExecutionMonitorClearReason;
   clearedAt?: Date;
+  /**
+   * The attempt count to persist to the monitorAttemptCount column, if this
+   * clear is itself the result of a just-consumed (and failed) dispatch
+   * attempt. Omitted when the clear isn't attempt-driven (e.g. the monitor
+   * was replaced/cancelled out from under the dispatch). Without this, a
+   * monitor cleared on its final allowed attempt (buildIssueMonitorDeferredPatch's
+   * counterpart on the defer path does set this) would leave the column at
+   * its pre-attempt value, understating how many times it actually ran.
+   */
+  nextAttemptCount?: number;
 }) {
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
@@ -1286,6 +1296,9 @@ export function buildIssueMonitorClearedPatch(input: {
     executionState: executionStateWithMonitor(existingState, nextMonitorState) as Record<string, unknown> | null,
     monitorNextCheckAt: null,
     monitorWakeRequestedAt: null,
+    ...(input.nextAttemptCount !== undefined
+      ? { monitorAttemptCount: input.nextAttemptCount }
+      : {}),
   };
 }
 
