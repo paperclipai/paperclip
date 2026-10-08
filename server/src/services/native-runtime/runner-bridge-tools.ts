@@ -32,8 +32,31 @@ export function runnerBridgeDefinitions(options: { workspace: boolean; skills: b
 }
 const digest = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const PAGE_BYTES = 24000;
+const instanceStateName = (name: string) => name.toLowerCase() === ".paperclip";
+/** Instance state is never part of the remotely exposed task workspace. */
+export function assertRunnerWorkspacePathAllowed(name: string) {
+  if (name.split(/[\\/]/u).some(instanceStateName)) throw new Error("runner_workspace_instance_state_denied");
+}
+async function protectedWorkspaceDirectories(root: string) {
+  const protectedPaths = new Set([path.join(root, ".paperclip")]);
+  const pending = [root];
+  let scanned = 0;
+  while (pending.length) {
+    if (++scanned > 4096) throw new Error("runner_workspace_protection_scan_limit");
+    const directory = pending.pop()!;
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      if (instanceStateName(entry.name)) {
+        if (!entry.isDirectory()) throw new Error("runner_workspace_instance_state_invalid");
+        protectedPaths.add(target);
+      } else if (entry.isDirectory()) pending.push(target);
+    }
+  }
+  return [...protectedPaths];
+}
 async function confined(root: string, name: string, newFile = false) {
   const canonicalRoot = await fs.realpath(root);
+  assertRunnerWorkspacePathAllowed(name);
   const parts = name ? relativeFile.parse(name).split("/") : [];
   let target = canonicalRoot;
   for (const [index, part] of parts.entries()) {
@@ -123,7 +146,7 @@ async function executeWorkspaceToolInLane(root: string, name: string, raw: unkno
   await authorize();
   if (name === "workspace_list") {
     const entries = await fs.readdir(await confined(root, input.path), { withFileTypes: true });
-    const page = entries.filter(entry => !input.after || entry.name > input.after).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0).slice(0, 100);
+    const page = entries.filter(entry => !instanceStateName(entry.name) && (!input.after || entry.name > input.after)).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0).slice(0, 100);
     return { entries: page.map(entry => ({ name: entry.name, kind: entry.isSymbolicLink() ? "symlink" : entry.isDirectory() ? "directory" : "file" })), nextAfter: page.length === 100 ? page.at(-1)!.name : null };
   }
   if (name === "workspace_read") return readFilePage(await confined(root, input.path), input.offset);
@@ -154,11 +177,15 @@ async function executeWorkspaceToolInLane(root: string, name: string, raw: unkno
   if (process.platform === "darwin") {
     // Deny by default. No /Users, host home, arbitrary /private or unrestricted /Library access.
     const quote = (value: string) => JSON.stringify(value);
-    const profile = `(version 1)(deny default)(allow process*)(allow file-read-metadata)(allow sysctl-read)(allow mach-lookup)(allow file-read* (subpath "/System") (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/opt/homebrew/Cellar") (subpath "/opt/homebrew/lib") (subpath "/opt/homebrew/bin") (subpath "/opt/homebrew/opt") (literal "/") (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))(allow file-read* file-write* (subpath ${quote(cwd)}))`;
+    const protectedPaths = await protectedWorkspaceDirectories(cwd);
+    const excludedPaths = protectedPaths.map(directory => `(subpath ${quote(directory)})`).join(" ");
+    const profile = `(version 1)(deny default)(allow process*)(allow file-read-metadata)(allow sysctl-read)(allow mach-lookup)(allow file-read* (subpath "/System") (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/opt/homebrew/Cellar") (subpath "/opt/homebrew/lib") (subpath "/opt/homebrew/bin") (subpath "/opt/homebrew/opt") (literal "/") (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))(allow file-read* file-write* (subpath ${quote(cwd)}))(deny file-read* file-write* ${excludedPaths})`;
     program = "/usr/bin/sandbox-exec"; args = ["-p", profile, input.program, ...input.args];
   } else {
     program = "/usr/bin/bwrap";
-    args = ["--die-with-parent", "--unshare-all", "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib", ...(existsSync("/lib64") ? ["--ro-bind", "/lib64", "/lib64"] : []), "--proc", "/proc", "--dev", "/dev", "--bind", cwd, cwd, "--chdir", cwd, "--", input.program, ...input.args];
+    const protectedPaths = await protectedWorkspaceDirectories(cwd);
+    const masks = protectedPaths.flatMap(directory => ["--tmpfs", directory, "--remount-ro", directory]);
+    args = ["--die-with-parent", "--unshare-all", "--cap-drop", "ALL", "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib", ...(existsSync("/lib64") ? ["--ro-bind", "/lib64", "/lib64"] : []), "--proc", "/proc", "--dev", "/dev", "--bind", cwd, cwd, ...masks, "--chdir", cwd, "--", input.program, ...input.args];
   }
   await authorize();
   return new Promise<Record<string, unknown>>((resolve, reject) => {

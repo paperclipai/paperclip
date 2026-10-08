@@ -614,6 +614,23 @@ describe("PaperclipRunnerToolAuthority", () => {
     ).resolves.toMatchObject({ approval: { id: approvalId }, tasks: [] });
   });
 
+  it("rejects Dot artifact publication from instance state before reading a file", async () => {
+    const [actor] = await db.select().from(agents).where(eq(agents.id, agentId));
+    await db.update(agents).set({ adapterConfig: { ...actor.adapterConfig, dotWorkspaceAccess: true } }).where(eq(agents.id, agentId));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+      dotRuntime: true, workspaceBridge: true, workspaceRoot: "/tmp/fixture-workspace" });
+    try {
+      for (const contentRef of [".paperclip/.env", "nested/.PaPeRcLiP/config.json"]) {
+        await expect(authority.execute({ tool: "register_deliverable", callId: contentRef, arguments: {
+          idempotencyKey: contentRef, filename: "config.txt", title: "Config", contentType: "text/plain",
+          byteSize: 10, sha256: "0".repeat(64), contentRef,
+        } })).rejects.toThrow("runner_workspace_instance_state_denied");
+      }
+    } finally {
+      await db.update(agents).set({ adapterConfig: actor.adapterConfig }).where(eq(agents.id, agentId));
+    }
+  });
+
   it("fits large assigned catalogs alongside workspace and completion tools without dropping task tools", async () => {
     const listToolsForNamedGateway = vi.fn().mockResolvedValue(Array.from({ length: 224 }, (_, i) => ({
       name: `app.action_${i}`, displayName: `Action ${i}`, description: "Read a fixture",

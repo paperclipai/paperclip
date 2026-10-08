@@ -1,5 +1,5 @@
 import { TaskAttachmentReadCache, TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
-import { RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, readWorkspaceUploadFile, settleRunnerBridgeRead } from "./runner-bridge-tools.js";
+import { RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, readWorkspaceUploadFile, settleRunnerBridgeRead, assertRunnerWorkspacePathAllowed } from "./runner-bridge-tools.js";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 import { assertCanManageIssueMonitor, prepareIssueMonitorUpdate, setTaskMonitorSchema, summarizeIssueMonitor } from "../issue-monitors.js";
 import { readTaskQuestionContext } from "../issue-question-context.js";
@@ -1636,6 +1636,7 @@ export class PaperclipRunnerToolAuthority {
         if (this.binding.dotRuntime) {
           if (!this.binding.workspaceBridge || context.actor.adapterConfig?.dotWorkspaceAccess !== true)
             throw forbidden("Dot workspace access is required to publish workspace files.");
+          assertRunnerWorkspacePathAllowed(typeof input.contentRef === "string" ? input.contentRef : "");
           await this.binding.assertBridgeAuthority?.();
         }
         const prepared = await prepareNativeRunnerFileHandoff({

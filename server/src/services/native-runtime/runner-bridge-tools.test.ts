@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { materializeAsset } from "./runtime-context.js";
 import { join } from "node:path";
@@ -49,6 +49,41 @@ describe("Runner workspace bridge", () => {
     }
     expect(combined).toBe(text);
     await expect(read(6000)).rejects.toThrow("offset_splits_character");
+  });
+
+  it("excludes instance state from workspace reads, writes, listings and upload reads", async () => {
+    const directory = await root();
+    await mkdir(join(directory, ".paperclip"));
+    await writeFile(join(directory, ".paperclip", ".env"), "SYNTHETIC_INSTANCE_SECRET");
+    await mkdir(join(directory, "nested", ".PaPeRcLiP"), { recursive: true });
+    for (const path of [".paperclip/.env", "nested/.PaPeRcLiP/config.json"]) {
+      await expect(executeWorkspaceTool(directory, "workspace_read", { path }, authorize)).rejects.toThrow("instance_state_denied");
+      await expect(executeWorkspaceTool(directory, "workspace_write", { path, text: "overwrite", expectedSha256: null }, authorize)).rejects.toThrow("instance_state_denied");
+      await expect(readWorkspaceUploadFile(directory, path)).rejects.toThrow("instance_state_denied");
+    }
+    await expect(executeWorkspaceTool(directory, "workspace_list", { path: ".paperclip" }, authorize)).rejects.toThrow("instance_state_denied");
+    expect(await executeWorkspaceTool(directory, "workspace_list", { path: "" }, authorize)).toMatchObject({ entries: [{ name: "nested" }] });
+    expect(await readFile(join(directory, ".paperclip", ".env"), "utf8")).toBe("SYNTHETIC_INSTANCE_SECRET");
+  });
+
+  it.skipIf(!workspaceCommandSandboxAvailable())("denies command access to instance keys while preserving ordinary workspace work", async () => {
+    const directory = join(await root(), "project.[safe]");
+    await mkdir(directory);
+    await mkdir(join(directory, ".paperclip"));
+    await mkdir(join(directory, "nested", ".PaPeRcLiP"), { recursive: true });
+    const keys = [".paperclip/.env", "nested/.PaPeRcLiP/config.json"];
+    for (const key of keys) await writeFile(join(directory, key), "SYNTHETIC_INSTANCE_SECRET");
+    for (const key of keys) {
+      const read = await executeWorkspaceTool(directory, "workspace_run", { program: "/bin/cat", args: [key] }, authorize) as any;
+      expect(read.exitCode).not.toBe(0);
+      expect(read.output).not.toContain("SYNTHETIC_INSTANCE_SECRET");
+      const write = await executeWorkspaceTool(directory, "workspace_run", { program: "/bin/sh", args: ["-c", 'printf overwrite > "$1"', "sh", key] }, authorize) as any;
+      expect(write.exitCode).not.toBe(0);
+      expect(await readFile(join(directory, key), "utf8")).toBe("SYNTHETIC_INSTANCE_SECRET");
+    }
+    const ordinary = await executeWorkspaceTool(directory, "workspace_run", { program: "/bin/sh", args: ["-c", "printf hello > result.txt"] }, authorize) as any;
+    expect(ordinary.exitCode).toBe(0);
+    expect(await readFile(join(directory, "result.txt"), "utf8")).toBe("hello");
   });
 
   it("serializes overlapping writes so only one observed hash can commit", async () => {
