@@ -1206,6 +1206,10 @@ When a workspace service runs Paperclip for browser OAuth QA, configure its `exp
 
 ## Wake Context Delivery
 
+Task assignment Markdown is rendered by `server/src/services/heartbeat-task-markdown.ts`.
+`heartbeat.ts` calls the renderer and re-exports it for existing callers. Keep prompt
+formatting changes in the renderer and its tests, separate from run orchestration.
+
 Built-in adapters deliver wake context through the run prompt, including structured
 execution-continuation data. They do not export `PAPERCLIP_WAKE_PAYLOAD_JSON`. A
 large JSON environment entry can prevent the agent process from starting with
