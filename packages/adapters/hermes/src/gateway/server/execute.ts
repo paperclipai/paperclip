@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -15,9 +16,11 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   ADAPTER_TYPE,
+  DEFAULT_DISPATCH_ATTEMPTS,
   DEFAULT_EVENT_RECONNECT_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_TIMEOUT_SEC,
+  MAX_DISPATCH_ATTEMPTS,
   STOP_GRACE_MS,
 } from "../shared/constants.js";
 import {
@@ -38,6 +41,32 @@ type HermesHttpError = Error & {
   code?: string;
   retryNotBefore?: string | null;
   body?: unknown;
+  /** Transport-level cause code (ECONNREFUSED, ENOTFOUND, ...) of a failed fetch. */
+  transportCode?: string | null;
+};
+
+type DispatchFailureFacts = {
+  status?: number;
+  code: string;
+  transportCode?: string;
+};
+
+type HermesDispatchEvidence = {
+  phase: "create" | "created";
+  idempotencyKey: string;
+  canonicalBodySha256: string;
+  attempts: number;
+  maxAttempts: number;
+  provenUndelivered?: boolean;
+  proof?: "first_attempt" | "idempotent_replay";
+  hermesRunId?: string;
+  failures?: DispatchFailureFacts[];
+  probe?: {
+    method: "POST";
+    path: "/v1/runs";
+    reuseIdempotencyKey: true;
+    canonicalBodySha256: string;
+  };
 };
 
 type TerminalState = {
@@ -86,6 +115,13 @@ const TERMINAL_STATUSES = new Set([
 
 const FAILURE_STATUSES = new Set(["failed", "error"]);
 const CANCELLED_STATUSES = new Set(["cancelled", "canceled", "stopped", "interrupted"]);
+// Re-emitting POST /v1/runs is only safe against a gateway that reserves the
+// Idempotency-Key durably before doing work: the same key with the same bytes
+// replays the same run_id instead of starting a second run. That cannot be
+// probed from here, so re-emission stays off unless dispatchRetryAttempts opts in.
+const DISPATCH_BACKOFF_MS = [1_500, 6_000];
+/** Transport codes that prove the request never reached the gateway process. */
+const UNDELIVERED_TRANSPORT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
 const DEFAULT_HERMES_DASHBOARD_PORT = "9119";
 const HERMES_DASHBOARD_API_PATHS = new Set(["", "/", "/chat"]);
 
@@ -370,6 +406,15 @@ function fetchFailureMessage(err: unknown): string {
   return causeCode ? `${message} (${causeCode}: ${causeMessage})` : `${message} (${causeMessage})`;
 }
 
+// Keep the transport code as a field: it is the only positive evidence that no
+// byte reached the gateway, and parsing it back out of the message is not a contract.
+function fetchFailureCause(err: unknown): string | null {
+  const cause = err instanceof Error ? (err as { cause?: unknown }).cause : null;
+  if (!cause || typeof cause !== "object") return null;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === "string" && code.length > 0 ? code : null;
+}
+
 async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
@@ -377,6 +422,7 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
   } catch (err) {
     const fetchErr = new Error(`Hermes gateway request failed: ${fetchFailureMessage(err)}`) as HermesHttpError;
     fetchErr.code = "hermes_gateway_connect_failed";
+    fetchErr.transportCode = fetchFailureCause(err);
     throw fetchErr;
   }
   const body = await readResponseJson(response);
@@ -508,11 +554,11 @@ async function handleEvent(
   }
 }
 
-async function delay(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return;
+async function delay(ms: number, signal?: AbortSignal | null): Promise<void> {
+  if (signal?.aborted) return;
   await new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
+    signal?.addEventListener(
       "abort",
       () => {
         clearTimeout(timer);
@@ -709,48 +755,88 @@ export function mapFinalResultForTest(input: {
   };
 }
 
+/** Aborts after `ms`. Timer-based so every gateway call made during a Stop stays bounded. */
+function deadlineSignal(ms: number): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`deadline of ${ms}ms exceeded`)), Math.max(0, ms));
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
+
 async function stopRun(input: {
   ctx: AdapterExecutionContext;
   baseUrl: URL;
   headers: Record<string, string>;
   runId: string;
+  deadlineAt: number;
   redactText?: TextRedactor;
 }): Promise<Record<string, unknown> | null> {
+  const bound = deadlineSignal(input.deadlineAt - Date.now());
   try {
     const stopped = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}/stop`), {
       method: "POST",
       headers: input.headers,
+      signal: bound.signal,
     });
     await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
     return asRecord(stopped);
   } catch (err) {
     await input.ctx.onLog("stderr", `[hermes-gateway] stop request failed: ${redactErrorMessage(err, input.redactText)}\n`);
     return null;
+  } finally {
+    bound.clear();
   }
 }
 
+/**
+ * Polls until a terminal status or the deadline. A failed GET is not a verdict:
+ * Hermes may still report the terminal status before the deadline.
+ */
 async function fetchFinalStatus(input: {
   baseUrl: URL;
   headers: Record<string, string>;
   runId: string;
-  deadlineMs: number;
+  deadlineAt: number;
 }): Promise<Record<string, unknown> | null> {
-  const deadline = Date.now() + input.deadlineMs;
-  while (Date.now() < deadline) {
+  while (Date.now() < input.deadlineAt) {
+    const bound = deadlineSignal(input.deadlineAt - Date.now());
     try {
       const status = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}`), {
         method: "GET",
         headers: input.headers,
+        signal: bound.signal,
       });
-      const record = asRecord(status);
       const normalized = extractStatus(status);
-      if (normalized && TERMINAL_STATUSES.has(normalized)) return record;
+      if (normalized && TERMINAL_STATUSES.has(normalized)) return asRecord(status);
     } catch {
-      return null;
+      // Transient: keep polling until the deadline.
+    } finally {
+      bound.clear();
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await delay(Math.min(500, Math.max(0, input.deadlineAt - Date.now())));
   }
   return null;
+}
+
+/**
+ * Sends /stop and waits for the terminal receipt under one shared budget, so a
+ * gateway that accepts the connection but never answers cannot hold the run open.
+ */
+async function stopAndVerify(input: {
+  ctx: AdapterExecutionContext;
+  baseUrl: URL;
+  headers: Record<string, string>;
+  runId: string;
+  redactText?: TextRedactor;
+}): Promise<{ stopResponse: Record<string, unknown> | null; finalStatus: Record<string, unknown> | null }> {
+  const deadlineAt = Date.now() + STOP_GRACE_MS;
+  const stopResponse = await stopRun({ ...input, deadlineAt });
+  const finalStatus = await fetchFinalStatus({
+    baseUrl: input.baseUrl,
+    headers: input.headers,
+    runId: input.runId,
+    deadlineAt,
+  });
+  return { stopResponse, finalStatus };
 }
 
 function redactErrorMessage(err: unknown, redactText: TextRedactor = sanitizeSensitiveText): string {
@@ -758,7 +844,75 @@ function redactErrorMessage(err: unknown, redactText: TextRedactor = sanitizeSen
   return redactText(String(err));
 }
 
-function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveText): AdapterExecutionResult {
+function dispatchFailureFacts(err: unknown): DispatchFailureFacts {
+  const hermesError = (err ?? {}) as HermesHttpError;
+  return {
+    ...(typeof hermesError.status === "number" ? { status: hermesError.status } : {}),
+    code: typeof hermesError.code === "string" ? hermesError.code : "hermes_gateway_protocol_error",
+    ...(typeof hermesError.transportCode === "string" ? { transportCode: hermesError.transportCode } : {}),
+  };
+}
+
+/** Proof of non-delivery: the gateway refused before creating, or no byte was accepted. */
+function isProvenUndelivered(facts: DispatchFailureFacts): boolean {
+  if (facts.status === 401 || facts.status === 403 || facts.status === 404) return true;
+  return (
+    facts.code === "hermes_gateway_connect_failed" &&
+    facts.transportCode !== undefined &&
+    UNDELIVERED_TRANSPORT_CODES.has(facts.transportCode)
+  );
+}
+
+/** Worth re-emitting under the same key: availability faults, not application refusals. */
+function isReattachableDispatchFailure(facts: DispatchFailureFacts): boolean {
+  if (typeof facts.status === "number") return facts.status === 429 || facts.status >= 500;
+  return facts.code === "hermes_gateway_connect_failed";
+}
+
+// The only recovery shape the host accepts as "no provider work happened".
+// Emit it on proof only; absent evidence never authorizes a replay.
+const PROVIDER_WORK_NOT_STARTED: NonNullable<AdapterExecutionResult["executionRecovery"]> = {
+  kind: "bootstrap",
+  providerWorkStarted: false,
+};
+
+/**
+ * Result for a Paperclip Stop. The cancellation is acknowledged only on a
+ * receipt (a terminal Hermes status, or proof that nothing was dispatched);
+ * otherwise it stays "requested" and the host reports an unverified termination.
+ */
+function cancellationResult(input: {
+  acknowledged: boolean;
+  reason?: string;
+  providerWorkStarted?: false;
+  resultJson: Record<string, unknown>;
+  sessionParams?: Record<string, unknown>;
+}): AdapterExecutionResult {
+  return {
+    exitCode: 1,
+    signal: "SIGTERM",
+    timedOut: false,
+    errorCode: "hermes_gateway_cancelled",
+    errorMessage: input.acknowledged
+      ? "Hermes run stopped after Paperclip cancellation."
+      : `Paperclip cancellation not confirmed by Hermes: ${input.reason}`,
+    provider: "hermes_gateway",
+    ...(input.providerWorkStarted === false ? { executionRecovery: PROVIDER_WORK_NOT_STARTED } : {}),
+    resultJson: {
+      ...input.resultJson,
+      executionCancellation: input.acknowledged
+        ? { state: "acknowledged", acknowledgedAt: new Date().toISOString(), forced: false }
+        : { state: "requested", unverifiedReason: input.reason },
+    },
+    ...(input.sessionParams ? { sessionParams: input.sessionParams } : {}),
+  };
+}
+
+function errorResult(
+  err: unknown,
+  redactText: TextRedactor = sanitizeSensitiveText,
+  dispatchEvidence: HermesDispatchEvidence | null = null,
+): AdapterExecutionResult {
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
@@ -777,6 +931,8 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
       ...(hermesError.status ? { status: hermesError.status } : {}),
       ...(hermesError.body ? { body: redactForLog(hermesError.body, [], 0, redactText) as Record<string, unknown> } : {}),
     },
+    ...(dispatchEvidence?.provenUndelivered ? { executionRecovery: PROVIDER_WORK_NOT_STARTED } : {}),
+    ...(dispatchEvidence ? { resultJson: { hermesDispatch: dispatchEvidence } } : {}),
   };
 }
 
@@ -857,7 +1013,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runHeaders.Authorization,
     runHeaders["X-Hermes-Session-Key"],
   ]);
-  const body = buildRunBody(ctx, sessionKey);
+  // Idempotence is defined on the bytes: serialize once, hash once, and send
+  // exactly these bytes on every attempt under the same Idempotency-Key.
+  const canonicalBody = JSON.stringify(buildRunBody(ctx, sessionKey));
+  const canonicalBodySha256 = createHash("sha256").update(canonicalBody).digest("hex");
+  const bodyHashPrefix = canonicalBodySha256.slice(0, 12);
+  const dispatchAttempts = Math.floor(clamp(
+    parseNonNegativeNumber(ctx.config.dispatchRetryAttempts, DEFAULT_DISPATCH_ATTEMPTS),
+    DEFAULT_DISPATCH_ATTEMPTS,
+    MAX_DISPATCH_ATTEMPTS,
+  ));
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
@@ -870,38 +1035,146 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       eventReconnectMs: reconnectMs,
       sessionKeyStrategy: strategy,
       hasSessionKey: Boolean(sessionKey),
+      dispatchAttempts,
     },
   });
   await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy})\n`);
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
-  let runId: string | null = null;
-  try {
-    // This adapter has no local child process, so crossing into the first
-    // remote create request is its dispatch boundary. Report it before the
-    // request can block so continuation gates may release their issue lock.
-    ctx.onDispatch?.();
-    const created = await fetchJson(createRunUrl, {
-      method: "POST",
-      headers: runHeaders,
-      body: JSON.stringify(body),
-    });
-    runId = extractRunId(created);
-    if (!runId) {
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorCode: "hermes_gateway_protocol_error",
-        errorMessage: "Hermes /v1/runs response did not include run_id.",
-        errorMeta: { response: redactForLog(created, [], 0, redactText) as Record<string, unknown> },
-      };
+  // Opt in to signal-based Stop so this adapter settles it: the native Hermes
+  // run is stopped and the Stop is acknowledged only on a terminal receipt.
+  const cancelSignal = ctx.signal ?? null;
+  if (cancelSignal) await ctx.onCancellationReady?.();
+
+  const dispatchFailures: DispatchFailureFacts[] = [];
+  const failedDispatchEvidence = (): HermesDispatchEvidence => ({
+    phase: "create",
+    // Every attempt must carry positive proof of non-delivery: one ambiguous
+    // 502 in the series forbids the claim, whatever later attempts returned.
+    provenUndelivered: dispatchFailures.every(isProvenUndelivered),
+    idempotencyKey: ctx.runId,
+    canonicalBodySha256,
+    attempts: dispatchFailures.length,
+    maxAttempts: dispatchAttempts,
+    failures: dispatchFailures,
+  });
+  // Stop before the run was created. Acknowledge only if nothing can exist on
+  // the gateway; an ambiguous attempt may have created a run we cannot name, and
+  // there is no lookup by key (re-POSTing to learn it could create it).
+  const cancelledBeforeCreate = (): AdapterExecutionResult => {
+    const evidence = failedDispatchEvidence();
+    return evidence.provenUndelivered
+      ? cancellationResult({ acknowledged: true, providerWorkStarted: false, resultJson: { hermesDispatch: evidence } })
+      : cancellationResult({
+          acknowledged: false,
+          reason: "cancelled after an unproven dispatch attempt; no Hermes run id to stop",
+          resultJson: { hermesDispatch: evidence },
+        });
+  };
+  if (cancelSignal?.aborted) return cancelledBeforeCreate();
+
+  // This adapter has no local child process, so crossing into the first
+  // remote create request is its dispatch boundary. Report it before the
+  // request can block so continuation gates may release their issue lock.
+  ctx.onDispatch?.();
+  let created: unknown = null;
+  let createFailure: { err: unknown } | null = null;
+  for (let attempt = 1; attempt <= dispatchAttempts; attempt++) {
+    if (attempt > 1) {
+      const backoffMs = DISPATCH_BACKOFF_MS[Math.min(attempt - 2, DISPATCH_BACKOFF_MS.length - 1)]!;
+      await ctx.onLog(
+        "stdout",
+        `[hermes-gateway] re-emitting the same POST /v1/runs in ${backoffMs}ms attempt=${attempt}/${dispatchAttempts} ` +
+          `idempotency_key=${ctx.runId} body_sha256=${bodyHashPrefix}\n`,
+      );
+      await delay(backoffMs, cancelSignal);
+      if (cancelSignal?.aborted) return cancelledBeforeCreate();
     }
-  } catch (err) {
-    return errorResult(err, redactText);
+    try {
+      created = await fetchJson(createRunUrl, {
+        method: "POST",
+        headers: runHeaders,
+        body: canonicalBody,
+      });
+      createFailure = null;
+      break;
+    } catch (err) {
+      createFailure = { err };
+      const facts = dispatchFailureFacts(err);
+      dispatchFailures.push(facts);
+      await ctx.onLog(
+        "stderr",
+        `[hermes-gateway] dispatch attempt ${attempt}/${dispatchAttempts} failed paperclip_run=${ctx.runId} ${stringifyForLog(facts, 300)}\n`,
+      );
+      if (!isReattachableDispatchFailure(facts)) break;
+    }
   }
 
+  if (createFailure) {
+    if (cancelSignal?.aborted) return cancelledBeforeCreate();
+    const evidence = failedDispatchEvidence();
+    return errorResult(createFailure.err, redactText, {
+      ...evidence,
+      // The gateway has no run lookup by key, so name the only safe probe for a
+      // later reconciliation: the same POST, same key, same bytes.
+      ...(evidence.provenUndelivered
+        ? {}
+        : { probe: { method: "POST", path: "/v1/runs", reuseIdempotencyKey: true, canonicalBodySha256 } }),
+    });
+  }
+
+  const runId = extractRunId(created);
+  if (!runId) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_gateway_protocol_error",
+      errorMessage: "Hermes /v1/runs response did not include run_id.",
+      errorMeta: { response: redactForLog(created, [], 0, redactText) as Record<string, unknown> },
+      resultJson: { hermesDispatch: { ...failedDispatchEvidence(), provenUndelivered: false } },
+    };
+  }
+
+  const dispatchEvidence: HermesDispatchEvidence = {
+    phase: "created",
+    proof: dispatchFailures.length > 0 ? "idempotent_replay" : "first_attempt",
+    idempotencyKey: ctx.runId,
+    hermesRunId: runId,
+    canonicalBodySha256,
+    attempts: dispatchFailures.length + 1,
+    maxAttempts: dispatchAttempts,
+    ...(dispatchFailures.length > 0 ? { failures: dispatchFailures } : {}),
+  };
+  await ctx.onLog(
+    "stdout",
+    `[hermes-gateway] dispatch ok paperclip_run=${ctx.runId} idempotency_key=${ctx.runId} hermes_run=${runId} ` +
+      `body_sha256=${bodyHashPrefix} attempt=${dispatchEvidence.attempts}/${dispatchAttempts}\n`,
+  );
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
+
+  // Durable checkpoint before any observation: a run event outlives this
+  // process, so reconciliation after a host restart can name the Hermes run to
+  // rejoin instead of creating another one.
+  try {
+    await ctx.onEvent?.({
+      eventType: "hermes.run.created",
+      stream: "system",
+      level: "info",
+      message: "Hermes accepted run",
+      payload: {
+        hermesRunId: runId,
+        idempotencyKey: ctx.runId,
+        canonicalBodySha256,
+        sessionKeyStrategy: strategy,
+        proof: dispatchEvidence.proof,
+        attempts: dispatchEvidence.attempts,
+      },
+    });
+  } catch (err) {
+    // The run exists remotely; losing the checkpoint must not abandon it unobserved.
+    await ctx.onLog("stderr", `[hermes-gateway] run checkpoint event failed: ${redactErrorMessage(err, redactText)}\n`);
+  }
 
   const state = createExecutionState(runId);
   const controller = new AbortController();
@@ -930,13 +1203,72 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutTimer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
 
-  const outcome = await Promise.race([state.terminalPromise, timeoutPromise]);
+  let removeCancelListener = () => {};
+  const cancelPromise = new Promise<"cancelled">((resolve) => {
+    if (!cancelSignal) return;
+    if (cancelSignal.aborted) return resolve("cancelled");
+    const onAbort = () => resolve("cancelled");
+    cancelSignal.addEventListener("abort", onAbort, { once: true });
+    removeCancelListener = () => cancelSignal.removeEventListener("abort", onAbort);
+  });
+
+  const outcome = await Promise.race([state.terminalPromise, timeoutPromise, cancelPromise]);
   if (timeoutTimer) clearTimeout(timeoutTimer);
+  removeCancelListener();
   controller.abort();
 
+  if (outcome === "cancelled") {
+    // Propagate the Stop to the same native run, then require a terminal status
+    // as the receipt: a stop request that was merely sent proves nothing.
+    await ctx.onLog("stdout", `[hermes-gateway] paperclip cancellation, stopping hermes_run=${runId} paperclip_run=${ctx.runId}\n`);
+    const { stopResponse, finalStatus } = await stopAndVerify({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
+    const finalNormalized = extractStatus(finalStatus);
+    if (finalNormalized && TERMINAL_STATUSES.has(finalNormalized) && !CANCELLED_STATUSES.has(finalNormalized)) {
+      // The run finished on its own while the Stop was in flight: keep its real
+      // outcome instead of recording a success or failure as a cancellation.
+      await ctx.onLog(
+        "stdout",
+        `[hermes-gateway] run finished before stop took effect hermes_run=${runId} final_status=${finalNormalized}\n`,
+      );
+      const finishedResult = mapFinalResultForTest({
+        terminal: { runId, status: finalNormalized, payload: finalStatus, output: extractOutput(finalStatus) },
+        outputChunks: state.outputChunks,
+        sessionKey,
+        strategy,
+        redactText,
+      });
+      return {
+        ...finishedResult,
+        resultJson: {
+          ...(finishedResult.resultJson ?? {}),
+          stop_requested: stopResponse !== null,
+          hermesDispatch: dispatchEvidence,
+        },
+      };
+    }
+    const acknowledged = Boolean(finalNormalized && CANCELLED_STATUSES.has(finalNormalized));
+    await ctx.onLog(
+      acknowledged ? "stdout" : "stderr",
+      `[hermes-gateway] stop ${acknowledged ? "confirmed" : "NOT confirmed"} hermes_run=${runId} final_status=${finalNormalized ?? "unknown"}\n`,
+    );
+    return cancellationResult({
+      acknowledged,
+      ...(acknowledged
+        ? {}
+        : { reason: `Hermes run ${runId} did not reach a terminal status within ${STOP_GRACE_MS}ms after /stop` }),
+      resultJson: {
+        run_id: runId,
+        status: finalNormalized ?? "unknown",
+        stop_requested: stopResponse !== null,
+        final_status: redactForLog(finalStatus, [], 0, redactText),
+        hermesDispatch: dispatchEvidence,
+      },
+      sessionParams: { hermesRunId: runId, strategy },
+    });
+  }
+
   if (outcome === "timeout") {
-    await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
-    const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    const { finalStatus } = await stopAndVerify({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
     return {
       exitCode: 1,
       signal: null,
@@ -949,6 +1281,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         status: extractStatus(finalStatus) ?? "timeout",
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
+        hermesDispatch: dispatchEvidence,
       },
       sessionParams: {
         hermesRunId: runId,
@@ -958,11 +1291,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  return mapFinalResultForTest({
+  const finalResult = mapFinalResultForTest({
     terminal: outcome,
     outputChunks: state.outputChunks,
     sessionKey,
     strategy,
     redactText,
   });
+  // Correlate paperclip run, idempotency key, and Hermes run on every outcome,
+  // not only on failures, so later reconciliation can read it.
+  return {
+    ...finalResult,
+    resultJson: { ...(finalResult.resultJson ?? {}), hermesDispatch: dispatchEvidence },
+  };
 }

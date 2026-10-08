@@ -1,5 +1,5 @@
 import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
-import { DEFAULT_EVENT_RECONNECT_MS, DEFAULT_TIMEOUT_SEC } from "../shared/constants.js";
+import { DEFAULT_DISPATCH_ATTEMPTS, DEFAULT_EVENT_RECONNECT_MS, DEFAULT_TIMEOUT_SEC } from "../shared/constants.js";
 import { INSECURE_REMOTE_HTTP_ESCAPE_HATCH } from "./transport-security.js";
 
 export function getConfigSchema(): AdapterConfigSchema {
@@ -52,6 +52,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "number",
         default: DEFAULT_EVENT_RECONNECT_MS,
         hint: "Delay before reconnecting the Hermes SSE events stream after a nonterminal disconnect.",
+      },
+      {
+        key: "dispatchRetryAttempts",
+        label: "Dispatch attempts",
+        type: "number",
+        default: DEFAULT_DISPATCH_ATTEMPTS,
+        hint: "Total POST /v1/runs attempts (1-3) on 429, 5xx, or connection failures, resent with the same Idempotency-Key and body. Raise above 1 only for Hermes gateways that durably dedupe Idempotency-Key.",
       },
       {
         key: "paperclipApiUrl",
