@@ -4,8 +4,14 @@ function normalizeHost(value: string | null | undefined): string {
   return (value ?? "").trim();
 }
 
+function stripIpv6Brackets(host: string): string {
+  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+}
+
 function isLoopbackHost(host: string): boolean {
-  const normalized = normalizeHost(host).toLowerCase();
+  // WHATWG `URL.hostname` keeps IPv6 in brackets ("[::1]"), so strip them before
+  // comparing or an explicitly configured IPv6 loopback reads as non-loopback.
+  const normalized = stripIpv6Brackets(normalizeHost(host).toLowerCase());
   return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
 }
 
@@ -183,6 +189,8 @@ export function chooseRuntimeDialOrigin(input: {
   configuredApiUrl: string | null | undefined;
   listenPort: string | number | null | undefined;
   localExecution: boolean;
+  /** The address the listener is bound to (`PAPERCLIP_LISTEN_HOST`). */
+  bindHost?: string | null;
 }): string | null {
   const configured = normalizeHost(input.configuredApiUrl ?? "");
   if (!configured) return null; // never conjure an origin
@@ -191,6 +199,13 @@ export function chooseRuntimeDialOrigin(input: {
     if (isLoopbackHost(new URL(configured).hostname)) return configured; // worktree on its own port
   } catch {
     // Unparseable: fall through to substitution.
+  }
+  // A listener bound to one specific non-loopback address (tailnet/custom bind)
+  // is NOT serving 127.0.0.1, so substituting loopback would hand the run a dead
+  // URL. Only wildcard and loopback binds actually answer on loopback.
+  const bindHost = normalizeHost(input.bindHost ?? "");
+  if (bindHost && !isWildcardHost(bindHost) && !isLoopbackHost(bindHost)) {
+    return configured;
   }
   const port = normalizeHost(String(input.listenPort ?? ""));
   if (!/^\d+$/.test(port)) return configured;
