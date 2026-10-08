@@ -584,6 +584,15 @@ from 1 through 255. No paths, repository or branch names, IDs, command output, o
 arbitrary messages enter these fields. Validation still blocks reuse; it does
 not repair Git metadata, change the selected repository, or retry the task.
 
+For explicit reuse of a retained Git workspace, `persisted_workspace_source_conflict`
+uses the same two fields with the fixed reason codes `source_scope_mismatch`,
+`explicit_project_workspace_conflict`, `source_path_unproven`,
+`source_registration_unproven`, `source_repository_mismatch`, or
+`source_repository_unavailable`. These distinguish an unverified original source
+from a missing Git registration. Paths, repository URLs, and workspace IDs stay
+out of the diagnostic fields. The task remains blocked until its original source
+is available or the owner intentionally selects a different workspace.
+
 When available, the saved `workspaceRestoreDiagnostic` adds the bounded fields
 `workspaceRestorePhase`, `workspaceRestoreStep`, `workspaceRestoreErrorCode`,
 `workspaceRestoreHttpStatus`, and `workspaceRestoreExitCode` to `run_execution`.

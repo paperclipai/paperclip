@@ -7,7 +7,7 @@ import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/w
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 import { readNativeModelRejectionDiagnostic } from "./native-runtime/native-provider-failure.js";
-import { MANAGED_GIT_WORKTREE_REASON_CODES, readManagedGitInspectionDiagnostic } from "./workspace-validation-diagnostics.js";
+import { MANAGED_GIT_WORKTREE_REASON_CODES, PERSISTED_WORKSPACE_SOURCE_REASON_CODES, readManagedGitInspectionDiagnostic } from "./workspace-validation-diagnostics.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Context = Record<string, string | number | boolean>;
@@ -161,6 +161,11 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       if (diagnostic.errorCode) execution.workspaceValidationInspectionErrorCode = diagnostic.errorCode;
       if (diagnostic.exitCode !== undefined) execution.workspaceValidationInspectionExitCode = diagnostic.exitCode;
     }
+  }
+  if (run.errorCode === "workspace_validation_failed" && read(workspaceValidation, "reason") === "persisted_workspace_source_conflict") {
+    execution.workspaceValidationReason = "persisted_workspace_source_conflict";
+    const reasonCode = PERSISTED_WORKSPACE_SOURCE_REASON_CODES.find(code => code === read(workspaceValidation, "reasonCode"));
+    if (reasonCode) execution.workspaceValidationReasonCode = reasonCode;
   }
   if (run.errorCode === "process_lost") {
     const diagnostic = readProcessLossDiagnostic(read(result, "processLossDiagnostic"));

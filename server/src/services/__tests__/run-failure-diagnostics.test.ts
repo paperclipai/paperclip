@@ -49,6 +49,30 @@ describe("run failure diagnostics", () => {
     expect(inspect({ ...base, inspectionDiagnostic: { command: "worktree_list", failure: "spawn_failed", errorCode: "EACCES", exitCode: 128 } })).toMatchObject({ workspaceValidationInspectionErrorCode: "EACCES" });
   });
 
+  it.each(["source_scope_mismatch", "explicit_project_workspace_conflict", "source_path_unproven",
+    "source_registration_unproven", "source_repository_mismatch", "source_repository_unavailable"])(
+    "exports only the fixed retained-source reason %s", reasonCode => {
+      const workspaceValidation = { reason: "persisted_workspace_source_conflict", reasonCode,
+        executionWorkspaceId: "private-id", repoUrl: "private-url", cwd: "/private-path", message: "private-message" };
+      expect(collectRunFailureDiagnostics(run({ errorCode: "workspace_validation_failed", resultJson: { workspaceValidation } }), {}).execution)
+        .toEqual({ workspaceValidationReason: "persisted_workspace_source_conflict", workspaceValidationReasonCode: reasonCode });
+      expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed", resultJson: { workspaceValidation } }), {}).execution).toEqual({});
+    },
+  );
+
+  it("omits arbitrary retained-source reason strings and hostile getters", () => {
+    for (const reasonCode of ["private-url", Object.defineProperty({}, "value", { get() { throw new Error("private"); } })]) {
+      expect(collectRunFailureDiagnostics(run({ errorCode: "workspace_validation_failed", resultJson: { workspaceValidation: {
+        reason: "persisted_workspace_source_conflict", reasonCode,
+      } } }), {}).execution).toEqual({ workspaceValidationReason: "persisted_workspace_source_conflict" });
+    }
+    const workspaceValidation = Object.defineProperty({ reason: "persisted_workspace_source_conflict" }, "reasonCode", {
+      get() { throw new Error("private"); },
+    });
+    expect(collectRunFailureDiagnostics(run({ errorCode: "workspace_validation_failed", resultJson: { workspaceValidation } }), {}).execution)
+      .toEqual({ workspaceValidationReason: "persisted_workspace_source_conflict" });
+  });
+
   it("exports bounded orphan evidence only for a process-loss failure", () => {
     const processLossDiagnostic = { pidRecorded: false, groupRecorded: false, localCheck: "no_identifiers",
       retryEligible: false, runPredatesObserver: true, observerUptimeMs: 30_000, lastOutputAgeMs: 120_000,

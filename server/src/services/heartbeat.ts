@@ -434,6 +434,7 @@ import {
   type UnresolvedWorkspaceBaseRefError,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
+import { resolvePersistedGitWorkspaceSource } from "./persisted-workspace-source.js";
 import {
   readManagedWorktreeInstanceOwnership,
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
@@ -3947,6 +3948,8 @@ export type ResolvedWorkspaceForRun = {
   materializationFailures: WorkspaceMaterializationFailure[];
   /** True only for an explicitly configured local project path without a repository URL. */
   localPathOnlyWorkspace?: boolean;
+  /** Current configuration for drift reporting; never an alternative restore source. */
+  freshnessSource?: { projectId: string | null; workspaceId: string | null; repoUrl: string | null; repoRef: string | null };
   /**
    * Read-only referenced (mentioned) project workspaces for this run, one per authorized
    * additional project. The array is empty unless the multi-project workspace-sync flag is on
@@ -12598,6 +12601,85 @@ export function heartbeatService(
         readNonEmptyString(resumeContext.issueId),
       sessionDisplayId: sessionOverride.sessionDisplayId,
       sessionParams: sessionOverride.sessionParams,
+    };
+  }
+
+  async function resolveReusedGitWorkspaceAnchor(input: {
+    agent: typeof agents.$inferSelect;
+    workspace: ExecutionWorkspace;
+    projectId: string | null;
+    explicitProjectWorkspaceId: string | null;
+    issueId: string | null;
+    runId: string;
+    responsibleUserId: string | null;
+    immutableNativeBinding: boolean;
+  }): Promise<ResolvedAnchorWorkspaceForRun> {
+    const { workspace, agent } = input;
+    // Configuration preparation may have awaited credentials and skills since
+    // issueRef was read. Match the ordinary anchor resolver's fresh selection
+    // check; only an already-admitted native input owns immutable source scope.
+    const currentIssueSource = input.issueId && !input.immutableNativeBinding
+      ? await db.select({ projectId: issues.projectId, projectWorkspaceId: issues.projectWorkspaceId }).from(issues)
+          .where(and(eq(issues.id, input.issueId), eq(issues.companyId, agent.companyId))).then(rows => rows[0] ?? null)
+      : null;
+    const sourceProjectId = input.issueId && !input.immutableNativeBinding ? currentIssueSource?.projectId ?? null : input.projectId;
+    const explicitProjectWorkspaceId = currentIssueSource?.projectWorkspaceId ?? input.explicitProjectWorkspaceId;
+    const projectWorkspaceRows = await db.select().from(projectWorkspaces).where(and(
+      eq(projectWorkspaces.companyId, agent.companyId),
+      eq(projectWorkspaces.projectId, workspace.projectId),
+    )).orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
+    const boundProjectWorkspace = projectWorkspaceRows.find(row => row.id === workspace.projectWorkspaceId) ?? null;
+    const configuredSource = prioritizeProjectWorkspaceCandidatesForRun(projectWorkspaceRows, explicitProjectWorkspaceId)[0];
+    const managedBase = workspace.repoUrl ? resolveManagedProjectWorkspaceDir({
+      companyId: agent.companyId,
+      projectId: workspace.projectId,
+      repoName: deriveRepoNameFromRepoUrl(workspace.repoUrl),
+    }) : null;
+    const candidateBaseCwds = [
+      managedBase,
+      managedBase && workspace.repoUrl
+        ? `${managedBase}-${createHash("sha256").update(workspace.repoUrl).digest("hex").slice(0, 12)}` : null,
+    ].filter((value): value is string => Boolean(value));
+    const cwd = await resolvePersistedGitWorkspaceSource({
+      companyId: agent.companyId,
+      projectId: sourceProjectId,
+      explicitProjectWorkspaceId,
+      workspace,
+      boundProjectWorkspace,
+      candidateBaseCwds,
+      managedSourceRoot: resolvePaperclipInstanceRoot(),
+      materializeOriginalRepository: workspace.repoUrl ? async () => {
+        const original = await ensureManagedProjectWorkspace({
+          companyId: agent.companyId,
+          projectId: workspace.projectId,
+          repoUrl: workspace.repoUrl,
+          resolveGitAuth: createGitRemoteAuthProvider(db, agent.companyId, {
+            issueId: input.issueId, heartbeatRunId: input.runId, agentId: agent.id,
+            responsibleUserId: input.responsibleUserId,
+          }),
+        });
+        return original.cwd;
+      } : undefined,
+    });
+    return {
+      cwd,
+      source: "task_session",
+      projectId: workspace.projectId,
+      workspaceId: workspace.projectWorkspaceId,
+      repoUrl: workspace.repoUrl,
+      repoRef: workspace.baseRef,
+      // Freshness must still expose drift in current project configuration.
+      // This snapshot authorizes no filesystem lookup or repository fallback.
+      freshnessSource: {
+        projectId: workspace.projectId,
+        workspaceId: configuredSource?.id ?? null,
+        repoUrl: configuredSource?.repoUrl ?? null,
+        repoRef: configuredSource?.repoRef ?? null,
+      },
+      workspaceHints: [],
+      warnings: [],
+      baseCwdFallback: false,
+      materializationFailures: [],
     };
   }
 
@@ -22288,6 +22370,22 @@ export function heartbeatService(
             {
               useProjectWorkspace:
                 requestedExecutionWorkspaceMode !== "agent_default",
+              anchorWorkspace: requestedShouldReuseExisting && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
+                ? await resolveReusedGitWorkspaceAnchor({
+                    agent,
+                    workspace: reusableExistingExecutionWorkspace,
+                    responsibleUserId,
+                    immutableNativeBinding: Boolean(nativeRecoveryExecutionWorkspaceId),
+                    projectId: nativeRecoveryExecutionWorkspaceId
+                      ? reusableExistingExecutionWorkspace.projectId
+                      : issueRef?.projectId ?? readNonEmptyString(context.projectId),
+                    explicitProjectWorkspaceId: nativeRecoveryExecutionWorkspaceId
+                      ? reusableExistingExecutionWorkspace.projectWorkspaceId
+                      : readNonEmptyString(context.projectWorkspaceId),
+                    issueId,
+                    runId: run.id,
+                  })
+                : undefined,
               // Thread the selected environment driver so run-workspace resolution can tell a local
               // target from a remote one, and a confined sandbox target from an unconfined remote
               // target. A remote run resolves referenced projects only for the confined sandbox
@@ -22371,17 +22469,18 @@ export function heartbeatService(
         trustPreset: trustPreset.kind,
         lowTrustSandboxDriver: lowTrustPreflightEnvironmentDriver,
       };
+      const workspaceFreshnessSource = resolvedWorkspace.freshnessSource ?? executionWorkspaceBase;
       const latestWorkspaceConfigMetadata =
         buildEffectiveRunWorkspaceConfigMetadata({
           mode: requestedExecutionWorkspaceMode,
-          projectId: executionWorkspaceBase.projectId,
-          projectWorkspaceId: executionWorkspaceBase.workspaceId,
+          projectId: workspaceFreshnessSource.projectId,
+          projectWorkspaceId: workspaceFreshnessSource.workspaceId,
           strategyType: latestWorkspaceStrategyType,
           workspaceStrategy: workspaceStrategyFingerprintValue,
-          repoUrl: executionWorkspaceBase.repoUrl,
+          repoUrl: workspaceFreshnessSource.repoUrl,
           repoRef:
             readNonEmptyString(workspaceStrategyForFingerprint.baseRef) ??
-            executionWorkspaceBase.repoRef,
+            workspaceFreshnessSource.repoRef,
           configSnapshot,
           environment: workspaceEnvironmentFingerprint,
           realization: workspaceRealizationFingerprint,
@@ -22560,7 +22659,9 @@ export function heartbeatService(
         executionProjectId ??
         null;
       const resolvedProjectWorkspaceId =
-        issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
+        resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
+          ? reusableExistingExecutionWorkspace.projectWorkspaceId
+          : issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
       let persistedExecutionWorkspace: ExecutionWorkspace | null = null;
       let issueExecutionWorkspaceIdForRun =
         issueRef?.executionWorkspaceId ?? null;

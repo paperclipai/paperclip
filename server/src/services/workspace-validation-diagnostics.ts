@@ -1,3 +1,10 @@
+export const PERSISTED_WORKSPACE_SOURCE_REASON_CODES = [
+  "source_scope_mismatch", "explicit_project_workspace_conflict", "source_path_unproven",
+  "source_registration_unproven", "source_repository_mismatch", "source_repository_unavailable",
+] as const;
+
+export type PersistedWorkspaceSourceReasonCode = typeof PERSISTED_WORKSPACE_SOURCE_REASON_CODES[number];
+
 export const MANAGED_GIT_WORKTREE_REASON_CODES = [
   "missing_worktree", "not_a_git_checkout", "not_registered",
   "wrong_repository_root", "branch_mismatch", "git_inspection_failed",
