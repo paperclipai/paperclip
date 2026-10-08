@@ -86,6 +86,48 @@ describe("Runner workspace bridge", () => {
     expect(await readFile(join(directory, "result.txt"), "utf8")).toBe("hello");
   });
 
+  it.skipIf(process.platform === "linux")("does not expose or execute commands without descendant containment", async () => {
+    const directory = await root();
+    expect(workspaceCommandSandboxAvailable()).toBe(false);
+    const tools = runnerBridgeDefinitions({ workspace: true, skills: false, api: false, mode: "standard" }).map(tool => tool.name);
+    expect(tools).toEqual(expect.arrayContaining(["workspace_list", "workspace_read", "workspace_write"]));
+    expect(tools).not.toContain("workspace_run");
+    await expect(executeWorkspaceTool(directory, "workspace_run", {
+      program: "/bin/sh", args: ["-c", "printf escaped > unexpected.txt"],
+    }, authorize)).rejects.toThrow("command_sandbox_unavailable");
+    await expect(readFile(join(directory, "unexpected.txt"))).rejects.toThrow();
+  });
+
+  it.skipIf(!workspaceCommandSandboxAvailable()).each(["completion", "timeout", "revocation"])("terminates detached descendants on %s", async mode => {
+      const directory = await root();
+      await writeFile(join(directory, "detach.py"), `import os, time, sys
+if os.fork() == 0:
+    os.setsid()
+    for fd in (0, 1, 2):
+        os.close(fd)
+    for tick in range(500):
+        with open("ticks.txt", "w") as out:
+            out.write(str(tick))
+        time.sleep(0.02)
+    os._exit(0)
+while not os.path.exists("ticks.txt"):
+    time.sleep(0.01)
+if sys.argv[1] != "completion":
+    time.sleep(20)
+`);
+      let revoked = false;
+      const result = await executeWorkspaceTool(directory, "workspace_run", {
+        program: "/usr/bin/python3", args: ["detach.py", mode], timeoutMs: mode === "timeout" ? 1000 : 5000,
+      }, async () => {
+        if (revoked) throw new Error("revoked");
+        if (mode === "revocation") revoked = await readFile(join(directory, "ticks.txt")).then(() => true, () => false);
+      }) as any;
+      expect(result.stopped).toBe(mode === "timeout" ? "timeout" : mode === "revocation" ? "authority_revoked" : null);
+      const final = await readFile(join(directory, "ticks.txt"), "utf8");
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(await readFile(join(directory, "ticks.txt"), "utf8")).toBe(final);
+    });
+
   it("serializes overlapping writes so only one observed hash can commit", async () => {
     const directory = await root();
     const initial = await executeWorkspaceTool(directory, "workspace_write", { path: "shared.txt", text: "initial", expectedSha256: null }, authorize) as any;

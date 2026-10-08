@@ -1,6 +1,7 @@
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { upsertIssueDocumentSchema } from "@paperclipai/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   activityLog,
@@ -369,6 +370,48 @@ describe("PaperclipRunnerToolAuthority", () => {
       else process.env.PAPERCLIP_RUNNER_API_TOOLS_COMPANY_IDS = previousCompanies;
       if (previousSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
       else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousSecret;
+    }
+  });
+
+  it("dispatches cross-task Markdown documents that pass route validation and persist revisions", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "document-test-secret");
+    const taskId = randomUUID();
+    await db.insert(issues).values({ id: taskId, companyId, title: "Cross-task document target", status: "todo" });
+    const service = documentService(db);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, request) => {
+      expect(String(url)).toBe(`http://runner-test.invalid/api/issues/${taskId}/documents/notes`);
+      expect(new Headers(request?.headers).get("authorization")).toMatch(/^Bearer /);
+      // Use the real route validator and persistence service, so a missing
+      // required format or stale base revision cannot be hidden by a spy.
+      const body = upsertIssueDocumentSchema.parse(JSON.parse(String(request?.body)));
+      const saved = await service.upsertIssueDocument({ issueId: taskId, key: "notes", ...body,
+        createdByAgentId: agentId, createdByRunId: runId });
+      return new Response(JSON.stringify(saved.document), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+        apiToolsEnabled: true, apiUrl: "http://runner-test.invalid" });
+      const first = { tool: "write_task_document", callId: "cross-task-document-create", arguments: {
+        taskId, key: "notes", title: "Notes", body: "# First revision", baseRevisionId: null,
+      } };
+      expect(await authority.execute(first)).toMatchObject({ ok: true, status: 200 });
+      const saved = await service.getIssueDocumentByKey(taskId, "notes");
+      expect(saved).toMatchObject({ format: "markdown", body: "# First revision" });
+      expect(await authority.execute({ ...first, callId: "cross-task-document-update", arguments: {
+        ...first.arguments, body: "# Second revision", baseRevisionId: saved!.latestRevisionId,
+      } })).toMatchObject({ ok: true, status: 200 });
+      expect(await service.getIssueDocumentByKey(taskId, "notes")).toMatchObject({ body: "# Second revision" });
+      expect(await service.listIssueDocumentRevisions(taskId, "notes")).toHaveLength(2);
+      const tooLong = await authority.execute({ ...first, callId: "cross-task-document-long-title", arguments: {
+        ...first.arguments, title: "x".repeat(201),
+      } });
+      expect(tooLong).toMatchObject({ outcome: "failed", code: "runner_bridge_invalid_arguments" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      fetchMock.mockRestore();
+      const saved = await service.getIssueDocumentByKey(taskId, "notes");
+      if (saved) await db.delete(documents).where(eq(documents.id, saved.id));
+      await db.delete(issues).where(eq(issues.id, taskId));
     }
   });
 

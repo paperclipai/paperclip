@@ -353,7 +353,7 @@ export class PaperclipRunnerToolAuthority {
       const [method, path] = paths[call.tool]!;
       const operation = runnerApiCatalog().find(operation => operation.method === method && operation.path === path);
       if (!operation) throw new Error("runner_task_api_operation_unavailable");
-      const body = call.tool === "comment_on_task" ? { body: input.body } : call.tool === "write_task_document" ? { title: input.title, body: input.body, baseRevisionId: input.baseRevisionId } : undefined;
+      const body = call.tool === "comment_on_task" ? { body: input.body } : call.tool === "write_task_document" ? { title: input.title, format: "markdown", body: input.body, baseRevisionId: input.baseRevisionId } : undefined;
       const { operationId, ...response } = record(await this.#callApi(call.callId, { operationId: operation.operationId, pathParams: { id: input.taskId, ...(input.key ? { key: input.key } : {}) }, ...(body ? { body } : {}) }));
       return { ...response, apiOperationId: operationId };
     }
