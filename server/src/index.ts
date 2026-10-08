@@ -1355,6 +1355,25 @@ async function startServerWithDatabaseTeardown(
           logger.error({ err }, "merged pull-request confirmation sweep failed");
         }));
     };
+    // Agents may declare a default answer for a reversible question (#4022).
+    // Apply it once the timeout passes, then deliver it like a human answer.
+    const scheduleQuestionDefaultSweep = () => {
+      if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(mergedPullRequestConfirmations
+        .sweepExpiredQuestionDefaults()
+        .then(async ({ applied }) => {
+          if (applied.length === 0) return;
+          logger.info({ applied: applied.length }, "applied default answers to timed-out agent questions");
+          for (const interactionId of applied) {
+            await questionResponseDeliveries.deliver(interactionId).catch((err) => {
+              logger.warn({ err, interactionId }, "default-answer delivery failed; it stays retryable");
+            });
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "question default-answer sweep failed");
+        }));
+    };
     // Emit a periodic signal when the reaper inspects candidates but archives
     // none, so an inert reaper that skips every candidate is never fully silent.
     // The throttle keeps the 30s cadence from flooding the log.
@@ -1690,6 +1709,7 @@ async function startServerWithDatabaseTeardown(
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
         scheduleMergedPullRequestConfirmationSweep();
+        scheduleQuestionDefaultSweep();
         scheduleGitHubConnectionEventPoll();
         scheduleGitHubConnectionContinuitySweep();
         scheduleTerminalWorkspaceSweep();

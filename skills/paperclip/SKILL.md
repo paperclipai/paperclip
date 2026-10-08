@@ -188,6 +188,8 @@ In Agent Chat, Paperclip addresses the question to the conversation owner automa
 
 Verify the interaction was saved and is pending, then PATCH the same task to `in_review` without changing its assignee. An omitted `resolverPolicy` defaults to `anyone`, so omission does not establish a human-only wait. See [the API reference](references/api-reference.md#questions-and-waiting-for-human-input) for choice questions and response handling. Include the normal Authorization and X-Paperclip-Run-Id headers.
 
+For a reversible choice question with a safe option, you may add `"defaultResponse": { "timeoutMinutes": 240, "answers": [{ "questionId": "...", "optionIds": ["..."] }] }` to the payload. It must answer every required question. If nobody answers in time, Paperclip records your default with `outcome: "default_applied"` and wakes you. Omit it when the decision is irreversible, costly, or needs a human.
+
 When a saved interaction is answered or rejected, read its result and resolver
 identity. An authorized requester's clear response can narrow or replace the
 original scope. Act on that direction and finish the resulting work; do not ask

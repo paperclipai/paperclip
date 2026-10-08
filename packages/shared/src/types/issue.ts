@@ -1276,6 +1276,16 @@ export interface AskUserQuestionsPayload {
   questionSet?: PaperclipQuestionSetPayload;
   /** Correlates a recovered interaction with the live runtime request it replaces. */
   runtimeRequestId?: string | null;
+  /**
+   * Optional fallback for reversible decisions. When no one answers within
+   * `timeoutMinutes`, the scheduler answers with `answers` and wakes the agent.
+   */
+  defaultResponse?: AskUserQuestionsDefaultResponse;
+}
+
+export interface AskUserQuestionsDefaultResponse {
+  timeoutMinutes: number;
+  answers: AskUserQuestionsAnswer[];
 }
 
 export interface AskUserQuestionsAnswer {
@@ -1286,7 +1296,7 @@ export interface AskUserQuestionsAnswer {
 
 export interface AskUserQuestionsResult {
   version: 1;
-  outcome?: "skipped" | "withdrawn" | "issue_closed" | "addressee_deleted";
+  outcome?: "skipped" | "withdrawn" | "issue_closed" | "addressee_deleted" | "default_applied";
   reason?: string | null;
   answers: AskUserQuestionsAnswer[];
   cancelled?: true;

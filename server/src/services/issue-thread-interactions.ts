@@ -3363,6 +3363,79 @@ export function issueThreadInteractionService(
       return { expired: expired.length };
     },
 
+    /**
+     * Answers pending `ask_user_questions` interactions whose author declared a
+     * `defaultResponse` and whose timeout has elapsed (#4022). The answer goes
+     * through the same path as a human answer (status `answered`, durable
+     * question-response delivery row), so the existing delivery service wakes
+     * the agent. Interactions without a default are never touched.
+     */
+    sweepExpiredQuestionDefaults: async (now: Date = new Date()) => {
+      const candidates = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.kind, "ask_user_questions"),
+            eq(issueThreadInteractions.status, "pending"),
+            sql`${issueThreadInteractions.payload} -> 'defaultResponse' is not null`,
+          ),
+        )
+        .orderBy(asc(issueThreadInteractions.createdAt))
+        .limit(100);
+
+      const applied: IssueThreadInteraction[] = [];
+      for (const candidate of candidates) {
+        const interaction = hydrateInteraction(candidate) as AskUserQuestionsInteraction;
+        const fallback = interaction.payload.defaultResponse;
+        if (!fallback) continue;
+        const dueAt = new Date(new Date(candidate.createdAt).getTime() + fallback.timeoutMinutes * 60_000);
+        if (dueAt.getTime() > now.getTime()) continue;
+
+        let answers: AskUserQuestionsAnswer[];
+        try {
+          answers = normalizeQuestionAnswers({
+            questions: interaction.payload.questions,
+            answers: fallback.answers,
+          });
+        } catch {
+          // A stale default (e.g. options edited after creation) must not block the
+          // sweep for every other question; leave this one for a human.
+          continue;
+        }
+        const summaryMarkdown =
+          `No reply within ${fallback.timeoutMinutes} minute(s); proceeding with the default the agent declared.`;
+        const updated = await db.transaction(async (tx) => {
+          const [issueRow] = await tx.select({ status: issues.status }).from(issues)
+            .where(and(eq(issues.id, candidate.issueId), eq(issues.companyId, candidate.companyId))).for("update");
+          if (!issueRow || isTerminalIssueStatus(issueRow.status)) return null;
+          const [row] = await tx
+            .update(issueThreadInteractions)
+            .set({
+              status: "answered",
+              result: { version: 1, outcome: "default_applied", answers, summaryMarkdown },
+              resolvedByAgentId: null,
+              resolvedByRunId: null,
+              resolvedByUserId: null,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(eq(issueThreadInteractions.id, candidate.id), eq(issueThreadInteractions.status, "pending")))
+            .returning();
+          if (!row) return null;
+          const answered = hydrateInteraction(row) as AskUserQuestionsInteraction;
+          await tx.insert(issueQuestionResponseDeliveries).values(questionResponseDeliveryValues(answered));
+          await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, answered);
+          return row;
+        });
+        if (!updated) continue;
+        await touchIssue(db, candidate.issueId);
+        applied.push(hydrateInteraction(updated));
+      }
+      if (applied.length > 0) await emitResolvedInteractionsTelemetry(db, applied);
+      return { applied: applied.map((interaction) => interaction.id) };
+    },
+
     create: async (
       issue: { id: string; companyId: string },
       input: CreateIssueThreadInteractionInput,
