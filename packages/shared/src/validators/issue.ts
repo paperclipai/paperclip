@@ -1496,6 +1496,9 @@ export const askUserQuestionsPayloadSchema = z
         if (question.selectionMode === "single" && answer.optionIds.length > 1) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Single-select questions take one default option", path: [...path, "optionIds"] });
         }
+        if (question.required && answer.optionIds.length === 0 && !answer.otherText?.trim()) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "A default for a required question must select an option or give text", path: [...path, "optionIds"] });
+        }
       }
       for (const question of value.questions) {
         if (question.required && !seenDefaultQuestionIds.has(question.id)) {

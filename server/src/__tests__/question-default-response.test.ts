@@ -5,6 +5,7 @@ import {
   agents,
   companies,
   createDb,
+  issueComments,
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
   issues,
@@ -84,20 +85,34 @@ describe("ask_user_questions default response (#4022)", () => {
     const createdAt = new Date("2026-01-01T12:00:00Z");
     const minutesAfter = (minutes: number) => new Date(createdAt.getTime() + minutes * 60_000);
 
-    async function fixture(opts: { withDefault?: boolean; issueStatus?: string } = {}) {
-      const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
-      await db.insert(companies).values({ id: companyId, name: "Defaults", issuePrefix: `D${companyId.slice(0, 8)}` });
+    async function fixture(opts: {
+      withDefault?: boolean;
+      issueStatus?: string;
+      policy?: "anyone" | "human_only" | "not_creator";
+      timeoutMinutes?: number;
+      createdAt?: Date;
+      addresseeUserId?: string;
+      companyId?: string;
+    } = {}) {
+      const companyId = opts.companyId ?? randomUUID(), agentId = randomUUID(), issueId = randomUUID();
+      if (!opts.companyId) {
+        await db.insert(companies).values({ id: companyId, name: "Defaults", issuePrefix: `D${companyId.slice(0, 8)}` });
+      }
       await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "process", status: "active" });
       await db.insert(issues).values({
         id: issueId, companyId, title: "Ship it", status: opts.issueStatus ?? "in_progress", assigneeAgentId: agentId,
       });
       const [row] = await db.insert(issueThreadInteractions).values({
         companyId, issueId, kind: "ask_user_questions", status: "pending", createdByAgentId: agentId,
-        effectiveResolverPolicy: "human_only", createdAt,
+        effectiveResolverPolicy: opts.policy ?? "anyone", createdAt: opts.createdAt ?? createdAt,
+        addresseeUserId: opts.addresseeUserId ?? null,
         payload: {
           version: 1, questions: [question],
           ...(opts.withDefault === false ? {} : {
-            defaultResponse: { timeoutMinutes: 60, answers: [{ questionId: "verify", optionIds: ["fix_first"] }] },
+            defaultResponse: {
+              timeoutMinutes: opts.timeoutMinutes ?? 60,
+              answers: [{ questionId: "verify", optionIds: ["fix_first"] }],
+            },
           }),
         },
       }).returning();
@@ -145,6 +160,79 @@ describe("ask_user_questions default response (#4022)", () => {
     it("skips questions on closed tasks", async () => {
       const f = await fixture({ issueStatus: "done" });
       await issueThreadInteractionService(db).sweepExpiredQuestionDefaults(minutesAfter(61));
+      expect((await status(f.interactionId)).status).toBe("pending");
+      expect(await deliveries(f.interactionId)).toHaveLength(0);
+    });
+
+    // Review finding 1: never auto-answer a question that must be resolved by a human
+    // (including a company cap) or by a specific addressee.
+    it.each(["human_only", "not_creator"] as const)("never applies a default to a %s question", async (policy) => {
+      const f = await fixture({ policy });
+      await issueThreadInteractionService(db).sweepExpiredQuestionDefaults(minutesAfter(61));
+      expect((await status(f.interactionId)).status).toBe("pending");
+      expect(await deliveries(f.interactionId)).toHaveLength(0);
+    });
+
+    it("never applies a default to a question addressed to a specific user", async () => {
+      const f = await fixture({ addresseeUserId: "board-user" });
+      await issueThreadInteractionService(db).sweepExpiredQuestionDefaults(minutesAfter(61));
+      expect((await status(f.interactionId)).status).toBe("pending");
+    });
+
+    it("rejects creating a default under a company human_only cap", async () => {
+      const companyId = randomUUID(), issueId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId, name: "Capped", issuePrefix: `C${companyId.slice(0, 8)}`,
+        interactionResolverGovernance: { ask_user_questions: { cap: "human_only" } },
+      });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Capped task", status: "in_progress" });
+      await expect(issueThreadInteractionService(db).create(
+        { id: issueId, companyId },
+        {
+          kind: "ask_user_questions",
+          payload: {
+            version: 1, questions: [question],
+            defaultResponse: { timeoutMinutes: 60, answers: [{ questionId: "verify", optionIds: ["fix_first"] }] },
+          },
+        },
+        { userId: "board-user" },
+      )).rejects.toMatchObject({ status: 422 });
+    });
+
+    // Review finding 2: long-timeout rows must not crowd a due short-timeout row out of the batch.
+    it("applies a due short-timeout default even when 100+ older long-timeout defaults are pending", async () => {
+      const companyId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Busy", issuePrefix: `B${companyId.slice(0, 8)}` });
+      for (let i = 0; i < 105; i += 1) {
+        await fixture({ companyId, timeoutMinutes: 30 * 24 * 60, createdAt: minutesAfter(-60 - i) });
+      }
+      const short = await fixture({ companyId, timeoutMinutes: 5, createdAt });
+      const result = await issueThreadInteractionService(db).sweepExpiredQuestionDefaults(minutesAfter(6));
+      expect(result.applied).toContain(short.interactionId);
+      expect((await status(short.interactionId)).status).toBe("answered");
+    });
+
+    // Review finding 3: an empty answer to a required question is rejected up front.
+    it("rejects a default with an empty answer for a required question", () => {
+      const parsed = askUserQuestionsPayloadSchema.safeParse({
+        version: 1, questions: [question],
+        defaultResponse: { timeoutMinutes: 60, answers: [{ questionId: "verify", optionIds: [] }] },
+      });
+      expect(parsed.success).toBe(false);
+    });
+
+    // Review finding 4: a human reply after the question supersedes the agent's default.
+    it("does not apply a default after a newer human reply on the task", async () => {
+      const f = await fixture();
+      const control = await fixture();
+      await db.insert(issueComments).values({
+        companyId: f.companyId, issueId: f.issueId, authorType: "user", authorUserId: "board-user",
+        body: "Fix the errors first, don't skip verification.", createdAt: minutesAfter(10),
+      });
+      const result = await issueThreadInteractionService(db).sweepExpiredQuestionDefaults(minutesAfter(61));
+      // Control proves the sweep reached this batch; only the replied-to question is held back.
+      expect(result.applied).toContain(control.interactionId);
+      expect(result.applied).not.toContain(f.interactionId);
       expect((await status(f.interactionId)).status).toBe("pending");
       expect(await deliveries(f.interactionId)).toHaveLength(0);
     });

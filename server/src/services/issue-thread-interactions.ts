@@ -1724,6 +1724,48 @@ function normalizeQuestionAnswers(args: {
     .filter((answer): answer is AskUserQuestionsAnswer => Boolean(answer));
 }
 
+/**
+ * A timed default lets the scheduler answer on the board's behalf (#4022), so it
+ * is only allowed where any resolver may answer. Human-only and not-creator
+ * questions (including company-capped ones) and questions addressed to a
+ * specific principal must wait for that resolver. The default must also pass
+ * the same answer rules as a human reply.
+ */
+async function assertQuestionDefaultResponseAllowed(
+  data: {
+    addresseeAgentId?: string | null;
+    addresseeUserId?: string | null;
+    payload: AskUserQuestionsInteraction["payload"];
+  },
+  effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy,
+) {
+  const fallback = data.payload.defaultResponse;
+  if (!fallback) return;
+  if (effectiveResolverPolicy !== "anyone") {
+    throw unprocessable(
+      "defaultResponse is only allowed when anyone may answer; a human_only or not_creator question must wait for its resolver",
+      { code: "default_response_resolver_policy", effectiveResolverPolicy },
+    );
+  }
+  if (data.addresseeUserId || data.addresseeAgentId) {
+    throw unprocessable(
+      "defaultResponse is not allowed on a question addressed to a specific user or agent",
+      { code: "default_response_addressed" },
+    );
+  }
+  const answers = normalizeQuestionAnswers({ questions: data.payload.questions, answers: fallback.answers });
+  if (data.payload.questionSet) {
+    try {
+      await parseQuestionInteractionAnswers(data.payload.questionSet, answers, data.payload.questions);
+    } catch (error) {
+      throw unprocessable(
+        error instanceof Error ? `Invalid defaultResponse: ${error.message}` : "Invalid defaultResponse",
+        { code: "invalid_default_response" },
+      );
+    }
+  }
+}
+
 async function getIssueDocumentTargetSnapshot(
   db: Db | any,
   args: {
@@ -3371,17 +3413,26 @@ export function issueThreadInteractionService(
      * the agent. Interactions without a default are never touched.
      */
     sweepExpiredQuestionDefaults: async (now: Date = new Date()) => {
+      // Only rows that are already due and still eligible, so long-timeout rows
+      // can never crowd a short deadline out of the batch.
+      const dueAt = sql`${issueThreadInteractions.createdAt} + make_interval(mins => ((${issueThreadInteractions.payload} -> 'defaultResponse' ->> 'timeoutMinutes')::int))`;
+      const eligible = and(
+        eq(issueThreadInteractions.kind, "ask_user_questions"),
+        eq(issueThreadInteractions.status, "pending"),
+        sql`jsonb_typeof(${issueThreadInteractions.payload} -> 'defaultResponse' -> 'timeoutMinutes') = 'number'`,
+        // Defaults are only allowed where anyone may answer, and never for an
+        // addressed principal. Re-checked here in case policy/rows changed.
+        eq(issueThreadInteractions.effectiveResolverPolicy, "anyone"),
+        isNull(issueThreadInteractions.addresseeUserId),
+        isNull(issueThreadInteractions.addresseeAgentId),
+        // A human reply after the question supersedes the agent's default.
+        sql`not ${historicalQuestionCondition()}`,
+      )!;
       const candidates = await db
         .select()
         .from(issueThreadInteractions)
-        .where(
-          and(
-            eq(issueThreadInteractions.kind, "ask_user_questions"),
-            eq(issueThreadInteractions.status, "pending"),
-            sql`${issueThreadInteractions.payload} -> 'defaultResponse' is not null`,
-          ),
-        )
-        .orderBy(asc(issueThreadInteractions.createdAt))
+        .where(and(eligible, sql`${dueAt} <= ${now.toISOString()}::timestamptz`))
+        .orderBy(asc(dueAt), asc(issueThreadInteractions.id))
         .limit(100);
 
       const applied: IssueThreadInteraction[] = [];
@@ -3389,8 +3440,6 @@ export function issueThreadInteractionService(
         const interaction = hydrateInteraction(candidate) as AskUserQuestionsInteraction;
         const fallback = interaction.payload.defaultResponse;
         if (!fallback) continue;
-        const dueAt = new Date(new Date(candidate.createdAt).getTime() + fallback.timeoutMinutes * 60_000);
-        if (dueAt.getTime() > now.getTime()) continue;
 
         let answers: AskUserQuestionsAnswer[];
         try {
@@ -3398,9 +3447,12 @@ export function issueThreadInteractionService(
             questions: interaction.payload.questions,
             answers: fallback.answers,
           });
+          if (interaction.payload.questionSet) {
+            await parseQuestionInteractionAnswers(interaction.payload.questionSet, answers, interaction.payload.questions);
+          }
         } catch {
-          // A stale default (e.g. options edited after creation) must not block the
-          // sweep for every other question; leave this one for a human.
+          // Creation rejects invalid defaults; a row that still fails (legacy or
+          // edited) is left for a human rather than saved as an undeliverable answer.
           continue;
         }
         const summaryMarkdown =
@@ -3409,6 +3461,7 @@ export function issueThreadInteractionService(
           const [issueRow] = await tx.select({ status: issues.status }).from(issues)
             .where(and(eq(issues.id, candidate.issueId), eq(issues.companyId, candidate.companyId))).for("update");
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) return null;
+          // Re-check eligibility (including "no newer human reply") under the issue lock.
           const [row] = await tx
             .update(issueThreadInteractions)
             .set({
@@ -3420,7 +3473,7 @@ export function issueThreadInteractionService(
               resolvedAt: now,
               updatedAt: now,
             })
-            .where(and(eq(issueThreadInteractions.id, candidate.id), eq(issueThreadInteractions.status, "pending")))
+            .where(and(eq(issueThreadInteractions.id, candidate.id), eligible))
             .returning();
           if (!row) return null;
           const answered = hydrateInteraction(row) as AskUserQuestionsInteraction;
@@ -3494,6 +3547,10 @@ export function issueThreadInteractionService(
         throw unprocessable(
           "An issue-thread interaction cannot address both an agent and a user",
         );
+      }
+
+      if (normalizedData.kind === "ask_user_questions" && normalizedData.payload.defaultResponse) {
+        await assertQuestionDefaultResponseAllowed(normalizedData, policy.effectiveResolverPolicy);
       }
 
       if (normalizedData.addresseeAgentId) {
