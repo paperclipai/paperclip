@@ -1071,12 +1071,15 @@ describe("ACPX runtime host", () => {
 
   it("bounds post-handshake model verification and cleans the runtime", async () => {
     const fixture = await hostFixture();
+    const credential = credentialLeaseFixture(fixture.root);
+    const getStatus = vi.fn(() => new Promise<never>(() => undefined));
     const runtime = runtimePort({
-      getStatus: () => new Promise<never>(() => undefined),
+      getStatus,
     });
     const dependencies = fixture.dependencies({
       openRuntime: async () => runtime,
     });
+    dependencies.stageCredential = vi.fn(async () => credential);
     dependencies.admissionVerificationTimeoutMs = 1;
 
     await expect(
@@ -1091,12 +1094,16 @@ describe("ACPX runtime host", () => {
         dependencies,
       ),
     ).rejects.toThrow("admission verification exceeded its deadline");
+    expect(dependencies.stageCredential).toHaveBeenCalledOnce();
+    expect(getStatus).toHaveBeenCalledOnce();
     expect(runtime.close).toHaveBeenCalledOnce();
+    expect(credential.close).toHaveBeenCalledOnce();
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
   it("bounds post-handshake cleanup while retaining its exact owner", async () => {
     const fixture = await hostFixture();
+    const credential = credentialLeaseFixture(fixture.root);
     let finishRuntimeClose!: () => void;
     const runtimeClose = new Promise<void>((resolve) => {
       finishRuntimeClose = resolve;
@@ -1108,6 +1115,7 @@ describe("ACPX runtime host", () => {
     const dependencies = fixture.dependencies({
       openRuntime: async () => runtime,
     });
+    dependencies.stageCredential = vi.fn(async () => credential);
     let retainedAdmissionCleanup: Promise<void> | null = null;
     dependencies.retainAdmissionCleanup = (cleanup) => {
       retainedAdmissionCleanup = cleanup;
@@ -1128,6 +1136,7 @@ describe("ACPX runtime host", () => {
       ),
     ).rejects.toThrow("initialization and cleanup failed");
     expect(runtime.close).toHaveBeenCalledOnce();
+    expect(credential.close).not.toHaveBeenCalled();
     expect(fixture.commandClose).toHaveBeenCalledOnce();
     expect(retainedAdmissionCleanup).not.toBeNull();
     let cleanupSettled = false;
@@ -1140,6 +1149,7 @@ describe("ACPX runtime host", () => {
     finishRuntimeClose();
     await retainedAdmissionCleanup;
     expect(cleanupSettled).toBe(true);
+    expect(credential.close).toHaveBeenCalledOnce();
   });
 
   it("retains credential ownership when runtime shutdown fails until retry succeeds", async () => {
@@ -1818,6 +1828,21 @@ describe("ACPX runtime host", () => {
     await waitForAcpxOperation(() => expect(credentialClose).toHaveBeenCalledOnce());
   }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 });
+
+// Deadline tests exercise runtime admission and cleanup, not kernel lease
+// acquisition. Keep their credential owner deterministic: real lease staging
+// uses hashed loopback ports that unrelated parallel tests can occupy. The
+// credential and retained-owner integration tests still use real leases.
+function credentialLeaseFixture(root: string) {
+  return {
+    path: join(root, "auth.json"),
+    mode: "inline_json" as const,
+    lifetimeFenceFds: [42, 43] as const,
+    lifetimeFenceCandidates: [60_001, 60_002, 60_003] as const,
+    activateLifetimeOwner: async () => undefined,
+    close: vi.fn(async () => undefined),
+  };
+}
 
 function runtimePort(
   input: {
