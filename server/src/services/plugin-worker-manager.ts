@@ -1049,6 +1049,8 @@ export function createPluginWorkerHandle(
   // -----------------------------------------------------------------------
 
   function setStatus(newStatus: WorkerStatus): void {
+    const done = beginIdleTrackedWork();
+    done();
     const prev = status;
     if (prev === newStatus) return;
     status = newStatus;
@@ -3455,6 +3457,9 @@ export function createPluginWorkerHandle(
       const drain = readTaskDrain(new Date());
       if (drain?.ownerId !== hold.ownerId || drain.expiresAt?.getTime() !== hold.expiresAt ||
           hold.expiresAt <= Date.now()) return "unknown";
+      // Clear a previous hold even when this idle worker received no ordinary
+      // call between two controller attempts.
+      idleSleepHeld();
       if (status !== "running" || totalCrashes > 0) return "unknown";
       if (!supportedMethods.includes("prepareIdleSleep")) return "present";
       if (unsettledCalls.size || activeHostHandlers || loginPtyRoutesByHostRouteId.size ||
@@ -3722,7 +3727,7 @@ export function createPluginWorkerManager(
       const snapshot = [...workers.entries()];
       const results = await Promise.all(snapshot.map(async ([, worker]) =>
         worker.prepareIdleSleep ? worker.prepareIdleSleep(hold) : "unknown"));
-      if (startupLocks.size || snapshot.length !== workers.size || snapshot.some(([id, worker]) => workers.get(id) !== worker)) {
+      if (startupLocks.size || snapshot.length !== workers.size || snapshot.some(([id, worker]) => workers.get(id) !== worker || worker.status !== "running")) {
         return { backgroundWork: "unknown", pluginIds: [] };
       }
       const backgroundWork = results.includes("present") ? "present" : results.includes("unknown") ? "unknown" : "none";

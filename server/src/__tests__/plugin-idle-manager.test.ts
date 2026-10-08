@@ -33,6 +33,11 @@ describe("plugin manager idle receipts", () => {
       expect(await handle.prepareIdleSleep!({ ...lease, ownerId: "stale" })).toBe("unknown");
       stopTaskDrain(); handle.releaseIdleSleep!();
       expect(await handle.call("health", {})).toMatchObject({ status: "ok" });
+      expect(await handle.prepareIdleSleep!(hold())).toBe("none");
+      stopTaskDrain();
+      // No intervening request or explicit worker release: the next controller
+      // attempt must discard the worker manager's previous ownership record.
+      expect(await handle.prepareIdleSleep!(hold())).toBe("none");
     } finally { stopTaskDrain(); await handle.stop(); }
   });
 
