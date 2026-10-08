@@ -25,6 +25,7 @@ import {
 import { createPostgresRunDispatchAdapter } from "./postgres.js";
 import { settleUnrecoverableExecutions } from "../../../services/execution-recovery-resolution.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { refreshIssueContinuationSummary } from "../../../services/issue-continuation-summary.js";
 
 // Proves the DB-to-facts mapping this adapter owns for each state the two
 // run-dispatch gates decide on. `application/use-cases.test.ts` and
@@ -804,6 +805,40 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         outcome: "cancelled",
         errorCode: "issue_continuation_waiting_on_review",
       });
+    });
+
+    it("keeps a continuation queued after the summary was refreshed for an issue back in progress", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId: agentId });
+      const agent = { id: agentId, name: "Agent", adapterType: "claude_local" };
+
+      const finishRun = async () => {
+        const id = await seedRun({ companyId, agentId, contextSnapshot: { issueId } });
+        await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, id));
+        return { id, status: "succeeded", error: null };
+      };
+      await refreshIssueContinuationSummary({ db, issueId, agent, run: await finishRun() });
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+      await refreshIssueContinuationSummary({ db, issueId, agent, run: await finishRun() });
+
+      const runId = await seedRun({
+        companyId,
+        agentId,
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+        },
+      });
+      const result = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(result).toMatchObject({ outcome: "not_stale" });
     });
   });
 
