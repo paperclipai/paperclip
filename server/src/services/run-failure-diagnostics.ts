@@ -7,6 +7,7 @@ import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/w
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 import { readNativeModelRejectionDiagnostic } from "./native-runtime/native-provider-failure.js";
+import { MANAGED_GIT_WORKTREE_REASON_CODES, readManagedGitInspectionDiagnostic } from "./workspace-validation-diagnostics.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Context = Record<string, string | number | boolean>;
@@ -147,6 +148,20 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
     if (Number.isFinite(durationMs) && durationMs >= 0) execution.durationMs = durationMs;
   }
   const result = run.resultJson;
+  const workspaceValidation = read(result, "workspaceValidation");
+  if (run.errorCode === "workspace_validation_failed" && read(workspaceValidation, "reason") === "git_worktree_not_reusable") {
+    execution.workspaceValidationReason = "git_worktree_not_reusable";
+    const reasonCode = MANAGED_GIT_WORKTREE_REASON_CODES.find(code => code === read(workspaceValidation, "reasonCode"));
+    if (reasonCode) execution.workspaceValidationReasonCode = reasonCode;
+    const diagnostic = reasonCode === "git_inspection_failed"
+      ? readManagedGitInspectionDiagnostic(read(workspaceValidation, "inspectionDiagnostic")) : null;
+    if (diagnostic) {
+      execution.workspaceValidationInspectionCommand = diagnostic.command;
+      execution.workspaceValidationInspectionFailure = diagnostic.failure;
+      if (diagnostic.errorCode) execution.workspaceValidationInspectionErrorCode = diagnostic.errorCode;
+      if (diagnostic.exitCode !== undefined) execution.workspaceValidationInspectionExitCode = diagnostic.exitCode;
+    }
+  }
   if (run.errorCode === "process_lost") {
     const diagnostic = readProcessLossDiagnostic(read(result, "processLossDiagnostic"));
     for (const [field, value] of Object.entries(diagnostic)) {

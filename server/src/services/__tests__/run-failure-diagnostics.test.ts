@@ -7,6 +7,48 @@ const run = (overrides: Partial<Run> = {}) => ({ resultJson: null, ...overrides 
 const collect = (error: unknown) => collectRunFailureDiagnostics(run(), { error });
 
 describe("run failure diagnostics", () => {
+  it("exports only fixed workspace validation codes and bounded inspection evidence", () => {
+    const resultJson = { workspaceValidation: { reason: "git_worktree_not_reusable", reasonCode: "git_inspection_failed",
+      worktreePath: "/private/path", executionWorkspaceId: "private-id", repository: "private-url", message: "private-message",
+      inspectionDiagnostic: { command: "worktree_list", failure: "nonzero_exit", exitCode: 128, stderr: "private-token" } } };
+    const execution = collectRunFailureDiagnostics(run({ errorCode: "workspace_validation_failed", resultJson }), {}).execution;
+    expect(execution).toEqual({ workspaceValidationReason: "git_worktree_not_reusable", workspaceValidationReasonCode: "git_inspection_failed",
+      workspaceValidationInspectionCommand: "worktree_list", workspaceValidationInspectionFailure: "nonzero_exit", workspaceValidationInspectionExitCode: 128 });
+    expect(JSON.stringify(execution)).not.toContain("private");
+    expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed", resultJson }), {}).execution).toEqual({});
+  });
+
+  it.each(["missing_worktree", "not_a_git_checkout", "not_registered", "wrong_repository_root", "branch_mismatch"])(
+    "exports %s without attaching unrelated probe evidence", reasonCode => {
+      expect(collectRunFailureDiagnostics(run({ errorCode: "workspace_validation_failed", resultJson: { workspaceValidation: {
+        reason: "git_worktree_not_reusable", reasonCode, inspectionDiagnostic: { command: "worktree_list", failure: "nonzero_exit", exitCode: 128 },
+      } } }), {}).execution).toEqual({ workspaceValidationReason: "git_worktree_not_reusable", workspaceValidationReasonCode: reasonCode });
+    },
+  );
+
+  it.each([null, -1, 0, 256, Infinity, NaN, 1.5, "private", {}])("omits invalid Git inspection exit codes (%j)", exitCode => {
+    const execution = collectRunFailureDiagnostics(run({ errorCode: "workspace_validation_failed", resultJson: { workspaceValidation: {
+      reason: "git_worktree_not_reusable", reasonCode: "git_inspection_failed",
+      inspectionDiagnostic: { command: "worktree_list", failure: "nonzero_exit", exitCode },
+    } } }), {}).execution;
+    expect(execution).not.toHaveProperty("workspaceValidationInspectionExitCode");
+    expect(JSON.stringify(execution)).not.toContain("private");
+  });
+
+  it("omits unknown validation values and contains hostile diagnostic getters", () => {
+    const inspect = (workspaceValidation: unknown) => collectRunFailureDiagnostics(run({ errorCode: "workspace_validation_failed", resultJson: { workspaceValidation } }), {}).execution;
+    expect(inspect({ reason: "private" })).toEqual({});
+    expect(inspect({ reason: "git_worktree_not_reusable", reasonCode: "private" })).toEqual({ workspaceValidationReason: "git_worktree_not_reusable" });
+    const base = { reason: "git_worktree_not_reusable", reasonCode: "git_inspection_failed" };
+    for (const inspectionDiagnostic of [null, {}, { command: "private", failure: "nonzero_exit" }, { command: "worktree_list", failure: "private" },
+      Object.defineProperty({}, "command", { get() { throw new Error("private"); } })]) {
+      expect(inspect({ ...base, inspectionDiagnostic })).toEqual({ workspaceValidationReason: base.reason, workspaceValidationReasonCode: base.reasonCode });
+    }
+    const error = Object.defineProperty({ command: "worktree_list", failure: "spawn_failed" }, "errorCode", { get() { throw new Error("private"); } });
+    expect(inspect({ ...base, inspectionDiagnostic: error })).toMatchObject({ workspaceValidationInspectionErrorCode: "unknown" });
+    expect(inspect({ ...base, inspectionDiagnostic: { command: "worktree_list", failure: "spawn_failed", errorCode: "EACCES", exitCode: 128 } })).toMatchObject({ workspaceValidationInspectionErrorCode: "EACCES" });
+  });
+
   it("exports bounded orphan evidence only for a process-loss failure", () => {
     const processLossDiagnostic = { pidRecorded: false, groupRecorded: false, localCheck: "no_identifiers",
       retryEligible: false, runPredatesObserver: true, observerUptimeMs: 30_000, lastOutputAgeMs: 120_000,

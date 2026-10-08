@@ -563,6 +563,18 @@ or `restore_failed`. Unknown values are omitted. Workspace paths and arbitrary
 pre-restore result data are not included. A later successful run does not, by
 itself, establish that an earlier failed restore recovered the workspace files.
 
+For `workspace_validation_failed` with `git_worktree_not_reusable`, `run_execution`
+includes `workspaceValidationReason` and an allowlisted `workspaceValidationReasonCode`:
+`missing_worktree`, `not_a_git_checkout`, `not_registered`, `wrong_repository_root`,
+`branch_mismatch`, or `git_inspection_failed`. The last code distinguishes an
+unsuccessful or truncated Git registration inspection from confirmed absence in
+a complete list. Its optional `workspaceValidationInspection*` fields identify
+the fixed command `worktree_list`, failure (`spawn_failed`, `nonzero_exit`, or
+`output_truncated`), an allowlisted OS error code (or `unknown`), and an exit code
+from 1 through 255. No paths, repository or branch names, IDs, command output, or
+arbitrary messages enter these fields. Validation still blocks reuse; it does
+not repair Git metadata, change the selected repository, or retry the task.
+
 When available, the saved `workspaceRestoreDiagnostic` adds the bounded fields
 `workspaceRestorePhase`, `workspaceRestoreStep`, `workspaceRestoreErrorCode`,
 `workspaceRestoreHttpStatus`, and `workspaceRestoreExitCode` to `run_execution`.
