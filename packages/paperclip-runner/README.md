@@ -138,6 +138,9 @@ build and include them in the server's vendored Runner output before npm packing
 Assembly requires the provider pack's source revision to match `sourceRevision`
 and its ACPX profiles and Cursor distribution to match the current source pins.
 An independently rehashed older pack is rejected.
+Provider-pack builds replace the installed Copilot platform wrappers with relative
+launchers. These wrappers remain usable after the pack moves into an image. The
+build still rejects any wrapper that retains its temporary deployment path.
 Ordinary remote Cursor startup uses the packaged Linux daemon and verifies every
 image asset against that manifest. A mismatched image fails before the provider
 starts; install the matching package and image together.
