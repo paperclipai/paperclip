@@ -1,4 +1,6 @@
+import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
+import { environmentSyncErrorData } from "./environment-sync-error.js";
 /**
  * Worker-side RPC host — runs inside the child process spawned by the host.
  *
@@ -524,6 +526,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       events: {
+        async listLifecycle(companyId: string, limit?: number, afterId?: string) {
+          return callHost("events.listLifecycle", { companyId, limit, afterId });
+        },
+        async acknowledgeLifecycle(companyId: string, eventId: string) {
+          await callHost("events.acknowledgeLifecycle", { companyId, eventId });
+        },
         on(
           name: string,
           filterOrFn: EventFilter | ((event: PluginEvent) => Promise<void>),
@@ -1574,7 +1582,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       sendMessage(createErrorResponse(id, errorCode, errorMessage,
         method === "environmentAcquireLease" || method === "environmentDestroyLease"
-          ? environmentCreationCleanupErrorData(err) : undefined));
+          ? environmentCreationCleanupErrorData(err)
+          : method === "environmentSyncOut" ? environmentSyncErrorData(err) : undefined));
     }
   }
 
@@ -1620,6 +1629,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         return handleExecuteTool(params as ExecuteToolParams);
       case "detectExternalObjects":
         return handleDetectExternalObjects(params as DetectExternalObjectsParams);
+      case "routeAiConnection":
+        if (!plugin.definition.onRouteAiConnection) throw methodNotImplemented("routeAiConnection");
+        return plugin.definition.onRouteAiConnection(params as AiConnectionRouterRequest);
       case "resolveExternalObject":
         return handleResolveExternalObject(params as ResolveExternalObjectParams);
       case "refreshExternalObjects":
@@ -1736,6 +1748,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onShutdown) supportedMethods.push("shutdown");
     if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
     if (plugin.definition.onDetectExternalObjects) supportedMethods.push("detectExternalObjects");
+    if (plugin.definition.onRouteAiConnection) supportedMethods.push("routeAiConnection");
     if (plugin.definition.onResolveExternalObject) supportedMethods.push("resolveExternalObject");
     if (plugin.definition.onRefreshExternalObjects) supportedMethods.push("refreshExternalObjects");
     if (plugin.definition.onEnvironmentValidateConfig) supportedMethods.push("environmentValidateConfig");

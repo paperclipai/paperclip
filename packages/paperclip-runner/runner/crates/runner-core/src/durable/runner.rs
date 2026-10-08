@@ -251,6 +251,13 @@ pub enum TerminalDeliveryReconciliation {
 pub trait CommandExecutor {
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
+    /// Opt in only when semantic result delivery validates an exact durable
+    /// call receipt and cannot dispatch the underlying business operation.
+    /// Ordinary commands and providers without this proof remain indeterminate.
+    fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
+        Ok(false)
+    }
+
     /// Advances provider-side event correlation after a durable `run.attach`
     /// has moved runnerd to the next run-bound authority. The runner validates
     /// and persists the new authority before invoking this infallible hook.
@@ -1724,6 +1731,15 @@ fn process_command<E: CommandExecutor>(
         }
     }
     match state.begin_command(command)? {
+        CommandDisposition::Replay(result)
+            if result.status == "indeterminate"
+                && command.command_type == "semantic_tool.result"
+                && executor.can_reconcile_result_delivery()? =>
+        {
+            // begin_command already checked the complete immutable command
+            // fingerprint. Only replay receipt delivery, never the operation.
+            state.resume_result_delivery(command)?;
+        }
         CommandDisposition::Replay(result) => {
             let lifecycle =
                 if result.status == "pending" || state.pending_provider_cleanup.is_some() {
@@ -1742,8 +1758,8 @@ fn process_command<E: CommandExecutor>(
         CommandDisposition::Execute => {}
     }
     // Persist the pending marker before any command effect. If the process dies
-    // in the effect window, recovery returns an indeterminate result and never
-    // executes the same logical command twice.
+    // in the effect window, recovery remains indeterminate unless the provider
+    // explicitly supports exact, idempotent semantic result delivery above.
     store.save(state)?;
     let mut execution = match executor.execute(command) {
         Ok(execution) => execution,
@@ -1850,7 +1866,11 @@ fn process_command<E: CommandExecutor>(
 
 fn event_envelope_for_protocol(event: &StoredOutboxEvent, protocol_version: u64) -> Value {
     let mut envelope = event.envelope.clone();
-    if protocol_version == 1 && envelope.pointer("/payload/schemaVersion") == Some(&json!(2)) {
+    if envelope
+        .pointer("/payload/schemaVersion")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| version > protocol_version)
+    {
         // Preserve the source sequence on a v1 connection so its cumulative
         // ACK can advance past an event family that only exists in PRP v2.
         // Never copy the v2 payload because it can include a goal objective.
@@ -1858,7 +1878,7 @@ fn event_envelope_for_protocol(event: &StoredOutboxEvent, protocol_version: u64)
         envelope["payload"]["eventType"] = json!("runner.diagnostic");
         envelope["payload"]["schemaVersion"] = json!(1);
         envelope["payload"]["payload"] = json!({
-            "reasonCode": "event_requires_prp_v2",
+            "reasonCode": if event.envelope.pointer("/payload/schemaVersion") == Some(&json!(3)) { "event_requires_prp_v3" } else { "event_requires_prp_v2" },
             "originalEventType": event.event_type,
         });
     }
@@ -4482,6 +4502,150 @@ mod tests {
             assert_eq!(replay_lifecycle, expected_lifecycle);
             assert_eq!(executor.calls, 1);
             fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn interrupted_result_delivery_reconciles_exact_receipts_without_reexecuting_operations() {
+        use crate::provider_bridge::{
+            authorized_tool_catalog_digest, AuthorizedTool, AuthorizedToolSet, ProviderToolBridge,
+            ToolResult,
+        };
+        struct ReceiptExecutor {
+            path: PathBuf,
+            deliveries: usize,
+            supported: bool,
+        }
+        impl CommandExecutor for ReceiptExecutor {
+            fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
+                Ok(self.supported)
+            }
+            fn execute(
+                &mut self,
+                command: &Command,
+            ) -> Result<CommandExecution, DurableRunnerError> {
+                assert_eq!(
+                    command.command_type, "semantic_tool.result",
+                    "must never redispatch an operation"
+                );
+                self.deliveries += 1;
+                let mut bridge: ProviderToolBridge =
+                    serde_json::from_slice(&fs::read(&self.path).unwrap()).unwrap();
+                let result: ToolResult = serde_json::from_value(command.payload.clone()).unwrap();
+                bridge
+                    .apply_result(result)
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                fs::write(&self.path, serde_json::to_vec(&bridge).unwrap()).unwrap();
+                Ok(CommandExecution::result(json!({"status":"delivered"})))
+            }
+        }
+        for applied in [false, true] {
+            for supported in [false, true] {
+                let directory = std::env::temp_dir().join(format!(
+                    "result-delivery-crash-{}-{applied}-{supported}",
+                    std::process::id()
+                ));
+                let _ = fs::remove_dir_all(&directory);
+                let config = config(directory.clone());
+                let store = DurableStateStore::new(&directory).unwrap();
+                let (mut state, _) = store.load_or_create(&config).unwrap();
+                let operations = vec![AuthorizedTool {
+                    operation_id: "write_document".into(),
+                    version: 1,
+                    description: "Fixture write already committed on the server".into(),
+                    input_schema: json!({"type":"object"}),
+                    response_schema: json!({"type":"object"}),
+                }];
+                let mut bridge = ProviderToolBridge::default();
+                bridge
+                    .prepare(AuthorizedToolSet {
+                        schema: "paperclip.runner.authorized-tools.v1".into(),
+                        schema_version: 1,
+                        catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                        operations,
+                    })
+                    .unwrap();
+                bridge
+                    .begin_call(
+                        "call-1".into(),
+                        "write_document".into(),
+                        json!({"content":"exact original"}),
+                    )
+                    .unwrap();
+                bridge.settle_turn("provider_turn_stopped").unwrap();
+                let path = directory.join("tool-receipts.json");
+                fs::write(&path, serde_json::to_vec(&bridge).unwrap()).unwrap();
+                let mut executor = ReceiptExecutor {
+                    path: path.clone(),
+                    deliveries: 0,
+                    supported,
+                };
+                let mut delivery = command("semantic_tool.result");
+                delivery.payload = json!({"callId":"call-1", "operationId":"write_document", "isError":false,
+                    "result":{"revisionId":"one-committed-write"}});
+                assert_eq!(
+                    state.begin_command(&delivery).unwrap(),
+                    CommandDisposition::Execute
+                );
+                store.save(&state).unwrap();
+                if applied {
+                    executor.execute(&delivery).unwrap();
+                }
+                // Crash before receipt application, or after receipt application
+                // but before the command completion journal commits.
+                let (mut recovered, _) = store.load_or_create(&config).unwrap();
+                let before = executor.deliveries;
+                let (result, _) =
+                    process_command(&mut recovered, &store, &config, &mut executor, &delivery)
+                        .unwrap();
+                assert_eq!(
+                    result.status,
+                    if supported {
+                        "completed"
+                    } else {
+                        "indeterminate"
+                    }
+                );
+                assert_eq!(executor.deliveries, before + usize::from(supported));
+                let saved: ProviderToolBridge =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                assert_eq!(
+                    saved.pending_calls().count(),
+                    usize::from(!applied && !supported)
+                );
+                let (mut reopened, _) = store.load_or_create(&config).unwrap();
+                assert_eq!(
+                    process_command(&mut reopened, &store, &config, &mut executor, &delivery)
+                        .unwrap()
+                        .0,
+                    result
+                );
+                assert_eq!(executor.deliveries, before + usize::from(supported));
+                let mut changed = delivery.clone();
+                changed.payload["result"]["revisionId"] = json!("conflicting-write");
+                assert!(
+                    process_command(&mut reopened, &store, &config, &mut executor, &changed)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("different command data")
+                );
+                assert_eq!(executor.deliveries, before + usize::from(supported));
+                let mut ordinary = command("session.open");
+                ordinary.command_id = "ordinary-effect".into();
+                ordinary.controller_seq = 2;
+                reopened.begin_command(&ordinary).unwrap();
+                store.save(&reopened).unwrap();
+                let (mut after_crash, _) = store.load_or_create(&config).unwrap();
+                assert_eq!(
+                    process_command(&mut after_crash, &store, &config, &mut executor, &ordinary)
+                        .unwrap()
+                        .0
+                        .status,
+                    "indeterminate"
+                );
+                assert_eq!(executor.deliveries, before + usize::from(supported));
+                fs::remove_dir_all(directory).unwrap();
+            }
         }
     }
 

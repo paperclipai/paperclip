@@ -14,7 +14,7 @@ import {
 
 export interface CodexAcpxNativeSessionBackendOptions extends Omit<
   CodexAcpxDriverOptions,
-  "model" | "permissionMode" | "systemInstructions" | "providerPolicy"
+  "model" | "permissionMode" | "mode" | "systemInstructions" | "providerPolicy" | "runtimeContext"
 > {}
 
 export type AcpxNativeSessionBackendOptions =
@@ -72,7 +72,9 @@ export function createAcpxNativeSessionBackend(
       agent: input.provider.agent,
       model: input.provider.model,
       permissionMode: input.provider.permissionMode ?? "approve-reads",
+      mode: input.provider.mode,
       systemInstructions,
+      runtimeContext: "runtimeContext" in input ? input.runtimeContext : null,
       providerPolicy: { readOnly: "executionMode" in input && input.executionMode === "plan" },
     }),
   );

@@ -109,6 +109,7 @@ import type {
 import {
   PaperclipRunnerProviderProfileError,
   resolvePaperclipRunnerProviderProfile,
+  validatePaperclipRunnerDotConfig,
 } from "./native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
@@ -3600,6 +3601,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     if (adapterType === "paperclip_runner") {
       let profile;
       try {
+        if (adapterConfig.provider === "openai_dot") {
+          validatePaperclipRunnerDotConfig(adapterConfig, false);
+          return;
+        }
         profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
       } catch (error) {
         if (error instanceof PaperclipRunnerProviderProfileError) {
@@ -5248,19 +5253,27 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           .filter((entry) => entry.action !== "skip")
           .map((entry) => entry.slug),
       );
-      const selectsNativeRunner = sourceManifest.agents.some((agent) =>
+      const runnerSelections = sourceManifest.agents.filter((agent) =>
         importedAgentSlugs.has(agent.slug)
         && (input.adapterOverrides?.[agent.slug]?.adapterType ?? agent.adapterType)
           === "paperclip_runner",
       );
-      if (
-        selectsNativeRunner
-        && (await instanceSettingsService(db).getExperimental()).enableNativeRunner !== true
-      ) {
-        throw unprocessable(
-          "Paperclip Runner is experimental and disabled on this instance.",
-          { code: "paperclip_runner_rollout_disabled" },
-        );
+      if (runnerSelections.length > 0) {
+        const experimental = await instanceSettingsService(db).getExperimental();
+        for (const agent of runnerSelections) {
+          const config = input.adapterOverrides?.[agent.slug]?.adapterConfig ?? agent.adapterConfig;
+          if (config.provider === "openai_dot") {
+            if (experimental.enableOpenAiDot !== true) throw unprocessable(
+              "OpenAI Dot is experimental and disabled on this instance.",
+              { code: "paperclip_runner_dot_disabled" },
+            );
+          } else if (experimental.enableNativeRunner !== true) {
+            throw unprocessable(
+              "Paperclip Runner is experimental and disabled on this instance.",
+              { code: "paperclip_runner_rollout_disabled" },
+            );
+          }
+        }
       }
     }
 
@@ -5671,7 +5684,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ...patch,
             ...automationPausePatch,
             status: pauseAutomations ? "paused" : "idle",
-          });
+          }, { createdByUserId: actorUserId });
           await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
           await access.setPrincipalPermission(
             targetCompany.id,

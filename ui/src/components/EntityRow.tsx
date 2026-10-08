@@ -6,6 +6,7 @@ interface EntityRowProps {
   leading?: ReactNode;
   identifier?: string;
   title: string;
+  titleAccessory?: ReactNode;
   subtitle?: string;
   /**
    * Optional metadata columns rendered immediately after the title. When set,
@@ -44,6 +45,7 @@ export function EntityRow({
   leading,
   identifier,
   title,
+  titleAccessory,
   subtitle,
   meta,
   metaSpacerClassName,
@@ -91,6 +93,7 @@ export function EntityRow({
           <span className={cn(!titleTextClassName && "truncate", titleTextClassName)} title={title}>
             {title}
           </span>
+          {titleAccessory}
         </div>
         {(subtitle || reserveSubtitleSpace) && (
           <p

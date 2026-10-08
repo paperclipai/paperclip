@@ -501,6 +501,11 @@ test("shared questions resume and existing project reuse creates no project card
       }),
     );
     expect(ordinaryChild.parentId).toBe(task.id);
+    // The delegated task finishes on its own and wakes the conversation with
+    // a completion reporting turn. Wait for that turn to post its reply and
+    // settle before reading status, or this read can catch the conversation
+    // mid-turn.
+    await idle(request, f.chatPath, 4);
     expect(
       (await json(await request.get(`/api/issues/${chat.id}`))).status,
     ).toBe("in_review");

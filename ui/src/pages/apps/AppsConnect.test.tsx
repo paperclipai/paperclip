@@ -9,8 +9,11 @@ import { ApiError } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { queryKeys } from "@/lib/queryKeys";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
+import { rememberSkillSourceReturn, skillSourceReturnPath } from "@/lib/skill-source-connect-return";
 import { AppsConnect } from "./AppsConnect";
 import { TooltipProvider } from "@/components/ui/tooltip";
+
+vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "board-user", settled: true, failed: false }), resolveAccountUserId: async () => "board-user" }));
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const experimentalMock = vi.hoisted(() => vi.fn());
@@ -31,6 +34,8 @@ const getCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
 const startCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
+const openAggregatorTaskMock = vi.hoisted(() => vi.fn());
+vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: openAggregatorTaskMock }) }));
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 const mockSearch = vi.hoisted(() => ({ value: "" }));
 const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }));
@@ -52,7 +57,14 @@ const GITHUB_MANAGED = {
 };
 const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
 const ASANA = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "asana")!;
+const ASANA_MANAGED = {
+  ...ASANA,
+  ownershipAvailability: { ...ASANA.ownershipAvailability, platform_shared: true },
+};
+const BOX = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "box")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
+const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
+const SUPERAGENT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
 const SHOPIFY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "shopify")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
@@ -63,6 +75,7 @@ const PAGERDUTY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "pagerd
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
+    syncAggregatorApps: vi.fn().mockResolvedValue({ apps: [], sync: { status: "idle" }, discovery: { availability: "available" } }),
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
@@ -171,11 +184,55 @@ function stepLabelsOnScreen(): string[] {
 }
 
 /**
- * Advance past the Access step (PAP-17835), which now sits between picking a
- * curated app and entering its credential. Picks "Any agent" so Continue is
- * enabled without depending on the agent list.
+ * Open the Advanced disclosure that now holds the identity and agent-reach
+ * controls the Access step used to own (PAP-659 C0). Closed by default and
+ * unmounted while closed, so a test that asserts on those controls has to open
+ * it first — which is itself the assertion that they are one click away.
+ */
+async function openAccessAdvanced() {
+  const change = Array.from(document.body.querySelectorAll("button")).find(
+    (b) => b.textContent?.trim() === "Change" && b.getAttribute("aria-expanded") === "false",
+  );
+  if (!change) return;
+  await act(async () => {
+    change.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushReact();
+}
+
+/**
+ * PAP-659 deleted the Access step: picking a connector now opens its connect
+ * screen directly, and identity/agent reach are a stated default with an
+ * Advanced disclosure rather than a screen to pass.
+ *
+ * What remains is the one-click handoff the Access step used to perform for
+ * automatic-OAuth definitions, which is now the primary action of the sign-in
+ * screen itself. Everywhere else this is a no-op, so the call sites keep
+ * reading as "get to the part this test is about".
  */
 async function passAccessStep() {
+  const onOAuthEntryScreen = Boolean(
+    document.body.textContent?.includes("Paperclip will open")
+      || document.body.textContent?.includes("Your connection is saved."),
+  );
+  if (onOAuthEntryScreen) {
+    const handoff = Array.from(document.body.querySelectorAll("button")).find((b) => {
+      const label = b.textContent?.trim() ?? "";
+      return label.startsWith("Continue to") || label.startsWith("Finish with");
+    });
+    await act(async () => {
+      handoff?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    return;
+  }
+  // The remote-MCP aggregator setup (arcade, composio, executor, zapier) keeps
+  // its own Access step until PAP-659's no-auth pass replaces it. Recognise it
+  // by its own stepper rather than by any control the shared flow also has.
+  if (!stepLabelsOnScreen().includes("Access")) {
+    await flushReact();
+    return;
+  }
   const anyAgent = Array.from(document.body.querySelectorAll('[role="radio"]'))
     .find((option) => option.textContent?.includes("Any agent"));
   if (anyAgent) {
@@ -184,11 +241,10 @@ async function passAccessStep() {
     });
     await flushReact();
   }
-  const submit = Array.from(document.body.querySelectorAll("button")).find(
-    (b) => b.textContent?.trim() === "Save and continue"
-      || b.textContent?.trim() === "Continue"
-      || b.textContent?.trim().startsWith("Continue to"),
-  );
+  const submit = Array.from(document.body.querySelectorAll("button")).find((b) => {
+    const label = b.textContent?.trim() ?? "";
+    return label === "Save and continue" || label === "Continue";
+  });
   await act(async () => {
     submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
@@ -322,26 +378,88 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     return root;
   }
 
+  it("keeps Honcho setup blocked until the provider workspace is supplied", async () => {
+    const honcho = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "honcho")!;
+    experimentalMock.mockResolvedValue({ enableMemoryConnectors: true });
+    listGalleryMock.mockResolvedValue({ apps: [honcho] });
+    await render(undefined, false, <ConnectionSetupFlow serviceSlug="honcho" />);
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    const workspace = container.querySelector<HTMLInputElement>('input[aria-label="Honcho workspace"]')!;
+    expect(workspace.compareDocumentPosition(key) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(container.textContent).toContain(honcho.agentInstructions!.text);
+    expect(container.querySelector('[aria-label="Agent instructions"] [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+    await act(async () => setInputValue(key, "test-honcho-key"));
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+    await act(async () => buttonByText("Connect")?.click());
+    expect(connectAppMock).not.toHaveBeenCalled();
+    await act(async () => setInputValue(workspace, "paperclip-acme"));
+    expect(buttonByText("Connect")?.disabled).toBe(false);
+    await act(async () => buttonByText("Connect")?.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledOnce();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      configValues: { workspaceId: "paperclip-acme" },
+      agentInstructions: expect.objectContaining({ enabled: true, text: honcho.agentInstructions!.text }),
+    }));
+  });
+
+  it.each([false, true])("shows optional instructions on the Notion OAuth screen only when supplied (%s)", async (provided) => {
+    const template = { id: "notion.test", version: 1, text: "Look up published decisions in Notion before proposing changes." };
+    listGalleryMock.mockResolvedValue({ apps: [{ ...NOTION, agentInstructions: provided ? template : undefined }] });
+    await render(undefined, false, <ConnectionSetupFlow serviceSlug="notion" />);
+    expect(buttonByText("Continue to Notion")).toBeDefined();
+    const toggle = container.querySelector('[aria-label="Agent instructions"] [role="switch"]');
+    expect(container.textContent?.includes("Tell agents to use Notion")).toBe(provided);
+    if (provided) {
+      expect(toggle?.getAttribute("aria-checked")).toBe("true");
+      expect(container.textContent).toContain(template.text);
+    } else expect(toggle).toBeNull();
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
   it.each(["zapier", "arcade", "composio", "executor"])("inline aggregator %s collects the endpoint and completes only for the requester", async (provider) => {
     const onComplete = vi.fn();
     const popup = vi.spyOn(window, "open").mockReturnValue(null);
     const connection = { id: "conn-inline", status: "draft", credentialPolicy: "per_user", authKind: "api_key" };
-    connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [{ id: "tool-1", status: "active" }] });
+    connectAppMock.mockResolvedValue({
+      connectionId: connection.id, connection,
+      catalog: [{ id: "tool-1", status: "active" }, { id: "tool-2", status: "active" }],
+      actions: {
+        readOnly: [{ catalogEntryId: "tool-1", riskLevel: "read" }],
+        canMakeChanges: [{ catalogEntryId: "tool-2", riskLevel: "write" }],
+      },
+      suggestedDefaults: { askFirstRiskLevels: ["write", "destructive", "high", "critical"] },
+    });
     await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug={provider} requestedAgentId="agent-1" interactionId="intent-inline" onComplete={onComplete} />);
-    expect(container.textContent).toContain("This task grants access only to Ada");
+    // PAP-659 C0: the gateway connectors reach the endpoint field immediately.
+    // The task-scoped reach is stated rather than confirmed on its own step.
+    const connectLabel = `Connect ${provider[0].toUpperCase()}${provider.slice(1)}`;
+    expect(container.textContent).toContain("available to the agent that asked for it");
     expect(radioContaining("Any agent")).toBeUndefined();
-    await passAccessStep();
+    if (provider === "composio") {
+      expect(container.textContent).not.toContain("MCP server URL");
+      expect(buttonByText("Reuse an existing session")?.getAttribute("aria-expanded")).toBe("false");
+      expect(buttonByText(connectLabel)?.disabled).toBe(false);
+      await act(async () => buttonByText("Reuse an existing session")!.click());
+    }
     expect(container.textContent).toContain("MCP server URL");
     expect(container.textContent).not.toContain("Add your key");
+    expect(container.textContent).not.toContain("Step 1 of 2");
     const url = container.querySelector<HTMLInputElement>('input[type="password"]')!;
     expect(url.value).toBe(provider === "composio" ? "https://connect.composio.dev/mcp" : "");
-    expect(buttonByText("Connect")?.disabled).toBe(provider !== "composio");
+    expect(buttonByText(connectLabel)?.disabled).toBe(provider !== "composio");
     await act(async () => setInputValue(url, "not a url"));
-    await act(async () => buttonByText("Connect")!.click());
+    await act(async () => buttonByText(connectLabel)!.click());
     expect(container.textContent).toContain("Enter a valid MCP URL");
     expect(connectAppMock).not.toHaveBeenCalled();
+    await act(async () => setInputValue(url, "https://provider.example/mcp"));
+    // The sign-in method shares the one Advanced disclosure with the access
+    // controls, and Radix unmounts collapsed content — so it has to be opened.
+    expect(container.querySelector("select")).toBeNull();
+    await act(async () => buttonByText("Change")!.click());
+    expect(buttonByText("Advanced")).toBeUndefined();
+    expect(buttonByText("Change")?.getAttribute("aria-expanded")).toBe("true");
     await act(async () => {
-      setInputValue(url, "https://provider.example/mcp");
       const auth = container.querySelector<HTMLSelectElement>("select")!;
       auth.value = "bearer";
       auth.dispatchEvent(new Event("change", { bubbles: true }));
@@ -351,7 +469,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => buttonByText("Try again")!.click());
     await vi.waitFor(() => expect(onComplete).toHaveBeenCalledWith({ connectionId: connection.id }));
     expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ galleryKey: provider, link: "https://provider.example/mcp", grantKind: "user", authMode: "bearer", credentialValues: { "credentials.authorization": "fixture-token" } }));
-    expect(finishAppMock).toHaveBeenCalledWith("company-1", connection.id, { enabledCatalogEntryIds: ["tool-1"], askFirstCatalogEntryIds: [], access: { agentIds: ["agent-1"] }, preserveExistingAccess: true });
+    // PAP-659 C6a/C7: this path used to send an empty ask-first list, so the
+    // gateway connectors were the one place the armed write gate did not apply.
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", connection.id, { enabledCatalogEntryIds: ["tool-1", "tool-2"], askFirstCatalogEntryIds: ["tool-2"], access: { agentIds: ["agent-1"] }, preserveExistingAccess: true });
     expect(putConnectionInstallsMock).not.toHaveBeenCalled();
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(popup).not.toHaveBeenCalled();
@@ -365,9 +485,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const connection = { id: "conn-inline-oauth", status: "draft", credentialPolicy: "per_user", authKind: "oauth" };
     connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [], auth: { kind: "oauth" } });
     const root = await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug={provider} requestedAgentId="agent-1" interactionId="intent-inline" onComplete={onComplete} onPhaseChange={onPhaseChange} />);
-    await passAccessStep();
+    const connectLabel = `Connect ${provider[0].toUpperCase()}${provider.slice(1)}`;
+    if (provider === "composio") await act(async () => buttonByText("Reuse an existing session")!.click());
     await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, "https://provider.example/mcp"));
-    await act(async () => buttonByText("Connect")!.click());
+    await act(async () => buttonByText(connectLabel)!.click());
     await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(connection.id, { asCurrentUser: true, interactionId: "intent-inline" }));
     expect(popup.location.assign).toHaveBeenCalled();
     popup.closed = true;
@@ -391,6 +512,61 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(popup.close).toHaveBeenCalled();
   });
 
+  it.each(["blocked", "throws", "closed"])("keeps inline Composio sign-in recoverable when its popup is %s", async (failure) => {
+    const popup = { closed: true, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    const open = vi.spyOn(window, "open").mockImplementation(() => {
+      if (failure === "throws") throw new Error("Browser blocked the popup");
+      return failure === "closed" ? popup as unknown as Window : null;
+    });
+    const onPhaseChange = vi.fn();
+    const onComplete = vi.fn();
+    const connection = { id: "conn-composio", status: "draft", credentialPolicy: "per_user" };
+    connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [], auth: { kind: "oauth" } });
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="composio" interactionId="intent-inline" onPhaseChange={onPhaseChange} onComplete={onComplete} />);
+    await act(async () => buttonByText("Connect Composio")!.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("Paperclip couldn’t open sign-in"));
+
+    const link = container.querySelector<HTMLAnchorElement>('a[target="_blank"]')!;
+    expect(link.href).toBe("https://mcp.notion.com/authorize?state=resumed");
+    expect(link.rel).toBe("noopener noreferrer");
+    expect(onPhaseChange).toHaveBeenCalledWith("needs_retry");
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    await act(async () => link.dispatchEvent(click));
+    expect(click.defaultPrevented).toBe(false);
+    expect(onPhaseChange).toHaveBeenLastCalledWith("authorizing");
+    expect(container.textContent).not.toContain("Paperclip couldn’t open sign-in");
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(startOAuthMock).toHaveBeenCalledTimes(1);
+    expect(onComplete).not.toHaveBeenCalled();
+  });
+
+  it.each(["arcade", "composio", "executor"])("keeps a native sign-in link when direct %s navigation is blocked", async (provider) => {
+    mockSearch.value = `source=${provider}`;
+    const connection = { id: "conn-provider", status: "draft", credentialPolicy: "shared" };
+    connectAppMock.mockResolvedValue({ connectionId: connection.id, connection, catalog: [], auth: { kind: "oauth" } });
+    navigateTopLevelMock.mockImplementationOnce(() => { throw new Error("Browser refused navigation"); });
+    await render();
+    if (provider !== "composio") {
+      await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[id$="-url"]')!, "https://provider.example/mcp"));
+    }
+    await act(async () => buttonByText(`Connect ${provider[0].toUpperCase()}${provider.slice(1)}`)!.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("Paperclip couldn’t open sign-in"));
+
+    const link = container.querySelector<HTMLAnchorElement>('a[target="_blank"]')!;
+    expect(link.textContent).toBe("open sign-in again");
+    expect(link.href).toBe("https://mcp.notion.com/authorize?state=resumed");
+    expect(link.rel).toBe("noopener noreferrer");
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    await act(async () => link.dispatchEvent(click));
+    expect(click.defaultPrevented).toBe(false);
+    expect(navigateTopLevelMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(startOAuthMock).toHaveBeenCalledTimes(1);
+    expect(finishAppMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Waiting for sign-in");
+  });
+
   it("inline aggregator saves and resumes a draft without storing credentials in browser storage", async () => {
     const onCancel = vi.fn();
     const connection = { id: "conn-inline-draft", status: "draft", credentialPolicy: "per_user", authKind: "none", config: { url: "https://provider.example/mcp", sourceTemplateKey: "zapier", connectionMethodKey: "generated-url" } };
@@ -398,7 +574,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     getConnectionMock.mockResolvedValue(connection);
     const content = <ConnectionSetupFlow host="dialog" serviceSlug="zapier" requestedAgentId="agent-1" interactionId="intent-inline" onCancel={onCancel} />;
     const root = await render(undefined, false, content);
-    await passAccessStep();
     await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, "https://provider.example/mcp?token=fixture-secret"));
     await act(async () => buttonByText("Save & exit")!.click());
     await vi.waitFor(() => expect(onCancel).toHaveBeenCalled());
@@ -412,7 +587,24 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render(undefined, false, content);
     await vi.waitFor(() => expect(container.textContent).toContain("MCP server URL"));
     expect(getConnectionMock).toHaveBeenCalledWith(connection.id);
-    expect(container.textContent).toContain("Step 2 of 2");
+    // Resuming lands on the same single screen it was saved from, not "step 2".
+    expect(container.textContent).not.toContain("Step 2 of 2");
+  });
+
+  it.each(["page", "dialog"] as const)("lets %s setup cancel after an invalid provider URL without trying to save it", async (host) => {
+    const onCancel = host === "dialog" ? vi.fn() : undefined;
+    connectAppMock.mockRejectedValue(new Error("That connection URL does not belong to Zapier"));
+    await render(undefined, false, <ConnectionSetupFlow host={host} serviceSlug="zapier" onCancel={onCancel} />);
+    await passAccessStep();
+    await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[type="password"]')!, "https://wrong-provider.example/mcp"));
+    await act(async () => buttonByText("Connect Zapier")!.click());
+    await vi.waitFor(() => expect(container.textContent).toContain("That connection URL does not belong to Zapier"));
+
+    await act(async () => buttonByText("Cancel")!.click());
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    if (onCancel) expect(onCancel).toHaveBeenCalledOnce();
+    else expect(mockNavigate).toHaveBeenCalledWith("/apps");
   });
 
   it("inline aggregator reuses an eligible account without changing its access", async () => {
@@ -446,9 +638,81 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render();
     expect(container.textContent).not.toContain("Enable MCP aggregators");
     await passAccessStep();
-    expect(container.textContent).toContain("MCP server URL");
+    expect(container.textContent?.includes("MCP server URL")).toBe(provider !== "composio");
+    expect(buttonByText("Advanced")).toBeUndefined();
+    expect(buttonByText("Change")?.getAttribute("aria-expanded")).toBe("false");
     expect(connectAppMock).not.toHaveBeenCalled();
     expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps an existing Composio session URL when its disclosure is closed", async () => {
+    mockSearch.value = "source=composio&new=1";
+    await render();
+    expect(container.querySelector('input[id$="-url"]')).toBeNull();
+    await act(async () => buttonByText("Reuse an existing session")!.click());
+    await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[id$="-url"]')!, "https://session.example/mcp"));
+    await act(async () => buttonByText("Reuse an existing session")!.click());
+    expect(container.querySelector('input[id$="-url"]')).toBeNull();
+    await act(async () => buttonByText("Connect Composio")!.click());
+    await vi.waitFor(() => expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ link: "https://session.example/mcp" })));
+  });
+
+  it("reuses saved Composio accounts for a targeted app setup URL", async () => {
+    mockSearch.value = "source=composio&targetToolkit=circleback_mcp";
+    listConnectionsMock.mockResolvedValue({ connections: [{ id: "saved-composio", status: "active", enabled: true, transport: "mcp_remote", config: { sourceTemplateKey: "composio", url: "https://connect.composio.dev/mcp" } }] });
+    await render();
+    await vi.waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/apps?source=composio&targetToolkit=circleback_mcp", { replace: true }));
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("retains explicit new-account setup even when Composio is saved", async () => {
+    mockSearch.value = "source=composio&targetToolkit=circleback_mcp&new=1";
+    listConnectionsMock.mockResolvedValue({ connections: [{ id: "saved-composio", status: "active", enabled: true, transport: "mcp_remote", config: { sourceTemplateKey: "composio", url: "https://connect.composio.dev/mcp" } }] });
+    await render();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Connect Circleback through Composio");
+  });
+
+  it.each(["arcade", "composio"])("retains the selected upstream app in %s setup without claiming app authorization", async (provider) => {
+    mockSearch.value = `source=${provider}&targetToolkit=hubspot`;
+    await render();
+    expect(container.textContent).toContain(`Connect HubSpot through ${provider === "arcade" ? "Arcade" : "Composio"}`);
+    expect(container.textContent).toContain(provider === "composio" ? "sign in to the app in Composio" : "Manage app sign-in in the provider");
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it("returns completed Arcade gateway setup to Apps without creating an agent task", async () => {
+    mockSearch.value = "source=arcade&targetToolkit=hubspot";
+    connectAppMock.mockResolvedValue({ connectionId: "new-arcade", connection: { id: "new-arcade", status: "active", credentialPolicy: "shared" }, catalog: [] });
+    await render();
+    await passAccessStep();
+    await act(async () => setInputValue(container.querySelector<HTMLInputElement>('input[id$="-url"]')!, "https://api.arcade.dev/mcp/test"));
+    await act(async () => buttonByText("Connect Arcade")!.click());
+    await vi.waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/apps"));
+    expect(openAggregatorTaskMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["source=composio", "source=composio&targetToolkit=hubspot"])("opens Composio permissions after gateway setup for %s", async (search) => {
+    mockSearch.value = search;
+    connectAppMock.mockResolvedValue({ connectionId: "new-composio", connection: { id: "new-composio", status: "active", credentialPolicy: "shared" }, catalog: [] });
+    await render();
+    await act(async () => buttonByText("Connect Composio")!.click());
+    await vi.waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/apps/new-composio/permissions"));
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ grantKind: "organization" }));
+    expect(putConnectionInstallsMock).toHaveBeenCalledWith("new-composio", [{ targetType: "company", targetId: "company-1" }]);
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "new-composio", expect.objectContaining({ access: "all_agents" }));
+    expect(openAggregatorTaskMock).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem("paperclip:mcp-upstream-app:company-1:new-composio")).toBeNull();
+  });
+
+  it("recovers upstream app context after a gateway OAuth redirect", async () => {
+    window.sessionStorage.setItem("paperclip:mcp-upstream-app:company-1:composio-draft", "hubspot");
+    mockSearch.value = "source=composio&resume=composio-draft&oauth=connected";
+    getConnectionMock.mockResolvedValue({ id: "composio-draft", status: "draft", credentialPolicy: "per_user", config: { sourceTemplateKey: "composio", connectionMethodKey: "mcp" } });
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Connect HubSpot through Composio"));
+    expect(openAggregatorTaskMock).not.toHaveBeenCalled();
   });
 
   it.each(["arcade", "composio", "executor"])("explains a failed %s OAuth return and retries the same saved draft", async (provider) => {
@@ -458,6 +722,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [], auth: { kind: "oauth" } });
     await render();
     await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("Authorization did not complete"));
+    expect(container.querySelector<HTMLInputElement>('input[id$="-url"]')?.value).toBe("https://example.com/mcp");
     expect(container.textContent).not.toContain("untrusted-provider-message");
     expect(buttonByText("Try again")).toBeTruthy();
     await act(async () => buttonByText("Try again")!.click());
@@ -476,19 +741,22 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it.each([
-    ["shared", "Any human in the organization", false],
-    ["per_user", "Just me", true],
-  ])("retains the %s identity when returning to Access after an OAuth return", async (credentialPolicy, identityLabel, asCurrentUser) => {
+    ["shared", "Connects for everyone in your organization", "Any human in the organization", false],
+    ["per_user", "Connects as you", "Just me", true],
+  ])("retains the %s identity across an OAuth return without a step to walk back through", async (credentialPolicy, statedDefault, identityLabel, asCurrentUser) => {
     const draft = { id: "conn-oauth-draft", status: "draft", authKind: "oauth", credentialPolicy, config: { sourceTemplateKey: "composio", connectionMethodKey: "mcp", url: "https://connect.composio.dev/mcp" } };
     mockSearch.value = `source=composio&resume=${draft.id}&oauth=denied`;
     getConnectionMock.mockResolvedValue(draft);
     connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [], auth: { kind: "oauth" } });
     await render();
-    await vi.waitFor(() => expect(buttonByText("Back")).toBeTruthy());
-    await act(async () => buttonByText("Back")!.click());
+    // PAP-659 C0: the retained identity is stated on the one screen instead of
+    // being re-confirmed on an Access step the operator has to navigate back to.
+    await vi.waitFor(() => expect(container.textContent).toContain(statedDefault));
+    // It is also still editable, one disclosure away. Radix unmounts collapsed
+    // content, so the controls have to be opened to be asserted at all.
+    await act(async () => buttonByText("Change")!.click());
     expect(container.textContent).toContain(identityLabel);
     expect(container.querySelector('[role="radiogroup"][aria-label="Which humans can use this credential?"]')).toBeNull();
-    await act(async () => buttonByText("Continue")!.click());
     await act(async () => buttonByText("Try again")!.click());
     await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(draft.id, { asCurrentUser }));
     expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: draft.id, grantKind: asCurrentUser ? "user" : "organization" }));
@@ -551,18 +819,20 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]')?.value).toBe("https://edited.example.test/mcp");
   });
 
-  it("an unrecognized URL routes to a minimal frame with the URL and key choice", async () => {
+  it("an unrecognized URL routes to a minimal frame that asks nothing but the address", async () => {
     await render();
     await gotoLinkFrame(container, "https://www.example.com/actions");
 
     expect(container.textContent).toContain("Connect your own MCP server");
     expect(container.textContent).toContain("https://www.example.com/actions");
-    expect(container.textContent).toContain("Does it need a key?");
-    expect(Array.from(container.querySelectorAll("label")).find(
-      (label) => label.textContent === "Does it need a key?",
-    )?.classList.contains("mr-2")).toBe(true);
-    expect(buttonByText("No")).toBeTruthy();
-    expect(buttonByText("Yes")).toBeTruthy();
+    // PAP-659 bucket H: the server's probe answers "does it need a key?", so the
+    // operator is no longer asked to guess at it before anything has been tried.
+    expect(container.textContent).not.toContain("Does it need a key?");
+    expect(buttonByText("No")).toBeUndefined();
+    expect(buttonByText("Yes")).toBeUndefined();
+    expect(
+      Array.from(container.querySelectorAll<HTMLInputElement>("input")).some((i) => i.type === "password"),
+    ).toBe(false);
 
     expect(container.querySelector('input[placeholder="My app"]')).toBeNull();
   });
@@ -579,6 +849,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
+    await openAccessAdvanced();
 
     expect(container.textContent).toContain("Which humans can use this credential?");
     expect(container.textContent).toContain("Which agents can use this connection?");
@@ -586,7 +857,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(radioContaining("Any human in the organization")?.getAttribute("aria-checked")).toBe("true");
     expect(radioContaining("Just agents I pick")).toBeTruthy();
     expect(radioContaining("Any agent")?.getAttribute("aria-checked")).toBe("true");
-    expect(container.textContent).not.toContain("Does it need a key?");
   });
 
   it.each([false, true])("gates chat-only cards in the embedded tool gallery without hiding GitHub (%s)", async (enabled) => {
@@ -628,6 +898,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(buttonByText("Use GitHub")).toBeTruthy();
     await act(async () => buttonByText("Use GitHub")!.click());
     await flushReact();
+    await openAccessAdvanced();
     expect(container.textContent).toContain("Connect GitHub as");
     expect(container.textContent).toContain("My GitHub account");
     expect(container.textContent).not.toContain("Chat with an agent");
@@ -657,7 +928,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     client.setQueryData(queryKeys.health, { deploymentMode: "authenticated", localAiLoginSupported: false });
     await render(client, false, taskRepair ? <ConnectionSetupFlow host="dialog" serviceSlug="anthropic" interactionId="ai-intent" requestedAgentId="agent-1" aiConnection={{ provider: "anthropic", method: "subscription", mode: "responsible_user" }} /> : undefined);
     await passAccessStep();
-    expect(container.textContent).toContain("Connect account");
     expect(container.textContent).toContain("Connection name");
     expect(container.textContent).not.toContain("How do you want to connect?");
     expect(radioContaining("Use an API key")).toBeUndefined();
@@ -678,12 +948,19 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Connect for tool access instead");
   });
 
-  it("asks for a GitHub identity and defaults to the current user and every agent", async () => {
+  it("states the GitHub identity default and keeps its controls one click away", async () => {
     mockParams.appKey = "github";
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
     await render();
 
-    expect(container.textContent).toContain("Access");
+    // PAP-659 C0: the default is printed, not asked. Nothing about identity or
+    // reach blocks the primary action.
+    expect(container.textContent).toContain("Connects as you, available to all agents.");
+    expect(container.textContent).not.toContain("Connect GitHub as");
+    expect(container.querySelector('[role="radio"]')).toBeNull();
+
+    await openAccessAdvanced();
+
     expect(container.textContent).toContain("Connect GitHub as");
     expect(container.textContent).toContain("Which agents may use your GitHub when you’re responsible?");
     expect(container.textContent).not.toContain("Choose access before adding credentials");
@@ -715,11 +992,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(anyAgent?.getAttribute("aria-checked")).toBe("true");
   });
 
-  it("keeps provider guidance and card styling out of the shared access step", async () => {
+  it("keeps provider guidance and card styling out of the access controls", async () => {
     mockParams.appKey = "pagerduty";
     listGalleryMock.mockResolvedValue({ apps: [PAGERDUTY] });
 
     await render();
+    await openAccessAdvanced();
 
     expect(container.textContent).toContain("Which humans can use this credential?");
     expect(container.textContent).toContain("Which agents can use this connection?");
@@ -736,11 +1014,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(accessCard?.classList.contains("shadow-sm")).toBe(false);
   });
 
-  it("defaults to every agent and only blocks an empty explicit selection", async () => {
+  it("defaults to every agent and states an empty explicit selection", async () => {
     mockParams.appKey = "github";
     await render();
+    await openAccessAdvanced();
 
-    expect(buttonByText("Save and continue")?.disabled).toBe(false);
+    // PAP-659 C0: narrowing reach never blocks Connect. An empty selection is
+    // reported in the stated default instead of disabling the primary action.
+    expect(container.textContent).toContain("available to all agents.");
 
     await act(async () => {
       Array.from(document.body.querySelectorAll('[role="radio"]'))
@@ -749,43 +1030,37 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    expect(buttonByText("Save and continue")?.disabled).toBe(true);
+    expect(container.textContent).toContain("no agents selected yet.");
   });
 
-  it("keeps the access selections when the wizard moves backward", async () => {
+  it("reflects a changed access selection in the stated default", async () => {
     mockParams.appKey = "github";
     await render();
+    await openAccessAdvanced();
 
     await act(async () => {
       Array.from(document.body.querySelectorAll('[role="radio"]'))
-        .find((r) => r.textContent?.includes("My GitHub account"))
-        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-    await act(async () => {
-      Array.from(document.body.querySelectorAll('[role="radio"]'))
-        .find((r) => r.textContent?.includes("Any agent"))
+        .find((r) => r.textContent?.includes("Only agents I choose"))
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    await act(async () => {
-      buttonByText("Save and continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-    expect(container.textContent).toContain("Connect GitHub");
+    // The sentence above the primary action is the only place this is said, so
+    // it has to track the controls rather than print a fixed default.
+    expect(container.textContent).toContain("no agents selected yet");
 
-    await act(async () => {
-      buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    // Moving backward must not silently reset the identity the operator chose.
     const radios = Array.from(document.body.querySelectorAll('[role="radio"]'));
-    expect(radios.find((r) => r.textContent?.includes("My GitHub account"))?.getAttribute("aria-checked"))
-      .toBe("true");
-    expect(radios.find((r) => r.textContent?.includes("Any agent"))?.getAttribute("aria-checked"))
-      .toBe("true");
+    expect(radios.find((r) => r.textContent?.includes("Only agents I choose"))
+      ?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("returns to the pending skill import when GitHub setup is cancelled", async () => {
+    mockParams.appKey = "github";
+    rememberSkillSourceReturn("company-1", "new");
+    await render();
+    await act(async () => buttonByText("Cancel")?.click());
+    expect(mockNavigate).toHaveBeenCalledWith("/skills/sources/new");
+    expect(skillSourceReturnPath("company-1")).toBeNull();
   });
 
   it("uses Cancel to exit while the bottom Back button stays in the wizard", async () => {
@@ -824,6 +1099,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
+    await openAccessAdvanced();
+
     const github = identityChoices();
     expect(github.wholeOrg?.getAttribute("aria-checked")).toBe("true");
     expect(github.justMe?.getAttribute("aria-checked")).toBe("false");
@@ -842,10 +1119,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       Array.from(document.body.querySelectorAll('[role="radio"]'))
         .find((r) => r.textContent?.includes("Any agent"))
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-    await act(async () => {
-      buttonByText("Save and continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -873,6 +1146,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockParams.appKey = "posthog";
     mockSearch.value = "";
     root = await render();
+    await openAccessAdvanced();
 
     const posthog = identityChoices();
     expect(posthog.justMe?.getAttribute("aria-checked")).toBe("false");
@@ -894,15 +1168,57 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(gmail?.textContent).not.toContain("Coming soon");
   });
 
-  it("collects customer-owned OAuth client details for a curated manual OAuth app", async () => {
+  it("defaults Asana to managed sign-in and allows a custom app before enrollment", async () => {
+    mockSearch.value = "source=asana";
+    listGalleryMock.mockResolvedValue({ apps: [{ ...ASANA, methods: ASANA.methods.filter((method) => !method.oauthStrategy), ownershipAvailability: {
+      ...ASANA.ownershipAvailability, platform_shared: false,
+    } }] });
+    getCloudConnectorEnrollmentMock.mockResolvedValue({ configured: false, status: "not_configured", origins: [] });
+    await render();
+    await passAccessStep();
+    expect(container.textContent).toContain("Connect with Paperclip");
+    await act(async () => { buttonByText("Use your own Asana OAuth app")!.click(); });
+    await flushReact();
+    expect(container.textContent).toContain("Your OAuth app");
+    expect(container.textContent).toContain("API apps do not work with Asana MCP");
+    expect(container.textContent).not.toContain("You must connect this instance");
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")!, "asana-client"); });
+    await flushReact();
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("requires the acting user's saved Asana client secret for reuse (%s)", async (hasSavedOAuthClientSecret) => {
+    mockSearch.value = "source=asana&resume=conn-asana";
     listGalleryMock.mockResolvedValue({ apps: [ASANA] });
-    mockParams.appKey = "asana";
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-asana", status: "draft", metadata: { sourceTemplateKey: "asana" } }] });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      id: "conn-asana", applicationId: "app-asana", name: "Asana", authKind: "oauth",
+      credentialPolicy: "per_user", status: "draft", credentialSecretRefs: [], hasSavedOAuthClientSecret,
+      config: { sourceTemplateKey: "asana", connectionMethodKey: "mcp-own-oauth", oauth: { clientId: "saved-asana-client", clientRegistrationSource: "manual" } },
+      transportConfig: {},
+    }] });
+    await render();
+    await flushReact();
+    expect(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")?.value).toBe("saved-asana-client");
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(!hasSavedOAuthClientSecret);
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")!, "different-client"); });
+    await flushReact();
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
+  });
+
+  it("collects customer-owned OAuth client details for a curated manual OAuth app", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [BOX] });
+    mockParams.appKey = "box";
     await render();
     await passAccessStep();
 
-    expect(container.textContent).toContain("Your OAuth app");
-    expect(container.textContent).toContain("Open Asana app settings");
-    expect(container.textContent).not.toContain("Create an Asana MCP OAuth app");
+    expect(container.textContent).toContain("needs its own OAuth app");
+    expect(container.textContent).toContain("Open Box app settings");
+    // The extra work reads as the provider's limitation, not as Box's normal path.
+    expect(container.textContent).toContain(
+      "does not let Paperclip register itself automatically",
+    );
     expect(container.textContent).toContain("Paperclip callback URL");
     expect(container.textContent).toContain(
       "http://localhost:3000/api/tools/oauth/callback",
@@ -912,8 +1228,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const clientId = container.querySelector<HTMLInputElement>("#curated-oauth-client-id")!;
     const clientSecret = container.querySelector<HTMLInputElement>("#curated-oauth-client-secret")!;
     await act(async () => {
-      setInputValue(clientId, "asana-client-id");
-      setInputValue(clientSecret, "asana-client-secret");
+      setInputValue(clientId, "box-client-id");
+      setInputValue(clientSecret, "box-client-secret");
     });
     await flushReact();
     expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
@@ -924,12 +1240,71 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
-      galleryKey: "asana",
+      galleryKey: "box",
       connectionMethodKey: "mcp-own-oauth",
       oauthClient: {
-        clientId: "asana-client-id",
-        clientSecret: "asana-client-secret",
+        clientId: "box-client-id",
+        clientSecret: "box-client-secret",
       },
+    }));
+  });
+
+  it("connects Asana through the shared app without client credentials", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [ASANA_MANAGED] });
+    mockParams.appKey = "asana";
+    await render();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("needs its own OAuth app");
+    expect(container.querySelector("#curated-oauth-client-id")).toBeNull();
+    const primary = buttonByText("Continue to sign in");
+    expect(primary).toBeTruthy();
+    expect(primary?.disabled).toBe(false);
+    await act(async () => { primary!.click(); });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "asana", connectionMethodKey: "managed", grantKind: "user",
+    }));
+  });
+
+  it("allows a custom Asana app from the shared sign-in setup", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [ASANA_MANAGED] });
+    mockParams.appKey = "asana";
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-asana",
+      application: { id: "app-asana", name: "Asana" },
+      connection: { id: "conn-asana" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://app.asana.com/-/oauth_authorize?state=opaque" },
+    });
+    await render();
+    await flushReact();
+    expect(container.querySelector("#curated-oauth-client-id")).toBeNull();
+
+    await openAccessAdvanced();
+    await flushReact();
+    const customApp = buttonByText("Use your own Asana OAuth app");
+    expect(customApp).toBeTruthy();
+    await act(async () => { customApp!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+
+    const clientId = container.querySelector<HTMLInputElement>("#curated-oauth-client-id");
+    const clientSecret = container.querySelector<HTMLInputElement>("#curated-oauth-client-secret");
+    expect(clientId).toBeTruthy();
+    expect(clientSecret).toBeTruthy();
+    await act(async () => {
+      setInputValue(clientId!, "asana-own-client");
+      setInputValue(clientSecret!, "asana-own-secret");
+    });
+    await flushReact();
+    await act(async () => { buttonByText("Continue to sign in")!.click(); });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenLastCalledWith("company-1", expect.objectContaining({
+      galleryKey: "asana", connectionMethodKey: "mcp-own-oauth",
+      oauthClient: { clientId: "asana-own-client", clientSecret: "asana-own-secret" },
     }));
   });
 
@@ -947,7 +1322,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
 
     await render();
-    await passAccessStep();
+    await openAccessAdvanced();
 
     const full = radioContaining("Full");
     const code = radioContaining("Code");
@@ -986,6 +1361,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = "source=asana";
 
     await render();
+    await openAccessAdvanced();
 
     expect(document.body.textContent).toContain("Which humans can use this credential?");
     expect(document.body.textContent).toContain("Which agents can use this connection?");
@@ -999,9 +1375,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
 
-    expect(document.body.textContent).toContain("Step 1 of 2");
-    expect(document.body.textContent).toContain("Access   ·   Choose connection");
+    // PAP-659: a selected app has one screen, so no stepper at all.
+    expect(document.body.textContent).not.toContain("Step 1 of 2");
     expect(document.body.textContent).not.toContain("Pick app   ·");
+    expect(document.body.textContent).toContain("Connect Gmail");
   });
 
   it("opens a brokered Gmail deep link at the access step", async () => {
@@ -1011,9 +1388,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
 
-    expect(document.body.textContent).toContain("Step 1 of 2");
-    expect(document.body.textContent).toContain("Access   ·   Choose connection");
+    // PAP-659: a selected app is one screen, so there is no stepper and no
+    // Access stage to deep-link into; a legacy stage=access URL lands here.
+    expect(document.body.textContent).not.toContain("Step 1 of 2");
     expect(document.body.textContent).not.toContain("Pick app   ·");
+    expect(document.body.textContent).toContain("Connects for everyone in your organization");
+    await openAccessAdvanced();
     expect(document.body.textContent).toContain("Which humans can use this credential?");
     expect(document.body.textContent).toContain("Just me");
     expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });
@@ -1046,7 +1426,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
     expect(buttonByText("Connect with Paperclip")?.closest(".rounded-xl")?.classList.contains("border-border")).toBe(true);
     expect(container.textContent).not.toContain("Required once for managed Google sign-in.");
-    expect(container.textContent).not.toContain("Your OAuth app");
+    expect(container.textContent).not.toContain("needs its own OAuth app");
 
     await act(async () => {
       buttonByText("Connect with Paperclip")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1093,8 +1473,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     await flushReact();
     if (!popupBlocked) expect(popup.close).toHaveBeenCalled();
+    await openAccessAdvanced();
     expect(container.textContent).toContain("What should Paperclip be able to do?");
-    expect(container.textContent).toContain("Step 2 of 2");
     connectAppMock.mockResolvedValue({ connectionId: "gmail-1", connection: { id: "gmail-1", credentialPolicy: "per_user" }, auth: { kind: "oauth", startUrl: "https://example.test/unbound" } });
     await act(async () => buttonByText("Continue to sign in")?.click());
     await flushReact();
@@ -1164,7 +1544,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       });
 
       await render();
-      expect(container.textContent).toContain("Step 2 of 2");
       await act(async () => {
         buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
@@ -1182,23 +1561,21 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     },
   );
 
-  it("labels GitHub's local setup transition without promising a provider handoff", async () => {
+  it("labels GitHub's setup transition as the provider handoff it now is", async () => {
     mockSearch.value = "source=github";
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
 
     await render();
 
-    const continueButton = buttonByText("Continue");
-    expect(continueButton).toBeDefined();
-    expect(continueButton?.disabled).toBe(false);
-    expect(continueButton?.querySelector(".lucide-arrow-up-right")).toBeNull();
-    expect(buttonByText("Continue to GitHub")).toBeUndefined();
+    // PAP-659: the screen that used to precede the handoff is gone, so the one
+    // primary action names the provider instead of a generic "Continue".
+    expect(buttonByText("Continue")).toBeUndefined();
+    const handoff = buttonByText("Continue to GitHub");
+    expect(handoff).toBeDefined();
+    expect(handoff?.disabled).toBe(false);
 
-    await passAccessStep();
-
-    expect(container.textContent).toContain("Step 2 of 2");
+    await openAccessAdvanced();
     expect(container.textContent).toContain("How do you want to connect?");
-    expect(buttonByText("Continue to GitHub")).toBeDefined();
     expect(startOAuthMock).not.toHaveBeenCalled();
     expect(connectAppMock).not.toHaveBeenCalled();
   });
@@ -1234,11 +1611,13 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
 
-    expect(container.textContent).toContain("Access   ·   Sign in");
+    expect(container.textContent).toContain("Connects as you");
+    await openAccessAdvanced();
     expect(radioContaining("My GitHub account")?.getAttribute("aria-checked")).toBe("true");
     expect(radioContaining("Any agent")?.getAttribute("aria-checked")).toBe("true");
     expect(container.textContent).toContain("Which agents may use your GitHub when you’re responsible?");
-    expect(buttonByText("Continue")).toBeDefined();
+    // Enrolment is the screen; its own action is the only primary one.
+    expect(buttonByText("Connect with Paperclip")).toBeDefined();
     expect(buttonByText("Continue to GitHub")).toBeUndefined();
 
     await passAccessStep();
@@ -1253,7 +1632,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
 
-    expect(container.textContent).toContain("Step 2 of 2");
     expect(container.textContent).toContain("Continue to GitHub");
     expect(container.textContent).not.toContain("Connect GitHub as");
     expect(container.textContent).not.toContain("Connect with Paperclip");
@@ -1346,6 +1724,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
 
     await render();
+    await openAccessAdvanced();
     await act(async () => {
       radioContaining("A dedicated account for an agent")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -1357,12 +1736,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => {
       document.body.querySelector<HTMLElement>('[aria-label="Allow Ada"]')
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-    const accessContinue = buttonByText("Continue");
-    expect(accessContinue?.disabled).toBe(false);
-    await act(async () => {
-      accessContinue?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
     await act(async () => {
@@ -1413,7 +1786,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.textContent).toContain("Step 2 of 2");
+    expect(container.textContent).toContain("Connects as a dedicated agent account");
     expect(window.sessionStorage.getItem(
       "paperclip.connector-enrollment-access:github",
     )).toBeNull();
@@ -1447,11 +1820,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         ...definition, ownershipAvailability: { ...definition.ownershipAvailability, platform_shared: true },
       }] });
       await render();
+      await openAccessAdvanced();
       if (!enrollmentReturn) {
         await act(async () => {
           radioContaining("Just me")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         });
-        await passAccessStep();
+        await flushReact();
       }
 
       if (definition.methods.some((method) => method.capabilityProfile?.key !== "read")) {
@@ -1463,9 +1837,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       }
       await flushReact();
       // Change auth methods too, including apps with only one capability.
-      expect(container.textContent).not.toContain("How do you want to connect?");
       expect(container.textContent).not.toContain("Connect with Paperclip");
-      expect(container.textContent).not.toContain("Your OAuth app");
+      expect(container.textContent).not.toContain("needs its own OAuth app");
       expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
       const customerAuth = buttonByText("Use your own Google OAuth app");
       expect(customerAuth).toBeDefined();
@@ -1474,7 +1847,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         customerAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
       await flushReact();
-      expect(container.textContent).toContain("Your OAuth app");
+      expect(container.textContent).toContain("needs its own OAuth app");
       expect(container.textContent).toContain("Client ID");
       expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
       const managedAuth = buttonByText("Use Paperclip instead");
@@ -1487,7 +1860,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         managedAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
       await flushReact();
-      expect(container.textContent).not.toContain("Your OAuth app");
+      expect(container.textContent).not.toContain("needs its own OAuth app");
       await act(async () => {
         buttonByText("Continue to sign in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
@@ -1523,15 +1896,17 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("does not enable unrelated Paperclip customers");
     expect(container.textContent).not.toContain("final project-registration email");
     expect(container.textContent).not.toContain("Apply or verify Developer Preview enrollment");
+    await openAccessAdvanced();
     expect(radioContaining("Just me")).toBeTruthy();
     expect(radioContaining("Any human in the organization")?.getAttribute("aria-checked")).toBe("true");
     await passAccessStep();
 
+    expect(container.textContent).toContain("Read & create");
     expect(radioContaining("Read & create")?.getAttribute("aria-checked")).toBe("true");
     expect(radioContaining("Read only")?.getAttribute("aria-checked")).toBe("false");
     expect(container.textContent).not.toContain("Before connecting, enroll the signed-in Workspace account");
     expect(container.textContent).toContain("Review requirements");
-    expect(container.textContent).toContain("Your OAuth app");
+    expect(container.textContent).toContain("needs its own OAuth app");
   });
 
   it("renders Google Calendar as one minimal, unboxed setup screen", async () => {
@@ -1545,6 +1920,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       (heading) => heading.textContent?.trim() === "Connect Google Calendar",
     );
     expect(duplicateHeadings).toHaveLength(1);
+    await openAccessAdvanced();
     expect(container.textContent).toContain("What should Paperclip be able to do?");
     expect(container.textContent).toContain("Review requirements");
     expect(container.textContent).not.toContain("Connect Google Calendar to read and manage events.");
@@ -1597,6 +1973,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       },
     });
     await render();
+    await openAccessAdvanced();
 
     const anyAgent = Array.from(
       document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
@@ -1626,36 +2003,115 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
     ).find((r) => r.textContent?.includes("Just agents I pick"));
     expect(pick?.disabled).toBe(false);
-    // Continue refuses the forbidden choice even though it is the current one.
-    expect(buttonByText("Continue")?.disabled).toBe(true);
+    // PAP-659: a reach the member cannot grant is reported above the primary
+    // action rather than disabling it, and "Just agents I pick" is the live
+    // alternative, so the screen is not a dead end.
+    expect(container.textContent).toContain(
+      "Your company policy limits this choice to connection managers.",
+    );
   });
 
   it("opens the selected app directly on its setup route", async () => {
     mockParams.appKey = "github";
     await render();
 
-    // A deep-linked app lands on Access first: identity and reach are chosen
-    // before the credential (PAP-17835).
+    // PAP-659: a deep-linked app lands on its one connect screen. Identity and
+    // reach are stated there and changed in the same Advanced disclosure.
+    expect(container.textContent).toContain("Connects for everyone in your organization");
+    await openAccessAdvanced();
     expect(container.textContent).toContain("Connect GitHub as");
-    await passAccessStep();
 
     expect(container.textContent).toContain("Connect GitHub");
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
+  });
+
+  it("connects Superagent with only an organization API key", async () => {
+    mockParams.appKey = "superagent";
+    listGalleryMock.mockResolvedValueOnce({ apps: [SUPERAGENT] });
+    await render();
+
+    expect(radioContaining("Sign in with")).toBeFalsy();
+    // The Ask-first advice must be visible on the key form, which renders the
+    // credential helper text rather than method warnings.
+    expect(container.textContent).toContain("set billable and destructive actions to Ask first");
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keyInput).toBeTruthy();
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+
+    await act(async () => {
+      setInputValue(keyInput!, "sk_live_test-key");
+    });
+    await flushReact();
+    const submit = buttonByText("Connect");
+    expect(submit?.disabled).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "superagent",
+      connectionMethodKey: "mcp-api-key",
+      credentialValues: { "credentials.authorization": "sk_live_test-key" },
+    }));
+  });
+
+  it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {
+    mockParams.appKey = "neon";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NEON] });
+    await render();
+    await openAccessAdvanced();
+
+    expect(radioContaining("Sign in with Neon")?.getAttribute("aria-checked")).toBe("true");
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+
+    await act(async () => {
+      radioContaining("Use an API key")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keyInput).toBeTruthy();
+    expect(container.textContent).toContain("Pin to project ID");
+    expect(container.querySelector<HTMLInputElement>('input[placeholder="Optional Neon project ID"]')).toBeTruthy();
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
+    // The key is the only required input on this method: Connect waits for it
+    // and for nothing else, since both narrowing controls are optional.
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+
+    await act(async () => {
+      setInputValue(keyInput!, "napi_test-key");
+    });
+    await flushReact();
+    const submit = buttonByText("Connect");
+    expect(submit?.disabled).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "neon",
+      connectionMethodKey: "mcp-api-key",
+      credentialValues: { "credentials.authorization": "napi_test-key" },
+      configValues: { readOnly: false },
+    }));
   });
 
   it("connects PostHog without a project ID and keeps optional controls advanced", async () => {
     mockParams.appKey = "posthog";
     listGalleryMock.mockResolvedValueOnce({ apps: [POSTHOG] });
     await render();
-    // Access comes first for a curated app; the method chooser shares a screen
-    // with the credential fields, so it sits behind it (PAP-17835).
-    expect(container.textContent).toContain("Which humans can use this credential?");
-    await passAccessStep();
+    // PAP-659: identity is stated, not asked, and the method chooser moved
+    // into the same Advanced disclosure.
+    expect(container.textContent).toContain("Connects for everyone in your organization");
+    await openAccessAdvanced();
 
     expect(container.textContent).toContain("How do you want to connect?");
-    expect(radioContaining("Sign in with PostHog")?.getAttribute("aria-checked")).toBe("false");
+    // PAP-659 C1: OAuth is strictly less work than a key, so it is preselected.
+    expect(radioContaining("Sign in with PostHog")?.getAttribute("aria-checked")).toBe("true");
     expect(radioContaining("Use a personal API key")?.getAttribute("aria-checked")).toBe("false");
-    expect(buttonByText("Connect")?.disabled).toBe(true);
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
 
     await act(async () => {
       radioContaining("Use a personal API key")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1666,22 +2122,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Vercel Connect");
 
     const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
-    const advanced = buttonByText("Advanced");
+    const advanced = buttonByText("Change");
     expect(keyInput).toBeTruthy();
-    expect(container.querySelector<HTMLInputElement>('input[placeholder="Optional numeric project ID"]')).toBeNull();
-    expect(container.querySelector('[role="switch"]')).toBeNull();
-    expect(advanced?.getAttribute("aria-expanded")).toBe("false");
-    expect(container.textContent).not.toContain("Pin to project ID");
-    expect(container.textContent).not.toContain("Feature groups");
-    expect(container.textContent).not.toContain("Individual tools");
-    expect(container.textContent).not.toContain("Tool response mode");
-
-    await act(async () => {
-      advanced?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(advanced?.getAttribute("aria-expanded")).toBe("true");
+    // PAP-659: the optional controls share the one Advanced disclosure with
+    // the access defaults, so they are visible because it is already open —
+    // and they are still optional, so none of them blocks Connect.
+    expect(advanced).toBeTruthy();
     expect(container.textContent).toContain("Pin to project ID");
     expect(container.querySelector<HTMLInputElement>('input[placeholder="Optional numeric project ID"]')).toBeTruthy();
     expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
@@ -1732,7 +2178,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       },
     });
     await render(undefined, false, <AppsConnect credentialSource="vercel_connect" />);
-    await passAccessStep();
+    await openAccessAdvanced();
     await act(async () => {
       radioContaining("Use a personal API key")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -1767,7 +2213,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(JSON.stringify(connectAppMock.mock.calls[0])).not.toContain("credentialValues");
   });
 
-  it("folds optional customer-owned OAuth details under Advanced", async () => {
+  it("folds optional customer-owned OAuth details under Change", async () => {
     mockParams.appKey = "posthog";
     listGalleryMock.mockResolvedValueOnce({ apps: [POSTHOG] });
     await render();
@@ -1778,7 +2224,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    const advanced = buttonByText("Advanced");
+    const advanced = buttonByText("Change");
     expect(advanced?.getAttribute("aria-expanded")).toBe("false");
     expect(container.textContent).not.toContain("Use your own OAuth app");
     expect(container.querySelector("#curated-oauth-client-id")).toBeNull();
@@ -1838,9 +2284,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         requestedAgentId="agent-1"
       />
     ));
-    expect(container.textContent).toContain("This task grants access only to Ada");
+    expect(container.textContent).toContain("available to the agent that asked for it");
     const continueButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Continue",
+      (button) => button.textContent?.trim().startsWith("Continue"),
     );
     expect(continueButton).toBeTruthy();
     expect(continueButton?.disabled).toBe(false);
@@ -1995,6 +2441,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(connectAppMock).not.toHaveBeenCalled();
     expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Connects for everyone in your organization");
+    await openAccessAdvanced();
     expect(container.textContent).toContain("Which humans can use this credential?");
     expect(container.textContent).not.toContain("Choose access before sign-in");
     const identityRadios = Array.from(document.body.querySelectorAll('[role="radio"]'));
@@ -2041,19 +2489,20 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
 
-    const stepsOnAccess = stepLabelsOnScreen();
-    expect(stepsOnAccess).toEqual(["Access", "Sign in"]);
+    // PAP-659: a curated connector is a single screen, so it shows no stepper
+    // at all. Connecting must not conjure one.
+    expect(stepLabelsOnScreen()).toEqual([]);
+    expect(stepDotCount()).toBe(0);
 
     await passAccessStep();
     await submitCuratedOAuthSetup();
 
     expect(container.textContent).toContain("Preparing secure sign-in");
-    // Connecting must not grow the stepper a step the flow never lands on.
-    expect(stepLabelsOnScreen()).toEqual(stepsOnAccess);
-    expect(stepDotCount()).toBe(stepsOnAccess.length);
+    expect(stepLabelsOnScreen()).toEqual([]);
+    expect(stepDotCount()).toBe(0);
   });
 
-  it("backs from the sign-in checkpoint to Access without exiting the wizard", async () => {
+  it("backs from the sign-in checkpoint out to the connector gallery", async () => {
     mockSearch.value = "source=notion";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     connectAppMock.mockReturnValueOnce(new Promise(() => {}));
@@ -2067,9 +2516,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Which humans can use this credential?");
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?source=notion&stage=access");
-    expect(mockNavigate).not.toHaveBeenCalledWith("/apps");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps");
   });
 
   it("resumes an existing Notion OAuth connection instead of creating another draft", async () => {
@@ -2103,7 +2550,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
     expect(container.textContent).not.toContain("Reconnect keeps this identity type");
-    expect(container.textContent).toContain("Existing agent access stays the same");
+    expect(container.textContent).toContain("agent access stays as it is");
     expect(startOAuthMock).not.toHaveBeenCalled();
     await passAccessStep();
     await submitCuratedOAuthSetup();
@@ -2269,9 +2716,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     await render();
     expect(container.textContent).toContain(
-      credentialPolicy === "per_user" ? "Just me" : "Any human in the organization",
+      credentialPolicy === "per_user" ? "Connects as you" : "Connects for everyone in your organization",
     );
-    expect(container.textContent).toContain("Existing agent access stays the same");
+    expect(container.textContent).toContain("agent access stays as it is");
     await passAccessStep();
     await submitCuratedOAuthSetup();
 
@@ -2322,7 +2769,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
 
     await render();
-    expect(container.textContent).toContain("Any human in the organization");
+    expect(container.textContent).toContain("Connects for everyone in your organization");
     await passAccessStep();
     await submitCuratedOAuthSetup();
 
@@ -2529,7 +2976,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).not.toHaveBeenCalled();
     expect(startOAuthMock).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Reconnect keeps this identity type");
-    expect(container.textContent).toContain("Existing agent access stays the same");
+    expect(container.textContent).toContain("agent access stays as it is");
     await passAccessStep();
     await submitCuratedOAuthSetup();
     expect(startOAuthMock).toHaveBeenCalledWith("conn-refreshed", {
@@ -2572,12 +3019,11 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     await flushReact();
 
+    // PAP-659: Try again re-reads and then resumes the draft it finds. There
+    // is no Access step to bounce back through, and the operator already
+    // pressed the one primary action, so recovery must not ask again.
     expect(connectAppMock).not.toHaveBeenCalled();
-    expect(startOAuthMock).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Reconnect keeps this identity type");
-    expect(container.textContent).toContain("Existing agent access stays the same");
-    await passAccessStep();
-    await submitCuratedOAuthSetup();
     expect(startOAuthMock).toHaveBeenCalledWith("conn-after-retry", {
       asCurrentUser: true,
     });
@@ -2708,6 +3154,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render();
 
     expect(connectAppMock).not.toHaveBeenCalled();
+    await openAccessAdvanced();
     expect(container.textContent).toContain("Which humans can use this credential?");
     expect(mockNavigate).not.toHaveBeenCalledWith("/apps/connect", { replace: true });
   });
@@ -2745,11 +3192,19 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(input.credentialValues).toBeUndefined();
   });
 
-  it("choosing Yes reveals one masked key field without extra reassurance copy", async () => {
+  it("reveals one masked key field only after the probe says a credential is needed", async () => {
+    // PAP-659 bucket H. The first press asks the server; the server is what
+    // knows. Only its credential challenge puts a key field on screen, and the
+    // second press carries the key.
+    connectAppMock.mockRejectedValueOnce(
+      new ApiError("This app needs you to sign in.", 502, {
+        error: "This app needs you to sign in.",
+        details: { code: "oauth_challenge" },
+      }),
+    );
     await render();
     await gotoLinkFrame(container, "https://www.example.com/actions");
 
-    // No key field while No is selected.
     expect(
       Array.from(container.querySelectorAll<HTMLInputElement>("input")).some(
         (i) => i.type === "password",
@@ -2757,10 +3212,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     ).toBe(false);
 
     await act(async () => {
-      buttonByText("Yes")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
+    await flushReact();
 
+    expect(container.textContent).toContain("This server wants a credential");
     const passwordInputs = Array.from(
       container.querySelectorAll<HTMLInputElement>("input"),
     ).filter((i) => i.type === "password");
@@ -2775,8 +3232,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await flushReact();
 
-    expect(connectAppMock).toHaveBeenCalledTimes(1);
-    const [, input] = connectAppMock.mock.calls[0];
+    expect(connectAppMock).toHaveBeenCalledTimes(2);
+    const [, input] = connectAppMock.mock.calls[1];
     expect(input.credentialValues).toEqual({ "credentials.authorization": "secret-key" });
   });
 
@@ -2798,6 +3255,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonByText("Continue")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
+    await openAccessAdvanced();
 
     expect(container.textContent).toContain("Which humans can use this credential?");
     expect(container.textContent).toContain("Which agents can use this connection?");
@@ -2859,22 +3317,27 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await render();
 
-    expect(container.textContent).toContain("Step 1 of 2");
+    // PAP-659 C0: no step counter and no Access step — the endpoint field is
+    // the first and only thing on the way in, with the default stated above it.
+    expect(container.textContent).not.toContain("Step 1 of 2");
+    expect(container.textContent).not.toContain("Step 2 of 2");
     expect(container.textContent).toContain("Connect Zapier");
-    expect(container.textContent).toContain("Which humans can use this credential?");
-    expect(container.textContent).toContain("Which agents can use this connection?");
+    expect(container.textContent).toContain("Connects for everyone in your organization, available to all agents.");
     expect(container.querySelector('[data-remote-mcp-provider="zapier"]')).toBeTruthy();
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
-    expect(container.querySelector('input[placeholder="Paste the full URL from Zapier"]')).toBeNull();
+    expect(container.textContent).toContain("MCP server URL");
 
+    // The two questions the deleted step asked are still answerable, together,
+    // one disclosure away.
+    expect(container.textContent).not.toContain("Which humans can use this credential?");
+    await act(async () => buttonByText("Change")!.click());
+    expect(container.textContent).toContain("Which humans can use this credential?");
+    expect(container.textContent).toContain("Which agents can use this connection?");
     await act(async () => {
       radioContaining("Just me")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    await passAccessStep();
-
-    expect(container.textContent).toContain("Step 2 of 2");
-    expect(container.textContent).toContain("MCP server URL");
+    expect(container.textContent).toContain("Connects as you, available to all agents.");
 
     const linkInput = container.querySelector<HTMLInputElement>(
       'input[placeholder="Paste the full URL from Zapier"]',
@@ -2886,7 +3349,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     await act(async () => {
-      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonByText("Connect Zapier")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -2941,6 +3404,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value =
       "link=https%3A%2F%2Fwww.example.com%2Factions&name=Bla&applicationId=app-77";
     await render();
+    await openAccessAdvanced();
 
     expect(container.textContent).toContain("Which humans can use this credential?");
     await passAccessStep();
@@ -2975,7 +3439,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    await passAccessStep();
+    await openAccessAdvanced();
     await act(async () => {
       buttonContaining("Share selected sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -3001,7 +3465,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    await passAccessStep();
+    await openAccessAdvanced();
     await act(async () => {
       buttonContaining("Share selected sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -3029,7 +3493,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Connect GitHub");
     expect(container.querySelector('input[placeholder="My app"]')).toBeNull();
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?source=github&stage=setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?source=github");
   });
 
   it("keeps the originating connection intent in wizard URLs", async () => {
@@ -3046,26 +3510,18 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
 
     await passAccessStep();
-    expect(mockNavigate).toHaveBeenCalledWith(
-      `/apps/connect?source=github&stage=setup&intent=${interactionId}`,
-    );
+    expect(mockNavigate).not.toHaveBeenCalledWith("/apps");
   });
 
-  it("steps back from the key step to Access, and from Access to Connectors", async () => {
+  it("steps back from the single connect screen straight to Connectors", async () => {
     mockSearch.value = "";
     mockParams.appKey = "github";
     await render();
     await passAccessStep();
     expect(container.textContent).toContain("Connect GitHub");
 
-    // Back from the credential goes to Access, not all the way out: the
-    // selections made there have to survive (PAP-17835).
-    await act(async () => {
-      buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-    expect(container.textContent).toContain("Connect GitHub as");
-
+    // PAP-659: there is no Access step to return to, so Back is a single hop
+    // out of the connector rather than a two-hop wizard retreat.
     await act(async () => {
       buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -3176,7 +3632,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    await passAccessStep();
+    await openAccessAdvanced();
     await act(async () => {
       buttonContaining("Share selected sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -3214,7 +3670,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       buttonContaining("Google Sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
-    await passAccessStep();
+    await openAccessAdvanced();
     await act(async () => {
       buttonContaining("Share selected sheets")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -3510,10 +3966,10 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
   });
 
   // The curated flow has its own regression test for this. The generic flow is
-  // a separate three-step model with a separate override, so it needs its own —
+  // a separate two-step model with a separate override, so it needs its own —
   // otherwise the waiting screen could quietly drop back to the curated
-  // two-step labels here and nothing would catch it.
-  it("keeps the generic three-step model when a pasted endpoint hands off to sign-in", async () => {
+  // single-step label here and nothing would catch it.
+  it("keeps the generic two-step model when a pasted endpoint hands off to sign-in", async () => {
     connectAppMock.mockResolvedValue({
       connectionId: "conn-1",
       application: { id: "app-1", name: "mcp.example.test" },
@@ -3526,7 +3982,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
 
     const stepsBeforeHandoff = stepLabelsOnScreen();
-    expect(stepsBeforeHandoff).toEqual(["Pick app", "Access", "Add your key"]);
+    expect(stepsBeforeHandoff).toEqual(["Pick app", "Add your key"]);
 
     await act(async () => {
       buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

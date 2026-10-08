@@ -110,6 +110,99 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     } as unknown as typeof heartbeatRuns.$inferSelect;
   }
 
+  function missingSecretRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "configuration_incomplete",
+      executionStage: "preparing",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "secret_binding_missing",
+          missingBindings: [{ bindingType: "user_secret_ref", errorCode: "user_secret_missing" }],
+        },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each([
+    { bindingType: "secret_ref" },
+    { bindingType: "secret_ref", errorCode: "binding_missing" },
+    ...["binding_missing", "responsible_user_missing", "user_secret_missing", "secret_inactive", "user_secret_definition_inactive"]
+      .map((errorCode) => ({ bindingType: "user_secret_ref", errorCode })),
+  ])("keeps the known pre-dispatch secret blocker local: %j", async (binding) => {
+    await seedCompanyAndAgent();
+    const run = missingSecretRun();
+    (run.resultJson!.configurationIncomplete as Record<string, unknown>).missingBindings = [binding];
+    const saved = structuredClone(run);
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(saved);
+  });
+
+  it.each([
+    {},
+    { reason: "secret_binding_missing", missingBindings: [] },
+    { reason: "secret_binding_missing", missingBindings: [null] },
+    { reason: "secret_binding_missing", missingBindings: [{ errorCode: "user_secret_missing" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "provider_error" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "user_secret_definition_missing" }] },
+    { reason: "secret_binding_missing", missingBindings: [{ bindingType: "user_secret_ref", errorCode: "new_unknown_reason" }] },
+    { reason: "secret_binding_missing", missingBindings: [
+      { bindingType: "user_secret_ref", errorCode: "user_secret_missing" },
+      { bindingType: "secret_ref", errorCode: "provider_error" },
+    ] },
+    { reason: "ai_connection_unavailable" },
+  ])("reports ambiguous, unknown, and provider failures: %j", async (configurationIncomplete) => {
+    await seedCompanyAndAgent();
+    const run = missingSecretRun();
+    run.resultJson!.configurationIncomplete = configurationIncomplete;
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: "timed_out" },
+    { errorCode: "setup_failed" },
+    { errorCode: "workspace_validation_failed" },
+    { errorCode: "adapter_failed" },
+    { executionStage: "executing" },
+    { executionStage: null },
+    { exitCode: 1 },
+    { exitCode: 0 },
+    { signal: "SIGTERM" },
+  ])("reports missing-secret text without a proven pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+
+    await reportRunFailure(db, missingSecretRun(overrides), { phase: "setup" });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, { kind: "bootstrap" }, { kind: "bootstrap", providerWorkStarted: true }])(
+    "reports missing-secret failures without explicit bootstrap proof: %j", async (executionRecovery) => {
+      await seedCompanyAndAgent();
+      const run = missingSecretRun();
+      run.resultJson!.executionRecovery = executionRecovery;
+
+      await reportRunFailure(db, run, { phase: "setup" });
+
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([undefined, "execute"] as const)("reports configuration failures outside setup: %s", async (phase) => {
+    await seedCompanyAndAgent();
+
+    await reportRunFailure(db, missingSecretRun(), { phase });
+
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
   it("captures once for the status failed", async () => {
     await seedCompanyAndAgent();
     const run = buildRun({ status: "failed" });
@@ -118,6 +211,79 @@ describeEmbeddedPostgres("reportRunFailure", () => {
 
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
   });
+
+  function localPathConfigurationRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "workspace_validation_failed",
+      executionStage: "preparing",
+      resultJson: {
+        workspaceValidation: {
+          reason: "git_worktree_base_not_git_checkout",
+          configurationReason: "local_path_requires_git_checkout",
+          resolvedWorkspaceSource: "project_primary",
+          workspaceStrategyType: "git_worktree",
+          requestedExecutionWorkspaceMode: "isolated_workspace",
+        },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each(["isolated_workspace", "operator_branch"])("keeps proven local-path policy conflicts actionable locally: %s", async (mode) => {
+    await seedCompanyAndAgent();
+    const run = localPathConfigurationRun();
+    (run.resultJson!.workspaceValidation as Record<string, unknown>).requestedExecutionWorkspaceMode = mode;
+    const before = structuredClone(run);
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(before);
+  });
+
+  it.each([
+    { configurationReason: undefined },
+    { configurationReason: "unknown_reason" },
+    { reason: "git_worktree_base_materialization_failed" },
+    { reason: "git_worktree_not_reusable" },
+    { reason: "inherited_workspace_reuse_unavailable" },
+    { resolvedWorkspaceSource: "agent_home" },
+    { workspaceStrategyType: "project_primary" },
+    { requestedExecutionWorkspaceMode: "agent_default" },
+  ])("reports unproven and other workspace failures: %j", async (validation) => {
+    await seedCompanyAndAgent();
+    const run = localPathConfigurationRun();
+    Object.assign(run.resultJson!.workspaceValidation as object, validation);
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: "timed_out" }, { errorCode: "setup_failed" }, { executionStage: "executing" },
+    { exitCode: 1 }, { signal: "SIGTERM" }, { resultJson: {} },
+    { resultJson: { workspaceValidation: { reason: "git_worktree_base_not_git_checkout", configurationReason: "local_path_requires_git_checkout" } } },
+  ])("reports workspace failures without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, localPathConfigurationRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "execute"] as const)("reports local-path markers outside the setup report: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, localPathConfigurationRun(), { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, { kind: "bootstrap" }, { kind: "bootstrap", providerWorkStarted: true }])(
+    "reports local-path markers without affirmative unstarted-provider evidence: %j", async (executionRecovery) => {
+      await seedCompanyAndAgent();
+      const run = localPathConfigurationRun();
+      run.resultJson!.executionRecovery = executionRecovery;
+      await reportRunFailure(db, run, { phase: "setup" });
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("captures once for the status timed_out", async () => {
     await seedCompanyAndAgent();
@@ -188,7 +354,10 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       exceptions: [{ message: "adapter threw" }, { message: "provider unreachable", code: "ECONNRESET", status: 503, requestId: "request-123" }],
     });
     expect(captured.diagnostics.exceptions[0].stack).toContain("run-failure-report.test.ts");
-    expect(JSON.stringify(captured)).not.toContain("private-");
+    // Match the sensitive fixture values, not a legitimate checkout name in the stack.
+    for (const value of ["private-response", "private-stderr", "private-stdout", "private-prompt", "private-provider-raw", "private-summary", "private-env", "private-adapter-response"]) {
+      expect(JSON.stringify(captured)).not.toContain(value);
+    }
     expect(error.cause).toBe(cause);
   });
 
@@ -259,6 +428,25 @@ describeEmbeddedPostgres("reportRunFailure", () => {
       await reportRunFailure(db, run);
     }
 
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+  it.each(["provider", "unknown"])("reports an unexpected started cancellation from %s", async source => {
+    await seedCompanyAndAgent();
+    const run = buildRun({ status: "cancelled", startedAt: new Date(0), finishedAt: new Date(1000),
+      resultJson: { cancellation: { source, expected: false, initiator: { type: "provider", id: "private-actor" },
+        reason: "private-reason", recordedAt: new Date(1000).toISOString() } } });
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+    expect(mockCaptureRunFailure.mock.calls[0][0]).toMatchObject({ runStatus: "cancelled",
+      diagnostics: { execution: { cancellationSource: source, cancellationExpected: false } } });
+    expect(JSON.stringify(mockCaptureRunFailure.mock.calls)).not.toMatch(/private-actor|private-reason/);
+  });
+  it("does not report an operator's Stop as a failure", async () => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, buildRun({ status: "cancelled", startedAt: new Date(0), resultJson: {
+      cancellation: { source: "operator", expected: true, initiator: { type: "user", id: "board" },
+        reason: "Stop", recordedAt: new Date().toISOString() },
+    } }));
     expect(mockCaptureRunFailure).not.toHaveBeenCalled();
   });
 

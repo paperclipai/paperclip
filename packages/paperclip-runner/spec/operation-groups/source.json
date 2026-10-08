@@ -46,9 +46,14 @@
   },
   "optionalGrantGroups": [
     {
+      "id": "feedback",
+      "description": "Internally attributed complaints and improvement suggestions; no additional grant required beyond active run authority.",
+      "operationIds": ["submit_complaint", "submit_suggestion"]
+    },
+    {
       "id": "discovery",
       "description": "Company-visible task, agent, project, and goal discovery.",
-      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals"]
+      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals", "set_task_title"]
     },
     {
       "id": "projects",
@@ -78,7 +83,7 @@
     {
       "id": "wake_scheduling",
       "description": "Schedule a bounded continuation wake when the current task owns the future check.",
-      "operationIds": ["schedule_wake"]
+      "operationIds": ["schedule_wake", "set_task_monitor"]
     },
     {
       "id": "routines",
@@ -87,8 +92,8 @@
     },
     {
       "id": "company_skills",
-      "description": "Create or inspect company skills and synchronize the current agent's skills.",
-      "operationIds": ["create_skill", "list_company_skills", "sync_company_skills"]
+      "description": "Create, update, or inspect company skills and synchronize the current agent's skills.",
+      "operationIds": ["create_skill", "update_skill", "list_company_skills", "sync_company_skills"]
     },
     {
       "id": "secrets",
@@ -120,7 +125,7 @@
       "legacyGroup": 1,
       "name": "Heartbeat",
       "owner": "control plane + always tools",
-      "operationIds": ["get_task_context"],
+      "operationIds": ["get_task_context", "set_task_title"],
       "controlPlaneOperationIds": ["select_work", "enforce_budget"],
       "realSurface": "agent identity, inbox-lite, heartbeat context, budget and active-issue services",
       "mockStateDomains": ["company", "actor", "wake", "task", "budget", "run"],
@@ -264,12 +269,12 @@
       "legacyGroup": 13,
       "name": "Reference files",
       "owner": "always instruction tools + optional domain tools + test-only escape hatch",
-      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "create_skill", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api", "create_project", "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions"],
+      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "create_skill", "update_skill", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api", "create_project", "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions", "submit_complaint", "submit_suggestion"],
       "controlPlaneOperationIds": ["append_audit_record"],
-      "realSurface": "agent instruction revisions, project, case, routine, company-skill, secret, portability, and administration services",
+      "realSurface": "agent instruction revisions, project, case, routine, company-skill, secret, portability, and administration services, and run-attributed agent commentary",
       "mockStateDomains": ["company", "cases", "routines", "skills", "secrets", "audit", "fault"],
       "prpEvidence": "bounded domain projections, redacted broker receipts, company diffs, and audit references",
-      "gap": "Instruction read/update/history/restore require the live canonical revision service, current responsible-user permissions, and pinned base revisions for writes. Their service, authority, and product E2E tests are separate from the legacy mock scenarios. Project and skill creation and API tools require the live server authority; generic_api_request is test-only and the remaining domain operations are scenario-only. Broad administer_company is deferred and cannot claim product coverage. Production API and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage."
+      "gap": "Instruction read/update/history/restore require the live canonical revision service, current responsible-user permissions, and pinned base revisions for writes. Their service, authority, and product E2E tests are separate from the legacy mock scenarios. Project and skill creation and API tools require the live server authority; generic_api_request is test-only and the remaining domain operations are scenario-only. Broad administer_company is deferred and cannot claim product coverage. Production API and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage. Feedback actions are live-only: shared persistence, authority, API, and actual Codex smoke tests cover them; the legacy scenario count does not claim feedback coverage."
     },
     {
       "id": "mh",
@@ -300,12 +305,12 @@
       "legacyGroup": 16,
       "name": "Wake situations",
       "owner": "control plane + always context/history tools",
-      "operationIds": ["get_task_context", "get_task_history", "schedule_wake"],
+      "operationIds": ["get_task_context", "get_task_history", "schedule_wake", "set_task_monitor"],
       "controlPlaneOperationIds": ["select_work", "route_wake"],
       "realSurface": "wakeup requests, heartbeat context, comment/interaction/approval/blocker wake routing, and scheduled wake services",
       "mockStateDomains": ["wake", "task", "comments", "interactions", "approvals", "blockers", "run"],
       "prpEvidence": "attention request routing/resolution plus resumed session/run causality",
-      "gap": "Production scheduling binding is unbound; control-plane routing remains non-callable."
+      "gap": "set_task_monitor binds the one-shot monitor scheduler in production; schedule_wake remains mock-backed. Control-plane routing remains non-callable."
     }
   ],
   "rules": {

@@ -182,7 +182,7 @@ fn prepare_payload(directory: &Path, agent: &str) -> Value {
 fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value {
     let operations = Vec::new();
     let (runtime_package, runtime_version) = if agent == "codex" {
-        (json!("@openai/codex"), json!("0.156.0"))
+        (json!("@openai/codex"), json!("0.160.0"))
     } else {
         (Value::Null, Value::Null)
     };
@@ -199,7 +199,7 @@ fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value
             "driver": "acpx_runtime",
             "providerVersion": "0.13.1",
             "agent": agent,
-            "model": "gpt-5.6-sol",
+            "model": "explicit-test-model",
             "acpxVersion": "0.13.1",
             "agentServerPackage": "@agentclientprotocol/codex-acp",
             "agentServerVersion": "1.6.2",
@@ -228,7 +228,6 @@ fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value
 fn pi_prepare_payload(directory: &Path, mode: &str) -> Value {
     let mut payload = prepare_payload_with_mode(directory, "pi", mode);
     let provider = &mut payload["provider"];
-    provider["model"] = json!("openrouter/deepseek/deepseek-v4-flash-0731");
     provider["agentServerPackage"] = json!("pi-acp");
     provider["agentServerVersion"] = json!("0.0.33");
     provider["agentRuntimePackage"] = json!("@earendil-works/pi-coding-agent");
@@ -262,11 +261,10 @@ fn pending_acpx_runtime_request(
             .unwrap() = digest.into();
         let provider = &mut payload["provider"];
         provider["agent"] = json!("claude");
-        provider["model"] = json!("claude-sonnet-5");
         provider["agentServerPackage"] = json!("@agentclientprotocol/claude-agent-acp");
         provider["agentServerVersion"] = json!("0.73.0");
         provider["agentRuntimePackage"] = json!("@anthropic-ai/claude-agent-sdk");
-        provider["agentRuntimeVersion"] = json!("0.3.280");
+        provider["agentRuntimeVersion"] = json!("0.3.286");
         provider["commandDigest"] = json!(digest);
         provider["sidecarArgs"][3] = json!(digest);
     } else {
@@ -800,7 +798,7 @@ fn opencode_prepare_payload(directory: &Path) -> Value {
             "kind": "opencode",
             "provider": "opencode",
             "driver": "opencode_server",
-            "providerVersion": "1.18.32",
+            "providerVersion": "1.18.34",
             "command": directory.join("qualified-opencode-proxy-command"),
             "args": [directory.join("qualified-opencode-proxy-script")],
             "cwd": directory,
@@ -1355,13 +1353,12 @@ fn rejects_opencode_launch_profile_drift_across_fresh_recovery() {
 }
 
 #[test]
-fn rejects_pi_with_an_unqualified_model_before_starting_a_sidecar() {
+fn rejects_pi_without_an_explicit_model_before_starting_a_sidecar() {
     let directory = temporary_directory("pi-model");
     let config = pi_acpx_config(&directory, "bootstrap");
     let mut payload = pi_prepare_payload(&directory, "bootstrap");
-    // All Pi distribution and policy fields are correct. Admission must reject
-    // the model itself, not rely on the old blanket exclusion of this harness.
-    payload["provider"]["model"] = json!("gpt-5.6-sol");
+    // Distribution and policy are valid, but model selection is still required.
+    payload["provider"]["model"] = json!(" ");
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
     let error = executor
         .execute(&command(1, "run.prepare", payload))

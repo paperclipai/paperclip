@@ -20,6 +20,26 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Shared file tree: preserve desktop indentation and leave room for labels on
+   narrow screens, including deeply nested skill packages. */
+.file-tree-row {
+  padding-inline-start: min(calc(var(--file-tree-indent-base) + var(--file-tree-depth) * var(--file-tree-indent-step)), var(--file-tree-indent-max));
+}
+
+@media (width < 40rem) {
+  .file-tree-row {
+    --file-tree-indent-step: calc(var(--spacing) * 3);
+    --file-tree-indent-max: 25%;
+  }
+}
+
+/* One control column plus its gap: a child's checkbox aligns with its parent's
+   icon. Keep this rhythm at every depth and viewport width. */
+.file-tree-row-explorer {
+  --file-tree-indent-step: calc(var(--spacing) * 6);
+  padding-inline-start: calc(var(--file-tree-indent-base) + var(--file-tree-depth) * var(--file-tree-indent-step));
+}
+
 @theme inline {
   --font-sans: "InterVariable", "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -72,6 +92,18 @@
 
 :root {
   color-scheme: light;
+  --file-tree-indent-base: calc(var(--spacing) * 2);
+  --file-tree-indent-step: calc(var(--spacing) * 6);
+  --file-tree-indent-max: 40%;
+  --native-select-caret-half: calc(var(--spacing) * 1.5);
+  --native-select-caret-inset: calc(var(--spacing) * 3);
+  --native-select-caret-stroke: 1.5px;
+  --native-select-end-padding: calc(var(--spacing) * 9);
+  --composer-effort-track-height: calc(var(--spacing) * 3);
+  --composer-effort-thumb-size: calc(var(--spacing) * 7);
+  --composer-effort-hover-scale: 1.08;
+  --composer-effort-press-scale: 1.16;
+  --composer-effort-halo: 0 0 0 calc(var(--spacing) * 1.5) color-mix(in oklab, var(--tc-mode-ask) 14%, transparent);
   --radius: 0.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -88,7 +120,7 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -233,6 +265,13 @@
   --mobile-entity-picker-visual-viewport-height: 100dvh;
   --mobile-entity-picker-backdrop: color-mix(in oklab, var(--foreground) 50%, transparent);
 
+  /* Deliberate scroll distances (CSS pixels) and shared nav/composer motion. */
+  --mobile-nav-scroll-top-zone: 24px;
+  --mobile-nav-scroll-hide-distance: 32px;
+  --mobile-nav-scroll-show-distance: 16px;
+  --motion-mobile-nav-enter: var(--motion-duration-slow);
+  --motion-mobile-nav-exit: var(--motion-duration-base);
+
   /* ────────────────────────────────────────────────────────────────────────
      Motion tokens — chat-style task thread (default; classic legacy view sits
      behind enableClassicTaskInterface).
@@ -288,6 +327,8 @@
      task, project, agent, and future hosts render the same Codex-like chrome. */
   --side-panel-header-height: var(--sz-60px);
   --side-panel-tab-height: var(--sz-30px);
+  --side-panel-mobile-tabs-width: min(calc(100vw - var(--spacing) * 4), 24rem);
+  --side-panel-mobile-tabs-max-height: 60dvh;
   --side-panel-streamlined-tab-min-width: var(--sz-72px);
   --side-panel-streamlined-tab-max-width: var(--sz-160px);
   --side-panel-tab-edge-fade-width: var(--sz-32px);
@@ -532,6 +573,16 @@
   label {
     touch-action: manipulation;
   }
+  @media (pointer: coarse) {
+    input,
+    select,
+    textarea,
+    [contenteditable=""],
+    [contenteditable="true"],
+    [contenteditable="plaintext-only"] {
+      font-size: max(var(--text-base), 1em);
+    }
+  }
   /* Let font-mono (utilities layer) override for monospace editors */
   .paperclip-mdxeditor [class*="_placeholder_"],
   .paperclip-mdxeditor-content {
@@ -539,7 +590,56 @@
   }
 }
 
+/* Native single-value dropdowns share one inset caret. Padding alone does not
+   move the browser's arrow. Keep native menus/keyboard behavior and leave
+   listboxes and controls with their own appearance-none icon untouched.
+   This rule is outside layers so per-field px-* utilities cannot erase the
+   space reserved for the caret. currentColor follows every app theme. */
+select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="0"], [size="1"]) {
+  appearance: none;
+  padding-inline-end: var(--native-select-end-padding);
+  background-image:
+    linear-gradient(45deg, transparent calc(50% - var(--native-select-caret-stroke) / 2), currentColor calc(50% - var(--native-select-caret-stroke) / 2), currentColor calc(50% + var(--native-select-caret-stroke) / 2), transparent calc(50% + var(--native-select-caret-stroke) / 2)),
+    linear-gradient(135deg, transparent calc(50% - var(--native-select-caret-stroke) / 2), currentColor calc(50% - var(--native-select-caret-stroke) / 2), currentColor calc(50% + var(--native-select-caret-stroke) / 2), transparent calc(50% + var(--native-select-caret-stroke) / 2));
+  background-position: right calc(var(--native-select-caret-inset) + var(--native-select-caret-half)) center, right var(--native-select-caret-inset) center;
+  background-size: var(--native-select-caret-half) var(--native-select-caret-half);
+  background-repeat: no-repeat;
+}
+select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="0"], [size="1"]):dir(rtl) {
+  background-position: left var(--native-select-caret-inset) center, left calc(var(--native-select-caret-inset) + var(--native-select-caret-half)) center;
+}
+@media (forced-colors: active) {
+  select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="0"], [size="1"]) {
+    appearance: auto;
+    background-image: none;
+  }
+}
+
 @media (pointer: coarse) {
+  /* iOS Safari zooms when focusing text smaller than 16px. Floor the small
+     typography tokens on editable controls, preserving larger title sizes. */
+  input,
+  select,
+  textarea,
+  [contenteditable=""],
+  [contenteditable="true"],
+  [contenteditable="plaintext-only"] {
+    --text-nano: var(--text-base);
+    --text-micro: var(--text-base);
+    --text-xs: var(--text-base);
+    --text-compact: var(--text-base);
+    --text-sm: var(--text-base);
+  }
+
+  /* Rich-text editors can inherit a smaller size from their surrounding
+     document styles rather than using a typography utility. Keep this more
+     specific than the editor's content class. */
+  html [contenteditable=""],
+  html [contenteditable="true"],
+  html [contenteditable="plaintext-only"] {
+    font-size: max(var(--text-base), 1em);
+  }
+
   button,
   [role="button"],
   input,
@@ -568,6 +668,32 @@
      single line of text and push it too high (notably on mobile Safari). */
   textarea[data-autosize-title] {
     min-height: 0;
+  }
+}
+
+/* Keep the nav on the compositor; the composer follows the same easing and
+   duration while the page retains its reserved bottom space. */
+.mobile-bottom-nav {
+  transform: translateY(0);
+  transition: transform var(--motion-mobile-nav-enter) var(--motion-ease-out-expo);
+  will-change: transform;
+}
+
+.mobile-bottom-nav[data-visible="false"] {
+  transform: translateY(100%);
+  transition-duration: var(--motion-mobile-nav-exit);
+  transition-timing-function: var(--motion-ease-standard);
+  pointer-events: none;
+}
+
+.mobile-nav-composer {
+  transition: bottom var(--mobile-nav-motion-duration, var(--motion-mobile-nav-enter)) var(--mobile-nav-motion-ease, var(--motion-ease-out-expo));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-mobile-nav-enter: 0ms;
+    --motion-mobile-nav-exit: 0ms;
   }
 }
 
@@ -880,6 +1006,7 @@
 .tc-enter-marker { animation: tc-fade-in var(--motion-marker-enter) var(--motion-ease-out) both; }
 .tc-enter-tool { animation: tc-fade-rise var(--motion-tool-enter) var(--motion-ease-out-expo) both; }
 .tc-enter-status { animation: tc-status-in var(--motion-status-enter) var(--motion-ease-out-expo) both; }
+.mobile-task-side-panel { animation-duration: var(--motion-duration-fast); }
 .tc-enter-cot-line { animation: tc-fade-rise var(--motion-duration-fast) var(--motion-ease-standard) both; }
 .tc-notice-chevron { transition-duration: var(--motion-duration-fast); }
 .tc-reveal-diff { animation: tc-fade-in var(--motion-diff-reveal) var(--motion-ease-standard) both; }
@@ -1686,7 +1813,7 @@
   align-items: center;
   gap: 0.25rem;
   margin: 0 0.1rem;
-  padding: 0 0.625rem;
+  padding: 2px 0.625rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.75rem;
@@ -1725,17 +1852,12 @@ a.paperclip-mention-chip[data-mention-kind="project"]::before {
 
 .paperclip-mdxeditor-content a.paperclip-mention-chip[data-mention-kind="agent"]::before,
 a.paperclip-mention-chip[data-mention-kind="agent"]::before {
-  width: 0.75rem;
-  height: 0.75rem;
-  background-color: currentColor;
-  -webkit-mask-image: var(--paperclip-mention-icon-mask);
-  mask-image: var(--paperclip-mention-icon-mask);
-  -webkit-mask-position: center;
-  mask-position: center;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  -webkit-mask-size: contain;
-  mask-size: contain;
+  width: 1rem;
+  height: 1rem;
+  background-image: var(--paperclip-mention-avatar-image);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
 }
 
 .paperclip-mdxeditor-content ul,
@@ -2282,7 +2404,7 @@ span.paperclip-project-mention-chip {
   align-items: center;
   gap: 0.25rem;
   margin: 0 0.1rem;
-  padding: 0 0.625rem;
+  padding: 2px 0.625rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 0.75rem;
@@ -2978,6 +3100,25 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   animation: none;
 }
 
+/* Concealed mobile history must not grow the document between responses.
+   Restore normal flow and position the finished conversation before paint. */
+.task-chat-history-pending {
+  position: relative;
+  height: var(--tc-thread-max-h);
+  overflow: hidden;
+}
+
+.task-chat-history-pending [data-testid="task-chat-history-content"] {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.task-chat-history-pending > [data-testid="task-chat-composer-dock"] {
+  position: absolute;
+  inset-inline: 0;
+}
+
 /* Task recovery panel uses the shared spacing, radius, and type scales. */
 .execution-blocker-notice {
   gap: calc(var(--spacing) * 2);
@@ -3022,7 +3163,9 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
     position: absolute;
     inset: 0;
     background: var(--mobile-entity-picker-backdrop);
-    pointer-events: none;
+    /* Hit the popper wrapper so Radix dismisses this sheet, while the parent
+       task dialog recognizes the tap as belonging to its nested picker. */
+    pointer-events: auto;
   }
 
   [data-mobile-entity-picker] {
@@ -3154,4 +3297,119 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .plugin-app-shell-overlay { pointer-events: auto; }
 @media (max-width: 767px) {
   .plugin-app-shell-overlays { bottom: var(--plugin-shell-mobile-bottom); }
+}
+
+:root {
+  /* Browser Use live viewer chrome: 30px tab strip + 40px navigation bar.
+     Provider integration measurement (2026-09-29), not Paperclip spacing.
+     Keep navigation visible; the cross-origin viewer exposes no sizing message. */
+  --browser-use-viewer-chrome-height: 70px;
+}
+
+/* GitHub skill scans: real counters with a quiet indeterminate sweep until the tree is known. */
+.skill-import-enter {
+  animation: tc-fade-rise var(--motion-duration-enter) var(--motion-ease-out) both;
+}
+.skill-import-sweep {
+  width: 40%;
+  animation: skill-import-sweep var(--motion-approval-pulse) var(--motion-ease-standard) infinite;
+}
+@keyframes skill-import-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(350%); }
+}
+.skill-import-progress {
+  appearance: none;
+  overflow: hidden;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--muted);
+  color: var(--foreground);
+}
+.skill-import-progress::-webkit-progress-bar { background: var(--muted); }
+.skill-import-progress::-webkit-progress-value {
+  background: var(--foreground);
+  border-radius: var(--radius-sm);
+  transition: width var(--motion-line-scroll) var(--motion-ease-standard);
+}
+.skill-import-progress::-moz-progress-bar { background: var(--foreground); }
+@media (prefers-reduced-motion: reduce) {
+  .skill-import-enter, .skill-import-sweep { animation: none; }
+  .skill-import-progress::-webkit-progress-value { transition: none; }
+}
+
+/* Agent setup handoff: the same logo stack travels from trigger to prompt. */
+:root {
+  --agent-setup-flight-duration: var(--motion-duration-deliberate);
+  --agent-setup-copied-hold: 2400ms;
+  --agent-setup-popover-width: 21rem;
+  --agent-setup-collision-padding: 12;
+  --agent-setup-preview-height: clamp(6rem, 27dvh, 12rem);
+  --agent-setup-logo-size: calc(var(--spacing) * 7);
+  --agent-setup-logo-overlap: calc(var(--spacing) * -1.5);
+  --agent-setup-logo-lift: calc(var(--spacing) * -1.5);
+  --agent-setup-logo-tilt: 14deg;
+}
+.agent-setup-trigger-logos {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: calc(var(--agent-setup-logo-size) * 3 + var(--agent-setup-logo-overlap) * 2);
+  height: var(--agent-setup-logo-size);
+  margin-left: auto;
+}
+.agent-setup-logos { display: inline-flex; isolation: isolate; }
+.agent-setup-logos[data-hidden="true"] { visibility: hidden; }
+.agent-setup-logo-slot { display: inline-flex; position: relative; }
+.agent-setup-logo-slot + .agent-setup-logo-slot { margin-left: var(--agent-setup-logo-overlap); }
+.agent-setup-flight-layer { position: fixed; inset: 0; z-index: 51; pointer-events: none; }
+.agent-setup-flight-layer .agent-setup-flying-logo { position: absolute; transition: none; }
+.agent-setup-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--agent-setup-logo-size);
+  height: var(--agent-setup-logo-size);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--popover);
+  box-shadow: var(--shadow-xs);
+  transition: transform var(--motion-duration-slow) var(--motion-ease-out-expo);
+}
+.agent-setup-trigger:is(:hover, :focus-visible) .agent-setup-logo-slot:nth-child(1) .agent-setup-logo {
+  transform: translateY(var(--agent-setup-logo-lift)) rotate(calc(-1 * var(--agent-setup-logo-tilt)));
+}
+.agent-setup-trigger:is(:hover, :focus-visible) .agent-setup-logo-slot:nth-child(2) .agent-setup-logo {
+  transform: translateY(calc(var(--agent-setup-logo-lift) * 1.6));
+}
+.agent-setup-trigger:is(:hover, :focus-visible) .agent-setup-logo-slot:nth-child(3) .agent-setup-logo {
+  transform: translateY(calc(var(--agent-setup-logo-lift) * 0.6)) rotate(var(--agent-setup-logo-tilt));
+}
+.agent-setup-popover {
+  width: min(var(--agent-setup-popover-width), calc(100vw - var(--spacing) * 6));
+  max-height: var(--radix-popover-content-available-height);
+  box-shadow: var(--shadow-profile-popover);
+}
+.agent-setup-popover[data-state="open"] { animation: tc-fade-in var(--motion-duration-base) var(--motion-ease-out-expo); }
+.agent-setup-popover[data-state="closed"] { animation: none; }
+.agent-setup-preview {
+  height: var(--agent-setup-preview-height);
+  max-height: max(3rem, calc(var(--radix-popover-content-available-height) - 12rem));
+  scrollbar-width: thin;
+}
+.agent-setup-preview-logos { transform: translateY(-25%); }
+.agent-setup-preview-logos .agent-setup-logo-slot:first-child .agent-setup-logo { transform: rotate(calc(var(--agent-setup-logo-tilt) * -0.5)); }
+.agent-setup-preview-logos .agent-setup-logo-slot:last-child .agent-setup-logo { transform: rotate(calc(var(--agent-setup-logo-tilt) * 0.5)); }
+.agent-setup-check { animation: agent-setup-check var(--motion-duration-slow) var(--motion-ease-out-expo) both; }
+.agent-setup-confirmation { animation: tc-fade-rise var(--motion-duration-base) var(--motion-ease-out-expo) both; }
+.agent-setup-copy[aria-disabled="true"] { opacity: 0.5; }
+@keyframes agent-setup-check {
+  from { opacity: 0; transform: scale(0.6) rotate(-20deg); }
+  to { opacity: 1; transform: scale(1) rotate(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-setup-logo { transition: none; transform: none !important; }
+  .agent-setup-popover, .agent-setup-check, .agent-setup-confirmation { animation: none !important; }
+}
+@media (max-height: 420px) {
+  .agent-setup-popover { overflow-y: auto; }
 }

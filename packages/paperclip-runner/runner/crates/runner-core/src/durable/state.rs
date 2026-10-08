@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -77,12 +78,18 @@ impl Command {
         let schema_version = match self.schema.as_str() {
             "paperclip.prp.command.v1" => 1,
             "paperclip.prp.command.v2" => 2,
+            "paperclip.prp.command.v3" => 3,
             _ => {
                 return Err(DurableRunnerError::invalid(
                     "command requires a supported paperclip.prp.command schema",
                 ));
             }
         };
+        if self.command_type == "external_provider.operation" && schema_version < 3 {
+            return Err(DurableRunnerError::invalid(
+                "external provider operations require PRP v3",
+            ));
+        }
         if schema_version == 1 && self.command_type.starts_with("session.goal.") {
             return Err(DurableRunnerError::invalid(
                 "session goal commands require the paperclip.prp.command.v2 schema",
@@ -149,6 +156,7 @@ impl Command {
                 | "session.goal.get"
                 | "session.goal.set"
                 | "session.goal.clear"
+                | "external_provider.operation"
         ) {
             return Err(DurableRunnerError::invalid(format!(
                 "command type is not supported by PRP v{schema_version}"
@@ -311,6 +319,8 @@ pub enum CommandDisposition {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DurableState {
+    #[serde(skip)]
+    identity_output: IdentityOutputBuffer,
     pub schema: String,
     pub runner_instance_id: String,
     pub environment_lease_id: String,
@@ -351,6 +361,7 @@ pub struct DurableState {
 impl DurableState {
     pub(crate) fn new(config: &DurableRunnerConfig) -> Self {
         Self {
+            identity_output: IdentityOutputBuffer::default(),
             schema: STATE_SCHEMA.to_owned(),
             runner_instance_id: config.runner_instance_id.clone(),
             environment_lease_id: config.environment_lease_id.clone(),
@@ -526,20 +537,57 @@ impl DurableState {
         }
         validate_semantic_tool_input_digest(event_type.as_str(), &payload)?;
 
-        let sanitized_payload = sanitize_value(&payload);
+        // Clone until enqueue succeeds: rejected writes must not consume output.
+        // Pending secret fragments are memory-only and never enter durable state.
+        let mut identity_output = self.identity_output.clone();
+        let payload = if event_type == "item.delta" {
+            identity_output.redact(
+                &format!("{}:{}", self.turn_id, self.item_id),
+                &payload,
+                &self.item_id,
+            )
+        } else if matches!(
+            event_type.as_str(),
+            "item.completed" | "item.failed" | "item.cancelled"
+        ) {
+            identity_output.settle(
+                &format!("{}:{}", self.turn_id, self.item_id),
+                &payload,
+                false,
+            )
+        } else if matches!(
+            event_type.as_str(),
+            "turn.completed"
+                | "turn.failed"
+                | "turn.cancelled"
+                | "turn.interrupted"
+                | "session.closed"
+        ) {
+            identity_output.settle(&format!("{}:", self.turn_id), &payload, true)
+        } else {
+            payload
+        };
+
+        let sanitized_payload = preserve_bounded_display_content(
+            event_type.as_str(),
+            &payload,
+            sanitize_value(&payload),
+        )?;
+        // Restore authoritative tool arguments before checking protocol identities.
+        // Their contents are execution data, not a redacted diagnostic preview.
+        let sanitized_payload =
+            finalize_semantic_tool_input_payload(event_type.as_str(), &payload, sanitized_payload)?;
         if durable_semantics_changed_by_sanitization(&payload, &sanitized_payload) {
             return Err(DurableRunnerError::invalid(
                 "durable identity or validation semantics contain credential-shaped material",
             ));
         }
-        let sanitized_payload =
-            preserve_bounded_display_content(event_type.as_str(), &payload, sanitized_payload)?;
-        let sanitized_payload =
-            finalize_semantic_tool_input_payload(event_type.as_str(), &payload, sanitized_payload)?;
 
         let source_seq = self.next_source_seq;
         let emitted_at = current_timestamp()?;
-        let schema_version = if matches!(
+        let schema_version = if event_type.starts_with("external_provider.") {
+            3
+        } else if matches!(
             event_type.as_str(),
             "session.capabilities.updated"
                 | "session.goal.snapshot"
@@ -629,6 +677,7 @@ impl DurableState {
             );
         }
         self.peak_outbox_bytes = self.peak_outbox_bytes.max(projected);
+        self.identity_output = identity_output;
         Ok(source_seq)
     }
 
@@ -773,6 +822,28 @@ impl DurableState {
             .insert(command.command_id.clone(), fingerprint);
         self.compact_command_history();
         Ok(CommandDisposition::Execute)
+    }
+
+    pub(crate) fn resume_result_delivery(
+        &mut self,
+        command: &Command,
+    ) -> Result<(), DurableRunnerError> {
+        if command.command_type != "semantic_tool.result"
+            || !matches!(self.begin_command(command)?, CommandDisposition::Replay(ref prior) if prior.status == "indeterminate")
+        {
+            return Err(DurableRunnerError::invalid(
+                "only exact indeterminate result delivery can resume",
+            ));
+        }
+        self.processed_commands
+            .get_mut(&command.command_id)
+            .expect("validated retained delivery receipt")
+            .status = "pending".to_owned();
+        self.record_diagnostic(format!(
+            "reconciling semantic result delivery command {}",
+            command.command_id
+        ));
+        Ok(())
     }
 
     pub fn complete_command(
@@ -1491,8 +1562,24 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
     ) {
         return !value.is_number();
     }
+    let credential_name = [
+        "value",
+        "header",
+        "production",
+        "prod",
+        "development",
+        "dev",
+        "test",
+        "staging",
+        "primary",
+        "secondary",
+    ]
+    .iter()
+    .find_map(|suffix| normalized.strip_suffix(suffix))
+    .unwrap_or(&normalized);
     [
         "authorization",
+        "authorizationcode",
         "bearer",
         "browsercode",
         "cookie",
@@ -1500,16 +1587,19 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
         "jwt",
         "loginurl",
         "password",
+        "passwords",
         "passwd",
         "privatekey",
         "secret",
+        "secrets",
         "token",
         "ticket",
         "apikey",
         "credential",
+        "credentials",
     ]
     .iter()
-    .any(|needle| normalized.contains(needle))
+    .any(|needle| credential_name.ends_with(needle))
 }
 
 fn protocol_authorization_boundary(key: &str, value: &Value) -> bool {
@@ -1577,6 +1667,199 @@ fn durable_semantics_changed_by_sanitization(original: &Value, sanitized: &Value
                 })
         }
         _ => false,
+    }
+}
+
+#[derive(Clone, Default, PartialEq)]
+struct IdentityOutputBuffer {
+    pending: BTreeMap<String, String>,
+    streams: BTreeMap<String, IdentityOutputStream>,
+}
+
+#[derive(Clone, PartialEq)]
+struct IdentityOutputStream {
+    scope: String,
+    item_id: Option<Value>,
+    payload: Value,
+    paths: Vec<String>,
+}
+
+impl std::fmt::Debug for IdentityOutputBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("IdentityOutputBuffer { [REDACTED] }")
+    }
+}
+
+impl IdentityOutputBuffer {
+    fn redact(&mut self, stream: &str, payload: &Value, item_id: &str) -> Value {
+        let Ok(key) = std::env::var("PAPERCLIP_AGENT_PRIVATE_KEY") else {
+            return payload.clone();
+        };
+        if key.is_empty() {
+            return payload.clone();
+        }
+        let result = self.redact_with_key(stream, payload, &key);
+        if let Some(descriptor) = self.streams.get_mut(&Self::stream_key(stream, payload)) {
+            descriptor.item_id = Some(json!(item_id));
+        }
+        result
+    }
+
+    fn stream_key(stream: &str, payload: &Value) -> String {
+        json!([
+            stream,
+            payload.get("itemId"),
+            payload.get("providerItemId"),
+            payload.get("channel"),
+            payload.get("stream")
+        ])
+        .to_string()
+    }
+
+    fn redact_with_key(&mut self, stream: &str, payload: &Value, key: &str) -> Value {
+        let scope = stream.to_owned();
+        let stream = Self::stream_key(stream, payload);
+        let mut values = vec![key.to_owned(), key.trim().to_owned()];
+        values.extend(
+            key.lines()
+                .filter(|line| !line.is_empty() && !line.starts_with("-----"))
+                .map(str::to_owned),
+        );
+        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        let result = self.visit(&stream, "", payload, &values);
+        let prefix = format!("{stream}.");
+        let paths: Vec<String> = self
+            .pending
+            .keys()
+            .filter(|path| path.starts_with(&prefix))
+            .cloned()
+            .collect();
+        if paths.is_empty() {
+            self.streams.remove(&stream);
+        } else {
+            let metadata = ["itemId", "providerItemId", "kind", "channel", "stream"]
+                .iter()
+                .filter_map(|key| {
+                    payload
+                        .get(*key)
+                        .filter(|value| value.is_string())
+                        .map(|value| ((*key).to_owned(), sanitize_value(value)))
+                })
+                .collect();
+            self.streams.insert(
+                stream,
+                IdentityOutputStream {
+                    scope,
+                    item_id: None,
+                    payload: Value::Object(metadata),
+                    paths,
+                },
+            );
+        }
+        result
+    }
+
+    fn settle(&mut self, scope: &str, payload: &Value, whole_turn: bool) -> Value {
+        let streams: Vec<String> = self
+            .streams
+            .iter()
+            .filter(|(_, descriptor)| {
+                (if whole_turn {
+                    descriptor.scope.starts_with(scope)
+                } else {
+                    descriptor.scope == scope
+                }) && (whole_turn
+                    || payload.get("itemId").is_none()
+                    || descriptor.payload.get("itemId").is_none()
+                    || payload.get("itemId") == descriptor.payload.get("itemId"))
+            })
+            .map(|(stream, _)| stream.clone())
+            .collect();
+        let mut tails = Vec::new();
+        for stream in streams {
+            let descriptor = self.streams.remove(&stream).unwrap();
+            let primary = descriptor
+                .paths
+                .iter()
+                .find(|path| **path == format!("{stream}.text"))
+                .or_else(|| descriptor.paths.first())
+                .cloned();
+            let mut text = String::new();
+            for path in descriptor.paths {
+                if let Some(held) = self.pending.remove(&path) {
+                    if Some(&path) == primary.as_ref() {
+                        text = if held.len() < 8 {
+                            held
+                        } else {
+                            "[REDACTED]".to_owned()
+                        };
+                    }
+                }
+            }
+            if !text.is_empty() {
+                let mut tail_payload = descriptor.payload;
+                tail_payload["text"] = json!(text);
+                tails.push(json!({"itemId": descriptor.item_id, "payload": tail_payload}));
+            }
+        }
+        let mut result = payload.clone();
+        if !tails.is_empty() {
+            let mut existing = result
+                .get("outputTails")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            existing.extend(tails);
+            result["outputTails"] = json!(existing);
+        }
+        result
+    }
+
+    fn visit(&mut self, path: &str, field: &str, value: &Value, secrets: &[String]) -> Value {
+        match value {
+            Value::Object(object) => Value::Object(
+                object
+                    .iter()
+                    .map(|(key, child)| {
+                        (
+                            key.clone(),
+                            self.visit(&format!("{path}.{key}"), key, child, secrets),
+                        )
+                    })
+                    .collect(),
+            ),
+            Value::Array(array) => Value::Array(
+                array
+                    .iter()
+                    .enumerate()
+                    .map(|(index, child)| {
+                        self.visit(&format!("{path}.{index}"), field, child, secrets)
+                    })
+                    .collect(),
+            ),
+            Value::String(chunk) if matches!(field, "text" | "delta" | "output" | "patch") => {
+                let mut text = self.pending.remove(path).unwrap_or_default();
+                text.push_str(chunk);
+                for secret in secrets {
+                    text = text.replace(secret, "[REDACTED]");
+                }
+                let mut held = 0;
+                for secret in secrets {
+                    for size in (held + 1..secret.len().min(text.len() + 1)).rev() {
+                        if secret.is_char_boundary(size) && text.ends_with(&secret[..size]) {
+                            held = size;
+                            break;
+                        }
+                    }
+                }
+                if held > 0 {
+                    let tail = text.split_off(text.len() - held);
+                    self.pending.insert(path.to_owned(), tail);
+                }
+                Value::String(text)
+            }
+            other => other.clone(),
+        }
     }
 }
 
@@ -1667,56 +1950,36 @@ fn preserve_bounded_display_content(
     Ok(sanitized)
 }
 
-pub(crate) fn sanitize_semantic_tool_input(
+pub(crate) fn validate_semantic_tool_input(
     operation_id: &str,
     input: &Value,
 ) -> Result<Value, DurableRunnerError> {
-    let mut sanitized = sanitize_value(input);
-    // Mutation prose is the user's intended work, not a diagnostic. Preserve
-    // ordinary references to a token in these declared text fields; credential
-    // syntax and high-confidence secret values are still scrubbed. All other
-    // fields and operations retain the strict diagnostic policy.
-    let prose_fields: &[&str] = match operation_id {
-        "create_task" => &["title", "description", "initialPlan"],
-        "create_project" => &["name", "description"],
-        "write_document" => &["title", "body", "changeSummary"],
-        _ => &[],
-    };
-    if let Some(sanitized_input) = sanitized.as_object_mut() {
-        for field in prose_fields {
-            if let Some(text) = input.get(*field).and_then(Value::as_str) {
-                sanitized_input.insert(
-                    (*field).to_owned(),
-                    // The tool/API schema bounds business content. A diagnostic
-                    // preview limit must never truncate a plan or document.
-                    Value::String(redact_sensitive_text_values_with_context(text, true)),
-                );
-            }
-        }
+    // This value is executed by the authority. Diagnostic preview limits and
+    // redaction must never turn it into a different, apparently valid write.
+    // Hex-encoded authenticated frames double JSON bytes. Reserve envelope
+    // space below the 1 MiB wire cap before any effect can start.
+    // Credential policy belongs to the harness. Only transport bounds are
+    // enforced here; executed arguments must retain their original bytes.
+    if serde_json::to_vec(input)
+        .map_err(|_| DurableRunnerError::invalid("semantic tool input is not serializable"))?
+        .len()
+        > 480 * 1024
+    {
+        return Err(DurableRunnerError::invalid(
+            "semantic tool input exceeds the 480 KiB encrypted transport limit",
+        ));
     }
-    if !matches!(operation_id, "paperclip_finish" | "paperclip_block") {
-        return Ok(sanitized);
-    }
-    let Some(summary) = input.get("summary").and_then(Value::as_str) else {
-        return Ok(sanitized);
-    };
-    if summary.chars().count() > MAX_COMPLETION_SUMMARY_CHARS {
+    if matches!(operation_id, "paperclip_finish" | "paperclip_block")
+        && input
+            .get("summary")
+            .and_then(Value::as_str)
+            .is_some_and(|summary| summary.chars().count() > MAX_COMPLETION_SUMMARY_CHARS)
+    {
         return Err(DurableRunnerError::invalid(
             "semantic completion summary exceeds the 12,000 character limit",
         ));
     }
-    let Some(sanitized_input) = sanitized.as_object_mut() else {
-        return Ok(sanitized);
-    };
-    // Completion summary is the schema-bounded user-facing answer, not an
-    // untrusted diagnostic snippet. Preserve it in full while applying the
-    // same credential scrubber used by every durable string. All other fields
-    // retain the generic 4 KiB diagnostic bound.
-    sanitized_input.insert(
-        "summary".to_owned(),
-        Value::String(redact_sensitive_text_values(summary)),
-    );
-    Ok(sanitized)
+    Ok(input.clone())
 }
 
 fn finalize_semantic_tool_input_payload(
@@ -1742,7 +2005,7 @@ fn finalize_semantic_tool_input_payload(
     let Some(original_input) = original_tool.get("input") else {
         return Ok(sanitized);
     };
-    let finalized_input = sanitize_semantic_tool_input(operation_id, original_input)?;
+    let finalized_input = validate_semantic_tool_input(operation_id, original_input)?;
     let Some(sanitized_tool) = sanitized
         .get_mut("semantic_tool")
         .and_then(Value::as_object_mut)
@@ -1798,6 +2061,9 @@ fn validate_semantic_tool_input_digest(
 }
 
 pub(crate) fn redact_text(input: &str) -> String {
+    // Cutting a secret first leaves an unmatchable plaintext fragment.
+    let redacted = redact_sensitive_text_values(input);
+    let input = redacted.as_str();
     let (bounded, truncated) = if input.len() > 4096 {
         let boundary = input
             .char_indices()
@@ -1809,18 +2075,37 @@ pub(crate) fn redact_text(input: &str) -> String {
     } else {
         (input, false)
     };
-    let mut redacted = redact_sensitive_text_values(bounded);
+    let mut redacted = bounded.to_owned();
     if truncated {
         redacted.push_str("…[truncated]");
     }
     redacted
 }
 
-pub(crate) fn redact_sensitive_text_values(input: &str) -> String {
-    redact_sensitive_text_values_with_context(input, false)
+pub(crate) fn redact_agent_identity_text(input: &str) -> String {
+    let Ok(key) = std::env::var("PAPERCLIP_AGENT_PRIVATE_KEY") else {
+        return input.to_owned();
+    };
+    if key.is_empty() {
+        return input.to_owned();
+    }
+    let escaped = serde_json::to_string(&key).unwrap_or_default();
+    let mut result = input.replace(&key, "[REDACTED]");
+    if escaped.len() > 2 {
+        result = result.replace(&escaped[1..escaped.len() - 1], "[REDACTED]");
+    }
+    for line in key
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with("-----"))
+    {
+        result = result.replace(line, "[REDACTED]");
+    }
+    result
 }
 
-fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) -> String {
+pub(crate) fn redact_sensitive_text_values(input: &str) -> String {
+    let identity_redacted = redact_agent_identity_text(input);
+    let input = identity_redacted.as_str();
     let normalized = input.to_ascii_lowercase();
     let bytes = normalized.as_bytes();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
@@ -2022,9 +2307,15 @@ fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) 
         }
         let candidate_end = without_sentence_period(jwt_start, jwt_end);
         if candidate_end > jwt_start {
-            let candidate = &normalized[jwt_start..candidate_end];
+            let candidate = &input[jwt_start..candidate_end];
             let segments = candidate.split('.').collect::<Vec<_>>();
-            if matches!(segments.len(), 3 | 4)
+            let json_header = URL_SAFE_NO_PAD
+                .decode(segments[0])
+                .ok()
+                .and_then(|decoded| serde_json::from_slice::<Value>(&decoded).ok())
+                .is_some_and(|header| header.get("alg").is_some_and(Value::is_string));
+            if (candidate.starts_with("eyJ") || json_header)
+                && matches!(segments.len(), 3 | 5)
                 && segments.iter().all(|segment| {
                     segment.len() >= 8
                         && segment.bytes().all(|value| {
@@ -2068,7 +2359,27 @@ fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) 
             },
             |quote| quoted_value_end(value_start, quote),
         );
-        if end > value_start {
+        let candidate = &input[value_start..end];
+        // A bare "bearer token" or "bearer authentication" is ordinary prose.
+        // Quoted values, opaque formats, and long values indicate credentials;
+        // explicit Authorization fields are independently redacted below.
+        let prose_term = matches!(
+            candidate
+                .trim_end_matches(['.', ',', ';', ':', '!', '?'])
+                .to_ascii_lowercase()
+                .as_str(),
+            "token"
+                | "tokens"
+                | "authentication"
+                | "authorization"
+                | "credential"
+                | "credentials"
+                | "scheme"
+                | "schemes"
+                | "flow"
+                | "flows"
+        );
+        if end > value_start && (quote.is_some() || !prose_term) {
             ranges.push((value_start, end));
         }
     }
@@ -2077,6 +2388,10 @@ fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) 
     // provider diagnostic are useful context and are not secrets by themselves.
     let sensitive_keys = [
         "authorization",
+        "authorization code",
+        "authorization-code",
+        "authorization_code",
+        "authorizationcode",
         "api key",
         "api-key",
         "api_key",
@@ -2157,132 +2472,39 @@ fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) 
                 && authorization_scheme_start + scheme.len() < bytes.len()
                 && bytes[authorization_scheme_start + scheme.len()].is_ascii_whitespace()
         });
-        // A small closed set of grammatical noun/count phrases is prose, not
-        // the diagnostic field/value pair "token opaque-value". Keep this
-        // exception exact: assignments, quoted/compound/CLI keys or values,
-        // and arbitrary words after token still use the ordinary scanners.
-        let token_phrase_has_lead = |lead: &str| {
-            normalized[..start]
-                .strip_suffix(lead)
-                .is_some_and(|before| {
-                    before.is_empty()
-                        || before
-                            .as_bytes()
-                            .last()
-                            .is_some_and(|value| value.is_ascii_whitespace())
-                })
-        };
-        let token_phrase_has_tail = |tail: &str| {
-            normalized[separator..].starts_with(tail)
-                && bytes.get(separator + tail.len()).is_none_or(|value| {
-                    value.is_ascii_whitespace()
-                        || (matches!(value, b'.' | b',' | b';' | b')')
-                            && bytes
-                                .get(separator + tail.len() + 1)
-                                .is_none_or(|next| next.is_ascii_whitespace()))
-                })
-        };
-        let token_phrase_follows_list_delimiter = || {
-            let before = &normalized[..start];
-            start == 0
-                || [", ", "; ", ": ", "\n", "- "]
-                    .iter()
-                    .any(|delimiter| before.ends_with(delimiter))
-        };
-        let has_hyphenated_count_lead = token_phrase_has_lead("one-");
-        // A bare token reference in declared mutation prose can be an output
-        // requirement. Auth/access/session context, explicit assignment,
-        // quoted credentials and CLI/compound names remain credential pairs.
-        // Known key/JWT/Bearer values are independently scrubbed above.
-        let is_semantic_token_reference = semantic_prose
-            && key == "token"
-            && !key_is_compound
-            && whitespace_start == start + key.len()
-            && separator > whitespace_start
-            && !has_assignment_separator
-            && bytes[whitespace_start..separator]
-                .iter()
-                .all(|value| matches!(value, b' ' | b'\t'))
-            && quoted_value_start(separator).1.is_none()
-            && ![
-                "auth ",
-                "authentication ",
-                "authorization ",
-                "access ",
-                "refresh ",
-                "session ",
-                "api ",
-                "security ",
-                "secret ",
-                "credential ",
-                "bearer ",
-            ]
-            .iter()
-            .any(|lead| token_phrase_has_lead(lead));
-        let is_benign_token_noun_phrase = key == "token"
-            && (!key_is_compound || has_hyphenated_count_lead)
-            && whitespace_start == start + key.len()
-            && !has_assignment_separator
-            && bytes[whitespace_start..separator]
-                .iter()
-                .all(|value| matches!(value, b' ' | b'\t'))
-            && ((token_phrase_has_tail("system")
-                && [
-                    "a ",
-                    "the ",
-                    "a simple ",
-                    "the simple ",
-                    "a balanced ",
-                    "the balanced ",
-                    "a transparent ",
-                    "the transparent ",
-                ]
-                .iter()
-                .any(|lead| token_phrase_has_lead(lead)))
-                || (token_phrase_has_tail("economy")
-                    && ["a balanced ", "the balanced ", "the "]
-                        .iter()
-                        .any(|lead| token_phrase_has_lead(lead)))
-                || (["station", "rules"]
-                    .iter()
-                    .any(|tail| token_phrase_has_tail(tail))
-                    && token_phrase_has_lead("the "))
-                || (["design", "values"]
-                    .iter()
-                    .any(|tail| token_phrase_has_tail(tail))
-                    && ["a jade ", "the "]
-                        .iter()
-                        .any(|lead| token_phrase_has_lead(lead)))
-                || (token_phrase_has_tail("exchanges") && token_phrase_has_lead("standard "))
-                || (["count", "limits"]
-                    .iter()
-                    .any(|tail| token_phrase_has_tail(tail))
-                    && token_phrase_has_lead("and "))
-                || (["limit", "rule"]
-                    .iter()
-                    .any(|tail| token_phrase_has_tail(tail))
-                    && has_hyphenated_count_lead)
-                || (token_phrase_has_tail("reconciliation, and cleanup")
-                    && token_phrase_follows_list_delimiter())
-                || (["for", "per"]
-                    .iter()
-                    .any(|tail| token_phrase_has_tail(tail))
-                    && [
-                        "one ",
-                        "two ",
-                        "first ",
-                        "second ",
-                        "each ",
-                        "another ",
-                        "additional ",
-                    ]
-                    .iter()
-                    .any(|lead| token_phrase_has_lead(lead)))
-                || (token_phrase_has_tail("can equal") && token_phrase_has_lead("one ")));
+        // Whitespace alone in prose is not an assignment: "secret storage"
+        // and "credential handling" describe work, not credential values.
+        // Shell options, compound field names, and authorization schemes still
+        // have an unambiguous field/value relationship.
+        let mut name_start = start;
+        while name_start > 0 && is_name_byte(bytes[name_start - 1]) {
+            name_start -= 1;
+        }
+        let full_name = &input[name_start..start + key.len()];
+        let is_cli_key = full_name.starts_with('-')
+            && (name_start == 0 || bytes[name_start - 1].is_ascii_whitespace());
+        let is_compound_field = key_is_compound
+            && (full_name.contains('_')
+                || full_name.chars().any(|value| value.is_ascii_uppercase()));
+        // Opaque values in diagnostic key/value pairs remain masked. Plain
+        // words such as "secret manager" do not establish an assignment.
+        let (candidate_start, candidate_quote) = quoted_value_start(separator);
+        let candidate_end = value_end(candidate_start);
+        // Uppercase symbolic acceptance markers in prose are not evidence of
+        // credentials. Explicit assignments and flags still mask any value.
+        let opaque_value = !input[candidate_start..candidate_end]
+            .bytes()
+            .any(|value| value.is_ascii_uppercase())
+            && (candidate_quote.is_some()
+                || (candidate_end.saturating_sub(candidate_start) >= 8
+                    && bytes[candidate_start..candidate_end].iter().any(|value| {
+                        value.is_ascii_digit() || matches!(value, b'_' | b'-' | b'/' | b'+' | b'=')
+                    })));
         let has_whitespace_separator = separator > whitespace_start
-            && (key != "authorization" || key_is_compound || has_authorization_scheme)
-            && !is_benign_token_noun_phrase
-            && !is_semantic_token_reference;
+            && (is_compound_field
+                || is_cli_key
+                || opaque_value
+                || (key == "authorization" && has_authorization_scheme));
         if !has_assignment_separator && !has_whitespace_separator {
             continue;
         }
@@ -2401,6 +2623,64 @@ fn current_timestamp() -> Result<String, DurableRunnerError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn identity_delta_redaction_buffers_every_split_and_never_serializes_pending_material() {
+        use super::*;
+        let key = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIExamplePrivateMaterial\n-----END PRIVATE KEY-----\n";
+        let body = key.lines().nth(1).unwrap();
+        for split in 1..body.len() {
+            let mut buffer = IdentityOutputBuffer::default();
+            let first = buffer.redact_with_key(
+                "envelope-item",
+                &json!({"itemId": "item-1", "text": &body[..split], "update": {"delta": &body[..split]}}),
+                key,
+            );
+            let other = buffer.redact_with_key(
+                "envelope-item",
+                &json!({"itemId": "item-2", "text": "ordinary output\n"}),
+                key,
+            );
+            assert_eq!(other["text"], "ordinary output\n");
+            let second = buffer.redact_with_key(
+                "envelope-item",
+                &json!({"itemId": "item-1", "text": &body[split..], "update": {"delta": &body[split..]}}),
+                key,
+            );
+            assert_eq!(first["text"], "");
+            assert_eq!(second["text"], "[REDACTED]");
+            assert_eq!(second["update"]["delta"], "[REDACTED]");
+        }
+        let mut state = DurableState::new(&config(PathBuf::from("/unused")));
+        state
+            .identity_output
+            .redact_with_key("item", &json!({"text": &body[..20]}), key);
+        assert!(!serde_json::to_string(&state).unwrap().contains(&body[..20]));
+        assert!(!format!("{state:?}").contains(&body[..20]));
+    }
+
+    #[test]
+    fn identity_output_settles_item_and_turn_tails_without_retaining_fragments() {
+        let key = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEITestSecretMaterialForAnAgentIdentity\n-----END PRIVATE KEY-----\n";
+        let mut output = IdentityOutputBuffer::default();
+        assert_eq!(
+            output.redact_with_key(
+                "turn:item",
+                &json!({"itemId": "one", "kind": "reasoning", "text": "Thinking-"}),
+                key
+            )["text"],
+            "Thinking"
+        );
+        let settled = output.settle("turn:item", &json!({"itemId": "one"}), false);
+        assert_eq!(settled["outputTails"][0]["payload"]["text"], "-");
+        assert!(output.pending.is_empty());
+        assert!(output.streams.is_empty());
+        output.redact_with_key("turn:other", &json!({"text": &key[..42]}), key);
+        let settled = output.settle("turn:", &json!({"status": "completed"}), true);
+        assert_eq!(settled["outputTails"][0]["payload"]["text"], "[REDACTED]");
+        assert!(output.pending.is_empty());
+        assert!(output.streams.is_empty());
+    }
+
     use std::time::Duration;
 
     use super::*;
@@ -2440,6 +2720,30 @@ mod tests {
             precondition: None,
             payload: json!({}),
         }
+    }
+
+    #[test]
+    fn diagnostic_credentials_remain_masked_without_prose_false_positives() {
+        let jwt = format!(
+            "{}.abcdefghijk.abcdefghijkl",
+            URL_SAFE_NO_PAD.encode(br#" {"alg":"HS256","typ":"JWT"}"#)
+        );
+        assert_eq!(redact_text(&jwt), "[REDACTED]");
+        assert_eq!(redact_text("Bearer abcdefghijkl"), "Bearer [REDACTED]");
+        assert_eq!(
+            redact_text("request failed token secret-value"),
+            "request failed token [REDACTED]"
+        );
+        assert_eq!(
+            redact_text("Use a secret manager for credential handling and bearer authentication."),
+            "Use a secret manager for credential handling and bearer authentication."
+        );
+        assert_eq!(
+            sanitize_value(
+                &json!({"authorizationHeader": "abcdefghijkl", "apiKeyProduction": "sensitivevalue", "credentialHandling": "harness"})
+            ),
+            json!({"authorizationHeader": "[REDACTED]", "apiKeyProduction": "[REDACTED]", "credentialHandling": "harness"})
+        );
     }
 
     #[test]
@@ -2927,7 +3231,7 @@ mod tests {
             state.outbox[0]
                 .envelope
                 .pointer("/payload/payload/nested/providerApiKeyDiagnostic"),
-            Some(&json!("[REDACTED]"))
+            Some(&json!("Invalid API key: [REDACTED]; request rejected"))
         );
         assert_eq!(
             state.outbox[0]
@@ -2944,12 +3248,12 @@ mod tests {
         let config = config(PathBuf::from("unused"));
         let mut state = DurableState::new(&config);
         let summary = format!(
-            "token=do-not-persist {} Authorization: Bearer late-provider-secret COMPLETE-DURABLE-SUMMARY",
+            "Answer: {} COMPLETE-DURABLE-SUMMARY",
             "A complete paragraph for the user. ".repeat(180)
         );
         let input = json!({"summary": summary});
         let once_sanitized_input =
-            sanitize_semantic_tool_input("paperclip_finish", &input).unwrap();
+            validate_semantic_tool_input("paperclip_finish", &input).unwrap();
         let payload = json!({
             "semantic_tool": {
                 "schema": "paperclip.prp.semantic_tool.v1",
@@ -2988,11 +3292,11 @@ mod tests {
             .pointer("/payload/payload/semantic_tool/input")
             .unwrap();
         let transmitted_summary = transmitted["summary"].as_str().unwrap();
-        assert!(transmitted_summary.starts_with("token=[REDACTED] "));
+        assert!(transmitted_summary.starts_with("Answer: "));
         assert!(transmitted_summary.ends_with(" COMPLETE-DURABLE-SUMMARY"));
         assert!(!transmitted_summary.contains("do-not-persist"));
         assert!(!transmitted_summary.contains("late-provider-secret"));
-        assert!(transmitted_summary.contains("Authorization: Bearer [REDACTED]"));
+        assert_eq!(transmitted, &input);
         assert!(!transmitted_summary.contains("…[truncated]"));
         assert_eq!(
             state.outbox[0]
@@ -3013,7 +3317,7 @@ mod tests {
 
         let mut changed_tail = payload.clone();
         changed_tail["semantic_tool"]["input"]["summary"] = Value::String(format!(
-            "token=[REDACTED] {} CHANGED-DURABLE-SUMMARY",
+            "Answer: {} CHANGED-DURABLE-SUMMARY",
             "A complete paragraph for the user. ".repeat(180)
         ));
         assert!(state
@@ -3040,7 +3344,7 @@ mod tests {
         small_frame.max_frame_bytes = 8_000;
         let mut state = DurableState::new(&small_frame);
         let long_input = json!({"summary": "C".repeat(12_000)});
-        let safe_input = sanitize_semantic_tool_input("paperclip_finish", &long_input).unwrap();
+        let safe_input = validate_semantic_tool_input("paperclip_finish", &long_input).unwrap();
         let exact_payload = json!({
             "semantic_tool": {
                 "schema": "paperclip.prp.semantic_tool.v1",
@@ -3063,7 +3367,7 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("transport frame limit"));
-        assert!(sanitize_semantic_tool_input(
+        assert!(validate_semantic_tool_input(
             "paperclip_finish",
             &json!({"summary": "C".repeat(MAX_COMPLETION_SUMMARY_CHARS + 1)}),
         )
@@ -3318,7 +3622,7 @@ mod tests {
                                 "required": true,
                                 "answerMode": "single_select",
                                 "options": [{
-                                    "id": "abcdefgh.ijklmnop.qrstuvwx",
+                                    "id": "eyJabcdefghi.ijklmnop.qrstuvwx",
                                     "label": "Yes"
                                 }],
                                 "textValidation": {"pattern": "^token=pattern-secret$"}
@@ -3345,7 +3649,7 @@ mod tests {
         assert_eq!(sanitized["authorization"], json!("[REDACTED]"));
         assert_eq!(
             sanitized["nested"]["authorizationBoundary"],
-            json!("[REDACTED]")
+            json!("Bearer [REDACTED]")
         );
     }
 
@@ -3379,7 +3683,7 @@ mod tests {
             "idempotencyKey": "write-description-1",
         });
         assert_eq!(
-            sanitize_semantic_tool_input("create_task", &input).unwrap(),
+            validate_semantic_tool_input("create_task", &input).unwrap(),
             input
         );
         for text in [
@@ -3389,14 +3693,10 @@ mod tests {
             "Include the exact token ACCEPTANCE-42 in the final output.",
         ] {
             assert_eq!(
-                sanitize_semantic_tool_input("write_document", &json!({"body": text})).unwrap(),
+                validate_semantic_tool_input("write_document", &json!({"body": text})).unwrap(),
                 json!({"body": text})
             );
-            assert_ne!(
-                redact_text(text),
-                text,
-                "diagnostics keep their strict policy"
-            );
+            assert_eq!(redact_sensitive_text_values(text), text);
         }
         let config = config(PathBuf::from("unused"));
         let mut state = DurableState::new(&config);
@@ -3431,78 +3731,67 @@ mod tests {
             "{}\nAuthorization: Bearer late-credential\nFINAL-ACCEPTANCE-42",
             "Document content. ".repeat(400)
         );
-        let safe =
-            sanitize_semantic_tool_input("write_document", &json!({"body": document})).unwrap();
-        let body = safe["body"].as_str().unwrap();
-        assert!(body.len() > 4096);
-        assert!(body.ends_with("FINAL-ACCEPTANCE-42"));
-        assert!(!body.contains("late-credential"));
+        assert!(validate_semantic_tool_input("write_document", &json!({"body": document})).is_ok());
     }
 
     #[test]
-    fn semantic_prose_does_not_exempt_credential_syntax_or_shapes() {
-        for text in [
-            "auth token opaque-credential",
-            "access token opaque-credential",
-            "session token opaque-credential",
-            "refresh token opaque-credential",
-            "authentication token opaque-credential",
-            "literal token=opaque-credential",
-            "literal token:opaque-credential",
-            "literal --token opaque-credential",
-            "literal access_token opaque-credential",
-            "literal \"token\" opaque-credential",
-            "literal token \"opaque-credential\"",
-        ] {
-            assert!(!redact_text(text).contains("opaque-credential"), "{text}");
-            let input = json!({"description": text, "initialPlan": text});
-            assert!(
-                !sanitize_semantic_tool_input("create_task", &input)
-                    .unwrap()
-                    .to_string()
-                    .contains("opaque-credential"),
-                "{text}"
-            );
-        }
-        for secret in [
-            "sk-proj-secretvalue123456",
-            "ghp_secretvalue12345678901234567890",
-            "github_pat_secretvalue12345678901234567890",
-            "eyJhbGciOiJIUzI1NiJ9.c2VjcmV0LWNsYWlt.signaturesecret",
-        ] {
-            let text = format!("Include the literal token {secret} in the document.");
-            assert!(!redact_text(&text).contains(secret), "{text}");
-            assert!(
-                !sanitize_semantic_tool_input("write_document", &json!({"body": text}))
-                    .unwrap()
-                    .to_string()
-                    .contains(secret)
-            );
-        }
-        let input = json!({
-            "description": "Include the literal token ACCEPTANCE-42. Authorization: Bearer opaque-credential",
-            "token": "opaque-credential",
-        });
-        let safe = sanitize_semantic_tool_input("create_task", &input).unwrap();
-        assert!(safe["description"]
-            .as_str()
-            .unwrap()
-            .contains("ACCEPTANCE-42"));
-        assert!(!safe.to_string().contains("opaque-credential"));
-        let diagnostic = json!({"description": "the token opaque-credential"});
-        assert!(
-            !sanitize_semantic_tool_input("get_task_context", &diagnostic)
-                .unwrap()
-                .to_string()
-                .contains("opaque-credential")
-        );
-        assert!(!sanitize_semantic_tool_input(
+    fn semantic_arguments_preserve_credentials_for_harness_authorization() {
+        for operation in [
+            "set_task_title",
             "create_task",
-            &json!({"diagnostic": "token opaque-credential"})
+            "create_project",
+            "write_document",
+            "update_agent_instructions",
+            "request_human_input",
+            "call_api",
+            "get_task_context",
+        ] {
+            for input in [
+                json!({"body": "Use a GitHub App with secure credential handling."}),
+                json!({"content": "Authorization: Bearer opaque-credential"}),
+                json!({"content": "literal token=opaque-credential"}),
+                json!({"content": "ghp_secretvalue12345678901234567890"}),
+                json!({"token": "opaque-credential"}),
+                json!({"nested": {"password": "opaque-credential", "secretId": "token=opaque-credential"}}),
+            ] {
+                assert_eq!(
+                    validate_semantic_tool_input(operation, &input).unwrap(),
+                    input,
+                    "{operation}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn instruction_arguments_survive_the_complete_outbox_without_byte_changes() {
+        let content = format!(
+            "{}\nAuthorization: Bearer intentional-credential\nFINAL-TAIL-🦀",
+            "# Instructions — 日本語 🦀\n".repeat(400)
+        );
+        let input = json!({"entryFile": "AGENTS.md", "baseRevisionId": null, "content": content, "nested": {"secretId":"token=credential-id", "password":"intentional-credential"}});
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        state.enqueue_executor_event(&config, "instruction-write".to_owned(), "semantic_tool.input".to_owned(), EventPriority::P0,
+            json!({"semantic_tool": {"schema":"paperclip.prp.semantic_tool.v1", "schemaVersion":1, "phase":"input", "operationId":"update_agent_instructions", "content":{"digest":semantic_value_digest(&input)}, "input": input}})).unwrap();
+        let encoded = serde_json::to_vec(&state).unwrap();
+        let recovered: DurableState = serde_json::from_slice(&encoded).unwrap();
+        let actual = recovered.outbox[0]
+            .envelope
+            .pointer("/payload/payload/semantic_tool/input")
+            .unwrap();
+        assert_eq!(actual, &input);
+        assert_eq!(
+            actual["content"].as_str().unwrap().as_bytes(),
+            content.as_bytes()
+        );
+        assert_eq!(semantic_value_digest(actual), semantic_value_digest(&input));
+        assert!(validate_semantic_tool_input(
+            "update_agent_instructions",
+            &json!({"content":"🦀".repeat(200_000)})
         )
-        .unwrap()
-        .to_string()
-        .contains("opaque-credential"));
+        .is_err());
+        assert_eq!(state.outbox.len(), 1);
     }
 
     #[test]
@@ -3561,164 +3850,47 @@ mod tests {
     }
 
     #[test]
-    fn token_system_prose_exception_preserves_credential_redaction() {
-        for (input, expected) in [
-            ("token system", "token [REDACTED]"),
+    fn diagnostic_redaction_requires_assignments_or_recognizable_credentials() {
+        for prose in [
+            "Document secret storage and deployment permissions.",
+            "Keep the private key in a secret manager.",
+            "Use a GitHub App with secure credential handling.",
+            "API key rotation checklist for staging.",
+            "Review token rules. Send a thank-you.",
+            "Use token budgeting and secret detection.",
+            "Use bearer tokens for authentication. Prefer bearer authentication.",
+            "token arbitrary",
+            "one-token rule",
+            "executor.customTools.integrations.list",
+            "paperclip.question_set.v1",
+            "aaaaaaaa.bbbbbbbb.cccccccc",
+            "plan.security.credentials.md",
+        ] {
+            assert_eq!(redact_text(prose), prose, "{prose}");
+        }
+        for (text, expected) in [
+            ("secret=value", "secret=[REDACTED]"),
+            ("token: value", "token: [REDACTED]"),
+            ("--token opaque-value", "--token [REDACTED]"),
+            ("OPENAI_API_KEY opaque-value", "OPENAI_API_KEY [REDACTED]"),
+            ("access_token opaque-value", "access_token [REDACTED]"),
+            ("Bearer opaque-value", "Bearer [REDACTED]"),
             (
-                "request failed token system",
-                "request failed token [REDACTED]",
-            ),
-            ("a token=system", "a token=[REDACTED]"),
-            ("a token:system", "a token:[REDACTED]"),
-            ("a token \"system\"", "a token \"[REDACTED]\""),
-            ("a token 'system'", "a token '[REDACTED]'"),
-            ("a \"token\" system", "a \"token\" [REDACTED]"),
-            ("a access_token system", "a access_token [REDACTED]"),
-            ("a --token system", "a --token [REDACTED]"),
-            ("a token system-secret", "a token [REDACTED]"),
-            ("a token system.signed-value", "a token [REDACTED]"),
-            ("a token system,secret", "a token [REDACTED],secret"),
-            ("a token system;secret", "a token [REDACTED];secret"),
-            ("a token system)secret", "a token [REDACTED])secret"),
-            ("a token system=secret", "a token [REDACTED]"),
-            ("a token system:secret", "a token [REDACTED]"),
-            ("a token secret-value", "a token [REDACTED]"),
-            (
-                "a balanced token economy-secret",
-                "a balanced token [REDACTED]",
-            ),
-            ("the token economy-secret", "the token [REDACTED]"),
-            ("the token station-secret", "the token [REDACTED]"),
-            ("the token rules-secret", "the token [REDACTED]"),
-            ("and token limits-secret", "and token [REDACTED]"),
-            ("a jade token design-secret", "a jade token [REDACTED]"),
-            ("the token values-secret", "the token [REDACTED]"),
-            (
-                "standard token exchanges-secret",
-                "standard token [REDACTED]",
-            ),
-            ("and token count-secret", "and token [REDACTED]"),
-            ("one-token limit-secret", "one-token [REDACTED]"),
-            ("one-token rule-secret", "one-token [REDACTED]"),
-            ("one-token secret-value", "one-token [REDACTED]"),
-            ("the token design=secret", "the token [REDACTED]"),
-            ("token design", "token [REDACTED]"),
-            (
-                "token reconciliation-secret, and cleanup",
-                "token [REDACTED], and cleanup",
+                "Use a token system; ghp_abcdefghijklmnopqrstuvwxyz",
+                "Use a token system; [REDACTED]",
             ),
             (
-                "after token reconciliation, and cleanup-secret",
-                "after token [REDACTED], and cleanup-secret",
-            ),
-            ("token rules", "token [REDACTED]"),
-            ("token limits", "token [REDACTED]"),
-            ("the token=rules", "the token=[REDACTED]"),
-            ("the token \"rules\"", "the token \"[REDACTED]\""),
-            ("the --token rules", "the --token [REDACTED]"),
-            ("the access_token rules", "the access_token [REDACTED]"),
-            (
-                "a balanced token system-secret",
-                "a balanced token [REDACTED]",
-            ),
-            (
-                "a balanced token ghp_abcdefghijklmnopqrstuvwxyz",
-                "a balanced token [REDACTED]",
-            ),
-            ("one token bearer-secret", "one token [REDACTED]"),
-            (
-                "second token sk-abcdefghijklmnop",
-                "second token [REDACTED]",
-            ),
-            ("one token for-secret", "one token [REDACTED]"),
-            ("second token per.secret", "second token [REDACTED]"),
-            ("one token can rotate", "one token [REDACTED] rotate"),
-            ("one token can-equal-secret", "one token [REDACTED]"),
-            (
-                "one token can equal-secret",
-                "one token [REDACTED] equal-secret",
-            ),
-            ("one token can=secret-value", "one token [REDACTED]"),
-            ("stone token for", "stone token [REDACTED]"),
-            ("one-time token for", "one-time token [REDACTED]"),
-            ("one access_token for", "one access_token [REDACTED]"),
-            ("one --token can equal", "one --token [REDACTED] equal"),
-            ("one \"token\" can equal", "one \"token\" [REDACTED] equal"),
-            ("one token \"for\"", "one token \"[REDACTED]\""),
-            ("one token for=secret", "one token [REDACTED]"),
-            ("a token\nsystem", "a token\n[REDACTED]"),
-            ("meta token system", "meta token [REDACTED]"),
-            (
-                "a token system; token=secret-value",
-                "a token system; token=[REDACTED]",
-            ),
-            (
-                "a token system; Bearer secret-value",
-                "a token system; Bearer [REDACTED]",
-            ),
-            (
-                "a token system; sk-abcdefghijklmnop",
-                "a token system; [REDACTED]",
-            ),
-            (
-                "a token system; ghp_abcdefghijklmnopqrstuvwxyz",
-                "a token system; [REDACTED]",
-            ),
-            (
-                "a token system; eyJabcdefghi.abcdefghijk.lmnopqrstuv",
-                "a token system; [REDACTED]",
+                "Use a token system; eyJabcdefghi.abcdefghijk.lmnopqrstuv",
+                "Use a token system; [REDACTED]",
             ),
         ] {
-            let redacted = redact_text(input);
-            assert_eq!(redacted, expected, "{input}");
-            assert_eq!(redact_text(&redacted), redacted);
+            assert_eq!(redact_text(text), expected, "{text}");
+            assert_eq!(redact_text(expected), expected);
         }
-    }
-
-    #[test]
-    fn transparent_token_system_requires_exact_prose_boundaries() {
-        for lead in ["a transparent ", "the transparent "] {
-            for (tail, redacted_tail) in [
-                ("token=system", "token=[REDACTED]"),
-                ("token:system", "token:[REDACTED]"),
-                ("token \"system\"", "token \"[REDACTED]\""),
-                ("token 'system'", "token '[REDACTED]'"),
-                ("\"token\" system", "\"token\" [REDACTED]"),
-                ("access_token system", "access_token [REDACTED]"),
-                ("--token system", "--token [REDACTED]"),
-                ("token\nsystem", "token\n[REDACTED]"),
-                ("token system-secret", "token [REDACTED]"),
-                ("token system.signed-value", "token [REDACTED]"),
-                ("token system=secret", "token [REDACTED]"),
-                ("token system:secret", "token [REDACTED]"),
-                ("token system,secret", "token [REDACTED],secret"),
-                ("token system;secret", "token [REDACTED];secret"),
-                ("token system)secret", "token [REDACTED])secret"),
-                ("token arbitrary", "token [REDACTED]"),
-                ("token ghp_abcdefghijklmnopqrstuvwxyz", "token [REDACTED]"),
-                ("token sk-abcdefghijklmnop", "token [REDACTED]"),
-            ] {
-                let input = format!("{lead}{tail}");
-                assert_eq!(redact_text(&input), format!("{lead}{redacted_tail}"));
-            }
-        }
-        for input in [
-            "meta-transparent token system",
-            "a very transparent token system",
-            "a transparent token economy",
-            "one token clerk, one demonstration host",
-        ] {
-            assert!(redact_text(input).contains("[REDACTED]"), "{input}");
-        }
+        let metadata = json!({"tokenBudget": 42, "tokenPolicy":"limited", "secretStorage":"vault", "credentialHandling":"harness", "credentials":{"service":"opaque-value"}, "passwordValue":"opaque-value", "accessToken":"opaque-value"});
         assert_eq!(
-            sanitize_value(&json!({
-                "summary": "Use a transparent token system; Bearer fixture-secret.",
-                "token": "system.",
-            })),
-            json!({
-                "summary": "Use a transparent token system; Bearer [REDACTED].",
-                "token": "[REDACTED]",
-            })
+            sanitize_value(&metadata),
+            json!({"tokenBudget":42,"tokenPolicy":"limited", "secretStorage":"vault", "credentialHandling":"harness", "credentials":"[REDACTED]", "passwordValue":"[REDACTED]", "accessToken":"[REDACTED]"})
         );
     }
 
@@ -3726,21 +3898,21 @@ mod tests {
     fn sentence_period_redaction_keeps_credentials_and_embedded_dots_private() {
         for (input, expected) in [
             ("token=fixture-secret. Next.", "token=[REDACTED]. Next."),
-            ("token fixture-secret.", "token [REDACTED]."),
+            ("token=fixture-secret.", "token=[REDACTED]."),
             (
-                "token fixture.secret.suffix. Next.",
-                "token [REDACTED]. Next.",
+                "token=fixture.secret.suffix. Next.",
+                "token=[REDACTED]. Next.",
             ),
-            ("token fixture.secret.suffix", "token [REDACTED]"),
-            ("token fixture-secret..", "token [REDACTED]"),
-            ("token .", "token [REDACTED]"),
+            ("token=fixture.secret.suffix", "token=[REDACTED]"),
+            ("token=fixture-secret..", "token=[REDACTED]"),
+            ("token=.", "token=[REDACTED]"),
             ("token=fixture-secret.\nRetry.", "token=[REDACTED].\nRetry."),
             ("token=fixture-secret., Next.", "token=[REDACTED], Next."),
             (
-                "token \"fixture-secret.\" Next.",
-                "token \"[REDACTED]\" Next.",
+                "token=\"fixture-secret.\" Next.",
+                "token=\"[REDACTED]\" Next.",
             ),
-            ("token 'fixture-secret.' Next.", "token '[REDACTED]' Next."),
+            ("token='fixture-secret.' Next.", "token='[REDACTED]' Next."),
             ("Bearer fixture-secret. Next.", "Bearer [REDACTED]. Next."),
             (
                 "Authorization: Bearer fixture-secret. Next.",
@@ -3751,7 +3923,7 @@ mod tests {
                 "[REDACTED]. Next.",
             ),
             (
-                "eyJabcdefghi.abcdefghijk.lmnopqrstuv.wxyzabcdefg.",
+                "eyJabcdefghi.abcdefghijk.lmnopqrstuv.wxyzabcdefg.hijklmnopqr.",
                 "[REDACTED].",
             ),
             (
@@ -3760,7 +3932,7 @@ mod tests {
             ),
             (
                 "Review token rules. Send a thank-you.",
-                "Review token [REDACTED]. Send a thank-you.",
+                "Review token rules. Send a thank-you.",
             ),
         ] {
             let redacted = redact_text(input);
@@ -4027,7 +4199,7 @@ mod tests {
             ),
             (
                 "provider rejected abcdefgh.ijklmnop.qrstuvwx before startup",
-                "provider rejected [REDACTED] before startup",
+                "provider rejected abcdefgh.ijklmnop.qrstuvwx before startup",
             ),
         ] {
             assert_eq!(redact_text(input), expected);
@@ -4101,6 +4273,42 @@ mod tests {
             redact_text("Missing bearer [REDACTED]"),
             "Missing bearer [REDACTED]"
         );
+    }
+
+    #[test]
+    fn identity_redaction_precedes_multibyte_truncation() {
+        let prefix = "MC4CAQAwBQYDK2VwBCIEIA";
+        let body = format!("{prefix}{}", "A".repeat(64 - prefix.len()));
+        let key = format!("-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n");
+        // Give only this subprocess the key; do not race other tests' environment.
+        if std::env::var_os("PAPERCLIP_IDENTITY_TRUNCATION_TEST").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "durable::state::tests::identity_redaction_precedes_multibyte_truncation",
+                    "--nocapture",
+                ])
+                .env("PAPERCLIP_IDENTITY_TRUNCATION_TEST", "1")
+                .env("PAPERCLIP_AGENT_PRIVATE_KEY", &key)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        for material in [&body, &key] {
+            let input = format!("{}{material}", "é".repeat(2025));
+            let output = redact_text(&input);
+            assert!(!output.contains(prefix));
+            assert!(output.contains("[REDACTED]"));
+            assert!(output.len() <= 4096);
+            let persisted = sanitize_value(&json!({"text": input}));
+            assert!(!persisted.to_string().contains(prefix));
+        }
     }
 
     #[test]

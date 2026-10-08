@@ -14,7 +14,7 @@ export async function provisionFirstTaskFixtures(input: {
 }): Promise<LiveFixtureValues> {
   const { api, execution, nonce, company, credentials } = input;
   if (
-    !["first-task", "completion-updates"].includes(execution.suite.id) || execution.task.flow !== "first_task" ||
+    !["first-task", "completion-updates", "confirmation-replies"].includes(execution.suite.id) || execution.task.flow !== "first_task" ||
     execution.environment.id !== "local" ||
     ![
       "legacy-codex",

@@ -15,6 +15,7 @@ exact execution ID explicitly.
 | Hire a teammate and use them again | `hire-reuse` | One Morgan QA reporting to the lead, native runner and the same encrypted connection bindings, real child execution, then a second usable delivery from that same agent. |
 | Decide on an installed service action | `service-approve`, `service-decline` | Assign an authenticated local MCP fixture with Ask first; match its tool action and connection ID; no provider call before approval; exactly one after approval and a verified document; none after decline. |
 | Decline a new connection | `connection-decline` | Start without service connections; match a Notion connection intent; click Not now; verify the saved rejection, no new connection or repeated request, and an explanation followed by Done. |
+| Request an email address | `agentmail-setup` | Enable Chat connectors, ask for an email address, and require a durable AgentMail card for the requesting agent and user. Reload and verify one password field, the direct API-key link, and no access selectors or modal. Decline and verify no connection or repeated request. |
 | Continue work after a controller restart | `recover-controller` | Observe saved source, persist a user message, restart the isolated controller, and independently test the delivered result. |
 | Stop work and change direction | `stop-redirect` | Click Stop, send one new request, reload, observe exactly one stored user message and the new answer, and reach Done. |
 | Create and edit a company skill | `create-skill-studio` | Create one skill through the runner, verify its persisted library entry and activity-feed card, open Skill Studio, save an edit, and verify the edit after returning. Local Codex, local ACPX Claude, and warm Daytona cells are explicit. |
@@ -36,10 +37,12 @@ See [controlled recovery tests](../runner-recovery/README.md).
 
 ## Matrix and running
 
-The local matrix has nine cases on native Codex `gpt-5.6-sol`, native ACPX Claude
-`claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 27 cells. The two core profiles
+The local matrix has fourteen cases on native Codex `gpt-5.6-sol`, native ACPX Claude
+`claude-sonnet-5`, and native Codex `gpt-5.4-mini`: 42 cells. The two core profiles
 also declare build/revise, delegation, controller-restart, and skill-creation cases
-on Daytona: eight cells. Remote runner-process killing is not supported. For remote controller
+on Daytona: eight cells. OpenCode adds only local hiring/reuse and delegation,
+for 52 cells total. Hiring/reuse and delegation have one attempt and a
+1,000-cent company and lead-agent hard stop. Remote runner-process killing is not supported. For remote controller
 restart, a verified first download supplies the persistence checkpoint; the
 controller is interrupted during a subsequent revision with another queued
 requirement.
@@ -200,7 +203,19 @@ identity check.
 ## External-provider fallback
 
 Three explicit local cases cover aggregator routing with the normal production
-agent guidance. They add nine local cells; the suite now has 47 cells total.
+agent guidance. They add nine local cells. The AgentMail setup case adds three
+local cells; the suite now has 50 cells total.
+
+The AgentMail case uses real model discovery and production interaction/UI paths,
+but declines before sending credentials to AgentMail. Its independent grader is
+calibrated against missing, duplicate, misaddressed, hidden, and malformed cards.
+The email integration suite separately proves credential/inbox creation, access
+defaults, assignment checks, and completion using a fixture provider. Neither
+test qualifies live AgentMail delivery. Run a bounded local model cell with:
+
+```sh
+pnpm test:e2e:runner -- --id everyday-workflows.runner-codex-mini.local.agentmail-setup --max-automatic-retries 0
+```
 
 - `provider-native`: Jira is supported natively and by aggregators. Require the
   Jira connection card directly, decline it in the browser, and verify no provider
@@ -223,3 +238,25 @@ revision, harness digest, and existing usage/cost evidence accompany each attemp
 routing, incorrect ordering, early calls, duplicate questions, and fabricated reads.
 Run a single `everyday-workflows.runner-codex-mini.local.provider-decline` cell
 first; do not treat these fixtures as live provider compatibility tests.
+
+### Connection-guidance observation boundaries
+
+The explicit `native-connection-guidance` suite keeps one attempt per cell.
+For decline cases, Done and a succeeded run are insufficient: settlement waits
+within the existing cell deadline for a saved reply attributed by run ID to the
+lead agent's final successful run on this task. Readiness checks storage and
+identity, not favorable wording. A missing reply times out; an incorrect reply
+settles and fails the independent explanation check. Both decline explanation
+checks use the same bounded matcher, including unavailable/rejected access and
+“wasn't able to pull” wording. This is textual evidence, not proof of cognition.
+
+An executed approval or a recorded tool-action rejection with `wake_assignee`
+may precede its continuation run. Only a response bound to the same task, company,
+agent, and completed source run can defer the stranded-blocker check, and only
+within the original deadline. A failed execution, unrelated card, or already
+consumed response cannot extend that wait.
+
+`connection-guidance-decline-grade.json` and the workflow's
+`declineGradeEvidence` retain the exact cloned assertion input and original
+checks. Later final-state or cleanup observations cannot overwrite that input.
+Earlier campaign grades remain unchanged when the evaluator is corrected.

@@ -45,6 +45,8 @@ export interface StorageProvider {
 }
 
 export type PutFileInput = {
+  /** Server-allocated, company-prefixed key for durable idempotent uploads. Never accept from client input. */
+  objectKey?: string;
   companyId: string;
   namespace: string;
   originalFilename: string | null;

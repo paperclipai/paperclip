@@ -974,6 +974,28 @@ describe("HarnessDriverBackend", () => {
     await expect(iterator.next()).rejects.toThrow("provider transport lost after resolution");
   });
 
+  it.each([false, true])("retains final usage without accepting late output (journal boundary only: %s)", async journalOnly => {
+    class AccountingAfterCancelSession extends FakeHarnessSession {
+      async interrupt() {}
+      override async *events() {
+        yield prpEvent(1, "item.completed", { kind: "agentMessage", text: "late answer" });
+        yield prpEvent(2, "item.completed", { kind: "usage", usage: { runDelta: { inputTokens: 7, outputTokens: 3 }, runDeltaComplete: true } });
+        yield prpEvent(3, "turn.completed", { status: "completed" });
+      }
+    }
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return new AccountingAfterCancelSession(); } });
+    const session = await backend.openSession({
+      identity: { runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" }, workingDirectory: "/workspace",
+    });
+    if (journalOnly) session.revokeTurnPublication();
+    else await session.cancel({ reason: "durable governed wait", signal: new AbortController().signal }).cleanup;
+    const events = [];
+    for await (const event of session.events()) events.push(event);
+    expect(events.filter(event => event.payload.kind === "agentMessage")).toHaveLength(0);
+    expect(events.find(event => event.payload.kind === "usage")?.payload.usage).toMatchObject({ runDelta: { inputTokens: 7, outputTokens: 3 } });
+    expect(events.some(event => event.eventType === "turn.cancelled")).toBe(true);
+  });
+
   it("does not start provider work when Stop arrives before the first turn", async () => {
     const provider = new FakeHarnessSession();
     const start = vi.spyOn(provider, "startTurn");

@@ -64,6 +64,12 @@ export function getAssignedMcpGateway(db: Db): ToolGatewayService {
   return gateway;
 }
 
+/** No configured gateway means no authorized connection tools or instructions. */
+export async function resolveAssignedConnectionInstructionsForRun(db: Db, binding: { companyId: string; agentId: string; runId: string }) {
+  const gateway = assignedMcpGateways.get(db);
+  return gateway ? gateway.resolveConnectionInstructionsForRun(binding) : null;
+}
+
 function assignedToolName(name: string): string {
   const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
   const separator = name.lastIndexOf(":");

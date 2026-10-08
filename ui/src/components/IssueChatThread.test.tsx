@@ -4813,6 +4813,53 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("keeps the completed chain-of-thought caret beside its label and reveals it on hover or focus", () => {
+    const root = createRoot(container);
+    const run = issueChatLongThreadLinkedRuns[2];
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[run]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={() => true}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const header = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("worked for 4 minutes"),
+    );
+    expect(header).toBeDefined();
+    const label = Array.from(header!.children).find((child) =>
+      child.textContent?.includes("worked for 4 minutes"),
+    );
+    const caret = label?.nextElementSibling;
+    expect(caret?.tagName.toLowerCase()).toBe("svg");
+    expect(header?.classList.contains("group")).toBe(true);
+    expect(caret?.classList.contains("opacity-0")).toBe(true);
+    expect(caret?.classList.contains("group-hover:opacity-100")).toBe(true);
+    expect(caret?.classList.contains("group-focus-visible:opacity-100")).toBe(true);
+    expect(caret?.nextElementSibling?.classList.contains("ml-auto")).toBe(true);
+
+    act(() => {
+      header!.click();
+    });
+    expect(caret?.classList.contains("rotate-180")).toBe(true);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("folds chain-of-thought when the same message transitions from running to complete", () => {
     expect(
       resolveAssistantMessageFoldedState({

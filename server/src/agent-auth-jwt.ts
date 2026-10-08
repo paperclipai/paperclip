@@ -160,7 +160,7 @@ export function createLocalAgentJwt(
   return `${signingInput}.${signature}`;
 }
 
-export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
+export function verifyLocalAgentJwt(token: string, options: { strictRunAuthority?: boolean } = {}): LocalAgentJwtClaims | null {
   if (!token) return null;
   const config = jwtConfig();
   if (!config) return null;
@@ -199,7 +199,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const perCompanyKey = deriveCompanySigningKey(config.secret, claimedCompanyId, config.instanceId);
   const perCompanySig = signPayload(perCompanyKey, signingInput);
   let signatureOk = safeCompare(signature, perCompanySig);
-  if (!signatureOk && !config.disableLegacyFallback) {
+  if (!signatureOk && !config.disableLegacyFallback && !options.strictRunAuthority) {
     const legacySig = signPayload(config.secret, signingInput);
     signatureOk = safeCompare(signature, legacySig);
   }
@@ -237,6 +237,15 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   // enforcement is conditional — matching how iss/aud are handled above.
   const instanceClaim = typeof claims.instance_id === "string" ? claims.instance_id : undefined;
   if (instanceClaim && instanceClaim !== config.instanceId) return null;
+  // Cross-instance inspection cannot inherit the compatibility exceptions of
+  // ordinary API authentication. Only a current, standard managed-run token
+  // issued by this instance can attest live authority.
+  if (options.strictRunAuthority && (
+    header.typ !== "JWT" || issuer !== config.issuer || audience !== config.audience
+    || instanceClaim !== config.instanceId || exp <= now || iat > now
+    || !Number.isInteger(iat) || !Number.isInteger(exp)
+    || (Object.hasOwn(claims, "key_scope") && (!claims.key_scope || typeof claims.key_scope !== "object" || (claims.key_scope as { kind?: unknown }).kind !== "standard"))
+  )) return null;
 
   return {
     sub,

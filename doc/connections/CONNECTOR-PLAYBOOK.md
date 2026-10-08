@@ -61,6 +61,59 @@ execution. Extend the provider's existing catalog entry with typed AI methods;
 reuse the existing login controllers. See [AI Connections](./AI-CONNECTIONS.md)
 for compatibility, personal defaults, resolver isolation, and legacy adoption.
 
+## Read/write defaults and credential ownership
+
+New tool connections request the provider-documented permissions needed for their
+supported read **and write** actions. Prefer an available write/draft capability
+before a managed read-only method. Read-only capability choices and provider
+read-only switches belong under **Advanced**. Preserve an explicit method on
+resume/reconnect. Keep the Access → Connect flow and manage action restrictions
+on Permissions; changing OAuth configuration never changes existing consent or
+turns an Off/Ask-first action into Allowed.
+
+Every tool method must have a review in
+[`tool-method-permission-reviews.json`](./tool-method-permission-reviews.json).
+It records requested scopes, supported actions, provider restrictions, official
+evidence, and live-proof status. The ingestion script uses its explicit scope
+lists as `scopesHint`; the catalog regression rejects missing reviews, drift,
+and undocumented omitted OAuth scopes. An omission requires a provider-default
+exception explaining how consent/registration grants access. Never automatically
+request all scopes advertised by an authorization server. See the
+[permission audit](./CONNECTOR-PERMISSION-AUDIT.md) for review findings and limits.
+API-key fields must explain required provider permissions; Paperclip cannot
+increase an already-issued key's permissions. Reconnect with fresh consent/key
+when access is insufficient. A provider's explicit `insufficient_scope` response
+becomes an actionable `oauth_insufficient_scope` error; provider response text
+and credentials are not echoed.
+
+All invocation credential writes use `writeConnectionCredential` (setup,
+replacement, reconnect, OAuth completion and rotation). A personal grant requires
+a **user-scoped** secret owned by its subject and a user-secret definition and
+declaration for the connection. Organization/dedicated-agent credentials use
+company secrets and bindings. OAuth **client-registration** secrets remain
+company-owned and are resolved separately from action credentials. Declaration
+paths are canonical (`credentials.authorization`, `headers.X-Api-Key`,
+`remote.url`, `oauth.access_token`), never double-prefixed. Health, discovery,
+board tests, invocation, and version tracking must use the selected grant's
+refs and the same ownership checks. A personal resolver must not fall back to a
+company credential. Ownership mismatch is `grant_credential_invalid` and tells
+the owner to reconnect.
+
+Existing personal connections with company-scoped invocation credentials require
+their owner to reconnect and enter a fresh key or secret URL. Reconnect creates
+a user-owned credential and updates the grant and declarations while preserving
+the connection identity and action policies. Credential ownership is never
+automatically reassigned at startup. Health, discovery and invocation reject an
+invalid ownership layout with an actionable reconnect error.
+
+Verification must assert stored ownership and declarations, then execute a read
+and a write through a real run-scoped gateway. Cover generic and curated URL
+credentials, bearer/custom headers, shared identities, public endpoints, rotation,
+removal, failed-setup cleanup, owner reconnect of legacy credentials, another user,
+and another company. Fixture-backed MCP calls prove Paperclip behavior; they do
+not prove provider consent or account entitlements. Record account-bound live
+read/write proof separately and never describe metadata discovery as live proof.
+
 ## Contents
 
 - [Mental model and support matrix](#mental-model-five-independent-axes)
@@ -69,6 +122,7 @@ for compatibility, personal defaults, resolver isolation, and legacy adoption.
 - [Current access defaults](#current-default-access-policy)
 - [Golden-path agent tutorial](#golden-path-agent-tutorial)
 - [Connection UX and user journeys](#connection-ux-and-user-journeys)
+- [Optional agent instructions](#optional-agent-instructions)
 - [Chat and email connector UX](./CHAT-CONNECTOR-UX.md)
 - [Production validation evidence](#step-9-align-with-production-validation)
 - [AppDefinition field reference](#appdefinition-field-reference)
@@ -94,6 +148,59 @@ A complete connector proposal produces:
   denied/quarantined call when the method declares one, revoke, and audit
   evidence.
 
+## Optional agent instructions
+
+Some connections need standing guidance: tools tell an agent what it *can* do,
+while a short paragraph explains when it should use them. Memory is the first
+use case. See [Connection instructions](CONNECTION-INSTRUCTIONS.md) for the
+generic catalog metadata, saved settings, API, runtime, and integration contracts.
+**Design explorations → Connections → Agent instructions** in Storybook uses
+production components with mocked APIs.
+
+When adding a template:
+
+- Show the section only when the connector explicitly provides a nonempty
+  instruction template. Use **Agent instructions** and the checkbox
+  **Tell agents to use {provider}**, with the exact paragraph visible. No template
+  means no instructions UI, including no blank editor.
+  Keep setup in the existing flow and its single footer; add no required test or
+  extra wizard step. Use the current shared access defaults/disclosure.
+- Use a reviewed, versioned provider-specific suggestion. Explain when to recall,
+  when to save, the allowed context, and what to do if a call fails. Prefer one
+  short paragraph over a full skill or a pasted tool catalog. Avoid unsupported
+  promises about hooks, automatic transcript capture, or private memory.
+- Default provided instructions on for every participating connector. Let users
+  edit, **Reset to default** after changes, or disable guidance while retaining
+  tools. Show a compact amber notice when off. Reconnect and catalog refresh
+  preserve explicit opt-outs and custom text. Omit suggestion attribution badges
+  and routine lifecycle/storage helper copy.
+- Edit in an optional **Agent instructions** section of the existing **Permissions**
+  page, between agent access and Actions. Use the actual connection page shell,
+  credential form, and footers in review stories; include a baseline story for
+  comparison rather than constructing parallel page chrome. Show recipients
+  from current assignments and a read-only, source-linked copy on the agent.
+  Keep action controls and tests in the existing **Permissions** screen.
+- Resolve runtime guidance with the same company, agent, task, responsible-user,
+  and grant checks used for tools. Compose a revisioned block alongside agent
+  instructions; never permanently edit AGENTS.md or shared harness home files.
+  Verify fresh and resumed turns, removal, revoked access, and unsupported adapters.
+- Keep required provider settings, such as Honcho workspace, expanded near the
+  top of setup and configuration, above instructions. Put validation beside the
+  field and block completion while required values are missing. Memory stays an
+  ordinary connection; do not add a default-memory chooser or agent preference.
+  Keep provider binding identifiers separate from editable prose. Agent IDs,
+  tags, and query filters alone are not access-control boundaries. Any promised
+  isolation needs server enforcement across all relevant tool paths.
+- Treat MCP initialization instructions as external provider content. Review
+  them as template source; do not silently inject arbitrary remote text or let
+  a provider update overwrite an operator's instructions. Guidance never grants
+  additional tool permissions.
+- Prove both delivery and behavior: deterministic assignment/resume checks, then
+  a bounded save → **fresh session** recall with synthetic data through the real
+  run gateway. Record exact model/template/catalog versions, tool receipts,
+  costs, ingestion timeout, and cleanup. Discovery and a model's “saved” reply
+  do not prove memory works. See the linked plan for the minimal matrix.
+
 ## Use This Document As The Checklist
 
 An agent implementing a connection should be able to begin with only a provider
@@ -105,7 +212,7 @@ The shortest valid implementation usually changes these files:
 
 ```text
 scripts/ingest-app-definitions.mjs                # human-authored definition source
-packages/shared/src/app-definitions/<slug>.json  # generated definition
+packages/shared/src/app-definitions/<slug>.json  # definition with app-owned instruction template
 packages/shared/src/app-definitions.generated.ts # generated registry
 ui/public/brands/apps/<slug>.svg                  # official, sanitized mark
 ui/public/brands/apps/manifest.json               # runtime branding paths
@@ -460,6 +567,9 @@ connection work or enforce a real tenant boundary. Follow these rules:
   controls and per-action Test dialog. Do not build a parallel permissions list or
   provider-specific testing page. Discovery errors stay inline on Connect; an empty
   returned catalog belongs to the ordinary saved-connection state.
+- The per-action Test dialog shows structured MCP results as readable fields,
+  tables, or cards when possible. It keeps the full raw response available for
+  diagnosis and opens it by default when the result cannot be rendered safely.
 - Enable every discovered tool automatically. Put later Allowed / Ask first / Off
   controls in management, separate from connection access. Reconnect and refresh
   retain existing restrictions; new tools are Allowed under the existing access rules.
@@ -497,6 +607,13 @@ registry in `server/src/services/connector-runtime.ts`; AgentMail is the first
 consumer. This registry describes bundled server implementations, not executable
 code or skill URLs supplied by a credential or external message.
 
+Optional connector instructions must not be placed in the universal `skills/`
+directory, which adapters can enumerate for every agent. A trusted contribution
+can provide `skillMarkdown` from its connector module; the server then materializes
+`SKILL.md` only for authorized assignments. Browser Use Cloud uses this path with
+the app key and skill name `browser-use-cloud`, leaving generic browser skill
+names available to other integrations.
+
 For each contribution, declare its connector key, bundled skill, namespaced tool
 definitions, resource-assignment resolver, and execution handler. Use names such
 as `agentmail_send` rather than extending core tools with provider-specific
@@ -506,10 +623,10 @@ they do not need a duplicate native wrapper just to supply a skill.
 **Resolve eligibility from current assignments and access.** An AgentMail account
 credential alone does not give an agent email capabilities. An active inbox
 assigned to that agent does, provided both the inbox connection and saved
-credential access remain authorized and the experimental chat-connector flag is
-on. Other connectors must define an equally concrete assignment rule. Keep every
+credential access remain authorized. AgentMail is available by default and does
+not depend on the experimental chat-connector flag. Other connectors must define an equally concrete assignment rule. Keep every
 lookup company-scoped. Revoked grants, disabled connections, removed assignments,
-and experimental gates must remove the contribution. Fail closed on lookup errors.
+and any applicable experimental gates must remove the contribution. Fail closed on lookup errors.
 
 **Install skills transparently through the existing runtime skill path.** Merge
 system-managed contributions with the agent's chosen skills for each run, without
@@ -585,7 +702,7 @@ controls and precise labels over explanatory paragraphs. Remove repeated
 headings, redundant access summaries, implementation details, and reassurance
 that does not help the user decide or act. Keep necessary warnings, meaningful
 consequences, and actionable errors. Put optional expert settings under a
-collapsed Advanced disclosure. Link to provider-owned administration, such as
+collapsed disclosure through **Change**. Link to provider-owned administration, such as
 AgentMail allowlists, rather than rebuilding it in Paperclip.
 
 **Keep ongoing interactions in Paperclip tasks.** Connections are where users
@@ -602,8 +719,16 @@ internal discussion; a task comment or agent progress update must not imply
 that an external action occurred. Reuse existing task-feed components and
 preserve one visible record per external event.
 
+**Keep setup to one screen.** The connect screen collects only what proves who
+the user is: a provider sign-in, a key, or an endpoint. It states the default
+access in one line, with **Change** for other choices, and does not add an
+access step. Pick the ranked default method instead of asking. Put scope,
+capability, and per-action choices on the Permissions tab after the connection.
+`connectionSetupStateForMethod` in `packages/shared` classifies each method as
+`instant`, `authorize`, `paste`, or `register`; the gallery verb comes from it.
+
 **Make interactive Storybooks for setup and actual use.** Include the catalog
-card, access and credential steps, any agent-resource wizard, and the task
+card, the connect screen and its credential states, any agent-resource wizard, and the task
 journeys after setup. Provide a clickable walkthrough plus focused stories for
 important steps, loading, errors, and recovery. Use realistic fixtures and
 clearly label simulated actions. Reuse production components as implementation
@@ -637,7 +762,13 @@ definitions and visible manifest entries to match exactly.
 
 ### Phase 5: Author the definition at the durable source
 
-The checked-in provider JSON files are generated. Do not edit one and stop.
+Transport/auth fields in the checked-in provider JSON files are generated. Do
+not edit those fields and stop. Optional `agentInstructions: { id, version, text }`
+templates are authored directly in each app's JSON definition, alongside its
+supporting `docsUrl`. Ingestion validates and preserves that field; edit or
+remove it there, and increment its version when changing the default. There is
+no central instruction-template registry. See
+[Connection instructions](./CONNECTION-INSTRUCTIONS.md) for the runtime contract.
 
 1. Add or update the provider in `scripts/ingest-app-definitions.mjs`.
 2. Update `packages/shared/src/self-serve-mcp-research.json` when it belongs to
@@ -1440,10 +1571,15 @@ The operator should see Apps, Connections, and Review language. Keep protocol la
 Request only the documented scope set the reviewed connection needs; never
 adopt every scope returned by discovery. Operators should not have to predict
 every future tool during setup. Keep the default view to the minimum inputs
-needed for a working connection, fold optional expert controls under one
-collapsed **Advanced** disclosure, and enforce execution afterward through
+needed for a working connection, fold optional expert controls under the
+**Change** link beside the access summary, and enforce execution afterward through
 Paperclip's resource boundaries, risk classification, tier defaults, optional
 quarantine, and audit.
+
+When a provider supplies its MCP endpoint, keep that URL out of the initial
+form. Composio exposes it through **Reuse an existing session** for operators
+with a custom session URL; resumed custom endpoints and URL validation errors
+keep the field visible. Preserve the endpoint when its disclosure is closed.
 
 ### Step 8: Apply Governance Defaults
 
@@ -2191,6 +2327,16 @@ Collect end-to-end evidence using the production validation matrix above:
 - Audit rows prove actor, run/issue context, connection, tool, decision,
   reason code, and outcome.
 
+## Reviewed REST browser connection
+
+[Browser Use Cloud](./BROWSER-USE.md) uses the v4 REST API through the same
+connection grants, catalog, policies, approvals and audit gateway. Its
+`provider_rest` execution path is limited to the reviewed Browser Use adapter;
+adding `rest_api` to a catalog entry does not enable arbitrary HTTP execution.
+The task Browser panel is a human-only credential viewer, separate from agent
+tool results. Follow that guide for lifecycle, profile scope, cost accounting,
+cleanup and the required live acceptance pass.
+
 ## Slack task tools
 
 For Slack bot tool contributions, use [Slack task tools](SLACK-TASK-TOOLS.md). It
@@ -2245,3 +2391,147 @@ in-memory provider responses. The `provider-native`, `provider-decline`, and
 `provider-second` Product E2E cases exercise native preference, persisted choice,
 restart recovery, and an independently observed gateway read. They do not prove
 compatibility with the real external providers.
+
+### Public aggregator apps in Connectors
+
+The Connectors catalog combines native definitions with the public Composio and
+Arcade app snapshots in `packages/shared/src/aggregator-app-catalog.ts`. Native
+definitions always take precedence, including definitions temporarily hidden or
+unavailable on the instance. Each remaining app has one card with its provider
+logos; Connect opens a provider picker when multiple providers support the app.
+An app with one provider goes directly to setup or its saved gateway flow.
+Search covers names, aliases, providers,
+and saved accounts. The uninstalled catalog uses pages of 50 entries; matching
+installed connectors remain above every page. Listing an upstream app never
+creates a Paperclip connection or marks that app authorized.
+Provider filters include native cards only when they contain accounts managed
+by that provider. A matching public catalog entry alone does not include a
+native card; its native onboarding remains in Paperclip and All.
+
+Composio app setup offers a dropdown of connected Composio accounts and an option
+to connect a new one. The board calls `COMPOSIO_MANAGE_CONNECTIONS` directly to
+check the requested toolkit and generate its hosted authorization link. This
+creates no task and starts no agent run. An already active app skips new link
+creation. After the human signs in, completion checks the toolkit's ACTIVE
+account status again. New gateways default to all humans and all agents; app
+setup preserves the selected gateway's saved access and tool policies without
+adding agent-specific grants. Access remains gateway-wide, not app-level
+isolation. Saved credentials are resolved for the acting human and authorization
+URLs stay outside audit/result storage. A failed or uncertain add is never
+retried automatically; the user can explicitly request a new link.
+
+Composio is authoritative for app accounts and authorization. Paperclip stores
+only account observations in `tool_connection_app_snapshots`: IDs, aliases,
+statuses, default flags, check times, and failure times. Observations are scoped
+to company, saved gateway, viewing human, and credential identity, including
+secret versions. Credential replacement or rotation hides the old inventory.
+Discovery and app setup never create agent grants or change saved policies.
+
+Apps starts a background check of the entire supported public Composio catalog,
+independent of search and pagination. `POST /tool-connections/:id/composio/apps/sync`
+returns cached observations and sync progress; `{force:true}` requests a refresh.
+`tool_connection_app_syncs` holds a per-credential lease and progress. Repeated
+visits and concurrent tabs share the lease. Checks use explicit `action:list`,
+batches of 32, a four-minute deadline, and five-minute freshness. Known accounts
+are checked first. Polling updates account rows while browsing stays usable.
+Manual **Refresh Composio** belongs in the saved Composio account's kebab menu;
+it checks that account only. Do not add a catalog-wide refresh button.
+Composio gateway setup finishes on its Permissions page. That page lists detected
+apps in a bounded, scrollable list and starts a refresh on first load. Its
+**Refresh Composio** button shows catalog-check progress and refreshes only that
+gateway. The same connected-app list and refresh controls serve Arcade and
+Executor gateways when discovery is available. Executor remains available as a
+connection, but its catalog filter chip is temporarily hidden.
+A complete empty list removes an observed account; EXPIRED accounts show Needs
+sign-in. Failed or incomplete evidence retains the last accounts, visibly
+unverified, and offers retry. Interrupted jobs can be restarted after the lease
+expires. A late response cannot replace a newer check or a changed credential.
+
+The saved Connect MCP OAuth credential supports listing accounts by toolkit;
+it is not a consumer user API key or a developer project API key. This discovery
+covers the supported public catalog, including toolkit variants. It does not
+claim complete enumeration of custom apps outside that catalog. A future
+identity-bound inventory endpoint should replace this scan when available.
+Never forward an MCP OAuth token to an unrelated REST inventory endpoint.
+
+Imported accounts appear above the paginated catalog with their actual source:
+**Via “saved connection name”**, rather than attributing upstream authorization
+to the gateway creator. Already connected Composio accounts remain visible even
+when Paperclip has a native connector; native Connect offers still take
+precedence. Imported account menus offer only **Open in Composio**. Access
+controls remain on the saved gateway and apply to all apps on that connection.
+The Manage dialog displays provider observations
+and links to Composio; it does not offer local rename or upstream removal.
+Use `https://dashboard.composio.dev/~/org/connect/apps` for Connect app management.
+The organization placeholder resolves to the signed-in user's For You area.
+The bare dashboard opens Platform developer projects, which have a separate
+account inventory and are the wrong destination for saved Connect MCP accounts.
+Remove connection remains available on the saved gateway itself. Its confirmation
+states that removing it from Paperclip does not delete accounts in Composio.
+
+Targeted Composio app setup URLs reuse the saved-account chooser when an active
+gateway exists. Explicit `new=1`, resume, and reconnect keep their own gateway
+setup flow. Existing ACTIVE app accounts are checked without creating another
+hosted link or a task. New app authorization remains a direct hosted sign-in
+handoff, followed by a fresh account check.
+
+Arcade still offers an agent task draft to verify the requested app and obtain
+any provider authorization link. It requires the app's tools in the selected
+gateway, a catalog refresh, and any tool authorization. New gateway setup retains
+the app name through `targetToolkit`; it creates only the provider gateway.
+Composio then returns to direct app setup; Arcade opens the task draft.
+Setup entry points preselect an assignable agent: prefer an agent named
+**Default agent**, then organizational rank and leadership roles, then creation
+date. If there is no named default, use the same rank and age ordering on the
+remaining agents. The user can change the selection before continuing.
+The board's Create Task action creates a new task even when an open task has the
+same title. A request key protects retries of the same submitted draft, and the
+success confirmation links to the created task.
+Connection setup drafts opt into the dialog's `navigateOnCreate` option, taking
+the operator to the created task after submission. Other callers stay on their
+current page by default; the option does not add a visible control.
+The task asks the assigned agent to perform setup directly without hiring or
+delegating, and to provide a browser link and wait when human authorization is
+needed. Before provider calls, it checks access for the task's current assignee.
+Missing access uses `connection_request` with the saved `connectionId` and exact
+indexed `toolNames`, producing an embedded card with the requesting agent's
+avatar and a **Grant access** action. The addressed human connection manager
+approves the frozen tool set; acceptance adds agent-scoped access and resumes
+the task. Composio setup asks for Search Tools as Allowed and Manage Connections
+as Ask first. Writes and unknown-risk tools retain per-call approval. Changed or
+quarantined tools require a new request. Existing policies, identity selection,
+and other agents' access are preserved. The task never grants itself permissions
+or requests access for every agent.
+The connection's Permissions page lists additional agent access separately
+and lets the connection manager remove it without changing the default action
+permissions. Removing that grant also disables its Ask-first tools.
+A successful agent run or a local gateway fixture does not prove that
+the underlying app is authorized; verify against the real provider gateway.
+OAuth recovery exposes a validated native sign-in link on both page and dialog
+hosts. A blocked window or navigation retains the existing connection and OAuth
+session so the link can continue sign-in without creating another gateway.
+
+Composio reuses `composio-search-catalog.json`. Arcade's snapshot records its
+official logo and evidence URLs, excluding hidden and coming-soon entries. To
+review and refresh only Arcade's claims, run:
+
+```sh
+node scripts/update-arcade-app-catalog.mjs --verified-at YYYY-MM-DD
+```
+
+Use the date of the public catalog review. The script preserves the prior file
+if the source structure or entries fail validation. `--input <saved-html>` allows
+reproducing the snapshot from the same official catalog response. Neither public
+snapshot proves a user's gateway configuration or app authorization.
+
+### Managed aggregator account inventory
+
+Composio, Arcade, and Executor observations share the existing app snapshot/sync tables and the manager-only `/api/tool-connections/:connectionId/aggregator/apps` list, `/sync`, and `/refresh` endpoints. Legacy Composio endpoints remain supported. These rows are observations, never executable connections or authorization grants. Company, gateway, viewing human, and effective credential version define the cache; fully successful enumeration reconciles removal, while partial failure retains stale observations.
+
+Arcade discovery paginates its [admin account list](https://github.com/ArcadeAI/arcade-go/blob/main/adminuserconnection.go) and [tool requirements](https://github.com/ArcadeAI/arcade-go/blob/main/tool.go), filters to the configured user and exposed gateway tools, and stores only allowlisted account metadata. An existing project key plus `Arcade-User-ID` can be reused. Otherwise optional manager-only sync setup stores a separate user-owned vault key for discovery; it is excluded from gateway invocation credentials and tool access grants. OAuth gateway tokens are not substituted for project keys.
+
+Executor reads its [MCP integration inventory](https://github.com/UsefulSoftwareCo/executor/blob/main/packages/hosts/mcp/src/tool-server.ts) or uses fixed, read-only `connections.list` and `integrations.list` calls in code mode. Its pure `connections.createHandoff` URL builder can supply the upstream console destination. No arbitrary generated code or provider REST endpoint is used. Unknown integrations remain separate, without guessed branding. Last-health `healthy` is connected, `expired` needs sign-in, and unverified or degraded health never earns a green check. Missing inventory support is visible as discovery unavailable. Managers can set a trusted HTTPS console URL for gateways that do not expose a destination, preserving workspace and self-hosted paths.
+
+Apps groups native and imported accounts under canonical app cards, preserving all upstream account identities. Native onboarding wins over aggregator connect offers. Imported account menus only open their upstream provider; deletion and per-app authorization stay upstream. Parent gateway menus own refresh and optional discovery setup. Paperclip policies continue to govern invocation through the gateway.
+
+Acceptance fixtures: `server/src/__tests__/aggregator-app-discovery.test.ts`, `server/src/__tests__/aggregator-app-sync.test.ts`, `ui/src/pages/apps/Browse.test.tsx`, and the production-page/full-stack test drive at `tests/aggregator-accounts/test-drive.ts`. The expected stories and evidence are recorded in `doc/plans/2026-10-05-managed-aggregator-account-user-stories.md`. Fixture runs do not replace live provider proof when working credentials are available.

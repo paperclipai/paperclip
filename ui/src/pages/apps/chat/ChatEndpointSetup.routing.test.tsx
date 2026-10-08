@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -27,7 +26,7 @@ function Location() {
   );
 }
 
-describe("GitHub connection purpose routing", () => {
+describe("GitHub code review bot routing", () => {
   let root: Root;
   let container: HTMLDivElement;
   beforeEach(() => {
@@ -52,33 +51,10 @@ describe("GitHub connection purpose routing", () => {
       ),
     );
   }
-  async function click(label: string) {
-    const button = [...container.querySelectorAll("button")].find((node) =>
-      node.textContent?.includes(label),
-    );
-    expect(button).toBeDefined();
-    await act(async () => {
-      button!.click();
-    });
-  }
-  it("offers personal/tool connections from the catalog instead of forcing bot setup", async () => {
-    render("provider=github&toolHref=%2Fapps%2Fconnect%3Fsource%3Dgithub");
-    expect(container.textContent).toContain("Choose how to connect");
-    expect(container.textContent).not.toContain("GitHub bot setup");
-    await click("Use this connection as an agent tool");
-    expect(container.querySelector("output")?.textContent).toBe(
-      "/apps/connect?source=github",
-    );
-  });
-  it("opens the bot wizard when chat is chosen and preserves the agent preselection", async () => {
-    render("provider=github&agentId=agent-a");
-    await click("Chat with an agent");
-    expect(container.textContent).toContain("GitHub bot setup");
-    expect(container.querySelector("output")?.textContent).toContain(
-      "agentId=agent-a&purpose=chat",
-    );
-  });
   it.each([
+    "",
+    "agentId=agent-a",
+    "toolHref=%2Fapps%2Fconnect%3Fsource%3Dgithub",
     "purpose=chat",
     "resume=endpoint-a",
     "resume=endpoint-a&reconnect=1",
@@ -86,5 +62,6 @@ describe("GitHub connection purpose routing", () => {
     render(`provider=github&${search}`);
     expect(container.textContent).toContain("GitHub bot setup");
     expect(container.textContent).not.toContain("Choose how to connect");
+    expect(container.querySelector("output")?.textContent).toBe(`/apps/chat/connect?provider=github&${search}`);
   });
 });

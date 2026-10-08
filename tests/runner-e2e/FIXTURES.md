@@ -1,5 +1,19 @@
 # Runner E2E fixture authoring
 
+## Connection creation fixtures
+
+See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
+`provider-connections` suite, local/staging target ownership, dedicated browser
+profiles, credential handoffs, private evidence, and cleanup contract.
+
+The [public MCP journeys](PUBLIC-MCP.md) reuse the fixture registry with a real
+authenticated browser session. `RunnerApi.setBrowserSession` binds that session
+to API calls, including encrypted secret provisioning via Node fetch. OAuth
+setup stays outside model context. The external assistant receives the catalog
+from `tools/list` and the shipped workflow skills; its calls execute against the
+real SDK transport. Client-side loss of a successful response is the sole fault
+injection in the uncertain-retry case. Task/run/document REST reads own grading.
+
 The fixture catalog is executable production-contract data. Keep it small,
 typed, deterministic, and free of raw credentials.
 
@@ -16,6 +30,17 @@ The suite definition fingerprint is historical comparison metadata. Any
 profile, model qualification, environment, task, or ranking-snapshot change
 must change that fingerprint automatically so the dashboard can annotate the
 boundary instead of silently joining unlike totals.
+
+The explicit [stock-harness suite](STOCK-HARNESS.md) wraps existing profiles with
+`productionDefaultHireProfile`: omit only `instructionsBundle` so the public
+hire route loads the shipped default, while preserving runtime, permissions,
+auth, skills, and managed secret references. Do not replace this with a fixture
+copy of the default manual. Public receipts check the exact independently
+specified bundle before provider execution and again during cleanup, along with
+both budget hard stops and actual legacy invocation prompts. Missing evidence
+fails closed. The definition fingerprint includes the helper, graders, journey
+sources, live fixture, and execution integration; editing those sources changes
+the suite revision automatically.
 
 ## Agent profiles
 
@@ -108,7 +133,13 @@ canonical Plan revision, capture its pending UI, approve in the browser, and
 prove exactly two successful runs. `warm_three_turn` provides exactly two
 browser follow-up messages, preserves one project/execution-workspace scope,
 verifies host file contents after every turn, and finishes within three
-ten-minute turn deadlines. Native turns 1 and 2 include an actionable human review in the completion report's `attentionRequests`. Paperclip creates the review gate from that report. An explicit question-tool wait yields the turn and suppresses its final prose, so it is not interchangeable with this completion-review fixture. Turn 3 reports Done without another review.
+ten-minute turn deadlines. The ordinary warm fixture uses managed instructions,
+updates AGENT_HOME each turn, and verifies memory, an unchanged 8 MiB binary and
+a deletion through public file APIs. Native turns 2 and 3 must copy/hash only the
+changed memory file, with a saved receipt and the same provider PID. Journal and
+Git stress fixtures retain fixed external bundles as controls. Keep the stable-PID
+oracle strict; `instruction-persistence` also covers cold restarts and quota handling.
+Native turns 1 and 2 include an actionable human review in the completion report's `attentionRequests`. Paperclip creates the review gate from that report. An explicit question-tool wait yields the turn and suppresses its final prose, so it is not interchangeable with this completion-review fixture. Turn 3 reports Done without another review.
 
 Every selected case runs in its own isolated Paperclip process, and independent
 cases may run concurrently. Follow-up turns inside one case retain their shared
@@ -128,6 +159,26 @@ visible previews. Add matcher behavior and credential-free tests together.
 Adding a task expands its suite's matrix. Update the suite's intentional size,
 the complete-catalog size, and credential-free unit tests in the same change.
 Paid tests never silently skip a missing credential or unsupported artifact.
+
+## Prompt-only task title fixtures
+
+`task-titles.ts` defines a bounded ordinary writing request and an independent
+title oracle. Its `single_turn` cases leave the title field empty or supply an
+explicit control title. The harness captures the exact browser creation response
+instead of searching by a title that the agent may already have changed. It
+never patches the title itself. Normal production instructions own the early
+naming behavior; fixture prompts and agent instruction bundles contain no naming
+hints. Existing company/secret/environment/agent registry dependencies are reused,
+with 500-cent company and agent budgets and normal instance teardown.
+
+Keep the call input, successful result, execution receipt, saved task, and
+agent/run-attributed audit correlated. Missing evidence must fail. The first-five
+tool-call bound counts calls in the initial provider run, including discovery.
+The title must describe API-key rotation without requiring one exact wording.
+The control must retain its title throughout, not merely restore it at the end.
+The source digest versions the grader and request in catalog metadata. See
+[Automatic task titles](README.md#automatic-task-titles) for live selectors,
+coverage limits, evidence, and calibration.
 
 ## New Paperclip object fixtures
 
@@ -257,3 +308,54 @@ cleanup must preserve the original candidate as a conflict. The browser reviews
 current and incoming files and applies the run edits against the reviewed current
 directory hash. All three tasks' runs count toward billing and teardown. The suite
 is explicit-only. No private control-plane hooks or direct database writes are used.
+
+## Direct blocker fixtures
+
+`blocker-cases.ts`, `blocker-fixtures.ts`, `blocker-flow.ts`, and
+`blocker-scoring.ts` define the explicit local legacy `blocker-guidance` suite.
+Its fixture registry creates a manager through the public API and assigns the
+production operational skill to worker and manager. Company-wide evidence and
+cleanup include unexpected manager runs. The grader checks saved human input,
+requester identity for scope questions, ownership history, no additional work or
+hires, and the browser-answer continuation. See [Direct blocker guidance](README.md#direct-blocker-guidance)
+for coverage boundaries and run commands.
+
+
+## Source-derived hiring template fixture
+
+The explicit `hiring-templates` suite reuses the public company/agent, personal
+managed account and browser chat fixtures. `hiringTemplateProfile` removes the
+custom instruction bundle from the ordinary profile; the real agent creation
+route selects the evaluated revision's CEO bundle. Keep its two local native
+profiles, five expected runs and 15-minute deadline stable for paired runs.
+`isManagedHiringCase` requests the account fixture and `chatNeedsApiTools`
+enables only the existing API-tool path. It adds no private fixture endpoint,
+provider fake or database write.
+
+`hiring-template-flow.ts` reads the production instructions and company skill
+files through public APIs before dispatch and verifies their hashes against the
+checkout. The public run-events API supplies paginated read evidence after
+execution. `hiring-template-scoring.ts` grades deterministic child documents,
+actual worker identity/account, reuse and source coverage independently of the
+agents' claims. `hiring-template.test.ts` calibrates production Codex/ACPX event
+shapes, wrong/missing/late reads, incorrect/default bundles, source mismatch,
+wrong hire/output, missing durable state, and an admissible historical four-file
+CEO with a long coder role.
+
+Preserve both dimensions in a comparison: `outcomePassed` describes the work;
+`comparisonStatus` describes whether the expected sources and reads were proven.
+Unprovable provider event shapes are coverage gaps. They must not become a
+passing template comparison or a claimed behavior regression. The existing
+report matcher paths carry the dimension and private final evidence carries the
+explicit status. Provider runs are separately authorized; unit results establish
+oracle calibration only. See the [suite contract](README.md#production-hiring-templates)
+for evidence, budgets, cleanup and exact IDs.
+
+Cursor native denial qualification requires one exact absolute-target command, a
+correlated browser Reject once delivered after reconnect, six independent absence
+samples, a complete continuous mutation watcher, and retirement of the actual
+run-owned process tree. The pinned Cursor transport may report the rejected call
+as completed and end the native turn; Paperclip must retain a failed run with
+missing semantic finalization and an unfinished task. That is a denial outcome,
+not task success or operator cancellation. Stop during an unresolved permission
+remains a separate `native-active-stop/pending-permission-stop` gate.

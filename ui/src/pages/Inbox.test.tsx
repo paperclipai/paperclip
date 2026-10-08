@@ -120,11 +120,6 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
 }));
 
-const generalSettingsMock = { keyboardShortcutsEnabled: false };
-vi.mock("../context/GeneralSettingsContext", () => ({
-  useGeneralSettings: () => generalSettingsMock,
-}));
-
 vi.mock("../hooks/useInboxBadge", () => ({
   useDismissedInboxAlerts: () => ({ dismissed: new Set(), dismiss: vi.fn() }),
   useInboxDismissals: () => ({ dismissedAtByKey: new Map(), dismiss: vi.fn() }),
@@ -292,6 +287,8 @@ function createApproval(overrides: Partial<Approval> = {}): Approval {
 function createFailedRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
   return {
     id: "run-1",
+    issueId: null,
+    scopeKind: "company",
     companyId: "company-1",
     agentId: "agent-1",
     responsibleUserId: null,
@@ -973,8 +970,7 @@ describe("Inbox toolbar", () => {
     // state-selected band (which would swap to hover:bg-transparent). Coupling
     // hover to React state was the per-hover re-render storm behind the lag;
     // scrubbing the list must not touch selection state. (Keyboard nav that
-    // continues from the hovered row is exercised in live/e2e verification —
-    // this unit mocks keyboardShortcutsEnabled off.)
+    // continues from the hovered row is exercised in live/e2e verification.)
     await act(async () => {
       rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
       rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
@@ -1060,7 +1056,6 @@ describe("Inbox toolbar", () => {
 
   it("keeps hover→j/k selection in sync after the list reshapes (PAP-9679)", async () => {
     routerMock.location.pathname = "/inbox/mine";
-    generalSettingsMock.keyboardShortcutsEnabled = true;
     const issueA = createIssue({ id: "issue-a", identifier: "PAP-2001", title: "Sync row A" });
     const issueB = createIssue({ id: "issue-b", identifier: "PAP-2002", title: "Sync row B" });
     const issueC = createIssue({ id: "issue-c", identifier: "PAP-2003", title: "Sync row C" });
@@ -1118,7 +1113,6 @@ describe("Inbox toolbar", () => {
       });
       expect(selectedRowIndex()).toBe(2);
     } finally {
-      generalSettingsMock.keyboardShortcutsEnabled = false;
       act(() => {
         root.unmount();
       });
@@ -1342,7 +1336,6 @@ describe("Inbox toolbar", () => {
   });
 
   it("restores a locally hidden archive when undo is pressed", async () => {
-    generalSettingsMock.keyboardShortcutsEnabled = true;
     routerMock.location.pathname = "/inbox/mine";
     const archivedIssue = createIssue({
       id: "issue-a",
@@ -1386,7 +1379,6 @@ describe("Inbox toolbar", () => {
         expect(container.textContent).toContain("Undoable inbox row");
       });
     } finally {
-      generalSettingsMock.keyboardShortcutsEnabled = false;
       act(() => root.unmount());
     }
   });

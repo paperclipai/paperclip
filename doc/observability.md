@@ -22,7 +22,8 @@ alternative peer dependencies — install exactly **one**, matching
 `OTEL_EXPORTER_OTLP_PROTOCOL`.
 
 When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, none of the `@opentelemetry/*` SDK
-packages are imported and there is zero runtime overhead.
+packages are imported and there is no SDK or exporter overhead. Local request
+timings still use the performance clock.
 
 `server/package.json` declares each optional package at the exact version the
 server tests against; install that exact version. Our Dependabot cannot bump
@@ -33,6 +34,33 @@ decision. `@opentelemetry/api` is the one OpenTelemetry package Paperclip
 maintains as a dependency; once you install the packages below, they become
 normal dependencies of **your own** project, and your own Dependabot updates
 them.
+
+## Task detail loading
+
+`GET /api/issues/:id` returns `Server-Timing` with `paperclip_issue` for the
+whole handler and `issue_<phase>` for its reads. The total includes the final
+execution-blocker read after recovery revalidation. Concurrent phases overlap;
+do not sum them to obtain request duration.
+
+With the existing operator-configured OTLP endpoint, the same reads produce
+`issue.read.<phase>` child spans through the `paperclip.issue-read` tracer.
+There are no custom attributes, identifiers, content, or exception messages.
+The closed phase names in `server/src/services/issue-read-timing.ts` are:
+`lookup`, `authorization`, `project_goal`, `ancestors`, `mentions`, `documents`,
+`relations`, `blockers`, `review`, `references`, `handoff`, `retry`, `recovery`,
+`cases`, `inbox`, `channel`, `workspace`, `work_products`, `execution_blocker`,
+`relation_recovery`, `revalidate_recovery`, and `mentioned_projects`.
+Without an OTLP endpoint, spans remain no-ops. This adds no first-party
+Telemetry events or run-log events.
+
+The browser's `issue-detail:navigate→content-paint` User Timing measure ends
+after the redesigned conversation is revealed and painted, rather than when
+the comments request completes while the conversation is still hidden. Durable
+messages can paint before run history and plan enrichment. Runtime-only threads
+wait for initial output; late history retains the existing scroll-anchor behavior.
+Use Chrome's request waterfall and this mark together to distinguish API wait,
+request dependencies, and rendering time. A hard-load trace also includes auth,
+company selection, and JavaScript startup before the task navigation mark.
 
 ## Enabling tracing
 
@@ -241,9 +269,9 @@ environment variables: `SENTRY_DSN_FRONTEND` for the browser and
 `SENTRY_DSN_BACKEND` for the server. Each variable is optional. A
 specific variable always wins for its own component; a legacy variable,
 `SENTRY_DSN`, supplies a component that has no specific value set. An
-empty string counts as absent for all three variables. The feature uses
-built-in Sentry options only. It adds no `beforeSend` hook and no custom
-filter code.
+empty string counts as absent for all three variables. SDK configuration uses
+built-in Sentry options only. It adds no `beforeSend` hook. The run-failure
+reporter selects reportable outcomes before calling the SDK, as described below.
 
 The server is inactive when the backend DSN resolves to `null`; then it
 imports no Sentry package. The browser is inactive when the front-end DSN
@@ -406,6 +434,24 @@ They do not change the ambient Sentry scope, whose isolation is unavailable
 without an OpenTelemetry context manager. Later, unrelated exceptions must
 not inherit a previous run's identity or fingerprint.
 
+Known missing-secret configuration blockers are kept in the task's run log,
+blocked state, and owner recovery action, without a Sentry run-failure event.
+This requires a failed `configuration_incomplete` run in the preparing stage,
+a setup-phase report, explicit proof that provider work did not start, and a
+nonempty list of recognized missing or inactive secret bindings. Process exit
+evidence, unknown binding reasons, secret-provider failures, ambiguous missing
+secret-definition lookups remain reportable. This filter does not change task
+recovery, credentials, or execution policy.
+
+A workspace policy conflict also stays local when the resolver proves that an
+explicit `local_path` or `non_git_path` project workspace has no repository URL,
+Git confirms the selected directory is not a repository, and the task requests
+a Git worktree. The run must fail during setup before provider work starts.
+Its existing validation error, blocked task and board recovery action remain.
+Git command failures, permissions, corrupt repositories, failed materialization,
+fallback paths, and generic missing or unrestorable workspaces remain reportable;
+the error text or `workspace_validation_failed` code alone never suppresses them.
+
 The `run_failure` context also includes the recorded process `exitCode` and
 `signal`, so a generic adapter error can still distinguish a nonzero exit from
 a signal termination. Exit codes must fit the database's signed 32-bit integer;
@@ -415,16 +461,189 @@ values become `unknown`. A signal such as `SIGKILL` does not establish who sent
 it or prove an out-of-memory kill. These fields do not change error grouping
 or run outcomes, and do not include process output or adapter result payloads.
 
+For a native Codex turn that ends with a structured HTTP 400 model/ChatGPT
+compatibility rejection, the run records `native_provider_model_rejected`
+and a fixed message that asks the user to select a supported model or connection.
+This requires a committed runner terminal for the selected model and the exact
+failed turn. Agent text, tool output, unrelated turns, and unknown provider
+errors do not create this classification. The provider diagnostic contains only
+`provider=codex`, `category=model_auth_incompatible`, `status=400`, and
+`authMode=chatgpt`. It excludes the model name and provider response. This does
+not change credentials, select a fallback model, replay a turn, or alter the
+accepted semantic result or cleanup. The existing configuration-blocker recovery
+path requires a configuration change instead of automatically retrying the same
+model and connection. Native finalization also derives this evidence from the
+committed event and the run's pinned provider configuration before it can queue
+a failed-result retry. This survives a controller restart before the adapter
+diagnostic is saved. Invalid bindings, missing evidence, or a mismatched event
+hash do not grant this classification. A current worker's task is blocked for a
+configuration change. A pending review instead keeps its original decision and
+status version, releases execution, and creates no automatic recovery action.
+After repairing the configuration, explicitly retry the reviewer to resolve the
+same pending review. The Board's exact failed-run Retry accepts this classified
+native failure only while its saved review is still current and pending; caller
+payloads cannot select a different review. Dispatch checks that assignment again.
+Superseded or completed reviews retain their authority.
+
+Cloud portfolio proxy failures have an event-local `cloud_portfolio` context.
+It contains only the phase (`fetch`, `http_response`, `response_body`, or
+`response_write`), upstream HTTP status when available, elapsed milliseconds,
+and an allowlisted network error code. Unknown values become `unknown` or
+`null`; elapsed time outside 0–60,000 ms becomes `null`. Codes come from at
+most four error/cause objects' own data properties, never error messages.
+`DEADLINE_EXCEEDED` means the request's own ten-second signal was aborted.
+The route's warning uses the same safe fields. Neither record includes URLs,
+headers, cookies, bodies, user/stack IDs, or the original exception. Sentry
+receives a plain error with the existing generic message and default grouping.
+The context does not change the HTTP response, authentication, cookies, cache,
+deadline, or single-fetch behavior, and does not carry into unrelated events.
+
+An unconfirmed adapter Stop timeout has an event-local `adapter_stop` context:
+the run UUID, built-in adapter type, native/legacy runtime mode, configured
+wait duration, and whether abort was requested. Invalid identities become
+`null`, and unknown adapter/runtime values become `unknown`. The report does
+not include stop reasons, prompts, process output, provider responses, or
+credentials. It preserves default error grouping and does not acknowledge
+termination, remove the live execution control, or change the timeout. The
+context is sent only through the existing opt-in Sentry gate and never leaks
+into unrelated captures.
+
+The context also samples the pending execution `phase` and `phaseElapsedMs`
+when the Stop timer expires. An in-memory tracker belongs to the exact live
+execution control; a replaced or missing owner reports `unknown` with a null
+elapsed time. Labels come from a closed list and elapsed time uses a monotonic
+clock, capped at one day. Nested scopes remain visible while their awaits are
+pending, including ACP session close, transport stop, instruction collection,
+workspace restore, and host instruction or lease cleanup. `phase_reporting`
+means a step is waiting to write timing or teardown error diagnostics. `adapter_execution` and
+`host_execution` are coarse labels for work outside those narrower scopes.
+The tracker clears when its executor finishes. A phase is diagnostic context,
+not evidence that a provider stopped or that files were recovered. No new
+run-log or Telemetry event is emitted by this tracker.
+
 The shared reporter also attaches bounded diagnostic contexts for both legacy
 and native runs:
 
 - `run_execution`: runtime mode, execution stage/native phase, driver and version,
-  duration, failure phase, stop reason, error family, and timeout settings when available.
+  duration, ACP activity, failure phase, stop reason, error family,
+  and timeout settings when available.
 - `adapter_failure`: selected adapter error fields such as phase, category,
   protocol code, retryability, cause message, stack preview, HTTP status, and request ID.
 - `provider_failure`: the saved provider failure category, title, and details.
 - `run_exception_0` through `run_exception_3`: exception names, codes, HTTP
   statuses, and request IDs for a caught exception and up to three causes.
+
+The orphan reaper records a bounded `processLossDiagnostic` before status writes
+or cleanup. For `process_lost` failures, `run_execution` includes
+`processLossPidRecorded`, `processLossGroupRecorded`, and `processLossLocalCheck`
+(`not_observed_alive`, `not_checked`, or `no_identifiers`). It also includes
+`processLossRunPredatesObserver`, `processLossObserverUptimeMs`, and
+`processLossLastOutputAgeMs` when the timestamps are available and valid. Ages
+above seven days are omitted. These are observations, not proof of an OOM,
+provider failure, or deployment. The last-output age can include system output.
+`processLossRetryEligible` records eligibility for the existing process-loss retry
+at detection; it does not claim that a retry was queued or succeeded. This data
+contains no process IDs, task text, paths, or credentials and changes no recovery
+or ownership decisions.
+
+ACP turns record `acpLastEventAgeMs`, `acpObservedEventCount`,
+`acpPendingToolCount`, and `acpToolInventoryComplete` at finalization, before
+usage reads, error logging, and cleanup. The age measures time since the last
+runtime event and is omitted if no event was observed or the clock is invalid.
+Timeout and cleanup log messages do not reset this age. The pending count uses
+known tool statuses; an incomplete inventory cannot establish that no work is
+pending. Recent events do not prove useful progress. These fields contain only
+numbers and a boolean, never tool names, IDs, arguments, or event content, and
+do not change the execution timeout, cancellation, or recovery policy.
+
+ACP results retain the adapter's resolved wall-clock timeout as
+`adapterExecutionTimeout` in the instance run result. Finalization uses it for
+`effectiveTimeoutSec`, `timeoutSource`, and `timeoutConfigured`. Sources are
+`configured`, `sandbox_default`, or `unlimited`; `timeoutConfigured` identifies an
+explicit override, including a negative value that disables the timer. An untouched
+sandbox value of zero reports the four-hour default, while a local zero reports
+unlimited. Older adapters without a valid resolution retain the config-based
+metadata fallback. This does not change timers, Stop acknowledgement, or recovery.
+
+When settlement records a workspace restore failure, `run_execution` also
+includes `workspaceRestoreFailure` with one of the shared, path-free codes:
+`restore_permission_denied`, `restore_lock_timeout`, `restore_unsafe_archive`,
+or `restore_failed`. Unknown values are omitted. Workspace paths and arbitrary
+pre-restore result data are not included. A later successful run does not, by
+itself, establish that an earlier failed restore recovered the workspace files.
+
+For `workspace_validation_failed` with `git_worktree_not_reusable`, `run_execution`
+includes `workspaceValidationReason` and an allowlisted `workspaceValidationReasonCode`:
+`missing_worktree`, `not_a_git_checkout`, `not_registered`, `wrong_repository_root`,
+`branch_mismatch`, or `git_inspection_failed`. The last code distinguishes an
+unsuccessful or truncated Git registration inspection from confirmed absence in
+a complete list. Its optional `workspaceValidationInspection*` fields identify
+the fixed command `worktree_list`, failure (`spawn_failed`, `nonzero_exit`, or
+`output_truncated`), an allowlisted OS error code (or `unknown`), and an exit code
+from 1 through 255. No paths, repository or branch names, IDs, command output, or
+arbitrary messages enter these fields. Validation still blocks reuse; it does
+not repair Git metadata, change the selected repository, or retry the task.
+
+For explicit reuse of a retained Git workspace, `persisted_workspace_source_conflict`
+uses the same two fields with the fixed reason codes `source_scope_mismatch`,
+`explicit_project_workspace_conflict`, `source_path_unproven`,
+`source_registration_unproven`, `source_repository_mismatch`, or
+`source_repository_unavailable`. These distinguish an unverified original source
+from a missing Git registration. Paths, repository URLs, and workspace IDs stay
+out of the diagnostic fields. The task remains blocked until its original source
+is available or the owner intentionally selects a different workspace. A failed
+Git registration probe retains `git_inspection_failed` and the same bounded
+inspection fields, including when it occurs during original-source selection.
+
+When available, the saved `workspaceRestoreDiagnostic` adds the bounded fields
+`workspaceRestorePhase`, `workspaceRestoreStep`, `workspaceRestoreErrorCode`,
+`workspaceRestoreHttpStatus`, and `workspaceRestoreExitCode` to `run_execution`.
+The phase is `workspace` or `asset`. The failing step is one of `git_export`,
+`git_import`, `workspace_transfer`, `workspace_extract`, `directory_merge`,
+`git_integration`, `index_reset`, `git_ref_cleanup`, or `asset_restore`.
+Nested steps retain the most specific failing operation. Error codes come from
+the restore diagnostic allowlist, with unrecognized codes reported as `unknown`;
+HTTP statuses are integers from 400 through 599 and process exit codes are
+integers from 1 through 255. These fields accompany a known restore failure code
+only. They omit error messages, raw command lines, paths, process output, and arbitrary
+cause data. Git error wrappers preserve only these safe codes and numbers for
+diagnostics, without adding the original error as a cause.
+Native sandbox `environmentSyncOut` failures carry the same allowlisted codes
+and bounded HTTP/exit statuses across the plugin worker RPC boundary. The host
+revalidates that optional envelope and retains it only for restore diagnostics.
+The envelope excludes provider messages, response bodies, names, paths, and
+credentials. The existing RPC error message and code remain unchanged, as do
+restore classification, retries, and source retention. Older workers without the
+envelope still report `unknown` when no structured cause is available.
+For `git_integration`, optional `workspaceRestoreGitCommand` identifies the fixed
+command family: `rev_parse`, `symbolic_ref`, `merge_base`, `merge_tree`,
+`commit_tree`, `update_ref`, or `log`. `workspaceRestoreGitFailureKind` is
+`merge_conflict`, `invalid_object`, `ref_conflict`, `permission_denied`, or
+`unknown`. A merge conflict requires an uninterrupted `merge-tree --write-tree`
+exit of 1 with a completed tree ID in stdout; exit 1 alone is ambiguous.
+Object and ref classifications require recognized Git diagnostics;
+permission denial requires an OS `EACCES` or `EPERM` code. Unrecognized or
+localized messages remain `unknown`. Up to 16 KiB of stderr is inspected only
+in memory; no arguments, stderr, paths, repository URLs, filenames, or ref names
+enter these fields. Handled probes and successful retries emit no diagnostic.
+This does not change
+restore behavior, retries, timeouts, or recovery policy.
+
+A caught directory-merge lock timeout also records `restoreLockOwnerState`
+(`alive`, `dead`, `unknown`, `missing`, or `invalid`), `restoreLockKnownLocalHolder`,
+and, when available, `restoreLockOwnerSameProcess`, `restoreLockOwnerPredatesProcess`,
+`restoreLockOwnerAgeMs`, and `restoreLockWaitMs` in `run_execution`. Ages are capped
+at seven days. These fields omit paths, PIDs, owner records, and absolute timestamps.
+The local-holder flag covers this module's active acquisitions only. Process-age
+comparison uses the wall clock and a one-second margin; it is a clue to PID reuse,
+not proof of ownership or permission to remove a lock. Diagnostic reads can race
+with release. The extra diagnostic owner read has a 100 ms budget; a stalled or
+unreadable read leaves the owner state `unknown`, while malformed JSON is `invalid`.
+These fields do not change lock acquisition, reclamation, or retries.
+Agent-directory callers also supply `restoreLockOperation`: `agent_directory_release`,
+`agent_directory_collect`, `agent_directory_checkpoint`, or `agent_directory_handoff`.
+This identifies the operation waiting for the lock, including cleanup after a
+completed adapter turn when the recorded execution stage has not advanced.
 
 The execution and setup catch paths pass the original exception to the reporter.
 It snapshots and rebuilds only these selected fields and the original message and

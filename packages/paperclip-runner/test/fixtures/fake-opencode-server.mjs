@@ -108,8 +108,27 @@ function json(response, status, value) {
   response.end(JSON.stringify(value));
 }
 
+// Each simulated turn reuses the same short event ids ("event-1",
+// "event-3", and so on). OpenCode's real event ids are unique, and the
+// driver relies on that to drop a duplicate delivery of the same event.
+// Scope every event id to the turn that produced it so a second turn's
+// events do not look like duplicates of the first turn's events.
+let promptTurnSeq = 0;
+// Set by a "late-straggler-source" turn to simulate a distinct provider
+// frame for that turn's message arriving only after a later turn's prompt
+// has already been accepted. Counts down by one on each subsequent prompt
+// request and flushes at the start of the request that brings it to zero.
+// A plain "late-straggler-source" message flushes on the very next prompt
+// (delay 1); "late-straggler-source-delay-N" flushes N prompts later, so a
+// test can place the stale frame's arrival after several more turns have
+// sealed.
+let lateStragglerRemaining = 0;
 function emit(value) {
-  const frame = `data: ${JSON.stringify(value)}\n\n`;
+  const scoped =
+    promptTurnSeq > 0 && typeof value.id === "string"
+      ? { ...value, id: `${value.id}#${promptTurnSeq}` }
+      : value;
+  const frame = `data: ${JSON.stringify(scoped)}\n\n`;
   for (const response of clients) response.write(frame);
 }
 
@@ -221,17 +240,25 @@ async function callTerminalTool(promptBody) {
     const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: bad });
     await writeFile(join(process.env.XDG_DATA_HOME, "fake-criteria-repair.json"), JSON.stringify(rejected));
   }
-  return mcpRequest("tools/call", {
+  const call = () => mcpRequest("tools/call", {
     name: blocked ? "paperclip_block" : "paperclip_finish",
     arguments: result,
   });
+  const first = await call();
+  if (String(prompt.message ?? prompt.task?.prompt ?? "").includes("completion-feedback")) {
+    const outcomes = [first];
+    if (first.result?.isError) outcomes.push(await call());
+    await writeFile(join(process.env.XDG_DATA_HOME, "fake-completion-feedback.json"), JSON.stringify(outcomes));
+    return outcomes.at(-1);
+  }
+  return first;
 }
 
 const server = createServer(async (request, response) => {
   if (request.headers.authorization !== expectedAuth)
     return json(response, 401, { error: "unauthorized" });
   if (request.url === "/global/health")
-    return json(response, 200, { healthy: true, version: "1.18.32" });
+    return json(response, 200, { healthy: true, version: "1.18.34" });
   if (request.url === "/event") {
     eventConnections += 1;
     response.writeHead(200, {
@@ -381,7 +408,27 @@ const server = createServer(async (request, response) => {
           error: "OpenCode 1.18 prompt model fields must be top-level",
         });
       }
+      promptTurnSeq += 1;
       json(response, 204, null);
+      if (lateStragglerRemaining > 0) {
+        lateStragglerRemaining -= 1;
+        if (lateStragglerRemaining === 0) {
+          emit({
+            type: "message.part.updated",
+            id: "event-late-straggler-delivery",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-late-straggler",
+                messageID: "message-late-source",
+                type: "text",
+                text: "late straggler text must not reach the next turn",
+                time: { start: 9, end: 10 },
+              },
+            },
+          });
+        }
+      }
       setTimeout(async () => {
         await callFirstPaperclipTool();
         const parsedPrompt = parsedPromptText(promptPayload);
@@ -430,6 +477,103 @@ const server = createServer(async (request, response) => {
           });
           return;
         }
+        if (String(parsedPrompt.message ?? "").includes("session-failed")) {
+          emit({
+            type: "session.error",
+            id: "event-session-failed",
+            properties: {
+              sessionID: session.id,
+              error: {
+                name: "ProviderError",
+                message: "The fake provider failed on purpose.",
+              },
+            },
+          });
+          return;
+        }
+        if (
+          String(parsedPrompt.message ?? "").includes(
+            "pending-request-then-turn-fails",
+          )
+        ) {
+          pendingQuestion = nativeQuestion();
+          emit({
+            type: "question.asked",
+            id: "event-question-pending-then-fail",
+            properties: pendingQuestion,
+          });
+          setTimeout(() => {
+            emit({
+              type: "session.error",
+              id: "event-session-failed-with-pending-request",
+              properties: {
+                sessionID: session.id,
+                error: {
+                  name: "ProviderError",
+                  message: "The fake provider failed with a request still pending.",
+                },
+              },
+            });
+          }, 10);
+          return;
+        }
+        if (
+          String(parsedPrompt.message ?? "").includes("late-straggler-source")
+        ) {
+          emit({
+            type: "message.updated",
+            id: "event-late-source-message",
+            properties: {
+              sessionID: session.id,
+              info: {
+                id: "message-late-source",
+                sessionID: session.id,
+                role: "assistant",
+              },
+            },
+          });
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-late-source-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-late-source",
+                messageID: "message-late-source",
+                type: "text",
+                text: "done",
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-late-source-usage",
+            properties: {
+              info: {
+                id: "message-late-source",
+                sessionID: session.id,
+                role: "assistant",
+                tokens: { input: 3, output: 2 },
+                cost: 0.001,
+              },
+            },
+          });
+          emit({
+            type: "session.idle",
+            id: "event-late-source-idle",
+            properties: { sessionID: session.id },
+          });
+          // Deliver the straggling frame for this message only once a later
+          // turn's own prompt has already been accepted. Defaults to the
+          // very next prompt; "-delay-N" postpones it by N prompts.
+          const delayMatch = String(parsedPrompt.message ?? "").match(
+            /late-straggler-source-delay-(\d+)/,
+          );
+          lateStragglerRemaining = delayMatch ? Number(delayMatch[1]) : 1;
+          return;
+        }
         const textBeforeFinish = String(parsedPrompt.message ?? "").includes(
           "text-before-finish",
         );
@@ -475,6 +619,15 @@ const server = createServer(async (request, response) => {
             },
           },
         });
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("invalid-tool-feedback")) {
+          for (const [status, state] of [
+            ["pending", {}], ["running", { title: "Checking tool name" }],
+            ["error", { error: "Tool not found: fixture_missing" }],
+          ]) emit({ type: "message.part.updated", id: `event-invalid-${status}`, properties: {
+            sessionID: session.id, part: { id: "part-invalid", messageID: "message-assistant",
+              type: "tool", tool: "invalid", callID: "call-invalid", state: { status, ...state } },
+          } });
+        }
         emit({
           type: "message.part.updated",
           id: "event-patch",

@@ -1,3 +1,5 @@
+import { runsCompletionUpdateProbe } from "./completion-quality.js";
+import { gradeConfirmationReply, assertConfirmationReceipt } from "./confirmation-replies.js";
 import { firstTaskUserRequest } from "./first-task-transcript.js";
 import { isBlockedUnstartedWake, isTerminalUnstartedWake } from "./non-execution-wake.js";
 import { firstTaskRejectionReplyRecorded, isFirstTaskRejectionCancellation } from "./first-task-rejection.js";
@@ -256,6 +258,7 @@ export async function runFirstTaskFlow(input: {
     };
     e.checkpoints.push(checkpoint);
     e.checks = gradeFirstTask(e);
+    if (execution.suite.id === "confirmation-replies" && scenario.id !== "task-card-accept") e.checks.push(...gradeConfirmationReply(e));
     input.observe(issue, runs, e);
     await input.evidence("first-task.json", e);
     await input.evidence("api-state.json", checkpoint);
@@ -343,7 +346,7 @@ export async function runFirstTaskFlow(input: {
     const agent = await api.get<Row>(`/api/agents/${fixtures.agent.id}`);
     e.configuredModel = agent.adapterConfig?.model ?? null;
     e.runtimeSettings = {
-      completionDeliveryProbe: execution.suite.id === "completion-updates",
+      completionDeliveryProbe: runsCompletionUpdateProbe(execution),
       onboardingRuntime: fixtures.onboardingRuntime,
       adapterType: agent.adapterType,
       adapterConfig: agent.adapterConfig,
@@ -598,7 +601,16 @@ export async function runFirstTaskFlow(input: {
           scenario.id !== "interview-plan-accept",
         );
     }
-    if (execution.suite.id === "completion-updates") {
+    if (execution.suite.id === "confirmation-replies" && scenario.id !== "task-card-accept") {
+      const last = e.checkpoints.at(-1)!;
+      const decisionCard = last.interactions.find(card => card.result?.commentId && ["accepted", "rejected"].includes(card.status));
+      if (decisionCard) {
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await assertConfirmationReceipt(page, decisionCard);
+      }
+      await input.evidence("confirmation-audit.json", await api.get(`/api/issues/${issue.id}/activity`));
+    }
+    if (runsCompletionUpdateProbe(execution)) {
       const children = (await api.get<Row[]>(tasksPath)).filter(t => t.parentId === issue.id);
       expect(children).toHaveLength(1);
       const completion = await observeCompletionUpdate({ ...input, sourceId: issue.id, workerId: children[0]!.id,
@@ -607,6 +619,7 @@ export async function runFirstTaskFlow(input: {
       await snapshot("finished");
     }
     e.checks = gradeFirstTask(e);
+    if (execution.suite.id === "confirmation-replies" && scenario.id !== "task-card-accept") e.checks.push(...gradeConfirmationReply(e));
     await input.evidence("first-task.json", e);
     await input.capture(
       "final-state",

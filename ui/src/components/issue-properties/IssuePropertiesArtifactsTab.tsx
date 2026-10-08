@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { TextAttachmentContext } from "@/context/TextAttachmentContext";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AttachmentArtifactWorkProductMetadata,
@@ -12,13 +13,14 @@ import {
   getMarkdownWorkProductAttachmentMetadata,
   isArtifactReviewDocumentKey,
 } from "@paperclipai/shared";
-import { Download, ExternalLink } from "lucide-react";
+import { Download, ExternalLink, FileText } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { activityApi } from "@/api/activity";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
+import { useIssueWorkProducts } from "@/hooks/useIssueWorkProducts";
 import {
   documentDisplayTitle,
   selectAgentArtifactAttachments,
@@ -93,6 +95,7 @@ function MarkdownWorkProductRow({
   author: string;
   openRequestId?: number;
 }) {
+  const openTextAttachment = useContext(TextAttachmentContext);
   const [expanded, setExpanded] = useState(false);
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const headerRef = useRef<HTMLDivElement | null>(null);
@@ -232,6 +235,17 @@ function MarkdownWorkProductRow({
                   }}
                 />
               ) : null}
+              {openTextAttachment ? (
+                <button
+                  type="button"
+                  onClick={() => openTextAttachment(metadata.attachmentId, metadata.originalFilename ?? workProduct.title)}
+                  aria-label={`Open in tab: ${workProduct.title}`}
+                  title="Open in tab"
+                  className="shrink-0 px-1.5 py-1.5 text-muted-foreground hover:text-foreground"
+                >
+                  <FileText className="h-3 w-3" />
+                </button>
+              ) : null}
               <a
                 href={metadata.openPath}
                 target="_blank"
@@ -367,10 +381,7 @@ export function IssuePropertiesArtifactsTab({
     isPending: productsPending,
     isError: productsError,
     refetch: refetchProducts,
-  } = useQuery({
-    queryKey: queryKeys.issues.workProducts(issue.id),
-    queryFn: () => issuesApi.listWorkProducts(issue.id),
-  });
+  } = useIssueWorkProducts(issue.id);
   const {
     data: documents,
     isPending: documentsPending,
@@ -602,6 +613,7 @@ export function IssuePropertiesArtifactsTab({
                   <li key={row.id} className="col-span-full min-w-0">
                     <IssueArtifactFile
                       id={attachment.id}
+                      attachmentId={attachment.id}
                       title={filename}
                       summary=""
                       author={

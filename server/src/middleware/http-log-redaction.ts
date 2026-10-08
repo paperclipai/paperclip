@@ -1,5 +1,6 @@
 export const HTTP_LOG_REDACT_PATHS = [
   "req.headers.authorization",
+  "res.headers.location",
   'req.headers["proxy-authorization"]',
   "req.headers.cookie",
   // "set-cookie" is normally a response header; keep the request-side
@@ -15,6 +16,7 @@ export const HTTP_LOG_REDACT_PATHS = [
   'req.headers["x-paperclip-cloud-session-id"]',
   'req.headers["x-paperclip-cloud-runtime-identity"]',
   'req.headers["x-paperclip-cloud-control"]',
+  'req.headers["x-paperclip-cloud-inspection"]',
   // Runtime GitHub capabilities authorize credential acquisition for a live run.
   'req.headers["x-paperclip-github-capability"]',
   // Telegram's optional webhook verification header is a reusable bearer

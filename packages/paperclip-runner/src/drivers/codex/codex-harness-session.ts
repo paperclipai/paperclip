@@ -404,6 +404,7 @@ export class CodexHarnessSession
       await this.transport.request("turn/interrupt", {
         threadId: this.opened.threadId,
         turnId,
+        ...(reason ? { reason: boundedText(reason) } : {}),
       });
       if (this.activeTurnId !== turnId) {
         throw new HarnessOperationAlreadyTerminalError("interruption");

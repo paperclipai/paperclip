@@ -89,7 +89,7 @@ vi.mock("../services/company-import-transfers.js", async (importOriginal) => {
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
-  ? describe.sequential
+  ? describe
   : describe.skip;
 
 const companyId = "11111111-1111-4111-8111-111111111111";

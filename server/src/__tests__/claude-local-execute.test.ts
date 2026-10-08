@@ -639,9 +639,12 @@ describe("claude execute", () => {
     const instructionsFile = path.join(root, "instructions.md");
     await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
     const metaEvents: Array<{ commandArgs: string[]; commandNotes: string[] }> = [];
+    const getFreshSessionHandoff = vi.fn(async () => "FRESH_HANDOFF: original goal and prior decisions");
+    const prompts: string[] = [];
     try {
       const result = await execute({
         runId: "run-resume-fallback",
+        getFreshSessionHandoff,
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
@@ -659,6 +662,7 @@ describe("claude execute", () => {
         authToken: "tok",
         onLog: async () => {},
         onMeta: async (meta) => {
+          prompts.push(String(meta.prompt ?? ""));
           metaEvents.push({
             commandArgs: ((meta.commandArgs as string[]) ?? []).slice(),
             commandNotes: ((meta.commandNotes as string[]) ?? []).slice(),
@@ -671,6 +675,9 @@ describe("claude execute", () => {
         appendedSystemPromptFileContents: string | null;
       }>;
       expect(captured).toHaveLength(2);
+      expect(getFreshSessionHandoff).toHaveBeenCalledOnce();
+      expect(prompts[0]).not.toContain("FRESH_HANDOFF");
+      expect(prompts[1]).toContain("FRESH_HANDOFF: original goal and prior decisions");
       expect(captured[0]?.argv).toContain("--resume");
       expect(captured[0]?.argv).not.toContain("--append-system-prompt-file");
       expect(captured[1]?.argv).not.toContain("--resume");
@@ -678,8 +685,9 @@ describe("claude execute", () => {
       expect(captured[1]?.appendedSystemPromptFilePath).toContain("agent-instructions.md");
       expect(captured[1]?.appendedSystemPromptFilePath).not.toBe(instructionsFile);
       expect(captured[1]?.appendedSystemPromptFileContents).toContain("# Agent instructions");
-      expect(captured[1]?.appendedSystemPromptFileContents).toContain(
-        `The above agent instructions were loaded from ${instructionsFile}. ` +
+      expect(captured[1]?.appendedSystemPromptFileContents).not.toContain(instructionsFile);
+      for (const prompt of prompts) expect(prompt).toContain(
+        `Agent instructions for this run were loaded from ${instructionsFile}. ` +
         `Resolve any relative file references from ${path.dirname(instructionsFile)}/. ` +
         `This base directory is authoritative for sibling instruction files such as ` +
         `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.`,
@@ -1163,7 +1171,7 @@ describe("claude execute", () => {
     })).toBe(false);
   });
 
-  it("reuses a stable Paperclip-managed Claude prompt bundle across equivalent runs", async () => {
+  it.each(["unchanged", "added", "removed"])("resumes a stable Claude prompt bundle with %s MCP tools", async (change) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-bundle-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "claude");
@@ -1232,7 +1240,9 @@ describe("claude execute", () => {
       });
       expect(typeof first.sessionParams?.promptBundleKey).toBe("string");
 
+      const getFreshSessionHandoff = vi.fn(async () => "FRESH_HANDOFF_ONLY");
       const second = await execute({
+        getFreshSessionHandoff,
         runId: "run-2",
         agent: {
           id: "agent-1",
@@ -1265,6 +1275,7 @@ describe("claude execute", () => {
           taskId: "issue-1",
           wakeReason: "issue_commented",
           wakeCommentId: "comment-2",
+          refreshTools: change !== "unchanged",
           paperclipWake: {
             reason: "issue_commented",
             issue: {
@@ -1296,12 +1307,12 @@ describe("claude execute", () => {
           },
         },
         runtimeMcp: {
-          getServers: () => [{
+          getServers: () => change === "removed" ? [] : [{
             name: "Paperclip projects",
             url: "http://localhost:3100/api/mcp/project-tools",
             connectionId: "paperclip-project-tools",
             token: "next-run-jwt-token",
-          }],
+          }, ...(change === "added" ? [{ name: "GitHub", url: "https://example.test/github/mcp", connectionId: "github", token: "fresh-github-token" }] : [])],
         },
         authToken: "run-jwt-token",
         onLog: async () => {},
@@ -1328,10 +1339,19 @@ describe("claude execute", () => {
       expect(capture1.addDir?.startsWith(expectedRoot)).toBe(true);
       expect(capture1.instructionsFilePath?.startsWith(expectedRoot)).toBe(true);
       expect(capture1.instructionsContents).toContain("You are managed instructions.");
-      expect(capture1.instructionsContents).toContain(`The above agent instructions were loaded from ${instructionsPath}.`);
+      expect(capture1.instructionsContents).not.toContain(instructionsPath);
+      expect(capture1.prompt).toContain(`Agent instructions for this run were loaded from ${instructionsPath}.`);
+      expect(capture2.prompt).toContain(`Agent instructions for this run were loaded from ${instructionsPath}.`);
       expect(capture1.skillEntries).toContain("paperclip");
       expect(capture2.argv).toContain("--resume");
+      expect(getFreshSessionHandoff).not.toHaveBeenCalled();
       expect(capture2.argv).toContain("11111111-1111-4111-8111-111111111111");
+      if (change === "removed") expect(capture2.mcpConfigContents).toBeNull();
+      else {
+        expect(capture2.mcpConfigContents).toContain("next-run-jwt-token");
+        expect(capture2.mcpConfigContents).not.toContain('"run-jwt-token"');
+        if (change === "added") expect(capture2.mcpConfigContents).toContain("fresh-github-token");
+      }
       expect(capture2.prompt).toContain("## Paperclip Resume Delta");
       expect(capture2.prompt).not.toContain("Follow the paperclip heartbeat.");
     } finally {
@@ -1341,6 +1361,81 @@ describe("claude execute", () => {
       else process.env.PAPERCLIP_HOME = previousPaperclipHome;
       if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
       else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes across per-run instruction copies and refreshes their location", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-working-copy-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    const capturePath = path.join(root, "capture.json");
+    const skillDir = path.join(root, "skill");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(skillDir);
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "First skill version.\n");
+    await writeFakeClaudeCommand(commandPath);
+    vi.stubEnv("PAPERCLIP_HOME", path.join(root, "paperclip-home"));
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+
+    try {
+      let sessionParams: Record<string, unknown> | null = null;
+      let previousBundleKey: unknown;
+      let previousInstructionsPath = "";
+      for (const [index, change] of ["initial", "location", "instructions", "skill"].entries()) {
+        const runId = `run-${index}`;
+        const instructionsPath = path.join(root, "companies", "company-1", "agents", "agent-1",
+          "file-sync", "runs", runId, "live", "AGENTS.md");
+        await fs.mkdir(path.dirname(instructionsPath), { recursive: true });
+        await fs.writeFile(instructionsPath, index < 2 ? "First instructions.\n" : "Changed instructions.\n");
+        if (change === "skill") {
+          await fs.writeFile(path.join(skillDir, "SKILL.md"), "Changed skill version.\n");
+        }
+        const logs: string[] = [];
+        const result = await execute({
+          runId,
+          agent: { id: "agent-1", companyId: "company-1", name: "Test", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+          runtime: { sessionId: null, sessionParams, sessionDisplayId: null, taskKey: "issue-1" },
+          config: {
+            engine: "cli",
+            command: commandPath,
+            cwd: workspace,
+            instructionsFilePath: instructionsPath,
+            paperclipRuntimeSkills: [{ key: "test-skill", runtimeName: "test-skill", source: skillDir }],
+            paperclipSkillSync: { desiredSkills: ["test-skill"] },
+            env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath, CLAUDE_CONFIG_DIR: path.join(root, "claude-config") },
+          },
+          context: { issueId: "issue-1" },
+          onLog: async (_stream, chunk) => { logs.push(chunk); },
+        });
+        expect(result.exitCode).toBe(0);
+        const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+        if (change === "location") {
+          expect(capture.argv).toContain("--resume");
+          expect(capture.argv).toContain("11111111-1111-4111-8111-111111111111");
+          expect(capture.instructionsFilePath).toBeNull();
+          expect(result.sessionParams?.promptBundleKey).toBe(previousBundleKey);
+        } else {
+          expect(capture.argv).not.toContain("--resume");
+          expect(capture.instructionsContents).toContain(index < 2 ? "First instructions." : "Changed instructions.");
+          expect(result.sessionParams?.promptBundleKey).not.toBe(previousBundleKey);
+          if (index > 0) {
+            expect(capture.instructionsContents).not.toContain(instructionsPath);
+            expect(logs.join("")).toContain("was saved for prompt bundle");
+            expect(logs.join("")).not.toContain("was saved for cwd");
+          }
+        }
+        if (index > 0) {
+          expect(capture.prompt).toContain(instructionsPath);
+          expect(capture.prompt).toContain(`Resolve any relative file references from ${path.dirname(instructionsPath)}/.`);
+        }
+        if (previousInstructionsPath) expect(capture.prompt).not.toContain(previousInstructionsPath);
+        sessionParams = sessionCodec.deserialize(sessionCodec.serialize(result.sessionParams ?? null));
+        previousBundleKey = result.sessionParams?.promptBundleKey;
+        previousInstructionsPath = instructionsPath;
+      }
+    } finally {
+      vi.unstubAllEnvs();
       await fs.rm(root, { recursive: true, force: true });
     }
   });

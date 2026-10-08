@@ -7,6 +7,7 @@ import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   costEvents,
   createDb,
   documentRevisions,
@@ -52,6 +53,7 @@ function unprivilegedBoardActor(companyId: string): Express.Request["actor"] {
     source: "session",
     sessionId: "session-1",
     companyIds: [companyId],
+    memberships: [{ companyId, membershipRole: "operator", status: "active" }],
     isInstanceAdmin: false,
   };
 }
@@ -93,6 +95,7 @@ describeEmbeddedPostgres("status card routes", () => {
     await db.delete(heartbeatRuns);
     await db.delete(instanceSettings);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -320,6 +323,62 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(list.status).toBe(200);
     expect(list.body).toEqual([expect.objectContaining({ id: card.id, summaryBody: null })]);
     expect(list.body[0]).not.toHaveProperty("watchedIssueCount");
+  });
+
+  it("redacts hydrated summaries and watched issues when a card includes a private task", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const privateIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: privateIssueId,
+      companyId: company.id,
+      title: "Confidential acquisition",
+      status: "blocked",
+      priority: "high",
+      visibility: "private",
+      privacyRootIssueId: privateIssueId,
+      responsibleUserId: "private-owner",
+    });
+    const document = await db.insert(documents).values({
+      companyId: company.id,
+      title: "Private status summary",
+      format: "markdown",
+      latestBody: "Confidential acquisition is blocked.",
+      latestRevisionNumber: 1,
+    }).returning().then((rows) => rows[0]!);
+    const card = await db.insert(statusCards).values({
+      companyId: company.id,
+      createdByUserId: "private-owner",
+      interestPrompt: "Acquisition status",
+      documentId: document.id,
+      queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }],
+      queryVersion: 1,
+      refreshPolicy: { mode: "manual" },
+      state: "active",
+      fingerprint: {},
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: "unprivileged-user",
+      membershipRole: "operator",
+      status: "active",
+    });
+
+    const app = createApp(db, unprivilegedBoardActor(company.id));
+    const detail = await request(app).get(`/api/status-cards/${card.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body).toMatchObject({
+      watchedIssueCount: 0,
+      summaryBody: null,
+      privacyRedacted: true,
+    });
+    expect(JSON.stringify(detail.body)).not.toContain("Confidential acquisition");
+
+    const dryRun = await request(app).get(`/api/status-cards/${card.id}/dry-run`);
+    expect(dryRun.status).toBe(200);
+    expect(JSON.stringify(dryRun.body)).not.toContain("Confidential acquisition");
+    expect(JSON.stringify(dryRun.body)).not.toContain(privateIssueId);
   });
 
   it("refreshes a card whose watched issues carry human comments", async () => {

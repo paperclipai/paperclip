@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -87,6 +88,35 @@ describe("shipped teams catalog", () => {
     expect(resolveCatalogTeamRef(sample.id)).toMatchObject({ key: sample.key });
     expect(resolveCatalogTeamRef(sample.key)).toMatchObject({ key: sample.key });
     expect(resolveCatalogTeamRef(sample.slug)).toMatchObject({ key: sample.key });
+  });
+
+  it("preserves shipped agent roles, reporting lines, and skill assignments", () => {
+    const expected = {
+      "core-exec-team/ceo": { role: "ceo", reportsTo: null, skills: ["task-planning", "issue-triage"] },
+      "core-exec-team/cto": { role: "engineering-manager", reportsTo: "ceo", skills: ["github-pr-workflow", "task-planning"] },
+      "core-exec-team/qa": { role: "qa", reportsTo: "cto", skills: ["qa-acceptance"] },
+      "product-engineering/cto": { role: "engineering-manager", reportsTo: null, skills: ["github-pr-workflow", "task-planning", "doc-maintenance"] },
+      "product-engineering/qa": { role: "qa", reportsTo: "cto", skills: ["qa-acceptance"] },
+      "product-engineering/senior-coder": { role: "engineer", reportsTo: "cto", skills: ["github-pr-workflow", "doc-maintenance"] },
+      "product-design/ux-designer": { role: "designer", reportsTo: null, skills: ["wireframe", "design-critique", "task-planning"] },
+      "content-machine/content-lead": { role: "content-strategist", reportsTo: null, skills: ["content-calendar"] },
+    };
+    const observed: Record<string, unknown> = {};
+    for (const team of catalogTeams) {
+      for (const file of team.files.filter((entry) => entry.kind === "agent")) {
+        const raw = fs.readFileSync(path.join(PACKAGE_DIR, team.path, file.path));
+        const { frontmatter } = parseFrontmatterMarkdown(raw.toString("utf8"));
+        observed[`${team.slug}/${frontmatter.slug}`] = {
+          role: frontmatter.role,
+          reportsTo: frontmatter.reportsTo,
+          skills: frontmatter.skills,
+        };
+        // An edited role file must also regenerate its distributable manifest.
+        expect(file.sizeBytes, `${team.key}/${file.path}`).toBe(raw.byteLength);
+        expect(file.sha256, `${team.key}/${file.path}`).toBe(createHash("sha256").update(raw).digest("hex"));
+      }
+    }
+    expect(observed).toEqual(expected);
   });
 
   it("declares a valid project for every shipped recurring task", () => {

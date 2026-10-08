@@ -35,6 +35,8 @@ export interface NativeSessionCapabilities {
   reconciliation?: boolean;
   usage?: boolean;
   dynamicTools?: boolean;
+  /** Can replace the authorized tool declarations while recovering the same provider session. */
+  toolRefreshOnResume?: boolean;
   runtimeRequestResolution?: boolean;
   runtimeRequestHandoff?: boolean;
   goals?: boolean;

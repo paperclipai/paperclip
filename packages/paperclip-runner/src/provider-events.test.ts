@@ -34,6 +34,48 @@ function envelope(
 }
 
 describe("provider-neutral events", () => {
+  it("keeps unrelated information as bounded run-log evidence without a provider notice", () => {
+    const [event] = canonicalProviderEventsFromCodex("warning", {
+      classification: "unrelated_information",
+      message: "ignored unrelated provider information",
+      providerMethod: "account/updated",
+      expectedThreadId: "root",
+      receivedThreadId: "x".repeat(300),
+      expectedTurnId: "turn-1",
+      receivedTurnId: null,
+      accessToken: "not-for-the-log",
+      planType: "private-account-data",
+    });
+    expect(event).toEqual({
+      eventType: "harness.diagnostic",
+      itemId: "provider-item",
+      payload: {
+        code: "codex_unrelated_information",
+        classification: "unrelated_information",
+        providerMethod: "account/updated",
+        expectedThreadId: "root",
+        receivedThreadId: "x".repeat(244) + "…[truncated]",
+        expectedTurnId: "turn-1",
+        receivedTurnId: null,
+      },
+    });
+    expect(validatePrpEvent(envelope(event)).ok).toBe(true);
+    const [unicodeEvent] = canonicalProviderEventsFromCodex("warning", {
+      classification: "unrelated_information",
+      expectedThreadId: "token=not-for-the-log",
+      receivedThreadId: "😀".repeat(300),
+    });
+    expect(unicodeEvent.payload).toMatchObject({
+      expectedThreadId: "token=[REDACTED]",
+      receivedThreadId: "😀".repeat(244) + "…[truncated]",
+      receivedTurnId: null,
+    });
+    expect(canonicalProviderEventsFromCodex("error", {
+      classification: "unrelated_information",
+      message: "Provider connection failed",
+    })[0].eventType).toBe("provider.notice.recorded");
+  });
+
   it("preserves Codex notice summaries with legacy and empty-message fallbacks", () => {
     for (const method of ["configWarning", "deprecationNotice", "warning"]) {
       for (const [params, expected] of [

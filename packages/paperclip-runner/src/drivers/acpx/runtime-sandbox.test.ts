@@ -1,3 +1,4 @@
+import { configuredEnvironmentProjection } from "../../configured-environment.js";
 import {
   chmod,
   lstat,
@@ -34,6 +35,22 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime sandbox", () => {
+  it.each([false, true])("allows selected task secrets in Codex shells (agent identity: %s)", async identity => {
+    const fixture = await sandboxFixture("codex");
+    const pages = { PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY: "task-pages-secret", CUSTOM_TOKEN: "task-service-secret" };
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "codex", environment: {
+      PATH: process.env.PATH, OPENAI_API_KEY: "provider-secret", HOST_SECRET: "unselected-secret",
+      ...configuredEnvironmentProjection(pages), ...(identity ? { PAPERCLIP_AGENT_KEY_ID: "agent-key" } : {}),
+    } });
+    const config = await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8");
+    const keys = JSON.parse(config.split("\n").find(line => line.startsWith("include_only = "))?.slice("include_only = ".length) ?? "[]");
+    expect(keys).toEqual(expect.arrayContaining(Object.keys(pages)));
+    expect(keys).not.toContain("OPENAI_API_KEY");
+    expect(keys).not.toContain("HOST_SECRET");
+    expect(sandbox.launchEnvironment).toMatchObject(pages);
+    for (const value of Object.values(pages)) expect(config).not.toContain(value);
+  });
+
   it("restores Grok permission controls on recovery without importing compatible hooks or credentials", async () => {
     const fixture = await sandboxFixture("grok");
     const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "grok" });
@@ -50,6 +67,26 @@ describe("ACPX runtime sandbox", () => {
     expect(config).toContain('[compat.claude]\nhooks = false\nmcps = false');
     expect(await readFile(requirementsPath, "utf8")).toContain('disable_bypass_permissions_mode = true');
     expect((await stat(requirementsPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it("keeps provider credentials outside identity-enabled Codex shell commands", async () => {
+    const fixture = await sandboxFixture("codex");
+    const sandbox = await prepareAcpxRuntimeSandbox({
+      binding: fixture.binding, agent: "codex", environment: {
+        PATH: process.env.PATH,
+        OPENAI_API_KEY: "provider-secret", MY_SERVICE_TOKEN: "configured-secret",
+        PAPERCLIP_API_KEY: "scoped-run-token",
+        PAPERCLIP_AGENT_KEY_ID: "sha256:test", PAPERCLIP_AGENT_PUBLIC_KEY: "public-identity",
+        PAPERCLIP_AGENT_PRIVATE_KEY: "private-identity",
+      },
+    });
+    const config = await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8");
+    const keys = JSON.parse(config.split("\n").find(line => line.startsWith("include_only = "))!.slice("include_only = ".length));
+    expect(keys).toEqual(expect.arrayContaining(["PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]));
+    expect(keys).not.toContain("OPENAI_API_KEY");
+    expect(keys).not.toContain("MY_SERVICE_TOKEN");
+    expect(sandbox.launchEnvironment.OPENAI_API_KEY).toBe("provider-secret");
+    for (const value of ["provider-secret", "configured-secret", "scoped-run-token", "private-identity"]) expect(config).not.toContain(value);
   });
 
   it.each(["claude-sonnet-5", "sonnet", "custom-deployment-id"])(

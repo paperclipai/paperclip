@@ -15,6 +15,14 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("accepts private visibility without adding defaults to updates", () => {
+    expect(createIssueSchema.parse({ title: "Private", visibility: "private" }).visibility).toBe("private");
+    expect(createIssueSchema.parse({ title: "Open" }).visibility).toBe("open");
+    expect(updateIssueSchema.parse({}).visibility).toBeUndefined();
+    expect(updateIssueSchema.parse({ visibility: "private" }).visibility).toBe("private");
+    expect(updateIssueSchema.safeParse({ visibility: "secret" }).success).toBe(false);
+  });
+
   it("validates the typed recovery display snapshot while retaining older metadata", () => {
     const metadata = { version: 1, sections: [{ rows: [{ type: "text", text: "Details" }] }] };
     const recovery = { kind: "disposition_repair_escalated", actionId: "9af8228f-0be7-45ae-a104-6fbe0af6f1d3", attemptCount: 2, maxAttempts: 2, reason: "unchanged_source_state_exhausted", assigneeAgentId: null };
@@ -304,6 +312,20 @@ describe("issue validators", () => {
         sourceIssueStatus: "todo",
       }).success,
     ).toBe(false);
+  });
+
+  it.each(["backlog", "in_progress", "blocked", "cancelled"])("requires workspace evidence to record a repair at unchanged %s status", sourceIssueStatus => {
+    const input = { outcome: "restored", sourceIssueStatus };
+    expect(resolveIssueRecoveryActionSchema.safeParse(input).success).toBe(false);
+    expect(resolveIssueRecoveryActionSchema.safeParse({ ...input, executionReconciliation: {
+      runId: "11111111-1111-4111-8111-111111111111", providerStopped: true, actionOutcome: "mixed",
+      outcomeEvidence: "Observed and reconciled the source run action outcomes.",
+    } }).success).toBe(false);
+    expect(resolveIssueRecoveryActionSchema.safeParse({ ...input, executionReconciliation: {
+      runId: "11111111-1111-4111-8111-111111111111", providerStopped: true, actionOutcome: "mixed",
+      outcomeEvidence: "Observed and reconciled the source run action outcomes.",
+      workspaceRepairEvidence: "Copied the retained source files and verified the restored files.",
+    } }).success).toBe(true);
   });
 
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {

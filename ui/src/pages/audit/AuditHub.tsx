@@ -89,10 +89,6 @@ export function AuditHub({ section }: { section: AuditSection }) {
     <div className="space-y-6">
       <div>
         <HeadingTag className="text-3xl font-semibold tracking-tight text-foreground">Audit</HeadingTag>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-          Review what happened, inspect agent runs, and understand the costs and budget controls
-          behind your organization.
-        </p>
       </div>
 
       <Tabs

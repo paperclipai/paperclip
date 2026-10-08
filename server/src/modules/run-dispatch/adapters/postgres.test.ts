@@ -8,6 +8,7 @@ import {
   createDb,
   documentRevisions,
   documents,
+  environmentLeases,
   heartbeatRunEvents,
   heartbeatRuns,
   issueDocuments,
@@ -51,6 +52,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -154,6 +156,115 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     return runId;
   }
 
+  async function seedCleanupRetry(status: "scheduled_retry" | "queued" = "scheduled_retry") {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const now = new Date();
+    await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
+    const sourceId = await seedRun({ companyId, agentId, contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: now,
+      resultJson: { conversationContinuation: "continue_conversation_v1", workspaceRestoreFailure: "restore_failed" },
+    }).where(eq(heartbeatRuns.id, sourceId));
+    const [lease] = await db.insert(environmentLeases).values({ companyId, issueId,
+      heartbeatRunId: sourceId, status: "pending_cleanup", cleanupStatus: "failed",
+    }).returning();
+    const runId = await seedRun({ companyId, agentId, status, now,
+      contextSnapshot: { issueId, retryOfRunId: sourceId, executionRetryAccounting: { version: 1, failureRetries: 1, maxTurnContinuations: 0 } },
+      scheduledRetryReason: "transient_failure",
+    });
+    await db.update(heartbeatRuns).set({ retryOfRunId: sourceId, scheduledRetryAttempt: 1,
+      resultJson: { conversationContinuation: "continue_conversation_v1" },
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    return { companyId, agentId, issueId, sourceId, leaseId: lease!.id, runId, now };
+  }
+
+  it("keeps one scheduled retry through cleanup and promotes it once after release", async () => {
+    const f = await seedCleanupRetry();
+    let adapter = createPostgresRunDispatchAdapter(db);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      expect(await adapter.promoteOrCancelDueRetry({ ...f, now: new Date(f.now.getTime() + attempt * 60_000) }))
+        .toMatchObject({ outcome: "not_promoted" });
+      // Reconstruct the service to prove the wait survives controller restart.
+      adapter = createPostgresRunDispatchAdapter(db);
+    }
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run).toMatchObject({ status: "scheduled_retry", startedAt: null, finishedAt: null,
+      retryOfRunId: f.sourceId, scheduledRetryAttempt: 1,
+      contextSnapshot: { executionRetryAccounting: { failureRetries: 1 } },
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+    expect(events.filter(e => e.message?.includes("waiting for execution cleanup"))).toHaveLength(1);
+    await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date() })
+      .where(eq(environmentLeases.id, f.leaseId));
+    const now = new Date(f.now.getTime() + 300_000);
+    const outcomes = await Promise.all([
+      adapter.promoteOrCancelDueRetry({ ...f, now }), adapter.promoteOrCancelDueRetry({ ...f, now }),
+    ]);
+    expect(outcomes.filter(o => o.outcome === "promoted")).toHaveLength(1);
+    const [resumed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(resumed).toMatchObject({ status: "queued", scheduledRetryAttempt: 1 });
+    expect(resumed.resultJson).not.toHaveProperty("executionWait");
+    expect(await adapter.cancelStaleQueuedRun({ ...f, now, expectedStatus: "queued" }))
+      .toMatchObject({ outcome: "not_stale" });
+  });
+
+  it("parks the same unstarted retry if cleanup becomes pending after promotion", async () => {
+    const f = await seedCleanupRetry("queued");
+    const adapter = createPostgresRunDispatchAdapter(db);
+    expect(await adapter.cancelStaleQueuedRun({ ...f, expectedStatus: "queued" }))
+      .toMatchObject({ outcome: "deferred" });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1, startedAt: null, finishedAt: null });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(f.runId);
+  });
+
+  it("still suppresses a cleanup-waiting retry when the task is cancelled", async () => {
+    const f = await seedCleanupRetry();
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issueId));
+    expect(await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry(f))
+      .toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_cancelled" });
+  });
+
+  it("still suppresses a cleanup-waiting retry after reassignment", async () => {
+    const f = await seedCleanupRetry();
+    const newOwnerId = randomUUID();
+    await seedAgent({ id: newOwnerId, companyId: f.companyId, name: "New owner" });
+    await db.update(issues).set({ assigneeAgentId: newOwnerId }).where(eq(issues.id, f.issueId));
+    expect(await createPostgresRunDispatchAdapter(db).promoteOrCancelDueRetry(f))
+      .toMatchObject({ outcome: "gate_suppressed", errorCode: "issue_reassigned" });
+  });
+
+  it("retains a no-replay hold after cleanup releases ownership", async () => {
+    const f = await seedCleanupRetry();
+    const adapter = createPostgresRunDispatchAdapter(db);
+    await db.insert(issueRecoveryActions).values({
+      companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
+      ownerType: "board", cause: "uncertain_external_action", status: "resolved",
+      evidence: { automaticRecovery: { replay: "blocked" } }, fingerprint: f.sourceId,
+      nextAction: "Verify the external action before continuing.",
+    });
+    expect(await adapter.promoteOrCancelDueRetry(f)).toMatchObject({ outcome: "not_promoted" });
+    await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date() })
+      .where(eq(environmentLeases.id, f.leaseId));
+    const now = new Date(f.now.getTime() + 60_000);
+    expect(await adapter.promoteOrCancelDueRetry({ ...f, now })).toMatchObject({ outcome: "promoted" });
+    expect(await adapter.cancelStaleQueuedRun({ ...f, now, expectedStatus: "queued" }))
+      .toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ cause: "uncertain_external_action" });
+  });
+
+  it.each(["native", "started", "non-conversation"])("does not park a %s run behind cleanup", async (mode) => {
+    const f = await seedCleanupRetry("queued");
+    await db.update(heartbeatRuns).set(mode === "native" ? { runtimeMode: "native" }
+      : mode === "started" ? { startedAt: f.now } : { resultJson: {} })
+      .where(eq(heartbeatRuns.id, f.runId));
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ ...f, expectedStatus: "queued" }))
+      .toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+  });
+
   async function seedContinuationSummary(input: {
     companyId: string;
     issueId: string;
@@ -191,16 +302,19 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     });
   }
 
-  it.each(["executionRunId", "checkoutRunId"] as const)("suppresses delayed native replacement after another run acquires %s", async (lock) => {
+  it.each([
+    ["executionRunId", "native_safe_replacement"], ["checkoutRunId", "native_safe_replacement"],
+    ["executionRunId", "native_provider_overloaded"], ["checkoutRunId", "native_provider_overloaded"],
+  ] as const)("suppresses delayed retry after another run acquires %s (%s)", async (lock, retryReason) => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
-    const contextSnapshot = { issueId, wakeReason: "native_safe_replacement", retryReason: "native_safe_replacement", forceFreshSession: true };
+    const contextSnapshot = { issueId, wakeReason: retryReason, retryReason, forceFreshSession: true };
     const replacementId = await seedRun({ companyId, agentId, status: "scheduled_retry", contextSnapshot });
     const competingId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
     await db.update(issues).set({ [lock]: competingId }).where(eq(issues.id, issueId));
     const adapter = createPostgresRunDispatchAdapter(db);
-    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: "native_safe_replacement", now: new Date() }))
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: retryReason, now: new Date() }))
       .toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
     await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, replacementId));
     expect(await adapter.cancelStaleQueuedRun({ companyId, runId: replacementId, expectedStatus: "queued", now: new Date() }))
@@ -218,15 +332,15 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, competingId)))[0]?.status).toBe("running");
   });
 
-  it("does not dispatch a replacement when the task becomes blocked after scheduling", async () => {
+  it.each(["native_safe_replacement", "native_provider_overloaded"])("does not dispatch %s when the task becomes blocked after scheduling", async retryReason => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
-    const contextSnapshot = { issueId, wakeReason: "native_safe_replacement", retryReason: "native_safe_replacement", forceFreshSession: true };
+    const contextSnapshot = { issueId, wakeReason: retryReason, retryReason: retryReason, forceFreshSession: true };
     const replacementId = await seedRun({ companyId, agentId, status: "scheduled_retry", contextSnapshot });
     await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
     const adapter = createPostgresRunDispatchAdapter(db);
-    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: "native_safe_replacement", now: new Date() }))
+    expect(await adapter.evaluateScheduledRetryGate({ companyId, runId: replacementId, retryReasonOverride: retryReason, now: new Date() }))
       .toMatchObject({ allowed: false, errorCode: "issue_blocked" });
     await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, replacementId));
     expect(await adapter.cancelStaleQueuedRun({ companyId, runId: replacementId, expectedStatus: "queued", now: new Date() }))

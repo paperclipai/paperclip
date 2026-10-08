@@ -5,11 +5,13 @@ import type { NativeExecutionInput } from "../contracts/native-execution.js";
 import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type {
   NativeSessionBackend,
+  NativeSessionBackendDescriptor,
   PersistedNativeSession,
 } from "../contracts/native-session-backend.js";
 import type { CodexAppServerTransport } from "../drivers/codex/app-server-transport.js";
 import { CodexAppServerDriver } from "../drivers/codex/codex-app-server-driver.js";
 import type { CodexWorkingDirectoryAuthority } from "../drivers/codex/codex-boundaries.js";
+import { describeRunnerdDotDriver } from "../drivers/dot/runnerd-dot-driver.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 import {
   nativeSystemInstructions,
@@ -71,7 +73,7 @@ function transportDriverIdentity(input: NativeExecutionInput): {
       return {
         kind: "opencode_server",
         displayName: "OpenCode server",
-        version: "1.18.32",
+        version: "1.18.34",
       };
     case "claude_managed":
       return {
@@ -139,7 +141,6 @@ function createTransportBackedNativeSessionBackend(
         ]
       : []),
     ...nativeTaskConstraints(input),
-    "Return one semantic completion result.",
   ];
 
   return new HarnessDriverBackend(
@@ -186,7 +187,9 @@ function createTransportBackedNativeSessionBackend(
       driverIdentity,
       capabilities: isCodex
         ? {}
-        : { steering: false, goals: false, threadLineage: false },
+        : { steering: false, goals: false, threadLineage: false,
+            toolRefreshOnResume: input.provider.kind !== "acpx"
+              || ACPX_CAPABILITY_PROFILES[input.provider.agent].toolRefreshOnResume === true },
       collaborationModes: supportsCollaborativePlanning
         ? ["default", "plan"]
         : ["default"],
@@ -194,6 +197,24 @@ function createTransportBackedNativeSessionBackend(
     }),
     preparedContext ? constraints : undefined,
   );
+}
+
+/** Inspect the selected runnerd harness without starting a provider process. */
+export function describeRunnerdNativeSessionBackend(
+  input: NativeExecutionInput,
+): Promise<NativeSessionBackendDescriptor> {
+  if (input.schema === "paperclip.native-execution-input.v6") {
+    // Dot uses its dedicated Rust bridge, rather than the JSON-RPC facade.
+    const descriptor = describeRunnerdDotDriver();
+    return Promise.resolve({
+      kind: "runner",
+      name: descriptor.kind,
+      version: descriptor.version,
+      capabilities: descriptor.capabilities,
+      runtimeContextCapabilities: descriptor.runtimeContextCapabilities,
+    });
+  }
+  return createTransportBackedNativeSessionBackend(input, {}).descriptor();
 }
 
 /**

@@ -337,7 +337,7 @@ export function pluginManagedAgentService(
       // and its canonical history. Transfer only its proven stable-key marker to
       // the replacement installation, atomically with the new scoped bindings.
       await upsertBinding(companyId, declaration, agentId, {}, adapterType, tx);
-      const [relinked] = await tx.update(agents).set({
+      await tx.update(agents).set({
         metadata: managedMetadata(options.pluginId, options.pluginKey, declaration, agent.metadata),
         updatedAt: new Date(),
       }).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).returning();
@@ -346,6 +346,8 @@ export function pluginManagedAgentService(
         action: "plugin.managed_agent.relinked", entityType: "agent", entityId: agentId,
         details: { sourcePluginKey: options.pluginKey, managedResourceKey: declaration.agentKey, previousPluginId },
       });
+      const relinked = await agentService(tx as unknown as Db).getById(agentId);
+      if (!relinked) throw notFound("Managed agent not found after relink");
       return relinked as Agent;
     });
   }

@@ -26,6 +26,8 @@ import { validatePrpEvent } from "../protocol/replay-contract.js";
 import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
   DurablePrpControlPlane,
+  durableRecoveryInternals,
+  SemanticToolNotDispatchedError,
   inspectWarmRunTransition,
   spawnRunner,
   type RunnerProcessLaunchSpec,
@@ -388,7 +390,13 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
     runnerDigest: expectedRunnerDigest,
     environment: {
       PATH: "/bin",
+      PAPERCLIP_AGENT_KEY_ID: "sha256:identity",
+      PAPERCLIP_AGENT_PUBLIC_KEY: "public-pem",
+      PAPERCLIP_AGENT_PRIVATE_KEY: "private-pem",
       OPENROUTER_API_KEY: "provider-key",
+      PAPERCLIP_AI_PROVIDER_KEY: "managed-provider-key",
+      ANTHROPIC_AUTH_TOKEN: "managed-claude-key",
+      ANTHROPIC_BASE_URL: "https://gateway.example",
       PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
       PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
       DATABASE_URL: "must-not-reach-runnerd",
@@ -417,7 +425,13 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
   expect(launches).toHaveLength(1);
   expect(launches[0]!.environment).toMatchObject({
     PATH: "/bin",
+    PAPERCLIP_AGENT_KEY_ID: "sha256:identity",
+    PAPERCLIP_AGENT_PUBLIC_KEY: "public-pem",
+    PAPERCLIP_AGENT_PRIVATE_KEY: "private-pem",
     OPENROUTER_API_KEY: "provider-key",
+    PAPERCLIP_AI_PROVIDER_KEY: "managed-provider-key",
+    ANTHROPIC_AUTH_TOKEN: "managed-claude-key",
+    ANTHROPIC_BASE_URL: "https://gateway.example",
     PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
     PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
   });
@@ -819,7 +833,9 @@ function sendMaskedJson(socket: Socket, value: unknown): void {
   } else if (payload.length <= 0xffff) {
     header.push(0x80 | 126, payload.length >>> 8, payload.length & 0xff);
   } else {
-    throw new Error("Test client frame exceeds the supported size.");
+    const length = Buffer.alloc(8);
+    length.writeBigUInt64BE(BigInt(payload.length));
+    header.push(0x80 | 127, ...length);
   }
   const masked = Buffer.from(payload);
   for (let index = 0; index < masked.length; index += 1) {
@@ -1161,7 +1177,17 @@ async function receiveSecure(
   return value;
 }
 
-function semanticInputEvent(sourceSeq = 1): Record<string, unknown> {
+const semanticInputDigestFixtures = JSON.parse(readFileSync(
+  new URL("../../test/fixtures/semantic-input-digests.json", import.meta.url),
+  "utf8",
+)) as Array<{ name: string; input: Record<string, unknown>; digest: string }>;
+
+function rawSemanticInputDigest(input: unknown): string {
+  return `sha256:${createHash("sha256")
+    .update(durableRecoveryInternals.canonicalJson(input)).digest("hex")}`;
+}
+
+function semanticInputEvent(sourceSeq = 1, input: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     protocol: "paperclip.runner",
     version: 1,
@@ -1201,11 +1227,11 @@ function semanticInputEvent(sourceSeq = 1): Record<string, unknown> {
           },
           idempotencyKey: null,
           content: {
-            digest: digestPaperclipSemanticContent({}),
+            digest: rawSemanticInputDigest(input),
             redactionDisposition: "digest_only",
             references: [],
           },
-          input: {},
+          input,
         },
       },
     },
@@ -1431,7 +1457,7 @@ it("refuses a processing-drain absence claim while local or remote ingress remai
   }
 });
 
-describe.sequential("DurablePrpControlPlane", () => {
+describe("DurablePrpControlPlane", () => {
   it.each(["pending_first", "all_pending", "completed_first"] as const)(
     "retains unanswered semantic input across the bounded event window (%s)",
     async (mode) => {
@@ -1684,6 +1710,144 @@ describe.sequential("DurablePrpControlPlane", () => {
     },
   );
 
+  it.each(semanticInputDigestFixtures.flatMap((fixture) =>
+    ["semantic_tool.input", "mcp_app.tool_input"].map((eventType) => ({ ...fixture, eventType })),
+  ))(
+    "accepts the Rust wire digest and preserves exact input: $eventType / $name",
+    async ({ input, digest, eventType }) => {
+      // The JSON transport normalizes negative zero before the receiver sees it.
+      const wireInput = JSON.parse(JSON.stringify(input)) as Record<string, unknown>;
+      const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-raw-input-"));
+      const onProtocolIntegrityError = vi.fn();
+      const onSemanticToolInput = vi.fn(async () => ({ result: { ok: true } }));
+      const core = new DurablePrpControlPlane({
+        stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+        onProtocolIntegrityError, onSemanticToolInput,
+      });
+      try {
+        await core.start();
+        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        const event = semanticInputEvent(1, wireInput);
+        (event.payload as any).eventType = eventType;
+        const semantic = (event.payload as any).payload.semantic_tool;
+        // This shared golden also runs against the Rust producer's hash.
+        semantic.content.digest = digest;
+        expect(rawSemanticInputDigest(input)).toBe(digest);
+        sendSecure(client, event);
+        const frames = [await receiveSecure(client), await receiveSecure(client)];
+        expect(frames).toContainEqual(expect.objectContaining({
+          kind: "ack", payload: expect.objectContaining({ ackedSourceSeq: 1 }),
+        }));
+        const command = frames.find((frame) => frame?.kind === "command")!.payload as any;
+        expect(command.payload.inputDigest).toBe(digest.slice("sha256:".length));
+        expect(onSemanticToolInput).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ input: wireInput }));
+        expect(core.store.state.committedEvents).toHaveLength(1);
+        expect(core.store.state.committedEvents[0]?.envelope).toEqual(event);
+        expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+        client.socket.destroy();
+      } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+    },
+  );
+
+  it.each([
+    "redacted_digest", "protected_field_tampering", "forged_digest",
+    "over_node_limit", "over_depth_limit",
+  ] as const)(
+    "rejects invalid raw semantic integrity without commit, dispatch or ACK: %s",
+    async (fault) => {
+      const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-raw-integrity-"));
+      const onProtocolIntegrityError = vi.fn();
+      const onCommittedEvent = vi.fn(async () => undefined);
+      const onSemanticToolInput = vi.fn(async () => ({ result: { ok: true } }));
+      const core = new DurablePrpControlPlane({
+        stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+        onProtocolIntegrityError, onCommittedEvent, onSemanticToolInput,
+      });
+      try {
+        await core.start();
+        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        const input = { password: "fixture-before", safe: true };
+        const event = semanticInputEvent(1, input);
+        const semantic = (event.payload as any).payload.semantic_tool;
+        const redactedDigest = digestPaperclipSemanticContent(input);
+        expect(redactedDigest).not.toBe(semantic.content.digest);
+        if (fault === "redacted_digest") semantic.content.digest = redactedDigest;
+        if (fault === "forged_digest") semantic.content.digest = `sha256:${"0".repeat(64)}`;
+        if (fault === "protected_field_tampering") {
+          semantic.input = { ...input, password: "fixture-after" };
+          // Redacted receipt hashes intentionally cannot prove byte integrity.
+          expect(digestPaperclipSemanticContent(semantic.input)).toBe(redactedDigest);
+        }
+        if (fault === "over_node_limit") semantic.input = { values: Array(10_001).fill(0) };
+        if (fault === "over_depth_limit") {
+          let nested: unknown = {};
+          for (let depth = 0; depth < 65; depth += 1) nested = { child: nested };
+          semantic.input = nested;
+        }
+        if (fault === "over_node_limit" || fault === "over_depth_limit") {
+          // Each fixture object has one key, so JSON.stringify is canonical.
+          // Hash independently of the bounded helper: the limits themselves
+          // must reject even a matching raw digest and keep the permanent fence.
+          semantic.content.digest = `sha256:${createHash("sha256")
+            .update(JSON.stringify(semantic.input)).digest("hex")}`;
+        }
+        sendSecure(client, event);
+        await expect(receiveSecure(client)).resolves.toBeNull();
+        expect(onProtocolIntegrityError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+          code: "native_event_replay_conflict", reason: "semantic_input_digest_mismatch",
+          recovery: "operator_required",
+        }));
+        expect(core.store.state.ackedSourceSeq).toBe(0);
+        expect(core.store.state.committedEvents).toEqual([]);
+        expect(onCommittedEvent).not.toHaveBeenCalled();
+        expect(onSemanticToolInput).not.toHaveBeenCalled();
+        expect(JSON.stringify(onProtocolIntegrityError.mock.calls)).not.toContain("fixture-before");
+        expect(JSON.stringify(onProtocolIntegrityError.mock.calls)).not.toContain("fixture-after");
+        const replay = (await authenticate(core, client.leaseToken!))!;
+        sendSecure(replay, semanticInputEvent());
+        await expect(receiveSecure(replay)).resolves.toBeNull();
+        expect(onProtocolIntegrityError).toHaveBeenCalledTimes(1);
+        expect(onSemanticToolInput).not.toHaveBeenCalled();
+      } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+    },
+  );
+
+  it.each(["authentication", "envelope", "event", "correlation"] as const)(
+    "rejects raw semantic input outside its exact authenticated scope: %s",
+    async (boundary) => {
+      const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-raw-scope-"));
+      const onProtocolIntegrityError = vi.fn();
+      const onCommittedEvent = vi.fn(async () => undefined);
+      const onSemanticToolInput = vi.fn(async () => ({ result: { ok: true } }));
+      const core = new DurablePrpControlPlane({
+        stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+        onProtocolIntegrityError, onCommittedEvent, onSemanticToolInput,
+      });
+      try {
+        await core.start();
+        const wrongRunId = "00000000-0000-4000-8000-000000000999";
+        const client = await authenticate(core, core.issueBootstrapTicket(),
+          boundary === "authentication" ? { ...identity, runId: wrongRunId } : identity);
+        if (boundary === "authentication") {
+          expect(client).toBeNull();
+        } else {
+          const event = semanticInputEvent(1, { password: "fixture-only" });
+          const payload = event.payload as any;
+          if (boundary === "envelope") event.runId = wrongRunId;
+          if (boundary === "event") payload.runId = wrongRunId;
+          if (boundary === "correlation") payload.payload.semantic_tool.correlation.runId = wrongRunId;
+          sendSecure(client!, event);
+          await expect(receiveSecure(client!)).resolves.toBeNull();
+        }
+        expect(core.store.state.ackedSourceSeq).toBe(0);
+        expect(core.store.state.committedEvents).toEqual([]);
+        expect(onCommittedEvent).not.toHaveBeenCalled();
+        expect(onSemanticToolInput).not.toHaveBeenCalled();
+        expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+      } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+    },
+  );
+
   it("latches an authenticated semantic integrity fault without ACK or dispatch and still permits suspension", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-integrity-"));
     const onProtocolIntegrityError = vi.fn();
@@ -1845,7 +2009,7 @@ describe.sequential("DurablePrpControlPlane", () => {
       ).semantic_tool as Record<string, unknown>;
       semantic.input = { changed: true };
       (semantic.content as Record<string, unknown>).digest =
-        digestPaperclipSemanticContent(semantic.input);
+        rawSemanticInputDigest(semantic.input);
       sendSecure(client, changed);
       await expect(receiveSecure(client)).resolves.toBeNull();
       expect(onProtocolIntegrityError).toHaveBeenCalledTimes(1);
@@ -2216,7 +2380,95 @@ describe.sequential("DurablePrpControlPlane", () => {
     }
   });
 
-  it("recovers one semantic call from the durable event after a coordinator restart", async () => {
+  it("delivers a large lossless result without copying its large input into the command", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-large-tool-result-"));
+    const content = "日本語🦀".repeat(34_000) + "END";
+    const args = { content };
+    const handler = vi.fn(async () => ({ result: { content } }));
+    const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, onSemanticToolInput: handler };
+    const core = new DurablePrpControlPlane(options);
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const event = semanticInputEvent();
+      const semantic = ((event.payload as any).payload as any).semantic_tool;
+      semantic.input = args;
+      semantic.content.digest = rawSemanticInputDigest(args);
+      sendSecure(client, event);
+      const frames = [await receiveSecure(client), await receiveSecure(client)];
+      const wire = frames.find((frame) => frame?.kind === "command")!.payload as any;
+      expect(wire.payload.result.content).toBe(content);
+      expect(wire.payload.input).toBeUndefined();
+      expect(wire.payload.inputDigest).toBe(rawSemanticInputDigest(args).slice("sha256:".length));
+      expect(Buffer.byteLength(JSON.stringify(wire))).toBeLessThan(1024 * 1024);
+      sendSecure(client, { protocol: "paperclip.runner", version: 1, kind: "command_result", payload: {
+        commandId: wire.commandId, controllerSeq: wire.controllerSeq, commandType: wire.type,
+        status: "completed", result: { status: "delivered", callId: "call-1" },
+      } });
+      await vi.waitFor(() => expect(core.store.state.commands[0]?.status).toBe("completed"));
+      expect(core.semanticToolResultsSettled()).toBe(true);
+      const savedDigest = core.store.state.commands[0]!.payload.inputDigest;
+      core.store.state.commands[0]!.payload.inputDigest = `sha256:${"0".repeat(64)}`;
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      core.store.state.commands[0]!.payload.inputDigest = savedDigest;
+      const reopened = new DurablePrpControlPlane(options);
+      expect(reopened.semanticToolResultsSettled()).toBe(true);
+      await reopened.stop();
+      expect(handler).toHaveBeenCalledTimes(1);
+      client.socket.destroy();
+    } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("reports an oversized semantic result without exposing its content or redispatching", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-result-limit-"));
+    const handler = vi.fn(async () => ({ result: { privateContent: "x".repeat(600_000) } }));
+    const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+      expectedRunnerVersion, expectedRunnerDigest, onSemanticToolInput: handler });
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      sendSecure(client, semanticInputEvent());
+      await vi.waitFor(() => expect(core.semanticToolSettlementDiagnostics()).toMatchObject({
+        persistenceFailed: true,
+        failures: [{ callId: "call-1", operationId: "get_task_context", stage: "persist_result", code: "command_payload_too_large" }],
+      }));
+      expect(core.store.state.commands).toEqual([]);
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      expect(JSON.stringify(core.semanticToolSettlementDiagnostics())).not.toContain("privateContent");
+      expect(handler).toHaveBeenCalledOnce();
+      client.socket.destroy();
+    } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["before_dispatch", "during_effect"] as const)("settles only proven pre-dispatch cancellation (%s)", async (stage) => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-tool-dispatch-boundary-"));
+    const handler = vi.fn(async () => {
+      if (stage === "before_dispatch") throw new SemanticToolNotDispatchedError();
+      throw new Error("connection lost after possibly committing a write");
+    });
+    const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+      expectedRunnerVersion, expectedRunnerDigest, onSemanticToolInput: handler });
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      sendSecure(client, semanticInputEvent());
+      await receiveSecure(client);
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+      if (stage === "before_dispatch") {
+        await vi.waitFor(() => expect(core.store.state.commands).toHaveLength(1));
+        expect(core.store.state.commands[0]).toMatchObject({ type: "semantic_tool.result", payload: {
+          callId: "call-1", isError: true, result: { error: { code: "semantic_tool_not_dispatched" } },
+        } });
+      } else {
+        await vi.waitFor(() => expect(core.semanticToolSettlementDiagnostics()).toMatchObject({ persistenceFailed: true }));
+        expect(core.store.state.commands).toEqual([]);
+      }
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      client.socket.destroy();
+    } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("retains an uncertain semantic outcome without redispatching after a coordinator restart", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-recovery-"));
     let firstCalls = 0;
     const first = new DurablePrpControlPlane({
@@ -2264,22 +2516,13 @@ describe.sequential("DurablePrpControlPlane", () => {
       await recovered.start();
       const client = await authenticate(recovered, leaseToken!);
       sendSecure(client!, semanticInputEvent());
-      const outcomes = [
-        await receiveSecure(client!),
-        await receiveSecure(client!),
-      ];
-      const command = outcomes.find((outcome) => outcome?.kind === "command");
-      expect(outcomes.some((outcome) => outcome?.kind === "ack")).toBe(true);
-      expect(command?.payload).toMatchObject({
-        type: "semantic_tool.result",
-        payload: {
-          callId: "call-1",
-          operationId: "get_task_context",
-          result: { ok: true, operationId: "get_task_context" },
-          isError: false,
-        },
+      await expect(receiveSecure(client!)).resolves.toMatchObject({ kind: "ack" });
+      expect(recoveredCalls).toBe(0);
+      expect(recovered.semanticToolResultsSettled()).toBe(false);
+      expect(recovered.semanticToolSettlementDiagnostics()).toMatchObject({
+        pending: [{ callId: "call-1", operationId: "get_task_context" }], deliveries: [],
       });
-      expect(recoveredCalls).toBe(1);
+      expect(recovered.store.state.commands.filter((entry) => entry.type === "semantic_tool.result")).toEqual([]);
 
       const tampered = semanticInputEvent(2);
       const tamperedEvent = tampered.payload as Record<string, unknown>;
@@ -3343,4 +3586,46 @@ describe.sequential("DurablePrpControlPlane", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+it("retires late semantic receipts without overwriting a successor journal or replaying the write", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-semantic-retirement-"));
+  let release!: () => void;
+  const held = new Promise<void>(resolveHeld => { release = resolveHeld; });
+  const handler = vi.fn(async () => { await held; return { result: { committed: true } }; });
+  const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest, onSemanticToolInput: handler };
+  const core = new DurablePrpControlPlane(options);
+  let successor: DurablePrpControlPlane | undefined;
+  let client: AuthenticatedClient | null = null;
+  let replay: AuthenticatedClient | null = null;
+  try {
+    await core.start();
+    expect(() => core.retireSemanticToolCallbacks()).toThrow("drained, stopped ingress");
+    client = await authenticate(core, core.issueBootstrapTicket());
+    sendSecure(client!, semanticInputEvent());
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    core.retireSemanticToolCallbacks();
+    successor = new DurablePrpControlPlane(options);
+    const command = successor.queueCommand("turn.stop", {}, "successor-stop");
+    release();
+    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+    const saved = JSON.parse(readFileSync(resolve(root, "control-plane-state.json"), "utf8"));
+    expect(saved.commands.map((entry: { commandId: string }) => entry.commandId)).toEqual([command.commandId]);
+    expect(successor.semanticToolResultsSettled()).toBe(false);
+    await successor.start();
+    replay = await authenticate(successor, successor.issueBootstrapTicket());
+    sendSecure(replay!, semanticInputEvent());
+    await vi.waitFor(() => expect(successor!.store.state.ackedSourceSeq).toBe(1));
+    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+    expect(handler).toHaveBeenCalledOnce();
+    expect(successor.store.state.commands.some(entry => entry.type === "semantic_tool.result")).toBe(false);
+  } finally {
+    release();
+    client?.socket.destroy(); replay?.socket.destroy();
+    await core.stop(); await core.drainPendingConnectionProcessing();
+    await successor?.stop(); await successor?.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

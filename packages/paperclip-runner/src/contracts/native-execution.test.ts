@@ -104,7 +104,8 @@ describe("NativeExecutionInputV1", () => {
     expect(delta).toEqual({
       schema: "paperclip.native-continuation.v1",
       events: '{"messages":[{"authorType":"user","body":"Just this new comment"}]}',
-      completion: { revision: "1", criterionIds: ["objective"] },
+      completion: { revision: "1", criterionIds: ["objective"],
+        instruction: "Before ending this turn, obtain one accepted paperclip_finish or paperclip_block result. Earlier reports belong to earlier turns; a final message alone does not complete this turn." },
     });
     expect(JSON.stringify(delta)).not.toContain(input.task.title);
     expect(JSON.stringify(delta)).not.toContain(input.completionContract.contract.objective);
@@ -482,6 +483,26 @@ describe("native task context ownership", () => {
       runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
     });
   }
+
+  it("carries an opaque provider mode without a vendor restriction and fences obsolete field names", () => {
+    const current = currentInput();
+    const provider = {
+      kind: "acpx", agent: "codex", model: "gpt-5.6-sol", permissionMode: "approve-all", mode: "architect",
+      profile: { driverKind: "acpx_runtime", protocolVersion: 1, acpxVersion: "0.13.1", agent: "codex", agentProfileVersion: 3,
+        agentServerPackage: "@agentclientprotocol/codex-acp", agentServerVersion: "1.6.2",
+        agentRuntimePackage: "@openai/codex", agentRuntimeVersion: "0.160.0", commandDigest: `sha256:${"a".repeat(64)}` },
+    };
+    const value = { ...current, session: { ...current.session, driverKind: "acpx_runtime" }, provider };
+    const parsed = parseNativeExecutionInput(value);
+    expect(parsed.provider).toMatchObject({ agent: "codex", mode: "architect" });
+    expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+    expect(JSON.stringify(buildNativeModelEnvelope(parsed))).not.toContain("architect");
+    for (const mode of [null, 1, "", " ", "x".repeat(241), "plan\0", "plan\n"]) {
+      expect(() => parseNativeExecutionInput({ ...value, provider: { ...provider, mode } })).toThrow(/provider.mode/);
+    }
+    const { mode: _mode, ...withoutMode } = provider;
+    expect(() => parseNativeExecutionInput({ ...value, provider: { ...withoutMode, cursorMode: "plan" } })).toThrow(/input.provider/);
+  });
 
   it.each([
     ["v4", "paperclip.native-execution-input.v4", "paperclip.native-model-envelope.v2"],

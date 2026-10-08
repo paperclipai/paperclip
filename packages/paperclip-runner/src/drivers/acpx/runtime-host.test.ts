@@ -195,6 +195,31 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime host", () => {
+  it.each([undefined, "plan", "ask"] as const)("requires observed Cursor mode %s in the host identity", async selected => {
+    const fixture = await hostFixture();
+    const mode = selected ?? "agent";
+    const options = { ...fixture.options, agent: "cursor" as const, model: "explicit-test-model", mode: selected, permissionMode: "approve-all" as const, environment: { CURSOR_API_KEY: "test" } };
+    const openRuntime = vi.fn(async (launch: AcpxRuntimePortOpenOptions) => {
+      expect(launch.mode).toBe(mode);
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: options.model } }), identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", mode: mode }) });
+    });
+    const host = await AcpxRuntimeHost.open(options, fixture.dependencies({ openRuntime }));
+    expect(host.identity().mode).toBe(mode);
+    await host.close({ reason: "mode test complete" });
+  });
+
+  it("rejects missing observed Cursor mode and mode supplied to another provider", async () => {
+    const fixture = await hostFixture();
+    const port = runtimePort({ getStatus: async () => ({ models: { currentModelId: "explicit-test-model" } }) });
+    const openRuntime = vi.fn(async () => port);
+    const options = { ...fixture.options, agent: "cursor" as const, model: "explicit-test-model", permissionMode: "approve-all" as const, environment: { CURSOR_API_KEY: "test" } };
+    await expect(AcpxRuntimeHost.open(options, fixture.dependencies({ openRuntime }))).rejects.toThrow(/Provider mode does not match/);
+    expect(port.close).toHaveBeenCalled();
+    openRuntime.mockClear();
+    await expect(AcpxRuntimeHost.open({ ...options, agent: "codex", model: "gpt-5.6-sol", mode: "plan" }, fixture.dependencies({ openRuntime }))).rejects.toThrow(/does not support configurable/);
+    expect(openRuntime).not.toHaveBeenCalled();
+  });
+
   it.each([
     { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned" },
     { PAPERCLIP_NATIVE_MCP_NAME: "paperclip", PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp", PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40) },
@@ -1046,12 +1071,15 @@ describe("ACPX runtime host", () => {
 
   it("bounds post-handshake model verification and cleans the runtime", async () => {
     const fixture = await hostFixture();
+    const credential = credentialLeaseFixture(fixture.root);
+    const getStatus = vi.fn(() => new Promise<never>(() => undefined));
     const runtime = runtimePort({
-      getStatus: () => new Promise<never>(() => undefined),
+      getStatus,
     });
     const dependencies = fixture.dependencies({
       openRuntime: async () => runtime,
     });
+    dependencies.stageCredential = vi.fn(async () => credential);
     dependencies.admissionVerificationTimeoutMs = 1;
 
     await expect(
@@ -1066,12 +1094,16 @@ describe("ACPX runtime host", () => {
         dependencies,
       ),
     ).rejects.toThrow("admission verification exceeded its deadline");
+    expect(dependencies.stageCredential).toHaveBeenCalledOnce();
+    expect(getStatus).toHaveBeenCalledOnce();
     expect(runtime.close).toHaveBeenCalledOnce();
+    expect(credential.close).toHaveBeenCalledOnce();
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
   it("bounds post-handshake cleanup while retaining its exact owner", async () => {
     const fixture = await hostFixture();
+    const credential = credentialLeaseFixture(fixture.root);
     let finishRuntimeClose!: () => void;
     const runtimeClose = new Promise<void>((resolve) => {
       finishRuntimeClose = resolve;
@@ -1083,6 +1115,7 @@ describe("ACPX runtime host", () => {
     const dependencies = fixture.dependencies({
       openRuntime: async () => runtime,
     });
+    dependencies.stageCredential = vi.fn(async () => credential);
     let retainedAdmissionCleanup: Promise<void> | null = null;
     dependencies.retainAdmissionCleanup = (cleanup) => {
       retainedAdmissionCleanup = cleanup;
@@ -1103,6 +1136,7 @@ describe("ACPX runtime host", () => {
       ),
     ).rejects.toThrow("initialization and cleanup failed");
     expect(runtime.close).toHaveBeenCalledOnce();
+    expect(credential.close).not.toHaveBeenCalled();
     expect(fixture.commandClose).toHaveBeenCalledOnce();
     expect(retainedAdmissionCleanup).not.toBeNull();
     let cleanupSettled = false;
@@ -1115,6 +1149,7 @@ describe("ACPX runtime host", () => {
     finishRuntimeClose();
     await retainedAdmissionCleanup;
     expect(cleanupSettled).toBe(true);
+    expect(credential.close).toHaveBeenCalledOnce();
   });
 
   it("retains credential ownership when runtime shutdown fails until retry succeeds", async () => {
@@ -1313,7 +1348,7 @@ describe("ACPX runtime host", () => {
         onExtensionRequest,
         onExtensionNotification,
       }),
-    ).toBe(turn);
+    ).toMatchObject({ requestId: turn.requestId, result: turn.result });
     expect(startTurn).toHaveBeenCalledWith({
       text: "Complete the task.",
       requestId: "turn-1",
@@ -1329,7 +1364,7 @@ describe("ACPX runtime host", () => {
     expect(turn.cancel).toHaveBeenCalledWith({ reason: "user interrupt" });
 
     await host.close({ reason: "shutdown" });
-    expect(turn.cancel).toHaveBeenCalledWith({ reason: "shutdown" });
+    expect(turn.cancel.mock.calls.every(([intent]) => intent.reason === "user interrupt")).toBe(true);
     expect(runtime.close).toHaveBeenCalledOnce();
     expect(() => host.startTurn({ text: "Late", requestId: "turn-3" })).toThrow(
       "is closing",
@@ -1794,8 +1829,24 @@ describe("ACPX runtime host", () => {
   }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 });
 
+// Deadline tests exercise runtime admission and cleanup, not kernel lease
+// acquisition. Keep their credential owner deterministic: real lease staging
+// uses hashed loopback ports that unrelated parallel tests can occupy. The
+// credential and retained-owner integration tests still use real leases.
+function credentialLeaseFixture(root: string) {
+  return {
+    path: join(root, "auth.json"),
+    mode: "inline_json" as const,
+    lifetimeFenceFds: [42, 43] as const,
+    lifetimeFenceCandidates: [60_001, 60_002, 60_003] as const,
+    activateLifetimeOwner: async () => undefined,
+    close: vi.fn(async () => undefined),
+  };
+}
+
 function runtimePort(
   input: {
+    identity?: AcpxRuntimePort["identity"];
     getStatus?: AcpxRuntimePort["getStatus"];
     setModel?: NonNullable<AcpxRuntimePort["setModel"]>;
     startTurn?: AcpxRuntimePort["startTurn"];
@@ -1803,11 +1854,11 @@ function runtimePort(
   } = {},
 ): AcpxRuntimePort & { close: ReturnType<typeof vi.fn> } {
   return {
-    identity: async () => ({
+    identity: input.identity ?? (async () => ({
       acpxRecordId: "record-1",
       backendSessionId: "backend-1",
       agentSessionId: "agent-1",
-    }),
+    })),
     getStatus:
       input.getStatus ??
       (async () => ({

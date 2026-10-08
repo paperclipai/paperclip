@@ -23,7 +23,10 @@ The canonical host directory keeps its existing physical location:
     any-supported-file
   file-sync/                   controller-only operational state
     adopted.json
-    runs/<run>/live/           isolated writable copy while a run executes
+    canonical-manifest.json   metadata/hash cache, no file contents
+    runs/<initial-run>/
+      owner.json              current run owning the writable copy
+      live/                   writable copy for the provider lifetime
 ```
 
 The process starts in its existing task workspace. `AGENT_HOME` points to the
@@ -33,6 +36,12 @@ the task workspace. Remote providers currently confine file sync to their
 workspace: their independent agent copy therefore lives under the excluded
 `.paperclip-runtime/agent-files/<agent>/<run>/` area. It is not included in task
 workspace sync, Git staging, or task deliverables.
+
+Claude CLI runs keep the working-copy location in each run's prompt, separate
+from the cached system instructions. A new copy path alone does not reset the
+task session. Each turn names the current copy for relative file references;
+instruction or enabled skill content changes still invalidate the prompt bundle.
+Sessions saved with the older path-bearing bundle start fresh once after upgrade.
 
 Regular files (including binary bytes) and directories are supported, up to
 100,000 entries (files and folders), 256 MiB per file and 2 GiB total. Symlinks,
@@ -75,13 +84,16 @@ the run detail also shows warnings from its save receipt. The editor only shows
 preserved instruction-only candidates that may need review, alongside errors
 from the current browser edit. Later successful saves do not erase run history.
 
-Larger folders take longer to hash, copy, and transfer on each run. There is one
-canonical folder plus temporary working copies for currently active runs (and
-remote staging when the transport needs it). No additional captured tree is
-created. Terminal runs remove their private trees and baseline metadata, keeping
-only a small receipt. Restart recovery retries interrupted cleanup without
-removing a running provider's files. These are not aggregate disk quotas; the
-operator still provisions storage for agents and the configured run concurrency.
+Initial restoration copies the canonical folder once. Warm native Codex turns
+reuse that working directory. Checkpoints enumerate file metadata, hash files
+whose identity/size/mode/mtime/ctime changed, and temporarily copy and transfer
+only changed file contents. Deletions and empty directories travel as manifest
+entries. An unchanged image is neither rehashed nor recopied after its first
+checkpoint. A modified file is transferred in full; this is a file-level delta,
+not block-level deduplication. Canonical hash caches and manifests contain no
+file contents. Temporary checkpoint payloads are removed after application.
+The operator still provisions storage for the canonical folders, active working
+copies and changed-file payloads; these are not aggregate disk quotas.
 
 ## Run lifecycle
 
@@ -90,23 +102,39 @@ operator still provisions storage for agents and the configured run concurrency.
    revision history.
 2. Stage the copy through the existing workspace transport. Point `AGENT_HOME`
    and instruction guidance at that registered root.
-3. At the provider's verified checkpoint-and-stop boundary, retrieve the entire
-   directory into the existing working copy before releasing its environment.
+3. For warm native Codex, capture a manifest and changed-file payload at each
+   terminal turn boundary before admitting another turn. Check file metadata
+   before and after streaming and hash the captured payload independently on
+   the host. Retry an unstable checkpoint up to three times; if it cannot be
+   validated, close the owned provider and perform the stopped collector. Other
+   execution paths retain their stopped-provider collection boundary.
 4. Recheck the responsible user's current authorization. Under the same agent
    lock used by editor writes, apply only files changed or deleted relative to
-   the starting baseline. For a competing edit or deletion of the same file,
-   the last synchronization to acquire the lock wins. Unchanged files do not
-   overwrite another run's changes; newly added unrelated files survive.
-5. Record the outcome and remove temporary copies for successful and failed
-   runs. No per-run file versions, conflict copies, or review queue accumulate.
-   The next run starts with the current directory.
+   the last acknowledged baseline. For a competing edit or deletion of the same
+   file, the last synchronization to acquire the lock wins. Unchanged files do
+   not overwrite another run's changes; newly added unrelated files survive.
+5. Record the save receipt and advance the baseline only after application. A
+   warm session keeps its directory and hands ownership to the next run using
+   a controller-owned marker. Old callbacks cannot collect or remove the next
+   owner's files. On session retirement, collect any later writes and remove
+   the private directory. No per-run file versions or conflict copies accumulate.
 
-The whole-directory contract closes the provider process to establish a safe
-collection boundary, including child processes. It preserves the provider's
-resumable conversation. Only the loaded instruction entry participates in the
-new runtime instruction digest; adding or editing another file does not change
-that digest. Relative supporting files are read from `AGENT_HOME`, not from the
-read-only prompt snapshot.
+These are validated **per-file checkpoints**, not an atomic snapshot of arbitrary
+background writers across an entire directory. Writes after a checkpoint remain
+pending until the next checkpoint or verified session retirement. A save receipt
+acknowledges only the captured bytes. Lost remote bytes or missing stop proof
+cannot become a successful save.
+
+Warm reuse requires the actual live session, the same remote environment and
+provider lease, and unchanged canonical files since its last checkpoint. An
+editor or another task changing canonical files retires that session before a
+fresh copy is restored. A directory-path mismatch also forces retirement. Only
+the loaded instruction entry participates in the runtime instruction digest;
+ordinary memory/image edits do not change it. Changes to loaded instructions,
+policy, credentials or provider configuration may still replace the process.
+Relative supporting files are read from `AGENT_HOME`, not the read-only prompt
+snapshot. External instruction bundles remain read-only and use their existing
+lifecycle.
 
 The editor supplies the hash of the file it read. A stale browser save returns
 409 and retains the user's unsaved draft. Run synchronization itself uses
@@ -150,6 +178,22 @@ New current-file bytes are not database revision rows. Old instruction-only
 candidates are retained solely for upgrade compatibility.
 
 Crash recovery can collect a stopped working copy without starting a model.
+Cleanup does not wait for a directory lock before process-stop proof exists, or
+after the copy is superseded or cleanup is complete. An unavailable copy keeps
+its failed-save receipt. Recovery can later clean an unavailable remote copy
+after destruction of its exact lease and executes no remote command. An
+unavailable local copy can still contain uncollected edits; this cleanup path
+preserves those bytes even if local stop proof arrives later.
+Deferred cleanup retries after a
+delay so one blocked copy does not prevent other copies from being cleaned.
+If releasing a run's instruction copy fails, the run records a cleanup warning
+and leaves the durable copy for the recovery sweep. Cleanup does not replace the
+provider's result, discard usage accounting, or prevent environment lease release.
+It does not claim that unsaved agent-file changes were saved; collection failures
+keep their separate failed-save receipts. A run attempts failed cleanup only once
+before handing it to recovery, rather than repeating the lock wait in teardown.
+Re-preparing an existing run uses the same lock as cleanup and rechecks its
+receipt under that lock. Preparing a new run keeps its separate admission path.
 Missing stop proof or lost remote bytes produce a visible diagnostic, never a
 save receipt. An interrupted apply can replay its changed files with the same
 last-sync-wins rule. Cleanup resumes for terminal runs; no copy is retained as

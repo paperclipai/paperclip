@@ -449,7 +449,7 @@ describe("ACPX installation integrity", () => {
       },
       {
         name: "@anthropic-ai/claude-agent-sdk",
-        version: "0.3.280",
+        version: "0.3.286",
         directory: join(dependencyRoot, "claude-agent-sdk"),
       },
       {
@@ -2140,18 +2140,12 @@ async function installationFixture() {
 
 
 describe("Grok launcher subscription refresh", () => {
-  it("keeps the Grok launcher digest synchronized across TypeScript, Rust, server, and provider pack", async () => {
+  it("binds the Grok launcher bytes to the shared release declaration", async () => {
     const launcher = await readFile(new URL("../../providers/grok/launcher.cjs", import.meta.url));
     const digest = `sha256:${createHash("sha256").update(launcher).digest("hex")}`;
-    expect(resolveQualifiedAcpxProfile("grok", "grok-4.7").commandDigest).toBe(digest);
-    const [server, pack, rust] = await Promise.all([
-      readFile(new URL("../../../../../server/src/services/native-runtime/native-session-executor.ts", import.meta.url), "utf8"),
-      readFile(new URL("../../../scripts/build-provider-pack.mjs", import.meta.url), "utf8"),
-      readFile(new URL("../../../runner/crates/runner-core/src/acpx_provider_backend.rs", import.meta.url), "utf8"),
-    ]);
-    expect(server).toContain(`grok: "${digest}"`);
-    expect(pack).toContain(`grok: "${digest}"`);
-    expect(rust.split('"grok" =>')[1]?.slice(0, 600)).toContain(`"${digest}"`);
+    const manifest = JSON.parse(await readFile(new URL("../../../acpx-profiles.json", import.meta.url), "utf8"));
+    expect(manifest.profiles.grok.commandDigest).toBe(digest);
+    expect(resolveQualifiedAcpxProfile("grok", "explicit-model").commandDigest).toBe(digest);
   });
 
   async function fixture(input: {

@@ -85,6 +85,96 @@ describe("createDurableRunLogStore", () => {
     expect(calls.get).toBe(0); // local file present -> no S3 read
   });
 
+  it.each([false, true])("retains every attempt across retry (pod restart: %s)", async (restart) => {
+    const { provider, objects } = createMemoryProvider();
+    let store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const attempts: string[] = [];
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (restart && attempt > 1) {
+        await fs.rm(baseDir, { recursive: true, force: true });
+        store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+      }
+      const handle = await store.begin(begin);
+      attempts.push(handle.attemptId!);
+      await store.append(handle, { stream: "stderr", chunk: `attempt-${attempt}`, ts: "same-time", seq: attempt });
+      const summary = await store.finalize(handle);
+      const saved = objects.get(handle.logRef)!;
+      const lines = saved.toString().trim().split("\n").map((line) => JSON.parse(line));
+      expect(lines.map((line) => line.chunk)).toEqual(Array.from({length: attempt}, (_, i) => `attempt-${i + 1}`));
+      expect(lines.map((line) => line.attemptId)).toEqual(attempts);
+      expect(new Set(attempts).size).toBe(attempt);
+      expect(summary.bytes).toBe(saved.length);
+      expect(summary.sha256).toBe(createHash("sha256").update(saved).digest("hex"));
+    }
+  });
+
+  it("never replaces concurrent appends when two stores restore the same missing log", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const firstStore = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const secondStore = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const original = await firstStore.begin(begin);
+    await firstStore.append(original, { stream: "stderr", chunk: "original", ts: "t0" });
+    await firstStore.finalize(original);
+    const prefix = Buffer.from(objects.get(original.logRef)!);
+    await fs.rm(baseDir, { recursive: true, force: true });
+    let reached!: () => void, release!: () => void;
+    const restoring = new Promise<void>((resolve) => { reached = resolve; });
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const spy = vi.spyOn(provider, "getObject").mockImplementationOnce(async () => ({
+      stream: Readable.from((async function* () {
+        yield prefix;
+        reached();
+        await barrier;
+      })()),
+      contentLength: prefix.length,
+    }));
+    const slow = firstStore.begin(begin);
+    try {
+      await restoring;
+      const fast = await secondStore.begin(begin);
+      await secondStore.append(fast, { stream: "stderr", chunk: "fast attempt", ts: "t1" });
+      release();
+      const late = await slow;
+      await firstStore.append(late, { stream: "stderr", chunk: "slow attempt", ts: "t2" });
+      await firstStore.finalize(late);
+      const saved = objects.get(original.logRef)!;
+      expect(saved).toEqual(await fs.readFile(path.join(baseDir, original.logRef)));
+      expect(saved.toString().trim().split("\n").map((line) => JSON.parse(line).chunk))
+        .toEqual(["original", "fast attempt", "slow attempt"]);
+    } finally {
+      release();
+      await slow.catch(() => undefined);
+      spy.mockRestore();
+    }
+  });
+
+  it.each(["stream_failure", "short_read"])("preserves the durable prefix when restore fails (%s)", async (fault) => {
+    const { provider, objects, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stderr", chunk: "original failure evidence", ts: "t1" });
+    await store.finalize(handle);
+    const prefix = Buffer.from(objects.get(handle.logRef)!);
+    await fs.rm(baseDir, { recursive: true, force: true });
+    const spy = vi.spyOn(provider, "getObject").mockResolvedValueOnce({
+      stream: Readable.from((async function* () {
+        yield prefix.subarray(0, 10);
+        if (fault === "stream_failure") throw new Error("storage connection lost");
+      })()),
+      contentLength: prefix.length,
+    });
+    try {
+      await expect(store.begin(begin)).rejects.toThrow(
+        fault === "stream_failure" ? "storage connection lost" : "incomplete prefix",
+      );
+      await expect(fs.stat(path.join(baseDir, handle.logRef))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(objects.get(handle.logRef)).toEqual(prefix);
+      expect(calls.put).toBe(1);
+      const next = await store.begin(begin);
+      expect(await fs.readFile(path.join(baseDir, next.logRef))).toEqual(prefix);
+    } finally { spy.mockRestore(); }
+  });
+
   it("uploads the complete log to S3 on finalize", async () => {
     const { provider, objects, calls } = createMemoryProvider();
     const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider, keyPrefix: "run-logs" } });
@@ -133,7 +223,7 @@ describe("createDurableRunLogStore", () => {
       expect(summary.sha256).toBe(createHash("sha256").update(local).digest("hex"));
       expect(objects.get(handle.logRef)).toEqual(local);
       expect(local.toString()).toBe(outcome === "fails" ? "" : JSON.stringify({
-        ts: "t1", stream: "stderr", chunk: "late diagnostic",
+        ts: "t1", attemptId: handle.attemptId, stream: "stderr", chunk: "late diagnostic",
       }) + "\n");
     } finally {
       release();

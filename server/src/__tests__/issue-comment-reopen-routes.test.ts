@@ -317,7 +317,7 @@ async function waitForWakeup(assertion: () => void) {
   await vi.waitFor(assertion);
 }
 
-describe.sequential("issue comment reopen routes", () => {
+describe("issue comment reopen routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
@@ -821,7 +821,7 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockAccessService.decide.mockImplementation(
       async (input: { action?: string }) => {
-        const allowed = input.action === "issue:comment";
+        const allowed = input.action === "issue:read" || input.action === "issue:comment";
         return {
           allowed,
           action: input.action,
@@ -869,7 +869,7 @@ describe.sequential("issue comment reopen routes", () => {
       });
       mockAccessService.decide.mockImplementation(
         async (input: { action?: string }) => {
-          const allowed = input.action === "issue:comment";
+          const allowed = input.action === "issue:read" || input.action === "issue:comment";
           return {
             allowed,
             action: input.action,

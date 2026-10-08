@@ -8,7 +8,7 @@ export function resolveAcpxQualification(
   provider: NativeExecutionInput["provider"] | { kind: "acpx"; agent: string; model: string },
   hostEnvironment: NodeJS.ProcessEnv,
 ): AcpxQualificationCandidate | undefined {
-  if (provider.kind !== "acpx" || !["cursor", "copilot", "pi"].includes(provider.agent)) return undefined;
+  if (provider.kind !== "acpx" || !["copilot", "pi"].includes(provider.agent)) return undefined;
   const encoded = hostEnvironment[ACPX_QUALIFICATION_ENV];
   if (!encoded) return undefined;
   let entries: unknown;

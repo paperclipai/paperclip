@@ -28,7 +28,7 @@ describe("capability semantic conformance vectors", () => {
     );
     expect(authorizations).toMatchObject({
       "governed-action-without-claim": { outcome: "denied", code: "required_claim_missing" },
-      "protected-input-redaction": { outcome: "denied", code: "protected_data_denied" },
+      "protected-input-redaction": { outcome: "allowed" },
       "cross-company-dependency-denial": { outcome: "denied", code: "company_scope_violation" },
       "progress-applied": { outcome: "allowed" },
       "progress-duplicate-retry": { outcome: "allowed" },

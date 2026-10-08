@@ -1,11 +1,15 @@
+import { AdapterStopTimeoutError, type AdapterStopContext } from "./adapter-stop-timeout.js";
+import { createAdapterExecutionPhaseTracker } from "./adapter-execution-phase.js";
+
 /** Live adapter ownership shared by routes and scheduler service instances. */
 export function createAdapterExecutionControl() {
   const controller = new AbortController();
+  const phases = createAdapterExecutionPhaseTracker();
   let finish!: () => void;
   const settled = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  return { controller, settled, finish };
+  return { controller, settled, phases, finish: () => { phases.finish(); finish(); } };
 }
 
 export const adapterExecutionControls = new Map<
@@ -67,7 +71,18 @@ export async function registerAdapterExecutionControl(
 export async function waitForAdapterStop(
   settled: Promise<void>,
   timeoutMs = 60_000,
+  diagnostics?: AdapterStopContext,
+  owner?: ReturnType<typeof createAdapterExecutionControl>,
 ) {
+  const currentPhase = () => {
+    try {
+      return owner && owner.settled === settled && diagnostics?.runId
+        && adapterExecutionControls.get(diagnostics.runId) === owner
+        ? owner.phases.snapshot() : null;
+    } catch {
+      return null;
+    }
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -76,9 +91,12 @@ export async function waitForAdapterStop(
         timer = setTimeout(
           () =>
             reject(
-              new Error(
-                "Execution is still stopping; termination has not been verified.",
-              ),
+              new AdapterStopTimeoutError(timeoutMs, {
+                ...diagnostics,
+                phase: undefined,
+                phaseElapsedMs: undefined,
+                ...currentPhase(),
+              }),
             ),
           timeoutMs,
         );

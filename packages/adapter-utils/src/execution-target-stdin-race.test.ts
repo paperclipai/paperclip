@@ -591,6 +591,7 @@ describe("stdin file race (parent PAP-4037)", () => {
     ["Remote command failed: Request failed with status code 502", 1],
     ["Cloudflare sandbox bridge request failed with HTTP 502. sensitive-input", 1],
     ["Remote command failed: sensitive-input", 1],
+    ["Provider never responds", 1],
   ] as const)("bounds input failure %s to %i attempts and stops later writes", async (failure, expectedAttempts) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-failed-"));
     cleanupDirs.push(rootDir);
@@ -602,11 +603,13 @@ describe("stdin file race (parent PAP-4037)", () => {
       if (script.includes("/stdin/000000000002.json")) laterWrite = true;
       if (script.includes("/stdin/000000000001.json")) {
         attempts += 1;
+        if (failure === "Provider never responds") await new Promise<void>(() => {});
         throw new Error(failure);
       }
     });
     const bridge = await startAdapterExecutionTargetProcessSessionBridge({
       runId: "run-stdin-failed",
+      timeoutSec: failure === "Provider never responds" ? 5 : undefined,
       target: { kind: "remote", transport: "sandbox", remoteCwd: rootDir, runner },
       runtimeRootDir: path.join(rootDir, "runtime"),
       adapterKey: "acpx", command: "cat", args: [], cwd: rootDir, env: {},

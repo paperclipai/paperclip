@@ -1,3 +1,4 @@
+import { configuredEnvironmentKeys } from "../../configured-environment.js";
 import { resolve, isAbsolute, join, dirname, delimiter } from "node:path";
 import { existsSync, realpathSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -167,20 +168,28 @@ function tomlString(value: string): string {
 }
 
 export function createIsolatedCodexAppServerArgs(
-  source: NodeJS.ProcessEnv = process.env,
+  source: NodeJS.ProcessEnv | undefined = undefined,
   readOnlyRoots: string[] = [],
   /** Server-registered run copy, never an environment/config-supplied root. */
   instructionWorkingCopyRoot?: string,
 ): string[] {
+  const explicitSource = source;
+  source ??= process.env;
   const gitRoots = gitFilesystemRoots(source);
   readOnlyRoots = [...new Set([...readOnlyRoots, ...codexNetworkReadOnlyRoots(source)])];
   const networkAccess = codexNetworkAccess(source);
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
-  const inheritedGitHubKeys = githubCredentialEnvironmentKeys(source);
+  const inheritedGitHubKeys = [
+    ...githubCredentialEnvironmentKeys(source),
+    ...configuredEnvironmentKeys(explicitSource),
+    ...["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"].filter(key => source[key] !== undefined),
+  ];
   const hasProjectedEnvironment = inheritedGitHubKeys.length > 0;
   // Codex filters the configured `set` values through include_only as well.
   // Retain the explicit command PATH/HOME/locale settings, not ambient secrets.
   const commandEnvironment = codexCommandEnvironment(source);
+  // Selected task values are inherited, never serialized into configuration argv.
+  for (const key of configuredEnvironmentKeys(explicitSource)) delete commandEnvironment[key];
   if (instructionWorkingCopyRoot && source.AGENT_HOME === instructionWorkingCopyRoot) commandEnvironment.AGENT_HOME = instructionWorkingCopyRoot;
   const shellEnvironmentKeys = [...new Set([...inheritedGitHubKeys, ...Object.keys(commandEnvironment)])].sort();
   if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) readOnlyRoots = [...readOnlyRoots, source.PAPERCLIP_GITHUB_LAUNCHER_DIR];

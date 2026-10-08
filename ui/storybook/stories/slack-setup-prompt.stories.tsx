@@ -10,7 +10,7 @@ const meta = {
   component: SlackSetupPrompt,
   parameters: {
     layout: "padded",
-    docs: { description: { component: "Production copy button and full browser-agent prompt. The surrounding agent selection is a static placement preview; it does not create a connection. Configure PAPERCLIP_STORYBOOK_API_URL to include a real instance origin in copied instructions. Otherwise the prompt asks for the instance URL." } },
+    docs: { description: { component: "Production animated setup button, prompt preview, and clipboard feedback. The surrounding agent selection is a static placement preview; it does not create a connection. Configure PAPERCLIP_STORYBOOK_API_URL to include a real instance origin in copied instructions. Otherwise the prompt asks for the instance URL." } },
   },
   args: { instanceUrl },
 } satisfies Meta<typeof SlackSetupPrompt>;

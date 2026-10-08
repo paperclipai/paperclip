@@ -201,3 +201,27 @@ PAPERCLIP_FILE_DELIVERY_DAYTONA=1 pnpm exec vitest run server/src/__tests__/file
 
 The live fixture deletes each sandbox before checking that its attachments
 remain downloadable from Paperclip. It does not run unless explicitly enabled.
+
+## Text attachment previews
+
+In the task chat layout, select a text attachment in Artifacts, a work-product
+card, or a chat attachment chip to open a named right-side tab. Reopening the
+same attachment focuses its existing tab. Tabs can be switched and closed.
+On mobile, the same viewer opens in the task details drawer.
+
+Markdown work products keep their expandable review document, annotations,
+revision indicator, and document links. **Open in tab** is a separate action.
+Work-product cards keep **Download** as a direct original-file download.
+Text file cards provide **Open in tab** beside their existing actions. CSV cards
+keep this action before and after loading their data preview.
+
+Markdown attachments offer **Rendered** and **Raw** views. Other supported text
+files display literal text. Image references and diagram source remain inert;
+opening a preview does not load attachment-selected media URLs. The viewer
+provides a download action. Preview reads
+are limited to 512 KiB; oversized, unsupported, or unavailable files show an
+explicit fallback instead of attempting an unbounded render. A failed read can
+be retried. Workspace files continue to use the existing workspace file viewer.
+
+Storybook: **Tasks / Text file tabs** covers opening from Artifacts, Markdown,
+plain text, empty files, oversized files, missing attachments, and a narrow panel.

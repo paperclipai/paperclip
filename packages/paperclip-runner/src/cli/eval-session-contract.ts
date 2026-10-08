@@ -262,7 +262,7 @@ export function parseEvalSessionRequest(
   if (options.candidateProfile !== undefined && (provider !== "acpx" || acpxAgent !== options.candidateProfile || !candidate)) {
     throw new Error("--candidate-profile must match the request's registered candidate ACPX agent");
   }
-  if (candidate && options.candidateProfile !== acpxAgent) {
+  if (candidate && acpxAgent !== "cursor" && options.candidateProfile !== acpxAgent) {
     throw new Error("Candidate ACPX profiles require an explicit matching --candidate-profile diagnostic flag");
   }
   const managedProfileInput = input.managedProfile === null

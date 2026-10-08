@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
+  authUsers,
+  companyMemberships,
+  instanceUserRoles,
+  issueQuestionResponseDeliveries,
   companies,
   createDb,
   documentRevisions,
@@ -48,6 +52,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await db.delete(issueThreadInteractions);
     await db.delete(activityLog);
     await db.delete(issueComments);
@@ -64,7 +69,10 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.delete(goals);
     await db.delete(agents);
     await db.delete(instanceSettings);
+    await db.delete(companyMemberships);
+    await db.delete(instanceUserRoles);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -205,6 +213,265 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     };
   }
 
+  it("persists and answers a canonical-only mixed question form", async () => {
+    const { companyId, issueId } = await seedSourceQuestionFixture({});
+    const questionSet = {
+      schema: "paperclip.question_set.v1" as const,
+      questions: [
+        { id: "repo", prompt: "Repository URL?", required: true, answerMode: "text" as const },
+        { id: "scope", prompt: "Review scope?", required: true, answerMode: "single_select" as const, options: [{ id: "all", label: "All changes" }, { id: "selected", label: "Selected changes" }] },
+        { id: "hosting", prompt: "Preview hosting?", required: true, answerMode: "multi_select" as const, options: [{ id: "existing", label: "Existing host" }, { id: "new", label: "New host" }] },
+      ],
+    };
+    const input = { kind: "ask_user_questions" as const, idempotencyKey: "canonical:mixed", payload: { version: 1 as const, questionSet } };
+    const issue = { id: issueId, companyId };
+    const created = await interactionsSvc.create(issue, input, { userId: "local-board" });
+    if (created.kind !== "ask_user_questions") throw new Error("expected questions");
+    expect(created.payload.questionSet).toEqual(questionSet);
+    expect(created.payload.questions.map((question) => question.id)).toEqual(["repo", "scope", "hosting"]);
+    expect(await interactionsSvc.create(issue, input, { userId: "local-board" })).toEqual(created);
+    await expect(interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "repo", optionIds: [], otherText: "https://example.com/repo" }] }, { userId: "local-board" })).rejects.toThrow("requires an answer");
+    const answered = await interactionsSvc.answerQuestions(issue, created.id, { answers: [
+      { questionId: "repo", optionIds: [], otherText: "https://example.com/repo" },
+      { questionId: "scope", optionIds: ["all"] },
+      { questionId: "hosting", optionIds: ["existing", "new"] },
+    ] }, { userId: "local-board" });
+    expect(answered.status).toBe("answered");
+  });
+
+  it("rejects canonical text and custom answers that violate constraints before resolution", async () => {
+    const { companyId, issueId } = await seedSourceQuestionFixture({});
+    const issue = { id: issueId, companyId };
+    const cases = [
+      { textValidation: { minLength: 3, maxLength: 4 }, invalid: ["ab", "abcde"], valid: "abcd" },
+      { textValidation: { pattern: "^https://" }, invalid: ["http://example.test"], valid: "https://example.test" },
+      { textValidation: { inputType: "integer" as const, minimum: 2, maximum: 4 }, invalid: ["no", "3.5", "1", "5"], valid: "3" },
+      { textValidation: { inputType: "number" as const, minimum: 2, maximum: 4 }, invalid: ["Infinity", "1.9", "4.1"], valid: "2.5" },
+    ];
+    for (const [index, entry] of cases.entries()) {
+      const created = await interactionsSvc.create(issue, {
+        kind: "ask_user_questions", payload: { version: 1, questionSet: {
+          schema: "paperclip.question_set.v1", questions: [{ id: "value", prompt: "Value?", required: true, answerMode: "text", textValidation: entry.textValidation }],
+        } },
+      }, { userId: "local-board" });
+      for (const otherText of entry.invalid) {
+        await expect(interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "value", optionIds: [], otherText }] }, { userId: "local-board" })).rejects.toThrow();
+        const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, created.id));
+        expect(row?.status, `case ${index}: ${otherText}`).toBe("pending");
+      }
+      expect((await interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "value", optionIds: [], otherText: entry.valid }] }, { userId: "local-board" })).status).toBe("answered");
+    }
+    const custom = await interactionsSvc.create(issue, { kind: "ask_user_questions", payload: { version: 1, questionSet: {
+      schema: "paperclip.question_set.v1", questions: [{ id: "scope", prompt: "Scope?", required: true, answerMode: "single_select", options: [{ id: "all", label: "All" }, { id: "selected", label: "Selected" }], customAnswer: { enabled: true }, textValidation: { minLength: 3 } }],
+    } } }, { userId: "local-board" });
+    await expect(interactionsSvc.answerQuestions(issue, custom.id, { answers: [{ questionId: "scope", optionIds: [], otherText: "ab" }] }, { userId: "local-board" })).rejects.toThrow("at least 3");
+    expect((await interactionsSvc.answerQuestions(issue, custom.id, { answers: [{ questionId: "scope", optionIds: [], otherText: "abc" }] }, { userId: "local-board" })).status).toBe("answered");
+  });
+
+  it("accepts existing custom-answer IDs in compatible dual forms", async () => {
+    const { companyId, issueId } = await seedSourceQuestionFixture({});
+    const issue = { id: issueId, companyId };
+    const options = [{ id: "all", label: "All" }, { id: "selected", label: "Selected" }];
+    const created = await interactionsSvc.create(issue, { kind: "ask_user_questions", payload: {
+      version: 1,
+      questions: [{ id: "scope", prompt: "Scope?", required: true, selectionMode: "single", options: [...options, { id: "existing-custom-id", label: "Other", freeText: true }] }],
+      questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "scope", prompt: "Scope?", required: true, answerMode: "single_select", options, customAnswer: { enabled: true }, textValidation: { minLength: 3 } }] },
+    } }, { userId: "local-board" });
+    const answered = await interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "scope", optionIds: ["existing-custom-id"], otherText: "Specific files" }] }, { userId: "local-board" });
+    expect(answered).toMatchObject({ status: "answered", result: { answers: [{ questionId: "scope", optionIds: ["existing-custom-id"], otherText: "Specific files" }] } });
+  });
+
+  it("keeps historical pending written-answer paths usable with their text constraints", async () => {
+    const { companyId, issueId } = await seedSourceQuestionFixture({});
+    const issue = { id: issueId, companyId };
+    const created = await interactionsSvc.create(issue, { kind: "ask_user_questions", payload: { version: 1, questionSet: {
+      schema: "paperclip.question_set.v1", questions: [{ id: "scope", prompt: "Scope?", required: true, answerMode: "single_select", options: [{ id: "all", label: "All" }, { id: "selected", label: "Selected" }], customAnswer: { enabled: true }, textValidation: { minLength: 3 } }],
+    } } }, { userId: "local-board" });
+    if (created.kind !== "ask_user_questions") throw new Error("expected questions");
+    const historicalPayload = structuredClone(created.payload);
+    delete historicalPayload.questionSet!.questions[0].customAnswer;
+    await db.update(issueThreadInteractions).set({ payload: historicalPayload }).where(eq(issueThreadInteractions.id, created.id));
+    await expect(interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "scope", optionIds: ["paperclip_custom_answer"], otherText: "ab" }] }, { userId: "local-board" })).rejects.toThrow("at least 3");
+    const answered = await interactionsSvc.answerQuestions(issue, created.id, { answers: [{ questionId: "scope", optionIds: ["paperclip_custom_answer"], otherText: "Specific files" }] }, { userId: "local-board" });
+    expect(answered.status).toBe("answered");
+  });
+
+  async function seedQuestionUser(companyId: string, userId: string, role = "member", status = "active") {
+    await db.insert(authUsers).values({ id: userId, name: "Question recipient", email: `${randomUUID()}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, membershipRole: role, status });
+  }
+
+  async function seedChatQuestion() {
+    const fixture = await seedSourceQuestionFixture({});
+    const userId = "paperclip-id:question-owner";
+    await seedQuestionUser(fixture.companyId, userId);
+    await db.update(issues).set({
+      conversationAgentId: fixture.agentId, conversationUserId: userId, conversationState: "active",
+      assigneeAgentId: fixture.agentId,
+    }).where(eq(issues.id, fixture.issueId));
+    return { ...fixture, userId };
+  }
+
+  it("derives the exact Cloud chat owner, denies other responders, and saves one answer delivery", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-cloud-token");
+    const fixture = await seedChatQuestion();
+    const scope = { id: fixture.issueId, companyId: fixture.companyId };
+    const created = await interactionsSvc.create(scope, {
+      ...questionCreateInput(fixture.runId), resolverPolicy: "human_only",
+    }, { agentId: fixture.agentId });
+    expect(created.addresseeUserId).toBe(fixture.userId);
+    const answer = { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] };
+    for (const userId of ["question-owner", "paperclip-id:other-user"]) {
+      await expect(interactionsSvc.answerQuestions(scope, created.id, answer, { userId }))
+        .rejects.toMatchObject({ status: 403, details: { code: "interaction_addressee_mismatch" } });
+    }
+    await expect(interactionsSvc.answerQuestions(scope, created.id, answer, { agentId: fixture.agentId, runId: fixture.runId }))
+      .rejects.toMatchObject({ status: 403 });
+    expect(await db.select().from(issueQuestionResponseDeliveries)).toHaveLength(0);
+    const answered = await interactionsSvc.answerQuestions(scope, created.id, answer, { userId: fixture.userId });
+    expect(answered).toMatchObject({ status: "answered", resolvedByUserId: fixture.userId, continuationPolicy: "wake_assignee" });
+    await expect(interactionsSvc.answerQuestions(scope, created.id, answer, { userId: fixture.userId }))
+      .rejects.toMatchObject({ status: 409 });
+    expect(await db.select().from(issueQuestionResponseDeliveries)).toHaveLength(1);
+  });
+
+  it("reuses concurrent omitted and explicit chat-owner requests and legacy omitted recipients", async () => {
+    const fixture = await seedChatQuestion();
+    const scope = { id: fixture.issueId, companyId: fixture.companyId };
+    const input = { ...questionCreateInput(fixture.runId), idempotencyKey: "chat-question" };
+    const actor = { agentId: fixture.agentId };
+    // Both callers must finish their optimistic lookup before either transaction
+    // inserts, forcing the unique-conflict recovery path instead of relying on timing.
+    const transaction = db.transaction.bind(db);
+    let arrivals = 0;
+    let release!: () => void;
+    const ready = new Promise<void>(resolve => { release = resolve; });
+    const gate = vi.spyOn(db, "transaction").mockImplementation(async (callback, config) => {
+      if (++arrivals === 2) release();
+      await ready;
+      return transaction(callback, config);
+    });
+    let omitted!: Awaited<ReturnType<typeof interactionsSvc.create>>;
+    let explicit!: Awaited<ReturnType<typeof interactionsSvc.create>>;
+    try {
+      [omitted, explicit] = await Promise.all([
+        interactionsSvc.create(scope, input, actor),
+        interactionsSvc.create(scope, { ...input, addresseeUserId: fixture.userId }, actor),
+      ]);
+    } finally { gate.mockRestore(); }
+    expect(explicit.id).toBe(omitted.id);
+    expect(explicit.addresseeUserId).toBe(fixture.userId);
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(1);
+    await db.update(issueThreadInteractions).set({ addresseeUserId: null }).where(eq(issueThreadInteractions.id, omitted.id));
+    expect((await interactionsSvc.create(scope, input, actor)).id).toBe(omitted.id);
+  });
+
+  it.each(["question-owner", "paperclip-id:another-member"])("rejects contradictory chat recipient %s before saving", async (addresseeUserId) => {
+    const fixture = await seedChatQuestion();
+    await seedQuestionUser(fixture.companyId, "paperclip-id:another-member");
+    await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+      ...questionCreateInput(fixture.runId), addresseeUserId,
+    }, { agentId: fixture.agentId })).rejects.toMatchObject({
+      status: 422, details: { code: "interaction_chat_addressee_mismatch" },
+    });
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+    expect(await db.select().from(issueQuestionResponseDeliveries)).toHaveLength(0);
+  });
+
+  it("does not infer chat recipients for confirmations or replace their explicit owner", async () => {
+    const fixture = await seedChatQuestion();
+    const scope = { id: fixture.issueId, companyId: fixture.companyId };
+    const input = { kind: "request_confirmation" as const, payload: { version: 1 as const, prompt: "Proceed?" } };
+    const actor = { agentId: fixture.agentId };
+    expect(await interactionsSvc.create(scope, input, actor)).toMatchObject({ addresseeUserId: null });
+    const addresseeUserId = "paperclip-id:confirmation-reviewer";
+    await seedQuestionUser(fixture.companyId, addresseeUserId);
+    expect(await interactionsSvc.create(scope, { ...input, addresseeUserId }, actor)).toMatchObject({ addresseeUserId });
+  });
+
+  it("keeps ordinary task addressing optional and enforces valid explicit recipients", async () => {
+    const fixture = await seedSourceQuestionFixture({});
+    const scope = { id: fixture.issueId, companyId: fixture.companyId };
+    const input = { ...questionCreateInput(fixture.runId), resolverPolicy: "human_only" as const };
+    const actor = { agentId: fixture.agentId };
+    const open = await interactionsSvc.create(scope, input, actor);
+    expect(open.addresseeUserId).toBeNull();
+    const userId = "paperclip-id:task-recipient";
+    await seedQuestionUser(fixture.companyId, userId);
+    const addressed = await interactionsSvc.create(scope, { ...input, addresseeUserId: userId }, actor);
+    expect(addressed.addresseeUserId).toBe(userId);
+    const answer = { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] };
+    await expect(interactionsSvc.answerQuestions(scope, addressed.id, answer, { userId: "other-user" })).rejects.toMatchObject({ status: 403 });
+    expect(await interactionsSvc.answerQuestions(scope, addressed.id, answer, { userId })).toMatchObject({ status: "answered", resolvedByUserId: userId });
+  });
+
+  it.each(["unknown", "prefix-dropped", "cross-company", "inactive", "viewer"])("rejects %s explicit task recipients before saving", async (kind) => {
+    const fixture = await seedSourceQuestionFixture({});
+    const userId = "paperclip-id:task-recipient";
+    if (kind !== "unknown") {
+      const companyId = kind === "cross-company" ? (await seedConfirmationIssue()).companyId : fixture.companyId;
+      await seedQuestionUser(companyId, userId, kind === "viewer" ? "viewer" : "member", kind === "inactive" ? "inactive" : "active");
+    }
+    await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+      ...questionCreateInput(fixture.runId), addresseeUserId: kind === "prefix-dropped" ? "task-recipient" : userId,
+    }, { agentId: fixture.agentId })).rejects.toMatchObject({
+      status: 422, details: { code: "interaction_addressee_user_unavailable" },
+    });
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+    expect(await db.select().from(issueQuestionResponseDeliveries)).toHaveLength(0);
+  });
+
+  it("preserves valid instance-admin recipients", async () => {
+    const userId = "instance-admin";
+    const fixture = await seedSourceQuestionFixture({});
+    await db.insert(authUsers).values({ id: userId, name: "Admin", email: `${randomUUID()}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
+    expect(await interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+      ...questionCreateInput(fixture.runId), addresseeUserId: userId,
+    }, { agentId: fixture.agentId })).toMatchObject({ addresseeUserId: userId });
+  });
+
+  it("lets the implicit local board answer chat questions without an auth row", async () => {
+    vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", "local_trusted");
+    const fixture = await seedSourceQuestionFixture({});
+    await db.update(issues).set({
+      conversationAgentId: fixture.agentId, conversationUserId: "local-board", conversationState: "active",
+      assigneeAgentId: fixture.agentId,
+    }).where(eq(issues.id, fixture.issueId));
+    const scope = { id: fixture.issueId, companyId: fixture.companyId };
+    const question = await interactionsSvc.create(scope, questionCreateInput(fixture.runId), { agentId: fixture.agentId });
+    expect(question.addresseeUserId).toBe("local-board");
+    expect(await db.select().from(authUsers)).toHaveLength(0);
+    expect(await db.select().from(companyMemberships)).toHaveLength(0);
+    expect(await interactionsSvc.answerQuestions(scope, question.id, {
+      answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+    }, { userId: "local-board" })).toMatchObject({ status: "answered", resolvedByUserId: "local-board" });
+  });
+
+  it.each(["authenticated", "cloud"])("does not infer local-board authority in %s mode", async (mode) => {
+    vi.stubEnv("PAPERCLIP_DEPLOYMENT_MODE", mode === "cloud" ? "local_trusted" : "authenticated");
+    if (mode === "cloud") vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-cloud-token");
+    const fixture = await seedSourceQuestionFixture({});
+    await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+      ...questionCreateInput(fixture.runId), addresseeUserId: "local-board",
+    }, { agentId: fixture.agentId })).rejects.toMatchObject({
+      status: 422, details: { code: "interaction_addressee_user_unavailable" },
+    });
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+  });
+
+  it("does not accept a stale Cloud instance-admin row as recipient authority", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-cloud-token");
+    const fixture = await seedSourceQuestionFixture({});
+    const userId = "paperclip-id:stale-admin";
+    await db.insert(authUsers).values({ id: userId, name: "Stale admin", email: `${randomUUID()}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
+    await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+      ...questionCreateInput(fixture.runId), addresseeUserId: userId,
+    }, { agentId: fixture.agentId })).rejects.toMatchObject({ status: 422 });
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+  });
+
   it("rejects a source-run question when a newer human comment was not delivered", async () => {
     const fixture = await seedSourceQuestionFixture({ paperclipWake: { comments: [] } });
     const commentId = randomUUID();
@@ -335,18 +602,21 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       permissions: {},
     });
 
-    await db.update(heartbeatRuns)
-      .set({ nativeIssueId: randomUUID() })
-      .where(eq(heartbeatRuns.id, fixture.runId));
+    // Simulate historical corruption to retain the service-level defense test.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.update(heartbeatRuns).set({ nativeIssueId: randomUUID() }).where(eq(heartbeatRuns.id, fixture.runId));
+    });
     await expect(interactionsSvc.create(
       { id: fixture.issueId, companyId: fixture.companyId },
       questionCreateInput(fixture.runId),
       { agentId: fixture.agentId, runId: fixture.runId },
     )).rejects.toMatchObject({ status: 422, message: "sourceRunId must belong to the same issue" });
 
-    await db.update(heartbeatRuns)
-      .set({ nativeIssueId: null, contextSnapshot: { issueId: randomUUID(), paperclipWake: { comments: [] } } })
-      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.update(heartbeatRuns).set({ nativeIssueId: null, contextSnapshot: { issueId: randomUUID(), paperclipWake: { comments: [] } } }).where(eq(heartbeatRuns.id, fixture.runId));
+    });
     await expect(interactionsSvc.create(
       { id: fixture.issueId, companyId: fixture.companyId },
       questionCreateInput(fixture.runId),
@@ -4206,6 +4476,96 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         foreignRunId,
       };
     }
+
+    it.each(["request_confirmation", "request_checkbox_confirmation"] as const)(
+      "projects %s readiness until its source workspace settles",
+      async (kind) => {
+        const { companyId, executionWorkspaceId, issueId, interactionId, sourceRunId, foreignRunId } =
+          await seedAcceptGateFixture({ kind, sourceRunStatus: "running" });
+        // A source run without workspace operations needs no sync barrier.
+        expect((await interactionsSvc.listForIssue(issueId))[0].acceptanceBlocker).toBeUndefined();
+        await db.insert(workspaceOperations).values({
+          companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+          phase: "worktree_prepare", status: "succeeded",
+        });
+        const assertPreparing = async () => {
+          const expected = { id: interactionId, status: "pending", acceptanceBlocker: "workspace_sync_pending" };
+          expect((await interactionsSvc.listForIssue(issueId))[0]).toMatchObject(expected);
+          expect(await interactionsSvc.getById(interactionId)).toMatchObject(expected);
+          expect(await interactionsSvc.getForIssue({ id: issueId, companyId }, interactionId)).toMatchObject(expected);
+        };
+        await assertPreparing();
+        const [finalize] = await db.insert(workspaceOperations).values({
+          companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+          phase: "workspace_finalize", status: "running",
+        }).returning();
+        await assertPreparing();
+        await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id, finalize.id));
+        await db.insert(workspaceOperations).values({
+          companyId, executionWorkspaceId, heartbeatRunId: foreignRunId,
+          phase: "worktree_prepare", status: "succeeded",
+        });
+        expect((await interactionsSvc.listForIssue(issueId))[0].acceptanceBlocker).toBeUndefined();
+        expect((await interactionsSvc.getById(interactionId))?.acceptanceBlocker).toBeUndefined();
+        expect((await interactionsSvc.getForIssue({ id: issueId, companyId }, interactionId)).acceptanceBlocker).toBeUndefined();
+      },
+    );
+
+    it.each(["failed", "skipped", "stale"])("does not keep preparing after a %s finalize", async (outcome) => {
+      const { companyId, executionWorkspaceId, issueId, sourceRunId } =
+        await seedAcceptGateFixture({ sourceRunStatus: "failed" });
+      await db.insert(workspaceOperations).values({
+        companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+        phase: "workspace_finalize", status: outcome === "stale" ? "running" : outcome,
+      });
+      expect((await interactionsSvc.listForIssue(issueId))[0].acceptanceBlocker).toBeUndefined();
+    });
+
+    it.each(["accepted", "rejected", "cancelled", "expired"])("does not project a blocker on %s history", async (status) => {
+      const { companyId, executionWorkspaceId, issueId, interactionId, sourceRunId } = await seedAcceptGateFixture();
+      await db.insert(workspaceOperations).values({
+        companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+        phase: "worktree_prepare", status: "succeeded",
+      });
+      await db.update(issueThreadInteractions).set({ status }).where(eq(issueThreadInteractions.id, interactionId));
+      expect((await interactionsSvc.listForIssue(issueId))[0].acceptanceBlocker).toBeUndefined();
+      expect((await interactionsSvc.getById(interactionId))?.acceptanceBlocker).toBeUndefined();
+    });
+
+    it("does not project a blocker for confirmations expired by task closure", async () => {
+      const { companyId, executionWorkspaceId, issueId, sourceRunId } = await seedAcceptGateFixture();
+      await db.insert(workspaceOperations).values({
+        companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+        phase: "worktree_prepare", status: "succeeded",
+      });
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+      const [interaction] = await interactionsSvc.listForIssue(issueId);
+      expect(interaction.status).toBe("expired");
+      expect(interaction.acceptanceBlocker).toBeUndefined();
+    });
+
+    it.each(["toolAction", "ask_user_questions"])(
+      "keeps live %s decisions available while the workspace is active",
+      async (kind) => {
+        const { companyId, executionWorkspaceId, issueId, interactionId, sourceRunId } =
+          await seedAcceptGateFixture({ sourceRunStatus: "running" });
+        await db.insert(workspaceOperations).values({
+          companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
+          phase: "worktree_prepare", status: "succeeded",
+        });
+        const payload = kind === "ask_user_questions"
+          ? { version: 1, questions: [{ id: "question", prompt: "Which option?", selectionMode: "single", options: [{ id: "first", label: "First" }] }] }
+          : { version: 1, prompt: "Allow this action?", [kind]: { version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "example.write",
+                toolDisplayName: "Write", connectionId: randomUUID(), applicationId: randomUUID(),
+                appDisplayName: "Example", risk: "write", previewMarkdown: "Write one row", argumentsSummaryJson: "{}",
+                argumentsHash: "hash", expiresAt: "2099-01-01T00:00:00.000Z" } };
+        await db.update(issueThreadInteractions).set({
+          kind: kind === "ask_user_questions" ? kind : "request_confirmation", payload,
+        }).where(eq(issueThreadInteractions.id, interactionId));
+        expect((await interactionsSvc.listForIssue(issueId))[0].acceptanceBlocker).toBeUndefined();
+        expect((await interactionsSvc.getById(interactionId))?.acceptanceBlocker).toBeUndefined();
+      },
+    );
 
     it("allows request_confirmation accept when the source run finalized but a foreign run is mid-flight", async () => {
       const { companyId, executionWorkspaceId, issueId, goalId, interactionId, sourceRunId, foreignRunId } =

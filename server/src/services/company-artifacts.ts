@@ -148,6 +148,7 @@ function buildArtifactsGroupHref(
   params.set("groupIssueId", groupIssueId);
   if (query.kind !== "all") params.set("kind", query.kind);
   if (query.projectId) params.set("projectId", query.projectId);
+  if (query.agentId) params.set("agentId", query.agentId);
   if (query.q) params.set("q", query.q);
   return `/${encodeURIComponent(companyPrefix)}/artifacts?${params.toString()}`;
 }
@@ -374,6 +375,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         if (documentCursor) documentConditions.push(documentCursor);
         if (groupBy === "task" && query.groupIssueId) documentConditions.push(eq(issues.id, query.groupIssueId));
         if (query.projectId) documentConditions.push(eq(issues.projectId, query.projectId));
+        if (query.agentId) documentConditions.push(sql`coalesce(${createdAgent.id}, ${updatedAgent.id}) = ${query.agentId}`);
         if (q) {
           documentConditions.push(sql`(
             coalesce(${documents.title}, '') ILIKE ${q} ESCAPE '\\'
@@ -502,6 +504,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           workProductBaseConditions.push(projectCondition);
           workProductConditions.push(projectCondition);
         }
+        // Agent filter applies to the listed rows only; the attachment dedupe
+        // below stays company-wide so a work product's file never re-lists.
+        if (query.agentId) workProductConditions.push(eq(workProductAgent.id, query.agentId));
         if (q) {
           const searchCondition = sql`(
             ${issueWorkProducts.title} ILIKE ${q} ESCAPE '\\'
@@ -627,6 +632,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         if (groupBy === "task" && query.groupIssueId) attachmentConditions.push(eq(issues.id, query.groupIssueId));
         if (attachmentKind) attachmentConditions.push(attachmentKind);
         if (query.projectId) attachmentConditions.push(eq(issues.projectId, query.projectId));
+        if (query.agentId) attachmentConditions.push(eq(attachmentAgent.id, query.agentId));
         if (q) {
           attachmentConditions.push(sql`(
             coalesce(${assets.originalFilename}, '') ILIKE ${q} ESCAPE '\\'

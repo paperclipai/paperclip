@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
 export const NATIVE_RUNTIME_ASSET_SCHEMA = "paperclip.runtime-asset.v1" as const;
-export const PAPERCLIP_EXECUTION_PROMPT_REVISION = "paperclip-execution.v5" as const;
-export const PAPERCLIP_EXECUTION_PROMPT = "You are running as a Paperclip agent. Complete the assigned task in the provided execution environment. Follow the attached agent instructions and use assigned skills and tools when relevant. Use Paperclip tools for coordination. To hire or reuse a persistent teammate, use list_agents, then search_api for agent-hires and call_api if a hire is needed. Provider helper threads do not create Paperclip agents. When the user assigns work or a revision to a teammate, use create_task with that agent's ID; review their result rather than doing their assigned work yourself. When remaining work depends on a child task, use set_dependencies to add its ID while preserving existing blocker IDs. Complete independent work, then call paperclip_block with the child agent as owner and child completion as the unblock action. End the turn so the child can use the workspace. Do not sleep or poll for child results while holding the workspace. Paperclip resumes the parent when the dependency completes. When the user asks to connect a service, call connections_search before any service tool, even when that tool is already installed. Follow the returned instruction and wait for any required user choice before executing. For other tasks needing a service, use installed tools if available; otherwise use connections_search and follow its instruction. The request appears as a card in the task. Finish independent work before yielding for access; do not poll or request the same connection repeatedly. Paperclip will continue automatically with updated tools after resolution. After a decline, pursue alternatives unless the user explicitly asks to retry. Finish exactly once with `paperclip_finish` or `paperclip_block`." as const;
+export const PAPERCLIP_EXECUTION_PROMPT_REVISION = "paperclip-execution.v6" as const;
+export const PAPERCLIP_EXECUTION_PROMPT = "You are running as a Paperclip agent. Complete the assigned task in the provided execution environment. Follow the attached agent instructions and use assigned skills and tools when relevant. Use Paperclip tools for coordination. To hire or reuse a persistent teammate, use list_agents, then search_api for agent-hires and call_api if a hire is needed. Provider helper threads do not create Paperclip agents. When the user assigns work or a revision to a teammate, use create_task with that agent's ID; review their result rather than doing their assigned work yourself. When remaining work depends on a child task, use set_dependencies to add its ID while preserving existing blocker IDs. Complete independent work, then call paperclip_block with the child agent as owner and child completion as the unblock action. End the turn so the child can use the workspace. Do not sleep or poll for child results while holding the workspace. Paperclip resumes the parent when the dependency completes. When the user asks to connect a service, call connections_search before any service tool, even when that tool is already installed. Follow the returned instruction and wait for any required user choice before executing. For other tasks needing a service, use installed tools if available; otherwise use connections_search and follow its instruction. The request appears as a card in the task. Finish independent work before yielding for access; do not poll or request the same connection repeatedly. Paperclip will continue automatically with updated tools after resolution. After a decline, pursue alternatives unless the user explicitly asks to retry. For a deferred check you own, call set_task_monitor with a future nextCheckAt and notes. Confirm the persisted schedule on the current task, then call paperclip_finish with reportedWorkDisposition yielded and continuation.kind monitor. End the turn; the one-shot monitor wakes you with issue_monitor_due. Re-arm explicitly only if another check is needed. Do not claim a monitor exists without its receipt. Finish exactly once with `paperclip_finish` or `paperclip_block`." as const;
 
 export interface NativeRuntimeAssetReference {
   schema: typeof NATIVE_RUNTIME_ASSET_SCHEMA;
@@ -23,6 +23,7 @@ export interface NativeRuntimeContextSnapshot {
   };
   skills: Array<{ key: string; runtimeName: string; versionId: string | null; bundle: NativeRuntimeAssetReference }>;
   mcp: { assignmentSetId: string; digest: string; bindingId: string | null };
+  connectionInstructions?: { text: string; digest: string };
   aggregateDigest: string;
 }
 
@@ -87,6 +88,7 @@ function aggregatePayload(value: Omit<NativeRuntimeContextSnapshot, "aggregateDi
     // assigned access set so a fresh capability can be rebound without forcing a
     // provider-session rotation when policy has not changed.
     mcp: { assignmentSetId: value.mcp.assignmentSetId, digest: value.mcp.digest },
+    ...(value.connectionInstructions ? { connectionInstructions: value.connectionInstructions } : {}),
   };
 }
 
@@ -98,7 +100,7 @@ export function nativeRuntimePromptDigest(): string { return sha256(PAPERCLIP_EX
 
 export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextSnapshot {
   const context = object(value, "input.runtimeContext");
-  exact(context, ["prompt", "instructions", "skills", "mcp", "aggregateDigest"], "input.runtimeContext");
+  exact(context, ["prompt", "instructions", "skills", "mcp", "connectionInstructions", "aggregateDigest"], "input.runtimeContext");
   const prompt = object(context.prompt, "input.runtimeContext.prompt");
   exact(prompt, ["revision", "text", "digest"], "input.runtimeContext.prompt");
   if (prompt.revision !== PAPERCLIP_EXECUTION_PROMPT_REVISION || prompt.text !== PAPERCLIP_EXECUTION_PROMPT) {
@@ -128,6 +130,15 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
   }
   const mcp = object(context.mcp, "input.runtimeContext.mcp");
   exact(mcp, ["assignmentSetId", "digest", "bindingId"], "input.runtimeContext.mcp");
+  let connectionInstructions: NativeRuntimeContextSnapshot["connectionInstructions"];
+  if (context.connectionInstructions !== undefined) {
+    const block = object(context.connectionInstructions, "input.runtimeContext.connectionInstructions");
+    exact(block, ["text", "digest"], "input.runtimeContext.connectionInstructions");
+    const content = text(block.text, "input.runtimeContext.connectionInstructions.text");
+    const contentDigest = digest(block.digest, "input.runtimeContext.connectionInstructions.digest");
+    if (sha256(content) !== contentDigest) throw new NativeRuntimeContextError("Connection instruction digest does not match text");
+    connectionInstructions = { text: content, digest: contentDigest };
+  }
   const parsed = {
     prompt: { revision: PAPERCLIP_EXECUTION_PROMPT_REVISION, text: PAPERCLIP_EXECUTION_PROMPT, digest: nativeRuntimePromptDigest() },
     instructions: {
@@ -145,6 +156,7 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
       digest: digest(mcp.digest, "input.runtimeContext.mcp.digest"),
       bindingId: mcp.bindingId === null ? null : text(mcp.bindingId, "input.runtimeContext.mcp.bindingId"),
     },
+    ...(connectionInstructions ? { connectionInstructions } : {}),
   } satisfies Omit<NativeRuntimeContextSnapshot, "aggregateDigest">;
   const aggregateDigest = digest(context.aggregateDigest, "input.runtimeContext.aggregateDigest");
   if (aggregateDigest !== canonicalNativeRuntimeContextDigest(parsed)) {
@@ -157,6 +169,7 @@ export function composeNativeSystemInstructions(context: NativeRuntimeContextSna
   return [
     context.prompt.text,
     entryContent.trim(),
+    context.connectionInstructions?.text,
     context.instructions.workingCopy?.kind === "agent_files"
       ? `Your persistent agent directory (AGENT_HOME) is ${context.instructions.workingCopy.rootPath}. Your instruction entry is ${context.instructions.workingCopy.entryPath}, relative to that directory. All supported files and subfolders there are restored across tasks and sessions, and collected after this provider stops. Write task deliverables in the task working directory. Only changed or deleted files synchronize; the last sync wins for the same file. Temporary copies are cleaned up without retaining file history. Check the save receipt before claiming persistence.`
       : context.instructions.workingCopy

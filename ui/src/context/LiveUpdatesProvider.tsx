@@ -533,6 +533,7 @@ function invalidateVisibleIssueRunQueries(
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProducts(issueRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProductPullRequestRefresh(issueRef) });
       queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", issueRef] });
     }
   }
@@ -1215,7 +1216,7 @@ function invalidateHeartbeatQueries(
   queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+  queryClient.invalidateQueries({ queryKey: ["costs", companyId] });
   queryClient.invalidateQueries({
     queryKey: queryKeys.sidebarBadges(companyId),
   });
@@ -1279,7 +1280,11 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
   }
 
-  if (action?.startsWith("resource_membership.")) {
+  if (action?.startsWith("primary_agent.") || action?.startsWith("agent.") || action?.startsWith("resource_membership.")) {
+    queryClient.invalidateQueries({ queryKey: ["primary-agent", companyId] });
+  }
+
+  if (action?.startsWith("resource_membership.") || action?.startsWith("primary_agent.")) {
     const targetUserId = readString(details?.userId);
     if (!targetUserId || targetUserId === currentActor.userId) {
       queryClient.invalidateQueries({
@@ -1289,6 +1294,11 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
+    const knownChat = entityId && queryClient.getQueryData<Issue[]>(chatListKey)?.some(chat => chat.id === entityId);
+    if (knownChat || action === "issue.conversation_opened" && ownActorActivity) {
+      queryClient.invalidateQueries({ queryKey: chatListKey });
+    }
     if (action === "issue.tree_hold_created" || action === "issue.tree_hold_released" || action === "issue.updated") {
       // An ancestor hold or reparenting changes descendants' effective pause.
       queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
@@ -1486,10 +1496,11 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "cost_event") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+    queryClient.invalidateQueries({ queryKey: ["costs", companyId] });
     queryClient.invalidateQueries({
-      queryKey: queryKeys.usageByProvider(companyId),
+      queryKey: ["usage-by-provider", companyId],
     });
+    queryClient.invalidateQueries({ queryKey: ["usage-by-biller", companyId] });
     queryClient.invalidateQueries({
       queryKey: queryKeys.usageWindowSpend(companyId),
     });

@@ -7,6 +7,12 @@ event needs no operator endpoint.
 
 ## Native PRP Run-Log Events
 
+Fresh remote Codex model substitution emits `runner.model_fallback` on the
+system stream with `warn` severity. Its payload contains `requestedModel`,
+`effectiveModel`, and `codexCliVersion`. It records a preparation choice before
+provider launch, not a failed turn or a retry. The same substitution appears as
+a system warning in the task conversation. It remains local run-log data.
+
 The hidden native coordinator writes each validated PRP event to the bound
 run's existing event stream before it acknowledges the runner. The row keeps
 the PRP `eventType`, source instance, source event ID, source sequence, protocol
@@ -33,6 +39,54 @@ credential material are never written to the run log.
 
 These records remain run-log events. They do not create an OpenTelemetry or
 Paperclip Telemetry export, and legacy adapters do not use this writer.
+
+## Semantic Settlement Diagnostics and Retry Logs
+
+Before interrupting a Codex turn, the runner durably records a
+`harness.diagnostic` event with code `provider_interrupt_requested`, the stop
+reason, provider turn ID, and pending tool call IDs. A harmless identical result
+replay records `semantic_tool_result_duplicate` with warning severity, call ID,
+operation ID, and result digest. It does not fail the task or create a user
+attention request. A true conflict includes the call and operation IDs and both
+result digests in its error; full arguments belong to the canonical semantic
+input record, not the error message.
+
+Incomplete close emits the bounded `native_session_settlement_incomplete`
+runner diagnostic. Its evidence includes runner suspension, provider drain,
+final provider state, pending call/operation/source-event IDs and input digests,
+and incomplete result-delivery command IDs and statuses. If execution and
+cleanup both fail, execution retains its original error identity and cleanup is
+attached as `cleanupError`.
+
+Semantic settlement also includes up to 20 content-free failure records, with
+the call ID, operation ID, stage (`dispatch` or `persist_result`), and cause.
+Causes distinguish an oversized command, a full command journal, known storage
+errors, dispatcher rejection, and other persistence failures. Exception messages
+and tool results are excluded. These diagnostics do not authorize replay of an
+operation whose outcome is unknown.
+
+Instruction writes also commit an `agent.instruction_write_attempted` activity
+row and a run-scoped `instructionToolAttempts` entry before permitting the
+filesystem effect. They retain the call ID, operation ID, and input digest, not
+instruction text. A later transaction rollback cannot erase this attempt proof.
+A missing success or definite pre-write failure receipt means the outcome is
+unknown, even if the current file contains the requested text. Known validation
+and stale-base failures are saved under the attempt's `failure` entry and replay
+their original status, message, and details without a new write. Unknown
+outcomes remain blocked until reconciled; a
+committed receipt with a lost acknowledgement can replay its exact result.
+
+The NDJSON output log appends across repeated `begin` calls for one run. Each
+new handle adds an `attemptId` to its lines. If the local file is absent and a
+durable S3 mirror exists, `begin` restores that prefix before appending. A
+failed restore must not replace the mirror with an empty or partial attempt.
+Publishing a restored prefix uses an atomic create-if-absent operation, so a
+concurrent restore cannot overwrite lines another attempt has already appended.
+Earlier attempts therefore remain available for incident diagnosis. Existing
+records without `attemptId` remain readable.
+
+These records use the instance run log and its configured storage. They add no
+Paperclip Telemetry or OpenTelemetry export.
 
 ## Omitted Unsafe Workspace Export
 
@@ -61,6 +115,14 @@ The event never includes bootstrap tickets, reconnect leases, authentication
 proofs, encryption keys, environment variables, provider credentials, command
 arguments, or an unsanitized stderr stream. Detailed failed-attempt diagnostics
 remain in the bounded `native_run_finalizations.recovery_history` ledger.
+
+For a local Codex turn lost while runnerd was stopped, the canonical `turn.failed`
+event retains `error.code: "provider_turn_lost_on_restore"` and
+`error.recoverable: true`. It records the interrupted turn, not a final task
+outcome. There is no synthesized result for that interruption. An admitted
+same-session continuation emits its own `turn.submitted`, accepted turn ID, and
+terminal events; only the final outcome closes the run. Reconstructed thread
+history retains the original error so reconciliation and live delivery agree.
 
 ## Native Local Process Stop Evidence
 
@@ -198,9 +260,39 @@ section in the Observability contract.
 
 ## Execution recovery
 
+Cancelled runs retain `resultJson.cancellation`: a closed `source` label
+(`operator`, `queued_message`, `shutdown`, `provider`, `transport`,
+`control_plane`, or `unknown`), whether the stop was expected, the initiator,
+reason, and recording time. Recorded stop intent survives adapter completion.
+The local lifecycle event includes this evidence. Started cancellations without
+an expected stop are also reported to Sentry; its cancellation diagnostics contain
+only source, expectedness, and initiator type, never initiator IDs or reason text.
+Historical ambiguous cancellations stay `unknown` and do not authorize replay.
+
+Provider tool-definition validation failures use
+`provider_tool_definition_invalid` / `configuration`. Automatic retry and
+continuation recovery stop until the configuration is repaired. Classification
+uses raw provider diagnostics in memory before redaction; stored diagnostics
+remain redacted and bounded.
+
 Provider identity diagnostics remain in the local run log. They record the notification method, expected and received thread/turn identifiers, and the classification (root, verified descendant, stale, unrelated informational, or invalid authoritative). They omit the original provider payload and credentials. Repeated informational notices are bounded.
 
+Ignored unrelated Codex notifications use `harness.diagnostic` with code
+`codex_unrelated_information`. The payload retains only the bounded provider
+method and expected/received thread and turn identifiers. Account updates, skill
+changes, and unrelated thread information do not create a provider notice in
+chat. Chat also omits the matching notice stored by older runners. Real provider
+warnings and errors remain visible.
+
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
+
+An unstarted legacy conversation retry waiting for execution cleanup retains
+`resultJson.executionWait` with the issue, blocking run, and
+`execution_owner_active` cause. A local lifecycle event records the wait and the
+unchanged scheduled retry attempt once per blocking run. Repeated scheduler
+checks update the same retry row without repeating that event. Promotion removes
+this ownership-wait marker after cleanup; other execution holds retain their
+existing dispatch gates.
 
 If execution-continuation setup finds that a task no longer exists, is closed,
 or its owner changed, the existing cancellation settlement records
@@ -257,6 +349,23 @@ the enclosing workspace task. The original error and restore safety policy are
 unchanged. These lines stay in the instance run log and its configured durable
 storage, and are not new first-party telemetry events.
 
+Native sandbox `environmentSyncOut` errors preserve allowlisted error codes and
+bounded HTTP/exit statuses across worker RPC for this diagnostic line. The host
+revalidates the envelope and keeps the original failure and recovery policy.
+Provider messages, paths, response bodies, credentials, and arbitrary error data
+are not copied into the new envelope. Older workers can still report `unknown`.
+
+The optional `step` identifies the failed restore operation. For
+`phase=workspace` and `step=git_integration`, `gitCommand` identifies one fixed
+command family (`rev_parse`, `symbolic_ref`, `merge_base`, `merge_tree`,
+`commit_tree`, `update_ref`, or `log`). `gitFailureKind` is `merge_conflict`,
+`invalid_object`, `ref_conflict`, `permission_denied`, or `unknown`; it is a
+bounded diagnostic clue, not a new recovery or retry decision. Only supported
+exit/OS codes and recognized Git messages produce a specific classification.
+No command arguments, stderr, filenames, repository URLs, or ref names are saved.
+The same closed fields persist in `workspaceRestoreDiagnostic` and are
+revalidated before projection into an enabled Sentry failure report.
+
 ## Codex resume usage snapshot
 
 The native runner retains a bounded local `harness.diagnostic` event with code
@@ -277,3 +386,27 @@ The message distinguishes an automatic retry from work that is no longer eligibl
 This pre-provider wait records `ai_connection_busy` on the cancelled run and does
 not consume the provider-failure retry allowance. The event contains no credentials
 and creates no Telemetry or OpenTelemetry export.
+
+## Managed Agent File Save Receipts
+
+The server writes `instruction_save` after managed file collection or a warm
+turn checkpoint. The payload includes the save state, instruction entry path,
+storage warning, and error code/message. Agent-directory receipts identify
+`contract: "agent_files"` and the applied candidate hash. Legacy instruction
+receipts instead identify the saved revision.
+
+A validated warm checkpoint reports `saved` or `unchanged`, even though its
+working directory remains owned by the live session. An unstable checkpoint
+reports `pending_collection` until stopped collection produces a final receipt.
+Successful checkpoints can include `checkpointStats`: `scannedEntries`,
+`hashedBytes`, `copiedFiles`, and `copiedBytes`. These counts describe that
+capture, not cumulative traffic or an atomic snapshot of background writers.
+They contain no file contents. The receipt remains in the instance run log;
+it adds no Paperclip Telemetry or OpenTelemetry export.
+
+If instruction-copy release throws, `instruction_cleanup` records a warning
+with payload `{ "state": "deferred" }`. The existing working-copy recovery sweep
+retries cleanup. This event preserves the run outcome and does not claim a file
+save; `instruction_save` remains authoritative for collection. The event contains
+no raw exception, host path, file contents, or lock-owner metadata. Failure to
+write the warning must not replace the provider outcome or stop lease release.

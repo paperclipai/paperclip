@@ -379,8 +379,8 @@ function assertProviderSessionIdentity(
   if (
     typeof ids.driverSessionId !== "string" ||
     ids.driverSessionId.trim().length === 0 ||
-    typeof ids.providerSessionId !== "string" ||
-    ids.providerSessionId.trim().length === 0
+    (provider !== "openai_dot_mcp" && (typeof ids.providerSessionId !== "string" || ids.providerSessionId.trim().length === 0))
+    || (provider === "openai_dot_mcp" && ids.providerSessionId !== null)
   ) {
     throw new Error(
       `provider_initialize_protocol_error: provider=${provider} stage=${stage} missing durable provider session identity`,
@@ -511,13 +511,48 @@ class HarnessNativeSession implements NativeSession {
     let streamFailure: unknown = null;
     const observedPendingInputs = new Map<string, Record<string, unknown>>();
     try {
-      for await (const event of this.#session.events()) {
+      for await (const providerEvent of this.#session.events()) {
+        // Stop may win publication after the provider result already settled.
+        // Preserve that terminal proof, with the operator's cancelled disposition.
+        let event = providerEvent;
+        if (this.#explicitlyCancelled && providerEvent.eventType === "turn.completed") {
+          event = {
+            ...providerEvent,
+            eventType: "turn.cancelled",
+            payload: {
+              ...providerEvent.payload,
+              status: "cancelled",
+              providerTerminalState: "completed",
+              reason: "cancelled_after_provider_completed",
+            },
+          };
+        } else if (this.#explicitlyCancelled && providerEvent.eventType === "run.terminal"
+          && providerEvent.payload.runTerminalState === "succeeded") {
+          event = {
+            ...providerEvent,
+            payload: {
+              ...providerEvent.payload,
+              turnTerminalState: "cancelled",
+              runTerminalState: "cancelled",
+              reportedWorkDisposition: "yielded",
+            },
+          };
+        }
         const isCancellationEvent =
           event.eventType === "turn.cancelled" ||
           event.eventType === "turn.interrupted" ||
+          // Failure is an authoritative terminal fact, not accepted output.
+          // Dropping it after Stop leaves the controller waiting until timeout.
+          event.eventType === "turn.failed" ||
+          event.eventType === "runtime_request.cancelled" ||
+          event.eventType === "runtime_request.expired" ||
+          (event.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(event.payload.runTerminalState))) ||
           (event.eventType === "item.completed" &&
             event.payload.kind === "interrupt_acknowledgement");
-        if (this.#explicitlyCancelled && !isCancellationEvent) continue;
+        // Accounting for work already performed survives cancellation. It grants
+        // no tool, message, semantic-result, or continuation authority.
+        const isUsageReceipt = event.eventType === "item.completed" && event.payload.kind === "usage";
+        if (this.#explicitlyCancelled && !isCancellationEvent && !isUsageReceipt) continue;
         sourceInstanceId = event.sourceInstanceId;
         lastSourceSequence = Math.max(lastSourceSequence, event.sourceSeq);
         if (event.eventType === "runtime_request.created") {
@@ -673,6 +708,7 @@ class HarnessNativeSession implements NativeSession {
     // The provider has no active turn to interrupt yet. Do not launch work
     // whose events cancellation would suppress and leave the owner waiting.
     if (this.#explicitlyCancelled) throw new Error("native_session_cancelled");
+    this.#terminal = null;
     try {
       const started = await this.#session.startTurn(input);
       this.#assertProtocolIntegrity();
@@ -702,6 +738,10 @@ class HarnessNativeSession implements NativeSession {
     return this.#session.interrupt(input);
   }
 
+  revokeTurnPublication() {
+    this.#explicitlyCancelled = true;
+  }
+
   cancel(input: { reason: string; signal: AbortSignal }) {
     if (input.signal.aborted) {
       throw (
@@ -711,7 +751,7 @@ class HarnessNativeSession implements NativeSession {
     // This flag is the adapter's synchronous publication boundary. Provider
     // interruption happens afterward as passive cleanup, so a slow or broken
     // transport cannot synthesize or publish new accepted output for the turn.
-    this.#explicitlyCancelled = true;
+    this.revokeTurnPublication();
     const interrupt = this.#session.interrupt;
     return {
       cleanup:

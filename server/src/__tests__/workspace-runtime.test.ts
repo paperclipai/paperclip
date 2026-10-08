@@ -43,6 +43,7 @@ import {
   releaseRuntimeServicesForRun,
   UnresolvedWorkspaceBaseRefError,
   resetRuntimeServicesForTests,
+  resetRuntimeServicePortReservationsForTests,
   MANAGED_RUNTIME_PUBLIC_URL_ENV,
   resolveManagedPaperclipRuntimePublicOrigin,
   resolveRuntimeProvisionCommand,
@@ -454,6 +455,9 @@ afterEach(async () => {
   delete process.env.PAPERCLIP_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
   await resetRuntimeServicesForTests();
+  // Registry reset does not clear the process-local allocation claims. A
+  // failed-start fixture must not reserve another test's ephemeral port.
+  resetRuntimeServicePortReservationsForTests();
 });
 
 describe("sanitizeRuntimeServiceBaseEnv", () => {
@@ -917,6 +921,43 @@ describe("realizeExecutionWorkspace", () => {
       await expect(fs.stat(path.join(workspace.cwd, ".git"))).resolves.toBeTruthy();
     } finally {
       await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("realizes a plain Paperclip checkout without a local seed instance (image default env: %s)", async (defaultConfigInEnv) => {
+    const repoRoot = await createTempRepo();
+    const paperclipHome = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-env-only-home-")));
+    const previousEnv = {
+      PAPERCLIP_HOME: process.env.PAPERCLIP_HOME,
+      PAPERCLIP_CONFIG: process.env.PAPERCLIP_CONFIG,
+      PAPERCLIP_INSTANCE_ID: process.env.PAPERCLIP_INSTANCE_ID,
+    };
+    try {
+      await fs.mkdir(path.join(repoRoot, "scripts"));
+      await fs.copyFile(provisionWorktreeScriptPath, path.join(repoRoot, "scripts", "provision-worktree.sh"));
+      await runGit(repoRoot, ["add", "scripts/provision-worktree.sh"]);
+      await runGit(repoRoot, ["commit", "-m", "Add Paperclip worktree provisioner"]);
+      process.env.PAPERCLIP_HOME = paperclipHome;
+      process.env.PAPERCLIP_INSTANCE_ID = "default";
+      if (defaultConfigInEnv) process.env.PAPERCLIP_CONFIG = path.join(paperclipHome, "instances", "default", "config.json");
+      else delete process.env.PAPERCLIP_CONFIG;
+
+      const workspace = await realizeWorktreeForTest(repoRoot, "HEAD");
+
+      expect(workspace.strategy).toBe("git_worktree");
+      expect(workspace.created).toBe(true);
+      expect(await readGit(workspace.cwd, ["branch", "--show-current"])).toBe(workspace.branchName);
+      for (const file of ["config.json", ".env", "seed-manifest.json", "seed-pending", "seed-complete"]) {
+        expect(existsSync(path.join(workspace.cwd, ".paperclip", file))).toBe(false);
+      }
+      expect(await fs.readdir(paperclipHome)).toEqual([]);
+    } finally {
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await fs.rm(repoRoot, { recursive: true, force: true });
+      await fs.rm(paperclipHome, { recursive: true, force: true });
     }
   });
 
@@ -4062,6 +4103,7 @@ describe("realizeExecutionWorkspace", () => {
       "utf8",
     );
     process.env.PAPERCLIP_WORKTREES_DIR = worktreesDir;
+    const canonicalInstanceRoot = await fs.realpath(instanceRoot);
 
     await cleanupExecutionWorkspaceArtifacts({
       workspace: {
@@ -4096,7 +4138,7 @@ describe("realizeExecutionWorkspace", () => {
     expect(operations[0]?.command).toBe("printf 'cleanup ok\\n'");
     expect(operations[1]?.metadata).toMatchObject({
       cleanupAction: "remove_worktree_instance",
-      instanceRoot,
+      instanceRoot: canonicalInstanceRoot,
     });
     expect(operations[2]?.metadata).toMatchObject({
       cleanupAction: "worktree_remove",
@@ -6706,35 +6748,44 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         executionWorkspaceId,
         serviceName: "web",
         status: "provisioning",
+        healthStatus: "unknown",
         providerRef: null,
       });
       expect(existsSync(markerPath)).toBe(false);
 
       await waitForMarker(markerPath);
-      const startingRow = await waitForPersistedStatus("starting");
-      expect(startingRow).toMatchObject({
+      // Readiness begins before the PID-bearing transaction commits. Keep the
+      // listener independent of DB reads and verify the completed records.
+      const services = await startPromise;
+      expect(services).toHaveLength(1);
+      expect(services[0]).toMatchObject({
+        id: provisioningRow.id,
         companyId,
         projectId,
         projectWorkspaceId,
         executionWorkspaceId,
         issueId,
         serviceName: "web",
-        status: "starting",
-        healthStatus: "unknown",
-      });
-      expect(startingRow.providerRef).toMatch(/^\d+$/);
-      expect(startingRow.port).toEqual(expect.any(Number));
-
-      const services = await startPromise;
-      expect(services).toHaveLength(1);
-      expect(services[0]).toMatchObject({
-        id: startingRow.id,
         status: "running",
         healthStatus: "healthy",
       });
+      expect(services[0]!.providerRef).toMatch(/^\d+$/);
+      expect(services[0]!.port).toEqual(expect.any(Number));
 
       const runningRow = await waitForPersistedStatus("running");
-      expect(runningRow.id).toBe(startingRow.id);
+      expect(runningRow).toMatchObject({
+        id: provisioningRow.id,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId,
+        issueId,
+        serviceName: "web",
+        status: "running",
+        healthStatus: "healthy",
+        providerRef: services[0]!.providerRef,
+        port: services[0]!.port,
+      });
       await expect(fetch(services[0]!.url!)).resolves.toMatchObject({ ok: true });
       const runtimeProvisionOperations = await db
         .select()
@@ -7606,16 +7657,25 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = `runtime-desired-reconcile-${randomUUID()}`;
 
-    const reservePort = async () => {
-      const probe = net.createServer();
-      await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-      const address = probe.address();
-      const port = typeof address === "object" && address ? address.port : null;
-      await new Promise<void>((resolve, reject) => {
-        probe.close((error) => error ? reject(error) : resolve());
-      });
-      if (!port) throw new Error("Failed to reserve runtime reconciliation test port");
-      return port;
+    const reservePorts = async () => {
+      const probes = [net.createServer(), net.createServer()];
+      try {
+        // Keep both sockets open until both allocations finish. Closing the
+        // first probe early lets the kernel return that same port again.
+        for (const probe of probes) await new Promise<void>((resolve, reject) => {
+          probe.once("error", reject);
+          probe.listen(0, "127.0.0.1", resolve);
+        });
+        return probes.map(probe => {
+          const address = probe.address();
+          if (!address || typeof address !== "object") throw new Error("Failed to reserve runtime reconciliation test port");
+          return address.port;
+        });
+      } finally {
+        await Promise.all(probes.filter(probe => probe.listening).map(probe => new Promise<void>((resolve, reject) => {
+          probe.close(error => error ? reject(error) : resolve());
+        })));
+      }
     };
     const isLoopbackPortFree = async (port: number) => {
       const probe = net.createServer();
@@ -7636,8 +7696,8 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       }
       throw new Error(`Port ${port} did not become free in time`);
     };
-    const stoppedPort = await reservePort();
-    const livePort = await reservePort();
+    const [stoppedPort, livePort] = await reservePorts();
+    expect(stoppedPort).not.toBe(livePort);
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -9691,7 +9751,7 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
 
     const workspace = await realizeExistingBranch(repoRoot, "feature/legacy-checkout");
 
-    expect(workspace.cwd).toBe(path.resolve(legacyPath));
+    expect(workspace.cwd).toBe(await fs.realpath(legacyPath));
     expect(workspace.branchName).toBe("feature/legacy-checkout");
     expect(workspace.created).toBe(false);
     expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(branchTip);

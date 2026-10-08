@@ -50,6 +50,7 @@ fn config(directory: &std::path::Path) -> AcpxProviderSessionConfig {
         normalized_session_id: "session-1".to_owned(),
         working_directory: directory.to_owned(),
         permission_mode: AcpxPermissionMode::ApproveReads,
+        mode: None,
         permission_mode_pinned: true,
         provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
@@ -76,6 +77,7 @@ fn identity() -> AcpxProviderSessionIdentity {
         requested_model: "gpt-5.6-sol".to_owned(),
         effective_model: "gpt-5.6-sol".to_owned(),
         permission_mode: Some(AcpxPermissionMode::ApproveReads),
+        mode: None,
         provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
     }
 }
@@ -255,5 +257,36 @@ fn rejects_an_existing_runner_state_directory_that_is_not_private() {
         fs::metadata(&directory).unwrap().permissions().mode() & 0o077,
         0o055
     );
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn mode_round_trips_checkpoint_and_rejects_changed_or_missing_recovery_mode() {
+    use paperclip_runner_core::acpx_provider_session::AcpxProviderRuntimePolicy;
+    let directory = temporary_directory("cursor-mode");
+    let mut config = config(&directory);
+    config.agent = "cursor".to_owned();
+    config.mode = Some("plan".to_owned());
+    config.provider_policy = Some(AcpxProviderRuntimePolicy { read_only: false });
+    let mut identity = identity();
+    identity.mode = Some("plan".to_owned());
+    let checkpoint = AcpxSuspensionCheckpoint::from_suspension(&config, identity.clone()).unwrap();
+    let wire = serde_json::to_value(&checkpoint).unwrap();
+    assert_eq!(wire["identity"]["mode"], json!("plan"));
+    let recovered: AcpxSuspensionCheckpoint = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(recovered.admit_recovery(&config).unwrap(), identity);
+    for mode in [None, Some("agent".to_owned()), Some("ask".to_owned())] {
+        let mut changed = config.clone();
+        changed.mode = mode.clone();
+        assert!(recovered.admit_recovery(&changed).is_err());
+        let mut changed = wire.clone();
+        changed["identity"]["mode"] = json!(mode);
+        let changed: AcpxSuspensionCheckpoint = serde_json::from_value(changed).unwrap();
+        assert!(changed.admit_recovery(&config).is_err());
+    }
+    let mut other = config.clone();
+    other.agent = "copilot".to_owned();
+    other.mode = None;
+    assert!(recovered.admit_recovery(&other).is_err());
     fs::remove_dir_all(directory).unwrap();
 }

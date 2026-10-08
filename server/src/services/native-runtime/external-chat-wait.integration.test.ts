@@ -2088,11 +2088,13 @@ describe("native external-chat response wait", () => {
           .update(agentWakeupRequests)
           .set({ requestedByActorId: "another-user" })
           .where(eq(agentWakeupRequests.id, parent.wakeId));
-      if (kind === "different_parent_issue")
-        await db
-          .update(heartbeatRuns)
-          .set({ nativeIssueId: fixture.sourceRunId })
-          .where(eq(heartbeatRuns.id, parent.runId));
+      if (kind === "different_parent_issue") {
+        // Deliberately corrupt historical data; normal writes reject this rebind.
+        await db.transaction(async (tx) => {
+          await tx.execute(sql`set local session_replication_role = replica`);
+          await tx.update(heartbeatRuns).set({ nativeIssueId: fixture.sourceRunId }).where(eq(heartbeatRuns.id, parent.runId));
+        });
+      }
       if (kind === "source_cycle") {
         const [wake] = await db
           .select()

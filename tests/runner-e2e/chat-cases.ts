@@ -54,10 +54,10 @@ export const chatStoryTasks = buildChatTasks([
 ]).map(task => ({ ...task, ...(task.id === "enable-disable-resume" ? {} : { minimumExpectedRunCount: 1 }) }));
 
 export function chatNeedsApiTools(suiteId: string, caseId: string): boolean {
-  return (suiteId === "agent-chat-qualification" && caseId === "grounded-answer-quality") || suiteId === "agent-chat-hardening" && ["hire-delegate-reuse", "blocked-status-review"].includes(caseId);
+  return suiteId === "hiring-templates" || (suiteId === "agent-chat-qualification" && caseId === "grounded-answer-quality") || suiteId === "agent-chat-hardening" && ["hire-delegate-reuse", "blocked-status-review"].includes(caseId);
 }
 export function isManagedHiringCase(suiteId: string, caseId: string): boolean {
-  return (suiteId === "everyday-workflows" && caseId === "hire-reuse") ||
+  return (suiteId === "hiring-templates" && caseId === "hire-coder-template-reuse") || (suiteId === "everyday-workflows" && caseId === "hire-reuse") ||
     (suiteId === "agent-chat-hardening" && caseId === "hire-delegate-reuse");
 }
 
@@ -73,3 +73,5 @@ export const chatCompletionTasks = buildChatTasks([
   ["handoff-completion-multiple", "Report multiple delegated results as they finish", 7],
   ["handoff-completion-restart", "Recover pending completion delivery across a server restart", 5],
 ]).map(task => ({ ...task, minimumExpectedRunCount: 2 }));
+
+export const chatConfirmationTasks = buildChatTasks([["confirmation-ambiguous", "Clarify ambiguous approval, then resolve only the chosen cards", 4], ["unanswered-question-return", "Move on, reopen a historical question, and deliver the late answer", 3]]);

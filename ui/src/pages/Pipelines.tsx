@@ -1,3 +1,4 @@
+import { interactionReadinessRefetchInterval } from "@/lib/issue-thread-interactions";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -2085,6 +2086,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     queryKey: conversationIssueId ? queryKeys.issues.interactions(conversationIssueId) : ["pipeline-item", caseId, "missing-conversation-interactions"],
     queryFn: () => issuesApi.listInteractions(conversationIssueId!),
     enabled: Boolean(conversationIssueId),
+    refetchInterval: (query) => interactionReadinessRefetchInterval(query.state.data),
   });
   const { data: agents } = useQuery({
     queryKey: conversationCompanyId ? queryKeys.agents.list(conversationCompanyId) : ["agents", "pipeline-item", "none"],

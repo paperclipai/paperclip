@@ -10,6 +10,7 @@ import {
   type RunFailureReportOptions,
 } from "./run-failure-diagnostics.js";
 import { logger } from "../middleware/logger.js";
+import { isUnexpectedRunCancellation } from "./run-cancellation.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -30,7 +31,7 @@ const pendingRunFailureReports = new Set<Promise<void>>();
 const PENDING_REPORT_DRAIN_TIMEOUT_MS = 5_000;
 
 function isRunFailureStatus(status: string): status is RunFailureStatus {
-  return status === "failed" || status === "timed_out";
+  return status === "failed" || status === "timed_out" || status === "cancelled";
 }
 
 function readTaskId(run: HeartbeatRun): string | null {
@@ -39,9 +40,72 @@ function readTaskId(run: HeartbeatRun): string | null {
   return typeof contextIssueId === "string" && contextIssueId.length > 0 ? contextIssueId : null;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/** A known owner action before dispatch, not a secret-provider or runtime failure. */
+function isMissingSecretConfigurationBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" ||
+    run.errorCode !== "configuration_incomplete" ||
+    run.executionStage !== "preparing" ||
+    options.phase !== "setup" ||
+    run.exitCode != null ||
+    run.signal != null
+  ) return false;
+
+  const configuration = asRecord(run.resultJson?.configurationIncomplete);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  if (
+    configuration?.reason !== "secret_binding_missing" ||
+    recovery?.kind !== "bootstrap" ||
+    recovery.providerWorkStarted !== false ||
+    !Array.isArray(configuration.missingBindings) ||
+    configuration.missingBindings.length === 0
+  ) return false;
+
+  return configuration.missingBindings.every((value: unknown) => {
+    const binding = asRecord(value);
+    if (!binding) return false;
+    if (binding.bindingType === "secret_ref") {
+      return binding.errorCode == null || binding.errorCode === "binding_missing";
+    }
+    if (binding.bindingType !== "user_secret_ref") return false;
+    // Missing-definition resolution can also catch a database error. Keep that
+    // ambiguous case, unknown codes, and provider errors visible in Sentry.
+    return binding.errorCode === "binding_missing" ||
+      binding.errorCode === "responsible_user_missing" ||
+      binding.errorCode === "user_secret_missing" ||
+      binding.errorCode === "secret_inactive" ||
+      binding.errorCode === "user_secret_definition_inactive";
+  });
+}
+
+/** The workspace resolver proved an explicit local-path/worktree policy mismatch. */
+function isLocalPathWorkspaceConfigurationBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== "workspace_validation_failed" ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+
+  const validation = asRecord(run.resultJson?.workspaceValidation);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return validation?.reason === "git_worktree_base_not_git_checkout" &&
+    validation.configurationReason === "local_path_requires_git_checkout" &&
+    validation.resolvedWorkspaceSource === "project_primary" &&
+    validation.workspaceStrategyType === "git_worktree" &&
+    (validation.requestedExecutionWorkspaceMode === "isolated_workspace" ||
+      validation.requestedExecutionWorkspaceMode === "operator_branch") &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 /**
  * Report a terminal run failure to Sentry. Returns at once for any status
- * other than `failed` and `timed_out`. Never throws — a Sentry failure or a
+ * other than failures and unexpected started cancellations. Never throws — a Sentry failure or a
  * database read failure must not change the caller's control flow.
  *
  * Call this beside the caller's own terminal-status write, with
@@ -52,6 +116,9 @@ function readTaskId(run: HeartbeatRun): string | null {
  */
 export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureReportOptions = {}): Promise<void> {
   if (!isRunFailureStatus(run.status)) return Promise.resolve();
+  if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
+  if (isMissingSecretConfigurationBlocker(run, options)) return Promise.resolve();
+  if (isLocalPathWorkspaceConfigurationBlocker(run, options)) return Promise.resolve();
   const runStatus = run.status;
   const report = captureTerminalRunFailure(db, run, runStatus, options);
   pendingRunFailureReports.add(report);

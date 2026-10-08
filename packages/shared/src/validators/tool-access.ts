@@ -1,3 +1,4 @@
+import { connectionAgentInstructionsSchema } from "../connection-instructions.js";
 import { isRemoteMcpConnectorMethod } from "../remote-mcp-connectors.js";
 import { z } from "zod";
 import {
@@ -178,6 +179,7 @@ export const updateToolApplicationSchema = createToolApplicationSchema.partial()
 export type UpdateToolApplication = z.infer<typeof updateToolApplicationSchema>;
 
 export const createToolConnectionSchema = z.object({
+  agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
   applicationId: z.string().guid().optional(),
   applicationName: z.string().trim().min(1).max(160).optional(),
   name: z.string().trim().min(1).max(160),
@@ -218,6 +220,9 @@ export const connectionGrantSchema = z.object({
       strategy: z.string().trim().min(1).max(100).optional(),
       accessTokenExpiresAt: z.string().datetime().nullable().optional(),
       scopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      scopeSource: z.enum(["provider", "requested_fallback"]).optional(),
+      unrequestedScopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
+      requestedScopes: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
       tokenType: z.string().trim().min(1).max(100).optional(),
       refreshTokenExpiresAt: z.string().datetime().optional(),
       refreshedAt: z.string().datetime().optional(),
@@ -407,6 +412,7 @@ function rejectUnsafeHeaderCredentials(
 }
 
 export const connectToolAppSchema = z.object({
+  agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
   galleryKey: z.string().trim().min(1).max(120).optional(),
   connectionMethodKey: z.string().trim().min(1).max(120).optional(),
   link: z.string().trim().url().max(2000).optional(),
@@ -488,6 +494,7 @@ export const reconnectToolAppSchema = z.object({
 export type ReconnectToolApp = z.infer<typeof reconnectToolAppSchema>;
 
 export const finishToolAppSchema = z.object({
+  agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
   /** Task setup adds access while preserving existing assignments and action policies. */
   preserveExistingAccess: z.boolean().optional(),
   enabledCatalogEntryIds: z.array(z.string().guid()).max(500).default([]),

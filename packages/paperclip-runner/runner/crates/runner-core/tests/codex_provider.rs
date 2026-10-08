@@ -617,6 +617,14 @@ fn codex_account_updates_do_not_interrupt_turns_or_publish_account_details() {
                         assert!(!params.to_string().contains("fixture-login"));
                         assert!(params.get("authMode").is_none());
                         assert!(params.get("planType").is_none());
+                        let normalized = normalize_codex_notification(&method, &params);
+                        assert_eq!(normalized.len(), 1);
+                        assert_eq!(normalized[0].event_type, "harness.diagnostic");
+                        assert_eq!(normalized[0].payload["code"], "codex_unrelated_information");
+                        assert_eq!(
+                            normalized[0].payload["providerMethod"],
+                            params["providerMethod"]
+                        );
                     }
                     if method == "turn/completed" {
                         completed = true;
@@ -3055,6 +3063,103 @@ fn codex_resume_advertises_the_same_authorized_tools() {
 }
 
 #[test]
+fn interrupted_tool_accepts_one_authoritative_result_across_restart_and_lost_ack() {
+    for restart in [false, true] {
+        let directory = temporary_directory(if restart {
+            "interrupt-tool-restart"
+        } else {
+            "interrupt-tool-live"
+        });
+        let config = provider_config(&directory, &["--require-dynamic-tool", "--emit-tool-call"]);
+        let runner_config = durable_config(&directory);
+        let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+        executor
+            .execute(&command(
+                "prepare",
+                1,
+                "run.prepare",
+                json!({"provider":config,"authorizedTools":task_context_tool_set()}),
+            ))
+            .unwrap();
+        executor
+            .execute(&command("open", 2, "session.open", json!({})))
+            .unwrap();
+        executor
+            .execute(&command(
+                "turn",
+                3,
+                "turn.start",
+                json!({"text":"Hold the actual operation until after interruption."}),
+            ))
+            .unwrap();
+        wait_for_executor_event(&mut executor, "semantic_tool.input");
+        executor
+            .execute(&command(
+                "interrupt",
+                4,
+                "turn.interrupt",
+                json!({"reason":"test_result_delivery_barrier"}),
+            ))
+            .unwrap();
+        let saved: Value =
+            serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["toolBridge"]["pending"].as_object().unwrap().len(), 1);
+        assert!(saved["pendingEvents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["payload"]["reason"] == "test_result_delivery_barrier"));
+        if restart {
+            drop(executor);
+            executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+        }
+        let result = json!({"callId":"semantic-call-1", "operationId":"get_task_context", "result":{"ok":true,"savedHash":"exact-write"}, "isError":false});
+        let delivered = executor
+            .execute(&command(
+                "result",
+                5,
+                "semantic_tool.result",
+                result.clone(),
+            ))
+            .unwrap();
+        assert_eq!(delivered.result["status"], "settled_after_turn");
+        // Lose the command ACK, restart, then deliver precisely the same result.
+        drop(executor);
+        executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+        let replay = executor
+            .execute(&command(
+                "retry-result",
+                6,
+                "semantic_tool.result",
+                result.clone(),
+            ))
+            .unwrap();
+        assert_eq!(replay.result["status"], "duplicate");
+        assert!(replay
+            .events
+            .iter()
+            .any(|(kind, _, value)| kind == "harness.diagnostic"
+                && value["code"] == "semantic_tool_result_duplicate"
+                && value["callId"] == "semantic-call-1"));
+        let mut conflict = result;
+        conflict["result"]["savedHash"] = json!("different-write");
+        let error = executor
+            .execute(&command("conflict", 7, "semantic_tool.result", conflict))
+            .unwrap_err();
+        assert!(error.to_string().contains("semantic-call-1"));
+        assert!(error.to_string().contains("get_task_context"));
+        assert!(error.to_string().contains("conflicting duplicate"));
+        assert!(error.to_string().contains("existingDigest=sha256:"));
+        assert!(error.to_string().contains("incomingDigest=sha256:"));
+        assert!(!error.to_string().contains("different-write"));
+        assert_eq!(call_count(&directory, "turn/start"), 1);
+        executor.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
 fn durable_backend_routes_a_semantic_tool_result_back_to_codex() {
     let directory = temporary_directory("durable-dynamic-tool");
     let config = provider_config(&directory, &["--require-dynamic-tool", "--emit-tool-call"]);
@@ -3380,6 +3485,65 @@ fn durable_backend_replays_pending_tool_calls_without_mutating_the_event_queue()
 }
 
 #[test]
+fn restart_lost_turn_retains_a_recoverable_cause_without_inventing_a_result() {
+    let directory = temporary_directory("restart-lost-turn");
+    let config = provider_config(
+        &directory,
+        &["--durable-turn-ids", "--linger-after-turn-start"],
+    );
+    let mut first = CodexCommandExecutor::new(&directory);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            "start",
+            3,
+            "turn.start",
+            json!({"text": "Watch the existing check run."}),
+        ))
+        .unwrap();
+    // The process disappeared while its command was in flight. Codex restores
+    // the conversation, but cannot restore the running turn.
+    drop(first);
+    fs::write(
+        directory.join("fake-state.json"),
+        serde_json::to_vec(&json!({
+            "threadId": "codex-thread-1", "activeTurnId": null, "nextTurn": 1,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut restored = CodexCommandExecutor::new(&directory);
+    restored
+        .execute(&command("snapshot", 4, "session.snapshot", json!({})))
+        .unwrap();
+    let events = poll_and_ack(&mut restored).unwrap();
+    let interrupted = events
+        .iter()
+        .find(|event| event.event_type == "turn.failed")
+        .unwrap();
+    assert_eq!(
+        interrupted.payload["error"]["code"],
+        "provider_turn_lost_on_restore"
+    );
+    assert_eq!(interrupted.payload["error"]["recoverable"], true);
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "run.result.proposed"));
+    restored.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn durable_backend_settles_pending_tools_when_recovery_finds_the_turn_ended() {
     let directory = temporary_directory("durable-tool-ended-offline");
     let config = provider_config(&directory, &["--require-dynamic-tool", "--emit-tool-call"]);
@@ -3450,33 +3614,15 @@ fn durable_backend_settles_pending_tools_when_recovery_finds_the_turn_ended() {
             break;
         }
     }
-    let semantic_result = observed
-        .iter()
-        .position(|event| event == "semantic_tool.result")
-        .expect("recovery settles the pending semantic tool");
-    let reconciled = observed
-        .iter()
-        .position(|event| event == "session.reconciled")
-        .expect("recovery emits a reconciliation event");
-    let terminal = observed
-        .iter()
-        .position(|event| event == "run.terminal")
-        .expect("offline turn recovery terminates the run");
-    assert!(semantic_result < reconciled);
-    assert!(reconciled < terminal);
-    assert!(recovered
-        .execute(&command(
-            "late-result",
-            5,
-            "semantic_tool.result",
-            json!({
-                "callId": "semantic-call-1",
-                "operationId": "get_task_context",
-                "result": {"ok": true},
-                "isError": false,
-            }),
-        ))
-        .is_err());
+    assert!(
+        !observed.iter().any(|event| event == "semantic_tool.result"),
+        "recovery must not invent an effect outcome"
+    );
+    assert!(observed.iter().any(|event| event == "session.reconciled"));
+    let late = recovered.execute(&command("late-result", 5, "semantic_tool.result", json!({
+        "callId":"semantic-call-1", "operationId":"get_task_context", "result":{"ok":true}, "isError":false,
+    }))).unwrap();
+    assert_eq!(late.result["status"], "settled_after_turn");
 
     recovered.shutdown().expect("stop recovered provider");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
@@ -3976,28 +4122,12 @@ fn durable_backend_settles_tools_before_a_natural_terminal_event() {
             break;
         }
     }
-    let semantic_result = observed
-        .iter()
-        .position(|event| event == "semantic_tool.result")
-        .expect("terminal settlement emits a failed semantic result");
-    let terminal = observed
-        .iter()
-        .position(|event| event == "turn.completed")
-        .expect("provider terminal event is emitted");
-    assert!(semantic_result < terminal);
-    assert!(executor
-        .execute(&command(
-            "late-result",
-            4,
-            "semantic_tool.result",
-            json!({
-                "callId": "semantic-call-1",
-                "operationId": "get_task_context",
-                "result": {"ok": true},
-                "isError": false,
-            }),
-        ))
-        .is_err());
+    assert!(!observed.iter().any(|event| event == "semantic_tool.result"));
+    assert!(observed.iter().any(|event| event == "turn.completed"));
+    let late = executor.execute(&command("late-result", 4, "semantic_tool.result", json!({
+        "callId":"semantic-call-1", "operationId":"get_task_context", "result":{"ok":true}, "isError":false,
+    }))).unwrap();
+    assert_eq!(late.result["status"], "settled_after_turn");
 
     executor.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
@@ -4167,27 +4297,15 @@ fn durable_stop_settles_pending_semantic_tools_without_a_courtesy_interrupt() {
         .execute(&command("stop", 4, "turn.stop", json!({})))
         .unwrap();
     assert_eq!(stopped.result["providerExitConfirmed"], true);
-    let result = wait_for_executor_event(&mut executor, "semantic_tool.result");
-    assert_eq!(result.payload["semantic_tool"]["outcome"], "failed");
-    assert_eq!(
-        result.payload["semantic_tool"]["callId"],
-        input.payload["semantic_tool"]["callId"]
-    );
-    assert_eq!(
-        result.payload["semantic_tool"]["correlation"],
-        input.payload["semantic_tool"]["correlation"]
-    );
-    assert!(executor
-        .execute(&command(
-            "late-result",
-            5,
-            "semantic_tool.result",
-            json!({
-                "callId": "semantic-call-1", "operationId": "get_task_context",
-                "result": {"ok": true}, "isError": false,
-            })
-        ))
-        .is_err());
+    assert_eq!(input.payload["semantic_tool"]["callId"], "semantic-call-1");
+    assert!(!poll_and_ack(&mut executor)
+        .unwrap()
+        .iter()
+        .any(|event| event.event_type == "semantic_tool.result"));
+    let late = executor.execute(&command("late-result", 5, "semantic_tool.result", json!({
+        "callId":"semantic-call-1", "operationId":"get_task_context", "result":{"ok":true}, "isError":false,
+    }))).unwrap();
+    assert_eq!(late.result["status"], "settled_after_turn");
     assert_eq!(call_count(&directory, "turn/interrupt"), 0);
     assert_eq!(call_count(&directory, "thread/start"), 1);
     assert_eq!(call_count(&directory, "turn/start"), 1);
@@ -6237,6 +6355,34 @@ fn skill_wire_requests(directory: &Path) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+#[test]
+fn runtime_instructions_are_additive_for_codex_on_start_and_resume() {
+    let directory = temporary_directory("instruction-channel-wire");
+    let log = directory.join("requests.ndjson");
+    let config = provider_config(&directory, &["--request-log", log.to_str().unwrap()]);
+    let mut provider = CodexProvider::start(&config, None).unwrap();
+    let thread_id = provider.thread_id().to_owned();
+    provider.shutdown().unwrap();
+    let mut resumed = CodexProvider::start(&config, Some(&thread_id)).unwrap();
+    resumed.shutdown().unwrap();
+    let frames = skill_wire_requests(&directory);
+    for method in ["thread/start", "thread/resume"] {
+        let frame = frames
+            .iter()
+            .find(|frame| frame["method"] == method)
+            .unwrap();
+        assert_eq!(
+            frame["params"]["developerInstructions"], config.instructions,
+            "{method}"
+        );
+        assert!(
+            frame["params"].get("baseInstructions").is_none(),
+            "{method}"
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

@@ -5,6 +5,7 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   agents,
   agentRuntimeState,
   agentWakeupRequests,
@@ -151,6 +152,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
   }
 
   async function cleanupFixtureOnce() {
+    await db.delete(costEvents);
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueComments);
@@ -523,8 +525,8 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(retryRuns).toHaveLength(0);
   });
 
-  it("defers a run whose issue targets a busy shared workspace and schedules a bounded retry", async () => {
-    const fixture = await seedWorkspaceFixture();
+  it.each([0, 35 * 60_000])("defers a run in a busy shared workspace after %i ms of holder silence", async (silenceMs) => {
+    const fixture = await seedWorkspaceFixture({ holderActivityAt: new Date(Date.now() - silenceMs) });
 
     const run = await heartbeat.invoke(
       fixture.agentId,

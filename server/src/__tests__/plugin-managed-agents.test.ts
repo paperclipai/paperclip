@@ -11,12 +11,14 @@ import {
   agentInstructionHeads,
   agents,
   approvals,
+  budgetPolicies,
   companies,
   createDb,
   pluginEntities,
   pluginCompanySettings,
   pluginManagedResources,
   plugins,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
@@ -106,6 +108,8 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
     await db.delete(pluginManagedResources);
     await db.delete(pluginCompanySettings);
     await db.delete(approvals);
+    await db.delete(budgetPolicies);
+    await db.delete(principalPermissionGrants);
     await db.delete(agents);
     await db.delete(plugins);
     await db.delete(companies);
@@ -497,6 +501,7 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
     const relinked = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
     expect(relinked.status).toBe("relinked");
     expect(relinked.agentId).toBe(agentId);
+    expect(relinked.agent?.urlKey).toBe("renamed-wiki-agent");
 
     const [binding] = await db.select().from(pluginEntities);
     expect(binding?.data).toMatchObject({ agentId });
