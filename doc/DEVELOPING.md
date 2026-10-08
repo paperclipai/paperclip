@@ -1245,6 +1245,15 @@ dispatch, retries, cancellation, and execution order, and re-exports the existin
 public helpers and configuration-incomplete error class. Keep preparation policy
 changes in this module and its tests.
 
+Run retrieval and session state are in `server/src/services/heartbeat/run-state.ts`.
+It owns bounded run projections, database encoding checks, task session reads and
+writes, explicit resumes, session compaction, and usage/billing helpers.
+`createHeartbeatRunState(db)` binds these operations without doing database work
+during construction. The encoding-check cache belongs to each factory instance.
+`heartbeat.ts` keeps run execution, session-goal recovery, cost accounting writes,
+and status transitions, and re-exports the existing public helpers. Keep session
+policy changes separate from run orchestration changes.
+
 ## Wake Context Delivery
 
 Built-in adapters deliver wake context through the run prompt, including structured
