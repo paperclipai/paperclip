@@ -1129,6 +1129,24 @@
       "liveProof": "not-run"
     },
     {
+      "app": "home-assistant",
+      "method": "mcp-access-token",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Read exposed entity state, date/time, timers, to-do items, calendar events, and media search; control exposed devices, timers, lists, and scripts through the Assist API. Only reviewed reads start Allowed; other tools start Ask first and later-discovered tools are quarantined.",
+      "evidence": [
+        "https://www.home-assistant.io/integrations/mcp_server/",
+        "https://developers.home-assistant.io/docs/auth_api/#long-lived-access-token",
+        "https://github.com/home-assistant/core/blob/dev/homeassistant/components/mcp_server/http.py"
+      ],
+      "reviewedAt": "2026-10-02",
+      "liveProof": "not-run",
+      "evidenceLimit": "Reviewed against official docs and Home Assistant core source only. No live Home Assistant token has been connected; connect, safe read, Ask-first write, refresh quarantine, and revocation remain unverified.",
+      "keyPermissions": "Long-lived access tokens are not scoped: the token acts as its Home Assistant user. Create it under Profile, Security as a dedicated non-admin user, and expose only needed entities to Assist."
+    },
+    {
       "app": "honcho",
       "method": "mcp-api-key",
       "auth": "api_key",

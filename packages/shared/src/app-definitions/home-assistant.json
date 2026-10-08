@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "slug": "home-assistant",
+  "name": "Home Assistant",
+  "description": "Let agents read your home's state and, with approval, control devices through Home Assistant's Assist API.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/home-assistant.svg"
+  },
+  "urlPatterns": [
+    "https://*.ui.nabu.casa/api/mcp*"
+  ],
+  "methods": [
+    {
+      "key": "mcp-access-token",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Recommended. Use a long-lived access token from a dedicated non-admin Home Assistant user, reached over HTTPS (Home Assistant Cloud remote URL or your own TLS reverse proxy).",
+      "defaults": {
+        "serverUrlTemplate": "https://{haHost}:{haPort}/api/mcp/assist"
+      },
+      "guidanceMd": "Connect to the Model Context Protocol Server integration on your own Home Assistant (2026.8 or newer) over HTTPS. Create a long-lived access token while signed in as a dedicated non-admin Home Assistant user, then paste it below.",
+      "riskTier": "S3",
+      "label": "Use a long-lived access token",
+      "grantKinds": [
+        "organization"
+      ],
+      "tenantFields": [
+        {
+          "key": "haHost",
+          "label": "Home Assistant host",
+          "type": "text",
+          "required": true,
+          "placeholder": "abcdef123456.ui.nabu.casa",
+          "helperMd": "Enter the HTTPS host name of your Home Assistant without https:// or a path, for example your Home Assistant Cloud remote URL host or your reverse proxy's host.",
+          "validation": {
+            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$",
+            "maxLength": 253
+          }
+        },
+        {
+          "key": "haPort",
+          "label": "HTTPS port",
+          "type": "text",
+          "required": true,
+          "advanced": true,
+          "placeholder": "443",
+          "defaultValue": "443",
+          "helperMd": "Use 443 for Home Assistant Cloud and most reverse proxies. Use 8123 only when Home Assistant itself serves HTTPS.",
+          "validation": {
+            "pattern": "^[1-9][0-9]{0,4}$",
+            "maxLength": 5
+          }
+        }
+      ],
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Long-lived access token",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste the token from Profile, Security, Long-lived access tokens",
+          "secret": true,
+          "helperMd": "Long-lived access tokens are not scoped: the token acts as its Home Assistant user. Create it under Profile, Security as a dedicated non-admin user, and expose only needed entities to Assist."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "docs": "https://www.home-assistant.io/integrations/mcp_server/"
+      },
+      "warnings": [
+        "Long-lived access tokens are not scoped. The token can do anything its Home Assistant user can, so create it as a dedicated non-admin user and never use an owner or administrator token.",
+        "Home Assistant has no read-only Assist mode. Agents can only reach entities exposed to Assist, so expose only what agents need under Settings, Voice assistants, Expose.",
+        "Device control, scripts, timers, and other non-read tools start as Ask first, and tools that appear later stay quarantined until reviewed.",
+        "Home Assistant reached over plain HTTP on a local network cannot use this connector. Use Home Assistant Cloud or an HTTPS reverse proxy."
+      ]
+    }
+  ],
+  "docsUrl": "https://www.home-assistant.io/integrations/mcp_server/",
+  "setupPrerequisite": {
+    "title": "Prepare Home Assistant before connecting",
+    "description": "Paperclip connects to the official Model Context Protocol Server integration on your own Home Assistant. It must be reachable over HTTPS and run Home Assistant 2026.8 or newer.",
+    "steps": [
+      "In Home Assistant, open Settings, Devices & services, Add integration, and add Model Context Protocol Server with the Assist API selected.",
+      "Create a dedicated non-admin Home Assistant user for Paperclip, sign in as that user, and create a long-lived access token under Profile, Security.",
+      "Under Settings, Voice assistants, Expose, expose only the entities agents should read or control.",
+      "Make Home Assistant reachable over HTTPS, for example with Home Assistant Cloud remote access or your own TLS reverse proxy."
+    ],
+    "actionLabel": "Open Home Assistant MCP Server docs",
+    "actionUrl": "https://www.home-assistant.io/integrations/mcp_server/"
+  }
+}
