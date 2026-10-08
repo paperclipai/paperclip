@@ -5,11 +5,33 @@ import {
   resolveApprovedRemoteHttpAddresses,
 } from "../services/remote-http-endpoint-guard.js";
 
+
 function guardError(message: string, code: string) {
   return Object.assign(new Error(message), { code });
 }
 
 describe("remote HTTP endpoint guard", () => {
+  it.each(["ENOTFOUND", "ENODATA", "EAI_AGAIN"])("retains proven DNS failure %s across the public wrapper", async (code) => {
+    const failure = await assertPublicRemoteHttpEndpoint(new URL("https://missing.example.test/mcp"), {
+      lookup: async () => { throw Object.assign(new Error("lookup failed"), { code }); },
+    }, guardError).catch((error) => error);
+    expect(failure).toMatchObject({ code: "remote_http_dns_failed" });
+    expect(readRemoteConnectionFailure(failure)).toBe("dns_failure");
+  });
+
+  it("marks its exact DNS deadline without trusting unknown lookup exceptions", async () => {
+    const timedOut = await assertPublicRemoteHttpEndpoint(new URL("https://silent.example.test/mcp"), {
+      lookup: async () => new Promise(() => {}), dnsTimeoutMs: 1,
+    }, guardError).catch((error) => error);
+    expect(timedOut).toMatchObject({ code: "remote_http_dns_failed" });
+    expect(readRemoteConnectionFailure(timedOut)).toBe("connection_timeout");
+    const unknown = await assertPublicRemoteHttpEndpoint(new URL("https://broken.example.test/mcp"), {
+      lookup: async () => { throw new TypeError("internal lookup bug: ENOTFOUND"); },
+    }, guardError).catch((error) => error);
+    expect(unknown).toMatchObject({ code: "remote_http_dns_failed" });
+    expect(readRemoteConnectionFailure(unknown)).toBeNull();
+  });
+
   it("blocks hostnames that resolve to private network addresses", async () => {
     await expect(assertPublicRemoteHttpEndpoint(
       new URL("https://metadata.example/mcp"),

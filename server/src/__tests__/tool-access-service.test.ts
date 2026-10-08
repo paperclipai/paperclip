@@ -87,6 +87,7 @@ import {
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 import * as sentry from "../sentry.js";
+import { HttpError } from "../errors.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import { invalidatePaperclipCloudConnectorCapabilities, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 
@@ -2963,6 +2964,35 @@ describeEmbeddedPostgres("tool access service", () => {
     ).rejects.toThrow(
       "Local stdio MCP connections must use an approved templateId",
     );
+  });
+
+  it("reports persistence failure after a recognized MCP outage instead of suppressing the database error", async () => {
+    const company = await createCompany(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id, applicationKey: `audit-failure-${randomUUID()}`,
+      name: "MCP audit fixture", type: "mcp_http", status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id, applicationId: application!.id, name: "MCP audit fixture",
+      uid: `test/${randomUUID()}`, transport: "mcp_remote", status: "draft", enabled: false,
+      config: { url: "https://audit-failure.example.test/mcp" },
+      transportConfig: { url: "https://audit-failure.example.test/mcp" },
+    }).returning();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 503 }));
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    await db.execute(sql`CREATE FUNCTION test_mcp_audit_failure() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'synthetic MCP audit write failure'; END $$`);
+    await db.execute(sql`CREATE TRIGGER test_mcp_audit_failure BEFORE INSERT ON tool_access_audit_events
+      FOR EACH ROW EXECUTE FUNCTION test_mcp_audit_failure()`);
+    try {
+      const response = await request(createRouteApp(db)).post(`/api/tool-connections/${connection!.id}/catalog/refresh`);
+      expect(response.status).toBe(500);
+      expect(capture).toHaveBeenCalledOnce();
+      expect(capture.mock.calls[0]?.[0]).toMatchObject({ cause: expect.objectContaining({ message: "synthetic MCP audit write failure" }) });
+    } finally {
+      await db.execute(sql`DROP TRIGGER test_mcp_audit_failure ON tool_access_audit_events`);
+      await db.execute(sql`DROP FUNCTION test_mcp_audit_failure()`);
+    }
   });
 
   it.each([
@@ -15297,15 +15327,81 @@ describeEmbeddedPostgres("tool access service", () => {
     },
   );
 
+  it.each(
+    (["catalog", "catalog/refresh", "health-check"] as const).flatMap((path) =>
+      ([401, 403] as const).map((upstreamStatus) => ({ path, upstreamStatus })),
+    ),
+  )(
+    "preserves reconnect guidance and degraded health for explicit OAuth scope failure on $path (HTTP $upstreamStatus)",
+    async ({ path, upstreamStatus }) => {
+      const company = await createCompany(db);
+      const [application] = await db.insert(toolApplications).values({
+        companyId: company.id,
+        applicationKey: `scope-status-${randomUUID()}`,
+        name: "OAuth scope fixture",
+        type: "mcp_http",
+        status: "active",
+      }).returning();
+      const [connection] = await db.insert(toolConnections).values({
+        companyId: company.id,
+        applicationId: application!.id,
+        name: "OAuth scope fixture",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
+        status: "draft",
+        enabled: false,
+        config: { url: "https://scope-status.example.test/mcp" },
+        transportConfig: { url: "https://scope-status.example.test/mcp" },
+      }).returning();
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(
+        JSON.stringify({ error: "private provider details" }),
+        { status: upstreamStatus, headers: { "www-authenticate": 'Bearer error="insufficient_scope", scope="tools:read"' } },
+      ));
+      const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+      const app = createRouteApp(db);
+      const url = `/api/tool-connections/${connection!.id}/${path}`;
+      const response = await (path === "catalog" ? request(app).get(url) : request(app).post(url));
+
+      expect(response.status).toBe(422);
+      expect(response.body).toMatchObject({
+        code: "oauth_insufficient_scope",
+        error: expect.stringContaining("Reconnect this connection"),
+        details: {
+          code: "oauth_insufficient_scope",
+          setupUrl: expect.any(String),
+          reconnectUrl: expect.any(String),
+        },
+      });
+      expect(JSON.stringify(response.body)).not.toContain("private provider details");
+      expect(capture).not.toHaveBeenCalled();
+      const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+      expect(updated?.healthStatus).toBe("degraded");
+      expect(updated?.healthMessage).toBe(response.body.error);
+      await expect(db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.connectionId, connection!.id)))
+        .resolves.toEqual(expect.arrayContaining([expect.objectContaining({
+          action: path === "health-check" ? "tool_connection.health_check" : "tool_connection.catalog_refresh",
+          outcome: "failure",
+          reasonCode: "oauth_insufficient_scope",
+        })]));
+      await expect(db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connection!.id)))
+        .resolves.toHaveLength(0);
+    },
+  );
+
   it.each([
     ["catalog", 401, 'Bearer realm="app"', 422, false],
     ["catalog/refresh", 401, 'Bearer realm="app"', 422, false],
     ["catalog", 400, null, 502, true],
     ["catalog/refresh", 400, null, 502, true],
-    ["catalog", 503, null, 502, true],
-    ["catalog/refresh", 503, null, 502, true],
+    ["catalog", 503, null, 502, false],
+    ["catalog/refresh", 503, null, 502, false],
+    ["catalog/refresh", 403, null, 502, false],
+    ["health-check", 503, 'Bearer error="insufficient_scope"', 502, false],
+    ["catalog/refresh", 404, null, 502, false],
+    ["catalog/refresh", 429, null, 502, false],
+    ["health-check", 500, null, 502, false],
   ] as const)(
-    "classifies %s upstream HTTP %i without hiding provider failures",
+    "classifies %s upstream HTTP %i while retaining the failed response",
     async (path, upstreamStatus, challenge, expectedStatus, reportable) => {
       const company = await createCompany(db);
       const [application] = await db
@@ -15349,7 +15445,7 @@ describeEmbeddedPostgres("tool access service", () => {
         : request(app).post(url));
 
       expect(res.status).toBe(expectedStatus);
-      if (challenge) {
+      if (challenge && upstreamStatus === 401) {
         expect(res.body).toMatchObject({
           error: "This app needs you to sign in.",
           code: "oauth_challenge",
@@ -15361,10 +15457,99 @@ describeEmbeddedPostgres("tool access service", () => {
         });
       }
       expect(capture).toHaveBeenCalledTimes(reportable ? 1 : 0);
+      const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+      expect(updated?.healthStatus).toBe("error");
+      expect(updated?.healthMessage).toBe(res.body.error);
       await expect(
         db.select().from(toolCatalogEntries)
           .where(eq(toolCatalogEntries.connectionId, connection!.id)),
       ).resolves.toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ["initialize reset", false],
+    ["initialize parser", true],
+    ["initialize internal reader", true],
+    ["notification 503", false],
+    ["notification 400", true],
+  ] as const)("preserves session-required MCP failure reporting: %s", async (scenario, reportable) => {
+    const company = await createCompany(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id, applicationKey: `session-status-${randomUUID()}`,
+      name: "MCP session fixture", type: "mcp_http", status: "active",
+    }).returning();
+    const config = { url: "https://session-status.example.test/mcp", mcpSessionRequired: true };
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id, applicationId: application!.id, name: "MCP session fixture",
+      uid: `test/${randomUUID()}`, transport: "mcp_remote", status: "draft", enabled: false,
+      config, transportConfig: config,
+    }).returning();
+    const methods: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      methods.push(request.method);
+      if (request.method === "notifications/initialized") return new Response(null, { status: scenario === "notification 503" ? 503 : 400 });
+      expect(request.method).toBe("initialize");
+      if (scenario === "initialize parser") return new Response("not JSON");
+      if (scenario === "initialize reset" || scenario === "initialize internal reader") {
+        const error = scenario === "initialize reset"
+          ? new TypeError("body terminated", { cause: { code: "ECONNRESET" } })
+          : new TypeError("internal reader failed");
+        return new Response(new ReadableStream({ start(controller) { controller.error(error); } }));
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2025-06-18" } }));
+    });
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    const response = await request(createRouteApp(db)).post(`/api/tool-connections/${connection!.id}/catalog/refresh`);
+    expect(response.status).toBe(502);
+    expect(response.body.error).toBeTruthy();
+    expect(capture).toHaveBeenCalledTimes(reportable ? 1 : 0);
+    expect(methods).toEqual(scenario.startsWith("notification") ? ["initialize", "notifications/initialized"] : ["initialize"]);
+    const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+    expect(updated?.healthStatus).toBe("error");
+    expect(updated?.healthMessage).toBe(response.body.error);
+    await expect(db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.connectionId, connection!.id)))
+      .resolves.toEqual(expect.arrayContaining([expect.objectContaining({ outcome: "failure", action: "tool_connection.catalog_refresh" })]));
+  });
+
+  it.each([
+    ["known transport", () => { throw new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } }); }, false],
+    ["direct transport", () => { throw Object.assign(new Error("connection reset"), { code: "ECONNRESET" }); }, false],
+    ["unknown transport", () => { throw new TypeError("ECONNREFUSED"); }, true],
+    ["database code", () => { throw Object.assign(new Error("query failed"), { code: "42P01" }); }, true],
+    ["mixed transport", () => { throw new TypeError("fetch failed", { cause: { errors: [{ code: "ECONNREFUSED" }, { code: "ERR_INTERNAL_ASSERTION" }] } }); }, true],
+    ["forged classification", () => { throw new HttpError(502, "Remote app returned HTTP 503", { status: 503, connectionFailure: { schemaVersion: 1, provider: "mcp_http", operation: "discover_tools", reason: "remote_unavailable" } }); }, true],
+    ["malformed response", () => new Response("not JSON"), true],
+    ["invalid catalog", () => new Response(JSON.stringify({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: {} })), true],
+  ] as const)(
+    "preserves MCP diagnostics and reports only unclassified failure: %s",
+    async (_name, reply, reportable) => {
+      const company = await createCompany(db);
+      const [application] = await db.insert(toolApplications).values({
+        companyId: company.id, applicationKey: `transport-status-${randomUUID()}`,
+        name: "MCP transport fixture", type: "mcp_http", status: "active",
+      }).returning();
+      const [connection] = await db.insert(toolConnections).values({
+        companyId: company.id, applicationId: application!.id, name: "MCP transport fixture",
+        uid: `test/${randomUUID()}`, transport: "mcp_remote", status: "draft", enabled: false,
+        config: { url: "https://transport-status.example.test/mcp" },
+        transportConfig: { url: "https://transport-status.example.test/mcp" },
+      }).returning();
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => reply());
+      const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+      const response = await request(createRouteApp(db)).post(`/api/tool-connections/${connection!.id}/catalog/refresh`);
+
+      expect(response.status).toBe(502);
+      expect(response.body.error).toBeTruthy();
+      expect(capture).toHaveBeenCalledTimes(reportable ? 1 : 0);
+      const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection!.id));
+      expect(updated?.healthStatus).toBe("error");
+      expect(updated?.healthMessage).toBe(response.body.error);
+      await expect(db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.connectionId, connection!.id)))
+        .resolves.toEqual(expect.arrayContaining([expect.objectContaining({ outcome: "failure", action: "tool_connection.catalog_refresh" })]));
+      await expect(db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, connection!.id)))
+        .resolves.toHaveLength(0);
     },
   );
 

@@ -12,7 +12,7 @@ import { recordLegacyWorkspaceRestoreFailure, terminalizeLegacyExecution } from 
 import { issueService } from "../services/issues.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -5588,6 +5588,179 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await heartbeat.waitForRunExecutionDrain(runId);
       await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: previousSettings.enableIsolatedWorkspaces });
       await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { name: "HTTPS authentication", failures: ["auth"], report: false },
+    { name: "SSH alias DNS", failures: ["dns"], report: false },
+    { name: "mixed recognized and unknown candidates", failures: ["auth", "unknown"], report: true },
+    { name: "mixed local and authentication diagnostics", failures: ["mixed"], report: true },
+    { name: "unknown clone failure", failures: ["unknown"], report: true },
+  ])("preserves failed workspace recovery while classifying managed Git connections: $name", async ({ failures, report }) => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-connection-lifecycle-"));
+    const bin = path.join(home, "bin");
+    const callsPath = path.join(home, "git-calls.jsonl");
+    const projectId = randomUUID();
+    const workspaceIds = failures.map(() => randomUUID());
+    const remotes = failures.map((failure, index) => failure === "dns"
+      ? `git@clone-alias.example.test:team/repository-${index}.git`
+      : `https://clone.example.test/team/repository-${index}.git`);
+    const diagnostics = failures.map((failure) => failure === "dns"
+      ? "ssh: Could not resolve hostname clone-alias.example.test: Name or service not known\nfatal: Could not read from remote repository."
+      : failure === "unknown" ? "fatal: unexpected internal clone failure"
+      : "fatal: Authentication failed for 'https://clone.example.test/'" +
+        (failure === "mixed" ? "\nfatal: No space left on device" : ""));
+    await fs.mkdir(bin);
+    // A real child process supplies execFile's numeric exit/stderr evidence.
+    // Every command is intercepted, so no fixture can reach a remote Git host.
+    await fs.writeFile(path.join(bin, "git"), `#!${process.execPath}\n` +
+      `const fs = require('node:fs');\n` +
+      `const args = process.argv.slice(2);\n` +
+      `fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args) + '\\n');\n` +
+      `const remotes = ${JSON.stringify(remotes)};\n` +
+      `const diagnostics = ${JSON.stringify(diagnostics)};\n` +
+      `const index = remotes.indexOf(args.at(-2));\n` +
+      `if (!args.includes('clone') || index < 0) { process.stderr.write('Unexpected fixture Git command\\n'); process.exit(2); }\n` +
+      `process.stderr.write(diagnostics[index] + '\\n'); process.exitCode = 128;\n`, { mode: 0o755 });
+    const heartbeat = heartbeatService(db);
+    const previousSettings = await instanceSettingsService(db).getExperimental();
+    const previousPath = process.env.PATH;
+    const previousHome = process.env.PAPERCLIP_HOME;
+    try {
+      process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+      process.env.PAPERCLIP_HOME = home;
+      await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+      await db.insert(projects).values({ id: projectId, companyId, name: "Git connection fixture", status: "in_progress" });
+      await db.insert(projectWorkspaces).values(workspaceIds.map((id, index) => ({
+        id, companyId, projectId, name: `Repository ${index}`, sourceType: "git_repo",
+        repoUrl: remotes[index], cwd: null, isPrimary: index === 0,
+      })));
+      await db.update(issues).set({
+        projectId, projectWorkspaceId: workspaceIds[0], executionWorkspaceSettings: { mode: "isolated_workspace" },
+      }).where(eq(issues.id, issueId));
+      await db.update(agents).set({ adapterConfig: { workspaceStrategy: { type: "git_worktree" } } }).where(eq(agents.id, agentId));
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      await waitForPendingRunFailureReports();
+
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run).toMatchObject({
+        status: "failed", errorCode: "workspace_validation_failed", processStartedAt: null,
+        resultJson: {
+          workspaceValidation: { reason: "git_worktree_base_materialization_failed" },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        },
+      });
+      expect(run.error).toContain("checkout could not be prepared");
+      const validation = run.resultJson!.workspaceValidation as Record<string, unknown>;
+      const materializations = validation.materializationFailures as Array<Record<string, unknown>>;
+      expect(materializations).toHaveLength(failures.length);
+      expect(materializations.map((failure) => failure.connectionFailure)).toEqual(failures.map((failure) =>
+        failure === "auth" || failure === "dns" ? {
+          schemaVersion: 1, provider: "git", operation: "clone",
+          reason: failure === "auth" ? "authentication_failed" : "dns_failure",
+        } : undefined));
+      expect(run.resultJson!.connectionFailure).toEqual(report ? undefined : materializations[0].connectionFailure);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue).toMatchObject({ status: "blocked", executionRunId: null, projectId, projectWorkspaceId: workspaceIds[0] });
+      const [action] = await db.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+      ));
+      expect(action).toMatchObject({ status: "active", kind: "workspace_validation", ownerType: "board" });
+      expect(action.nextAction).toContain("workspace");
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      expect(comments.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
+      expect(mockCaptureRunFailure.mock.calls.filter(([event]) => event.runId === runId)).toHaveLength(report ? 1 : 0);
+      const calls = (await fs.readFile(callsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
+      expect(calls).toHaveLength(failures.length);
+      expect(calls.every((args) => args.includes("clone"))).toBe(true);
+    } finally {
+      await heartbeat.waitForRunExecutionDrain(runId);
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+      await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: previousSettings.enableIsolatedWorkspaces });
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a direct additional-repository connection failure visible without reporting it to Sentry", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-additional-git-connection-"));
+    const cwd = path.join(home, "primary");
+    const bin = path.join(home, "bin");
+    const cloneCalls = path.join(home, "clone-calls.jsonl");
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const repoUrl = "git@clone-alias.example.test:team/additional.git";
+    const previousPath = process.env.PATH;
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const heartbeat = heartbeatService(db);
+    await fs.mkdir(cwd);
+    await fs.mkdir(bin);
+    execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+    await fs.writeFile(path.join(cwd, "README.md"), "Keep this local repository intact.\n");
+    execFileSync("git", ["add", "README.md"], { cwd, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", "Fixture"], { cwd, stdio: "ignore" });
+    await fs.writeFile(path.join(bin, "git"), `#!${process.execPath}\n` +
+      `const fs = require('node:fs'); const { spawnSync } = require('node:child_process');\n` +
+      `const args = process.argv.slice(2);\n` +
+      `if (args.includes('clone')) {\n` +
+      `  fs.appendFileSync(${JSON.stringify(cloneCalls)}, JSON.stringify(args) + '\\n');\n` +
+      `  if (args.at(-2) !== ${JSON.stringify(repoUrl)}) process.exit(2);\n` +
+      `  process.stderr.write('ssh: Could not resolve hostname clone-alias.example.test: Name or service not known\\nfatal: Could not read from remote repository.\\n'); process.exit(128);\n` +
+      `}\n` +
+      `if (args.some(arg => ['fetch', 'pull', 'push', 'ls-remote', 'submodule'].includes(arg))) process.exit(2);\n` +
+      `const result = spawnSync('git', args, { stdio: 'inherit', env: { ...process.env, PATH: ${JSON.stringify(previousPath)} } });\n` +
+      `process.exit(result.status ?? 2);\n`, { mode: 0o755 });
+    try {
+      process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+      process.env.PAPERCLIP_HOME = home;
+      await db.insert(projects).values({ id: projectId, companyId, name: "Additional repository fixture", status: "in_progress" });
+      await db.insert(projectWorkspaces).values([
+        { id: workspaceId, companyId, projectId, name: "Primary", sourceType: "local_path", cwd, isPrimary: true },
+        { id: randomUUID(), companyId, projectId, name: "Additional", sourceType: "git_repo", repoUrl, cwd: null, isPrimary: false },
+      ]);
+      await db.update(issues).set({ projectId, projectWorkspaceId: workspaceId,
+        executionWorkspaceSettings: { mode: "shared_workspace" },
+      }).where(eq(issues.id, issueId));
+      await db.update(agents).set({ adapterConfig: { cwd } }).where(eq(agents.id, agentId));
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      await waitForPendingRunFailureReports();
+
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run).toMatchObject({ status: "failed", errorCode: "setup_failed", executionStage: "preparing", processStartedAt: null,
+        resultJson: {
+          connectionFailure: { schemaVersion: 1, provider: "git", operation: "clone", reason: "dns_failure" },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        },
+      });
+      expect(run.resultJson?.workspaceValidation).toBeUndefined();
+      expect(run.error).toContain("Could not resolve hostname");
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue).toMatchObject({ status: "blocked", executionRunId: null, projectId, projectWorkspaceId: workspaceId });
+      const [action] = await db.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+      ));
+      expect(action).toMatchObject({ status: "active", ownerType: "board" });
+      expect(mockCaptureRunFailure.mock.calls.filter(([event]) => event.runId === runId)).toHaveLength(0);
+      const calls = (await fs.readFile(cloneCalls, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as string[]);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].at(-2)).toBe(repoUrl);
+      expect(await fs.readFile(path.join(cwd, "README.md"), "utf8")).toBe("Keep this local repository intact.\n");
+    } finally {
+      await heartbeat.waitForRunExecutionDrain(runId);
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+      await fs.rm(home, { recursive: true, force: true });
     }
   });
 

@@ -1,3 +1,5 @@
+import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./middleware/idle-admission.js";
+import { isIdleTaskDrainActive, trackIdleWork } from "./services/task-admission.js";
 import { customerSuccessRoutes } from "./routes/customer-success.js";
 import { cloudWarmStandbyMiddleware } from "./middleware/cloud-warm-standby.js";
 import type { CloudWarmStandby } from "./services/cloud-warm-standby.js";
@@ -520,6 +522,7 @@ export async function createApp(
   },
 ) {
   const app = express();
+  app.use(idleAdmissionMiddleware);
   const staticUi = express.Router();
   app.locals.paperclipDb = db;
   const isWarmStandby = opts.cloudWarmStandby ?? (() => false);
@@ -629,7 +632,7 @@ export async function createApp(
   // mutation guard. The Chat SDK adapter verifies the provider signature
   // before Paperclip persists or acts on any event.
   const emailChannels = emailChannelService(db, {
-    isBackgroundWorkEnabled: () => !isWarmStandby(),
+    isBackgroundWorkEnabled: () => !isWarmStandby() && !isIdleTaskDrainActive(),
     heartbeat: connectionIntentHeartbeat,
     storage: opts.storageService,
     publicBaseUrl: opts.chatWebhookPublicBaseUrl ?? opts.authPublicBaseUrl,
@@ -841,7 +844,7 @@ export async function createApp(
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });
   const scheduler = createPluginJobScheduler({
-    isBackgroundWorkEnabled: () => !isWarmStandby(),
+    isBackgroundWorkEnabled: () => !isWarmStandby() && !isIdleTaskDrainActive(),
     db,
     jobStore,
     workerManager,
@@ -1000,14 +1003,14 @@ export async function createApp(
   if (publicMcpOAuth) {
     const dispatch = createMcpApiDispatch(api);
     publicMcpEvents = createPublicMcpEvents(db, publicMcpOAuth, dispatch, {
-      isBackgroundWorkEnabled: () => !isWarmStandby(),
+      isBackgroundWorkEnabled: () => !isWarmStandby() && !isIdleTaskDrainActive(),
     });
     publicMcpEvents.start();
     const transfers = createPublicMcpTransfers(db, publicMcpOAuth, dispatch, opts.storageService);
     publicMcpIngress.use(transfers.router);
     publicMcpIngress.use(publicMcpIngressRoutes(publicMcpOAuth, createPublicMcpExecutor(db, publicMcpOAuth, dispatch, transfers), publicMcpEvents));
     const dotOAuth = createPublicMcpOAuth(db, { ...publicMcpOAuth.config, resource: publicMcpOAuth.config.origin + "/mcp/runner" });
-    dotMcpEvents = createPublicMcpEvents(db, dotOAuth, dispatch, { enableDotRunner: true, isBackgroundWorkEnabled: () => !isWarmStandby() });
+    dotMcpEvents = createPublicMcpEvents(db, dotOAuth, dispatch, { enableDotRunner: true, isBackgroundWorkEnabled: () => !isWarmStandby() && !isIdleTaskDrainActive() });
     dotMcpEvents.start();
     publicMcpIngress.use(publicMcpIngressRoutes(dotOAuth, createPublicMcpExecutor(db, dotOAuth, dispatch), dotMcpEvents, createDotRunnerMcpTools(db)));
     api.use(publicMcpManagementRoutes(publicMcpOAuth, dotOAuth));
@@ -1194,7 +1197,7 @@ export async function createApp(
     }
   };
   const flushPendingFeedbackExports = async () => {
-    if (feedbackExportShuttingDown || isWarmStandby()) return;
+    if (feedbackExportShuttingDown || isWarmStandby() || isIdleTaskDrainActive()) return;
     try {
       await opts.feedbackExportService?.flushPendingFeedbackTraces();
     } catch (err) {
@@ -1243,25 +1246,25 @@ export async function createApp(
   });
   const unsubscribeChatPublicationSignals = subscribeAllCompanyLiveEvents(
     (event) => {
-      if (!isWarmStandby() && isChatPublicationCommitSignal(event))
+      if (!isWarmStandby() && !isIdleTaskDrainActive() && isChatPublicationCommitSignal(event))
         chatReconciliation.notifyPublications();
     },
   );
   let chatPublicationTimer: ReturnType<typeof setInterval> | null = setInterval(
     () => {
-      if (!isWarmStandby()) chatReconciliation.reconcile();
+      if (!isWarmStandby() && !isIdleTaskDrainActive()) chatReconciliation.reconcile();
     },
     CHAT_PUBLICATION_FLUSH_INTERVAL_MS,
   );
   chatPublicationTimer.unref?.();
-  if (!isWarmStandby()) chatReconciliation.reconcile();
+  if (!isWarmStandby() && !isIdleTaskDrainActive()) chatReconciliation.reconcile();
   // Abandoned chunked-import spool sweep: hourly (plus once at startup),
   // deleting spool dirs whose transfer saw no activity for 24h and cancelling
   // their still-open ledger runs. Same setInterval + unref + shutdown-clear
   // shape as the feedback export flush above.
   const importTransferSpoolRoot = resolveDefaultImportTransferSpoolRoot();
   const sweepImportTransferSpools = () => {
-    if (isWarmStandby()) return;
+    if (isWarmStandby() || isIdleTaskDrainActive()) return;
     sweepAbandonedImportTransferSpools(db, importTransferSpoolRoot)
       .then((result) => {
         if (result.swept > 0) {
@@ -1276,11 +1279,11 @@ export async function createApp(
       });
   };
   const browserUseTimer = setInterval(() => {
-    if (isWarmStandby()) return;
+    if (isWarmStandby() || isIdleTaskDrainActive()) return;
     void browserUse.sweep().catch(() => logger.warn("Browser Use reconciliation failed; retrying."));
   }, 3000);
   browserUseTimer.unref?.();
-  if (!isWarmStandby()) void browserUse.sweep().catch(() => logger.warn("Browser Use startup reconciliation failed; retrying."));
+  if (!isWarmStandby() && !isIdleTaskDrainActive()) void browserUse.sweep().catch(() => logger.warn("Browser Use startup reconciliation failed; retrying."));
   let importTransferSweepTimer: ReturnType<typeof setInterval> | null =
     setInterval(
       sweepImportTransferSpools,
@@ -1369,7 +1372,7 @@ export async function createApp(
     .catch((err) => {
       logger.error({ err }, "Failed to load ready plugins on startup");
     });
-  app.locals.bundledPluginsStartup = bundledPluginsStartup;
+  app.locals.bundledPluginsStartup = trackIdleWork(bundledPluginsStartup);
   // The shutdown hook runs at most once. It caches the in-flight promise, so a
   // second caller (for example the `exit` handler) awaits the same completion
   // instead of starting a second teardown.
@@ -1427,5 +1430,6 @@ export async function createApp(
     void flushPluginLogBuffer();
   });
 
+  trackIdleRequestHandlers(app);
   return app;
 }

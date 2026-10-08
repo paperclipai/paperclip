@@ -29,8 +29,10 @@ const mockCompanyService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockPublishActivity = vi.hoisted(() => vi.fn());
+const mockReadIdleSleepSafety = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../services/idle-sleep-safety.js", () => ({ readIdleSleepSafety: mockReadIdleSleepSafety }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => mockCompanyService,
     heartbeatService: () => mockHeartbeatService,
@@ -89,6 +91,7 @@ describe("instance settings routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockReadIdleSleepSafety.mockReset();
     // vi.clearAllMocks() clears recorded calls only; it does not remove a
     // mockImplementation a prior test installed. Reinstall the default here
     // so a stateful implementation from one test can never leak into the
@@ -960,6 +963,54 @@ describe("instance settings routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual(idleStatus);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+    });
+
+    it("acquires an owned bounded idle hold and forwards its owner for inspection", async () => {
+      const ownerId = "d0b833f4-4098-42de-8420-1907f3aa4895";
+      mockHeartbeatService.computeTaskDrain.mockReturnValue({ ownerId, startedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) });
+      await request(createApp(adminActor)).post("/api/instance/task-drain").send({ purpose: "idle", ttlMs: 60_000 }).expect(200);
+      expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({ purpose: "idle", ttlMs: 60_000 });
+      await request(createApp(adminActor)).get(`/api/instance/task-drain?idleSleepSafety=1&ownerId=${ownerId}`).expect(200);
+      expect(mockReadIdleSleepSafety).toHaveBeenLastCalledWith(mockDb, expect.any(Function), Date.now, ownerId);
+    });
+
+    it.each([{}, { ttlMs: null }, { ttlMs: 1 }, { ttlMs: 300_001 }])("rejects an unbounded or invalid idle TTL: %j", async body => {
+      await request(createApp(adminActor)).post("/api/instance/task-drain").send({ ...body, purpose: "idle" }).expect(400);
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+    });
+
+    it("rejects replacement and ownerless or stale release of an idle hold", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true, ownerId: "current-owner" });
+      const app = createApp(adminActor);
+      await request(app).post("/api/instance/task-drain").send({}).expect(409);
+      await request(app).delete("/api/instance/task-drain").expect(409);
+      await request(app).delete("/api/instance/task-drain?ownerId=previous-owner").expect(409);
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+      await request(app).delete("/api/instance/task-drain?ownerId=current-owner").expect(200);
+      expect(mockHeartbeatService.stopTaskDrain).toHaveBeenCalledOnce();
+    });
+
+    it("returns the opt-in instance-wide safety report to an instance admin", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      const report = { version: 1, backgroundWork: "unknown" };
+      mockReadIdleSleepSafety.mockResolvedValue(report);
+      const res = await request(createApp(adminActor)).get("/api/instance/task-drain?idleSleepSafety=1");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ...idleStatus, idleSleepSafety: report });
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now, undefined);
+      expect(mockReadIdleSleepSafety.mock.calls[0][1]()).toEqual(idleStatus);
+    });
+
+    it.each([
+      ["company member", nonAdminActor],
+      ["agent", { type: "agent", agentId: "agent-1", companyId: "company-1" }],
+      ["anonymous caller", { type: "none" }],
+    ])("does not expose the instance-wide work report to a %s", async (_name, actor) => {
+      const res = await request(createApp(actor)).get("/api/instance/task-drain?idleSleepSafety=1");
+      expect(res.status).toBe(403);
+      expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
     });
 
     it("writes an activity record for every company, then applies the same drain values, in one transaction", async () => {

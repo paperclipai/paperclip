@@ -62,6 +62,7 @@ export function buildPaperclipTaskMarkdown(input: {
     body: string;
   } | null;
   externalChatProvider?: string | null;
+  slackCommand?: string | null;
   nativeRunner?: boolean;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
@@ -140,7 +141,7 @@ export function buildPaperclipTaskMarkdown(input: {
     );
   }
   if (input.externalChatProvider === "slack") {
-    lines.push(...slackChatAgentGuidance(input.nativeRunner === true));
+    lines.push(...slackChatAgentGuidance(input.nativeRunner === true, input.slackCommand));
   }
   if (input.externalChatProvider && input.nativeRunner) {
     lines.push(

@@ -334,9 +334,11 @@ describe("runner E2E Daytona image contract", () => {
     }
   });
 
-  it("invalidates the image when the Cursor runtime isolation patch changes", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "paperclip-cursor-image-id-"));
-    const patchPath = "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs";
+  it.each([
+    "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
+    "packages/paperclip-runner/scripts/provider-pack-executable-shims.mjs",
+  ])("invalidates the image when %s changes", async (patchPath) => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-provider-image-id-"));
     expect(DAYTONA_IMAGE_INPUT_PATHS).toContain(patchPath);
     const options = {
       repositoryRoot: root,

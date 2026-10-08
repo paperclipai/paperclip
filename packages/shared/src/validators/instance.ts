@@ -129,8 +129,11 @@ export const patchInstanceSettingsSchema = z.object({
 export const MAX_TASK_DRAIN_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const startTaskDrainRequestSchema = z.object({
+  purpose: z.literal("idle").optional(),
   ttlMs: z.number().int().positive().max(MAX_TASK_DRAIN_TTL_MS).nullable().optional(),
-}).strict();
+}).strict().refine(value => value.purpose !== "idle" ||
+  (typeof value.ttlMs === "number" && value.ttlMs >= 5_000 && value.ttlMs <= 300_000),
+  { message: "Idle holds require ttlMs between 5000 and 300000", path: ["ttlMs"] });
 
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;
 // The patch schema removes each default so an absent key stays absent. Declare

@@ -174,6 +174,16 @@ checkout, including a non-primary checkout. Changing projects clears the
 previous worktree choice. Switching from reuse to a new worktree or the project
 workspace restores the project default checkout. Task creation uses the selected company and has
 no separate heading or settings control.
+
+Task execution-policy controls apply the shared schema defaults when stages or
+participants are omitted. An invalid policy shows an unavailable notice and
+disables policy edits while leaving other task properties usable. Refresh to
+retry. Optional browser error monitoring reports only a fixed field category,
+once per mounted control; it never includes the policy or task identifiers.
+Edits in the reviewer and monitor controls retain an explicitly configured
+review-round limit when the last reviewer or monitor is removed, so adding a
+reviewer later uses the saved limit.
+
 Fresh tasks start with an empty request and the last task assignee chosen in that
 company, including a human. If that assignee is unavailable, the CEO is the
 default, or the first eligible agent when the company has no CEO. Explicit launch
@@ -1216,6 +1226,15 @@ Run-log formatting is in `server/src/services/heartbeat/run-log.ts`. It bounds
 stored event payloads, redacts and shortens log chunks, and caps stdout/stderr
 excerpts. `heartbeat.ts` keeps event writes, current-user redaction, and live
 event delivery. Existing public helpers remain available from `heartbeat.ts`.
+
+Workspace preparation is in `server/src/services/heartbeat/workspaces.ts`. It
+owns managed checkout materialization, workspace validation and reuse, referenced
+project resolution, and session/workspace configuration freshness. Its
+`createHeartbeatWorkspaceResolver(db)` factory binds the run workspace resolvers
+to a service's database. The checkout single-flight map stays at module scope so
+all service instances share in-flight materialization. Existing public helpers
+and the workspace validation error class remain available from `heartbeat.ts`.
+Keep workspace policy changes separate from scheduling and run execution changes.
 
 ## Wake Context Delivery
 

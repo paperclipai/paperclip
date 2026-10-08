@@ -9,6 +9,7 @@ import type { DeploymentMode, LiveEvent } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { trackIdleWork } from "../services/task-admission.js";
 
 interface WsSocket {
   readyState: number;
@@ -384,7 +385,9 @@ export function setupLiveEventsWebSocketServer(
       return;
     }
 
-    void authorizeUpgrade(db, req, companyId, url, {
+    // Upgrade admission precedes this async authentication. An idle hold or
+    // socket close must not make its accepted database writes disappear.
+    void trackIdleWork(authorizeUpgrade(db, req, companyId, url, {
       deploymentMode: opts.deploymentMode,
       resolveSessionFromHeaders: opts.resolveSessionFromHeaders,
       resolveCloudActor: opts.resolveCloudActor,
@@ -411,7 +414,7 @@ export function setupLiveEventsWebSocketServer(
       .catch((err) => {
         logger.error({ err, path: req.url }, "failed websocket upgrade authorization");
         rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");
-      });
+      }));
   });
 
   return wss;

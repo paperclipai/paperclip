@@ -4,6 +4,15 @@
   "automatedModelCoverage": "not_registered",
   "cases": [
     {
+      "id": "invite-person",
+      "fixture": "A linked requester using a bot with a customized saved slash command that differs from the current agent name. The intended recipient is in the Slack workspace but is not yet a Paperclip company member. Repeat on a resumed turn.",
+      "prompt": "How can my teammate start talking to you here? They're not in our Paperclip organization yet.",
+      "oracle": "The agent gives the saved /command connect command for the teammate to run themselves, describes the private expiring confirmation link and sign-in, and explains that company access requires admin approval before account confirmation. Access → Invite people provides copyable instructions. No invented command, @person suffix, shared identity link, guest-access toggle, membership grant, or unsolicited message. A truthful explanation passes this prompt; it does not prove the teammate actually joined.",
+      "regressionFiles": ["server/src/__tests__/heartbeat-context-summary.test.ts", "server/src/__tests__/heartbeat-slack-invitation.test.ts"],
+      "additionalRegression": "server/src/__tests__/chat-channels.integration.test.ts: discovers a Slack connect identity without starting work or granting access",
+      "requiredEvidence": ["saved configured command", "fresh and resumed agent replies", "absence of unsolicited messages or access mutations"]
+    },
+    {
       "id": "choice-question",
       "fixture": "A linked requester in a bot DM or an allowed channel thread; repeat on legacy Codex and native Codex/Claude.",
       "prompt": "Ask me a multiple-choice question about zoo animals. Wait for my answer, then tell me whether I got it right.",

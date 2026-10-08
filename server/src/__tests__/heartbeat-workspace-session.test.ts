@@ -462,6 +462,29 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
 });
 
 describe("assertGitWorktreeBaseWorkspaceReady", () => {
+  it.each(["all_external", "mixed", "malformed"])("keeps materialization aggregation fail-closed: %s", async (kind) => {
+    const first = { schemaVersion: 1, provider: "git", operation: "clone", reason: "authentication_failed" } as const;
+    const second = kind === "all_external" ? { ...first, reason: "dns_failure" as const } :
+      kind === "malformed" ? { ...first, reason: "unknown" } : undefined;
+    const failures = [first, second].map((connectionFailure, index) => ({
+      projectWorkspaceId: `workspace-${index}`, repoUrl: "https://example.test/team/repo.git",
+      error: "Managed checkout failed", ...(connectionFailure ? { connectionFailure } : {}),
+    }));
+    const error = await assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      config: { workspaceStrategy: { type: "git_worktree" } },
+      issue: { id: "issue-1", identifier: "TEST-1", projectId: "project-1", projectWorkspaceId: "workspace-0" },
+      base: { baseCwd: "/tmp/unused-fallback", source: "project_primary", projectId: "project-1", workspaceId: "workspace-0", repoUrl: "https://example.test/team/repo.git", repoRef: null },
+      anchor: { baseCwdFallback: true, materializationFailures: failures as never },
+    }).catch((error: unknown) => error);
+    expect(error).toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: { workspaceValidation: { reason: "git_worktree_base_materialization_failed", materializationFailures: failures } },
+    });
+    expect((error as { resultJson: Record<string, unknown> }).resultJson.connectionFailure)
+      .toEqual(kind === "all_external" ? first : undefined);
+  });
+
   it("rejects projectless isolated git worktrees that resolved to agent_home", async () => {
     const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
 

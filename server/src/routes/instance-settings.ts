@@ -1,3 +1,4 @@
+import { trackIdleWork } from "../services/task-admission.js";
 import { Router, type Request } from "express";
 import { companies, type Db } from "@paperclipai/db";
 import {
@@ -6,13 +7,14 @@ import {
   patchInstanceGeneralSettingsSchema,
   startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { conflict, forbidden } from "../errors.js";
 import {
   cloudTenantPrimaryCompanyId,
   getCloudStackContext,
   isCloudManagedInstance,
 } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -106,7 +108,7 @@ function assertCanManageInstanceSettings(req: Request) {
 let taskDrainTransitionQueue: Promise<void> = Promise.resolve();
 
 function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
-  const turn = taskDrainTransitionQueue.then(run);
+  const turn = trackIdleWork(taskDrainTransitionQueue.then(run));
   // Normalize to a settled void promise for the next caller in line, so a
   // rejected transition (a failed audit write, for example) cannot wedge
   // every later transition behind it.
@@ -297,6 +299,15 @@ export function instanceSettingsRoutes(db: Db) {
 
   router.get("/instance/task-drain", async (req, res) => {
     assertBoardOrgAccess(req);
+    if (req.query.idleSleepSafety === "1") {
+      // The report covers every company in this process. Ordinary company
+      // members may read process counters, but not instance-wide work state.
+      assertCanManageInstanceSettings(req);
+      const idleSleepSafety = await readIdleSleepSafety(db, () => heartbeat.getTaskDrainStatus(), Date.now,
+        typeof req.query.ownerId === "string" ? req.query.ownerId : undefined);
+      res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
+      return;
+    }
     res.json(heartbeat.getTaskDrainStatus());
   });
 
@@ -315,7 +326,12 @@ export function instanceSettingsRoutes(db: Db) {
       // startedAt reflects the moment this request actually took effect,
       // not the moment it arrived and was queued behind another transition.
       const drain = await withTaskDrainTransition(async () => {
-        const computed = heartbeat.computeTaskDrain({ ttlMs });
+        const prior = heartbeat.getTaskDrainStatus();
+        if (prior?.ownerId || (req.body.purpose === "idle" && prior?.draining)) {
+          throw conflict("Another task drain is already active");
+        }
+        const computed = heartbeat.computeTaskDrain({ ttlMs,
+          ...(req.body.purpose === "idle" ? { purpose: "idle" as const } : {}) });
         // One transaction for every company's audit row, so a write that
         // succeeds for one company and fails for another never leaves a
         // partial activity history behind — either every company gets the
@@ -339,6 +355,7 @@ export function instanceSettingsRoutes(db: Db) {
                 details: {
                   startedAt: computed.startedAt,
                   expiresAt: computed.expiresAt,
+                  ...(computed.ownerId ? { purpose: "idle", ownerId: computed.ownerId } : {}),
                 },
               }, postCommitActivityPublications),
             ),
@@ -369,6 +386,10 @@ export function instanceSettingsRoutes(db: Db) {
     // queued transition.
     const wasActive = await withTaskDrainTransition(async () => {
       const priorStatus = heartbeat.getTaskDrainStatus();
+      if ((priorStatus.ownerId || req.query.ownerId !== undefined) &&
+          (typeof req.query.ownerId !== "string" || req.query.ownerId !== priorStatus.ownerId)) {
+        throw conflict("Task drain ownership changed");
+      }
       // Read wasActive once, here, and use this same value for the audit
       // detail and the response body below. A TTL that expires between two
       // separate reads would otherwise make the two values disagree.

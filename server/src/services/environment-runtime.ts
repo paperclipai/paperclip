@@ -1,3 +1,4 @@
+import { beginIdleTrackedWork } from "./task-admission.js";
 import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
 import { readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import { preserveEnvironmentSyncOutErrorDiagnostic } from "./environment-sync-out-error.js";
@@ -1327,6 +1328,16 @@ function createSandboxEnvironmentDriver(
   // write, so a flushed row and a synchronous row are indistinguishable to the
   // sweep.
   const deferredOrphanCleanups: DeferredOrphanCleanupRecord[] = [];
+  // Keep the token through queue splices, failed flushes and buffer overflow.
+  // Release only when the database durably owns cleanup of this exact orphan.
+  const orphanIdleWork = new Map<string, () => void>();
+  const orphanIdleKey = (record: DeferredOrphanCleanupRecord) => JSON.stringify([
+    record.companyId, record.provider, record.providerLeaseId ?? record,
+  ]);
+  const trackOrphanIdleWork = (record: DeferredOrphanCleanupRecord) => {
+    const key = orphanIdleKey(record);
+    if (!orphanIdleWork.has(key)) orphanIdleWork.set(key, beginIdleTrackedWork());
+  };
   const DEFERRED_ORPHAN_CLEANUP_FAILURE_REASON = "acquire_rejected_teardown_failed";
 
   // The in-process buffer alone loses an orphan on a restart. So the driver also
@@ -1345,6 +1356,7 @@ function createSandboxEnvironmentDriver(
   // Add one orphan record to the in-process buffer. Report `false` only when the
   // buffer is full, so the caller keeps the error log as the last durable handle.
   const enqueueDeferredOrphanCleanup = (record: DeferredOrphanCleanupRecord): boolean => {
+    trackOrphanIdleWork(record);
     // Dedup by the provider lease id, so a repeated failure for the same orphan
     // never buffers it twice. Each acquire mints a unique provider lease id, so
     // two distinct orphans never collide. Skip the dedup for a null lease id,
@@ -1406,6 +1418,9 @@ function createSandboxEnvironmentDriver(
         // leaves the spooled copy for a later flush, which re-inserts a duplicate
         // the idempotent teardown handles. This order never loses the orphan.
         await orphanCleanupSpool.remove(record);
+        const idleKey = orphanIdleKey(record);
+        orphanIdleWork.get(idleKey)?.();
+        orphanIdleWork.delete(idleKey);
         recovered += 1;
       } catch {
         // The database is still down. Re-queue the record for a later flush,
@@ -1544,6 +1559,7 @@ function createSandboxEnvironmentDriver(
     cause: unknown,
     cleanupWriteError: unknown,
   ): Promise<never> => {
+    trackOrphanIdleWork(record);
     const persisted = await orphanCleanupSpool.append(record);
     const buffered = enqueueDeferredOrphanCleanup(record);
     logger.error(

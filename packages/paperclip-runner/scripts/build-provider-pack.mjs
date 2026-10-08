@@ -20,6 +20,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
+import { writePortableCopilotShims, writePortableExecutableShim } from "./provider-pack-executable-shims.mjs";
 import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -95,21 +96,6 @@ function writePortableNodeShim(name, entrypoint) {
       "set -eu",
       'basedir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
       `exec "$basedir/../node/bin/node" "$basedir/../${entrypoint}" "$@"`,
-      "",
-    ].join("\n"),
-  );
-  chmodSync(shimPath, 0o755);
-}
-
-function writePortableExecutableShim(name, executable) {
-  const shimPath = join(temporaryRoot, "node_modules", ".bin", name);
-  writeFileSync(
-    shimPath,
-    [
-      "#!/bin/sh",
-      "set -eu",
-      'basedir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
-      `exec "$basedir/../${executable}" "$@"`,
       "",
     ].join("\n"),
   );
@@ -204,11 +190,13 @@ try {
     `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`,
   );
   writePortableExecutableShim(
+    temporaryRoot,
     "claude",
     relative(realpathSync(join(temporaryRoot, "node_modules")), realpathSync(claudeExecutable)),
   );
-  writePortableExecutableShim("node", "node/bin/node");
-  writePortableExecutableShim("opencode", "opencode-ai/bin/opencode.exe");
+  writePortableExecutableShim(temporaryRoot, "node", "node/bin/node");
+  writePortableExecutableShim(temporaryRoot, "opencode", "opencode-ai/bin/opencode.exe");
+  writePortableCopilotShims(temporaryRoot);
   writePortableNodeShim("acpx", "acpx/dist/cli.js");
   writePortableNodeShim(
     "claude-agent-acp",

@@ -83,6 +83,15 @@ membership approval. Existing members can self-link; disconnecting an identity
 does not permanently block that member from reconnecting. Guest access remains
 a separate, explicit setting for restricted work.
 
+The person joining runs `/<saved slash command> connect` themselves (for example,
+`/maya connect`), without an `@person` argument. The command discovers their
+identity without starting agent work or granting access. Slack conversation
+agents receive this saved command on each fresh or resumed turn, alongside the
+confirmation and membership-approval instructions. If the saved command is
+unavailable, they refer the connection manager to **Access → Invite people**
+instead of guessing from the agent name. Inviting a person or bot to a Slack
+channel does not grant that person Paperclip access.
+
 **Allowed Channels** updates every five seconds while Slack Settings is open.
 Inviting the bot to a new channel enables replies and writes there automatically;
 no additional Paperclip configuration is required. An explicit off switch stays

@@ -1,3 +1,4 @@
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -2372,6 +2373,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   });
 
   it("buffers the orphan in-process when the durable spool write also fails", async () => {
+    const idleBefore = idleWorkSnapshot().active;
+    let releaseFlush!: () => void;
+    let enteredFlush!: () => void;
+    const flushGate = new Promise<void>(resolve => { releaseFlush = resolve; });
+    const flushEntered = new Promise<void>(resolve => { enteredFlush = resolve; });
     const { companyId, environment, runId } = await seedEnvironment({
       driver: "sandbox",
       name: "Foreign-bound Fake Sandbox Cleanup Spool Unwritable",
@@ -2413,7 +2419,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             if (databaseDown) {
               return Promise.reject(new Error("pending-cleanup write failed; database down"));
             }
-            return real.insertPendingCleanupLease(input);
+            enteredFlush();
+            return flushGate.then(() => real.insertPendingCleanupLease(input));
           },
         };
       });
@@ -2454,11 +2461,18 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           "sandbox_orphan_cleanup_write_failed",
       );
       expect(fallbackLog?.[0]).toMatchObject({ persisted: false, buffered: true });
+      expect(idleWorkSnapshot().active).toBe(idleBefore + 1);
 
       // The same runtime still keeps the orphan in-process, so a flush after the
       // database recovers lands the durable row.
       databaseDown = false;
-      const flushed = await runtime.flushDeferredOrphanCleanups();
+      const flushing = runtime.flushDeferredOrphanCleanups();
+      await flushEntered;
+      // The batch was spliced out of the queue, but the DB does not own it yet.
+      expect(idleWorkSnapshot().active).toBe(idleBefore + 1);
+      releaseFlush();
+      const flushed = await flushing;
+      expect(idleWorkSnapshot().active).toBe(idleBefore);
       expect(flushed).toEqual({ recovered: 1, pending: 0 });
       const rows = await db
         .select()
@@ -2467,6 +2481,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]?.status).toBe("pending_cleanup");
     } finally {
+      releaseFlush();
       logSpy.mockRestore();
       factorySpy.mockRestore();
       destroySpy.mockRestore();

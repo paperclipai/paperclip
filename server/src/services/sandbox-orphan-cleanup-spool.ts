@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { idleOrphanSpoolPath, registerIdleSpoolDirectory } from "./idle-local-work.js";
 
 /**
  * One orphan pending-cleanup record. The acquire builds it when the conditional
@@ -72,13 +72,6 @@ const RECORD_FILE_SUFFIX = ".json";
 // without a torn write.
 let tempFileCounter = 0;
 
-function resolveDefaultSpoolDir(): string {
-  return (
-    process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR ??
-    path.resolve(resolvePaperclipInstanceRoot(), "data", "sandbox-orphan-cleanup")
-  );
-}
-
 // Build the stable file name for one record. Key on the provider lease id, the
 // value the teardown needs, so a repeated append for the same orphan reuses the
 // same file. A null provider lease id carries no identity, so fall back to a
@@ -147,7 +140,8 @@ async function writeFileDurable(absPath: string, data: string): Promise<void> {
  * directory for a test.
  */
 export function createSandboxOrphanCleanupSpool(spoolDir?: string): SandboxOrphanCleanupSpool {
-  const dir = spoolDir ?? resolveDefaultSpoolDir();
+  const dir = spoolDir ?? idleOrphanSpoolPath();
+  registerIdleSpoolDirectory(dir);
 
   return {
     async append(record) {
