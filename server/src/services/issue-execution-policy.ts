@@ -1215,6 +1215,15 @@ export function buildIssueMonitorDeferredPatch(input: {
   policy: IssueExecutionPolicy | null;
   nextCheckAt: Date;
   attemptCount: number;
+  /**
+   * The monitor's externalRef straight from the DB column, before it passed
+   * through `normalizeIssueExecutionPolicy` (which always redacts
+   * externalRef to "[redacted]"). `input.policy` is already-normalized, so
+   * without this, every deferred retry would overwrite the real source
+   * reference (e.g. a quota monitor's source run id) with the literal
+   * redacted placeholder, breaking recovery once the next tick reads it back.
+   */
+  rawExternalRef?: string | null;
 }) {
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
@@ -1235,7 +1244,14 @@ export function buildIssueMonitorDeferredPatch(input: {
     clearReason: null,
   };
   const nextPolicy = monitor
-    ? { ...input.policy!, monitor: { ...monitor, nextCheckAt: input.nextCheckAt.toISOString() } }
+    ? {
+      ...input.policy!,
+      monitor: {
+        ...monitor,
+        externalRef: input.rawExternalRef ?? monitor.externalRef,
+        nextCheckAt: input.nextCheckAt.toISOString(),
+      },
+    }
     : (input.policy ?? null);
 
   return {

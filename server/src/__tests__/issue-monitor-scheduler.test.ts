@@ -21,6 +21,7 @@ import {
   issueRecoveryActions,
   issueDocuments,
   issues,
+  projects,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
@@ -122,6 +123,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companySkills);
+    await db.delete(projects);
     await db.delete(companies);
   }
 
@@ -737,6 +739,117 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       status: "cleared",
       clearReason: "timeout_exceeded",
     });
+  });
+
+  it("preserves the monitor's externalRef across repeated transient-error defer cycles", async () => {
+    // normalizeIssueExecutionPolicy (the only parser for executionPolicy)
+    // always redacts monitor.externalRef, since it also validates untrusted
+    // PUT input. A naive defer that rebuilds the policy from that normalized
+    // read would overwrite the real, previously-stored externalRef with the
+    // literal "[redacted]" placeholder on the very first retry.
+    const externalRef = "https://provider.example/run/abc?token=secret";
+    const { issueId } = await seedFixture({
+      agentStatus: "paused",
+      monitor: { externalRef },
+    });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    await heartbeat.tickTimers(tickAt);
+    const afterFirstDefer = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect((afterFirstDefer.executionPolicy as { monitor?: { externalRef?: string } } | null)?.monitor?.externalRef)
+      .toBe(externalRef);
+
+    // A second defer re-reads the policy this first defer just wrote. If
+    // that write had already redacted the ref, this tick would persist
+    // "[redacted]" from here on, permanently losing it.
+    const secondTickAt = new Date(afterFirstDefer.monitorNextCheckAt!.getTime() + 60_000);
+    await heartbeat.tickTimers(secondTickAt);
+    const afterSecondDefer = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect((afterSecondDefer.executionPolicy as { monitor?: { externalRef?: string } } | null)?.monitor?.externalRef)
+      .toBe(externalRef);
+    expect(afterSecondDefer.monitorAttemptCount).toBe(2);
+  });
+
+  it("caps a deferred retry at the monitor's timeoutAt instead of overshooting it", async () => {
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    // The first backoff delay is 5 minutes (MONITOR_DISPATCH_DEFER_BASE_MS).
+    // A timeoutAt only 2 minutes out is still in the future at tickAt (so
+    // the pre-dispatch exhaustion check doesn't fire), but an uncapped
+    // defer would schedule the retry a full 3 minutes past the deadline —
+    // tickDueIssueMonitors only selects rows that are already due, so an
+    // expired-but-not-yet-rechecked monitor would sit unrecoverable for
+    // that gap.
+    const timeoutAt = new Date(tickAt.getTime() + 2 * 60 * 1000);
+    const { issueId } = await seedFixture({
+      agentStatus: "paused",
+      monitor: { timeoutAt: timeoutAt.toISOString() },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.tickTimers(tickAt);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).toEqual(timeoutAt);
+    expect(issue.monitorAttemptCount).toBe(1);
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      nextCheckAt: timeoutAt.toISOString(),
+    });
+  });
+
+  it("falls back to a recovery comment, instead of throwing, when the owner is budget-blocked (not just agent-paused)", async () => {
+    // getAgentInvokability only sees the agent's own status (paused/
+    // terminated/pending_approval); it never checks a company or project
+    // budget block. A *company* pause would also exclude the issue from
+    // tickDueIssueMonitors' dispatch query entirely (it requires
+    // companies.status = "active"), so this has to be a project-scoped
+    // budget pause to reach the recovery-wake code path at all: agent and
+    // company both stay active, only the issue's project is budget-paused.
+    const { issueId, agentId } = await seedFixture({
+      agentStatus: "active",
+      monitorAttemptCount: 1,
+      monitor: { maxAttempts: 1, recoveryPolicy: "wake_owner" },
+    });
+    const issueRow = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId: issueRow.companyId,
+      name: "Budget Project",
+      status: "in_progress",
+      pauseReason: "budget",
+      pausedAt: new Date(),
+    });
+    await db.update(issues).set({ projectId }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    const result = await heartbeat.tickTimers(tickAt);
+    expect(result.skipped).toBe(1);
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.reason, "issue_monitor_recovery")))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).toBeNull();
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .then((rows) => rows.map((row) => row.body));
+    expect(comments.some((body) => body.includes("could not be woken"))).toBe(true);
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(activity).toContain("issue.monitor_exhausted");
+    expect(activity).toContain("issue.monitor_recovery_wake_skipped");
   });
 
   it("clears exhausted monitors and queues bounded owner recovery instead of another due check", async () => {
