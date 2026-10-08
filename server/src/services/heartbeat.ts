@@ -231,6 +231,7 @@ import {
   appendHeartbeatRunEvent,
   type AppendHeartbeatRunEventInput,
 } from "./heartbeat-run-events.js";
+import { readPendingNativeRuntimeRequestEvents } from "./native-runtime/runtime-request-resolution-authority.js";
 import {
   queuedCommentIdsFromWakePayload,
   queuedCommentIdsFromRunContext,
@@ -30746,6 +30747,127 @@ export function heartbeatService(
         )
         .orderBy(asc(heartbeatRunEvents.seq))
         .limit(Math.max(1, Math.min(limit, 1000))),
+
+    listEventPage: async (
+      runId: string,
+      input: { afterSeq: number | "tail"; beforeSeq?: number; limit?: number },
+    ) => {
+      const limit = Math.max(1, Math.min(Math.floor(input.limit ?? 200), 1000));
+      const tail = input.afterSeq === "tail";
+      const numericAfterSeq = typeof input.afterSeq === "number" ? input.afterSeq : 0;
+      const eventCondition = tail
+        ? input.beforeSeq === undefined
+          ? eq(heartbeatRunEvents.runId, runId)
+          : and(
+              eq(heartbeatRunEvents.runId, runId),
+              lt(heartbeatRunEvents.seq, input.beforeSeq),
+            )
+        : and(
+            eq(heartbeatRunEvents.runId, runId),
+            gt(heartbeatRunEvents.seq, numericAfterSeq),
+          );
+      const rows = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eventCondition)
+        .orderBy(tail ? desc(heartbeatRunEvents.seq) : asc(heartbeatRunEvents.seq))
+        .limit(limit + 1);
+      const hasOverflow = rows.length > limit;
+      const events = (hasOverflow ? rows.slice(0, limit) : rows);
+      if (tail) events.reverse();
+      const firstSeq = events[0]?.seq;
+      const lastSeq = events.at(-1)?.seq;
+      const hasMoreBefore = tail
+        ? hasOverflow
+        : numericAfterSeq > 0 && firstSeq !== undefined
+          ? Boolean(await db.select({ seq: heartbeatRunEvents.seq })
+              .from(heartbeatRunEvents)
+              .where(and(
+                eq(heartbeatRunEvents.runId, runId),
+                lt(heartbeatRunEvents.seq, numericAfterSeq + 1),
+              ))
+              .orderBy(desc(heartbeatRunEvents.seq))
+              .limit(1)
+              .then((older) => older[0]))
+          : false;
+      const hasMoreAfter = tail
+        ? Boolean(input.beforeSeq !== undefined && lastSeq !== undefined && await db
+            .select({ seq: heartbeatRunEvents.seq })
+            .from(heartbeatRunEvents)
+            .where(and(
+              eq(heartbeatRunEvents.runId, runId),
+              gt(heartbeatRunEvents.seq, lastSeq),
+            ))
+            .orderBy(asc(heartbeatRunEvents.seq))
+            .limit(1)
+            .then((newer) => newer[0]))
+        : hasOverflow;
+      return {
+        events,
+        hasMoreBefore,
+        hasMoreAfter,
+        direction: tail ? "tail" as const : "forward" as const,
+        limit,
+      };
+    },
+
+    listTranscriptContext: async (runId: string, companyId: string) => {
+      const pendingRequests = await readPendingNativeRuntimeRequestEvents(db, {
+        companyId,
+        runId,
+      });
+      const runFilter = and(
+        eq(heartbeatRunEvents.companyId, companyId),
+        eq(heartbeatRunEvents.runId, runId),
+      );
+      const [latestFinalMessage, acceptedResults, latestTerminal] = await Promise.all([
+        db.select().from(heartbeatRunEvents).where(and(
+          runFilter,
+          eq(heartbeatRunEvents.eventType, "item.completed"),
+          sql`${heartbeatRunEvents.payload} #>> '{prpEvent,schema}' = 'paperclip.prp.event.v1'`,
+          sql`${heartbeatRunEvents.payload} #>> '{prpEvent,schemaVersion}' = '1'`,
+          sql`${heartbeatRunEvents.payload} #>> '{prpEvent,eventType}' = 'item.completed'`,
+          sql`${heartbeatRunEvents.payload} #>> '{prpEvent,runId}' = ${runId}`,
+          sql`(coalesce(
+            nullif(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}', ''),
+            nullif(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,item,channel}', '')
+          ) in ('final', 'unknown') or coalesce(
+            nullif(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}', ''),
+            nullif(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,item,channel}', '')
+          ) is null)`,
+          sql`lower(replace(coalesce(
+            nullif(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,kind}', ''),
+            nullif(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,item,kind}', ''),
+            nullif(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,item,type}', ''),
+            ''
+          ), '_', '')) in ('agentmessage', 'assistantmessage')`,
+          sql`nullif(coalesce(
+            nullif(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,text}', ''),
+            nullif(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,item,text}', '')
+          ), '') is not null`,
+        )).orderBy(
+          sql`case when coalesce(
+            nullif(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}', ''),
+            nullif(${heartbeatRunEvents.payload} #>> '{prpEvent,payload,item,channel}', '')
+          ) = 'final' then 1 else 0 end desc`,
+          desc(heartbeatRunEvents.seq),
+        ).limit(1),
+        db.select().from(heartbeatRunEvents).where(and(
+          runFilter,
+          eq(heartbeatRunEvents.eventType, "run.result.accepted"),
+        )).orderBy(desc(heartbeatRunEvents.seq)).limit(2),
+        db.select().from(heartbeatRunEvents).where(and(
+          runFilter,
+          eq(heartbeatRunEvents.eventType, "run.terminal"),
+        )).orderBy(desc(heartbeatRunEvents.seq)).limit(1),
+      ]);
+      return [
+        ...pendingRequests,
+        ...acceptedResults.reverse(),
+        ...latestTerminal,
+        ...latestFinalMessage,
+      ].sort((a, b) => a.seq - b.seq);
+    },
 
     getRetryExhaustedReason: async (runId: string) => {
       const row = await db

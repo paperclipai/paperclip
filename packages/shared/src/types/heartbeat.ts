@@ -308,6 +308,10 @@ export interface HeartbeatRunEvent {
   message: string | null;
   payload: Record<string, unknown> | null;
   createdAt: Date;
+  /** Indicates that this response page has earlier event rows available. */
+  historyBefore?: boolean;
+  /** Indicates that this response page has later event rows available. */
+  historyAfter?: boolean;
 }
 
 export interface AgentRuntimeState {

@@ -141,6 +141,92 @@ export async function readPendingNativeRuntimeRequest(
   return canonicalPendingRequest({ ...input, payload: latest.payload });
 }
 
+/**
+ * Read the latest durable lifecycle row per canonical request identity and
+ * return only requests whose latest row is still a valid pending creation.
+ * DISTINCT ON keeps history filtering inside PostgreSQL before rows reach the
+ * server process.
+ */
+export async function readPendingNativeRuntimeRequestEvents(
+  db: Db,
+  input: { readonly companyId: string; readonly runId: string },
+) {
+  const requestIdentity = sql`coalesce(
+    ${heartbeatRunEvents.payload} #>> '{prpEvent,payload,request,requestId}',
+    ${heartbeatRunEvents.payload} #>> '{prpEvent,payload,requestId}'
+  )`;
+  const latestByRequest = db
+    .selectDistinctOn([requestIdentity], {
+      id: heartbeatRunEvents.id,
+      companyId: heartbeatRunEvents.companyId,
+      runId: heartbeatRunEvents.runId,
+      agentId: heartbeatRunEvents.agentId,
+      seq: heartbeatRunEvents.seq,
+      eventType: heartbeatRunEvents.eventType,
+      stream: heartbeatRunEvents.stream,
+      level: heartbeatRunEvents.level,
+      color: heartbeatRunEvents.color,
+      message: heartbeatRunEvents.message,
+      payload: heartbeatRunEvents.payload,
+      createdAt: heartbeatRunEvents.createdAt,
+      sourceInstanceId: heartbeatRunEvents.sourceInstanceId,
+      sourceEventId: heartbeatRunEvents.sourceEventId,
+      sourceSeq: heartbeatRunEvents.sourceSeq,
+      sourcePayloadSha256: heartbeatRunEvents.sourcePayloadSha256,
+      protocolSchemaVersion: heartbeatRunEvents.protocolSchemaVersion,
+      requestId: requestIdentity.as("request_id"),
+    })
+    .from(heartbeatRunEvents)
+    .where(and(
+      eq(heartbeatRunEvents.companyId, input.companyId),
+      eq(heartbeatRunEvents.runId, input.runId),
+      inArray(heartbeatRunEvents.eventType, [...RUNTIME_REQUEST_EVENTS]),
+    ))
+    .orderBy(requestIdentity, desc(heartbeatRunEvents.seq))
+    .as("latest_runtime_requests");
+  const pendingRows = await db
+    .select({
+      id: latestByRequest.id,
+      companyId: latestByRequest.companyId,
+      runId: latestByRequest.runId,
+      agentId: latestByRequest.agentId,
+      seq: latestByRequest.seq,
+      eventType: latestByRequest.eventType,
+      stream: latestByRequest.stream,
+      level: latestByRequest.level,
+      color: latestByRequest.color,
+      message: latestByRequest.message,
+      payload: latestByRequest.payload,
+      createdAt: latestByRequest.createdAt,
+      sourceInstanceId: latestByRequest.sourceInstanceId,
+      sourceEventId: latestByRequest.sourceEventId,
+      sourceSeq: latestByRequest.sourceSeq,
+      sourcePayloadSha256: latestByRequest.sourcePayloadSha256,
+      protocolSchemaVersion: latestByRequest.protocolSchemaVersion,
+    })
+    .from(latestByRequest)
+    .where(and(
+      eq(latestByRequest.eventType, "runtime_request.created"),
+      sql`${latestByRequest.payload} #>> '{prpEvent,payload,request,status}' = 'pending'`,
+      sql`${latestByRequest.payload} #>> '{prpEvent,schema}' = 'paperclip.prp.event.v1'`,
+      sql`${latestByRequest.payload} #>> '{prpEvent,sourceKind}' = 'runner'`,
+      sql`${latestByRequest.payload} #>> '{prpEvent,runId}' = ${input.runId}`,
+      sql`${latestByRequest.payload} #>> '{prpEvent,eventType}' = 'runtime_request.created'`,
+    ));
+
+  return pendingRows.filter((row) => {
+    const event = record(record(row.payload)?.prpEvent);
+    const payload = record(event?.payload);
+    const request = record(payload?.request);
+    const requestId = typeof request?.requestId === "string"
+      ? request.requestId
+      : typeof payload?.requestId === "string"
+        ? payload.requestId
+        : "";
+    return Boolean(requestId && canonicalPendingRequest({ ...input, requestId, payload: row.payload }));
+  });
+}
+
 /** Revalidate the server-owned resolver policy at the command-consumption edge. */
 export function assertNativeRuntimeRequestResolverAuthorized(
   request: PendingNativeRuntimeRequest,

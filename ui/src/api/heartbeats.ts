@@ -133,9 +133,26 @@ export const heartbeatsApi = {
     );
   },
   get: (runId: string) => api.get<HeartbeatRun>(`/heartbeat-runs/${runId}`),
-  events: (runId: string, afterSeq = 0, limit = 200, options?: RequestOptions) =>
+  events: (
+    runId: string,
+    afterSeq: number | "tail" = 0,
+    limit = 200,
+    options?: RequestOptions & { beforeSeq?: number },
+  ) => {
+    const { beforeSeq, ...requestOptions } = options ?? {};
+    const searchParams = new URLSearchParams({
+      afterSeq: String(afterSeq),
+      limit: String(limit),
+    });
+    if (beforeSeq !== undefined) searchParams.set("beforeSeq", String(beforeSeq));
+    return api.get<HeartbeatRunEvent[]>(
+      `/heartbeat-runs/${runId}/events?${searchParams.toString()}`,
+      requestOptions,
+    );
+  },
+  eventContext: (runId: string, options?: RequestOptions) =>
     api.get<HeartbeatRunEvent[]>(
-      `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
+      `/heartbeat-runs/${runId}/events?view=context`,
       options,
     ),
   log: (runId: string, offset = 0, limitBytes = 256000, options?: RequestOptions) =>

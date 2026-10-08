@@ -105,6 +105,7 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { boundHeartbeatRunEventPage } from "../services/heartbeat-run-event-paging.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
@@ -7748,17 +7749,61 @@ export function agentRoutes(
     if (!(await assertRunTelemetryReadAllowed(req, res, run.companyId))) return;
     if (!(await assertRunReadAllowed(req, res, run))) return;
 
-    const afterSeq = Number(req.query.afterSeq ?? 0);
-    const limit = Number(req.query.limit ?? 200);
-    const events = await heartbeat.listEvents(runId, Number.isFinite(afterSeq) ? afterSeq : 0, Number.isFinite(limit) ? limit : 200);
+    const rawView = req.query.view;
+    if (rawView !== undefined && rawView !== "context") {
+      throw badRequest("Invalid heartbeat run event view");
+    }
+    if (rawView === "context") {
+      const contextEvents = await heartbeat.listTranscriptContext(runId, run.companyId);
+      const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+      const redactedEvents = contextEvents.map((event) =>
+        redactCurrentUserValue({
+          ...event,
+          payload: redactEventPayload(event.payload),
+        }, currentUserRedactionOptions),
+      );
+      res.json(await runRedactions.redactForRun(run.companyId, run.id, redactedEvents));
+      return;
+    }
+
+    const rawAfterSeq = req.query.afterSeq ?? "0";
+    const rawBeforeSeq = req.query.beforeSeq;
+    const rawLimit = req.query.limit ?? "200";
+    const afterSeq = rawAfterSeq === "tail" ? "tail" : Number(rawAfterSeq);
+    const beforeSeq = rawBeforeSeq === undefined ? undefined : Number(rawBeforeSeq);
+    const limit = Number(rawLimit);
+    if (
+      typeof rawAfterSeq !== "string" ||
+      (rawBeforeSeq !== undefined && typeof rawBeforeSeq !== "string") ||
+      typeof rawLimit !== "string" ||
+      (afterSeq !== "tail" && (!Number.isSafeInteger(afterSeq) || afterSeq < 0)) ||
+      (rawBeforeSeq !== undefined && (
+        afterSeq !== "tail" || !Number.isSafeInteger(beforeSeq) || beforeSeq! < 0
+      )) ||
+      !Number.isSafeInteger(limit) || limit < 1 || limit > 1000
+    ) {
+      throw badRequest("Invalid heartbeat run event page parameters");
+    }
+    const page = await heartbeat.listEventPage(runId, {
+      afterSeq,
+      beforeSeq,
+      limit,
+    });
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-    const redactedEvents = events.map((event) =>
+    const redactedEvents = page.events.map((event) =>
       redactCurrentUserValue({
         ...event,
         payload: redactEventPayload(event.payload),
       }, currentUserRedactionOptions),
     );
-    res.json(await runRedactions.redactForRun(run.companyId, run.id, redactedEvents));
+    const fullyRedactedEvents = await runRedactions.redactForRun(run.companyId, run.id, redactedEvents);
+    res.json(boundHeartbeatRunEventPage({
+      events: fullyRedactedEvents,
+      direction: page.direction,
+      limit: page.limit,
+      hasMoreBefore: page.hasMoreBefore,
+      hasMoreAfter: page.hasMoreAfter,
+    }));
   });
 
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
