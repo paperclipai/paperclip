@@ -207,7 +207,7 @@ it.each([
           new Promise<never>((_resolveJoin, rejectJoin) => {
             deadline = setTimeout(() => rejectJoin(new Error(
               "startup-proof fixture could not join its exact runner child",
-            )), 5_000);
+            )), 10_000);
           }),
         ]);
         if (handle.processGroupId && !dead(-handle.processGroupId)) {
@@ -219,7 +219,7 @@ it.each([
         await vi.waitFor(() => {
           expect(handle.child.pid && dead(handle.child.pid)).toBe(true);
           expect(handle.processGroupId && dead(-handle.processGroupId)).toBe(true);
-        }, { timeout: 2_000 });
+        }, { timeout: 5_000 });
       } catch (error) {
         retainFixtureForUnprovenExit = true;
         throw error;
@@ -846,6 +846,11 @@ it.each([
                   hasRuntimeContext: false,
                 }),
               });
+              // CI-load latency (run 36406361979): the replay chain (spawn
+              // + maxRuntimeMs 2000 + reconnectGraceMs 1000 + settle sweep)
+              // measured past a 5s budget with both commands still 'pending'.
+              // 15s covers ~3x the observed worst case; the exact-child join
+              // and death checks get matching headroom.
               await vi.waitFor(() => {
                 for (const queued of [snapshot, stop]) {
                   const command = replayCore.getCommand(queued.commandId);
@@ -858,8 +863,8 @@ it.each([
                     },
                   });
                 }
-              }, { timeout: 5_000 });
-              await durableControlPlane.waitForProcess(replayHandle, 5_000);
+              }, { timeout: 15_000 });
+              await durableControlPlane.waitForProcess(replayHandle, 10_000);
               expect(await readFile(calls, "utf8")).toBe(observedMethods);
               expect((await readFile(calls, "utf8")).trim().split("\n")
                 .filter((method) => method === "process-start")).toHaveLength(2);
@@ -1749,6 +1754,6 @@ it.each([
         await rm(directory, { recursive: true, force: true });
     }
   },
-  40_000,
+  90_000,
 );
 
