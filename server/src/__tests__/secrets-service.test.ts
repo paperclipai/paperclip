@@ -4604,4 +4604,38 @@ describeEmbeddedPostgres("secretService", () => {
       }),
     ).rejects.toThrow(/active member|secrets:read|forbidden/i);
   });
+
+  it("accepts git author identity as plain env values in strict secret mode", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(
+        companyId,
+        {
+          GIT_AUTHOR_NAME: { type: "plain", value: "Jane Doe" },
+          GIT_AUTHOR_EMAIL: { type: "plain", value: "jane@example.com" },
+        },
+        { strictMode: true },
+      ),
+    ).resolves.toMatchObject({
+      GIT_AUTHOR_NAME: { type: "plain", value: "Jane Doe" },
+      GIT_AUTHOR_EMAIL: { type: "plain", value: "jane@example.com" },
+    });
+  });
+
+  it("still requires secret references for auth credentials in strict secret mode", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    for (const key of ["AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "AUTHORIZATION"]) {
+      await expect(
+        svc.normalizeEnvBindingsForPersistence(
+          companyId,
+          { [key]: { type: "plain", value: "abc123" } },
+          { strictMode: true },
+        ),
+      ).rejects.toThrow(/Strict secret mode requires secret references/);
+    }
+  });
 });

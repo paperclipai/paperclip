@@ -1496,7 +1496,7 @@ export function requiresPushCapabilityPreflight(input: {
 }
 
 const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
-  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+  /(api[-_]?key|access[-_]?token|auth(?!or(?!iz))(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
 // PAPERCLIP_* env binding policy:
 // 1. PAPERCLIP_API_KEY is never accepted from user/adapter/project/routine

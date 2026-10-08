@@ -37,4 +37,17 @@ describe("isSensitiveEnv", () => {
     expect(isSensitiveEnv("PATH", "/usr/local/bin/some/long/path/here")).toBe(false);
     expect(isSensitiveEnv("GREETING", "hello there this is a message")).toBe(false);
   });
+
+  it("does not flag git author identity names", () => {
+    expect(isSensitiveEnv("GIT_AUTHOR_NAME", "Jane Doe")).toBe(false);
+    expect(isSensitiveEnv("GIT_AUTHOR_EMAIL", "jane@example.com")).toBe(false);
+    expect(isSensitiveEnv("git_author_name", "Jane Doe")).toBe(false);
+  });
+
+  it("still flags auth-related credential names", () => {
+    expect(isSensitiveEnv("AUTH_TOKEN", "x")).toBe(true);
+    expect(isSensitiveEnv("CLAUDE_CODE_OAUTH_TOKEN", "x")).toBe(true);
+    expect(isSensitiveEnv("AUTHORIZATION", "x")).toBe(true);
+    expect(isSensitiveEnv("GITHUB_AUTH", "x")).toBe(true);
+  });
 });

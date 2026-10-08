@@ -6,7 +6,7 @@
 
 /** Env-var NAMES that conventionally hold credentials. */
 export const SENSITIVE_ENV_KEY_RE =
-  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+  /(api[-_]?key|access[-_]?token|auth(?!or(?!iz))(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
 /** Well-known credential value shapes (provider token prefixes, PEM headers). */
 const CREDENTIAL_VALUE_RES: RegExp[] = [

@@ -568,7 +568,7 @@ function isSensitiveEnvKey(key: string) {
     normalized.includes("api-key") ||
     normalized.includes("access_token") ||
     normalized.includes("access-token") ||
-    normalized.includes("auth") ||
+    /auth(?!or(?!iz))/.test(normalized) ||
     normalized.includes("auth_token") ||
     normalized.includes("auth-token") ||
     normalized.includes("authorization") ||

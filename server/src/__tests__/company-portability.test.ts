@@ -757,6 +757,10 @@ describe("company portability", () => {
               type: "plain",
               value: "banana",
             },
+            GIT_AUTHOR_NAME: {
+              type: "plain",
+              value: "Jane Doe",
+            },
             NODE_ENV: {
               type: "plain",
               value: "development",
@@ -812,6 +816,16 @@ describe("company portability", () => {
       kind: "plain",
       requirement: "optional",
       defaultValue: "banana",
+      portability: "portable",
+    });
+    expect(exported.manifest.envInputs).toContainEqual({
+      key: "GIT_AUTHOR_NAME",
+      description: "Optional default for GIT_AUTHOR_NAME on agent inlinesecretagent",
+      agentSlug: "inlinesecretagent",
+      projectSlug: null,
+      kind: "plain",
+      requirement: "optional",
+      defaultValue: "Jane Doe",
       portability: "portable",
     });
     expect(exported.manifest.envInputs).toContainEqual({

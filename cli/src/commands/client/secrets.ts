@@ -101,7 +101,7 @@ export interface InlineSecretMigrationCandidate {
 }
 
 const SENSITIVE_ENV_KEY_RE =
-  /(^token$|[-_]?token$|api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+  /(^token$|[-_]?token$|api[-_]?key|access[-_]?token|auth(?!or(?!iz))(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
 const DEFAULT_DECLARATION_INCLUDE: CompanyPortabilityInclude = {
   company: true,
