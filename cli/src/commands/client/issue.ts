@@ -151,6 +151,7 @@ interface IssueRecoveryResolveOptions extends BaseClientOptions {
 interface InteractionAcceptOptions extends BaseClientOptions {
   selectedClientKeys?: string;
   selectedOptionIds?: string;
+  reason?: string;
 }
 
 interface InteractionReasonOptions extends BaseClientOptions {
@@ -753,12 +754,14 @@ export function registerIssueCommands(program: Command): void {
       .argument("<interactionId>", "Interaction ID")
       .option("--selected-client-keys <csv>", "Client keys to accept")
       .option("--selected-option-ids <csv>", "Checkbox option IDs to accept")
+      .option("--reason <text>", "Reason")
       .action(async (issueId: string, interactionId: string, opts: InteractionAcceptOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
           const payload = acceptIssueThreadInteractionSchema.parse({
             selectedClientKeys: opts.selectedClientKeys === undefined ? undefined : parseCsv(opts.selectedClientKeys),
             selectedOptionIds: opts.selectedOptionIds === undefined ? undefined : parseCsv(opts.selectedOptionIds),
+            reason: opts.reason,
           });
           const interaction = await ctx.api.post(apiPath`/api/issues/${issueId}/interactions/${interactionId}/accept`, payload);
           printOutput(interaction, { json: ctx.json });

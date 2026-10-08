@@ -473,7 +473,7 @@ npx paperclipai issue work-product:update <work-product-id> --payload-json '{"st
 npx paperclipai issue work-product:delete <work-product-id>
 npx paperclipai issue interactions <issue-id>
 npx paperclipai issue interaction:create <issue-id> --payload-json '{"kind":"request_confirmation","payload":{"version":1,"prompt":"Continue?"}}'
-npx paperclipai issue interaction:accept <issue-id> <interaction-id> [--selected-client-keys key1,key2]
+npx paperclipai issue interaction:accept <issue-id> <interaction-id> [--selected-client-keys key1,key2] [--reason "..."]
 npx paperclipai issue interaction:reject <issue-id> <interaction-id> [--reason "..."]
 npx paperclipai issue interaction:respond <issue-id> <interaction-id> --answers-json '[{"questionId":"q1","optionIds":["yes"]}]'
 npx paperclipai issue interaction:cancel <issue-id> <interaction-id> [--reason "..."]
