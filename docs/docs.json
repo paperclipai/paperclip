@@ -50,6 +50,7 @@
               "guides/board-operator/execution-workspaces-and-runtime-services",
               "guides/board-operator/delegation",
               "guides/board-operator/execution-workspaces-and-runtime-services",
+              "guides/board-operator/auditing-execution-workspace-paths",
               "guides/board-operator/delegation",
               "guides/board-operator/experimental-features",
               "guides/board-operator/status-cards",
