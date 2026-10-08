@@ -58,6 +58,7 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   blocker_attention: { label: "Blocked dependency" },
   review: { label: "Review" },
   failed_run: { label: "Failed run" },
+  issue_rewake_throttle: { label: "No-progress wakes" },
   budget_alert: { label: "Budget" },
   agent_error_alert: { label: "Agent error" },
 };
@@ -94,7 +95,7 @@ export function severityStyle(severity: AttentionSeverity): SeverityStyle {
 // each one *borrows the task status it corresponds to* instead of declaring a
 // palette of its own:
 //
-//   • blocking — failed run, agent error, blocked dependency, recovery, budget
+//   • blocking — failed run, no-progress throttle, agent error, blocked dependency, recovery, budget
 //       → task status `blocked`    (red, CircleMinus)
 //   • review   — approval, confirmation, review, join request, everything else
 //       → task status `in_review`  (violet, CircleDot)
@@ -123,6 +124,7 @@ export function attentionKind(item: AttentionItem): AttentionKind {
     case "decision":
       return "review";
     case "failed_run":
+    case "issue_rewake_throttle":
     case "agent_error_alert":
     case "blocker_attention":
     case "recovery_action":

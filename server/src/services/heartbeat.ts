@@ -409,6 +409,7 @@ import {
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
+import { hasIssueUnblockingEvent } from "../modules/run-dispatch/index.js";
 import {
   logActivity,
   publishPluginDomainEvent,
@@ -7512,6 +7513,16 @@ export function mergeCoalescedContextSnapshot(
     ...existing,
     ...incoming,
   };
+  // A fresh qualifying wake may coalesce into a scheduled retry that still
+  // carries the predecessor's retryReason. Do not let that historical marker
+  // hide the new event from either dispatch gate.
+  if (
+    readNonEmptyString(existing.retryReason) &&
+    !readNonEmptyString(incoming.retryReason) &&
+    hasIssueUnblockingEvent(incoming)
+  ) {
+    delete merged.retryReason;
+  }
   // Only executeRun can mint this proof. Coalescence may retain an unchanged
   // admitted proof, but must never accept a new marker from an incoming wake.
   delete merged[PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY];
@@ -29055,6 +29066,10 @@ export function heartbeatService(
                           activityLog.action,
                           ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
                         ),
+                        or(
+                          ne(activityLog.action, "issue.comment_added"),
+                          eq(activityLog.actorType, "user"),
+                        ),
                         wakeCommentId && opts.requestedByActorType === "agent"
                           ? ne(activityLog.actorType, "agent")
                           : undefined,
@@ -29098,6 +29113,9 @@ export function heartbeatService(
                         throttleDecision.lastRunFinishedAt.toISOString(),
                       nextAllowedAt:
                         throttleDecision.nextAllowedAt.toISOString(),
+                      ...(throttleDecision.raiseAttentionFlag
+                        ? { churnGuardAttentionFlag: true }
+                        : {}),
                     },
                   },
                   status: "skipped",

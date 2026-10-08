@@ -105,7 +105,7 @@ describe("isInlineResolvable", () => {
   });
 
   it("deep-links recovery/failure/budget rows rather than inlining", () => {
-    for (const kind of ["recovery_action", "failed_run", "budget_alert", "blocker_attention"] as AttentionSourceKind[]) {
+    for (const kind of ["recovery_action", "failed_run", "issue_rewake_throttle", "budget_alert", "blocker_attention"] as AttentionSourceKind[]) {
       expect(isInlineResolvable(buildItem({ sourceKind: kind, inlineResolvable: true }))).toBe(false);
     }
   });
@@ -199,6 +199,7 @@ describe("sourceMeta + severityStyle", () => {
       "blocker_attention",
       "review",
       "failed_run",
+      "issue_rewake_throttle",
       "budget_alert",
       "agent_error_alert",
     ];
@@ -218,6 +219,7 @@ describe("sourceMeta + severityStyle", () => {
 describe("attentionKind + attentionStatus (flattened decision types)", () => {
   it("reads anything stuck as blocking", () => {
     expect(attentionKind(buildItem({ sourceKind: "failed_run" }))).toBe("blocking");
+    expect(attentionKind(buildItem({ sourceKind: "issue_rewake_throttle" }))).toBe("blocking");
     expect(attentionKind(buildItem({ sourceKind: "agent_error_alert" }))).toBe("blocking");
     expect(attentionKind(buildItem({ sourceKind: "blocker_attention" }))).toBe("blocking");
     expect(attentionKind(buildItem({ sourceKind: "recovery_action" }))).toBe("blocking");

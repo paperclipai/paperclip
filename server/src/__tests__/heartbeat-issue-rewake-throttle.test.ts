@@ -249,6 +249,29 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(admittedWake).not.toBeNull();
   });
 
+  it("does not count a run-authored comment as new input for a later state reassertion", async () => {
+    const { agentId, companyId, issueId } = await seedCompanyAgentIssue();
+
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issueId,
+      // This lands after the newest run finished, which is the ordering that
+      // used to make an agent's final comment look like external input.
+      createdAt: new Date(),
+    });
+
+    const wake = await assignmentWake(agentId, issueId);
+    expect(wake).toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
+  });
+
   it("does not throttle system comment-driven wakes even during a no-progress streak", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
@@ -366,6 +389,72 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(recoveryWake).not.toBeNull();
   });
 
+  it("dispatches an explicit board retry once for a parked blocked issue", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    const failedRunId = await seedTerminalRun({
+      companyId,
+      agentId,
+      issueId,
+      status: "failed",
+      finishedSecondsAgo: 10,
+    });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+    mockAdapterExecute.mockClear();
+
+    const retry = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "retry_failed_run",
+      failedRunId,
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      payload: { issueId },
+    });
+    expect(retry).not.toBeNull();
+    expect(retry?.contextSnapshot).toMatchObject({
+      issueId,
+      wakeSource: "on_demand",
+      wakeTriggerDetail: "manual",
+      wakeReason: "retry_failed_run",
+    });
+
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const retryRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failedRunId));
+    expect(retryRuns).toHaveLength(1);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("dispatches a new user comment wake once for a parked blocked issue", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: "board-user",
+      body: "Please continue this task.",
+    });
+    mockAdapterExecute.mockClear();
+
+    const commentWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      payload: { issueId, commentId },
+      contextSnapshot: { issueId, wakeReason: "issue_commented", wakeCommentId: commentId },
+    });
+    expect(commentWake).not.toBeNull();
+
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const commentRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(commentRuns.filter((run) => run.contextSnapshot?.wakeCommentId === commentId)).toHaveLength(1);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
   it("does not throttle when a recent run produced issue-visible progress", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
@@ -377,7 +466,10 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       actorId: agentId,
       agentId,
       runId: progressRunId,
-      action: "issue.comment_added",
+      // SON-4370: a run-authored comment is no longer issue-visible
+      // progress (keep-alive comments cannot reset the no-progress
+      // streak), so progress here is a real board mutation.
+      action: "issue.updated",
       entityType: "issue",
       entityId: issueId,
       createdAt: new Date(Date.now() - 11_000),

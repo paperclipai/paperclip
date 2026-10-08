@@ -237,6 +237,7 @@ async function sourceIssueId(
       return { exists: Boolean(row), issueId: row?.issueId ?? null };
     }
     // Keep historical decision queue entries accessible after feature retirement.
+    case "issue_rewake_throttle":
     case "productivity_review":
     case "blocker_attention":
     case "review": {
