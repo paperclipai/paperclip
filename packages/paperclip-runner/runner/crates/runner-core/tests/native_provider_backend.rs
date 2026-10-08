@@ -1121,7 +1121,7 @@ fn provider_death_expires_input_and_commits_failure_without_querying_the_dead_pr
     executor
         .execute(&command(6, "session.close", json!({})))
         .unwrap();
-    executor.shutdown().unwrap();
+    shutdown_recovered_acpx_fixture(&mut executor, &directory);
     fs::remove_dir_all(directory).unwrap();
 }
 
