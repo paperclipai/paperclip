@@ -2658,8 +2658,19 @@ export async function prepareProjectRepositoryWorkspaces(input: {
     const localSource = workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL
       && await fs.stat(workspace.cwd).then((entry) => entry.isDirectory()).catch(() => false)
       ? workspace.cwd : null;
-    const result = await materializeManagedProjectWorkspace(cwd, { repoUrl, repoRef: workspace.repoRef, localSource, resolveGitAuth: input.resolveGitAuth });
-    if (result.warning) throw new Error(result.warning);
+    const materialize = () => materializeManagedProjectWorkspace(cwd, { repoUrl, repoRef: workspace.repoRef, localSource, resolveGitAuth: input.resolveGitAuth });
+    let result = await materialize();
+    if (result.warning) {
+      // The folder exists but is not a git checkout (for example, a workspace sync wrote a copy of the
+      // repository without .git over it). Retain it like detached work below and check the repository out
+      // again, so one bad folder does not fail every later run on this task workspace.
+      const retained = path.join(input.cwd, ".paperclip-runtime", "detached-repositories", randomUUID());
+      await fs.mkdir(path.dirname(retained), { recursive: true });
+      await fs.rename(cwd, retained);
+      logger.warn({ cwd, retained }, "project repository folder was not a git checkout; retained it and checked the repository out again");
+      result = await materialize();
+      if (result.warning) throw new Error(result.warning);
+    }
     results.push({ workspaceId: workspace.id, cwd, repoUrl, repoRef: workspace.repoRef });
   }
   // Retain detached checkout work outside the synchronized repository set.

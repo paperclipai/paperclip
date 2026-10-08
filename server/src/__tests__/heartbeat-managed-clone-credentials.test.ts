@@ -81,6 +81,32 @@ describe("ensureManagedProjectWorkspace clone credentials", () => {
     }
   });
 
+  it("retains a repository folder that is not a git checkout and checks the repository out again", async () => {
+    const first = await createLocalSourceRepo();
+    const second = await createLocalSourceRepo();
+    try {
+      const anchor = await ensureManagedProjectWorkspace({ companyId: "repo-recheckout", projectId: "two", repoUrl: first });
+      const input = {
+        cwd: anchor.cwd, anchorRepoUrl: first,
+        workspaces: [{ id: "second", repoUrl: second, repoRef: null }],
+      };
+      const [repo] = await prepareProjectRepositoryWorkspaces(input);
+      // A workspace sync can write the repository back as a plain copy without .git.
+      await fs.rm(path.join(repo!.cwd, ".git"), { recursive: true, force: true });
+      await fs.writeFile(path.join(repo!.cwd, "synced.txt"), "copied back without .git");
+      const [again] = await prepareProjectRepositoryWorkspaces(input);
+      expect(again!.cwd).toBe(repo!.cwd);
+      expect((await execFile("git", ["remote", "get-url", "origin"], { cwd: again!.cwd })).stdout.trim()).toBe(second);
+      await expect(fs.stat(path.join(again!.cwd, "synced.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      const detached = path.join(anchor.cwd, ".paperclip-runtime", "detached-repositories");
+      const retained = await fs.readdir(detached);
+      expect(retained).toHaveLength(1);
+      expect(await fs.readFile(path.join(detached, retained[0]!, "synced.txt"), "utf8")).toBe("copied back without .git");
+    } finally {
+      await Promise.all([first, second].map((cwd) => fs.rm(cwd, { recursive: true, force: true })));
+    }
+  });
+
   it("seeds a configured second local checkout with its uncommitted work and ignores", async () => {
     const first = await createLocalSourceRepo();
     const second = await createLocalSourceRepo();
