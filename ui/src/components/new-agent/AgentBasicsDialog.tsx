@@ -14,6 +14,7 @@ import { getAdapterDisplay } from "@/adapters/adapter-display-registry";
 import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { SelectPopover } from "../ui/select";
 import {
   Dialog,
   DialogContent,
@@ -57,7 +58,8 @@ export function AgentBasicsDialog({
   });
   const [name, setName] = useState("");
   const [adapterType, setAdapterType] = useState(initialAdapter);
-  const [runnerProvider, setRunnerProvider] = useState("codex");
+  const managedHarness = ["claude_managed", "aws_agentcore", "openai_dot"].includes(adapterType);
+  const runnerProvider = managedHarness ? adapterType : "";
   const [step, setStep] = useState<"name" | "adapter">("name");
   const {
     data: adapters,
@@ -70,6 +72,7 @@ export function AgentBasicsDialog({
   });
   const choices = (adapters ?? []).filter(
     (adapter) =>
+      adapter.type !== "paperclip_runner" &&
       adapter.loaded &&
       !adapter.disabled &&
       isNewAgentAdapterAllowed(adapter.type, {
@@ -79,13 +82,14 @@ export function AgentBasicsDialog({
       !["process", "http"].includes(adapter.type) &&
       !getAdapterDisplay(adapter.type).comingSoon,
   );
-  const runner = adapters?.find(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled);
-  if (runner && isNewAgentAdapterAllowed("openai_dot", {
+  const managedAvailable = !cloud && adapters?.some(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled);
+  const dotAvailable = managedAvailable && isNewAgentAdapterAllowed("openai_dot", {
     cloud,
-    nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
+    nativeRunnerEnabled: false,
     openAiDotEnabled: experimental.data?.enableOpenAiDot === true,
-  })) choices.push({ ...runner, type: "openai_dot" });
-  const validAdapter = choices.some((adapter) => adapter.type === adapterType);
+  });
+  const validAdapter = choices.some((adapter) => adapter.type === adapterType)
+    || (managedAvailable && managedHarness && (adapterType !== "openai_dot" || dotAvailable));
   return (
     <Dialog
       open={open}
@@ -112,7 +116,7 @@ export function AgentBasicsDialog({
           <span
             className={cn(step === "adapter" && "font-medium text-foreground")}
           >
-            2. Adapter
+            2. Harness
           </span>
         </div>
         <form
@@ -122,9 +126,7 @@ export function AgentBasicsDialog({
             if (!name.trim()) return;
             if (step === "name") setStep("adapter");
             else if (validAdapter)
-              onContinue({ name: name.trim(),
-                adapterType: adapterType === "openai_dot" ? "paperclip_runner" : adapterType,
-                runnerProvider: adapterType === "openai_dot" ? "openai_dot" : runnerProvider });
+              onContinue({ name: name.trim(), adapterType: managedHarness ? "paperclip_runner" : adapterType, runnerProvider });
           }}
         >
           <div className="flex min-h-0 flex-col gap-7 overflow-y-auto px-6 pb-8 sm:px-10">
@@ -134,7 +136,7 @@ export function AgentBasicsDialog({
                 <DialogTitle className="text-3xl font-semibold tracking-tight">
                   {step === "name"
                     ? "Meet your next agent"
-                    : "Choose an adapter"}
+                    : "Choose a harness"}
                 </DialogTitle>
                 <DialogDescription className="text-base">
                   {step === "name"
@@ -170,10 +172,10 @@ export function AgentBasicsDialog({
               </div>
             ) : (
               <fieldset className="space-y-4">
-                <legend className="sr-only">Adapter</legend>
+                <legend className="sr-only">Harness</legend>
                 {isPending && (
                   <p role="status" className="text-sm text-muted-foreground">
-                    Loading adapters…
+                    Loading harnesses…
                   </p>
                 )}
                 {error && (
@@ -217,23 +219,23 @@ export function AgentBasicsDialog({
                     );
                   })}
                 </div>
-                {validAdapter && adapterType === "paperclip_runner" && (
-                  <label className="flex flex-col gap-2 text-sm font-medium">
-                    Runner
-                    <select
-                      className="rounded-md border border-border bg-background px-3 py-2"
-                      value={runnerProvider}
-                      onChange={(event) =>
-                        setRunnerProvider(event.target.value)
-                      }
-                    >
-                      <option value="codex">Codex (app server)</option>
-                      <option value="claude">Claude (ACPX)</option>
-                      <option value="grok">Grok Build (ACPX)</option>
-                      <option value="opencode">OpenCode</option>
-                    </select>
+                {managedAvailable && <details className="space-y-3">
+                  <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                  <label className="flex flex-col gap-2 text-sm">Managed harness
+                    <SelectPopover
+                      aria-label="Managed harness"
+                      value={managedHarness ? adapterType : ""}
+                      onValueChange={setAdapterType}
+                      options={[
+                        { value: "", label: "Choose a managed harness…" },
+                        { value: "claude_managed", label: "Claude Managed" },
+                        { value: "aws_agentcore", label: "AWS AgentCore" },
+                        ...(dotAvailable ? [{ value: "openai_dot", label: "OpenAI Dot (experimental)" }] : []),
+                      ]}
+                    />
                   </label>
-                )}
+                  <p className="text-xs text-muted-foreground">{adapterType === "openai_dot" ? "Create the agent, then pair your Dot." : "Requires a qualified organization profile."}</p>
+                </details>}
               </fieldset>
             )}
           </div>
@@ -256,7 +258,7 @@ export function AgentBasicsDialog({
               type="submit"
               disabled={!name.trim() || (step === "adapter" && !validAdapter)}
             >
-              {step === "name" ? "Choose adapter" : "Configure agent"}
+              {step === "name" ? "Choose harness" : "Configure agent"}
               <ArrowRight className="size-4" />
             </Button>
           </div>

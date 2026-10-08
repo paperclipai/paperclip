@@ -56,14 +56,10 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     tier: "managed", cloudDefault: false, selfHostedDefault: false,
   },
   enableNativeRunner: {
-    title: "Paperclip Runner",
-    description:
-      "Allow explicitly configured local Codex, OpenCode, and qualified ACPX agents to use the experimental Rust Paperclip Runner, including authenticated sandbox ingress when required. Onboarding remains on legacy adapters.",
+    title: "Paperclip Runner (compatibility)",
+    description: "Deprecated compatibility key. New supported harnesses use Paperclip Runner by default; this value has no runtime effect.",
     tier: "managed",
-    cloudDefault: false,
-    // On by default for self-hosted instances. Requires a Rust toolchain (or
-    // PAPERCLIP_RUNNER_BINARY) for `pnpm dev`, which builds runnerd whenever
-    // this is on.
+    cloudDefault: true,
     selfHostedDefault: true,
   },
   enableManagedSandboxOnly: {

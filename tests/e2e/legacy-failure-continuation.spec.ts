@@ -24,7 +24,7 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
     try {
       await writeFile(path.join(root, "continued"), "ready");
       const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
-        name: "Recovery fixture", role: "engineer", adapterType: "claude_local",
+        name: "Recovery fixture", role: "engineer", adapterType: "claude_local", runner: "legacy",
         adapterConfig: { engine: "acp", cwd: root, stateDir: path.join(root, "state"),
           agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve("scripts/mcp-fixtures/servers/acp-stop-agent.mjs"))}`,
           env: { PAPERCLIP_STOP_FIXTURE_ROOT: root, PAPERCLIP_STOP_FIXTURE_FINISH_TASK: "1" } },
@@ -98,7 +98,13 @@ for (const action of ["task_retry", "thread_retry", "inbox_retry", "message", "q
         await page.getByRole("button", { name: "Send", exact: true }).click();
       } else {
         await page.getByRole("button", { name: action === "thread_retry" ? "Try again" : "Retry", exact: true }).click();
-        if (action === "inbox_retry") await page.goto(taskUrl);
+        if (action === "inbox_retry") {
+          // Let the inbox mutation finish and navigate before leaving the page;
+          // an immediate full navigation can cancel the pending wakeup request.
+          await page.waitForURL((url) => url.pathname.includes(`/agents/${agent.id}/runs/`)
+            || url.pathname.endsWith(`/issues/${issue.id}`));
+          await page.goto(taskUrl);
+        }
       }
       await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible({ timeout: 45_000 });
       await expect(page.getByRole("status", { name: "Task recovery" })).toHaveCount(0);

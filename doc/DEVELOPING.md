@@ -1915,3 +1915,8 @@ Chromium. The test starts its own loopback Vite server and mocks API responses;
 it needs no running Paperclip instance or provider credentials. The same spec lives
 in the default `test:e2e` discovery tree, so the existing Chrome CI shards run it
 on pull requests.
+
+
+## Default agent runners
+
+Source development prepares the native runner binary at startup. The old `enableNativeRunner` flag is a deprecated no-op. New qualified harnesses resolve to Paperclip Runner at creation; use `runner: "legacy"` for explicit legacy fixtures. See [harnesses and runners](agent-runners.md) for configuration and real test-drive verification.

@@ -16,8 +16,11 @@ import { createServer as createHttpServer } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getCACertificates } from "node:tls";
+import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { pathToFileURL } from "node:url";
+import { gzipSync } from "node:zlib";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -118,7 +121,15 @@ async function makeWritable(root: string): Promise<void> {
   }
 }
 
+async function decodedTrace(path: string): Promise<string> {
+  const raw = await readFile(path, "utf8");
+  const frames = raw.trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+  return [raw, ...frames.filter(frame => typeof frame.rawBase64 === "string")
+    .map(frame => Buffer.from(frame.rawBase64, "base64").toString("utf8"))].join("\n");
+}
+
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     roots.splice(0).map(async (root) => {
       await makeWritable(root);
@@ -132,6 +143,55 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
+  it("resolves pinned native commands from standalone and vendored server layouts without postinstall or PATH", async () => {
+    // Use the maintained Node/tsx boundary so Vitest's global module lookup
+    // cannot supply a missing fixture dependency from the developer workspace.
+    const source = `
+      import assert from "node:assert/strict";
+      import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+      import { tmpdir } from "node:os";
+      import { dirname, join, resolve } from "node:path";
+      import { resolvePinnedOpenCodeCommand } from ${JSON.stringify(new URL("./opencode-server-driver.ts", import.meta.url).href)};
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "paperclip-pinned-opencode-")));
+      const targets = [["linux", "x64", "opencode-linux-x64-baseline"], ["darwin", "arm64", "opencode-darwin-arm64"], ["darwin", "x64", "opencode-darwin-x64-baseline"]];
+      try {
+        for (const layout of ["standalone", "vendored"]) for (const [platform, architecture, name] of targets) {
+          const owner = join(root, layout + "-" + platform + "-" + architecture);
+          const issuer = join(owner, layout === "vendored" ? "dist/vendor/paperclip-runner/drivers/opencode/driver.js" : "dist/drivers/opencode/driver.js");
+          const wrapper = join(owner, "node_modules/opencode-ai"), artifact = join(owner, "node_modules", name);
+          const executable = join(artifact, "bin/opencode");
+          const metadata = { name: "opencode-ai", version: "1.18.34", optionalDependencies: { [name]: "1.18.34", "opencode-darwin-x64": "1.18.34" } };
+          const platformMetadata = { name, version: "1.18.34", os: [platform], cpu: [architecture] };
+          mkdirSync(dirname(issuer), { recursive: true }); mkdirSync(wrapper, { recursive: true }); mkdirSync(dirname(executable), { recursive: true });
+          writeFileSync(join(wrapper, "package.json"), JSON.stringify(metadata));
+          writeFileSync(join(artifact, "package.json"), JSON.stringify(platformMetadata));
+          writeFileSync(executable, "synthetic executable; not invoked", { mode: 0o755 });
+          const target = { platform, architecture };
+          assert.equal(resolvePinnedOpenCodeCommand(issuer, target), executable);
+          // The old packageRoot-relative path is absent in this real layout.
+          assert.throws(() => realpathSync(resolve(dirname(issuer), "../../node_modules/opencode-ai/bin/opencode.exe")), { code: "ENOENT" });
+          writeFileSync(join(wrapper, "package.json"), JSON.stringify({ ...metadata, version: "1.18.18" }));
+          assert.throws(() => resolvePinnedOpenCodeCommand(issuer, target), /version mismatch/);
+          writeFileSync(join(wrapper, "package.json"), JSON.stringify(metadata));
+          for (const invalid of [{ ...platformMetadata, version: "1.18.18" }, { ...platformMetadata, name: "wrong-package" }, { ...platformMetadata, cpu: ["other"] }]) {
+            writeFileSync(join(artifact, "package.json"), JSON.stringify(invalid));
+            assert.throws(() => resolvePinnedOpenCodeCommand(issuer, target), /identity mismatch/);
+          }
+          writeFileSync(join(artifact, "package.json"), JSON.stringify(platformMetadata));
+          chmodSync(executable, 0o600); assert.throws(() => resolvePinnedOpenCodeCommand(issuer, target), /runtime unavailable/);
+          rmSync(executable); const outside = join(owner, "outside"); writeFileSync(outside, "outside", { mode: 0o755 }); symlinkSync(outside, executable);
+          assert.throws(() => resolvePinnedOpenCodeCommand(issuer, target), /escapes/);
+          rmSync(artifact, { recursive: true, force: true });
+          assert.throws(() => resolvePinnedOpenCodeCommand(issuer, target), /dependency is missing/);
+          rmSync(wrapper, { recursive: true, force: true });
+          assert.throws(() => resolvePinnedOpenCodeCommand(issuer, target), /runtime unavailable.*Legacy runner/);
+          assert.throws(() => resolvePinnedOpenCodeCommand(issuer, { platform: "win32", architecture: "x64" }), /not qualified/);
+        }
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    `;
+    const loader = new URL("../../../../../cli/node_modules/tsx/dist/loader.mjs", import.meta.url);
+    await promisify(execFile)(process.execPath, ["--import", loader.href, "--input-type=module", "-e", source], { timeout: 20_000, maxBuffer: 16 * 1024 });
+  });
   it("advertises within-turn plans as unsupported", async () => {
     const driver = new OpenCodeServerDriver({
       model: "openrouter/deepseek/deepseek-v4-flash-0731",
@@ -644,6 +704,119 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it.each([
+    ["openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "@openrouter/ai-sdk-provider", "chat"],
+    ["openai", "OPENAI_API_KEY", "https://api.openai.com/v1", "@ai-sdk/openai", "openai"],
+    ["anthropic", "ANTHROPIC_API_KEY", "https://api.anthropic.com/v1", "@ai-sdk/anthropic", "anthropic"],
+  ] as const)("keeps assigned %s authentication in the broker and out of inherited model-shell environment", async (provider, selectedKey, baseURL, npm, protocol) => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-broker-credentials-"));
+    roots.push(root);
+    const credentials = { OPENROUTER_API_KEY: "assigned-router-canary", OPENAI_API_KEY: "assigned-openai-canary", ANTHROPIC_API_KEY: "assigned-anthropic-canary", PAPERCLIP_AI_PROVIDER_KEY: "unselected-gateway-canary" };
+    expect(openCodeServerDriverInternals.openCodeProviderBinding(provider, credentials)).toEqual({ baseURL, npm, protocol, key: credentials[selectedKey] });
+    const shellWrapper = join(root, "shell-environment.mjs");
+    // Match the pinned harness's shell environment inheritance, while recording
+    // only key-presence booleans. No real provider or inference is involved.
+    await writeFile(shellWrapper, `#!/usr/bin/env node\nimport {execFileSync} from "node:child_process";\nimport {writeFileSync} from "node:fs";\nimport {join} from "node:path";\nconst presence = execFileSync("sh", ["-c", '\"$1\" -e \"$2\"', "sh", process.execPath, ${JSON.stringify(`process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(Object.keys(credentials))}.map(key => [key, process.env[key] !== undefined]))))`)}], {env: {...process.env}});\nwriteFileSync(join(process.env.XDG_DATA_HOME, "model-shell-credentials.json"), presence);\nawait import(${JSON.stringify(pathToFileURL(fixture).href)});\n`, { mode: 0o755 });
+    const driver = new OpenCodeServerDriver({ model: `${provider}/selected/model`, runtimeDirectory: root, command: shellWrapper, environment: { PATH: process.env.PATH, ...credentials } });
+    const session = await driver.openSession({ runId: provider, normalizedSessionId: provider, workingDirectory: root });
+    try {
+      const configText = await readFile(join(root, provider, "config/opencode/opencode.json"), "utf8");
+      const config = JSON.parse(configText);
+      expect(config.model).toBe(`${provider}/selected/model`);
+      expect(config.small_model).toBe(config.model);
+      expect(config.provider[provider]).toMatchObject({ npm, options: { baseURL: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/v1$/), apiKey: expect.any(String) }, models: { "selected/model": { name: "selected/model" } } });
+      for (const key of Object.values(credentials)) expect(configText).not.toContain(key);
+      expect(JSON.parse(await readFile(join(root, provider, "data/model-shell-credentials.json"), "utf8"))).toEqual(Object.fromEntries(Object.keys(credentials).map(key => [key, false])));
+      const environment = JSON.parse(await readFile(join(root, provider, "data/fake-environment.json"), "utf8"));
+      expect(environment.credentialDigests).toEqual({});
+      for (const key of Object.keys(credentials)) expect(environment.keys).not.toContain(key);
+    } finally { await session.close({ reason: "credential isolation test" }); }
+  });
+
+  it.each([
+    ["openai", "@ai-sdk/openai", "/responses"],
+    ["chat", "@openrouter/ai-sdk-provider", "/chat/completions"],
+    ["anthropic", "@ai-sdk/anthropic", "/messages"],
+  ] as const)("brokers %s selected-model requests with provider-native authentication and revokes the capability", async (protocol, npm, endpoint) => {
+    const received: Array<{ path: string; headers: Record<string, unknown>; body: unknown }> = [];
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        const chunks = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        received.push({ path: request.url!, headers: request.headers, body });
+        if (!body.stream) {
+          response.writeHead(401, { "content-type": "application/json", "content-encoding": "gzip" }).end(gzipSync('{"error":"runner-only-key"}'));
+          return;
+        }
+        response.writeHead(200, { "content-type": "text/event-stream", "retry-after": "runner-only-key", "x-private-header": "not-forwarded" });
+        response.write('data: {"type":"fixture","echo":"runner-');
+        setImmediate(() => response.end('only-key"}\n\n'));
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing provider fixture address");
+    const broker = await openCodeServerDriverInternals.startOpenCodeProviderProxy({ baseURL: `http://127.0.0.1:${address.port}/custom/v1`, key: "runner-only-key", protocol, npm }, "selected/model", {});
+    const otherBroker = await openCodeServerDriverInternals.startOpenCodeProviderProxy({ baseURL: `http://127.0.0.1:${address.port}/custom/v1`, key: "other-key", protocol, npm }, "other/model", {});
+    const authentication: Record<string, string> = protocol === "anthropic" ? { "x-api-key": broker.token } : { Authorization: `Bearer ${broker.token}` };
+    const headers = { ...authentication, "Content-Type": "application/json", "anthropic-version": "2023-06-01", "anthropic-beta": "fine-grained-tool-streaming-2025-05-14", "x-unapproved-header": "do-not-forward" };
+    const payload = { model: "selected/model", stream: true, ...(protocol === "openai" ? { input: "test" } : { messages: [{ role: "user", content: "test" }] }) };
+    try {
+      const request = (path: string, value = payload, requestHeaders: Record<string, string> = headers) => fetch(`${broker.baseURL}${path}`, { method: "POST", headers: requestHeaders, body: JSON.stringify(value) });
+      expect((await request(endpoint, payload, { "Content-Type": "application/json" })).status).toBe(401);
+      expect((await fetch(`${otherBroker.baseURL}${endpoint}`, { method: "POST", headers, body: JSON.stringify(payload) })).status).toBe(401);
+      expect((await request("/models")).status).toBe(404);
+      expect((await request(`${endpoint}?unapproved=true`)).status).toBe(404);
+      expect((await fetch(`${broker.baseURL}${endpoint}`, { headers })).status).toBe(404);
+      expect((await request(endpoint, { ...payload, model: "other/model" })).status).toBe(400);
+      if (protocol !== "openai") expect((await request("/responses")).status).toBe(404);
+      expect(received).toHaveLength(0);
+      const result = await request(endpoint);
+      expect(result.status).toBe(200);
+      expect(result.headers.get("x-private-header")).toBeNull();
+      expect(result.headers.get("retry-after")).toBe("[REDACTED]");
+      expect(await result.text()).toBe('data: {"type":"fixture","echo":"[REDACTED]"}\n\n');
+      expect(received).toHaveLength(1);
+      expect(received[0]!.path).toBe(`/custom/v1${endpoint}`);
+      expect(received[0]!.body).toEqual(payload);
+      expect(received[0]!.headers["x-unapproved-header"]).toBeUndefined();
+      if (protocol === "anthropic") {
+        expect(received[0]!.headers).toMatchObject({ "x-api-key": "runner-only-key", "anthropic-version": "2023-06-01", "anthropic-beta": "fine-grained-tool-streaming-2025-05-14" });
+        expect(received[0]!.headers.authorization).toBeUndefined();
+      } else {
+        expect(received[0]!.headers.authorization).toBe("Bearer runner-only-key");
+        expect(received[0]!.headers["x-api-key"]).toBeUndefined();
+        if (protocol === "chat") expect(received[0]!.headers).toMatchObject({ "http-referer": "https://opencode.ai/", "x-title": "opencode", "x-source": "opencode" });
+      }
+      const rejected = await request(endpoint, { ...payload, stream: false });
+      expect(rejected.status).toBe(401);
+      expect(rejected.headers.get("content-encoding")).toBeNull();
+      expect(await rejected.json()).toEqual({ error: "[REDACTED]" });
+      await broker.close();
+      await expect(request(endpoint)).rejects.toThrow();
+    } finally {
+      await broker.close();
+      await otherBroker.close();
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
+    }
+  });
+
+  it("redacts reusable provider keys across arbitrary byte boundaries without buffering the response", async () => {
+    const key = 'synthetic-"key\\value';
+    const redactor = openCodeServerDriverInternals.providerResponseRedactor(key);
+    const collected: Buffer[] = [];
+    const read = (async () => { for await (const chunk of redactor) collected.push(Buffer.from(chunk)); })();
+    const prefix = "stream-prefix ".repeat(1_000);
+    redactor.write(prefix);
+    expect(redactor.readableLength).toBeGreaterThan(prefix.length - key.length * 2);
+    for (const byte of Buffer.from(`direct=${key};json=${JSON.stringify(key)};suffix=✓`)) redactor.write(Buffer.from([byte]));
+    redactor.end();
+    await read;
+    expect(Buffer.concat(collected).toString("utf8")).toBe(`${prefix}direct=[REDACTED];json="[REDACTED]";suffix=✓`);
+  });
+
   it.each(["gateway-key", ""])("forwards selected-model streams without exposing the reusable key and revokes the proxy on close (%s)", async key => {
     const received: Array<{ path: string; authorization?: string; body: unknown }> = [];
     const upstream = createHttpServer((request, response) => {
@@ -758,6 +931,8 @@ describe("OpenCodeServerDriver", () => {
       environment: {
         PATH: process.env.PATH,
         OPENROUTER_API_KEY: "test-openrouter-key",
+        OPENAI_API_KEY: "test-openai-key",
+        ANTHROPIC_API_KEY: "test-anthropic-key",
         PAPERCLIP_API_KEY: "must-not-leak",
         UNRELATED_SECRET: "must-not-leak",
         PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
@@ -863,7 +1038,8 @@ describe("OpenCodeServerDriver", () => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
-    expect(JSON.stringify(traceEntries)).not.toContain("test-openrouter-key");
+    for (const key of ["test-openrouter-key", "test-openai-key", "test-anthropic-key"])
+      expect(await decodedTrace(tracePath)).not.toContain(key);
     const traceFrames = traceEntries.filter((entry) => entry.kind === "frame");
     expect(traceFrames.map((entry) => entry.direction)).toEqual(
       expect.arrayContaining([
@@ -901,7 +1077,8 @@ describe("OpenCodeServerDriver", () => {
         "utf8",
       ),
     );
-    expect(environment.keys).toContain("OPENROUTER_API_KEY");
+    for (const key of ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]) expect(environment.keys).not.toContain(key);
+    expect(environment.credentialDigests).toEqual({});
     expect(environment.keys).not.toContain("PAPERCLIP_API_KEY");
     expect(environment.keys).not.toContain("UNRELATED_SECRET");
     expect(environment.keys).not.toContain("PAPERCLIP_PROVIDER_TRACE_PATH");
@@ -915,10 +1092,42 @@ describe("OpenCodeServerDriver", () => {
     expect(
       events.some((event) => event.eventType === "runtime_request.created"),
     ).toBe(false);
-    expect(config).not.toContain("test-openrouter-key");
-    expect(diagnostics.join("\n")).not.toContain("test-openrouter-key");
+    for (const key of ["test-openrouter-key", "test-openai-key", "test-anthropic-key"]) {
+      expect(config).not.toContain(key);
+      expect(diagnostics.join("\n")).not.toContain(key);
+    }
     expect(diagnostics.join("\n")).toContain("[REDACTED]");
   });
+
+  it.each(["omitted", "undefined", "blank"] as const)(
+    "does not inherit ambient provider credentials into the authenticated child with %s bindings",
+    async mode => {
+      await chmod(fixture, 0o755);
+      const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-credential-boundary-"));
+      const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-credential-workspace-"));
+      roots.push(root, workspace);
+      const keys = ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] as const;
+      for (const key of keys) vi.stubEnv(key, `ambient-${key}-canary`);
+      vi.stubEnv("UNRELATED_SECRET", "ambient-unrelated-canary");
+      const driver = new OpenCodeServerDriver({
+        model: "openai/fixture-model", runtimeDirectory: root, command: fixture,
+        ...(mode === "omitted" ? {} : {
+          environment: { PATH: process.env.PATH, ...Object.fromEntries(keys.map(key => [key, mode === "blank" ? "" : undefined])) },
+        }),
+      });
+      const session = await driver.openSession({ runId: `credentials-${mode}`, normalizedSessionId: mode, workingDirectory: workspace });
+      try {
+        const environment = JSON.parse(await readFile(join(root, mode, "data/fake-environment.json"), "utf8"));
+        expect(environment.credentialDigests).toEqual({});
+        for (const key of keys) expect(environment.keys).not.toContain(key);
+        expect(environment.keys).not.toContain("UNRELATED_SECRET");
+        expect(environment.projectConfigDisabled).toBe("true");
+        expect(environment.home).not.toBe(process.env.HOME);
+      } finally {
+        await session.close({ reason: "credential boundary test" });
+      }
+    },
+  );
 
   it("maps OpenCode's normal abort error to cancellation without a false provider failure notice", async () => {
     await chmod(fixture, 0o755);
@@ -990,11 +1199,14 @@ describe("OpenCodeServerDriver", () => {
       )?.payload,
     ).toMatchObject({ text: "done [guide](guide.md)" });
 
+    expect(firstTurnEvents.find(event => event.eventType === "item.completed" && event.payload.channel === "final")?.payload.item).toMatchObject({ model: { provider: "openrouter", id: "deepseek/deepseek-v4-flash-0731" } });
+
     const secondTurn = await session.startTurn({
-      message: { role: "user", text: "finish" },
+      message: { role: "user", text: "finish native-model-missing" },
     });
     expect(secondTurn.turnId).not.toBe(firstTurn.turnId);
     const secondTurnEvents = await collectTurnEvents(session.events());
+    expect((secondTurnEvents.find(event => event.eventType === "item.completed" && event.payload.channel === "final")?.payload.item as Record<string, unknown>).model).toBeUndefined();
     expect(
       secondTurnEvents.filter((event) => event.eventType === "turn.completed"),
     ).toMatchObject([{ turnId: secondTurn.turnId }]);
@@ -2480,10 +2692,11 @@ describe("OpenCodeServerDriver", () => {
     const exitingFixture = join(root, "exit-before-health.mjs");
     await writeFile(
       exitingFixture,
-      "#!/usr/bin/env node\nimport { readFileSync } from 'node:fs';\nconst config = JSON.parse(readFileSync(`${process.env.XDG_CONFIG_HOME}/opencode/opencode.json`, 'utf8'));\nprocess.stderr.write(`credential=${process.env.OPENROUTER_API_KEY}\\ngateway=${config.provider.paperclip.options.apiKey}\\nauthorization=super-secret-opencode-token\\n`);\nprocess.exit(17);\n",
+      "#!/usr/bin/env node\nimport { readFileSync } from 'node:fs';\nconst config = JSON.parse(readFileSync(`${process.env.XDG_CONFIG_HOME}/opencode/opencode.json`, 'utf8'));\nprocess.stderr.write(`credential=${process.env.OPENROUTER_API_KEY}\\nopenai=${process.env.OPENAI_API_KEY}\\nanthropic=${process.env.ANTHROPIC_API_KEY}\\ngateway=${config.provider.paperclip.options.apiKey}\\nOPENAI_API_KEY=unbound-openai-sentinel\\nANTHROPIC_API_KEY=unbound-anthropic-sentinel\\nauthorization=super-secret-opencode-token\\n`);\nprocess.exit(17);\n",
       { mode: 0o755 },
     );
     const diagnostics: string[] = [];
+    const tracePath = join(root, "startup-trace.ndjson");
     const driver = new OpenCodeServerDriver({
       model: "paperclip/team/model-alias",
       runtimeDirectory: root,
@@ -2492,6 +2705,9 @@ describe("OpenCodeServerDriver", () => {
       environment: {
         PATH: process.env.PATH,
         OPENROUTER_API_KEY: "fixture-key",
+        OPENAI_API_KEY: "fixture-openai-key",
+        ANTHROPIC_API_KEY: "fixture-anthropic-key",
+        PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
         PAPERCLIP_AI_PROVIDER_KEY: "fixture-custom-gateway-key",
         PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example/v1",
       },
@@ -2515,22 +2731,33 @@ describe("OpenCodeServerDriver", () => {
     expect(error).not.toContain("super-secret-opencode-token");
     expect(diagnostics.join("")).toContain("gateway=[REDACTED]");
     expect(diagnostics.join("")).not.toContain("fixture-custom-gateway-key");
+    const trace = await decodedTrace(tracePath);
+    for (const key of ["fixture-key", "fixture-openai-key", "fixture-anthropic-key", "fixture-custom-gateway-key", "unbound-openai-sentinel", "unbound-anthropic-sentinel"]) {
+      expect(error).not.toContain(key);
+      expect(diagnostics.join("")).not.toContain(key);
+      expect(trace).not.toContain(key);
+    }
+    expect(diagnostics.join("")).toContain("OPENAI_API_KEY=[REDACTED]");
+    expect(diagnostics.join("")).toContain("ANTHROPIC_API_KEY=[REDACTED]");
   });
 
-  it.each(["network", "response"])("redacts custom gateway keys in %s errors", async (failure) => {
+  it.each(["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "PAPERCLIP_AI_PROVIDER_KEY"].flatMap(keyName => ["network", "response"].map(failure => ({ keyName, failure }))))("redacts $keyName in $failure errors", async ({ keyName, failure }) => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
     const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
     roots.push(root, workspace);
-    const key = "fixture-custom-gateway-key";
+    // Even an invalid short bound key must be masked in provider failures.
+    const key = keyName === "OPENAI_API_KEY" ? "qa" : `fixture-${keyName}-key`;
+    const tracePath = join(root, "api-error-trace.ndjson");
     const driver = new OpenCodeServerDriver({
       model: "paperclip/team/model-alias",
       runtimeDirectory: root,
       command: fixture,
       environment: {
         PATH: process.env.PATH,
-        PAPERCLIP_AI_PROVIDER_KEY: key,
+        [keyName]: key,
         PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example/v1",
+        PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
       },
       fetch: async (input, init) => {
         if (String(input).endsWith("/session") && init?.method === "POST") {
@@ -2547,5 +2774,36 @@ describe("OpenCodeServerDriver", () => {
     }).then(() => "provider unexpectedly started", (cause: unknown) => String(cause));
     expect(error).toContain("Gateway rejected [REDACTED]");
     expect(error).not.toContain(key);
+    expect(await decodedTrace(tracePath)).not.toContain(key);
+  });
+
+  it("redacts explicit provider credentials from native recovery failures", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-recovery-credentials-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-recovery-credentials-workspace-"));
+    roots.push(root, workspace);
+    const credentials = { OPENROUTER_API_KEY: "recovery-openrouter-key", OPENAI_API_KEY: "recovery-openai-key", ANTHROPIC_API_KEY: "recovery-anthropic-key" };
+    let failRecovery = false;
+    const tracePath = join(root, "recovery-trace.ndjson");
+    const driver = new OpenCodeServerDriver({
+      model: "openai/fixture-model", runtimeDirectory: root, command: fixture,
+      environment: { PATH: process.env.PATH, ...credentials, PAPERCLIP_PROVIDER_TRACE_PATH: tracePath },
+      fetch: async (input, init) => {
+        if (failRecovery && new URL(String(input)).pathname.startsWith("/session/"))
+          return new Response(`recovery rejected ${Object.values(credentials).join(" ")}`, { status: 400 });
+        return fetch(input, init);
+      },
+    });
+    const session = await driver.openSession({ runId: "recovery-credentials", normalizedSessionId: "recovery-credentials", workingDirectory: workspace });
+    const snapshot = await session.snapshot();
+    await session.close({ reason: "recover with rejection" });
+    failRecovery = true;
+    const recovered = await driver.recoverSession(snapshot);
+    expect(recovered).toMatchObject({ recovered: false, reason: expect.stringContaining("recovery rejected [REDACTED] [REDACTED] [REDACTED]") });
+    const trace = await decodedTrace(tracePath);
+    for (const key of Object.values(credentials)) {
+      expect(recovered.reason).not.toContain(key);
+      expect(trace).not.toContain(key);
+    }
   });
 });

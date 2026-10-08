@@ -1,3 +1,4 @@
+import type { AgentRunnerAvailability } from "@paperclipai/shared";
 /**
  * @fileoverview Frontend API client for external adapter management.
  */
@@ -33,7 +34,7 @@ export interface AcpTargetDescriptor {
   };
 }
 
-export interface AdapterInfo {
+export interface AdapterInfo extends Partial<AgentRunnerAvailability> {
   type: string;
   label: string;
   source: "builtin" | "external";

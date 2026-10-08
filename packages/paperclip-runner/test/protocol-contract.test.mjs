@@ -15,7 +15,9 @@ import {
   assertSchemaInstance,
   compileProtocolValidators,
   loadSchemaCatalog,
+  MIN_SUPPORTED_PROTOCOL_VERSION,
   readJson,
+  SUPPORTED_PROTOCOL_VERSION,
 } from "../scripts/protocol-contract.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -24,6 +26,25 @@ const protocolRoot = resolve(packageRoot, "protocol");
 async function fixture(relativePath) {
   return (await readJson(resolve(protocolRoot, "fixtures", relativePath))).value;
 }
+
+test("daemon build metadata advertises the canonical durable protocol range", async () => {
+  const rustRoot = resolve(packageRoot, "runner/crates/runner-core/src");
+  const [durable, daemon] = await Promise.all([
+    readFile(resolve(rustRoot, "durable/mod.rs"), "utf8"),
+    readFile(resolve(rustRoot, "bin/paperclip-runnerd.rs"), "utf8"),
+  ]);
+  const rustConstant = name => {
+    const declaration = durable.match(new RegExp(`pub const ${name}: u64 = (\\d+);`));
+    assert.ok(declaration, `durable ${name} must be exported`);
+    return Number(declaration[1]);
+  };
+  assert.equal(rustConstant("PROTOCOL_MIN_VERSION"), MIN_SUPPORTED_PROTOCOL_VERSION);
+  assert.equal(rustConstant("PROTOCOL_VERSION"), SUPPORTED_PROTOCOL_VERSION);
+  const metadata = daemon.match(/fn build_metadata\(\) -> serde_json::Value \{([\s\S]*?)\n\}/)?.[1];
+  assert.ok(metadata, "daemon build metadata must be present");
+  assert.match(metadata, /"minimumVersion":\s*PROTOCOL_MIN_VERSION\b/);
+  assert.match(metadata, /"maximumVersion":\s*PROTOCOL_VERSION\b/);
+});
 
 test("all schema IDs are unique and all external references resolve", async () => {
   const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));

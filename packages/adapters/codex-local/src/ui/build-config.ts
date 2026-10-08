@@ -71,7 +71,7 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   return ac;
 }
 
-/** Build a provider profile accepted by the experimental Rust runner. */
+/** Build a provider profile accepted by Paperclip Runner. */
 export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string, unknown> {
   const config = buildCodexLocalConfig(v);
   const schemaValues = normalizeLegacyRunnerProvider({ ...(v.adapterSchemaValues ?? {}) });
@@ -84,7 +84,6 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     "warmHandleIdleMs",
     "dangerouslyBypassApprovalsAndSandbox",
     "dangerouslyBypassSandbox",
-    "modelReasoningEffort",
     "search",
     "fastMode",
     "command",
@@ -94,14 +93,21 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     delete schemaValues[unsupportedKey];
   }
   const providerCandidate = schemaValues.provider;
+  if (providerCandidate !== undefined && !isPaperclipRunnerProvider(providerCandidate)) {
+    throw new Error(`Unknown Paperclip Runner provider: ${String(providerCandidate)}`);
+  }
   const provider = isPaperclipRunnerProvider(providerCandidate)
     ? providerCandidate
     : "codex";
+  if (provider !== "codex") delete config.modelReasoningEffort;
   if (provider === "openai_dot") {
     return { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: schemaValues.allowUnmeteredProvider === true, dotWorkspaceAccess: schemaValues.dotWorkspaceAccess === true, dotAttachmentAccess: schemaValues.dotAttachmentAccess === true,
       ...(typeof schemaValues.dotBindingId === "string" ? { dotBindingId: schemaValues.dotBindingId } : {}) };
   }
   const selectedAcpxProfile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === schemaValues.acpxAgent);
+  if (provider === "acpx" && schemaValues.acpxAgent !== undefined && !selectedAcpxProfile) {
+    throw new Error(`Unknown ACP agent: ${String(schemaValues.acpxAgent)}`);
+  }
   if (provider === "acpx" && selectedAcpxProfile && !selectedAcpxProfile.qualified) {
     throw new Error(`${selectedAcpxProfile.label} is not enabled for production`);
   }
@@ -229,7 +235,14 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     ...schemaValues,
     provider,
     ...(provider === "codex"
-      ? { model: resolvePaperclipRunnerModel("codex", config.model) }
+      ? {
+          model: resolvePaperclipRunnerModel("codex", config.model),
+          // The ordinary Thinking effort control owns this field, including
+          // an explicit Auto clear when imports merge with their source config.
+          modelReasoningEffort: config.modelReasoningEffort,
+          ...("reasoningEffort" in schemaValues ? { reasoningEffort: undefined } : {}),
+          ...("effort" in schemaValues ? { effort: undefined } : {}),
+        }
       : {}),
     codexPermissionMode: "never",
     opencodePermissionMode: resolvePaperclipRunnerPermissionMode(

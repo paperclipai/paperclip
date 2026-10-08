@@ -689,6 +689,7 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "capabilities": "Market research, competitor analysis",
           "budgetMonthlyCents": 5000,
           "adapterType": "codex_local",
+          "runner": "auto",
           "instructionsBundle": {
             "entryFile": "AGENTS.md",
             "files": {

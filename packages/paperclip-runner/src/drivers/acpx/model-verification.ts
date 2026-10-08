@@ -13,6 +13,34 @@ export interface AcpxModelControl {
   setModel?: (model: string) => Promise<void>;
 }
 
+export function needsAdvertisedCursorModel(profile: QualifiedAcpxProfile): boolean {
+  return profile.agent === "cursor" && !profile.reportedModelId.includes("[");
+}
+
+/** Cursor's CLI lists base names; ACP advertises selectors including settings. */
+export function resolveAdvertisedAcpxModel(
+  profile: QualifiedAcpxProfile,
+  status: AcpxModelStatus,
+): string {
+  const requested = profile.reportedModelId;
+  if (!needsAdvertisedCursorModel(profile)) return requested;
+  const advertised = Array.from(new Set([
+    ...(status.models?.availableModelIds ?? []),
+    ...(status.models?.currentModelId ? [status.models.currentModelId] : []),
+  ]));
+  if (advertised.includes(requested)) return requested;
+  const candidates = advertised.filter(model =>
+    model.startsWith(`${requested}[`) && model.endsWith("]"),
+  );
+  if (candidates.length === 1) return candidates[0]!;
+  throw acpxModelVerificationError(
+    candidates.length > 1 ? "ACPX_MODEL_SELECTION_AMBIGUOUS" : "ACPX_MODEL_SELECTION_UNAVAILABLE",
+    candidates.length > 1
+      ? `Cursor advertises multiple selectors for model ${requested}; choose an explicit full model ID`
+      : `Cursor does not advertise model ${requested}; choose an available model or an explicit full model ID`,
+  );
+}
+
 /**
  * Select and verify the exact requested model before a billable prompt can be
  * accepted. A provider selector is normalized only after ACP reports it.
@@ -28,8 +56,8 @@ export async function requireVerifiedAcpxModel(
     );
   }
   const requestedModel = profile.qualificationModel;
-  const providerModel = profile.reportedModelId;
   let status = await control.getStatus();
+  const providerModel = resolveAdvertisedAcpxModel(profile, status);
   if (status.models?.currentModelId !== providerModel) {
     if (!control.setModel) {
       throw acpxModelVerificationError(
@@ -47,7 +75,7 @@ export async function requireVerifiedAcpxModel(
       `ACPX effective model mismatch: requested ${requestedModel}, expected ACP selector ${providerModel}, received ${status.models?.currentModelId ?? "unverified"}`,
     );
   }
-  return normalizeVerifiedModelStatus(status, profile);
+  return normalizeVerifiedModelStatus(status, { ...profile, reportedModelId: providerModel });
 }
 
 function acpxModelVerificationError(code: string, message: string): Error {

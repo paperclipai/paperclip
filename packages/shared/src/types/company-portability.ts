@@ -1,3 +1,4 @@
+import type { AgentRunnerChoice } from "../agent-runner.js";
 import type { AgentAppearance } from "../agent-appearance.js";
 import type { AgentEnvConfig } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
@@ -211,6 +212,7 @@ export interface CompanyPortabilityIssueManifestEntry {
 }
 
 export interface CompanyPortabilityAgentManifestEntry {
+  runner?: AgentRunnerChoice;
   slug: string;
   name: string;
   path: string;
@@ -387,6 +389,7 @@ export interface CompanyPortabilityPreviewResult {
 }
 
 export interface CompanyPortabilityAdapterOverride {
+  runner?: AgentRunnerChoice;
   adapterType: string;
   adapterConfig?: Record<string, unknown>;
 }

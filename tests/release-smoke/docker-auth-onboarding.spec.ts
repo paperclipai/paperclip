@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { agentHarnessType, agentRunner } from "../../packages/shared/src/agent-runner.js";
 
 const ADMIN_EMAIL =
   process.env.PAPERCLIP_RELEASE_SMOKE_EMAIL ??
@@ -96,6 +97,53 @@ async function openOnboarding(page: Page) {
 }
 
 test.describe("Docker authenticated onboarding smoke", () => {
+  test("installed artifact first-run entry reaches the harness picker without provider access", async ({ page }) => {
+    test.skip(process.env.PAPERCLIP_PUBLIC_INSTALL_BROWSER_SMOKE !== "1", "Opt-in installed CLI packaging check; live provider onboarding is separate.");
+    const expectedRevision = process.env.PAPERCLIP_RELEASE_SMOKE_SOURCE_REVISION;
+    const bootstrapPath = process.env.PAPERCLIP_RELEASE_SMOKE_BOOTSTRAP_PATH;
+    expect(expectedRevision).toMatch(/^[a-f0-9]{40}$/);
+    expect(bootstrapPath).toMatch(/^\/invite\/pcp_bootstrap_[a-zA-Z0-9]+$/);
+    // No external provider, analytics, or hosted asset can make this installed
+    // artifact check pass. Product API requests retain their normal handlers.
+    await page.route("**/*", route => new URL(route.request().url()).origin === new URL(BASE_URL).origin
+      ? route.continue() : route.abort());
+    await page.goto("/auth");
+    await page.getByRole("button", { name: "Create one" }).click();
+    await page.getByLabel("Name").fill("Installed Smoke Admin");
+    await page.getByLabel("Email").fill(ADMIN_EMAIL);
+    await page.getByLabel("Password").fill(ADMIN_PASSWORD);
+    await page.getByRole("button", { name: "Create Account" }).click();
+    await expect(page).not.toHaveURL(/\/auth/, { timeout: 20_000 });
+    await page.goto(bootstrapPath!);
+    await expect(page.getByRole("heading", { name: "Accept bootstrap invite" })).toBeVisible();
+    await page.getByRole("button", { name: "Accept invite", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Bootstrap complete" })).toBeVisible();
+    await page.getByRole("link", { name: "Open board" }).click();
+    const health = await getJson<{ commit: string }>(page, "/api/health");
+    expect(health.commit).toBe(expectedRevision);
+    expect(await getJson<unknown[]>(page, "/api/companies")).toEqual([]);
+    const orgNameField = await openOnboarding(page);
+    await orgNameField.fill(`${COMPANY_NAME}-Installed`);
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await page.locator("#onboarding-agent-name").fill(AGENT_NAME);
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    const sources = page.getByRole("radiogroup", { name: "Model source" });
+    await expect(sources.getByRole("radio", { name: /Claude/ })).toBeVisible();
+    // The Codex harness is presented by its connection provider, as in the
+    // maintained first-task onboarding journey (OpenAI Subscription/API key).
+    await expect(sources.getByRole("radio", { name: /^OpenAI/ })).toBeVisible();
+    await expect(sources.getByRole("radio", { name: /Paperclip Runner/ })).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Connect a model" })).toBeVisible();
+    await expect(sources.getByRole("radio", { name: /^OpenAI/ })).toBeVisible();
+    await expect(sources.getByRole("radio", { name: /Paperclip Runner/ })).toHaveCount(0);
+    const companies = await getJson<Array<{ id: string }>>(page, "/api/companies");
+    expect(companies).toHaveLength(1);
+    expect(await getJson<unknown[]>(page, `/api/companies/${companies[0]!.id}/agents`)).toEqual([]);
+    await test.info().attach("installed-first-run-entry", { body: JSON.stringify({ sourceRevision: health.commit, companyId: companies[0]!.id, providerCalls: 0 }), contentType: "application/json" });
+    await test.info().attach("installed-harness-picker", { body: await page.screenshot(), contentType: "image/png" });
+  });
+
   test("logs in, completes onboarding, and hires the lead agent", async ({
     page,
   }) => {
@@ -208,12 +256,14 @@ test.describe("Docker authenticated onboarding smoke", () => {
     expect(company).toBeTruthy();
 
     const agents = await getJson<
-      Array<{ id: string; name: string; role: string; adapterType: string }>
+      Array<{ id: string; name: string; role: string; adapterType: string; adapterConfig: Record<string, unknown> }>
     >(page, `${baseUrl}/api/companies/${company!.id}/agents`);
     const leadAgent = agents.find((entry) => entry.name === AGENT_NAME);
     expect(leadAgent).toBeTruthy();
     expect(leadAgent!.role).toBe(AGENT_ROLE);
-    expect(leadAgent!.adapterType).not.toBe("process");
+    expect(agentRunner(leadAgent!.adapterType)).toBe("paperclip");
+    expect(agentHarnessType(leadAgent!.adapterType, leadAgent!.adapterConfig)).toBe("claude_local");
+    expect(leadAgent!.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude" });
 
     // Onboarding deliberately writes no goal: the mission is collected later in
     // the app, so a fresh company must come out of the wizard with an empty
@@ -242,6 +292,16 @@ test.describe("Docker authenticated onboarding smoke", () => {
     expect(new URL(page.url()).pathname.endsWith(`/issues/${seededRef}`)).toBe(
       true
     );
+
+    // Exercise persistence through the real installed UI. The wizard selects
+    // the default once; reload must not replace the reviewed execution choice.
+    await page.reload();
+    const reloadedAgent = await getJson<{ adapterType: string; adapterConfig: Record<string, unknown> }>(
+      page,
+      `${baseUrl}/api/agents/${leadAgent!.id}`
+    );
+    expect(reloadedAgent.adapterType).toBe(leadAgent!.adapterType);
+    expect(reloadedAgent.adapterConfig).toEqual(leadAgent!.adapterConfig);
 
     // #13068 rebuilt the seeded first task as a chat with the lead: launch
     // posts a deterministic, server-owned greeting plus an opening question

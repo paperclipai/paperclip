@@ -30,6 +30,7 @@ import {
 import type { Readable, Writable } from "node:stream";
 
 import { resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
+import qualifiedRuntimeArtifacts from "./qualified-runtime-artifacts.json" with { type: "json" };
 import {
   VERIFIED_RUNTIME_EXECUTABLE_ENV,
   verifiedRuntimeExecutableHandoff,
@@ -46,69 +47,30 @@ const PROVIDER_GUARDIAN_HANDSHAKE_TIMEOUT_MS = 5_000;
 const VERIFIED_PROVIDER_RUNTIME_TARGET_ENV =
   "PAPERCLIP_ACPX_VERIFIED_PROVIDER_RUNTIME_TARGET";
 
-const QUALIFIED_CLAUDE_LINUX_X64_RUNTIME = Object.freeze({
-  runtimePackageName: "@anthropic-ai/claude-agent-sdk",
-  runtimePackageVersion: "0.3.286",
-  packageName: "@anthropic-ai/claude-agent-sdk-linux-x64",
-  packageVersion: "0.3.286",
-  dependencyDeclaration: "0.3.286",
-  relativeExecutable: "claude",
-  executableDigest:
-    "sha256:fe503f65c6289d59c23e5b21ae44f03583f997dd33a2cbfc75ab4f96fb8fc73f",
-  environmentVariable: "CLAUDE_CODE_EXECUTABLE",
-});
-
-const QUALIFIED_CLAUDE_DARWIN_RUNTIMES = {
-  arm64: Object.freeze({
-    ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
-    packageName: "@anthropic-ai/claude-agent-sdk-darwin-arm64",
-    executableDigest: "sha256:75e3016e9d2570767b08e43a7467d4817a4f149232c169ca295f2c95fef21433",
-  }),
-  x64: Object.freeze({
-    ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
-    packageName: "@anthropic-ai/claude-agent-sdk-darwin-x64",
-    executableDigest: "sha256:53e6a936e89519d695230f9cc97943991286b72766674fba11bee845f0a7c047",
-  }),
+type QualifiedClaudeRuntime = typeof qualifiedRuntimeArtifacts.claude.platforms["linux-x64"] & {
+  environmentVariable: "CLAUDE_CODE_EXECUTABLE";
 };
-
-const QUALIFIED_CODEX_LINUX_X64_RUNTIME = Object.freeze({
-  runtimePackageName: "@openai/codex",
-  runtimePackageVersion: "0.160.0",
-  packageName: "@openai/codex-linux-x64",
-  packageVersion: "0.160.0-linux-x64",
-  dependencyDeclaration: "npm:@openai/codex@0.160.0-linux-x64",
-  relativeExecutable: "vendor/x86_64-unknown-linux-musl/bin/codex",
-  executableDigest:
-    "sha256:12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
-  environmentVariable: "CODEX_PATH",
-});
+type QualifiedCodexRuntime = typeof qualifiedRuntimeArtifacts.codex.platforms["linux-x64"] & {
+  environmentVariable: "CODEX_PATH";
+};
+const QUALIFIED_CLAUDE_LINUX_X64_RUNTIME = Object.freeze(
+  qualifiedRuntimeArtifacts.claude.platforms["linux-x64"] as QualifiedClaudeRuntime,
+);
+const QUALIFIED_CLAUDE_DARWIN_RUNTIMES = {
+  arm64: Object.freeze(qualifiedRuntimeArtifacts.claude.platforms["darwin-arm64"] as QualifiedClaudeRuntime),
+  x64: Object.freeze(qualifiedRuntimeArtifacts.claude.platforms["darwin-x64"] as QualifiedClaudeRuntime),
+};
+const QUALIFIED_CODEX_LINUX_X64_RUNTIME = Object.freeze(
+  qualifiedRuntimeArtifacts.codex.platforms["linux-x64"] as QualifiedCodexRuntime,
+);
 
 // Claude's ACP server is not a self-contained bundle: its entrypoint imports
 // these three packages directly from pnpm's real store paths. Keep that exact
 // package graph version-bound and descriptor-pinned instead of granting the
 // provider ambient access to the workspace's complete node_modules ancestry.
-const QUALIFIED_CLAUDE_PROVIDER_DEPENDENCIES = Object.freeze([
-  Object.freeze({
-    packageName: "@agentclientprotocol/sdk",
-    packageVersion: "1.4.0",
-    dependencyDeclaration: "1.4.0",
-  }),
-  Object.freeze({
-    packageName: "@anthropic-ai/claude-agent-sdk",
-    packageVersion: "0.3.286",
-    // The package's own package.json still declares 0.3.257 — 0.3.286 is
-    // only what pnpm resolves, forced by the
-    // "claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk" override in
-    // the workspace root. This field binds the declared string, not the
-    // resolved one; packageVersion above binds the resolved install.
-    dependencyDeclaration: "0.3.257",
-  }),
-  Object.freeze({
-    packageName: "zod",
-    packageVersion: "4.4.3",
-    dependencyDeclaration: "^4.0.0",
-  }),
-]);
+// The SDK declaration remains 0.3.257 while the qualified override resolves
+// 0.3.286. Bind both strings; packaging reads this same data-only contract.
+const QUALIFIED_CLAUDE_PROVIDER_DEPENDENCIES = Object.freeze(qualifiedRuntimeArtifacts.claude.dependencies.map(dependency => Object.freeze(dependency)));
 
 const PROVIDER_LIFETIME_WATCHDOG_SOURCE = `
 const fs = require("node:fs");
@@ -2093,6 +2055,26 @@ export async function probeAcpxClaudeInstallation(model: string): Promise<void> 
   const installation = await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("claude", model));
   const lease = await installation.openCommand();
   await lease.close();
+}
+
+/** Resolve the already-installed, digest-verified CLI for isolated browser login. */
+export async function resolvePinnedClaudeCommand(
+  resolvePackageJson: AcpxPackageJsonResolver = defaultPackageJsonResolver,
+): Promise<string> {
+  const profile = resolveQualifiedAcpxProfile("claude", "default");
+  const serverManifest = resolvePackageJson(profile.agentServerPackage);
+  const runtimePackageJsonPath = await realpath(
+    resolvePackageJson(profile.agentRuntimePackage!, serverManifest),
+  );
+  const runtimePackage = await readPackageJson(runtimePackageJsonPath, profile.agentRuntimePackage!);
+  if (runtimePackage.version !== profile.agentRuntimeVersion) {
+    throw new Error("Claude browser login runtime does not match its qualified version");
+  }
+  const executable = await verifyQualifiedRuntimeExecutable({
+    profile, runtimePackage, runtimePackageJsonPath, resolvePackageJson,
+  });
+  if (!executable) throw new Error("Qualified Claude browser login runtime is unavailable");
+  return executable.path;
 }
 
 export async function probeAcpxGrokInstallation(model: string): Promise<void> {

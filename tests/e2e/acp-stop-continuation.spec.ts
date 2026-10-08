@@ -18,7 +18,7 @@ for (const { unfinishedWrite, stopResponse } of [{ unfinishedWrite: false, stopR
     try {
       await json(await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: false } }));
       const owner = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
-        name: "ACP Stop fixture", role: "engineer", adapterType: "claude_local",
+        name: "ACP Stop fixture", role: "engineer", adapterType: "claude_local", runner: "legacy",
         adapterConfig: { engine: "acp", cwd: root, stateDir: path.join(root, "state"),
           agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve("scripts/mcp-fixtures/servers/acp-stop-agent.mjs"))}`,
           env: { PAPERCLIP_STOP_FIXTURE_ROOT: root, PAPERCLIP_STOP_FIXTURE_FINISH_TASK: "1", ...(unfinishedWrite ? { PAPERCLIP_STOP_FIXTURE_TOOL: "write" } : {}) },

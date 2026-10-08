@@ -1,3 +1,4 @@
+import { agentHarnessType } from "@paperclipai/shared";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
@@ -61,7 +62,7 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
           </PropertyRow>
         )}
         <PropertyRow label="Adapter">
-          <span className="text-sm font-mono">{getAdapterLabel(agent.adapterType)}</span>
+          <span className="text-sm font-mono">{getAdapterLabel(agentHarnessType(agent.adapterType, agent.adapterConfig))}</span>
         </PropertyRow>
       </div>
 

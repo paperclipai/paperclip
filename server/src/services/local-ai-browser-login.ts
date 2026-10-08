@@ -4,11 +4,15 @@ import { constants } from "node:fs";
 import path from "node:path";
 import { runSetupTokenLogin } from "@paperclipai/adapter-claude-local/server";
 import { runDeviceLogin } from "@paperclipai/adapter-codex-local/server";
+import { ensureCommandResolvable, resolveCommandForLogs } from "@paperclipai/adapter-utils/server-utils";
+import { paperclipRunnerSupportsPlatform } from "@paperclipai/shared";
+import { resolvePinnedClaudeCommand, resolvePinnedCodexCommand } from "../vendor/paperclip-runner/index.js";
 
 export type LocalBrowserLoginState = {
   authorizationUrl?: string;
   code?: string;
   outcome?: "success" | "failure";
+  error?: string;
   submitCode?: (code: string) => void;
   abort: () => void;
 };
@@ -47,24 +51,46 @@ sys.exit(os.waitstatus_to_exitcode(status))
 export function startLocalBrowserLogin(provider: "anthropic" | "openai", home: string): LocalBrowserLoginState {
   const controller = new AbortController();
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };
-  const executable = provider === "anthropic" ? "claude" : "codex";
   const args = provider === "anthropic" ? ["setup-token"] : ["login", "--device-auth"];
   let child: ChildProcessWithoutNullStreams | null = null;
   const driver = {
-    start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
+    async start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
+      let executable: string;
+      // Linux ARM64 ships the legacy CLIs, but has no qualified native
+      // distribution. This is platform selection, never dependency fallback.
+      const command = provider === "anthropic" ? "claude" : "codex";
+      const label = provider === "anthropic" ? "Claude Code" : "Codex";
+      const legacyPlatform = process.platform === "linux" && process.arch === "arm64"
+        && !paperclipRunnerSupportsPlatform(provider === "anthropic" ? "claude_local" : "codex_local", process.platform, process.arch);
+      try {
+        if (legacyPlatform) {
+          await ensureCommandResolvable(command, home, process.env);
+          executable = path.resolve(home, await resolveCommandForLogs(command, home, process.env));
+        } else {
+          executable = provider === "anthropic" ? await resolvePinnedClaudeCommand() : resolvePinnedCodexCommand();
+        }
+      } catch {
+        state.error = legacyPlatform
+          ? `${label} browser sign-in requires the legacy ${label} CLI on this platform. Install ${label} on this execution host and ensure ${command} is on Paperclip's PATH, then start sign-in again.`
+          : `${label} browser sign-in requires the qualified runtime for this platform. Reinstall Paperclip's runtime dependencies, then start sign-in again.`;
+        throw new Error("Browser login runtime unavailable");
+      }
+      if (controller.signal.aborted) throw new Error("Local sign-in cancelled before launch");
       const env = { ...process.env,
         ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "", CLAUDE_CODE_OAUTH_TOKEN: "",
         OPENAI_API_KEY: "", CODEX_API_KEY: "",
-        CLAUDE_CONFIG_DIR: provider === "anthropic" ? home : process.env.CLAUDE_CONFIG_DIR,
-        CODEX_HOME: provider === "openai" ? home : process.env.CODEX_HOME,
+        HOME: home, CLAUDE_CONFIG_DIR: home, CODEX_HOME: home,
         BROWSER: "true",
       };
       return new Promise((resolve, reject) => {
-        child = spawn("python3", ["-u", "-c", PYTHON_PTY_BRIDGE, executable, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
+        child = spawn("python3", ["-u", "-c", PYTHON_PTY_BRIDGE, executable, ...args], { env, cwd: home, stdio: ["pipe", "pipe", "pipe"] });
         child.stdout.on("data", (bytes: Buffer) => onData(bytes.toString("utf8")));
         // Provider output may contain secrets. Never log or retain stderr.
         child.stderr.resume();
-        child.once("error", reject);
+        child.once("error", () => {
+          state.error = "Browser sign-in requires Python 3 and a working local terminal. Install Python 3 on this execution host, then start sign-in again.";
+          reject(new Error("Browser login terminal unavailable"));
+        });
         child.once("close", (exitCode) => resolve({ exitCode }));
       });
     },

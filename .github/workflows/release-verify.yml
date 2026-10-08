@@ -7,18 +7,32 @@ on:
         description: Commit SHA, branch, or tag to verify
         required: true
         type: string
+      runner_assets_only:
+        description: Build only the release daemon/provider-pack data, without repeating source tests
+        type: boolean
+        default: false
+      runner_image_digest:
+        description: Optional immutable public Core image supplying the actual Linux provider-pack identity
+        type: string
+        default: ""
+    outputs:
+      runner_assets_artifact:
+        description: Run-bound validated assembled release data
+        value: ${{ jobs.runner_release_assemble.outputs.artifact_name }}
 
 # Caller-provided refs may name unmerged PR code. AWS is eligible only when
 # the caller runs on canonical master and verifies that event's exact SHA.
 # The organization group also restricts these workflow files to master.
 jobs:
   runner_chaos_evals:
+    if: ${{ !inputs.runner_assets_only }}
     name: Pre-release Runner chaos evals
     uses: ./.github/workflows/runner-chaos-evals.yml
     with:
       ref: ${{ inputs.ref }}
 
   typecheck:
+    if: ${{ !inputs.runner_assets_only }}
     name: Typecheck
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -97,6 +111,7 @@ jobs:
         run: pnpm -r typecheck
 
   general_tests:
+    if: ${{ !inputs.runner_assets_only }}
     name: General tests (${{ matrix.group_label }})
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -204,6 +219,7 @@ jobs:
           fi
 
   serialized_tests:
+    if: ${{ !inputs.runner_assets_only }}
     name: Serialized tests (${{ matrix.shard_label }})
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -253,6 +269,7 @@ jobs:
         run: pnpm test:run:serialized -- --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
 
   runner_workflow_evals:
+    if: ${{ !inputs.runner_assets_only }}
     name: Runner workflow eval scorer contract
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 10
@@ -283,6 +300,7 @@ jobs:
         run: pnpm test:runner-workflow-evals
 
   verify_paperclip_runner:
+    if: ${{ !inputs.runner_assets_only }}
     name: Verify Paperclip Runner (${{ matrix.lane }})
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -396,6 +414,7 @@ jobs:
         run: pnpm --filter @paperclipai/paperclip-runner build:rust
 
   build:
+    if: ${{ !inputs.runner_assets_only }}
     name: Build
     runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -424,3 +443,191 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  # Only the missing release producers. Source verification stays with the
+  # caller; these unprivileged jobs neither publish nor receive provider secrets.
+  runner_release_binaries:
+    needs: runner_release_request
+    if: inputs.runner_assets_only
+    name: Release daemon (${{ matrix.target }})
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Build the exact native release daemon
+        working-directory: packages/paperclip-runner
+        env:
+          SOURCE_SHA: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          rustup show
+          cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd
+      - name: Record native architecture, checksum and executable metadata
+        env:
+          SOURCE_SHA: ${{ inputs.ref }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          node scripts/release-runner-artifacts.mjs record-binary "$SOURCE_SHA" "$TARGET" \
+            "$GITHUB_WORKSPACE/packages/paperclip-runner/runner/target/release/paperclip-runnerd" \
+            "$RUNNER_TEMP/runner-release/$TARGET"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-release-${{ inputs.ref }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
+          path: ${{ runner.temp }}/runner-release/
+          if-no-files-found: error
+          retention-days: 7
+
+  runner_release_pack:
+    needs: runner_release_request
+    if: inputs.runner_assets_only
+    name: Actual release image Linux daemon and provider-pack identity
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+      - name: Extract the actual exact-source image provider-pack
+        env:
+          SOURCE_SHA: ${{ inputs.ref }}
+          IMAGE_DIGEST: ${{ inputs.runner_image_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          mkdir -p "$RUNNER_TEMP/runner-release-input"
+          owner="paperclip-release-pack-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          trap 'docker rm -f "$owner" >/dev/null 2>&1 || true' EXIT
+          if [[ -n "$IMAGE_DIGEST" ]]; then
+            [[ "$IMAGE_DIGEST" =~ ^ghcr\.io/paperclipai/paperclip@sha256:[a-f0-9]{64}$ ]]
+            docker pull "$IMAGE_DIGEST"
+            image="$IMAGE_DIGEST"
+            pack_path=/opt/paperclip-runner/provider-pack/provider-pack.json
+          else
+            # The ordinary canary image publishes after npm; waiting for its
+            # mutable tag would create a cycle. Reuse the existing image target
+            # without publishing, and extract the manifest from its real bytes.
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            image="$owner"
+            docker buildx build --platform linux/amd64 --target runner-provider-pack \
+              --build-arg "PAPERCLIP_BUILD_COMMIT=$SOURCE_SHA" \
+              --label "org.opencontainers.image.revision=$SOURCE_SHA" \
+              --cache-from type=registry,ref=ghcr.io/paperclipai/paperclip:buildcache-amd64 \
+              --tag "$image" --load .
+            pack_path=/provider-pack/provider-pack.json
+          fi
+          docker image inspect "$image" > "$RUNNER_TEMP/runner-release-input/image.json"
+          daemon_path=/app/server/dist/vendor/paperclip-runner/bin/paperclip-runnerd
+          docker create --name "$owner" --network none --user 1000:1000 --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --entrypoint "$daemon_path" "$image" --build-metadata >/dev/null
+          docker cp "$owner:$pack_path" "$RUNNER_TEMP/runner-release-input/provider-pack.json"
+          docker cp "$owner:$daemon_path" "$RUNNER_TEMP/runner-release-input/paperclip-runnerd"
+          # Execute only inside the source image. Its libc may be newer than
+          # ubuntu-latest; host execution would not prove this image artifact.
+          timeout 30s docker start --attach "$owner" > "$RUNNER_TEMP/runner-release-input/daemon-metadata.json"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$owner")" = 0
+          node scripts/release-runner-artifacts.mjs record-image-binary "$SOURCE_SHA" \
+            "$RUNNER_TEMP/runner-release-input/paperclip-runnerd" "$RUNNER_TEMP/runner-release-input/daemon-metadata.json" \
+            "$RUNNER_TEMP/runner-release-input/image.json" "$RUNNER_TEMP/runner-release/linux-x64" "$IMAGE_DIGEST"
+          node scripts/release-runner-artifacts.mjs record-pack "$SOURCE_SHA" \
+            "$RUNNER_TEMP/runner-release-input/provider-pack.json" "$RUNNER_TEMP/runner-release-input/image.json" \
+            "$RUNNER_TEMP/runner-release/provider-pack" "$IMAGE_DIGEST"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-release-${{ inputs.ref }}-${{ github.run_id }}-${{ github.run_attempt }}-provider-pack
+          path: ${{ runner.temp }}/runner-release/
+          if-no-files-found: error
+          retention-days: 7
+
+  runner_release_assemble:
+    if: inputs.runner_assets_only
+    name: Assemble verified release runner data
+    needs: [runner_release_binaries, runner_release_pack]
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      artifact_name: ${{ steps.identity.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: runner-release-${{ inputs.ref }}-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/runner-release-inputs
+          merge-multiple: true
+      - name: Run the sole source-aware assembler and bound its data envelope
+        env:
+          SOURCE_SHA: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          node scripts/release-runner-artifacts.mjs assemble "$SOURCE_SHA" \
+            "$RUNNER_TEMP/runner-release-inputs" "$RUNNER_TEMP/runner-release-assembled"
+      - name: Record run-bound assembled artifact
+        id: identity
+        env:
+          SOURCE_SHA: ${{ inputs.ref }}
+        run: echo "artifact_name=runner-release-assembled-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.identity.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/runner-release-assembled/runner-release-assets.tar.gz
+            ${{ runner.temp }}/runner-release-assembled/runner-release-assets.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  runner_release_request:
+    if: inputs.runner_assets_only
+    name: Validate immutable runner producer inputs
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Reject mutable sources and images before any producer checkout
+        env:
+          SOURCE_SHA: ${{ inputs.ref }}
+          IMAGE_DIGEST: ${{ inputs.runner_image_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          if [[ -n "$IMAGE_DIGEST" ]]; then
+            [[ "$IMAGE_DIGEST" =~ ^ghcr\.io/paperclipai/paperclip@sha256:[a-f0-9]{64}$ ]]
+          fi

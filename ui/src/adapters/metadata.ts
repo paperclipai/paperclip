@@ -66,7 +66,7 @@ export function listAdapterOptions(
     value: adapter.type,
     label: getLabel(adapter.type),
     comingSoon: !!getAdapterDisplay(adapter.type).comingSoon,
-    hidden: isAdapterTypeHidden(adapter.type),
+    hidden: adapter.type === "paperclip_runner" || isAdapterTypeHidden(adapter.type),
     experimental: !!getAdapterDisplay(adapter.type).experimental,
   }));
 }

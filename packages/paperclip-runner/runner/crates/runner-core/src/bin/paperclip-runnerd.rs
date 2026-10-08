@@ -9,7 +9,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use paperclip_runner_core::durable::{
     capture_bootstrap_ticket, redact_diagnostic_text, run_durable_runner, AcpxLaunchProfile,
-    DurableRunnerConfig, OpenCodeLaunchProfile, QualifiedLaunchArtifact,
+    DurableRunnerConfig, OpenCodeLaunchProfile, QualifiedLaunchArtifact, PROTOCOL,
+    PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 use paperclip_runner_core::local_runner::{run_local_runner, LocalRunnerError, RunnerConfig};
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
@@ -123,9 +124,9 @@ fn build_metadata() -> serde_json::Value {
         "nativeExecutionVersion": 1,
         "harnessDriverVersion": 1,
         "prp": {
-            "name": "paperclip.runner",
-            "minimumVersion": 1,
-            "maximumVersion": 2
+            "name": PROTOCOL,
+            "minimumVersion": PROTOCOL_MIN_VERSION,
+            "maximumVersion": PROTOCOL_VERSION
         },
         "prpTransportModes": ["dial_ws_loopback", "dial_wss", "listen_ws"]
     })
@@ -445,6 +446,14 @@ mod tests {
         let metadata = build_metadata();
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
         assert_eq!(metadata["binaryContractVersion"], 2);
+        assert_eq!(
+            metadata["prp"],
+            json!({
+                "name": PROTOCOL,
+                "minimumVersion": PROTOCOL_MIN_VERSION,
+                "maximumVersion": PROTOCOL_VERSION,
+            })
+        );
         assert_eq!(
             metadata["durableSessionCapabilities"],
             json!(["unlimited_runtime", "connection_lease_renewal"])

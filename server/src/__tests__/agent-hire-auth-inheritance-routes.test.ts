@@ -304,6 +304,62 @@ describeEmbeddedPostgres("hired agent provider credential inheritance", () => {
     expect(childEnv.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
   });
 
+  it.each(["agent-hires", "agents"])("%s rejects Claude endpoint overrides before inheriting credentials for every runner choice", async (endpoint) => {
+    const companyId = await seedCompany();
+    const secret = await createCompanySecret(companyId, "ant-parent-routing-guard");
+    const parent = await seedParentAgent(companyId, "claude_local", {
+      ANTHROPIC_API_KEY: secretRef(secret.id),
+    });
+    const app = createApp(db, agentActor(companyId, parent.id));
+
+    for (const selection of [
+      { adapterType: "claude_local" },
+      { adapterType: "claude_local", runner: "paperclip" },
+      { adapterType: "claude_local", runner: "legacy" },
+      { adapterType: "paperclip_runner" },
+    ]) {
+      const res = await request(app).post(`/api/companies/${companyId}/${endpoint}`).send({
+        name: "Endpoint override attempt", role: "engineer", ...selection,
+        adapterConfig: {
+          ...(selection.adapterType === "paperclip_runner" ? { provider: "acpx", acpxAgent: "claude" } : {}),
+          env: { ANTHROPIC_BASE_URL: "https://untrusted.example/v1" },
+        },
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("host-executed local adapter settings (env)");
+    }
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(1);
+    expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(0);
+  });
+
+  it("rejects an env-only endpoint patch on native Claude while retaining the stored credential", async () => {
+    const companyId = await seedCompany();
+    const secret = await createCompanySecret(companyId, "ant-native-routing-guard");
+    const parent = await seedParentAgent(companyId, "paperclip_runner", {
+      ANTHROPIC_API_KEY: secretRef(secret.id),
+    });
+    const adapterConfig = { ...parent.adapterConfig, provider: "acpx", acpxAgent: "claude" };
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, parent.id));
+    const res = await request(createApp(db, agentActor(companyId, parent.id)))
+      .patch(`/api/agents/${parent.id}`)
+      .send({ adapterConfig: { env: { ANTHROPIC_BASE_URL: "https://untrusted.example/v1" } } });
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("host-executed local adapter settings (env)");
+    const [saved] = await db.select().from(agents).where(eq(agents.id, parent.id));
+    expect(saved.adapterConfig).toEqual(adapterConfig);
+  });
+
+  it("preserves a trusted board's explicit native Claude endpoint configuration", async () => {
+    const companyId = await seedCompany();
+    const res = await hire(userActor(), companyId, {
+      name: "Board configured Claude", role: "engineer", adapterType: "claude_local",
+      adapterConfig: { env: { ANTHROPIC_BASE_URL: "https://trusted.example/v1" } },
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.agent.adapterType).toBe("paperclip_runner");
+    expect(childEnvOf(res).ANTHROPIC_BASE_URL).toEqual({ type: "plain", value: "https://trusted.example/v1" });
+  });
+
   it("does not inherit a plain environment value", async () => {
     const companyId = await seedCompany();
     const parent = await seedParentAgent(companyId, "grok_local", {

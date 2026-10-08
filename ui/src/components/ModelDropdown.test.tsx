@@ -18,7 +18,11 @@ afterEach(() => {
 
 function renderOpenDropdown(
   models: AdapterModel[],
-  { groupByProvider = false, preserveOrder = false }: { groupByProvider?: boolean; preserveOrder?: boolean } = {},
+  { groupByProvider = false, preserveOrder = false, withDiscovery = false }: {
+    groupByProvider?: boolean;
+    preserveOrder?: boolean;
+    withDiscovery?: boolean;
+  } = {},
 ) {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -37,6 +41,8 @@ function renderOpenDropdown(
           required
           groupByProvider={groupByProvider}
           preserveOrder={preserveOrder}
+          onDetectModel={withDiscovery ? async () => null : undefined}
+          onRefreshModels={withDiscovery ? async () => {} : undefined}
         />
       </TooltipProvider>,
     );
@@ -55,6 +61,40 @@ const curated = [
 ];
 
 describe("ModelDropdown", () => {
+  it("names the model list and keeps search and discovery actions outside its options", () => {
+    renderOpenDropdown(curated, { withDiscovery: true });
+    const list = document.querySelector('[role="listbox"][aria-label="Models"]');
+    expect(list?.querySelectorAll('[role="option"]')).toHaveLength(curated.length);
+    expect(document.querySelectorAll('[role="option"]')).toHaveLength(curated.length);
+    expect(list?.querySelector('input, button:not([role="option"])')).toBeNull();
+    const discovery = [...document.querySelectorAll("button")].filter(button =>
+      /Detect from config|Refresh models/.test(button.textContent ?? ""));
+    expect(discovery).toHaveLength(2);
+    for (const button of discovery) {
+      expect(button.getAttribute("role")).toBeNull();
+      expect(list?.contains(button)).toBe(false);
+    }
+  });
+
+  it("offers custom model entry in the shared dropdown and focuses the required model field", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => root.render(<TooltipProvider>
+      <ModelDropdown models={curated} value="" onChange={() => {}}
+        open={false} onOpenChange={() => {}} allowDefault={false} required
+        groupByProvider={false} creatable presentation="select" />
+    </TooltipProvider>));
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Model"]')!.click());
+    expect(document.querySelector<HTMLButtonElement>('[data-value=""]')?.disabled).toBe(true);
+    await act(async () => document.querySelector<HTMLButtonElement>('[data-value="__paperclip_custom_model__"]')!.click());
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Model ID"]');
+    expect(input?.required).toBe(true);
+    expect(document.activeElement).toBe(input);
+    expect(document.querySelector('[role="listbox"]')).toBeNull();
+  });
+
   it("keeps a hand-ordered list in the adapter's order when preserveOrder is set", () => {
     renderOpenDropdown(curated, { preserveOrder: true });
 

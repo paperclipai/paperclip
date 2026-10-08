@@ -8,6 +8,7 @@ export async function testAgentSetup(input: {
   companyId: string;
   agentId?: string;
   adapterType: string;
+  runner?: import("@paperclipai/shared").AgentRunnerChoice;
   providerAdapter: string;
   adapterConfig: Record<string, unknown>;
   aiConnection?: import("@paperclipai/shared").AiRuntimeConnectionBinding;
@@ -15,6 +16,7 @@ export async function testAgentSetup(input: {
   environmentId: string | null;
 }): Promise<AdapterEnvironmentTestResult> {
   const payload = {
+    runner: input.runner,
     ...(input.agentId ? { agentId: input.agentId } : {}),
     ...(input.aiConnection ? { aiConnection: input.aiConnection } : {}),
     adapterConfig: input.adapterConfig,
@@ -33,7 +35,7 @@ export async function testAgentSetup(input: {
       (check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE,
     ) ||
     runtime.checks.some((check) => check.code.includes("hello_probe")) ||
-    !["claude_local", "codex_local", "grok_local"].includes(input.providerAdapter)
+    !["claude_local", "codex_local", "grok_local", "cursor"].includes(input.providerAdapter)
   )
     return runtime;
   const provider = await agentsApi.testEnvironment(
@@ -41,10 +43,11 @@ export async function testAgentSetup(input: {
     input.providerAdapter,
     {
       ...payload,
+      runner: "legacy",
       adapterConfig: {
         ...input.adapterConfig,
         engine: "cli",
-        ...(input.adapterType === "paperclip_runner" && input.providerAdapter === "grok_local"
+        ...(runtime.adapterType === "paperclip_runner" && input.providerAdapter === "grok_local"
           ? { command: "/opt/paperclip/providers/grok/1.0.13/grok" }
           : {}),
       },

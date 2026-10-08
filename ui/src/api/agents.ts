@@ -249,7 +249,7 @@ export const agentsApi = {
     companyId: string,
     type: string,
     data: {
-      adapterConfig: Record<string, unknown>;
+      runner?: import("@paperclipai/shared").AgentRunnerChoice; adapterConfig: Record<string, unknown>;
       aiConnection?: import("@paperclipai/shared").AiRuntimeConnectionBinding;
       agentId?: string;
       testCredentials?: Record<string, string>;

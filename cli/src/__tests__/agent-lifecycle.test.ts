@@ -37,6 +37,57 @@ describe("agent lifecycle commands", () => {
     vi.restoreAllMocks();
   });
 
+  describe.each(["create", "hire"])("agent %s runner selection", (command) => {
+    it.each(["auto", "paperclip", "legacy"])("sends the explicit --runner %s override", async (runner) => {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse());
+      vi.stubGlobal("fetch", fetchMock);
+      const adapterConfig = {
+        model: "gpt-5.6-sol",
+        env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "44444444-4444-4444-8444-444444444444", version: "latest" } },
+      };
+
+      await run([
+        "agent", command,
+        "--company-id", COMPANY_ID,
+        "--payload-json", JSON.stringify({ name: "Builder", role: "engineer", adapterType: "codex_local", adapterConfig, runner: "legacy" }),
+        "--runner", runner,
+      ]);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, request] = fetchMock.mock.calls[0]!;
+      expect(url).toBe(`http://localhost:3100/api/companies/${COMPANY_ID}/${command === "create" ? "agents" : "agent-hires"}`);
+      expect(JSON.parse(request.body)).toMatchObject({
+        name: "Builder", role: "engineer", adapterType: "codex_local", adapterConfig, runner,
+      });
+    });
+
+    it("leaves omitted runner selection to the server", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse());
+      vi.stubGlobal("fetch", fetchMock);
+
+      await run([
+        "agent", command, "--company-id", COMPANY_ID,
+        "--payload-json", JSON.stringify({ name: "Builder", adapterType: "codex_local" }),
+      ]);
+
+      const payload = JSON.parse(fetchMock.mock.calls[0]![1].body);
+      expect(payload).toMatchObject({ name: "Builder", adapterType: "codex_local" });
+      expect(payload).not.toHaveProperty("runner");
+    });
+
+    it("preserves an explicit runner in the JSON payload when the flag is omitted", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse());
+      vi.stubGlobal("fetch", fetchMock);
+
+      await run([
+        "agent", command, "--company-id", COMPANY_ID,
+        "--payload-json", JSON.stringify({ name: "Builder", adapterType: "codex_local", runner: "legacy" }),
+      ]);
+
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toMatchObject({ runner: "legacy" });
+    });
+  });
+
   it("wraps agent lifecycle and state endpoints", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
     vi.stubGlobal("fetch", fetchMock);

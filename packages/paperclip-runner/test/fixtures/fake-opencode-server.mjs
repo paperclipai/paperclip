@@ -2,6 +2,7 @@
 import { createServer } from "node:http";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 
 const args = process.argv.slice(2);
 // Exercise diagnostic redaction without copying a real environment credential
@@ -99,6 +100,12 @@ await writeFile(
     home: process.env.HOME,
     configHome: process.env.XDG_CONFIG_HOME,
     projectConfigDisabled: process.env.OPENCODE_DISABLE_PROJECT_CONFIG,
+    // Prove the exact child binding without retaining credential values.
+    credentialDigests: Object.fromEntries(
+      ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"]
+        .filter((key) => process.env[key] !== undefined)
+        .map((key) => [key, createHash("sha256").update(process.env[key]).digest("hex")]),
+    ),
   }),
 );
 
@@ -123,7 +130,12 @@ let promptTurnSeq = 0;
 // test can place the stale frame's arrival after several more turns have
 // sealed.
 let lateStragglerRemaining = 0;
+let observedModel = { providerID: "openrouter", modelID: "deepseek/deepseek-v4-flash-0731" };
+let includeObservedModel = !args.includes("--native-missing-model");
 function emit(value) {
+  if (includeObservedModel && value.type === "message.updated" && value.properties?.info?.role === "assistant") {
+    value = { ...value, properties: { ...value.properties, info: { ...observedModel, ...value.properties.info } } };
+  }
   const scoped =
     promptTurnSeq > 0 && typeof value.id === "string"
       ? { ...value, id: `${value.id}#${promptTurnSeq}` }
@@ -188,6 +200,9 @@ async function callFirstPaperclipTool() {
 
 async function callTerminalTool(promptBody) {
   const prompt = parsedPromptText(promptBody);
+  // A native setup hello is an ordinary tool-free conversation, rather than
+  // the prepared task/completion-tool flow exercised by the other cases.
+  if (prompt.message === "Respond only with hello. Do not use tools or inspect files.") return;
   const blocked = String(prompt.message ?? "").includes("block-result");
   const result = {
     schema: "paperclip.run_result.v1",
@@ -398,6 +413,8 @@ const server = createServer(async (request, response) => {
     request.on("data", (chunk) => chunks.push(chunk));
     request.on("end", async () => {
       const promptPayload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      includeObservedModel = !args.includes("--native-missing-model") && !String(promptPayload.parts?.[0]?.text ?? "").includes("native-model-missing");
+      observedModel = { providerID: promptPayload.providerID, modelID: args.includes("--native-model-mismatch") ? "different-model" : promptPayload.modelID };
       await appendFile(join(process.env.XDG_DATA_HOME, "fake-prompt-requests.ndjson"), JSON.stringify(promptPayload) + "\n");
       if (
         promptPayload.providerID !== "openrouter" ||

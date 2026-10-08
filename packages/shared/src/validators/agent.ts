@@ -7,7 +7,7 @@ import {
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
-import { agentAdapterTypeSchema } from "../adapter-type.js";
+import { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
@@ -84,7 +84,10 @@ export const agentRuntimeConfigSchema = z.object({
   }
 });
 
+export const agentRunnerChoiceSchema = z.enum(["auto", "paperclip", "legacy"]);
+
 export const createAgentSchema = z.object({
+  runner: agentRunnerChoiceSchema.optional(),
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
@@ -121,7 +124,8 @@ export const createAgentSchema = z.object({
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 
 export const builtInAgentProvisionSchema = z.object({
-  adapterType: agentAdapterTypeSchema.optional(),
+  runner: agentRunnerChoiceSchema.optional(),
+  adapterType: optionalAgentAdapterTypeSchema,
   adapterConfig: adapterConfigSchema.optional(),
   budgetMonthlyCents: z.number().int().nonnegative().optional(),
 }).strict();
@@ -257,6 +261,7 @@ export const resetAgentSessionSchema = z.object({
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
+  runner: agentRunnerChoiceSchema.optional(),
   aiConnection: aiConnectionBindingSchema.optional(),
   /** Saved agent whose redacted environment entries are restored for this probe. */
   agentId: z.string().guid().optional(),

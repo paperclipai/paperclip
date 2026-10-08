@@ -997,7 +997,7 @@ function sanitizeRuntimeEvent(event: AcpRuntimeEvent): Record<string, unknown> {
       tag: event.tag ?? null,
       used: safeNonNegativeNumber(event.used),
       size: safeNonNegativeNumber(event.size),
-      ...safeUsage(event.cost, event.breakdown),
+      ...safeUsage(event.cost, event.breakdown, record(event).costDelta),
     });
   }
   if (event.type === "tool_call") {
@@ -1110,12 +1110,17 @@ function sanitizeRuntimeStatus(value: unknown): Record<string, unknown> {
   );
 }
 
-function safeUsage(cost: unknown, breakdown: unknown): Record<string, unknown> {
+function safeUsage(cost: unknown, breakdown: unknown, costDelta?: unknown): Record<string, unknown> {
   const nativeCost = record(cost);
   const nativeBreakdown = record(
     qualifiedAcpxUsageBreakdown(initializedAgent, breakdown),
   );
+  const delta = record(costDelta);
+  const qualifiedDelta = (initializedAgent === "claude" || initializedAgent === "grok")
+    && delta.currency === "USD" && typeof delta.amount === "number"
+    && Number.isFinite(delta.amount) && delta.amount >= 0;
   return {
+    ...(qualifiedDelta ? { costDelta: { amount: delta.amount, currency: "USD" } } : {}),
     cost:
       cost === undefined || cost === null
         ? null

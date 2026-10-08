@@ -23,6 +23,21 @@ on:
         required: false
         default: release-smoke
         type: string
+      qualification_source_sha:
+        description: Optional exact source SHA for provider-free source-install qualification; requires image digest
+        required: false
+        default: ""
+        type: string
+      qualification_image_digest:
+        description: Optional public ghcr.io/paperclipai/paperclip@sha256 digest paired with qualification source
+        required: false
+        default: ""
+        type: string
+      service_only:
+        description: Run only the background-service smoke against the selected version or paired source
+        required: false
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       paperclip_version:
@@ -36,28 +51,115 @@ on:
         required: false
         default: release-smoke
         type: string
+      qualification_source_sha:
+        required: false
+        default: ""
+        type: string
+      qualification_image_digest:
+        required: false
+        default: ""
+        type: string
+      service_only:
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
 
 jobs:
+  runner_release_assets:
+    if: inputs.service_only != true && inputs.qualification_source_sha != '' && inputs.qualification_image_digest != ''
+    uses: ./.github/workflows/release-verify.yml
+    with:
+      ref: ${{ inputs.qualification_source_sha }}
+      runner_assets_only: true
+      runner_image_digest: ${{ inputs.qualification_image_digest }}
+
   # The Docker smoke below can never exercise the background-service leg of
   # onboarding: containers have no service manager, so v2026.824.0 shipped a
   # service install that crash-looped on a missing shim while every
-  # golden-path check stayed green. Run the same published artifact directly
-  # on the runner VM's systemd and require the installed service to end up
-  # serving.
+  # golden-path check stayed green. Use the published artifact normally, or
+  # the supported exact git installer for paired candidate qualification.
+  # Both paths must leave a real managed shim serving through systemd.
   smoke_service:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.qualification_source_sha != '' && 60 || 30 }}
 
     steps:
+      - name: Validate paired immutable qualification inputs
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+          IMAGE_DIGEST: ${{ inputs.qualification_image_digest }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SOURCE_SHA" && -z "$IMAGE_DIGEST" ]]; then exit 0; fi
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$IMAGE_DIGEST" =~ ^ghcr\.io/paperclipai/paperclip@sha256:[a-f0-9]{64}$ ]]
+
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.qualification_source_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Setup pnpm for the candidate CLI bootstrap
+        if: inputs.qualification_source_sha != ''
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 24
 
+      - name: Prepare the exact candidate CLI source bootstrap
+        if: inputs.qualification_source_sha != ''
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+          PAPERCLIP_TELEMETRY_DISABLED: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/service-source-qualification"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          printf '%s\n' "$SOURCE_SHA" > "$RUNNER_TEMP/service-source-qualification/source-sha.txt"
+          git show "$SOURCE_SHA:pnpm-lock.yaml" > "$RUNNER_TEMP/service-source-qualification/source-pnpm-lock.yaml"
+          cmp pnpm-lock.yaml "$RUNNER_TEMP/service-source-qualification/source-pnpm-lock.yaml"
+          sha256sum pnpm-lock.yaml > "$RUNNER_TEMP/service-source-qualification/source-lock.sha256"
+          # PR manifests precede the CI bot's master lockfile refresh. Resolve
+          # in this owned checkout before the same frozen build CI uses.
+          # These locks describe the CLI bootstrap, not the installer's separate checkout.
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile > "$RUNNER_TEMP/service-source-qualification/bootstrap-lock-resolution.log" 2>&1
+          cp pnpm-lock.yaml "$RUNNER_TEMP/service-source-qualification/build-pnpm-lock.yaml"
+          sha256sum pnpm-lock.yaml > "$RUNNER_TEMP/service-source-qualification/build-lock.sha256"
+          git diff -- pnpm-lock.yaml > "$RUNNER_TEMP/service-source-qualification/lock-resolution.patch"
+          pnpm install --frozen-lockfile > "$RUNNER_TEMP/service-source-qualification/bootstrap-install.log" 2>&1
+          sha256sum --check "$RUNNER_TEMP/service-source-qualification/build-lock.sha256" > "$RUNNER_TEMP/service-source-qualification/bootstrap-lock-preservation.log"
+          # The raw workspace CLI bundle externalizes transitive dependencies
+          # supplied by public package staging. Use the existing source entry
+          # only to invoke the real git installer; the installed service still
+          # runs its actual npm payload through the managed shim below.
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          import { resolve } from 'node:path';
+          const cliArgs = [
+            resolve(process.env.GITHUB_WORKSPACE, 'cli/node_modules/tsx/dist/cli.mjs'),
+            resolve(process.env.GITHUB_WORKSPACE, 'cli/src/index.ts'),
+          ];
+          writeFileSync(resolve(process.env.RUNNER_TEMP, 'service-source-qualification/bootstrap.mjs'), [
+            "import { spawnSync } from 'node:child_process';",
+            'const result = spawnSync(process.execPath, ' + JSON.stringify(cliArgs) + '.concat(process.argv.slice(2)), { stdio: "inherit" });',
+            'if (result.error) throw result.error;',
+            'process.exit(result.status ?? 1);',
+            '',
+          ].join('\n'), { mode: 0o600 });
+          NODE
+          node "$RUNNER_TEMP/service-source-qualification/bootstrap.mjs" --help \
+            > "$RUNNER_TEMP/service-source-qualification/bootstrap-load.log" 2>&1
+
       - name: Start a user systemd session
+        id: service_session
         # The hosted runner has no login session for the runner user, so
         # `systemctl --user` cannot reach a user manager until lingering
         # starts one. Export the session address for the steps below.
@@ -75,9 +177,16 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Onboard with the background service
+        id: service_onboard
         env:
           PAPERCLIPAI_VERSION: ${{ inputs.paperclip_version }}
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+          PAPERCLIPAI_CLI_PATH: ${{ runner.temp }}/service-source-qualification/bootstrap.mjs
           DATA_DIR: ${{ runner.temp }}/service-smoke-data
+          SERVICE_QUALIFICATION_RECEIPT: ${{ runner.temp }}/service-source-qualification/service.json
+          SERVICE_SMOKE_OWNERSHIP_FILE: ${{ runner.temp }}/service-smoke-owned
+          PAPERCLIP_TELEMETRY_DISABLED: "1"
+          PAPERCLIP_OPEN_ON_LISTEN: "false"
           SMOKE_CLEANUP: "false"
         run: ./scripts/service-onboard-smoke.sh
 
@@ -89,15 +198,35 @@ jobs:
             journalctl --user -u paperclipai.service --no-pager || true
           } > "$RUNNER_TEMP/paperclipai-service.log" 2>&1
 
+      - name: Remove the owned smoke service after diagnostics
+        if: always() && steps.service_session.outcome == 'success'
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$RUNNER_TEMP/service-smoke-owned" ]]; then exit 0; fi
+          if [[ "$(cat "$RUNNER_TEMP/service-smoke-owned")" != "paperclipai.service" ]]; then exit 1; fi
+          systemctl --user show-environment >/dev/null || exit 1
+          PAPERCLIP_HOME="$RUNNER_TEMP/service-smoke-data" "$HOME/.local/bin/paperclipai" service uninstall --instance default
+          ! systemctl --user is-active --quiet paperclipai.service || exit 1
+          ! systemctl --user cat paperclipai.service >/dev/null 2>&1 || exit 1
+          printf '%s\n' '{"ownedServiceAbsent":true,"providerCalls":0}' > "$RUNNER_TEMP/service-cleanup.json"
+
       - name: Upload service diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}-service
-          path: ${{ runner.temp }}/paperclipai-service.log
+          path: |
+            ${{ runner.temp }}/paperclipai-service.log
+            ${{ runner.temp }}/service-cleanup.json
+            ${{ runner.temp }}/service-source-qualification/
           retention-days: 14
 
   smoke:
+    needs: runner_release_assets
+    if: >-
+      !cancelled() && inputs.service_only != true &&
+      ((inputs.qualification_source_sha == '' && inputs.qualification_image_digest == '') ||
+       needs.runner_release_assets.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -108,9 +237,27 @@ jobs:
     env:
       SMOKE_CONTAINER_NAME: release-smoke-onboard
 
+    outputs:
+      packed_artifact: ${{ steps.pack_transfer.outputs.artifact-id != '' && steps.pack_identity.outputs.artifact_name || '' }}
+
     steps:
+      - name: Validate paired immutable qualification inputs
+        id: qualification_inputs
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+          IMAGE_DIGEST: ${{ inputs.qualification_image_digest }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SOURCE_SHA" && -z "$IMAGE_DIGEST" ]]; then exit 0; fi
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$IMAGE_DIGEST" =~ ^ghcr\.io/paperclipai/paperclip@sha256:[a-f0-9]{64}$ ]]
+
       - name: Checkout repository
         uses: actions/checkout@v7
+        id: qualification_checkout
+        with:
+          ref: ${{ inputs.qualification_source_sha || github.sha }}
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -124,7 +271,28 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
+        if: inputs.qualification_source_sha == ''
         run: pnpm install --no-frozen-lockfile
+
+      - name: Install exact candidate dependencies with lock evidence
+        if: inputs.qualification_source_sha != ''
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/source-qualification"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          printf '%s\n' "$SOURCE_SHA" > "$RUNNER_TEMP/source-qualification/source-sha.txt"
+          git show "$SOURCE_SHA:pnpm-lock.yaml" > "$RUNNER_TEMP/source-qualification/source-pnpm-lock.yaml"
+          cmp pnpm-lock.yaml "$RUNNER_TEMP/source-qualification/source-pnpm-lock.yaml"
+          sha256sum pnpm-lock.yaml > "$RUNNER_TEMP/source-qualification/source-lock.sha256"
+          # Keep the CI-owned committed lock and the resolved build graph distinct.
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile > "$RUNNER_TEMP/source-qualification/lock-resolution.log" 2>&1
+          cp pnpm-lock.yaml "$RUNNER_TEMP/source-qualification/build-pnpm-lock.yaml"
+          sha256sum pnpm-lock.yaml > "$RUNNER_TEMP/source-qualification/build-lock.sha256"
+          git diff -- pnpm-lock.yaml > "$RUNNER_TEMP/source-qualification/lock-resolution.patch"
+          pnpm install --frozen-lockfile > "$RUNNER_TEMP/source-qualification/install.log" 2>&1
+          sha256sum --check "$RUNNER_TEMP/source-qualification/build-lock.sha256" > "$RUNNER_TEMP/source-qualification/build-lock-preservation.log"
 
       - name: Verify runner Chrome
         # Release smoke also runs headless on GitHub's Ubuntu image, so use the
@@ -132,6 +300,7 @@ jobs:
         run: google-chrome --version
 
       - name: Launch Docker smoke harness
+        if: inputs.qualification_source_sha == '' && inputs.qualification_image_digest == ''
         run: |
           HOST_PORT="${{ inputs.host_port }}" \
           DATA_DIR="$RUNNER_TEMP/release-smoke-data" \
@@ -154,6 +323,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Run release smoke Playwright suite
+        if: inputs.qualification_source_sha == '' && inputs.qualification_image_digest == ''
         env:
           PAPERCLIP_RELEASE_SMOKE_BASE_URL: ${{ env.SMOKE_BASE_URL }}
           PAPERCLIP_RELEASE_SMOKE_EMAIL: ${{ env.SMOKE_ADMIN_EMAIL }}
@@ -161,8 +331,84 @@ jobs:
           PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
         run: pnpm run test:release-smoke
 
+      - name: Download the same assembled release data used by official npm publication
+        if: inputs.qualification_source_sha != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.runner_release_assets.outputs.runner_assets_artifact }}
+          path: ${{ runner.temp }}/runner-release-archive
+      - name: Validate and materialize the exact-source release data
+        if: inputs.qualification_source_sha != ''
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+        run: |
+          node scripts/release-runner-artifacts.mjs unpack "$SOURCE_SHA" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz.sha256" \
+            "$RUNNER_TEMP/runner-release-assets"
+          echo "PAPERCLIP_RELEASE_RUNNER_ASSETS=$RUNNER_TEMP/runner-release-assets" >> "$GITHUB_ENV"
+
+      - name: Qualify exact-source installed browser entry
+        if: inputs.qualification_source_sha != ''
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+          PAPERCLIP_PUBLIC_INSTALL_BROWSER_SMOKE: "1"
+          PAPERCLIP_PUBLIC_PACK_OUTPUT: ${{ runner.temp }}/runner-public-pack
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/source-qualification"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          sha256sum --check "$RUNNER_TEMP/source-qualification/build-lock.sha256" >> "$RUNNER_TEMP/source-qualification/build-lock-preservation.log"
+          pnpm build > "$RUNNER_TEMP/source-qualification/build.log" 2>&1
+          sha256sum --check "$RUNNER_TEMP/source-qualification/build-lock.sha256" >> "$RUNNER_TEMP/source-qualification/build-lock-preservation.log"
+          node scripts/verify-grok-npm-install.mjs > "$RUNNER_TEMP/source-qualification/public-install.log" 2>&1
+          sha256sum --check "$RUNNER_TEMP/source-qualification/build-lock.sha256" >> "$RUNNER_TEMP/source-qualification/build-lock-preservation.log"
+
+      - name: Record the exact Linux-produced npm closure for the macOS consumers
+        id: pack_identity
+        if: ${{ !cancelled() && inputs.qualification_source_sha != '' }}
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+        run: |
+          if [[ -f "$RUNNER_TEMP/runner-public-pack/pack-receipt.json" ]]; then
+            echo "artifact_name=runner-public-pack-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Transfer the same public package bytes to existing host install probes
+        id: pack_transfer
+        if: ${{ !cancelled() && steps.pack_identity.outputs.artifact_name != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.pack_identity.outputs.artifact_name }}
+          path: ${{ runner.temp }}/runner-public-pack/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Qualify immutable image default startup and UI bytes
+        if: ${{ !cancelled() && inputs.qualification_source_sha != '' && steps.qualification_inputs.outcome == 'success' && steps.qualification_checkout.outcome == 'success' }}
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+          IMAGE_DIGEST: ${{ inputs.qualification_image_digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/source-qualification"
+          node tests/release-smoke/installed-cli-probe.mjs --standard-image "$SOURCE_SHA" "$IMAGE_DIGEST" \
+            > "$RUNNER_TEMP/source-qualification/image.json" \
+            2> "$RUNNER_TEMP/source-qualification/image.log"
+
+      - name: Upload provider-free qualification evidence
+        if: always() && inputs.qualification_source_sha != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}-qualification
+          path: |
+            ${{ runner.temp }}/source-qualification/
+            tests/release-smoke/playwright-report/
+            tests/release-smoke/test-results/
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Capture Docker logs
-        if: always()
+        if: always() && inputs.qualification_source_sha == '' && inputs.qualification_image_digest == ''
         run: |
           log_file="${{ runner.temp }}/docker-onboard-smoke.log"
           # A live container has the fuller story, so prefer it. When the
@@ -180,7 +426,7 @@ jobs:
           echo "Captured $(wc -l <"$log_file") log lines to $log_file"
 
       - name: Upload diagnostics
-        if: always()
+        if: always() && inputs.qualification_source_sha == '' && inputs.qualification_image_digest == ''
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
@@ -196,5 +442,56 @@ jobs:
           retention-days: 14
 
       - name: Stop Docker smoke container
-        if: always()
+        if: always() && inputs.qualification_source_sha == '' && inputs.qualification_image_digest == ''
         run: docker rm -f "$SMOKE_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+  # Consume Linux-produced public packages on the two existing supported Mac
+  # targets. These are the installed-CLI fixture and its byte oracle, not new
+  # source builds, provider evals or a parallel grading suite.
+  smoke_macos:
+    needs: [runner_release_assets, smoke]
+    if: >-
+      !cancelled() && inputs.service_only != true && inputs.qualification_source_sha != '' &&
+      needs.runner_release_assets.result == 'success' && needs.smoke.outputs.packed_artifact != ''
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.qualification_source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.smoke.outputs.packed_artifact }}
+          path: ${{ runner.temp }}/runner-public-pack
+      - name: Check the same assembled npm graph in an isolated home and runtime PATH
+        env:
+          SOURCE_SHA: ${{ inputs.qualification_source_sha }}
+          PAPERCLIP_PUBLIC_PACK_REQUIRE_LOCK_PROVENANCE: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/macos-public-install"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          node scripts/verify-grok-npm-install.mjs --consume-pack "$RUNNER_TEMP/runner-public-pack" \
+            > "$RUNNER_TEMP/macos-public-install/installed.json" \
+            2> "$RUNNER_TEMP/macos-public-install/installed.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: ${{ inputs.artifact_name }}-macos-${{ matrix.target }}
+          path: ${{ runner.temp }}/macos-public-install/
+          if-no-files-found: error
+          retention-days: 14

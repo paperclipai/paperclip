@@ -1437,7 +1437,30 @@ test.describe("Exact failed chat run retry", () => {
           surface === "agent run"
             ? `/${seed.prefix}/agents/${seed.agentId}/runs/${failedRunId}`
             : `/${seed.prefix}/inbox/all`;
+        const canonicalAgentResponse = surface === "agent run"
+          ? page.waitForResponse((response) => {
+              const url = new URL(response.url());
+              return response.request().method() === "GET"
+                && url.pathname === "/api/agents/maya"
+                && url.searchParams.get("companyId") === seed.companyId;
+            })
+          : null;
         await page.goto(startPath);
+        if (canonicalAgentResponse) {
+          // UUID lookup canonicalization changes the agent query key and
+          // remounts the run. Exercise retry from the settled selected run,
+          // after the canonical lookup body has actually completed.
+          const response = await canonicalAgentResponse;
+          expect(response.ok()).toBe(true);
+          expect(await response.json()).toMatchObject({
+            id: seed.agentId,
+            companyId: seed.companyId,
+            urlKey: "maya",
+          });
+          await expect(page).toHaveURL(
+            `/${seed.prefix}/agents/maya/runs/${failedRunId}`,
+          );
+        }
         const retry = page
           .getByRole("button", { name: "Retry", exact: true })
           .filter({ visible: true });

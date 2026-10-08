@@ -83,7 +83,8 @@ test("release selection includes every chat runtime patch and the existing ACPX 
     join(tmpdir(), "paperclip-chat-release-contract-"),
   );
   t.after(() => rmSync(destination, { recursive: true, force: true }));
-  for (const [name, version] of [...required, ["acpx", "0.13.1"]]) {
+  const nativeBridges = [["@agentclientprotocol/codex-acp", "1.6.2"], ["@agentclientprotocol/claude-agent-acp", "0.73.0"]];
+  for (const [name, version] of [...required, ["acpx", "0.13.1"], ...nativeBridges]) {
     const directory = join(destination, "node_modules", name);
     mkdirSync(directory, { recursive: true });
     writeFileSync(
@@ -101,6 +102,7 @@ test("release selection includes every chat runtime patch and the existing ACPX 
     [
       ...required.map(([name, version]) => `${name}@${version}`),
       "acpx@0.13.1",
+      ...nativeBridges.map(([name, version]) => `${name}@${version}`),
     ].sort(),
   );
   writeFileSync(

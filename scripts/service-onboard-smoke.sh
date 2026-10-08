@@ -5,9 +5,9 @@ set -euo pipefail
 # working background service. The Docker onboard smoke can never cover this
 # leg: containers have no service manager, so a release whose service install
 # crash-loops on a missing shim (v2026.824.0) still passes every golden-path
-# check. This script runs the published npm artifact on a real systemd user
-# session and fails unless the installed service itself ends up serving
-# /api/health.
+# check. This script runs the published npm artifact, or the supported exact
+# git install for source qualification, on a real systemd user session and
+# fails unless the installed service itself ends up serving /api/health.
 #
 # Requirements: a Linux host with a user systemd session. In CI that means
 # `loginctl enable-linger` plus XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS
@@ -25,6 +25,13 @@ SHIM_PATH="${PAPERCLIP_SHIM_PATH:-$HOME/.local/bin/paperclipai}"
 # disables it so the diagnostics step can still inspect the unit.
 SMOKE_CLEANUP="${SMOKE_CLEANUP:-true}"
 SMOKE_FORCE="${SMOKE_FORCE:-false}"
+SOURCE_SHA="${SOURCE_SHA:-}"
+PAPERCLIPAI_CLI_PATH="${PAPERCLIPAI_CLI_PATH:-}"
+SOURCE_INSTALL_TIMEOUT_SECONDS="${SOURCE_INSTALL_TIMEOUT_SECONDS:-1800}"
+SERVICE_PROBE_PATH="${SERVICE_PROBE_PATH:-$(cd "$(dirname "$0")/.." && pwd)/tests/release-smoke/installed-cli-probe.mjs}"
+SERVICE_QUALIFICATION_RECEIPT="${SERVICE_QUALIFICATION_RECEIPT:-$DATA_DIR/service-qualification.json}"
+SERVICE_SMOKE_OWNERSHIP_FILE="${SERVICE_SMOKE_OWNERSHIP_FILE:-$DATA_DIR/service-smoke-owned}"
+owns_service=false
 
 fail() {
   echo "Service smoke failed: $*" >&2
@@ -39,14 +46,21 @@ diagnostics() {
 }
 
 cleanup() {
-  if [[ "$SMOKE_CLEANUP" == "true" ]]; then
+  if [[ "$SMOKE_CLEANUP" == "true" && "$owns_service" == "true" && -f "$SERVICE_SMOKE_OWNERSHIP_FILE" ]] \
+    && [[ "$(cat "$SERVICE_SMOKE_OWNERSHIP_FILE")" == "$SERVICE_NAME" ]]; then
     if [[ -x "$SHIM_PATH" ]]; then
-      "$SHIM_PATH" service uninstall >/dev/null 2>&1 || true
+      PAPERCLIP_HOME="$DATA_DIR" "$SHIM_PATH" service uninstall --instance default >/dev/null 2>&1 || true
     fi
     systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT INT TERM
+
+if [[ -n "$SOURCE_SHA" ]]; then
+  [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || fail "source qualification requires a full source SHA"
+  [[ "$PAPERCLIPAI_CLI_PATH" == /* && -f "$PAPERCLIPAI_CLI_PATH" ]] \
+    || fail "source qualification requires the candidate CLI bootstrap"
+fi
 
 command -v systemctl >/dev/null 2>&1 || fail "systemctl is not available on this host"
 systemctl --user show-environment >/dev/null 2>&1 \
@@ -64,10 +78,28 @@ if [[ "$SMOKE_FORCE" != "true" ]]; then
   fi
 fi
 
-echo "==> Onboarding paperclipai@$PAPERCLIPAI_VERSION with --install-service"
+mkdir -p "$DATA_DIR"
+if [[ -n "$SOURCE_SHA" ]]; then
+  echo "==> Installing paperclipai from exact git source $SOURCE_SHA"
+  # Use the public, supported installer to create the manifest, payload,
+  # current link and real shim. A tarball-only shim would skip this contract.
+  if ! PAPERCLIP_HOME="$DATA_DIR" PAPERCLIP_BUILD_COMMIT="$SOURCE_SHA" \
+    timeout "$SOURCE_INSTALL_TIMEOUT_SECONDS" node "$PAPERCLIPAI_CLI_PATH" \
+      install --repo paperclipai/paperclip --ref "$SOURCE_SHA" --yes; then
+    fail "exact git installation exited non-zero"
+  fi
+  [[ -x "$SHIM_PATH" ]] || fail "no executable shim at $SHIM_PATH after exact git installation"
+  onboard_command=("$SHIM_PATH")
+else
+  onboard_command=(npx --yes "paperclipai@${PAPERCLIPAI_VERSION}")
+fi
+
+echo "==> Onboarding with --install-service"
 echo "    Data dir: $DATA_DIR"
+owns_service=true
+printf '%s\n' "$SERVICE_NAME" > "$SERVICE_SMOKE_OWNERSHIP_FILE"
 if ! timeout "$ONBOARD_TIMEOUT_SECONDS" \
-  npx --yes "paperclipai@${PAPERCLIPAI_VERSION}" onboard --yes --install-service --data-dir "$DATA_DIR"; then
+  "${onboard_command[@]}" onboard --yes --install-service --data-dir "$DATA_DIR"; then
   diagnostics
   fail "onboard exited non-zero"
 fi
@@ -89,6 +121,16 @@ for ((i = 1; i <= SMOKE_READY_TIMEOUT_SECONDS; i += 1)); do
     if [[ "$state" != "active" ]]; then
       diagnostics
       fail "$HEALTH_URL answers but $SERVICE_NAME is '$state' - something other than the service is serving"
+    fi
+    if [[ -n "$SOURCE_SHA" ]]; then
+      service_pid="$(systemctl --user show "$SERVICE_NAME" --property=MainPID --value)"
+      if ! node "$SERVICE_PROBE_PATH" --inspect-service "$SOURCE_SHA" \
+        "$DATA_DIR/cli/install.json" "$SHIM_PATH" \
+        "$DATA_DIR/instances/default/runtime-info.json" "$service_pid" "${HEALTH_URL%/api/health}" \
+        > "$SERVICE_QUALIFICATION_RECEIPT"; then
+        diagnostics
+        fail "exact-source managed service qualification failed"
+      fi
     fi
     echo "==> Service smoke passed: $SERVICE_NAME is active and serving $HEALTH_URL"
     exit 0

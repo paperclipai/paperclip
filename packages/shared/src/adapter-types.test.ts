@@ -1,7 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_ROLE_LABELS, acceptInviteSchema, createAgentSchema, updateAgentSchema } from "./index.js";
+import { AGENT_ROLE_LABELS, acceptInviteSchema, builtInAgentProvisionSchema, createAgentSchema, updateAgentSchema } from "./index.js";
 
 describe("dynamic adapter type validation schemas", () => {
+  it("leaves an omitted built-in adapter choice for server-owned resolution", () => {
+    expect(builtInAgentProvisionSchema.parse({})).toEqual({});
+    expect(createAgentSchema.parse({ name: "Default Agent" }).adapterType).toBe("process");
+  });
+
+  it.each(["process", "codex_local", "claude_local", "paperclip_runner", "external_adapter"])(
+    "preserves an explicit built-in adapter choice: %s",
+    (adapterType) => {
+      expect(builtInAgentProvisionSchema.parse({ adapterType }).adapterType).toBe(adapterType);
+    },
+  );
+
+  it.each(["", "   ", null, 123])("rejects an invalid built-in adapter choice: %s", (adapterType) => {
+    expect(() => builtInAgentProvisionSchema.parse({ adapterType })).toThrow();
+  });
+
   it("accepts external adapter types in create/update agent schemas", () => {
     expect(
       createAgentSchema.parse({

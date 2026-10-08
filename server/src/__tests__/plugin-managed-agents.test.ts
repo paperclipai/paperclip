@@ -315,7 +315,21 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
     const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
 
     expect(created.status).toBe("created");
-    expect(created.agent?.adapterType).toBe("codex_local");
+    expect(created.agent?.adapterType).toBe("paperclip_runner");
+    expect(created.agent?.adapterConfig).toMatchObject({ provider: "codex" });
+  });
+
+  it("resolves a changed plugin harness before resetting a native agent", async () => {
+    const pluginManifest = manifest();
+    pluginManifest.agents![0] = { ...pluginManifest.agents![0]!, adapterType: "codex_local", adapterConfig: {} };
+    const { companyId, pluginId, services } = await seedCompanyAndPlugin({ manifest: pluginManifest });
+    const created = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
+    expect(created.agent?.adapterType).toBe("paperclip_runner");
+    pluginManifest.agents![0] = { ...pluginManifest.agents![0]!, adapterType: "process", adapterConfig: { command: "echo reset" } };
+    await db.update(plugins).set({ manifestJson: pluginManifest }).where(eq(plugins.id, pluginId));
+    const reset = await services.agents.managedReset({ companyId, agentKey: "wiki-maintainer" });
+    expect(reset.agentId).toBe(created.agentId);
+    expect(reset.agent).toMatchObject({ adapterType: "process", adapterConfig: { command: "echo reset" } });
   });
 
   it("materializes declared managed agent instructions with local folder paths", async () => {

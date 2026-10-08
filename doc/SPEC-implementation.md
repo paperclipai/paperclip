@@ -2109,6 +2109,10 @@ in standard, ask, and planning modes. Submission never changes task disposition
 or routes feedback externally. See [Agent commentary](agent-commentary.md) for
 authentication, replay, document-sized limits, inspection, and deletion semantics.
 
+### Harness and runner selection
+
+New agents select a harness and default to Paperclip Runner on qualified targets; unsupported combinations use the existing adapter. Existing agents preserve their saved execution choice. Advanced provides an explicit legacy override. See [the runner contract](agent-runners.md) for supported harnesses, request fields, compatibility and approval/import behavior.
+
 ## Company decision-model service
 
 Company Settings → General can configure one shared API-key connection for optional internal decisions. V1 supports OpenAI Decisions and Jev through OpenRouter. Companies start unconfigured; background sponsorship defaults on when configured, while an explicit off setting persists. Human and agent calls retain current responsible-user, connection audience, resource, and agent installation checks. Only explicitly registered internal background features can use company sponsorship.

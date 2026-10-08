@@ -45,6 +45,8 @@
   },
   "dependencies": {
     "ai": "7.0.130",
+    "@agentclientprotocol/claude-agent-acp": "0.73.0",
+    "@agentclientprotocol/codex-acp": "1.6.2",
     "@ai-sdk/openai": "4.0.86",
     "@openrouter/ai-sdk-provider": "3.1.0",
     "@aws-sdk/client-s3": "^3.1141.0",
@@ -96,6 +98,7 @@
     "nice-grpc": "2.1.17",
     "nice-grpc-common": "2.0.4",
     "open": "^11.0.4",
+    "opencode-ai": "1.18.34",
     "pino": "^10.0.0",
     "pino-http": "^11.0.0",
     "pino-pretty": "^13.1.3",
@@ -107,13 +110,16 @@
     "zod": "^4.4.3"
   },
   "bundleDependencies": [
+    "@agentclientprotocol/claude-agent-acp",
+    "@agentclientprotocol/codex-acp",
     "@chat-adapter/discord",
     "@chat-adapter/github",
     "@chat-adapter/slack",
     "@chat-adapter/teams",
     "@chat-adapter/telegram",
     "@discordjs/ws",
-    "acpx"
+    "acpx",
+    "opencode-ai"
   ],
   "devDependencies": {
     "@paperclipai/paperclip-runner": "workspace:*",

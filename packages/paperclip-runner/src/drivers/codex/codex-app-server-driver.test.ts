@@ -1463,6 +1463,17 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
+  it("preserves the selected model and effort when the advertised plan preset differs", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport], { requestedCollaborationMode: "plan", model: "selected-model", reasoningEffort: "low" }).openSession({ runId: "selected-plan", normalizedSessionId: "selected-plan", workingDirectory: TEST_WORKING_DIRECTORY });
+    await session.startTurn({ message: { role: "user", text: "Respond with hello." } });
+    expect(transport.calls.find(call => call.method === "turn/start")?.params).toMatchObject({
+      effort: "low", permissions: "paperclip-runner-workspace-read-only",
+      collaborationMode: { mode: "plan", settings: { model: "selected-model", reasoning_effort: "low" } },
+    });
+    await session.close({ reason: "probe test complete" });
+  });
+
   it("sends the selected reasoning effort with the Codex turn", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport], { model: "gpt-6-astra", reasoningEffort: "ultra" }).openSession({

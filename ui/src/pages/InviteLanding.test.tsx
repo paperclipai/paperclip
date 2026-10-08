@@ -1171,6 +1171,61 @@ describe("InviteLandingPage", () => {
     });
   });
 
+  it.each(["bootstrap_ceo", "company_join"])(
+    "waits for the %s invite before accepting a signed-in user",
+    async (inviteType) => {
+      let resolveInvite!: (invite: Record<string, unknown>) => void;
+      getInviteMock.mockImplementation(() => new Promise((resolve) => { resolveInvite = resolve; }));
+      getSessionMock.mockResolvedValue({
+        session: { id: "session-1", userId: "user-1" },
+        user: { id: "user-1", name: "Jane Example", email: "jane@example.com", image: null },
+      });
+      acceptInviteMock.mockResolvedValue({
+        id: "join-1", companyId: "company-1", requestType: "human", status: "pending_approval",
+      });
+      const root = createRoot(container);
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+            <QueryClientProvider client={queryClient}>
+              <Routes><Route path="/invite/:token" element={<InviteLandingPage />} /></Routes>
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+      expect(acceptInviteMock).not.toHaveBeenCalled();
+      expect(container.textContent).not.toContain("Invite not found");
+
+      await act(async () => {
+        resolveInvite({
+          id: "invite-1", companyId: "company-1", companyName: "Acme Robotics",
+          inviteType, allowedJoinTypes: "both", humanRole: "operator",
+          expiresAt: "2027-03-07T00:10:00.000Z",
+        });
+      });
+      await flushReact();
+      await flushReact();
+      await flushReact();
+      expect(container.textContent).not.toContain("Invite not found");
+      if (inviteType === "bootstrap_ceo") {
+        expect(acceptInviteMock).not.toHaveBeenCalled();
+        expect(container.textContent).toContain("Accept bootstrap invite");
+        const acceptButton = Array.from(container.querySelectorAll("button"))
+          .find(button => button.textContent === "Accept invite");
+        expect(acceptButton).toBeTruthy();
+        await act(async () => { acceptButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+        await flushReact();
+      }
+      expect(acceptInviteMock).toHaveBeenCalledTimes(1);
+      expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+      await act(async () => { root.unmount(); });
+      queryClient.clear();
+    },
+  );
+
   it("waits for the membership check before showing invite acceptance to signed-in users", async () => {
     let resolveCompanies: ((value: Array<{ id: string; name: string }>) => void) | null = null;
     acceptInviteMock.mockResolvedValue({

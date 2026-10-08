@@ -766,12 +766,21 @@ artifact.
 
 ### Billing interpretation
 
-Each result contains raw sanitized `usage`, normalized `billing`, and
-`runtimeUsage`:
+Results retain sanitized `usage`, normalized `billing`, and `runtimeUsage`.
+Connection journeys may intentionally omit raw usage; reporting preserves their
+validated billing projection, including incomplete setup-probe coverage. When
+usage is available, the report recomputes its measured summary:
 
 - LLM token and dollar values come from the persisted heartbeat-run usage. A
   multi-turn case aggregates every selected run and records how many runs
   supplied tokens and provider-reported cost.
+- Ready accounting receipts with a valid decimal `costUsdExact`, an estimated
+  cost status, and versioned `rate_card` provenance contribute a separate
+  `estimatedLlmCostUsd` subtotal and estimated-run coverage. They remain labeled
+  estimates and count once in observed-and-estimated totals; `reportedCostUsd`
+  remains provider-reported spend only. Fixture forecasts, malformed amounts,
+  explicit unpriced receipts, and incomplete/not-ready receipts never qualify
+  observed pricing. Missing coverage remains incomplete, never priced as zero.
 - Local execution records agent run time but is `not_metered` because there is
   no external environment provider charge to attribute.
 - Daytona records every public-API lease window and its pinned 4 vCPU, 4 GiB
@@ -1063,17 +1072,16 @@ model. Configured and provider-observed model identities are reported separately
 
 There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
 `runner-acpx-claude`, local only (52 cells). Native profiles complete the same
-production wizard using their legacy provider, then change only the agent's
-runtime configuration via the public API before its first task. The wizard does
-not currently offer native Runner. Persona, managed instructions, skills, seeded
-question, and task invocation are preserved. Explicit model choices are retained;
-an unset model resolves through the production runtime-switch defaults. The
-production switch removes the legacy Paperclip operational skill because Runner
-supplies its control-plane contract through its protocol; other assigned skills,
-including `/first-task`, are retained. Native runtime permissions come from the
-existing qualified profile. Evidence labels
-this setup `post-onboarding-runtime-switch`; it does not claim a native wizard
-path exists. Legacy setup is labeled `production-wizard`.
+production wizard without specifying a runner. The server must save the native
+runner and correct underlying harness at creation; the fixture never switches
+execution afterward. Legacy profiles choose **Legacy runner** in Advanced before
+connecting. Both paths retain the production persona, model, permissions,
+managed instructions, skills, seeded question, and task invocation. Evidence
+labels both paths `production-wizard` and records `runnerChoice` as `auto` or
+`legacy`. A wrong or unknown persisted harness fails instead of being repaired.
+Before the first provider task, the fixture sets company and agent budget hard
+stops to 500 cents through the public budget API. This bounds paid work without
+changing the saved harness, runner, model, permissions, or instructions.
 
 | First response / control | Complete journey |
 | --- | --- |
@@ -1371,12 +1379,12 @@ released on failure and normal isolated-instance cleanup removes the workspace.
 The usual provider billing and partial-attempt reporting apply. No production
 prompts, onboarding defaults, or provider permissions are changed.
 
-For pre-default native onboarding qualification, select all `first-task` cases
-with profiles `runner-codex,runner-acpx-claude` (26 cells). The existing public-API
-runtime switch occurs after the real wizard creates its first agent and before
-any provider work. It preserves the wizard's model, persona, skills, and task.
-This tests the native first-task process in advance of the UI/default rollout;
-it does not certify a native option in the wizard, which is not offered yet.
+For native onboarding qualification, select the existing `first-task` cases
+with profiles `runner-codex,runner-acpx-claude` (26 cells). Both profiles leave
+the production wizard's automatic runner choice untouched and assert its saved
+harness and native execution before provider work. The corresponding legacy
+profiles select **Legacy runner** in Advanced before connecting. No fixture
+changes execution after the wizard creates the first agent.
 
 Current proof and remaining decisions are recorded in
 [the 21 September qualification report](QUALIFICATION-2026-09-21.md). In particular,

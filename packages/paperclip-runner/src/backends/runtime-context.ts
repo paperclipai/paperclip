@@ -7,7 +7,19 @@ import {
   type NativeRuntimeContextSnapshot,
   type NativeSkillInput,
   composeNativeSystemInstructions,
+  REGISTERED_INSTRUCTION_TOOL_GUIDANCE,
 } from "../contracts/runtime-context.js";
+
+function grokUsesInstructionTools(input: NativeExecutionInput): boolean {
+  if (!("runtimeContext" in input) || input.provider.kind !== "acpx"
+    || input.provider.agent !== "grok") return false;
+  const copy = input.runtimeContext.instructions.workingCopy;
+  const cwd = input.workspace.cwd;
+  if (!copy || copy.kind === "agent_files" || typeof cwd !== "string"
+    || !isAbsolute(cwd) || !isAbsolute(copy.rootPath)) return false;
+  const fromWorkspace = relative(resolve(cwd), resolve(copy.rootPath, copy.entryPath));
+  return fromWorkspace === ".." || fromWorkspace.startsWith(`..${sep}`) || isAbsolute(fromWorkspace);
+}
 
 export function nativeSystemInstructions(input: NativeExecutionInput): string {
   if (!("runtimeContext" in input)) return CODEX_SKILLLESS_BASE_INSTRUCTIONS;
@@ -32,7 +44,9 @@ export function nativeSystemInstructions(input: NativeExecutionInput): string {
       "This provider has no mounted workspace. Use Paperclip semantic tools for task coordination and write_document for durable text deliverables. Read pinned skills with list_assigned_skills and read_assigned_skill. Assigned app tools run through the Paperclip MCP gateway with normal permissions and approvals. If workspace tools are advertised, use them for files and sandboxed commands, then register_deliverable for requested downloadable files. Use get_identity and list_people to discover the responsible person and assignees. Read the current catalog before concluding a capability is unavailable.",
       `Assigned skills: ${input.runtimeContext.skills.map(skill => skill.runtimeName).join(", ") || "none"}.`].join("\n\n");
   }
-  return composeNativeSystemInstructions(input.runtimeContext, entry);
+  return composeNativeSystemInstructions(input.runtimeContext, entry, {
+    workingCopyAccess: grokUsesInstructionTools(input) ? "semantic-tools" : "native",
+  });
 }
 
 export function nativeTaskConstraints(input: NativeExecutionInput): string[] {
@@ -112,7 +126,9 @@ export function nativeTaskConstraints(input: NativeExecutionInput): string[] {
   return [
     "Use only the assigned skills and provider-native tools.",
     ...(input.runtimeContext.instructions.workingCopy ? [
-      input.runtimeContext.instructions.workingCopy.kind === "agent_files"
+      grokUsesInstructionTools(input)
+        ? REGISTERED_INSTRUCTION_TOOL_GUIDANCE
+        : input.runtimeContext.instructions.workingCopy.kind === "agent_files"
         ? `For this turn, AGENT_HOME is ${input.runtimeContext.instructions.workingCopy.rootPath}. This replaces any prior turn's agent directory path. It contains your instructions and persistent personal files, separate from the task working directory. Changes save after the provider stops; check the save receipt.`
         : `For this turn, the editable agent instruction file is ${input.runtimeContext.instructions.workingCopy.rootPath}/${input.runtimeContext.instructions.workingCopy.entryPath}. This replaces any private working-copy path from a previous turn. Ordinary edits save after the provider stops and only with a durable revision receipt. Use the agent instruction tools for immediate saves. Shared instruction assets and repository instructions are not collected.`,
     ] : []),

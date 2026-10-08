@@ -250,3 +250,7 @@ and sticky headers help operators scan exports. Rendered and raw view icons
 remain next to download; raw view preserves the original source. The table
 shows up to 500 data rows and 100 columns, with a notice when the preview is
 limited. Download retains the complete file.
+
+### Harness and runner selection
+
+New agents select a harness and default to Paperclip Runner on qualified targets; unsupported combinations use the existing adapter. Existing agents preserve their saved execution choice. Advanced provides an explicit legacy override. See [the runner contract](agent-runners.md) for supported harnesses, request fields, compatibility and approval/import behavior.

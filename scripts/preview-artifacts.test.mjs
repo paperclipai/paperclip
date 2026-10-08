@@ -117,6 +117,76 @@ test("publishing submits both packages before waiting for either to propagate", 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("preview publication honors the existing release visibility settings beyond ten minutes", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "preview-publish-propagation-"));
+  let submitted = 0, elapsed = 0, waits = 0;
+  try {
+    for (const short of ["shared", "db"]) writeFileSync(path.join(dir, `${short}.tgz`), pack(manifest(`@paperclipai/${short}`)));
+    await publishPreview(dir, sha, {
+      env: { NPM_PUBLISH_VERIFY_ATTEMPTS: "180", NPM_PUBLISH_VERIFY_DELAY_SECONDS: "10" },
+      now: () => elapsed,
+      exec: () => submitted++,
+      fetchImpl: async (url) => {
+        const name = decodeURIComponent(new URL(url).pathname.split("/")[1]);
+        return submitted === 2 && (name === "@paperclipai/shared" || elapsed >= 15 * 60_000)
+          ? json({ ...manifest(name), dist: { integrity: "test-integrity", tarball: "https://registry.npmjs.org/package.tgz" } })
+          : json({}, 404);
+      },
+      sleep: async (ms) => { assert.equal(ms, 10000); elapsed += ms; waits++; },
+    });
+    assert.equal(submitted, 2);
+    assert.equal(waits, 90);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("visibility defaults cover delayed publication and explicit attempts remain bounded", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "preview-publish-budget-"));
+  try {
+    for (const short of ["shared", "db"]) writeFileSync(path.join(dir, `${short}.tgz`), pack(manifest(`@paperclipai/${short}`)));
+    for (const env of [{}, { NPM_PUBLISH_VERIFY_ATTEMPTS: "3", NPM_PUBLISH_VERIFY_DELAY_SECONDS: "2" }]) {
+      let submitted = 0, polls = 0, waits = 0, elapsed = 0;
+      await assert.rejects(publishPreview(dir, sha, {
+        env, now: () => elapsed,
+        exec: () => submitted++,
+        fetchImpl: async () => { if (submitted === 2) polls++; return json({}, 404); },
+        sleep: async (ms) => { assert.equal(ms, env.NPM_PUBLISH_VERIFY_DELAY_SECONDS ? 2000 : 10000); elapsed += ms; waits++; },
+      }), /Wait for these exact versions to become public before retrying; do not republish them/);
+      const attempts = env.NPM_PUBLISH_VERIFY_ATTEMPTS ? 3 : 180;
+      assert.equal(submitted, 2);
+      assert.equal(polls, 2 * attempts);
+      assert.equal(waits, attempts - 1);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("slow registry requests share the configured visibility deadline", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "preview-publish-deadline-"));
+  let submitted = 0, elapsed = 0, polls = 0;
+  try {
+    for (const short of ["shared", "db"]) writeFileSync(path.join(dir, `${short}.tgz`), pack(manifest(`@paperclipai/${short}`)));
+    await assert.rejects(publishPreview(dir, sha, {
+      env: { NPM_PUBLISH_VERIFY_ATTEMPTS: "3", NPM_PUBLISH_VERIFY_DELAY_SECONDS: "2" }, now: () => elapsed,
+      exec: () => submitted++,
+      fetchImpl: async (_url, options) => {
+        if (submitted === 2) { assert.ok(options.signal instanceof AbortSignal); polls++; elapsed = 6000; }
+        return json({}, 404);
+      },
+      sleep: async () => assert.fail("The elapsed deadline must not start another delay"),
+    }), /not yet visible/);
+    assert.equal(polls, 2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("invalid or excessive visibility settings fail before any publication", async () => {
+  for (const env of [
+    { NPM_PUBLISH_VERIFY_ATTEMPTS: "0" }, { NPM_PUBLISH_VERIFY_ATTEMPTS: "181" }, { NPM_PUBLISH_VERIFY_ATTEMPTS: "Infinity" },
+    { NPM_PUBLISH_VERIFY_DELAY_SECONDS: "-1" }, { NPM_PUBLISH_VERIFY_DELAY_SECONDS: "0.5" }, { NPM_PUBLISH_VERIFY_DELAY_SECONDS: "61" },
+    { NPM_PUBLISH_VERIFY_ATTEMPTS: "180", NPM_PUBLISH_VERIFY_DELAY_SECONDS: "60" },
+  ]) await assert.rejects(publishPreview("unused", sha, {
+    env, exec: () => assert.fail("Invalid settings must not publish"), fetchImpl: async () => assert.fail("Invalid settings must not query the registry"),
+  }), /positive integer|must not exceed 30 minutes/);
+});
+
 test("a visibility timeout identifies the missing package after both were submitted", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "preview-publish-timeout-"));
   const submitted = [];
@@ -172,6 +242,9 @@ test("manual migrator and branch preview retain their npm publisher and concurre
   const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.match(release, /\(inputs.channel == 'preview' \|\| inputs.channel == 'cloud-migrator'\) && format\('\{0\}-\{1\}', inputs.channel, inputs.source_ref\)/);
   const publisher = release.split("  publish_preview:")[1].split("  image_preview:")[0];
+  const publisherTimeoutMinutes = Number(publisher.match(/timeout-minutes: (\d+)/)?.[1]);
+  assert.ok(publisherTimeoutMinutes >= 45, "Allow the 30-minute visibility deadline plus setup and publication overhead");
+  assert.ok(publisherTimeoutMinutes <= 60, "Keep preview publication bounded to at most one hour");
   assert.match(publisher, /group: preview-package-publish-\$\{\{ inputs.source_ref \}\}/);
   assert.match(publisher, /cancel-in-progress: false/);
   assert.match(release, /PLAN_COMMAND: \$\{\{ inputs.channel == 'cloud-migrator' && 'plan-migrator' \|\| 'plan' \}\}/);

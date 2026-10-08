@@ -311,15 +311,9 @@ test.describe("Onboarding wizard", () => {
     // mid-login must see the same login still running, not the tile row
     // again and not a second session started behind their back.
     //
-    // A bare `/onboarding` reload is not the right way to exercise this: that
-    // route always forces its own fixed entry step (see
-    // `resolveRouteOnboardingOptions` — a bare `/onboarding` hit is a request
-    // to start a new company, by design, and always wins over a saved draft's
-    // step). A returning visit to an existing company's own onboarding path
-    // (`/{prefix}/onboarding`) is the real "reopen onboarding" entry point, so
-    // this test reloads through that path instead, landing on the agent step
-    // with the draft's agent name already restored, then advances once to the
-    // connect step — where the resumed login must already be running.
+    // An authorized draft resumes its current step on reload. Cover reopening
+    // the company's own onboarding path and a real reload there: neither may
+    // reset the customer to the agent-name step or start another login.
     const pageErrors: string[] = [];
     page.on("pageerror", (err) => pageErrors.push(err.message));
 
@@ -478,7 +472,7 @@ test.describe("Onboarding wizard", () => {
     await page.locator("#onboarding-agent-name").fill("Ada");
     await page.getByRole("button", { name: "Next" }).click();
 
-    const source = page.getByRole("radio").first();
+    const source = page.getByRole("radio", { name: "Claude Subscription", exact: true });
     await source.waitFor({ timeout: 30_000 });
 
     // Answering the row is what starts the sign-in now — there is no separate
@@ -490,33 +484,46 @@ test.describe("Onboarding wizard", () => {
 
     await expect(cardInstruction).toBeVisible({ timeout: 30_000 });
     await expect(authorizationLink).toBeVisible({ timeout: 15_000 });
-    await expect(authorizationLink).toHaveAttribute("href", /claude\.ai\/oauth\/authorize/);
+    await expect(authorizationLink).toHaveAttribute("href", AUTHORIZATION_URL);
     expect(startCalls).toBe(1);
 
     const companiesRes = await page.request.get("/api/companies");
     expect(companiesRes.ok()).toBe(true);
     const companies = await companiesRes.json();
-    const company = companies.find(
+    const matchingCompanies = companies.filter(
       (c: { name: string }) => c.name === `${COMPANY_NAME}-reload`,
     );
-    expect(company, "the created company should exist").toBeTruthy();
+    expect(matchingCompanies, "naming must create exactly one company").toHaveLength(1);
+    const company = matchingCompanies[0];
 
     // Reload through the company's own onboarding path — the real "reopen
     // onboarding" entry point for a company that already exists.
     await page.goto(`/${company.issuePrefix}/onboarding`);
 
-    // This entry point always re-enters on the agent step, with the agent
-    // name restored from the draft. One more press reaches the connect step.
-    await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
-    await expect(page.locator("#onboarding-agent-name")).toHaveValue("Ada");
-    await page.getByRole("button", { name: "Next" }).click();
-
     // The resumed login shows with no new source pick and no fresh sign-in
     // press: the panel and the step both discover it from the caller's active
     // session.
-    await expect(cardInstruction).toBeVisible({ timeout: 15_000 });
-    await expect(authorizationLink).toBeVisible({ timeout: 15_000 });
-    expect(startCalls, "the reload must resume the session, not start a new one").toBe(1);
+    const expectResumedLogin = async () => {
+      await expect(page.getByRole("heading", { name: "Connect a model", exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText("Ada", { exact: true })).toBeVisible();
+      await expect(source).toBeChecked();
+      await expect(cardInstruction).toBeVisible({ timeout: 15_000 });
+      await expect(authorizationLink).toBeVisible({ timeout: 15_000 });
+      await expect(authorizationLink).toHaveAttribute("href", AUTHORIZATION_URL);
+      expect(startCalls, "the reload must resume the session, not start a new one").toBe(1);
+      await expect(page.locator("#onboarding-agent-name")).toHaveCount(0);
+    };
+    await expectResumedLogin();
+    await page.reload();
+    await expectResumedLogin();
+
+    const reloadedCompaniesRes = await page.request.get("/api/companies");
+    expect(reloadedCompaniesRes.ok()).toBe(true);
+    const reloadedCompanies = await reloadedCompaniesRes.json();
+    expect(reloadedCompanies.filter((c: { name: string }) => c.name === `${COMPANY_NAME}-reload`)).toHaveLength(1);
+    const agentsRes = await page.request.get(`/api/companies/${company.id}/agents`);
+    expect(agentsRes.ok()).toBe(true);
+    expect(await agentsRes.json(), "resuming a login must not hire an agent").toEqual([]);
 
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });

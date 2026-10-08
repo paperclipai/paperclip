@@ -24,7 +24,9 @@ test("built chat initializes after service worker takeover and reload with a slo
     try {
       await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
       await page.goto(f.route);
-      await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+      // This is a bounded initialization check under deliberate CPU throttling,
+      // not the suite's normal five-second interaction latency assertion.
+      await expect(page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: 15_000 });
       // The failed CI traces stopped before React evaluated, while a service
       // worker forwarded the Vite module graph. Keep this test on shipped assets
       // and cover both first takeover and subsequent controlled navigations.
@@ -36,7 +38,7 @@ test("built chat initializes after service worker takeover and reload with a slo
       await page.evaluate(async () => { await navigator.serviceWorker.ready; });
       for (let reload = 0; reload < 3; reload += 1) {
         await page.reload();
-        await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+        await expect(page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: 15_000 });
         expect(await page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
       }
       expect(await json(await request.get(f.chatPath))).toBeNull();

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { APIRequestContext } from "@playwright/test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -166,6 +167,33 @@ describe("target and selected credential boundaries", () => {
       await expect(verifyConnectionTarget("https://staging.example.test", config)).resolves.toMatchObject({ commit: "a".repeat(40) });
     } finally { fetch.mockRestore(); }
   });
+  it("checks the actual Core health through the QA tenant session without following redirects", async () => {
+    const config = parseConnectionConfig({ target: { mode: "attach", baseURL: "https://staging.example.test", expectedCommit: "a".repeat(40), deploymentMode: "authenticated" } });
+    const get = vi.fn(async () => ({ status: () => 200, ok: () => true, json: async () => ({ commit: "a".repeat(40), deploymentMode: "authenticated" }) }));
+    const request = { get } as unknown as Pick<APIRequestContext, "get">;
+    const unauthenticated = vi.spyOn(globalThis, "fetch");
+    try {
+      await expect(verifyConnectionTarget("https://staging.example.test", config, request)).resolves.toEqual({ commit: "a".repeat(40), deploymentMode: "authenticated" });
+      expect(get).toHaveBeenCalledWith("https://staging.example.test/api/health", { maxRedirects: 0, timeout: 15_000 });
+      expect(unauthenticated).not.toHaveBeenCalled();
+      get.mockResolvedValue({ status: () => 200, ok: () => true, json: async () => ({ commit: "b".repeat(40), deploymentMode: "authenticated" }) });
+      await expect(verifyConnectionTarget("https://staging.example.test", config, request)).rejects.toThrow("target_identity_mismatch");
+    } finally { unauthenticated.mockRestore(); }
+  });
+  it.each([401, 403])("requires board login for authenticated health HTTP %s instead of inspecting another endpoint", async status => {
+    const config = parseConnectionConfig({ target: { mode: "attach", baseURL: "https://staging.example.test", expectedCommit: "a".repeat(40), deploymentMode: "authenticated" } });
+    const json = vi.fn();
+    const get = vi.fn(async () => ({ status: () => status, ok: () => false, json }));
+    await expect(verifyConnectionTarget("https://staging.example.test", config, { get } as unknown as Pick<APIRequestContext, "get">)).rejects.toThrow("board_login_required");
+    expect(get).toHaveBeenCalledOnce();
+    expect(json).not.toHaveBeenCalled();
+  });
+  it.each([302, 503])("rejects authenticated health HTTP %s without treating an interstitial as Core readiness", async status => {
+    const config = parseConnectionConfig({ target: { mode: "attach", baseURL: "https://staging.example.test", expectedCommit: "a".repeat(40), deploymentMode: "authenticated" } });
+    const get = vi.fn(async () => ({ status: () => status, ok: () => false }));
+    await expect(verifyConnectionTarget("https://staging.example.test", config, { get } as unknown as Pick<APIRequestContext, "get">)).rejects.toThrow("target_health_unavailable_or_redirected");
+    expect(get).toHaveBeenCalledOnce();
+  });
   it("reads literal selected keys without sourcing shell commands or returning unrelated secrets", async () => {
     expect(selectedSecret("UNRELATED=do-not-read\nexport OPENAI_API_KEY='chosen-value'\n", "OPENAI_API_KEY")).toBe("chosen-value");
     expect(selectedSecret("OPENAI_API_KEY=one\nOPENAI_API_KEY=two", "OPENAI_API_KEY")).toBe("two");
@@ -237,6 +265,42 @@ describe("independent qualification", () => {
     expect(checks).toEqual([{ code: "hermes_cli_not_found", level: "error" }]);
     expect(JSON.stringify(checks)).not.toContain(sentinel);
   });
+  it.each(["codex", "claude", "opencode", "grok", "cursor"])("retains only closed %s native setup-failure details", (provider) => {
+    const checks = connectionProbeChecks({ adapterType: "paperclip_runner", status: "fail", checks: [{
+      code: `${provider}_hello_probe_failed`, level: "error", message: "HTTP 404: the configured model was not found.",
+      hint: "Check your model access.", detail: "Raw stderr and reasoning must not be retained.",
+    }] });
+    expect(checks).toEqual([{ code: `${provider}_hello_probe_failed`, level: "error", diagnostic: { boundary: "hello_probe", category: "model_unavailable", httpStatus: 404, inputTruncated: false } }]);
+    for (const override of [{ adapterType: "opencode_local" }, { status: "pass" }]) {
+      expect(connectionProbeChecks({ adapterType: "paperclip_runner", status: "fail", ...override, checks: [{ code: `${provider}_hello_probe_failed`, level: "error", message: "HTTP 404: the model was not found." }] }))
+        .toEqual([{ code: `${provider}_hello_probe_failed`, level: "error" }]);
+    }
+  });
+  it.each([
+    ["opencode_hello_probe_auth_required", "No further text.", { category: "authentication_required" }],
+    ["opencode_hello_probe_failed", "HTTP 401: unauthorized.", { category: "authentication_required", httpStatus: 401 }],
+    ["paperclip_runner_runtime_unavailable", "Cannot find package acpx.", { category: "missing_dependency", dependency: "acpx" }],
+    ["opencode_hello_probe_timeout", "No further text.", { category: "timeout" }],
+    ["opencode_hello_probe_failed", "JSON-RPC protocol error: method not found (-32601).", { category: "native_protocol" }],
+    ["opencode_hello_probe_failed", "HTTP 503: service overloaded.", { category: "provider_unavailable", httpStatus: 503 }],
+    ["opencode_hello_probe_failed", "Unknown provider failure.", { category: "unclassified" }],
+  ])("projects the native failure boundary for %s / %s", (code, message, expected) => {
+    const checks = connectionProbeChecks({ adapterType: "paperclip_runner", status: "fail", checks: [{ code, level: "error", message }] });
+    expect(checks[0]?.diagnostic).toEqual({ boundary: code === "paperclip_runner_runtime_unavailable" ? "runtime_preparation" : "hello_probe", inputTruncated: false, ...expected });
+  });
+  it("never retains secrets, headers, config, commands or reasoning and bounds native diagnostic input", () => {
+    const sentinel = "SENTINEL_CREDENTIAL_DO_NOT_RETAIN";
+    const message = `HTTP 401: unauthorized. Authorization: Bearer ${sentinel}\n` + JSON.stringify({ env: { API_KEY: sentinel }, headers: { cookie: sentinel }, config: { token: sentinel }, reasoning: sentinel, command: `opencode --token ${sentinel}` });
+    const checks = connectionProbeChecks({ adapterType: "paperclip_runner", status: "fail", checks: [{ code: "opencode_hello_probe_failed", level: "error", message, hint: sentinel, detail: sentinel, headers: { authorization: sentinel }, env: { API_KEY: sentinel } }] });
+    expect(checks).toEqual([{ code: "opencode_hello_probe_failed", level: "error", diagnostic: { boundary: "hello_probe", category: "authentication_required", httpStatus: 401, inputTruncated: false } }]);
+    expect(JSON.stringify(checks)).not.toContain(sentinel);
+    const long = connectionProbeChecks({ adapterType: "paperclip_runner", status: "fail", checks: [{ code: "opencode_hello_probe_failed", level: "error", message: "x".repeat(2_000) + " HTTP 401 unauthorized " + sentinel }] });
+    expect(long[0]?.diagnostic).toEqual({ boundary: "hello_probe", category: "unclassified", inputTruncated: true });
+    expect(JSON.stringify(long).length).toBeLessThan(250);
+    expect(connectionProbeChecks({ adapterType: "paperclip_runner", status: "fail", checks: Array.from({ length: 100 }, () => ({ code: "opencode_hello_probe_failed", level: "error", message })) })).toHaveLength(50);
+    expect(connectionProbeChecks({ adapterType: "paperclip_runner", status: "fail", checks: [{ code: "unknown_error", level: "error", message }, { code: "opencode_hello_probe_failed", level: "warn", message }] }))
+      .toEqual([{ code: "unknown_error", level: "error" }, { code: "opencode_hello_probe_failed", level: "warn" }]);
+  });
   it("rejects plausible prose, wrong bytes and wrong run attribution", () => {
     const proof = createConnectionProof();
     expect(verifyConnectionArtifact(Buffer.from(JSON.stringify(proof.expected)), proof.expected)).toBe(true);
@@ -271,6 +335,13 @@ describe("independent qualification", () => {
     const result: RunnerE2EResult = { schema: "paperclip.runner-e2e.result/v2", executionId: execution.id, suiteId: execution.suite.id, suiteDefinitionHash: execution.suiteDefinitionHash,
       attempt: 1, status: "failed", failureClass: "permanent_infrastructure", error: "provider_login_deadline_reached", profileId: execution.profile.id, environmentId: "local", caseId: execution.task.id, provider: "codex", model: "model", runtimeMode: "native",
       startedAt: "2026-10-03T00:00:00Z", finishedAt: "2026-10-03T00:01:00Z", durationMs: 60_000, cleanup: "passed", providerConnection: { ...passingEvidence(), outcome: "awaiting_user", checkpoints: { target: true } } };
+    const diagnostic = { boundary: "hello_probe", category: "model_unavailable", httpStatus: 404, inputTruncated: false };
+    const withDiagnostic = (value: unknown) => ({ ...result, providerConnection: { ...result.providerConnection, setupChecks: [{ code: "opencode_hello_probe_failed", level: "error", diagnostic: value }] } });
+    expect(() => validateRetainedRunnerResult(JSON.parse(JSON.stringify(withDiagnostic(diagnostic))))).not.toThrow();
+    for (const invalid of [{ ...diagnostic, category: "raw provider error" }, { ...diagnostic, httpStatus: 999 }, { ...diagnostic, dependency: "secret-binary-path" }, { ...diagnostic, message: "credential or reasoning" }]) {
+      expect(() => validateRetainedRunnerResult(withDiagnostic(invalid))).toThrow(/setupChecks/);
+    }
+    expect(() => validateRetainedRunnerResult({ ...result, providerConnection: { ...result.providerConnection, setupChecks: [{ code: "opencode_hello_probe_failed", level: "error", message: "credential or reasoning" }] } })).toThrow(/setupChecks/);
     const campaign = buildRunnerCampaign({ campaignId: "test", generatedAt: result.finishedAt, expected: [execution.id], results: [result] });
     expect(() => validateRetainedRunnerResult({ ...result, status: "passed" })).toThrow(/providerConnection/);
     expect(() => validateRetainedRunnerResult({ ...result, status: "passed", providerConnection: undefined })).toThrow(/providerConnection/);

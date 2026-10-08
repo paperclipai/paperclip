@@ -36,6 +36,7 @@ export interface CampaignBillingSummary {
   leaseDurationMs: number;
   llm: RunnerE2EBillingSummary["llm"];
   reportedLlmCostUsd: number;
+  estimatedLlmCostUsd?: number;
   estimatedRuntimeCostUsd: number;
   observedAndEstimatedCostUsd: number | null;
   testsWithCompleteBilling: number;
@@ -91,8 +92,30 @@ function usageMeasurement(usage: Record<string, unknown>) {
   );
 }
 
-function usageCostUsd(usage: Record<string, unknown>) {
+function exactUsd(value: unknown): number | undefined {
+  // Receipts use decimal USD strings. Do not accept coercions, scientific
+  // notation, infinities, or values that lose their recorded precision.
+  if (typeof value !== "string" || value !== value.trim() || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)) return undefined;
+  const amount = Number(value);
+  const normalized = value.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  const [mantissa, exponent] = String(amount).split("e");
+  const digits = mantissa!.replace(".", "");
+  const position = (mantissa!.split(".")[0]!.length) + Number(exponent ?? 0);
+  const decimal = exponent === undefined ? mantissa : position <= 0
+    ? `0.${"0".repeat(-position)}${digits}`
+    : position >= digits.length ? digits + "0".repeat(position - digits.length)
+      : `${digits.slice(0, position)}.${digits.slice(position)}`;
+  return Number.isFinite(amount) && amount <= Number.MAX_SAFE_INTEGER && decimal === normalized
+    ? amount : undefined;
+}
+
+function usageCostUsd(usage: Record<string, unknown>): { amount: number; estimate?: { source: "rate_card"; version: string } } | undefined {
   const measurement = usageMeasurement(usage);
+  const sources = [usage, measurement];
+  if (sources.some(source => source.accountingReceiptReady === false || source.runDeltaComplete === false || source.complete === false || ["unpriced", "unavailable"].includes(String(source.costStatus)))) return undefined;
+  const status = usage.costStatus ?? measurement.costStatus;
+  if (status != null && status !== "reported" && status !== "estimated") return undefined;
+  const exact = usage.costUsdExact ?? measurement.costUsdExact;
   const direct =
     firstNumber(usage, [
       "cacheAdjustedCostUsd",
@@ -104,12 +127,32 @@ function usageCostUsd(usage: Record<string, unknown>) {
       "costUsd",
       "providerCostUsd",
     ]);
-  if (direct !== undefined) return direct;
+  if (status === "estimated") {
+    const provenance = record(usage.pricingProvenance ?? measurement.pricingProvenance);
+    const amount = exact == null ? direct : exactUsd(exact);
+    if ((usage.accountingReceiptReady ?? measurement.accountingReceiptReady) !== true ||
+        provenance.source !== "rate_card" || typeof provenance.version !== "string" || !provenance.version.trim() ||
+        amount === undefined) return undefined;
+    return { amount, estimate: { source: "rate_card", version: provenance.version } };
+  }
+  if (direct !== undefined) return { amount: direct };
+  if (exact != null) {
+    const amount = exactUsd(exact);
+    return status === "reported" && (usage.accountingReceiptReady ?? measurement.accountingReceiptReady) === true && amount !== undefined ? { amount } : undefined;
+  }
   const cost = record(usage.cost);
   const currency =
     typeof cost.currency === "string" ? cost.currency.toUpperCase() : "USD";
   if (currency !== "USD") return undefined;
-  return firstNumber(cost, ["amount", "total"]);
+  const amount = firstNumber(cost, ["amount", "total"]);
+  return amount === undefined ? undefined : { amount };
+}
+
+function llmCostStatus(runCount: number, reported: number, estimated: number, measured: number): RunnerE2EBillingSummary["llm"]["costStatus"] {
+  if (reported === runCount) return "reported";
+  if (reported + estimated === runCount && estimated > 0) return "estimated";
+  if (reported + estimated > 0) return "partial";
+  return measured > 0 ? "unpriced" : "unavailable";
 }
 
 function usageEntries(
@@ -268,7 +311,10 @@ export function summarizeExecutionBilling(
   let cachedInputTokens = 0;
   let runsWithTokenUsage = 0;
   let runsWithReportedCost = 0;
+  let runsWithEstimatedCost = 0;
   let reportedCostUsd = 0;
+  let estimatedLlmCostUsd = 0;
+  const estimates = new Map<string, { source: "rate_card"; version: string }>();
   for (const usage of entries) {
     if (!usage) continue;
     const measurement = usageMeasurement(usage);
@@ -291,20 +337,19 @@ export function summarizeExecutionBilling(
     cachedInputTokens += cached;
     if (input > 0 || output > 0 || cached > 0) runsWithTokenUsage += 1;
     const costUsd = usageCostUsd(usage);
-    if (costUsd !== undefined && (costUsd > 0 || input > 0 || output > 0)) {
-      runsWithReportedCost += 1;
-      reportedCostUsd += costUsd;
+    if (costUsd !== undefined && (costUsd.amount > 0 || input > 0 || output > 0 || cached > 0)) {
+      if (costUsd.estimate) {
+        runsWithEstimatedCost += 1;
+        estimatedLlmCostUsd += costUsd.amount;
+        estimates.set(costUsd.estimate.version, costUsd.estimate);
+      } else {
+        runsWithReportedCost += 1;
+        reportedCostUsd += costUsd.amount;
+      }
     }
   }
   const runCount = Math.max(requestedRunCount, entries.length);
-  const costStatus =
-    runsWithReportedCost === runCount
-      ? "reported"
-      : runsWithReportedCost > 0
-        ? "partial"
-        : runsWithTokenUsage > 0
-          ? "unpriced"
-          : "unavailable";
+  const costStatus = llmCostStatus(runCount, runsWithReportedCost, runsWithEstimatedCost, runsWithTokenUsage);
   const runtime = fallbackRuntimeUsage(result);
   const estimatedRuntimeCostUsd = runtime.estimatedListCostUsd ?? 0;
   const judgments = [...(result.firstTaskQuality ? [result.firstTaskQuality] : []), ...(result.completionQuality ?? [])];
@@ -313,7 +358,7 @@ export function summarizeExecutionBilling(
   const complete =
     (!quality || quality.estimatedCostUsd !== null) &&
     runsWithTokenUsage === runCount &&
-    runsWithReportedCost === runCount &&
+    runsWithReportedCost + runsWithEstimatedCost === runCount &&
     runtime.costStatus !== "unavailable";
   return {
     ...(result.publicMcp ? { assistant: result.publicMcp } : {}),
@@ -321,18 +366,22 @@ export function summarizeExecutionBilling(
       runCount,
       runsWithTokenUsage,
       runsWithReportedCost,
+      runsWithEstimatedCost,
       inputTokens,
       outputTokens,
       cachedInputTokens,
       totalTokens: inputTokens + cachedInputTokens + outputTokens,
       reportedCostUsd,
+      estimatedCostUsd: estimatedLlmCostUsd,
+      estimateProvenance: [...estimates.values()],
       costStatus,
     },
     runtime,
     reportedCostUsd,
+    estimatedLlmCostUsd,
     estimatedRuntimeCostUsd,
     ...(quality ? { judge: { inputTokens: quality.inputTokens, outputTokens: quality.outputTokens, estimatedCostUsd: quality.estimatedCostUsd, reservedCostUsd: quality.reservedCostUsd } } : {}),
-    observedAndEstimatedCostUsd: quality?.estimatedCostUsd === null ? null : reportedCostUsd + estimatedRuntimeCostUsd + (quality?.estimatedCostUsd ?? 0) + (result.publicMcp?.estimatedCostUsd ?? 0),
+    observedAndEstimatedCostUsd: quality?.estimatedCostUsd === null ? null : reportedCostUsd + estimatedLlmCostUsd + estimatedRuntimeCostUsd + (quality?.estimatedCostUsd ?? 0) + (result.publicMcp?.estimatedCostUsd ?? 0),
     complete,
   };
 }
@@ -340,7 +389,12 @@ export function summarizeExecutionBilling(
 export function aggregateCampaignBilling(
   results: readonly RunnerE2EResult[],
 ): CampaignBillingSummary {
-  const summaries = results.map(summarizeExecutionBilling);
+  // Connection journeys retain a sanitized billing projection instead of raw
+  // provider usage. Recompute when usage exists; otherwise preserve that
+  // measured projection, including incomplete probe coverage.
+  const summaries = results.map(result => result.usage
+    ? summarizeExecutionBilling(result)
+    : result.billing ?? summarizeExecutionBilling(result));
   const runCount = summaries.reduce(
     (total, summary) => total + summary.llm.runCount,
     0,
@@ -357,6 +411,9 @@ export function aggregateCampaignBilling(
     (total, summary) => total + summary.reportedCostUsd,
     0,
   );
+  const runsWithEstimatedCost = summaries.reduce((total, summary) => total + (summary.llm.runsWithEstimatedCost ?? 0), 0);
+  const estimatedLlmCostUsd = summaries.reduce((total, summary) => total + (summary.estimatedLlmCostUsd ?? 0), 0);
+  const estimateProvenance = [...new Map(summaries.flatMap(summary => summary.llm.estimateProvenance ?? []).map(source => [source.version, source])).values()];
   const estimatedRuntimeCostUsd = summaries.reduce(
     (total, summary) => total + summary.estimatedRuntimeCostUsd,
     0,
@@ -392,6 +449,7 @@ export function aggregateCampaignBilling(
       runCount,
       runsWithTokenUsage,
       runsWithReportedCost,
+      runsWithEstimatedCost,
       inputTokens: summaries.reduce(
         (total, summary) => total + summary.llm.inputTokens,
         0,
@@ -409,16 +467,12 @@ export function aggregateCampaignBilling(
         0,
       ),
       reportedCostUsd: reportedLlmCostUsd,
-      costStatus:
-        runsWithReportedCost === runCount
-          ? "reported"
-          : runsWithReportedCost > 0
-            ? "partial"
-            : runsWithTokenUsage > 0
-              ? "unpriced"
-              : "unavailable",
+      estimatedCostUsd: estimatedLlmCostUsd,
+      estimateProvenance,
+      costStatus: llmCostStatus(runCount, runsWithReportedCost, runsWithEstimatedCost, runsWithTokenUsage),
     },
     reportedLlmCostUsd,
+    estimatedLlmCostUsd,
     estimatedRuntimeCostUsd,
     observedAndEstimatedCostUsd: summaries.some(s => s.observedAndEstimatedCostUsd === null) ? null : summaries.reduce((total, summary) => total + (summary.observedAndEstimatedCostUsd ?? 0), 0),
     testsWithCompleteBilling: summaries.filter((summary) => summary.complete)

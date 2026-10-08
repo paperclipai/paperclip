@@ -961,6 +961,28 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                             Value::String(bounded_text(provider_phase, 160)),
                         );
                 }
+                if item_type == "agentMessage" {
+                    if let (Some(provider), Some(model_id)) = (
+                        provider_item
+                            .pointer("/model/provider")
+                            .and_then(Value::as_str),
+                        provider_item.pointer("/model/id").and_then(Value::as_str),
+                    ) {
+                        if !provider.is_empty()
+                            && !model_id.is_empty()
+                            && provider.len() <= 240
+                            && model_id.len() <= 240
+                        {
+                            payload
+                                .as_object_mut()
+                                .expect("item payload is an object")
+                                .insert(
+                                    "model".to_owned(),
+                                    json!({ "provider": provider, "id": model_id }),
+                                );
+                        }
+                    }
+                }
                 push(
                     &mut events,
                     if completed {
@@ -1173,9 +1195,15 @@ fn normalize_acpx_status(
             Some(Value::String(currency)) => currency.eq_ignore_ascii_case("USD"),
             Some(_) => false,
         };
-        // ACPX 0.13.1 documents breakdown as per-turn usage while cost is
-        // session-cumulative. Keep those authorities separate so consumers do
-        // not add the same tokens twice or treat cumulative cost as a delta.
+        // ACPX breakdown is per-turn, while its cost is session-cumulative.
+        // Only the qualified sidecar's prompt-bound receipt delta can enter
+        // per-turn spend. Legacy/candidate totals never establish that delta.
+        let turn_cost = payload
+            .pointer("/costDelta/currency")
+            .and_then(Value::as_str)
+            .filter(|currency| currency.eq_ignore_ascii_case("USD"))
+            .and_then(|_| payload.pointer("/costDelta/amount").and_then(Value::as_f64))
+            .filter(|amount| amount.is_finite() && *amount >= 0.0);
         let cumulative = json!({
             "inputTokens": 0,
             "outputTokens": 0,
@@ -1208,7 +1236,7 @@ fn normalize_acpx_status(
             ),
             "activeSeconds": 0.0,
             "requests": 1,
-            "providerCostUsd": 0.0,
+            "providerCostUsd": turn_cost.unwrap_or(0.0),
         });
         return vec![NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
@@ -1824,6 +1852,30 @@ mod tests {
             }}),
         );
         assert!(legacy[0].payload.get("providerPhase").is_none());
+    }
+
+    #[test]
+    fn final_assistant_observed_model_is_closed_and_history_compatible() {
+        for (model, expected) in [
+            (
+                json!({"provider":"openrouter","id":"actual/model","apiKey":"never-forward"}),
+                Some(json!({"provider":"openrouter","id":"actual/model"})),
+            ),
+            (json!({"provider":"openrouter","id":""}), None),
+            (json!({"provider":"openrouter","id":"x".repeat(241)}), None),
+            (Value::Null, None),
+        ] {
+            let events = normalize_codex_notification(
+                "item/completed",
+                &json!({"threadId":"s", "turnId":"t", "item":{
+                    "id":"final", "type":"agentMessage", "phase":"final_answer", "text":"hello", "model":model
+                }}),
+            );
+            assert_eq!(events[0].payload.get("model"), expected.as_ref());
+            assert_eq!(events[0].payload["channel"], "final");
+            assert_eq!(events[0].payload["text"], "hello");
+            assert!(!events[0].payload.to_string().contains("never-forward"));
+        }
     }
 
     #[test]

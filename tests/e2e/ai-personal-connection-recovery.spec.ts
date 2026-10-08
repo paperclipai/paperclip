@@ -16,7 +16,7 @@ test("missing onboarding key offers personal Claude setup in chat and resumes on
     }));
     await writeFile(path.join(root, "continued"), "ready");
     const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
-      name: "Chief of Staff", role: "general", adapterType: "claude_local",
+      name: "Chief of Staff", role: "general", adapterType: "claude_local", runner: "legacy",
       adapterConfig: { engine: "acp", cwd: root, stateDir: path.join(root, "state"),
         agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve("scripts/mcp-fixtures/servers/acp-stop-agent.mjs"))}`,
         env: { ANTHROPIC_API_KEY: { type: "user_secret_ref", key: definition.key, version: "latest", required: true },

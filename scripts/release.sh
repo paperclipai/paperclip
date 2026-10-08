@@ -284,6 +284,37 @@ release_info ""
 release_info "==> Step 2/7: Building workspace artifacts..."
 cd "$REPO_ROOT"
 pnpm build
+# Production publication requires the data envelope from the separately gated,
+# credential-free assembler. The publisher never executes its producer tooling.
+# A developer dry-run may still inspect a host-only payload; it does not qualify
+# a release. Official dry-runs receive the same complete assets as publication.
+if [ -n "${PAPERCLIP_RELEASE_RUNNER_ASSETS:-}" ]; then
+  node --input-type=module - "$PAPERCLIP_RELEASE_RUNNER_ASSETS" "$CURRENT_SHA" <<'NODE'
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { lstatSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+const [assets, source] = process.argv.slice(2);
+const receipt = JSON.parse(readFileSync(join(assets, 'assembly-receipt.json')));
+assert.equal(receipt.schema, 'paperclip.runner.release-assembly.v1');
+assert.equal(receipt.sourceRevision, source, 'Release runner source mismatch');
+const paths = ['bin/darwin-arm64/paperclip-runnerd', 'bin/darwin-x64/paperclip-runnerd', 'bin/linux-x64/paperclip-runnerd',
+  'bin/release-manifest.json', 'remote-provider-packs/linux-x64/provider-pack.json'];
+assert.deepEqual(Object.keys(receipt.files).sort(), paths.sort());
+for (const path of paths) {
+  const target = join(assets, path), stat = lstatSync(target);
+  assert.ok(stat.isFile() && !stat.isSymbolicLink());
+  assert.equal(`sha256:${createHash('sha256').update(readFileSync(target)).digest('hex')}`, receipt.files[path]);
+}
+NODE
+  cp -Rf "$PAPERCLIP_RELEASE_RUNNER_ASSETS/bin" "$REPO_ROOT/packages/paperclip-runner/dist/"
+  cp -Rf "$PAPERCLIP_RELEASE_RUNNER_ASSETS/remote-provider-packs" "$REPO_ROOT/packages/paperclip-runner/dist/"
+  cp -Rf "$REPO_ROOT/packages/paperclip-runner/dist/." "$REPO_ROOT/server/dist/vendor/paperclip-runner/"
+elif [ "$dry_run" = false ]; then
+  release_fail "complete release runner assets are required; use the gated release workflow or supply PAPERCLIP_RELEASE_RUNNER_ASSETS."
+else
+  release_info "  Host-only dry-run: release runner matrix is not qualified."
+fi
 node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"
 bash "$REPO_ROOT/scripts/prepare-server-ui-dist.sh"
 for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do

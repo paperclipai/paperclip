@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Check, ChevronDown, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
-import { aiRuntimeConnectionBindingSchema, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
+import { agentHarnessType, aiRuntimeConnectionBindingSchema, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 import { agentsApi, type AdapterModel } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -43,7 +43,7 @@ interface Props {
 const HARNESS_LABELS: Record<string, string> = {
   claude_local: "Claude Code", codex_local: "Codex", opencode_local: "OpenCode",
   pi_local: "Pi", kimi_local: "Kimi Code", gemini_local: "Gemini CLI",
-  cursor: "Cursor", cursor_cloud: "Cursor Cloud", grok_local: "Grok CLI",
+  cursor: "Cursor", cursor_cloud: "Cursor Cloud", grok_local: "Grok Build",
   hermes_local: "Hermes CLI", paperclip_runner: "Paperclip Runner",
   process: "Process", http: "HTTP", openclaw_gateway: "OpenClaw Gateway",
   hermes_gateway: "Hermes Gateway",
@@ -51,7 +51,8 @@ const HARNESS_LABELS: Record<string, string> = {
 
 function harnessLabel(agent: Agent | undefined): string {
   if (!agent) return "Choose an agent";
-  const harness = HARNESS_LABELS[agent.adapterType] ?? agent.adapterType;
+  const type = agentHarnessType(agent.adapterType, agent.adapterConfig);
+  const harness = HARNESS_LABELS[type] ?? type;
   const provider = composerCatalogProvider(agent);
   const binding = aiRuntimeConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
   const poolId = binding?.mode === "router" ? binding.connectionId : undefined;

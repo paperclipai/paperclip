@@ -59,6 +59,14 @@ afterEach(() => {
 });
 
 describe("composer assignee picker", () => {
+  it.each(["claude_managed", "aws_agentcore", "codex"])("loads native %s models through the execution adapter", async provider => {
+    const loadModels = vi.spyOn(agentsApi, "adapterModels").mockResolvedValue([]);
+    const native = { ...agent, adapterType: "paperclip_runner", adapterConfig: { provider, model: "configured-model" } } as Agent;
+    render(vi.fn(), vi.fn(), true, { agents: new Map([[agent.id, native]]) });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    expect(loadModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.any(Object));
+  });
+
   it.each([false, true])("keeps the trigger stable until the picker closes (mobile: %s)", async (mobile) => {
     function ControlledPicker() {
       const [settings, setSettings] = useState({ model: "gpt-6-sol", effort: "high", fast: false });

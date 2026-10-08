@@ -4,6 +4,45 @@ import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import { requireVerifiedAcpxModel } from "./model-verification.js";
 
 describe("ACPX requested model verification", () => {
+  const cursorSelector = "gpt-5.6-sol[context=272k,reasoning=medium,fast=false]";
+
+  it("selects Cursor's unique advertised full selector and normalizes the verified model", async () => {
+    let currentModelId = "default";
+    const getStatus = vi.fn(async () => ({ models: {
+      currentModelId, availableModelIds: [cursorSelector, cursorSelector, "gpt-5.6-sol-mini[context=272k]"],
+    } }));
+    const setModel = vi.fn(async (model: string) => { currentModelId = model; });
+    await expect(requireVerifiedAcpxModel({ getStatus, setModel }, resolveQualifiedAcpxProfile("cursor", "gpt-5.6-sol")))
+      .resolves.toMatchObject({ models: { currentModelId: "gpt-5.6-sol", availableModelIds: ["gpt-5.6-sol", "gpt-5.6-sol-mini[context=272k]"] } });
+    expect(setModel).toHaveBeenCalledExactlyOnceWith(cursorSelector);
+    expect(getStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("accepts Cursor's already reported full selector without changing it", async () => {
+    const setModel = vi.fn();
+    await expect(requireVerifiedAcpxModel({ getStatus: async () => ({ models: { currentModelId: cursorSelector } }), setModel }, resolveQualifiedAcpxProfile("cursor", "gpt-5.6-sol")))
+      .resolves.toMatchObject({ models: { currentModelId: "gpt-5.6-sol" } });
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [[], "ACPX_MODEL_SELECTION_UNAVAILABLE"],
+    [["gpt-5.6-sol-mini[context=272k]"], "ACPX_MODEL_SELECTION_UNAVAILABLE"],
+    [[cursorSelector, "gpt-5.6-sol[context=272k,reasoning=high,fast=false]"], "ACPX_MODEL_SELECTION_AMBIGUOUS"],
+  ] as const)("rejects unavailable or ambiguous Cursor base names before selecting another model", async (availableModelIds, code) => {
+    const setModel = vi.fn();
+    await expect(requireVerifiedAcpxModel({ getStatus: async () => ({ models: { currentModelId: "default", availableModelIds } }), setModel }, resolveQualifiedAcpxProfile("cursor", "gpt-5.6-sol")))
+      .rejects.toMatchObject({ code });
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a Cursor provider that ignores the resolved selector", async () => {
+    const setModel = vi.fn(async () => undefined);
+    await expect(requireVerifiedAcpxModel({ getStatus: async () => ({ models: { currentModelId: "default", availableModelIds: [cursorSelector] } }), setModel }, resolveQualifiedAcpxProfile("cursor", "gpt-5.6-sol")))
+      .rejects.toMatchObject({ code: "ACPX_EFFECTIVE_MODEL_MISMATCH" });
+    expect(setModel).toHaveBeenCalledExactlyOnceWith(cursorSelector);
+  });
+
   it.each(["claude", "codex", "pi", "grok", "cursor", "copilot"] as const)("selects and verifies an unlisted model unchanged with %s", async agent => {
     const model = "custom/model[context=272k,reasoning=medium]";
     let currentModelId = "default";

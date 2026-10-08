@@ -4,9 +4,21 @@ import { listServerAdapters, requireServerAdapter } from "./registry.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 
-const { probeInstallation, probeGrokInstallation } = vi.hoisted(() => ({
+const { probeInstallation, probeGrokInstallation, probeRunner, probeRemoteProvider, probeAuthentication, nativeAuthentication, prepareRemoteSetup } = vi.hoisted(() => ({
   probeInstallation: vi.fn(),
   probeGrokInstallation: vi.fn(),
+  probeRunner: vi.fn(),
+  probeRemoteProvider: vi.fn(),
+  probeAuthentication: vi.fn(),
+  nativeAuthentication: vi.fn(),
+  prepareRemoteSetup: vi.fn(),
+}));
+vi.mock("../services/native-runtime/setup-readiness.js", () => ({
+  withRemoteNativeSetupArtifacts: prepareRemoteSetup,
+  assertNativeRunnerSetupReady: probeRunner,
+  assertRemoteAcpxSetupReady: probeRemoteProvider,
+  testNativeAcpxAuthentication: probeAuthentication,
+  testNativeRunnerAuthentication: nativeAuthentication,
 }));
 vi.mock("@paperclipai/paperclip-runner/live", () => ({
   probeAcpxClaudeInstallation: probeInstallation,
@@ -94,8 +106,17 @@ describe("built-in runtime connection tool delivery", () => {
 
 describe("native ACPX environment checks", () => {
   beforeEach(() => {
+    prepareRemoteSetup.mockReset().mockImplementation(async (_context, _provider, _model, probe) => probe());
     probeInstallation.mockReset().mockResolvedValue(undefined);
     probeGrokInstallation.mockReset().mockResolvedValue(undefined);
+    probeRunner.mockReset().mockResolvedValue(undefined);
+    nativeAuthentication.mockReset().mockResolvedValue({ adapterType: "paperclip_runner", status: "pass", testedAt: new Date(0).toISOString(),
+      checks: [{ code: "codex_hello_probe_passed", level: "info", message: "Native hello verified" }] });
+    probeRemoteProvider.mockReset().mockResolvedValue(undefined);
+    probeAuthentication.mockReset().mockImplementation(async (_context: unknown, agent: string) => ({
+      adapterType: "paperclip_runner", status: "pass", testedAt: new Date(0).toISOString(),
+      checks: [{ code: `${agent}_hello_probe_passed`, level: "info", message: "Selected native account verified" }],
+    }));
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -115,10 +136,22 @@ describe("native ACPX environment checks", () => {
     })]);
   });
 
-  it("requires a successful installed runtime probe", async () => {
+  it("requires installed runtime and selected native authentication probes", async () => {
     const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
     expect(result.status).toBe("pass");
     expect(probeInstallation).toHaveBeenCalledWith(context.config.model);
+    expect(probeAuthentication).toHaveBeenCalledWith(context, "claude", context.config.model, undefined);
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_passed" }));
+  });
+
+  it("does not report installation success as authentication success", async () => {
+    probeAuthentication.mockResolvedValueOnce({
+      adapterType: "paperclip_runner", status: "fail", testedAt: new Date(0).toISOString(),
+      checks: [{ code: "claude_hello_probe_auth_required", level: "error", message: "Select a valid Claude account" }],
+    });
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
+    expect(result.status).toBe("fail");
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_auth_required", level: "error" }));
   });
 
   it.each([true, false])("checks Grok's own installation readiness (%s)", async (ready) => {
@@ -141,9 +174,38 @@ describe("native ACPX environment checks", () => {
         runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n" }) },
       },
     });
-    expect(result.status).toBe("warn");
-    expect(result.checks[0].code).toBe("acpx_remote_runtime_unverified");
+    expect(result.status).toBe("pass");
+    expect(result.checks[0].code).toBe("acpx_runtime_ready");
+    expect(probeRemoteProvider).toHaveBeenCalled();
     expect(probeInstallation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["codex", { provider: "codex", model: "gpt-6.1-sol" }],
+    ["opencode", { provider: "opencode", model: "openrouter/example/model" }],
+    ["acpx", { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }],
+  ] as const)("uses prepared sandbox artifacts throughout %s setup", async (provider, config) => {
+    const artifacts = { runnerBinary: "/workspace/.paperclip-runtime/owned/bin/paperclip-runnerd", providerPackRoot: "/workspace/.paperclip-runtime/owned/provider-pack" };
+    prepareRemoteSetup.mockImplementationOnce(async (_context, _provider, _model, probe) => probe(artifacts));
+    const selected = { ...context, config, executionTarget: {
+      kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", providerKey: "test",
+      runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n" }) },
+    } };
+    expect((await requireServerAdapter("paperclip_runner").testEnvironment!(selected)).status).toBe("pass");
+    expect(prepareRemoteSetup).toHaveBeenCalledWith(selected, provider, config.model, expect.any(Function));
+    expect(probeRunner).toHaveBeenCalledWith(selected, artifacts);
+    if (provider === "acpx") {
+      expect(probeRemoteProvider).toHaveBeenCalledWith(selected, "claude", config.model, artifacts);
+      expect(probeAuthentication).toHaveBeenCalledWith(selected, "claude", config.model, artifacts);
+    } else expect(nativeAuthentication).toHaveBeenCalledWith(selected, provider, config.model, artifacts);
+  });
+  it("does not authenticate or report readiness when sandbox artifact preparation fails", async () => {
+    prepareRemoteSetup.mockResolvedValueOnce({ adapterType: "paperclip_runner", status: "fail", testedAt: new Date(0).toISOString(), checks: [{ code: "paperclip_runner_runtime_unavailable", level: "error", message: "Upload unavailable" }] });
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!(context);
+    expect(result.status).toBe("fail");
+    expect(probeRunner).not.toHaveBeenCalled();
+    expect(probeAuthentication).not.toHaveBeenCalled();
+    expect(nativeAuthentication).not.toHaveBeenCalled();
   });
 
   const sshTarget = {
@@ -154,10 +216,36 @@ describe("native ACPX environment checks", () => {
     },
   };
 
+  it.each(["pass", "fail"] as const)("requires staged native Codex readiness on SSH without preinstalled-only rejection (%s)", async status => {
+    probeRunner.mockRejectedValue(new Error("SSH has no preinstalled runner"));
+    nativeAuthentication.mockResolvedValueOnce({ adapterType: "paperclip_runner", status, testedAt: new Date(0).toISOString(),
+      checks: [{ code: status === "pass" ? "codex_hello_probe_passed" : "codex_hello_probe_failed", level: status === "pass" ? "info" : "error", message: "Staged native runtime evidence" }] });
+    const selected = { ...context, executionTarget: sshTarget, config: { provider: "codex", model: "gpt-6.1-sol" } };
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!(selected);
+    expect(result.status).toBe(status);
+    expect(nativeAuthentication).toHaveBeenCalledWith(selected, "codex", "gpt-6.1-sol", undefined);
+    expect(probeRunner).not.toHaveBeenCalled();
+    expect(probeInstallation).not.toHaveBeenCalled();
+  });
+  it("fails when the selected SSH runtime cannot be verified", async () => {
+    probeRunner.mockRejectedValue(new Error("SSH has no preinstalled runner"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context, executionTarget: sshTarget, config: { provider: "opencode", model: "openrouter/example/model" } });
+    expect(result.status).toBe("fail"); expect(probeRunner).toHaveBeenCalledOnce(); expect(nativeAuthentication).not.toHaveBeenCalled();
+  });
+  it.each(["opencode", "acpx"] as const)("uses prepared private paths for qualified SSH %s", async provider => {
+    const artifacts = { runnerBinary: "/workspace/owned/bin/paperclip-runnerd", providerPackRoot: "/workspace/owned/provider-pack" };
+    prepareRemoteSetup.mockImplementationOnce(async (_context, _provider, _model, probe) => probe(artifacts));
+    const selected = { ...context, executionTarget: sshTarget, config: provider === "opencode" ? { provider, model: "openrouter/example/model" } : { provider, acpxAgent: "claude", model: "claude-sonnet-5" } };
+    vi.spyOn(executionTarget, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n", stderr: "", signal: null, pid: null, startedAt: new Date(0).toISOString() });
+    expect((await requireServerAdapter("paperclip_runner").testEnvironment!(selected)).status).toBe("pass");
+    expect(probeRunner).toHaveBeenCalledWith(selected, artifacts);
+    if (provider === "acpx") expect(probeRemoteProvider).toHaveBeenCalledWith(selected, "claude", selected.config.model, artifacts);
+    else expect(nativeAuthentication).toHaveBeenCalledWith(selected, "opencode", selected.config.model, artifacts);
+  });
   it.each([
-    ["Linux\nx86_64\n", "warn"],
-    ["Darwin\nx86_64\n", "warn"],
-    ["Darwin\narm64\n", "warn"],
+    ["Linux\nx86_64\n", "pass"],
+    ["Darwin\nx86_64\n", "pass"],
+    ["Darwin\narm64\n", "pass"],
     ["Linux\naarch64\n", "fail"],
     ["", "fail"],
   ])("qualifies the SSH platform from its own uname output %j", async (stdout, status) => {

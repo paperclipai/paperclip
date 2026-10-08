@@ -3,6 +3,8 @@ import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } 
 import { requireAcpxResponseDelivery } from "./response-delivery.js";
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "./profile-extensions.js";
 import { createHash, randomBytes } from "node:crypto";
+import { join } from "node:path";
+import { resolveAcpxRuntimeRoot } from "./recovery-identity.js";
 
 import type {
   AcpElicitationContext,
@@ -199,11 +201,18 @@ export interface ProbeQualifiedAcpxEnvironmentOptions {
   agent: QualifiedAcpxAgent;
   model: string;
   environment?: NodeJS.ProcessEnv;
+  /** A setup test may verify authentication with one tool-free provider turn. */
+  hello?: boolean;
+  /** Bounds admission and the optional hello turn; cleanup retains its own bounds. */
+  timeoutMs?: number;
+  /** Preserve a selected Grok login's refresh only after confirmed provider exit. */
+  onGrokCredentialRefresh?: (path: string) => Promise<void>;
 }
 
 export interface QualifiedAcpxEnvironmentProbe {
   effectiveModel: string;
   commandDigest: string;
+  helloProbePassed?: true;
 }
 
 /**
@@ -220,8 +229,9 @@ export async function probeQualifiedAcpxEnvironment(
     model: options.model,
     permissionMode: "deny-all",
     providerPolicy: { readOnly: true },
-    systemInstructions:
-      "Paperclip Runner environment qualification probe. Do not execute a provider turn.",
+    systemInstructions: options.hello
+      ? "Paperclip Runner authentication probe. Respond only with hello. Do not use tools or inspect files."
+      : "Paperclip Runner environment qualification probe. Do not execute a provider turn.",
     ...(options.environment === undefined
       ? {}
       : { environment: options.environment }),
@@ -230,26 +240,63 @@ export async function probeQualifiedAcpxEnvironment(
       throw new Error("environment probe exposes no semantic tools");
     },
   });
-  const session = await driver.openSession({
-    runId: "environment-probe",
-    normalizedSessionId: "environment-probe",
-    workingDirectory: options.runtimeDirectory,
-  });
+  const controller = new AbortController();
+  const timeoutMs = Math.max(1, Math.min(options.timeoutMs ?? 45_000, 120_000));
+  const timer = setTimeout(() => controller.abort(new Error("Native provider hello probe timed out.")), timeoutMs);
+  let session: HarnessSession | undefined;
   try {
+    session = await driver.openSession({
+      runId: "environment-probe",
+      normalizedSessionId: "environment-probe",
+      workingDirectory: options.runtimeDirectory,
+      signal: controller.signal,
+    });
     const snapshot = await session.snapshot();
     if (snapshot.providerIdentity?.kind !== "acpx") {
       throw new Error("ACPX environment probe returned no provider identity");
     }
+    if (options.hello) {
+      await runAbortableDriverAdmission(controller.signal, async () => {
+        const { turnId } = await session!.startTurn({
+          message: { role: "user", text: "Respond only with hello. Do not use tools or inspect files." },
+        });
+        let responseObserved = false;
+        for await (const event of session!.events()) {
+          if (event.turnId !== turnId) continue;
+          if (event.eventType === "item.completed" && event.payload.kind === "agentMessage"
+            && typeof event.payload.text === "string" && event.payload.text.trim()) responseObserved = true;
+          if (event.eventType === "turn.completed") {
+            if (!responseObserved) throw new Error("The native provider hello probe returned no response.");
+            return;
+          }
+          if (event.eventType === "turn.failed" || event.eventType === "turn.interrupted") {
+            const error = event.payload.error;
+            const detail = error && typeof error === "object" && !Array.isArray(error)
+              ? (error as Record<string, unknown>).message : undefined;
+            const message = typeof detail === "string" ? detail : "The native provider hello probe failed.";
+            throw new Error(message);
+          }
+        }
+        throw new Error("The native provider hello probe ended without a successful turn.");
+      });
+    }
     return Object.freeze({
       effectiveModel: snapshot.providerIdentity.effectiveModel,
       commandDigest: profile.commandDigest,
+      ...(options.hello ? { helloProbePassed: true as const } : {}),
     });
   } finally {
+    clearTimeout(timer);
     // A successful return is authoritative proof that the driver's bounded
     // close released the provider, credential lease, semantic bridge, and
     // verified command. A failed close remains owned by the driver's retained
     // recovery/quarantine path, so callers must preserve runtimeDirectory.
-    await session.close({ reason: "environment probe complete" });
+    await session?.close({ reason: "environment probe complete" });
+    if (session && options.agent === "grok" && options.environment?.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET
+      && options.onGrokCredentialRefresh) {
+      const root = await resolveAcpxRuntimeRoot(options.runtimeDirectory, "environment-probe");
+      await options.onGrokCredentialRefresh(join(root, "grok-home", "auth-refresh.json"));
+    }
   }
 }
 

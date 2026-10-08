@@ -17,6 +17,17 @@ export function isConversationAdapter(adapterType: string): boolean {
 
 export const CONVERSATION_CONTINUATION_POLICY = "continue_conversation_v1";
 
+/** Transcript identity comes from the run, independently of later agent edits. */
+export const recordedRunAdapterTypeColumn = sql<string | null>`coalesce(
+  "heartbeat_runs"."runner_profile_json"->'adapterDispatch'->>'adapterType',
+  case when "heartbeat_runs"."runtime_mode" = 'native' then 'paperclip_runner' end,
+  (select event."payload"->>'adapterType' from "heartbeat_run_events" event
+    where event."company_id" = "heartbeat_runs"."company_id"
+      and event."run_id" = "heartbeat_runs"."id"
+      and event."event_type" = 'adapter.invoke'
+    order by event."seq" desc limit 1)
+)`.as("adapterType");
+
 export function hasConversationContinuationPolicy(result: Record<string, unknown> | null | undefined): boolean {
   return result?.workspaceRestoreFailure !== "restore_unsafe_archive" && !hasRequiredWorkspaceRecovery(result) && result?.conversationContinuation === CONVERSATION_CONTINUATION_POLICY;
 }

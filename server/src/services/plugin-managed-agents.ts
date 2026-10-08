@@ -1,3 +1,4 @@
+import { agentHarnessType, agentRunner } from "@paperclipai/shared";
 import { and, eq, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -21,6 +22,7 @@ import { approvalService } from "./approvals.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
 import { agentInstructionRevisionService } from "./agent-instruction-revisions.js";
+import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 
 const MANAGED_AGENT_ENTITY_TYPE = "managed_agent";
 const DEFAULT_MANAGED_AGENT_ADAPTER_TYPE = "process";
@@ -354,12 +356,12 @@ export function pluginManagedAgentService(
 
   async function companyAdapterUsage(companyId: string) {
     const rows = await db
-      .select({ adapterType: agents.adapterType })
+      .select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
       .from(agents)
       .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
     const counts = new Map<string, number>();
     for (const row of rows) {
-      const adapterType = normalizeAdapterType(row.adapterType);
+      const adapterType = normalizeAdapterType(agentHarnessType(row.adapterType, row.adapterConfig));
       if (!adapterType) continue;
       counts.set(adapterType, (counts.get(adapterType) ?? 0) + 1);
     }
@@ -656,11 +658,19 @@ export function pluginManagedAgentService(
         ? reconciled.agent.metadata
         : {};
       const adapterType = await resolveManagedAdapterType(companyId, declaration);
+      const defaults = declarationPatch(declaration, { adapterType });
+      // Resolve before replacing instructions, so an invalid new declaration
+      // cannot partially reset the agent. A changed harness selects its default.
+      const execution = await resolveNewAgentRunnerForCompany(db, companyId, {
+        ...defaults,
+        defaultEnvironmentId: reconciled.agent.defaultEnvironmentId,
+        runner: agentHarnessType(reconciled.agent.adapterType, reconciled.agent.adapterConfig) === adapterType
+          ? agentRunner(reconciled.agent.adapterType) : "auto",
+      });
       // Reset content through the canonical CAS path before changing defaults.
       // A conflict must leave the existing adapter configuration untouched.
       const withInstructions = await materializeDeclaredInstructions(companyId, reconciled.agent, declaration, { replaceExisting: true });
-      const defaults = declarationPatch(declaration, { adapterType });
-      const adapterConfig = { ...defaults.adapterConfig } as Record<string, unknown>;
+      const adapterConfig = { ...execution.adapterConfig };
       if (declaration.instructions) {
         for (const key of ["instructionsBundleMode", "instructionsRootPath", "instructionsEntryFile", "instructionsFilePath"]) {
           if (withInstructions.adapterConfig[key] !== undefined) adapterConfig[key] = withInstructions.adapterConfig[key];
@@ -668,6 +678,7 @@ export function pluginManagedAgentService(
       }
       const updated = await agentSvc.update(reconciled.agent.id, {
         ...defaults,
+        adapterType: execution.adapterType,
         adapterConfig,
         metadata: managedMetadata(options.pluginId, options.pluginKey, declaration, currentMetadata),
       }, {

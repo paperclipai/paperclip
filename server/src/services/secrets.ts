@@ -1,3 +1,4 @@
+import { agentHarnessType } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -279,7 +280,7 @@ export interface ClaudeOAuthBindingInvariantDecision {
 export function assertClaudeOAuthBindingInvariant(
   input: ClaudeOAuthBindingInvariantInput,
 ): ClaudeOAuthBindingInvariantDecision {
-  const isClaudeLocal = input.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE;
+  const isClaudeLocal = agentHarnessType(input.adapterType ?? "process", (input.nextConfig ?? {}) as Record<string, unknown>) === CLAUDE_LOCAL_ADAPTER_TYPE;
   const nextIsFixed = hasFixedClaudeOAuthBinding(input.nextConfig);
   const priorIsFixed = hasFixedClaudeOAuthBinding(input.priorConfig);
 

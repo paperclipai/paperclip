@@ -1,3 +1,5 @@
+import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
 import { agentAppearanceSchema } from "@paperclipai/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -3246,6 +3248,7 @@ function buildManifestFromPackageFiles(
       reportsToSlug: asString(frontmatter.reportsTo) ?? asString(extension.reportsTo),
       reportsToExistingAgentId: asString(extension.reportsToExistingAgentId),
       reportsToExistingAgentSlug: asString(extension.reportsToExistingAgentSlug),
+      runner: ["auto", "paperclip", "legacy"].includes(String(extensionAdapter?.runner)) ? extensionAdapter?.runner as AgentRunnerChoice : undefined,
       adapterType: asString(extensionAdapter?.type) ?? "process",
       adapterConfig,
       runtimeConfig,
@@ -3641,8 +3644,17 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     adapterConfig: Record<string, unknown>,
     desiredSkills: string[],
     mode: ImportMode,
+    runner?: AgentRunnerChoice,
+    defaultEnvironmentId?: string | null,
   ) {
-    const effectiveAdapterType = assertKnownImportAdapterType(adapterType);
+    const resolved = await resolveNewAgentRunnerForCompany(db, companyId, {
+      adapterType,
+      adapterConfig,
+      runner,
+      defaultEnvironmentId,
+    });
+    adapterConfig = resolved.adapterConfig;
+    const effectiveAdapterType = assertKnownImportAdapterType(resolved.adapterType);
     if (mode === "agent_safe" && IMPORT_FORBIDDEN_ADAPTER_TYPES.has(effectiveAdapterType)) {
       throw forbidden(`Adapter type "${effectiveAdapterType}" is not allowed in safe imports`);
     }
@@ -4266,6 +4278,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           capabilities: agent.capabilities ?? null,
           adapter: {
             type: agent.adapterType,
+            runner: agentRunner(agent.adapterType),
             config: portableAdapterConfig,
           },
           runtime: portableRuntimeConfig,
@@ -5253,27 +5266,18 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           .filter((entry) => entry.action !== "skip")
           .map((entry) => entry.slug),
       );
-      const runnerSelections = sourceManifest.agents.filter((agent) =>
+      const dotSelections = sourceManifest.agents.filter((agent) =>
         importedAgentSlugs.has(agent.slug)
         && (input.adapterOverrides?.[agent.slug]?.adapterType ?? agent.adapterType)
-          === "paperclip_runner",
+          === "paperclip_runner"
+        && (input.adapterOverrides?.[agent.slug]?.adapterConfig ?? agent.adapterConfig).provider === "openai_dot",
       );
-      if (runnerSelections.length > 0) {
+      if (dotSelections.length > 0) {
         const experimental = await instanceSettingsService(db).getExperimental();
-        for (const agent of runnerSelections) {
-          const config = input.adapterOverrides?.[agent.slug]?.adapterConfig ?? agent.adapterConfig;
-          if (config.provider === "openai_dot") {
-            if (experimental.enableOpenAiDot !== true) throw unprocessable(
-              "OpenAI Dot is experimental and disabled on this instance.",
-              { code: "paperclip_runner_dot_disabled" },
-            );
-          } else if (experimental.enableNativeRunner !== true) {
-            throw unprocessable(
-              "Paperclip Runner is experimental and disabled on this instance.",
-              { code: "paperclip_runner_rollout_disabled" },
-            );
-          }
-        }
+        if (experimental.enableOpenAiDot !== true) throw unprocessable(
+          "OpenAI Dot is experimental and disabled on this instance.",
+          { code: "paperclip_runner_dot_disabled" },
+        );
       }
     }
 
@@ -5597,12 +5601,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : { ...manifestAgent.adapterConfig } as Record<string, unknown>;
 
           const desiredSkills = (manifestAgent.skills ?? []).map((skillRef) => desiredSkillRefMap.get(skillRef) ?? skillRef);
+          const existingImportAgent = planAgent.action === "update" && planAgent.existingAgentId
+            ? await agents.getById(planAgent.existingAgentId) : null;
           const normalizedAdapter = await prepareImportedAgentAdapter(
             targetCompany.id,
             adapterOverride?.adapterType ?? manifestAgent.adapterType,
             baseAdapterConfig,
             desiredSkills,
             mode,
+            adapterOverride?.runner ?? (adapterOverride?.adapterType ? "auto" : manifestAgent.runner ?? (existingImportAgent ? agentRunner(existingImportAgent.adapterType) : undefined)),
+            existingImportAgent?.defaultEnvironmentId,
           );
           const patch = {
             name: planAgent.plannedName,
@@ -5682,6 +5690,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
           let created = await agents.create(targetCompany.id, {
             ...patch,
+            runner: agentRunner(patch.adapterType),
             ...automationPausePatch,
             status: pauseAutomations ? "paused" : "idle",
           }, { createdByUserId: actorUserId });

@@ -45,6 +45,8 @@ export {
 export type { DurableRecoveryIdentity } from "./control-plane/prp-transport-types.js";
 export * from "./drivers/codex/app-server-transport.js";
 export * from "./drivers/codex/codex-app-server-driver.js";
+export { resolvePinnedCodexCommand } from "./drivers/codex/codex-command.js";
+export { resolvePinnedClaudeCommand } from "./drivers/acpx/installation-integrity.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
 export * from "./drivers/acpx/qualified-profiles.js";
@@ -58,6 +60,7 @@ export * from "./drivers/acpx/sidecar-protocol.js";
 export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
+  probeNativeRunnerEnvironment,
   runnerCodexDynamicToolsFit,
   defaultCapabilityRunnerdBinary,
   readRunnerdArtifactBinding,

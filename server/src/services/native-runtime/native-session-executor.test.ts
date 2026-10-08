@@ -5,6 +5,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
 import {
   access,
+  chmod,
   cp,
   lstat,
   mkdir,
@@ -20,9 +21,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { inspect } from "node:util";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   heartbeatRuns,
   heartbeatRunEvents,
@@ -62,6 +64,13 @@ import {
   verifyNativeHarnessBackupStamp,
 } from "./native-harness-backup-stamp.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+// Match the vendor shim's source-loading boundary without emitting runner
+// source files inside the server TypeScript build's root directory.
+const materializerSourceUrl = new URL("../../../../packages/paperclip-runner/src/drivers/runtime-context-materializer.ts", import.meta.url);
+const { prepareIsolatedCodexHome, releaseMaterializedNativeRuntimeSkills } = await import(materializerSourceUrl.href) as {
+  prepareIsolatedCodexHome: (input: { context: ReturnType<typeof nativeRuntimeContextFixture> | null; codexHome: string }) => Promise<void>;
+  releaseMaterializedNativeRuntimeSkills: (skillsHome: string) => Promise<void>;
+};
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { buildNativeHeartbeatPreparationSpans } from "./native-run-trace.js";
 import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.js";
@@ -301,6 +310,7 @@ import {
   closeIdleWarmNativeSessionsForRestart,
   createGovernedWaitEventObservation,
   createRemoteRunnerProcessLauncher,
+  createRemoteNativeArtifactPreparation,
   createRunnerdBackend,
   executePaperclipNativeSession,
   detachNativeSessionsForRestart,
@@ -332,6 +342,7 @@ import {
   verifyRemoteRunnerReattachment,
   readRemoteProviderPackManifest,
   readBundledRemoteProviderPackManifest,
+  remoteProviderPackVerificationScript,
   providerSessionIdentityFromDurableProviderState,
   durableProviderCheckpointFailureReason,
   providerSessionIdentityTransitionIsAllowed,
@@ -1215,6 +1226,22 @@ describe("remote provider pack manifest", () => {
     expect(readRemoteProviderPackManifest(root).payload.pins.opencode).toBe(
       "1.18.34",
     );
+    // Execute the same immutable-pack verifier reused by selected-native setup
+    // against this existing assembled filesystem fixture. It never runs providers.
+    for (const [name, version] of Object.entries({ acpx: payload.pins.acpx, "@agentclientprotocol/claude-agent-acp": payload.pins.claudeAcp,
+      "@agentclientprotocol/codex-acp": payload.pins.codexAcp, "opencode-ai": payload.pins.opencode })) {
+      const directory = join(root, "node_modules", name);
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "package.json"), JSON.stringify({ version }));
+    }
+    const expected = Buffer.from(canonical(JSON.parse(await readFile(join(root, "provider-pack.json"), "utf8")))).toString("base64");
+    const verify = new Function("require", "process", remoteProviderPackVerificationScript());
+    const verifierProcess = { argv: ["", root, expected], platform: payload.target.platform, arch: payload.target.architecture, versions: process.versions };
+    expect(() => verify(createRequire(import.meta.url), verifierProcess)).not.toThrow();
+    expect(() => verify(createRequire(import.meta.url), { ...verifierProcess, argv: ["", root, Buffer.from("{}").toString("base64")] })).toThrow("manifest mismatch");
+    await writeFile(join(root, "pnpm-lock.yaml"), "substituted-lockfile");
+    expect(() => verify(createRequire(import.meta.url), verifierProcess)).toThrow("productionLock digest mismatch");
+    await writeFile(join(root, "pnpm-lock.yaml"), lockfile);
     const cursorPath = "provider-assets/cursor/linux-x64";
     await mkdir(join(root, cursorPath), { recursive: true });
     await writeFile(join(root, cursorPath, "runtime"), "pinned Cursor runtime");
@@ -2355,6 +2382,64 @@ describe("remote preinstalled executable discovery", () => {
     ).toBe(false);
     expect(mayUsePreinstalledRunnerArtifact("  ")).toBe(true);
     expect(mayUsePreinstalledRunnerArtifact(undefined)).toBe(true);
+  });
+});
+
+describe("shared native remote artifact staging", () => {
+  it.each(["qualified", "unsupported-codex", "missing-codex", "missing-controller"] as const)("verifies the task's artifacts without a provider pack (%s)", async mode => {
+    const root = await mkdtemp(join(tmpdir(), "native-ssh-artifacts-"));
+    const guestBin = join(root, "guest-bin");
+    const runtime = join(root, "owned-runtime");
+    const controllerRunner = join(root, "controller-runnerd");
+    try {
+      await mkdir(guestBin, { mode: 0o700 });
+      // Exercise the actual staging shell and checksum/metadata verification
+      // without depending on an unrelated local Rust build in the unit lane.
+      if (mode !== "missing-controller") {
+        const metadata = {
+          schema: "paperclip-runner/runnerd-build-metadata/v1",
+          binaryName: "paperclip-runnerd",
+          packageName: "@paperclipai/paperclip-runner",
+          binaryContractVersion: 2,
+          durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"],
+          prpTransportModes: ["dial_wss"],
+        };
+        await writeFile(controllerRunner, `#!/bin/sh\ntest "$1" = --build-metadata || exit 2\ncat <<'METADATA'\n${JSON.stringify(metadata)}\nMETADATA\n`, { mode: 0o700 });
+      }
+      if (mode !== "missing-codex") {
+        await writeFile(join(guestBin, "codex"), `#!/bin/sh\nprintf 'codex-cli ${mode === "unsupported-codex" ? "0.148.9" : "0.160.0"}\\n'\n`, { mode: 0o700 });
+      }
+      const calls: Array<{ command: string; args?: string[]; stdin?: string }> = [];
+      const runner = { execute: async (input: { command: string; args?: string[]; stdin?: string }) => {
+        calls.push(input);
+        try {
+          const stdout = execFileSync(input.command, input.args ?? [], { cwd: root, input: input.stdin,
+            env: { PATH: `${guestBin}:/usr/bin:/bin`, HOME: root }, encoding: "utf8", maxBuffer: 1024 * 1024 });
+          return { exitCode: 0, timedOut: false, stdout, stderr: "", signal: null, pid: null, startedAt: new Date(0).toISOString() };
+        } catch (error) {
+          const failure = error as { status: number; stdout?: Buffer; stderr?: Buffer };
+          return { exitCode: failure.status ?? 1, timedOut: false, stdout: String(failure.stdout ?? ""), stderr: String(failure.stderr ?? ""), signal: null, pid: null, startedAt: new Date(0).toISOString() };
+        }
+      } };
+      const remoteBinary = join(runtime, "bin", "paperclip-runnerd");
+      const remoteCodex = join(runtime, "bin", "codex");
+      const artifacts = createRemoteNativeArtifactPreparation({ target: { kind: "remote", transport: "ssh", remoteCwd: root, spec: {} as never }, runner,
+        remoteBinary, controllerRunnerBinary: controllerRunner, remoteRuntimeRoot: runtime, remoteCodexBinary: remoteCodex, model: "gpt-6.1-sol" });
+      if (mode === "qualified") {
+        await artifacts.prepare("dial_wss");
+        await artifacts.verifyRemoteRunner("dial_wss");
+        await artifacts.verifyRemoteCodex();
+        expect(createHash("sha256").update(await readFile(remoteBinary)).digest("hex")).toBe(createHash("sha256").update(await readFile(controllerRunner)).digest("hex"));
+        expect(await readFile(remoteCodex, "utf8")).toContain(`exec '${join(guestBin, "codex")}' "$@"`);
+      } else {
+        await expect(artifacts.prepare("dial_wss")).rejects.toThrow(mode === "missing-controller" ? "runner_remote_artifact_unavailable"
+          : mode === "missing-codex" ? "runner_remote_codex_artifact_unavailable" : "runner_remote_provider_artifact_incompatible");
+        await expect(access(remoteCodex)).rejects.toThrow();
+      }
+      expect(calls.some(input => JSON.stringify(input.args).includes("provider-pack"))).toBe(false);
+      expect(calls.some(input => input.command === "npm")).toBe(false);
+      expect(calls.filter(input => input.command.endsWith("codex")).every(input => input.args?.[0] === "--version")).toBe(true);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
 
@@ -11815,7 +11900,7 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
-  it.each(["fresh", "existing_state", "symlink_parent", "wrong_identity", "connected", "pending_turn", "remote_probe_failed", "backup_present"])(
+  it.each(["fresh", "fresh-fallback", "fresh-missing-skills", "fresh-skills-upload-failed", "fresh-skills-publish-failed", "existing_state", "symlink_parent", "wrong_identity", "connected", "pending_turn", "remote_probe_failed", "backup_present"])(
     "bootstraps only an untouched provider session in a resumed workspace lease: %s", async (scenario) => {
     const remoteCwd = join(isolatedStateDirectory, "remote");
     const runtimeRoot = join(remoteCwd, ".paperclip-runtime", "paperclip-runner");
@@ -11823,8 +11908,21 @@ describe("runnerd provider runtime wiring", () => {
     const sessionRoot = join(runtimeRoot, "sessions", createHash("sha256").update(execution.session.normalizedSessionId!).digest("hex"));
     if (scenario === "existing_state") await mkdir(sessionRoot, { recursive: true });
     if (scenario === "symlink_parent") await symlink(isolatedStateDirectory, join(runtimeRoot, "sessions"));
-    const syncIn = vi.fn(async () => undefined);
-    const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
+    const syncIn = vi.fn(async (operations: Array<{ files: Array<{ sourcePath: string; targetPath: string; kind: string; mode: number }> }>) => {
+      for (const { files } of operations) for (const file of files) {
+        if (scenario === "fresh-skills-upload-failed" && file.sourcePath.endsWith("/codex-home/skills")) {
+          throw new Error("fixture_skills_upload_failed");
+        }
+        if (file.kind === "directory" && file.mode === 0o555 && await access(file.targetPath).then(() => true, () => false)) {
+          expect(sha256DirectoryTree(file.targetPath)).toBe(sha256DirectoryTree(file.sourcePath));
+          continue;
+        }
+        await mkdir(join(file.targetPath, ".."), { recursive: true });
+        await cp(file.sourcePath, file.targetPath, { recursive: file.kind === "directory" });
+        await chmod(file.targetPath, file.mode);
+      }
+    });
+    const remoteExecute = vi.fn(async (command: { command: string; args?: string[]; stdin?: string }) => {
       if (command.args?.[2] === "paperclip-runner-claim-unstarted-session") {
         let exitCode = 1;
         if (scenario !== "remote_probe_failed") {
@@ -11846,12 +11944,29 @@ describe("runnerd provider runtime wiring", () => {
       if (command.args?.[2] === "paperclip-runner-launch") {
         throw new Error("fixture_stop_after_launch_staging");
       }
+      if (scenario === "fresh-skills-publish-failed" && command.args?.[2] === "paperclip-runner-publish-skills") {
+        return { exitCode: 1, timedOut: false, stdout: "", stderr: "fixture skills publication failed" };
+      }
+      if (command.command === "sh" && (command.stdin || command.args?.[1]?.includes("install -d") || command.args?.[2] === "paperclip-runner-publish-skills")) {
+        execFileSync("sh", command.args!, { input: command.stdin, stdio: ["pipe", "pipe", "pipe"] });
+        return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
+      }
       if (command.args?.[1]?.includes("base64")) return {
         exitCode: 1, timedOut: false, stdout: "", stderr: "",
       };
       return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
     });
     const runtimeContext = nativeRuntimeContextFixture();
+    runtimeContext.instructions.bundle.rootPath = join(isolatedStateDirectory, "instructions");
+    await mkdir(runtimeContext.instructions.bundle.rootPath);
+    await writeFile(join(runtimeContext.instructions.bundle.rootPath, "AGENTS.md"), "Assigned agent instructions");
+    const skillRoot = join(isolatedStateDirectory, "first-task-source");
+    await mkdir(skillRoot);
+    await writeFile(join(skillRoot, "SKILL.md"), "# First task\nUse the assigned first-task workflow.");
+    runtimeContext.skills = [{
+      key: "catalog/first-task", runtimeName: "first-task", versionId: "version-1",
+      bundle: { ...runtimeContext.instructions.bundle, rootPath: skillRoot },
+    }];
     const executionWithContext = { ...execution, runtimeContext };
     const backend = await createRunnerdBackend({
       db: leaseDb(execution), execution: executionWithContext, runnerInstanceId: "runner-new-in-retained-workspace",
@@ -11861,7 +11976,7 @@ describe("runnerd provider runtime wiring", () => {
         leaseId: "lease-resumed", providerKey: "daytona",
         effectiveCapabilities: { runnerWebSocketIngress: true },
         sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "sandbox-retained" },
-        runner: { execute: remoteExecute, syncIn },
+        runner: { execute: remoteExecute, ...(scenario === "fresh-fallback" ? {} : { syncIn }) },
       } as never,
     });
     expect(backend).toBeDefined();
@@ -11881,7 +11996,7 @@ describe("runnerd provider runtime wiring", () => {
       await mkdir(join(options.stateDirectory!, "failover-backups", "current"), { recursive: true });
       await writeFile(join(options.stateDirectory!, "failover-backups", "current", "manifest.json"), "{}");
     }
-    if (scenario === "fresh") {
+    if (scenario.startsWith("fresh")) {
       await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
       expect(remoteExecute.mock.calls.some(([command]) => command.args?.[1]?.includes("install -d"))).toBe(false);
       expect(syncIn).not.toHaveBeenCalled();
@@ -11893,27 +12008,85 @@ describe("runnerd provider runtime wiring", () => {
       // the current invocation's launch files. The actual launch must stage
       // those files without trying to claim/restore the session a second time.
       const home = join(options.stateDirectory!, "codex-home");
-      await mkdir(home, { recursive: true });
+      await prepareIsolatedCodexHome({ context: runtimeContext, codexHome: home });
       await writeFile(join(home, "auth.json"), "fixture-current-credential");
       await writeFile(join(home, "config.toml"), "fixture-current-config");
       await writeFile(join(options.stateDirectory!, "runtime-context.json"), JSON.stringify(runtimeContext));
       syncIn.mockClear();
       await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
       expect(syncIn).not.toHaveBeenCalled();
-      const launched = options.runnerProcessLauncher({
+      const launch = () => options.runnerProcessLauncher({
         command: "/controller/paperclip-runnerd", args: [], cwd: "/controller", environment: {},
       });
+      const remoteHome = join(sessionRoot, "filesystem", "codex-home");
+      if (scenario === "fresh-missing-skills" || scenario.endsWith("-failed")) {
+        if (scenario === "fresh-missing-skills") await releaseMaterializedNativeRuntimeSkills(join(home, "skills"));
+        await mkdir(join(remoteHome, "skills"), { recursive: true });
+        await writeFile(join(remoteHome, "skills", "preserved.md"), "previous skills snapshot");
+        try {
+          await expect(launch().completion).rejects.toThrow(scenario === "fresh-missing-skills"
+            ? "runner_remote_runtime_context_skills_missing"
+            : scenario === "fresh-skills-upload-failed" ? "fixture_skills_upload_failed"
+              : "runner_remote_runtime_context_skills_staging_failed");
+          expect(await readFile(join(remoteHome, "skills", "preserved.md"), "utf8")).toBe("previous skills snapshot");
+          expect(remoteExecute.mock.calls.some(([command]) => command.args?.[2] === "paperclip-runner-launch")).toBe(false);
+        } finally {
+          execFileSync("sh", ["-c", 'find "$1" -type d -exec chmod u+w {} +', "fixture-cleanup", isolatedStateDirectory]);
+        }
+        return;
+      }
+      const launched = launch();
       await expect(launched.completion).rejects.toThrow("fixture_stop_after_launch_staging");
-      for (const name of ["auth.json", "config.toml"]) {
+      try {
+        const remoteSkills = join(remoteHome, "skills");
+        expect(await readFile(join(remoteSkills, "first-task", "SKILL.md"), "utf8")).toContain("assigned first-task workflow");
+        expect((await lstat(remoteSkills)).mode & 0o777).toBe(0o700);
+        expect((await lstat(join(remoteSkills, "first-task"))).mode & 0o222).toBe(0);
+        expect((await lstat(join(remoteSkills, "first-task", "SKILL.md"))).mode & 0o222).toBe(0);
+        await mkdir(join(remoteSkills, ".system"));
+        await writeFile(join(remoteSkills, ".system", "generated.txt"), "Codex builtins");
+        await mkdir(join(remoteHome, "sessions"));
+        await writeFile(join(remoteHome, "sessions", "thread.jsonl"), "durable provider history");
+
+        if (scenario === "fresh") {
+          // A new revision of the same assignment replaces the old sealed files.
+          const revisedSkillRoot = join(isolatedStateDirectory, "first-task-revision");
+          await mkdir(revisedSkillRoot);
+          await writeFile(join(revisedSkillRoot, "SKILL.md"), "# First task\nRevised assigned workflow.");
+          const revisedContext = { ...runtimeContext, skills: [{
+            ...runtimeContext.skills[0]!, versionId: "version-2",
+            bundle: { ...runtimeContext.skills[0]!.bundle, rootPath: revisedSkillRoot },
+          }] };
+          await releaseMaterializedNativeRuntimeSkills(join(home, "skills"));
+          await prepareIsolatedCodexHome({ context: revisedContext, codexHome: home });
+          await expect(launch().completion).rejects.toThrow("fixture_stop_after_launch_staging");
+          expect(await readFile(join(remoteSkills, "first-task", "SKILL.md"), "utf8")).toContain("Revised assigned workflow");
+
+          // Empty assignments revoke old skill files without replacing auth or history.
+          await releaseMaterializedNativeRuntimeSkills(join(home, "skills"));
+          await prepareIsolatedCodexHome({ context: { ...runtimeContext, skills: [] }, codexHome: home });
+          await writeFile(join(home, "auth.json"), "fixture-next-credential");
+          await expect(launch().completion).rejects.toThrow("fixture_stop_after_launch_staging");
+          expect(await readdir(remoteSkills)).toEqual([]);
+          await mkdir(join(remoteSkills, ".system"));
+          expect(await readFile(join(remoteHome, "sessions", "thread.jsonl"), "utf8")).toBe("durable provider history");
+          expect(await readFile(join(remoteHome, "auth.json"), "utf8")).toBe("fixture-next-credential");
+        }
+      } finally {
+        execFileSync("sh", ["-c", 'find "$1" -type d -exec chmod u+w {} +', "fixture-cleanup", isolatedStateDirectory]);
+      }
+      if (scenario === "fresh") {
+        for (const name of ["auth.json", "config.toml"]) {
+          expect(syncIn).toHaveBeenCalledWith([expect.objectContaining({
+            files: [expect.objectContaining({ sourcePath: join(home, name), kind: "file", mode: 0o600 })],
+          })]);
+        }
+        expect(syncIn.mock.calls.flat(2).flatMap((entry: { files: Array<{ sourcePath: string }> }) => entry.files)
+          .filter((file: { sourcePath: string }) => file.sourcePath === runtimeContext.instructions.bundle.rootPath)).toHaveLength(3);
         expect(syncIn).toHaveBeenCalledWith([expect.objectContaining({
-          files: [expect.objectContaining({ sourcePath: join(home, name), kind: "file", mode: 0o600 })],
+          files: [expect.objectContaining({ sourcePath: join(options.stateDirectory!, "runtime-context.json"), kind: "file" })],
         })]);
       }
-      expect(syncIn.mock.calls.flat(2).flatMap((entry: { files: Array<{ sourcePath: string }> }) => entry.files)
-        .filter((file: { sourcePath: string }) => file.sourcePath === runtimeContext.instructions.bundle.rootPath)).toHaveLength(1);
-      expect(syncIn).toHaveBeenCalledWith([expect.objectContaining({
-        files: [expect.objectContaining({ sourcePath: join(options.stateDirectory!, "runtime-context.json"), kind: "file" })],
-      })]);
       expect(remoteExecute.mock.calls.filter(([command]) => command.args?.[2] === "paperclip-runner-claim-unstarted-session")).toHaveLength(1);
     } else {
       await expect(options.prepareExternalRunnerState()).rejects.toThrow("runner_harness_state_mismatch");

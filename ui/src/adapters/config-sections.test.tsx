@@ -56,7 +56,7 @@ async function renderSection(
 }
 
 describe("adapter configuration sections", () => {
-  it("separates provider selection from lifecycle and hides fixed Codex permissions", async () => {
+  it("keeps harness selection in the shared picker and lifecycle in run policy", async () => {
     const config = {
       provider: "codex",
       lifecycleMode: "warm",
@@ -80,7 +80,7 @@ describe("adapter configuration sections", () => {
       "runPolicy",
       config,
     );
-    expect(adapter).toContain('aria-label="Harness"');
+    expect(adapter).toBe("");
     expect(adapter).not.toContain("Runner lifecycle");
     expect(configuration).not.toContain("Permission mode");
     expect(configuration).not.toContain("Runner lifecycle");
@@ -89,12 +89,12 @@ describe("adapter configuration sections", () => {
     expect(policy).not.toContain("ACP agents");
   });
 
-  it("keeps ACP agent admission choices in the adapter section", async () => {
+  it("omits the redundant ACP agent selector", async () => {
     const config = { provider: "acpx", acpxAgent: "claude" };
     const adapter = await renderSection(CodexLocalConfigFields, "paperclip_runner", "adapter", config);
     const policy = await renderSection(CodexLocalConfigFields, "paperclip_runner", "runPolicy", config);
 
-    expect(adapter).toContain('aria-label="ACP agent"');
+    expect(adapter).toBe("");
     expect(adapter).not.toContain("Runner lifecycle");
     expect(policy).toContain("Runner lifecycle");
     expect(policy).not.toContain("ACP agent");

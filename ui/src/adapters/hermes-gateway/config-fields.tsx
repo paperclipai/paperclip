@@ -1,3 +1,4 @@
+import { SelectPopover } from "../../components/ui/select";
 import { configFieldsForSection } from "../config-sections";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
@@ -180,16 +181,16 @@ export function HermesGatewayConfigFields({
         label="Session key strategy"
         hint="Controls X-Hermes-Session-Key. Issue scoped prevents cross-task memory bleed by default."
       >
-        <select
+        <SelectPopover aria-label="Session key strategy"
           value={sessionKeyStrategy}
-          onChange={(event) => writeValue("sessionKeyStrategy", event.target.value)}
-          className={inputClass}
-        >
-          <option value="issue">Issue scoped</option>
-          <option value="agent">Agent scoped</option>
-          <option value="run">Run scoped</option>
-          <option value="none">None</option>
-        </select>
+          onValueChange={(selection) => writeValue("sessionKeyStrategy", selection)}
+         options={[
+           { value: "issue", label: "Issue scoped" },
+           { value: "agent", label: "Agent scoped" },
+           { value: "run", label: "Run scoped" },
+           { value: "none", label: "None" },
+         ]}
+       />
       </Field>
 
       <Field configSection="runPolicy" label="Timeout seconds">

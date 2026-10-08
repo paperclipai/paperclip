@@ -142,6 +142,7 @@ describe("buildPaperclipRunnerConfig", () => {
       codexPermissionMode: "never",
       lifecycleMode: "per_turn",
       model: "gpt-5.4",
+      modelReasoningEffort: "high",
       timeoutSec: 0,
       graceSec: 15,
     });
@@ -149,7 +150,6 @@ describe("buildPaperclipRunnerConfig", () => {
       "engine",
       "agentCommand",
       "stateDir",
-      "modelReasoningEffort",
       "search",
       "fastMode",
       "dangerouslyBypassApprovalsAndSandbox",
@@ -179,7 +179,7 @@ describe("buildPaperclipRunnerConfig", () => {
   it("rejects an unsupported persisted Codex permission instead of coercing it", () => {
     expect(() => buildPaperclipRunnerConfig(makeValues({
       adapterSchemaValues: {
-        provider: "unknown",
+        provider: "codex",
         codexPermissionMode: "unrestricted",
         lifecycleMode: "forever",
         idleTimeoutMs: -1,
@@ -218,6 +218,78 @@ describe("buildPaperclipRunnerConfig", () => {
       model: "gpt-5.6-sol",
       codexPermissionMode: "never",
     });
+  });
+
+  it.each(["modelReasoningEffort", "reasoningEffort", "effort"].flatMap(effortField => [
+    [effortField, "high", true], [effortField, "high", false],
+    [effortField, "low", true], [effortField, "low", false],
+  ] as const))("uses imported Codex %s with current effort %s without changing other settings (external billing=%s)", (effortField, thinkingEffort, allowUnmeteredProvider) => {
+    const importedConfig = {
+      provider: "codex",
+      model: "gpt-5.6-sol",
+      [effortField]: "high",
+      allowUnmeteredProvider,
+      timeoutSec: 120,
+      graceSec: 30,
+      env: {
+        OPENAI_API_KEY: { type: "secret_ref", secretId: "company-openai", version: "latest" },
+      },
+    };
+    const config = buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: importedConfig.model,
+      thinkingEffort,
+      envBindings: importedConfig.env,
+      adapterSchemaValues: importedConfig,
+    }));
+
+    const submittedConfig = JSON.parse(JSON.stringify({ ...importedConfig, ...config }));
+    expect(submittedConfig).toMatchObject({
+      provider: importedConfig.provider,
+      model: importedConfig.model,
+      modelReasoningEffort: thinkingEffort,
+      allowUnmeteredProvider,
+      timeoutSec: importedConfig.timeoutSec,
+      graceSec: importedConfig.graceSec,
+      env: importedConfig.env,
+    });
+    expect(submittedConfig).not.toHaveProperty("reasoningEffort");
+    expect(submittedConfig).not.toHaveProperty("effort");
+    expect(importedConfig[effortField]).toBe("high");
+  });
+
+  it.each(["modelReasoningEffort", "reasoningEffort", "effort"])("clears imported Codex %s when the operator selects Auto", (effortField) => {
+    const importedConfig = { provider: "codex", [effortField]: "high" };
+    const config = buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      thinkingEffort: "",
+      adapterSchemaValues: importedConfig,
+    }));
+
+    // Imports combine the edited configuration with the saved source before
+    // sending JSON. Auto must clear that source value rather than omit an edit.
+    const submittedConfig = JSON.parse(JSON.stringify({ ...importedConfig, ...config }));
+    expect(submittedConfig).not.toHaveProperty("modelReasoningEffort");
+    expect(submittedConfig).not.toHaveProperty("reasoningEffort");
+    expect(submittedConfig).not.toHaveProperty("effort");
+    expect(importedConfig[effortField]).toBe("high");
+  });
+
+  it("preserves non-Codex schema effort fields", () => {
+    const schemaValues = {
+      provider: "opencode",
+      model: "provider/model",
+      modelReasoningEffort: "high",
+      reasoningEffort: "high",
+      effort: "high",
+    };
+    const config = buildPaperclipRunnerConfig(makeValues({
+      adapterType: "paperclip_runner",
+      model: "provider/model",
+      thinkingEffort: "low",
+      adapterSchemaValues: schemaValues,
+    }));
+    expect(config).toMatchObject(schemaValues);
   });
 
   it.each(["claude-opus-5", "my-custom-model"])("preserves the selected ACPX Claude model %s", (model) => {

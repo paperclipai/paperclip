@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -14,6 +15,257 @@ const repoRoot = path.resolve(
 function readWorkflow(name) {
   return readFileSync(path.join(repoRoot, ".github/workflows", name), "utf8");
 }
+
+function job(workflow, name) {
+  return workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [a-z_]+:\n/)[0] ?? '';
+}
+function condition(block, needs, github = {}, inputs = {}, isCancelled = false) {
+  const expression = block.match(/    if: >-\n((?:      .+\n)+)/)?.[1]?.trim();
+  assert.ok(expression, 'Routing must use an explicit condition, including skipped ancestors');
+  return Function('needs', 'github', 'inputs', 'cancelled', `return (${expression})`)(needs, github, inputs, () => isCancelled);
+}
+
+test('release producer mode validates immutable data inputs and adds only the missing native target jobs', () => {
+  const workflow = readWorkflow('release-verify.yml');
+  assert.match(workflow, /runner_assets_only:[\s\S]*?default: false/);
+  for (const name of ['runner_chaos_evals', 'typecheck', 'general_tests', 'serialized_tests', 'runner_workflow_evals', 'verify_paperclip_runner', 'build']) {
+    // The default source gate keeps all its prior checks. Producer-only mode
+    // must not create a second broad suite or repeat paid eval authorization.
+    assert.match(job(workflow, name), /if: \$\{\{ !inputs\.runner_assets_only \}\}/, name);
+  }
+  const request = job(workflow, 'runner_release_request');
+  assert.doesNotMatch(request, /uses: actions\/checkout|secrets\./);
+  const validation = request.split('        run: |\n')[1];
+  assert.ok(validation);
+  const source = 'a'.repeat(40), image = `ghcr.io/paperclipai/paperclip@sha256:${'b'.repeat(64)}`;
+  for (const [SOURCE_SHA, IMAGE_DIGEST, expected] of [
+    [source, '', 0], [source, image, 0], ['master', image, 1], ['', image, 1],
+    [source, 'ghcr.io/paperclipai/paperclip:latest', 1], [source, image.replace('paperclipai', 'other'), 1],
+  ]) {
+    const result = spawnSync('bash', ['-c', validation], { env: { ...process.env, SOURCE_SHA, IMAGE_DIGEST }, encoding: 'utf8' });
+    assert.equal(result.status, expected, result.stderr);
+  }
+  for (const name of ['runner_release_binaries', 'runner_release_pack']) {
+    const producer = job(workflow, name);
+    assert.match(producer, /needs: runner_release_request/);
+    assert.match(producer, /contents: read/);
+    assert.doesNotMatch(producer, /secrets\.|contents: write|id-token: write|packages: write|--push|--password/);
+    assert.match(producer, /test "\$\(git rev-parse HEAD\)" = "\$SOURCE_SHA"/);
+  }
+  const binaries = job(workflow, 'runner_release_binaries');
+  assert.deepEqual([...binaries.matchAll(/- target: (.+)/g)].map(match => match[1]), ['darwin-arm64', 'darwin-x64']);
+  assert.match(binaries, /cargo build --release.*--locked/);
+  assert.match(binaries, /record-binary/);
+  const pack = job(workflow, 'runner_release_pack');
+  assert.match(pack, /docker pull "\$IMAGE_DIGEST"/);
+  assert.match(pack, /--target runner-provider-pack/);
+  assert.match(pack, /docker cp "\$owner:\$pack_path"/);
+  assert.match(pack, /daemon_path=\/app\/server\/dist\/vendor\/paperclip-runner\/bin\/paperclip-runnerd/);
+  assert.match(pack, /--entrypoint "\$daemon_path" "\$image" --build-metadata/);
+  assert.match(pack, /docker cp "\$owner:\$daemon_path"/);
+  assert.match(pack, /timeout 30s docker start --attach "\$owner"/);
+  assert.match(pack, /record-image-binary/);
+  assert.match(pack, /trap 'docker rm -f "\$owner"/);
+  const helper = readFileSync(path.join(repoRoot, 'scripts/release-runner-artifacts.mjs'), 'utf8');
+  assert.match(helper, /stage-release-runner-binaries\.mjs/);
+  assert.equal((helper.match(/execFileSync\(process\.execPath/g) ?? []).length, 1, 'Only the existing assembler owns staging');
+});
+
+test('channel assembly routing preserves skipped promotions and blocks incomplete data before publishers', () => {
+  const workflow = readWorkflow('release.yml');
+  const skipped = () => ({ result: 'skipped', outputs: {} });
+  const base = () => Object.fromEntries(['verify_canary', 'select_nightly', 'select_beta', 'verify_beta_candidate', 'preflight_stable', 'verify_stable'].map(name => [name, skipped()]));
+  const pin = job(workflow, 'pin_runner_release_source');
+  assert.equal(condition(pin, base(), { event_name: 'workflow_dispatch' }), false);
+  for (const [name, extra, event] of [
+    ['verify_canary', {}, 'push'], ['select_nightly', { proceed: 'true' }, 'schedule'],
+    ['select_beta', { mode: 'promote' }, 'workflow_dispatch'],
+  ]) {
+    const needs = base(); needs[name] = { result: 'success', outputs: extra };
+    assert.equal(condition(pin, needs, { event_name: event }), true, `${name} with unrelated skipped gates`);
+    assert.equal(condition(pin, needs, { event_name: event }, {}, true), false);
+  }
+  const stable = base(); stable.preflight_stable.result = 'success'; stable.verify_stable.result = 'success';
+  assert.equal(condition(pin, stable, { event_name: 'workflow_dispatch' }), true);
+  stable.verify_stable.result = 'failure';
+  assert.equal(condition(pin, stable, { event_name: 'workflow_dispatch' }), false);
+  assert.match(pin, /git show "\$source_sha:scripts\/release\.sh" \| grep -F 'PAPERCLIP_RELEASE_RUNNER_ASSETS'/);
+  assert.match(pin, /git cat-file -e "\$source_sha:scripts\/release-runner-artifacts\.mjs"/);
+
+  const ready = { verify_canary: { result: 'success' },
+    select_nightly: { result: 'success', outputs: { proceed: 'true' } }, smoke_nightly: { result: 'success' },
+    select_beta: { result: 'success', outputs: { mode: 'promote' } }, verify_beta_candidate: skipped(),
+    verify_stable: { result: 'success' },
+    pin_runner_release_source: { result: 'success', outputs: { required: 'true' } }, release_runner_assets: { result: 'success' } };
+  for (const [name, github, inputs] of [
+    ['publish_canary', { event_name: 'push' }, {}], ['publish_nightly', { event_name: 'schedule' }, {}],
+    ['publish_beta', { event_name: 'workflow_dispatch' }, {}],
+    ['preview_stable', { event_name: 'workflow_dispatch' }, { channel: 'stable', dry_run: true }],
+    ['publish_stable', { event_name: 'workflow_dispatch' }, { channel: 'stable', dry_run: false }],
+  ]) {
+    const block = job(workflow, name);
+    assert.equal(condition(block, ready, github, inputs), true, name);
+    for (const result of ['failure', 'cancelled', 'skipped']) {
+      assert.equal(condition(block, { ...ready, release_runner_assets: { result } }, github, inputs), false, `${name}/${result}`);
+    }
+    const older = { ...ready, pin_runner_release_source: { result: 'success', outputs: { required: 'false' } }, release_runner_assets: skipped() };
+    assert.equal(condition(block, older, github, inputs), true, `${name} older promoted contract`);
+    assert.match(block, /working-directory: source/);
+    const validation = block.match(/name: Validate runner data against[\s\S]*?(?=\n      - name:)/)?.[0];
+    assert.ok(validation);
+    assert.match(validation, /node "\$GITHUB_WORKSPACE\/trusted\/scripts\/release-runner-artifacts\.mjs" unpack/);
+    assert.match(validation, /"\$RUNNER_TEMP\/runner-release-assets" "\$GITHUB_WORKSPACE\/source"/);
+    assert.doesNotMatch(validation, /node scripts\//, 'Credentialed publishers may consume only trusted transfer tooling');
+  }
+  const release = readFileSync(path.join(repoRoot, 'scripts/release.sh'), 'utf8');
+  assert.ok(release.indexOf('pnpm build\n# Production publication') < release.indexOf('PAPERCLIP_RELEASE_RUNNER_ASSETS/bin'));
+  assert.ok(release.indexOf('PAPERCLIP_RELEASE_RUNNER_ASSETS/bin') < release.indexOf('node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"'));
+  assert.match(release, /elif \[ "\$dry_run" = false \]; then\n\s+release_fail/);
+});
+
+test('premerge qualification consumes one Linux-produced assembled npm graph on all three existing targets', () => {
+  const workflow = readWorkflow('release-smoke.yml');
+  const producer = job(workflow, 'runner_release_assets');
+  assert.match(producer, /qualification_source_sha != '' && inputs\.qualification_image_digest != ''/);
+  assert.match(producer, /runner_assets_only: true/);
+  assert.match(producer, /runner_image_digest: \$\{\{ inputs\.qualification_image_digest \}\}/);
+  const smoke = job(workflow, 'smoke');
+  assert.match(smoke, /inputs\.qualification_source_sha == '' && inputs\.qualification_image_digest == ''/);
+  assert.ok(smoke.indexOf('Validate and materialize the exact-source release data') < smoke.indexOf('Qualify exact-source installed browser entry'));
+  assert.match(smoke, /PAPERCLIP_PUBLIC_PACK_OUTPUT:/);
+  assert.match(smoke, /steps\.pack_transfer\.outputs\.artifact-id != ''/);
+  assert.match(smoke, /id: pack_transfer\n\s+if: \$\{\{ !cancelled\(\) && steps\.pack_identity\.outputs\.artifact_name != '' \}\}/);
+  const mac = job(workflow, 'smoke_macos');
+  assert.deepEqual([...mac.matchAll(/- target: (.+)/g)].map(match => match[1]), ['darwin-arm64', 'darwin-x64']);
+  assert.match(mac, /needs\.smoke\.outputs\.packed_artifact/);
+  assert.match(mac, /--consume-pack "\$RUNNER_TEMP\/runner-public-pack"/);
+  assert.match(mac, /PAPERCLIP_PUBLIC_PACK_REQUIRE_LOCK_PROVENANCE: "1"/);
+  assert.doesNotMatch(mac, /pnpm build|npm pack|secrets\./);
+});
+
+test("provider-free release qualification validates paired immutable inputs before checkout", () => {
+  const workflow = readWorkflow("release-smoke.yml");
+  const validation = workflow.match(/name: Validate paired immutable qualification inputs[\s\S]*?run: \|\n([\s\S]*?)(?=\n      - name:)/)?.[1];
+  assert.ok(validation);
+  const source = "a".repeat(40), image = `ghcr.io/paperclipai/paperclip@sha256:${"b".repeat(64)}`;
+  for (const [SOURCE_SHA, IMAGE_DIGEST, expected] of [
+    ["", "", 0], [source, image, 0], [source, "", 1], ["", image, 1], ["master", image, 1],
+    [source, "ghcr.io/paperclipai/paperclip:latest", 1], [source, image.replace("paperclipai", "other"), 1],
+  ]) {
+    const result = spawnSync("bash", ["-c", validation], { env: { ...process.env, SOURCE_SHA, IMAGE_DIGEST }, encoding: "utf8" });
+    assert.equal(result.status, expected, `${SOURCE_SHA}/${IMAGE_DIGEST}: ${result.stderr}`);
+  }
+  const smoke = workflow.split("\n  smoke:\n")[1];
+  assert.ok(smoke.indexOf("Validate paired immutable qualification inputs") < smoke.indexOf("Checkout repository"));
+  assert.match(smoke, /ref: \$\{\{ inputs\.qualification_source_sha \|\| github\.sha \}\}/);
+  assert.match(workflow, /permissions:\n  contents: read/);
+  assert.doesNotMatch(workflow, /secrets\./);
+});
+
+test("provider-free qualification reuses the installed browser oracle and preserves published smoke", () => {
+  const workflow = readWorkflow("release-smoke.yml");
+  const service = workflow.split("\n  smoke_service:\n")[1].split("\n  smoke:\n")[0];
+  assert.doesNotMatch(service.split("steps:")[0], /qualification_source_sha == ''/);
+  assert.ok(service.indexOf("Validate paired immutable qualification inputs") < service.indexOf("Checkout repository"));
+  assert.match(service, /ref: \$\{\{ inputs\.qualification_source_sha \|\| github\.sha \}\}/);
+  const bootstrap = service.match(/name: Prepare the exact candidate CLI source bootstrap[\s\S]*?(?=\n      - name:)/)?.[0];
+  assert.ok(bootstrap);
+  const sourceCheck = bootstrap.indexOf('test "$(git rev-parse HEAD)" = "$SOURCE_SHA"');
+  const sourceLock = bootstrap.indexOf('sha256sum pnpm-lock.yaml > "$RUNNER_TEMP/service-source-qualification/source-lock.sha256"');
+  const resolveLock = bootstrap.indexOf("pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile");
+  const buildLock = bootstrap.indexOf('sha256sum pnpm-lock.yaml > "$RUNNER_TEMP/service-source-qualification/build-lock.sha256"');
+  const frozenInstall = bootstrap.indexOf("pnpm install --frozen-lockfile");
+  assert.ok(sourceCheck >= 0 && sourceCheck < sourceLock && sourceLock < resolveLock && resolveLock < buildLock && buildLock < frozenInstall,
+    "Exact-source qualification must record the committed and CI-generated lock before its frozen install");
+  assert.match(bootstrap, /source-sha\.txt/);
+  assert.match(bootstrap, /bootstrap-lock-resolution\.log/);
+  assert.match(bootstrap, /cli\/node_modules\/tsx\/dist\/cli\.mjs/);
+  assert.match(bootstrap, /cli\/src\/index\.ts/);
+  assert.match(bootstrap, /bootstrap\.mjs" --help/);
+  assert.match(service, /PAPERCLIPAI_CLI_PATH: \$\{\{ runner\.temp \}\}\/service-source-qualification\/bootstrap\.mjs/);
+  assert.doesNotMatch(bootstrap, /cli\/dist\/index\.js|pnpm --filter paperclipai build/);
+  assert.match(service, /SERVICE_QUALIFICATION_RECEIPT:/);
+  assert.match(workflow, /name: Launch Docker smoke harness\n\s+if: inputs\.qualification_source_sha == ''/);
+  assert.match(workflow, /name: Run release smoke Playwright suite\n\s+if: inputs\.qualification_source_sha == ''/);
+  assert.match(workflow, /PAPERCLIP_PUBLIC_INSTALL_BROWSER_SMOKE: "1"/);
+  assert.match(workflow, /test "\$\(git rev-parse HEAD\)" = "\$SOURCE_SHA"/);
+  assert.match(workflow, /node scripts\/verify-grok-npm-install\.mjs/);
+  assert.match(workflow, /installed-cli-probe\.mjs --standard-image "\$SOURCE_SHA" "\$IMAGE_DIGEST"/);
+  const imageStep = workflow.match(/name: Qualify immutable image default startup and UI bytes[\s\S]*?(?=\n      - name:)/)?.[0];
+  assert.ok(imageStep);
+  assert.match(imageStep, /!cancelled\(\)/);
+  const evidenceDirectoryIndex = imageStep.indexOf('mkdir -p "$RUNNER_TEMP/source-qualification"');
+  assert.ok(evidenceDirectoryIndex >= 0 && evidenceDirectoryIndex < imageStep.indexOf('node tests/release-smoke/installed-cli-probe.mjs'),
+    "Image evidence directory must be created independently before output redirection");
+  assert.match(workflow, /name: Upload provider-free qualification evidence\n\s+if: always\(\) && inputs\.qualification_source_sha != ''/);
+  assert.match(workflow, /timeout-minutes: 45/);
+});
+
+test('qualification retains both lock graphs and rejects changes during frozen install, build, or packing', () => {
+  const workflow = readWorkflow('release-smoke.yml');
+  const install = workflow.match(/name: Install exact candidate dependencies with lock evidence[\s\S]*?run: \|\n([\s\S]*?)(?=\n      - name:)/)?.[1];
+  const build = workflow.match(/name: Qualify exact-source installed browser entry[\s\S]*?run: \|\n([\s\S]*?)(?=\n      - name:)/)?.[1];
+  const bootstrap = workflow.match(/name: Prepare the exact candidate CLI source bootstrap[\s\S]*?run: \|\n([\s\S]*?)(?=\n      - name:)/)?.[1]?.split('          # The raw workspace CLI bundle')[0];
+  assert.ok(install && build && bootstrap);
+  assert.match(workflow, /name: Install dependencies\n\s+if: inputs\.qualification_source_sha == ''\n\s+run: pnpm install --no-frozen-lockfile/);
+  const sourceRevision = 'a'.repeat(40), committed = "lockfileVersion: '9.0'\nimporters: {}\n";
+  const resolved = "lockfileVersion: '9.0'\nimporters:\n  server:\n    dependencies:\n      compression:\n        specifier: ^1.8.2\n        version: 1.8.2\n";
+  for (const [service, mutation] of [[true, ''], [true, 'frozen'], [false, ''], [false, 'frozen'], [false, 'build'], [false, 'pack'], [false, 'source']]) {
+    const root = mkdtempSync(path.join(tmpdir(), 'paperclip-lock-qualification-test-'));
+    try {
+      const bin = path.join(root, 'bin'), temporary = path.join(root, 'artifacts');
+      mkdirSync(bin); mkdirSync(temporary);
+      const source = path.join(root, 'committed-lock.yaml');
+      writeFileSync(source, committed);
+      writeFileSync(path.join(root, 'pnpm-lock.yaml'), mutation === 'source' ? 'changed before resolution\n' : committed);
+      const directory = path.join(temporary, service ? 'service-source-qualification' : 'source-qualification');
+      const executable = (name, code) => writeFileSync(path.join(bin, name), `#!${process.execPath}\n${code}\n`, { mode: 0o755 });
+      executable('git', `import {readFileSync} from 'node:fs';import {spawnSync} from 'node:child_process';
+        const args=process.argv.slice(2);
+        if(args.join(' ')==='rev-parse HEAD')console.log(process.env.SOURCE_SHA);
+        else if(args[0]==='show' && args[1]===process.env.SOURCE_SHA+':pnpm-lock.yaml')process.stdout.write(readFileSync(process.env.FIXTURE_SOURCE_LOCK));
+        else if(args.join(' ')==='diff -- pnpm-lock.yaml'){
+          const diff=spawnSync('diff',['-u',process.env.FIXTURE_SOURCE_LOCK,'pnpm-lock.yaml'],{encoding:'utf8'});
+          if(diff.error)throw diff.error;if(diff.status>1)process.exit(diff.status);process.stdout.write(diff.stdout);
+        }else process.exit(64);`);
+      executable('pnpm', `import {appendFileSync,writeFileSync} from 'node:fs';
+        const args=process.argv.slice(2);appendFileSync('commands.jsonl',JSON.stringify(args)+'\\n');
+        if(args.join(' ')==='install --resolution-only --ignore-scripts --no-frozen-lockfile')writeFileSync('pnpm-lock.yaml',${JSON.stringify(resolved)});
+        else if(args.join(' ')==='install --frozen-lockfile'){if(process.env.FIXTURE_MUTATION==='frozen')appendFileSync('pnpm-lock.yaml','# changed by install\\n');}
+        else if(args.join(' ')==='build'){if(process.env.FIXTURE_MUTATION==='build')appendFileSync('pnpm-lock.yaml','# changed by build\\n');}
+        else process.exit(65);`);
+      executable('node', `import {appendFileSync,writeFileSync} from 'node:fs';
+        if(process.argv.slice(2).join(' ')!=='scripts/verify-grok-npm-install.mjs')process.exit(66);
+        writeFileSync('pack-invoked','true');if(process.env.FIXTURE_MUTATION==='pack')appendFileSync('pnpm-lock.yaml','# changed by packing\\n');`);
+      const result = spawnSync('bash', ['-c', service ? bootstrap : `${install}\n${build}`], {
+        cwd: root, encoding: 'utf8', timeout: 10_000, env: { ...process.env, NODE_OPTIONS: '',
+          PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: temporary, SOURCE_SHA: sourceRevision,
+          FIXTURE_SOURCE_LOCK: source, FIXTURE_MUTATION: mutation },
+      });
+      assert.equal(result.status === 0, mutation === '', `${service ? 'service' : 'public'}/${mutation}: ${result.stderr}`);
+      assert.equal(readFileSync(path.join(directory, 'source-pnpm-lock.yaml'), 'utf8'), committed);
+      if (mutation === 'source') {
+        assert.equal(existsSync(path.join(root, 'commands.jsonl')), false, 'A modified source lock must fail before resolution');
+        continue;
+      }
+      assert.equal(readFileSync(path.join(directory, 'build-pnpm-lock.yaml'), 'utf8'), resolved);
+      assert.match(readFileSync(path.join(directory, 'lock-resolution.patch'), 'utf8'), /\+\s+specifier: \^1\.8\.2/);
+      for (const kind of ['source', 'build']) {
+        const retained = path.join(directory, `${kind}-pnpm-lock.yaml`);
+        const expected = spawnSync('sha256sum', [retained], { encoding: 'utf8' }).stdout.split(/\s+/)[0];
+        assert.equal(readFileSync(path.join(directory, `${kind}-lock.sha256`), 'utf8').split(/\s+/)[0], expected);
+      }
+      const commands = readFileSync(path.join(root, 'commands.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      assert.deepEqual(commands.slice(0, 2), [['install', '--resolution-only', '--ignore-scripts', '--no-frozen-lockfile'], ['install', '--frozen-lockfile']]);
+      assert.equal(existsSync(path.join(root, 'pack-invoked')), !service && ['', 'pack'].includes(mutation),
+        'A changed install/build lock must not reach the producer');
+      if (mutation === '') {
+        assert.equal(readFileSync(path.join(root, 'pnpm-lock.yaml'), 'utf8'), resolved);
+        assert.match(readFileSync(path.join(directory, service ? 'bootstrap-lock-preservation.log' : 'build-lock-preservation.log'), 'utf8'), /pnpm-lock.yaml: OK/);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});
 
 test("chaos verification isolates callers that verify the same source commit", () => {
   const chaosWorkflow = readWorkflow("runner-chaos-evals.yml");
@@ -45,7 +297,10 @@ test("canary reuses exact-source proof while stable keeps full verification", ()
   assert.match(canary, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /run: node scripts\/cloud-source-verification\.mjs "\$SOURCE_SHA"/);
   assert.doesNotMatch(canary, /release-verify\.yml|continue-on-error|always\(\)/);
-  assert.match(releaseWorkflow, /publish_canary:\n\s+if: github\.event_name == 'push'\n\s+needs: verify_canary/);
+  const publishCanary = releaseWorkflow.split('  publish_canary:\n')[1].split('\n  smoke_canary_onboarding:')[0];
+  assert.match(publishCanary, /needs: \[verify_canary, pin_runner_release_source, release_runner_assets\]/);
+  assert.match(publishCanary, /needs\.verify_canary\.result == 'success'/);
+  assert.match(publishCanary, /needs\.release_runner_assets\.result == 'success'/);
   // The stable lane is gated on the stable channel since the nightly lane
   // was added; a `needs:` line (for example a preflight job) may sit between
   // the gate and the delegation.

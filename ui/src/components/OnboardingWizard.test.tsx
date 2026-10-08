@@ -64,7 +64,7 @@ const mockAgentsApi = vi.hoisted(() => ({
     async (): Promise<import("@paperclipai/shared").AdapterEnvironmentTestResult> => ({
       adapterType: "claude_local",
       status: "pass",
-      checks: [],
+      checks: [{ code: "provider_hello_probe_passed", level: "info" as const, message: "Authenticated" }],
       testedAt: new Date().toISOString(),
     }),
   ),
@@ -377,7 +377,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockAgentsApi.testEnvironment.mockResolvedValue({
       adapterType: "claude_local",
       status: "pass" as const,
-      checks: [],
+      checks: [{ code: "provider_hello_probe_passed", level: "info" as const, message: "Authenticated" }],
       testedAt: new Date().toISOString(),
     });
     mockAgentsApi.hire.mockReset();
@@ -820,6 +820,23 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       return { root, clickByText };
     }
 
+    it("does not hire when native runtime readiness passes but provider authentication fails", async () => {
+      mockAgentsApi.testEnvironment.mockResolvedValueOnce({
+        adapterType: "paperclip_runner", status: "pass", testedAt: "now",
+        checks: [{ code: "acpx_runtime_ready", level: "info", message: "Installed" }],
+      }).mockResolvedValueOnce({
+        adapterType: "claude_local", status: "fail", testedAt: "now",
+        checks: [{ code: "claude_hello_probe_failed", level: "error", message: "Invalid credentials" }],
+      });
+      const { root, clickByText } = await openConnectStep();
+      await clickByText(t => isArcPrimary(t));
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
+      expect((mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[])?.[2]).toMatchObject({ runner: "legacy" });
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Invalid credentials");
+      await act(async () => root.unmount());
+    });
+
     it("blocks the hire on a warn result that holds adapter_auth_missing, and shows the returned checks", async () => {
       mockAgentsApi.testEnvironment.mockResolvedValue({
         adapterType: "claude_local",
@@ -989,7 +1006,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockAgentsApi.testEnvironment.mockResolvedValue({
         adapterType: "claude_local",
         status: "pass" as const,
-        checks: [],
+        checks: [{ code: "provider_hello_probe_passed", level: "info" as const, message: "Authenticated" }],
         testedAt: new Date().toISOString(),
       });
       // The hire fails, which is what leaves the passing probe behind.
@@ -1212,7 +1229,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
             ? {
                 adapterType: "claude_local" as const,
                 status: "pass" as const,
-                checks: [],
+                checks: [{ code: "provider_hello_probe_passed", level: "info" as const, message: "Authenticated" }],
                 testedAt: new Date().toISOString(),
               }
             : {

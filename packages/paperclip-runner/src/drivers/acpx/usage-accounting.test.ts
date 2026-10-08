@@ -170,3 +170,29 @@ describe("Pi prompt accounting authority", () => {
     });
   });
 });
+
+describe("qualified ACPX prompt cost deltas", () => {
+  const receipt = { input_tokens: 12, output_tokens: 5, cache_read_input_tokens: 2, cache_creation_input_tokens: 0, thought_tokens: 0 };
+  const first = { lastRequestId: "first", usageCost: { amount: 0.21211200000000002, currency: "USD" },
+    requestTokenUsage: { first: receipt }, promptMessageIds: ["first"] };
+  it.each(["claude", "grok"] as const)("uses the %s fresh receipt price once and derives only the follow-up delta", agent => {
+    expect(persistedAcpxTurnUsage({ promptMessageIds: [] }, first, "first", agent)?.costDelta)
+      .toEqual({ amount: 0.212112, currency: "USD" });
+    const second = { ...first, lastRequestId: "second", usageCost: { amount: 0.31211200000000006, currency: "USD" },
+      requestTokenUsage: { first: receipt, second: receipt }, promptMessageIds: ["first", "second"] };
+    expect(persistedAcpxTurnUsage(first, second, "second", agent)?.costDelta).toEqual({ amount: 0.1, currency: "USD" });
+    expect(persistedAcpxTurnUsage(second, second, "second", agent)).toBeNull();
+  });
+  it("never reprices unknown prior work, a falling total, non-USD cost, or unqualified profiles", () => {
+    expect(persistedAcpxTurnUsage({ lastRequestId: "prior", requestTokenUsage: { prior: receipt } }, first, "first", "claude")?.costDelta).toBeUndefined();
+    expect(persistedAcpxTurnUsage({ promptMessageIds: ["prior"] }, first, "first", "grok")?.costDelta).toBeUndefined();
+    expect(persistedAcpxTurnUsage({ usageCost: { amount: 1, currency: "USD" } }, first, "first", "grok")?.costDelta).toBeUndefined();
+    expect(persistedAcpxTurnUsage({}, { ...first, usageCost: { amount: 1, currency: "EUR" } }, "first", "claude")?.costDelta).toBeUndefined();
+    for (const agent of ["cursor", "copilot", "pi", "codex", null] as const) {
+      expect(persistedAcpxTurnUsage({}, first, "first", agent)?.costDelta).toBeUndefined();
+    }
+    for (const amount of [null, undefined, -1, Infinity, Number.MAX_VALUE]) {
+      expect(persistedAcpxTurnUsage({}, { ...first, usageCost: { amount, currency: "USD" } }, "first", "claude")?.costDelta).toBeUndefined();
+    }
+  });
+});

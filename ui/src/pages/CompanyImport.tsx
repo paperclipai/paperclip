@@ -1,3 +1,5 @@
+import { resolveAgentRunnerConfig } from "@paperclipai/adapter-utils";
+import { agentHarnessType } from "@paperclipai/shared";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -559,28 +561,12 @@ function ConflictResolutionList({
 
 const FALLBACK_IMPORT_ADAPTER_TYPE = "claude_local";
 const IMPORT_ADAPTER_OPTIONS: { value: string; label: string }[] = [
-  ...listUIAdapters().map((adapter) => ({
+  ...listUIAdapters().filter(adapter => adapter.type !== "paperclip_runner").map((adapter) => ({
     value: adapter.type,
     label: adapterLabels[adapter.type] ?? getAdapterLabel(adapter.type),
   })),
   { value: "openai_dot", label: "OpenAI Dot (experimental)" },
 ];
-
-// Dot is a picker choice backed by the shared Runner API adapter.
-function importAdapterValues(choice: string, sourceConfig?: Record<string, unknown>): CreateConfigValues {
-  return {
-    ...defaultCreateValues,
-    adapterType: choice === "openai_dot" ? "paperclip_runner" : choice,
-    ...(choice === "openai_dot" ? {
-      adapterSchemaValues: {
-        provider: "openai_dot",
-        allowUnmeteredProvider: sourceConfig?.allowUnmeteredProvider === true,
-        dotAttachmentAccess: sourceConfig?.dotAttachmentAccess === true,
-        dotWorkspaceAccess: sourceConfig?.dotWorkspaceAccess === true,
-      },
-    } : {}),
-  };
-}
 
 // ── Adapter picker for imported agents ───────────────────────────────
 
@@ -589,9 +575,10 @@ interface AdapterPickerItem {
   name: string;
   /** Adapter type from the package manifest (the source's adapter). */
   adapterType: string;
-  /** Display choice, including the separate Dot provider. */
+  /** Display choice, including the separately gated Dot provider. */
   adapterChoice: string;
   adapterConfig: Record<string, unknown>;
+  runner?: import("@paperclipai/shared").AgentRunnerChoice;
   /**
    * Set when the manifest adapter is not installed on the destination: the
    * adapter type the agent falls back to unless the user picks another one.
@@ -599,6 +586,56 @@ interface AdapterPickerItem {
    * which fails open to the manifest adapter except for experimental Runner providers).
    */
   fallbackAdapterType: string | null;
+}
+
+function importedAdapterConfigValues(agent: AdapterPickerItem | undefined, selectedType: string): CreateConfigValues {
+  const sameHarness = agent && agentHarnessType(selectedType, agent.adapterConfig)
+    === agentHarnessType(agent.adapterType, agent.adapterConfig);
+  if (selectedType === "openai_dot") {
+    const sourceConfig = sameHarness ? agent.adapterConfig : {};
+    return {
+      ...defaultCreateValues,
+      adapterType: "paperclip_runner",
+      runner: "paperclip",
+      adapterSchemaValues: {
+        ...sourceConfig,
+        provider: "openai_dot",
+        allowUnmeteredProvider: sourceConfig?.allowUnmeteredProvider === true,
+        dotAttachmentAccess: sourceConfig?.dotAttachmentAccess === true,
+        dotWorkspaceAccess: sourceConfig?.dotWorkspaceAccess === true,
+      },
+    };
+  }
+  const legacyConfig = sameHarness && selectedType !== "paperclip_runner" ? agent.adapterConfig ?? {} : {};
+  const text = (key: string) => typeof legacyConfig[key] === "string" ? legacyConfig[key] : "";
+  return {
+    ...defaultCreateValues,
+    adapterType: selectedType,
+    runner: sameHarness ? agent.runner : "auto",
+    adapterSchemaValues: sameHarness ? agent.adapterConfig : {},
+    model: sameHarness ? String(agent.adapterConfig?.model ?? "") : "",
+    cwd: text("cwd"),
+    instructionsFilePath: text("instructionsFilePath"),
+    promptTemplate: text("promptTemplate"),
+    command: text("command"),
+    args: Array.isArray(legacyConfig.args) ? legacyConfig.args.join(", ") : "",
+    extraArgs: Array.isArray(legacyConfig.extraArgs) ? legacyConfig.extraArgs.join(", ") : "",
+    thinkingEffort: sameHarness && selectedType === "paperclip_runner"
+      && agentHarnessType(selectedType, agent.adapterConfig) === "codex_local"
+      ? String(agent.adapterConfig?.modelReasoningEffort ?? agent.adapterConfig?.reasoningEffort ?? agent.adapterConfig?.effort ?? "")
+      : text("modelReasoningEffort") || text("effort") || text("reasoningEffort") || text("variant"),
+    chrome: legacyConfig.chrome === true,
+    dangerouslySkipPermissions: legacyConfig.dangerouslySkipPermissions !== false,
+    search: legacyConfig.search === true,
+    fastMode: legacyConfig.fastMode === true,
+    dangerouslyBypassSandbox: selectedType === "gemini_local" ? legacyConfig.sandbox === false
+      : legacyConfig.dangerouslyBypassApprovalsAndSandbox === true || legacyConfig.dangerouslyBypassSandbox === true,
+    maxTurnsPerRun: typeof legacyConfig.maxTurnsPerRun === "number" ? legacyConfig.maxTurnsPerRun : defaultCreateValues.maxTurnsPerRun,
+    envBindings: legacyConfig.env && typeof legacyConfig.env === "object" && !Array.isArray(legacyConfig.env)
+      ? legacyConfig.env as Record<string, unknown> : {},
+    url: text("url"),
+    bootstrapPrompt: text("bootstrapPrompt"),
+  };
 }
 
 function AdapterPickerList({
@@ -636,9 +673,7 @@ function AdapterPickerList({
             const selectedType =
               adapterOverrides[agent.slug] ?? agent.fallbackAdapterType ?? agent.adapterChoice;
             const isExpanded = expandedSlugs.has(agent.slug);
-            const vals = configValues[agent.slug] ?? importAdapterValues(
-              selectedType, selectedType === agent.adapterChoice ? agent.adapterConfig : undefined,
-            );
+            const vals = configValues[agent.slug] ?? importedAdapterConfigValues(agent, selectedType);
 
             return (
               <div key={agent.slug}>
@@ -655,7 +690,7 @@ function AdapterPickerList({
                   <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />
                   <select
                     className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none focus:border-foreground"
-                    value={selectedType}
+                    value={agentHarnessType(selectedType, agent.adapterConfig)}
                     onChange={(e) => onChangeAdapter(agent.slug, e.target.value)}
                   >
                     {adapterOptions.map((opt) => (
@@ -1035,7 +1070,7 @@ export function CompanyImport() {
   const ceoAdapterType = useMemo(() => {
     if (!companyAgents) return "claude_local";
     const ceo = companyAgents.find((a) => a.role === "ceo");
-    return ceo?.adapterType ?? "claude_local";
+    return ceo ? agentHarnessType(ceo.adapterType, ceo.adapterConfig) : "claude_local";
   }, [companyAgents]);
 
   // Fetch the destination's installed adapters so imported agents keep their
@@ -1058,17 +1093,15 @@ export function CompanyImport() {
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
   });
-  // Each Runner provider choice fails closed until its own opt-in and the
-  // shared adapter's availability are known. Dot does not enable other providers.
-  const runnerInstalled = availableAdapterTypes?.has("paperclip_runner") === true;
-  const nativeRunnerAvailable = runnerInstalled && experimentalSettings?.enableNativeRunner === true;
-  const dotAvailable = runnerInstalled && experimentalSettings?.enableOpenAiDot === true;
+  // Ordinary Runner providers are graduated; Dot retains its separate opt-in.
+  const dotAvailable = availableAdapterTypes?.has("paperclip_runner") === true
+    && experimentalSettings?.enableOpenAiDot === true;
   const importAdapterOptions = useMemo(
-    () => IMPORT_ADAPTER_OPTIONS.filter((option) =>
-      option.value === "paperclip_runner" ? nativeRunnerAvailable
-        : option.value === "openai_dot" ? dotAvailable : true,
+    () => IMPORT_ADAPTER_OPTIONS.filter(
+      (option) => option.value === "openai_dot" ? dotAvailable
+        : !availableAdapterTypes || availableAdapterTypes.has(option.value),
     ),
-    [nativeRunnerAvailable, dotAvailable],
+    [availableAdapterTypes, dotAvailable],
   );
 
   const localZipHelpText =
@@ -1549,8 +1582,9 @@ export function CompanyImport() {
     // Reset config values when adapter type changes
     setAdapterConfigValues((prev) => {
       const next = { ...prev };
-      if (adapterType === "openai_dot" || adapterType === "paperclip_runner") {
-        next[slug] = importAdapterValues(adapterType);
+      if (adapterType === "openai_dot") {
+        const agent = adapterAgents.find(candidate => candidate.slug === slug);
+        next[slug] = importedAdapterConfigValues(agent, adapterType);
       } else {
         delete next[slug];
       }
@@ -1576,9 +1610,7 @@ export function CompanyImport() {
     const currentType = agent ? effectiveAdapterType(agent) : adapterOverrides[slug] ?? "claude_local";
     setAdapterConfigValues((prev) => ({
       ...prev,
-      [slug]: { ...(prev[slug] ?? importAdapterValues(
-        currentType, currentType === agent?.adapterChoice ? agent.adapterConfig : undefined,
-      )), ...patch },
+      [slug]: { ...(prev[slug] ?? importedAdapterConfigValues(agent, currentType)), ...patch },
     }));
   }
 
@@ -1631,22 +1663,17 @@ export function CompanyImport() {
       const adapterChoice = a.adapterType === "paperclip_runner" && a.adapterConfig?.provider === "openai_dot"
         ? "openai_dot" : a.adapterType;
       let fallbackAdapterType: string | null = null;
-      if (a.adapterType === "paperclip_runner" && !(adapterChoice === "openai_dot" ? dotAvailable : nativeRunnerAvailable)) {
-        const firstEnabledLegacyAdapter = availableAdapterTypes
-          ? [...availableAdapterTypes].find((type) => type !== "paperclip_runner") ?? null
-          : null;
-        fallbackAdapterType =
-          ceoAdapterType !== "paperclip_runner" &&
-          (!availableAdapterTypes || availableAdapterTypes.has(ceoAdapterType))
-            ? ceoAdapterType
-            : firstEnabledLegacyAdapter ?? FALLBACK_IMPORT_ADAPTER_TYPE;
-      } else if (availableAdapterTypes && !availableAdapterTypes.has(a.adapterType)) {
+      if (adapterChoice === "openai_dot" && !dotAvailable) {
+        const firstEnabledHarness = availableAdapterTypes
+          ? [...availableAdapterTypes].find(type => type !== "paperclip_runner") ?? null : null;
+        fallbackAdapterType = ceoAdapterType !== "paperclip_runner" && ceoAdapterType !== "openai_dot"
+          && (!availableAdapterTypes || availableAdapterTypes.has(ceoAdapterType))
+          ? ceoAdapterType : firstEnabledHarness ?? FALLBACK_IMPORT_ADAPTER_TYPE;
+      } else if (a.adapterType !== "paperclip_runner" && availableAdapterTypes && !availableAdapterTypes.has(a.adapterType)) {
         // The fallback must itself be installed: the CEO's adapter when it is,
         // else any installed adapter, else null so the manifest adapter stands
         // and the server's unknown-adapter rejection is the backstop.
-        const selectableTypes = [...availableAdapterTypes].filter((type) =>
-          type !== "paperclip_runner" || nativeRunnerAvailable,
-        );
+        const selectableTypes = [...availableAdapterTypes].filter(type => type !== "paperclip_runner");
         fallbackAdapterType = selectableTypes.includes(ceoAdapterType)
           ? ceoAdapterType
           : selectableTypes[0] ?? null;
@@ -1658,10 +1685,11 @@ export function CompanyImport() {
         adapterType: a.adapterType,
         adapterChoice,
         adapterConfig: a.adapterConfig ?? {},
+        runner: a.runner,
         fallbackAdapterType,
       };
     });
-  }, [importPreview, availableAdapterTypes, ceoAdapterType, nativeRunnerAvailable, dotAvailable]);
+  }, [importPreview, availableAdapterTypes, ceoAdapterType, dotAvailable]);
 
   /** The adapter type an imported agent will actually use: an explicit user pick, else the availability fallback, else the manifest adapter. */
   function effectiveAdapterType(agent: AdapterPickerItem): string {
@@ -1678,13 +1706,42 @@ export function CompanyImport() {
       const selectedType = effectiveAdapterType(agent);
       const configVals = adapterConfigValues[agent.slug];
       if (selectedType === agent.adapterChoice && !configVals) continue;
-      const apiType = selectedType === "openai_dot" ? "paperclip_runner" : selectedType;
-      const override: CompanyPortabilityAdapterOverride = { adapterType: apiType };
+      const sameSelectedHarness = agentHarnessType(selectedType, agent.adapterConfig)
+        === agentHarnessType(agent.adapterType, agent.adapterConfig);
+      const override: CompanyPortabilityAdapterOverride = {
+        adapterType: configVals?.adapterType ?? selectedType,
+        runner: configVals?.runner ?? (sameSelectedHarness ? agent.runner : "auto") ?? "auto",
+      };
       if (configVals) {
-        if (selectedType === "openai_dot" && configVals.adapterSchemaValues?.allowUnmeteredProvider !== true) {
+        if (agentHarnessType(configVals.adapterType, configVals.adapterSchemaValues) === "openai_dot"
+          && configVals.adapterSchemaValues?.allowUnmeteredProvider !== true) {
           throw new Error("OpenAI Dot requires acknowledgement of external billing. Configure the Dot adapter and enable Allow externally billed provider.");
         }
-        override.adapterConfig = getUIAdapter(apiType).buildAdapterConfig(configVals);
+        const uiAdapter = getUIAdapter(configVals.adapterType);
+        const sameHarness = agentHarnessType(configVals.adapterType, configVals.adapterSchemaValues)
+          === agentHarnessType(agent.adapterType, agent.adapterConfig);
+        const sourceConfig = sameHarness ? resolveAgentRunnerConfig({
+          adapterType: agent.adapterType,
+          adapterConfig: agent.adapterConfig,
+          runner: configVals.runner ?? agent.runner ?? "auto",
+        }).adapterConfig : {};
+        const editedConfig = uiAdapter.buildAdapterConfig(configVals);
+        if (sameHarness && configVals.adapterType !== "paperclip_runner") {
+          // Legacy builders also emit creation defaults. Apply only actual edits
+          // so an unrelated change preserves imported policy and credentials.
+          const initialConfig = uiAdapter.buildAdapterConfig(importedAdapterConfigValues(agent, configVals.adapterType));
+          const nextConfig = { ...sourceConfig };
+          for (const key of new Set([...Object.keys(initialConfig), ...Object.keys(editedConfig)])) {
+            if (JSON.stringify(initialConfig[key]) === JSON.stringify(editedConfig[key])) continue;
+            if (editedConfig[key] === undefined) delete nextConfig[key];
+            else nextConfig[key] = editedConfig[key];
+          }
+          override.adapterConfig = nextConfig;
+        } else {
+          override.adapterConfig = { ...sourceConfig, ...editedConfig };
+        }
+      } else if (!sameSelectedHarness) {
+        override.adapterConfig = {};
       }
       overrides[agent.slug] = override;
     }

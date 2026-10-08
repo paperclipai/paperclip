@@ -45,7 +45,7 @@ export function setupEfforts(adapter: string, model = ""): string[] {
 
 export const SETUP_LOGIN_HINTS: Record<string, string> = {
   cursor:
-    "Use a Cursor API key, or run agent login on the selected environment's host.",
+    "Use a Cursor API key. For a saved CLI login, bind its login token as CURSOR_AUTH_TOKEN in advanced agent settings.",
   gemini_local:
     "Use a Gemini API key, or an existing supported Gemini CLI login on the selected environment's host.",
   kimi_local:

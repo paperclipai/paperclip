@@ -89,13 +89,24 @@ export async function startConnectionTarget(config: ConnectionConfig, executions
   } catch (error) { await stop(); throw error; }
 }
 
-export async function verifyConnectionTarget(origin: string, config: ConnectionConfig) {
+export async function verifyConnectionTarget(origin: string, config: ConnectionConfig, request?: Pick<APIRequestContext, "get">) {
   let health: any;
   try {
-    const response = await fetch(`${targetOrigin(origin)}/api/health`, { redirect: "error", signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) throw new ConnectionFailure();
-    health = await response.json();
-  } catch { throw new ConnectionBlock("blocked_target", "target_health_unavailable_or_redirected"); }
+    const url = `${targetOrigin(origin)}/api/health`;
+    if (request) {
+      const response = await request.get(url, { maxRedirects: 0, timeout: 15_000 });
+      if ([401, 403].includes(response.status())) throw new ConnectionBlock("awaiting_user", "board_login_required");
+      if (!response.ok()) throw new ConnectionFailure();
+      health = await response.json();
+    } else {
+      const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(15_000) });
+      if (!response.ok) throw new ConnectionFailure();
+      health = await response.json();
+    }
+  } catch (error) {
+    if (error instanceof ConnectionBlock) throw error;
+    throw new ConnectionBlock("blocked_target", "target_health_unavailable_or_redirected");
+  }
   if (typeof health.commit !== "string" || !/^[a-f0-9]{40}$/.test(health.commit)) throw new ConnectionBlock("blocked_target", "target_revision_unavailable");
   if (config.target.mode === "attach" && (health.commit !== config.target.expectedCommit || health.deploymentMode !== config.target.deploymentMode)) throw new ConnectionBlock("blocked_target", "target_identity_mismatch");
   return { commit: health.commit as string, deploymentMode: String(health.deploymentMode) };

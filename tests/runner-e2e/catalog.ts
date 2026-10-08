@@ -22,6 +22,7 @@ import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
 import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS, connectionGuidanceTasks, connectionGuidanceDefinitionDigest } from "./connection-guidance-cases.js";
 
 import { firstTaskTasks } from "./first-task-cases.js";
+import { FIRST_TASK_BUDGET_CENTS } from "./first-task-fixtures.js";
 import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks, chatCompletionTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -1375,7 +1376,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["onboarding"],
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
     environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 52,
-    definitionMetadata: { version: 4, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "post-onboarding-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
+    definitionMetadata: { version: 5, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "production-wizard-auto-default", legacySetup: "production-wizard-explicit-legacy", productionInstructions: true, qualityGrading: "informational", budgetMonthlyCents: FIRST_TASK_BUDGET_CENTS },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",

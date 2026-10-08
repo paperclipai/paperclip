@@ -672,7 +672,7 @@ describe("agent routes adapter validation", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(201);
   });
 
-  it("rejects a new paperclip_runner selection while the rollout flag is off", async () => {
+  it("allows a new paperclip_runner selection regardless of the retired flag", async () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true });
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
@@ -681,9 +681,8 @@ describe("agent routes adapter validation", () => {
         .send({ name: "Native Codex", adapterType: "paperclip_runner" }),
     );
 
-    expect(res.status, JSON.stringify(res.body)).toBe(422);
-    expect(res.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
-    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalled();
   });
 
   it("allows a new paperclip_runner selection while the rollout flag is on", async () => {
@@ -768,15 +767,17 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.update).not.toHaveBeenCalled();
   });
 
-  it("requires the general Runner rollout when changing an existing Dot to Codex", async () => {
+  it("allows changing an existing Dot to Codex independently of the retired Runner flag", async () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true });
     mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: "paperclip_runner", adapterConfig: { provider: "openai_dot", allowUnmeteredProvider: true } });
     const app = await createApp();
     const response = await requestApp(app, baseUrl => request(baseUrl).patch("/api/agents/11111111-1111-4111-8111-111111111111")
       .send({ adapterConfig: { provider: "codex" }, replaceAdapterConfig: true }));
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
-    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.adapterType).toBe("paperclip_runner");
+    expect(mockAgentService.update).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      adapterConfig: expect.objectContaining({ provider: "codex" }),
+    }), expect.anything());
   });
 
   it("normalizes legacy skills and permissions when switching to paperclip_runner", async () => {

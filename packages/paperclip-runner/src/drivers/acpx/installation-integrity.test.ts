@@ -38,6 +38,7 @@ import {
   verifiedExecutableOpenFlags,
   verifyQualifiedAcpxInstallation,
   probeAcpxClaudeInstallation,
+  resolvePinnedClaudeCommand,
   type VerifiedAcpxProviderLifetime,
 } from "./installation-integrity.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
@@ -61,6 +62,9 @@ describe("ACPX installation integrity", () => {
       const archSpy = vi.spyOn(process, "arch", "get").mockReturnValue(arch);
       try {
         await expect(probeAcpxClaudeInstallation("custom-claude-model")).rejects.toThrow(
+          `ACPX claude verified runtime executable is unavailable for ${platform} ${arch}`,
+        );
+        await expect(resolvePinnedClaudeCommand()).rejects.toThrow(
           `ACPX claude verified runtime executable is unavailable for ${platform} ${arch}`,
         );
       } finally {
@@ -589,6 +593,7 @@ describe("ACPX installation integrity", () => {
       expect(installation.agentRuntimePackageJsonPath).toContain(
         "/@anthropic-ai/claude-agent-sdk/package.json",
       );
+      expect(await resolvePinnedClaudeCommand()).toContain(`/@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`);
       await (await installation.openCommand()).close();
     },
     // This hashes the real installed SDK tree and competes with the complete

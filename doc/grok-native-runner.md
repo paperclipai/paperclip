@@ -1,6 +1,6 @@
 # Grok Build native runner
 
-Select **Grok Build** in the native runner provider selector. The stored contract is
+Select **Grok Build** in the harness picker. Paperclip Runner is the default on qualified targets; Advanced allows an explicit Legacy runner choice. The stored contract is
 `adapterType: "paperclip_runner"` with `provider: "acpx"`, `acpxAgent: "grok"`,
 and `model: "grok-4.7"`. Existing `grok_local` agents keep their legacy adapter.
 New Grok runner agents default to **Full auto (approve all)**
@@ -8,8 +8,7 @@ New Grok runner agents default to **Full auto (approve all)**
 API configurations that omit the permission mode use the same default. No
 additional permission setting is needed for unattended execution. Explicitly
 saved restrictions remain unchanged.
-On Cloud, an operator must enable `enableNativeRunner` for the instance before
-the new-agent picker or direct setup page offers the native runner.
+The deprecated `enableNativeRunner` field has no execution effect.
 
 Grok Build speaks [ACP over stdio](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md).
 The runner owns `grok agent --no-leader stdio` through ACPX, including session

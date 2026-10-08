@@ -1,3 +1,4 @@
+import { agentHarnessType } from "@paperclipai/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -127,7 +128,7 @@ export function listTeamInstallAdapterTypes(
     (type) =>
       !TEAM_INSTALL_FORBIDDEN_ADAPTER_TYPES.has(type) &&
       !disabledTypes.has(type) &&
-      (type !== "paperclip_runner" || adapterRegistryLoaded),
+      type !== "paperclip_runner",
   );
 }
 
@@ -135,6 +136,8 @@ export function resolveTeamInstallAdapterType(
   requestedType: string,
   selectableAdapterTypes: readonly string[],
 ) {
+  // Existing native packages carry their provider and explicit execution choice.
+  if (requestedType === "paperclip_runner") return requestedType;
   if (selectableAdapterTypes.includes(requestedType)) return requestedType;
   if (selectableAdapterTypes.includes(TEAM_INSTALL_FALLBACK_ADAPTER_TYPE)) {
     return TEAM_INSTALL_FALLBACK_ADAPTER_TYPE;
@@ -1158,7 +1161,7 @@ function TeamInstallerDialog({
           selectableAdapterTypes,
         );
         if (!resolvedAdapterType) {
-          throw new Error("Enable a legacy adapter before installing this team.");
+          throw new Error("Enable a harness before installing this team.");
         }
         overrides[slug] = {
           adapterType: resolvedAdapterType,
@@ -1172,7 +1175,7 @@ function TeamInstallerDialog({
         selectableAdapterTypes,
       );
       if (!adapterType) {
-        throw new Error("Enable a legacy adapter before installing this team.");
+        throw new Error("Enable a harness before installing this team.");
       }
       if (adapterType !== agent.adapterType) {
         overrides[agent.slug] = { adapterType };
@@ -1913,7 +1916,7 @@ export function StepPreview({
 
       {/* Adapter selection — install schema accepts adapterOverrides (design §4.4) */}
       {manifestAgents.length > 0 && (
-        <PreviewSection title={`Adapter selection · ${manifestAgents.length}`}>
+        <PreviewSection title={`Harness selection · ${manifestAgents.length}`}>
           {manifestAgents.map((agent) => {
             const selected = resolveTeamInstallAdapterType(
               adapterOverrides[agent.slug] ?? agent.adapterType,
@@ -1925,7 +1928,7 @@ export function StepPreview({
                 <span className="min-w-0 truncate">{agent.name}</span>
                 <span className="font-mono text-(length:--text-micro) text-muted-foreground">{agent.slug}</span>
                 {selected ? (
-                  <Select value={selected} onValueChange={(v) => onAdapterChange(agent.slug, v)}>
+                  <Select value={agentHarnessType(selected, agent.adapterConfig)} onValueChange={(v) => onAdapterChange(agent.slug, v)}>
                     <SelectTrigger className="ml-auto h-8 w-48">
                       <SelectValue />
                     </SelectTrigger>
@@ -1937,7 +1940,7 @@ export function StepPreview({
                   </Select>
                 ) : (
                   <span className="ml-auto text-xs text-rose-600 dark:text-rose-300">
-                    No enabled legacy adapter
+                    No enabled harness
                   </span>
                 )}
               </li>

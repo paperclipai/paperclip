@@ -1180,8 +1180,68 @@ fn starts_a_distinct_acpx_provider_turn_for_same_run_recovery() {
 
 #[test]
 fn executes_opencode_through_the_local_facade_without_codex_event_labels() {
+    const TEST_MODE: &str = "PAPERCLIP_OPENCODE_CREDENTIAL_TEST_MODE";
+    let Ok(mode) = std::env::var(TEST_MODE) else {
+        // Keep process-global credential fixtures isolated from concurrent
+        // tests. Exercise the actual verified proxy spawn for values and blanks.
+        for mode in ["values", "blank"] {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .arg("executes_opencode_through_the_local_facade_without_codex_event_labels")
+                .arg("--exact")
+                .arg("--nocapture")
+                .env(TEST_MODE, mode)
+                .env("UNRELATED_SECRET", "unrelated-secret-canary")
+                .env("DATABASE_URL", "unrelated-database-canary")
+                .env("PAPERCLIP_API_KEY", "unrelated-paperclip-key-canary");
+            for key in ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] {
+                child.env(
+                    key,
+                    if mode == "blank" {
+                        String::new()
+                    } else {
+                        format!("fixture-{key}")
+                    },
+                );
+            }
+            assert!(child
+                .status()
+                .expect("run isolated OpenCode credential assertion")
+                .success());
+        }
+        return;
+    };
+    assert!(matches!(mode.as_str(), "values" | "blank"));
     let directory = temporary_directory("opencode");
-    let config = opencode_config(&directory);
+    let mut config = opencode_config(&directory);
+    let profile = config.opencode_launch_profile.as_mut().unwrap();
+    let proxy_path = profile.proxy_script.path.clone();
+    let original = fs::read_to_string(&proxy_path).unwrap();
+    let mut assertions = String::new();
+    for key in ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] {
+        let expected = if mode == "blank" {
+            String::new()
+        } else {
+            format!("fixture-{key}")
+        };
+        assertions.push_str(&format!(
+            "[ \"${{{key}+x}}\" = x ] && [ \"${key}\" = '{expected}' ] || exit 91\n",
+        ));
+    }
+    for key in [
+        "UNRELATED_SECRET",
+        "DATABASE_URL",
+        "PAPERCLIP_API_KEY",
+        TEST_MODE,
+    ] {
+        assertions.push_str(&format!("[ \"${{{key}+x}}\" != x ] || exit 92\n"));
+    }
+    #[cfg(unix)]
+    fs::set_permissions(&proxy_path, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&proxy_path, format!("#!/bin/sh\n{assertions}{original}")).unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&proxy_path, fs::Permissions::from_mode(0o500)).unwrap();
+    profile.proxy_script = qualified_artifact(proxy_path);
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
 
     let prepared = executor

@@ -1,3 +1,4 @@
+import { agentHarnessType } from "@paperclipai/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -536,7 +537,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
           ) : null}
 
           <div className="text-xs text-muted-foreground">
-            Adapter: {adapterLabels[agent.adapterType] ?? agent.adapterType}
+            Adapter: {adapterLabels[agentHarnessType(agent.adapterType, agent.adapterConfig)] ?? agentHarnessType(agent.adapterType, agent.adapterConfig)}
           </div>
         </div>
       )}

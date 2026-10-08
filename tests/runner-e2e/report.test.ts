@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RunnerE2EResult } from "./types.js";
+import { summarizeExecutionBilling } from "./billing.js";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -23,7 +24,9 @@ describe("runner E2E report aggregation", () => {
     { name: "partial", usage: { runs: [{ usage: { inputTokens: 1250, outputTokens: 75, cachedInputTokens: 500, costUsd: 0.0125 } }, { usage: null }] }, runIds: ["run-1", "run-2"], tokens: "1250 input / 75 output / 500 cached (partial: 1/2 runs)", cost: "$0.012500 (partial: 1/2 runs)", htmlTokens: "1,250 (partial: 1/2 runs)" },
     { name: "reported", usage: { inputTokens: 1250, outputTokens: 75, cachedInputTokens: 500, costUsd: 0.0125 }, runIds: ["run-1"], tokens: "1250 input / 75 output / 500 cached", cost: "$0.012500", htmlTokens: "1,250" },
     { name: "reported zero cost", usage: { inputTokens: 1, outputTokens: 0, costUsd: 0 }, runIds: ["run-1"], tokens: "1 input / 0 output / 0 cached", cost: "$0.000000", htmlTokens: "1" },
-  ])("renders $name usage with its actual coverage", async ({ usage, runIds, tokens, cost, htmlTokens }) => {
+    { name: "ready rate-card estimate", usage: { inputTokens: 1250, outputTokens: 75, cachedInputTokens: 500, costUsd: null, costUsdExact: "0.275306000", accountingReceiptReady: true, costStatus: "estimated", pricingProvenance: { source: "rate_card", version: "fixture-rate-card" } }, runIds: ["run-1"], tokens: "1250 input / 75 output / 500 cached", cost: "Unavailable", htmlTokens: "1,250" },
+    { name: "retained ready rate-card estimate", usage: null, runIds: ["run-1"], tokens: "1250 input / 75 output / 500 cached", cost: "Unavailable", htmlTokens: "1,250" },
+  ])("renders $name usage with its actual coverage", async ({ name, usage, runIds, tokens, cost, htmlTokens }) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-billing-report-"));
     cleanupDirectories.push(root);
     const executionId = "core-compatibility.runner-codex.local.message-marker";
@@ -36,6 +39,10 @@ describe("runner E2E report aggregation", () => {
       startedAt: "2026-09-23T00:00:00Z", finishedAt: "2026-09-23T00:00:01Z", durationMs: 1000,
       cleanup: "passed", runIds, usage,
     };
+    if (name === "retained ready rate-card estimate") {
+      result.billing = { ...summarizeExecutionBilling({ ...result, usage: { inputTokens: 1250, outputTokens: 75, cachedInputTokens: 500,
+        costUsdExact: "0.275306000", accountingReceiptReady: true, costStatus: "estimated", pricingProvenance: { source: "rate_card", version: "fixture-rate-card" } } }), complete: false };
+    }
     const raw = JSON.stringify(result);
     await writeFile(path.join(directory, "result.json"), raw);
     await writeFile(path.join(directory, "final-state.png"), "fake-png");
@@ -50,7 +57,7 @@ describe("runner E2E report aggregation", () => {
     expect(markdown.split("\n").find((line) => line.startsWith("Provider-reported LLM cost: "))).toBe(`Provider-reported LLM cost: ${cost}`);
     const dashboard = await readFile(path.join(output, "index.html"), "utf8");
     expect(dashboard).toContain(`<strong>${htmlTokens}</strong><span>Input tokens</span>`);
-    if (usage === null) {
+    if (name === "missing") {
       expect(markdown).not.toContain("0/0 | $0.000000");
       expect(dashboard).toContain("<strong>Unavailable</strong><span>LLM reported subtotal</span>");
       expect(dashboard).toContain("<span>Known spend</span><strong>Unavailable</strong>");
@@ -59,6 +66,16 @@ describe("runner E2E report aggregation", () => {
     const normalized = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
     expect(normalized.passed).toBe(1);
     expect(normalized.results[0].usage).toEqual(usage);
+    if (name.includes("ready rate-card estimate")) {
+      expect(normalized.billing).toMatchObject({ reportedLlmCostUsd: 0, estimatedLlmCostUsd: 0.275306, observedAndEstimatedCostUsd: 0.275306,
+        llm: { runsWithReportedCost: 0, runsWithEstimatedCost: 1, costStatus: "estimated", estimateProvenance: [{ source: "rate_card", version: "fixture-rate-card" }] } });
+      expect(markdown).toContain("Recorded LLM rate-card estimate: $0.275306; rate_card: fixture-rate-card");
+      expect(dashboard).toContain("<strong>Unavailable</strong><span>LLM reported subtotal</span>");
+      expect(dashboard).toContain("<strong>$0.2753</strong><span>LLM rate-card estimate</span>");
+      expect(dashboard).toContain("rate_card: fixture-rate-card");
+      expect(dashboard).toContain("<span>Known spend</span><strong>$0.2753");
+      if (name.startsWith("retained")) expect(normalized.billing.testsWithCompleteBilling).toBe(0);
+    }
   });
 
   it("keeps interrupted journeys incomplete unless their evidence is invalid", async () => {

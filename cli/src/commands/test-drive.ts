@@ -18,7 +18,7 @@ import type { PaperclipConfig } from "../config/schema.js";
 import { runCommand, type StartedServer } from "./run.js";
 import { isLinkedGitWorktree } from "./git-workspace.js";
 
-export const TEST_DRIVE_HARNESSES = ["claude", "codex", "opencode"] as const;
+export const TEST_DRIVE_HARNESSES = ["claude", "codex", "opencode", "grok", "cursor"] as const;
 export type TestDriveHarness = (typeof TEST_DRIVE_HARNESSES)[number];
 
 export interface TestDriveOptions {
@@ -35,8 +35,8 @@ export interface TestDriveOptions {
 export type TestDriveApi = Pick<PaperclipApiClient, "get" | "post" | "patch" | "delete">;
 
 type HarnessDefinition = {
-  adapterType: "claude_local" | "codex_local" | "opencode_local";
-  credentialTarget: "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "OPENROUTER_API_KEY";
+  adapterType: "claude_local" | "codex_local" | "opencode_local" | "grok_local" | "cursor";
+  credentialTarget: "ANTHROPIC_API_KEY" | "OPENAI_API_KEY" | "OPENROUTER_API_KEY" | "XAI_API_KEY" | "CURSOR_API_KEY";
   credentialName: string;
 };
 
@@ -76,6 +76,8 @@ const HARNESS_DEFINITIONS: Record<TestDriveHarness, HarnessDefinition> = {
     credentialTarget: "OPENROUTER_API_KEY",
     credentialName: "OpenRouter API Key",
   },
+  grok: { adapterType: "grok_local", credentialTarget: "XAI_API_KEY", credentialName: "xAI API Key" },
+  cursor: { adapterType: "cursor", credentialTarget: "CURSOR_API_KEY", credentialName: "Cursor API Key" },
 };
 
 const NON_PAPERCLIP_ISOLATED_ENV_KEYS = [
@@ -240,6 +242,7 @@ export function resolveTestDriveBootstrap(
   if (!agentName) throw new Error("--agent-name cannot be empty.");
 
   const model = options.model;
+  if (harness === "cursor" && !model?.trim()) throw new Error("Cursor test drives require an explicit --model.");
   if (model !== undefined && (!model || model.trim() !== model)) {
     throw new Error("--model cannot be empty or have surrounding whitespace.");
   }

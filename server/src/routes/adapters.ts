@@ -1,3 +1,5 @@
+import { agentRunnerAvailability } from "../services/agent-runner-selection.js";
+import type { AgentRunnerAvailability } from "@paperclipai/shared";
 /**
  * @fileoverview Adapter management REST API routes
  *
@@ -123,7 +125,7 @@ interface AdapterCapabilities {
   login?: AdapterLoginProjection;
 }
 
-interface AdapterInfo {
+interface AdapterInfo extends AgentRunnerAvailability {
   type: string;
   label: string;
   source: "builtin" | "external";
@@ -196,6 +198,7 @@ export function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterC
 function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterPluginRecord | undefined, disabledSet: Set<string>): AdapterInfo {
   const fromDisk = externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined;
   return {
+    ...agentRunnerAvailability(adapter.type),
     type: adapter.type,
     label: adapter.type, // ServerAdapterModule doesn't have a separate "label" field; type serves as label
     source: externalRecord ? "external" : "builtin",
@@ -257,7 +260,8 @@ function registerWithSessionManagement(adapter: ServerAdapterModule): void {
 // Router
 // ---------------------------------------------------------------------------
 
-export function adapterRoutes(options: {
+export function adapterRoutes(_options: {
+  /** @deprecated Ordinary native runner availability is no longer experimental. */
   getNativeRunnerEnabled?: () => Promise<boolean>;
   getOpenAiDotEnabled?: () => Promise<boolean>;
 } = {}) {
@@ -281,11 +285,8 @@ export function adapterRoutes(options: {
       listAdapterPlugins().map((r) => [r.type, r]),
     );
     const disabledSet = new Set(getDisabledAdapterTypes());
-    const nativeRunnerEnabled = await options.getNativeRunnerEnabled?.().catch(() => false) ?? false;
-    const openAiDotEnabled = await options.getOpenAiDotEnabled?.().catch(() => false) ?? false;
-    // One shared implementation, with independent provider rollouts. Explicit
-    // adapter-admin disabling still applies to both choices.
-    if (!nativeRunnerEnabled && !openAiDotEnabled) disabledSet.add("paperclip_runner");
+    // The common native adapter is always available. Dot's provider admission
+    // has its own feature gate; explicit adapter-admin disabling still applies.
 
     const result: AdapterInfo[] = registeredAdapters.map((adapter) =>
       buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet),

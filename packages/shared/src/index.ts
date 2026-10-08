@@ -2851,5 +2851,6 @@ export { isAppAggregator, aggregatorManagementUrl, aggregatorAppsSyncSchema, agg
 
 export * from "./connection-instructions.js";
 export * from "./customer-success.js";
+export * from "./agent-runner.js";
 export * from "./decision-models.js";
 export { updatePrimaryAgentSchema, type UpdatePrimaryAgent, type PrimaryAgentPreference } from "./primary-agent.js";

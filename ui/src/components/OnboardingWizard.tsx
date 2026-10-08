@@ -1,3 +1,5 @@
+import { agentHarnessType, paperclipRunnerProfileForHarness, type AgentRunnerChoice } from "@paperclipai/shared";
+import { testAgentSetup } from "../lib/test-agent-setup";
 import { healthApi } from "@/api/health";
 import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
 import { useLocalAiLogin } from "./ai-connections/useLocalAiLogin";
@@ -56,7 +58,7 @@ type ConnectPhase =
 import { secretsApi } from "../api/secrets";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { SelectPopover, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -147,9 +149,7 @@ type Step = 0 | 1 | 2 | 3 | 4 | 5;
 // wizard's registry-driven approach rather than a fixed union.
 type AdapterType = string;
 
-// First-run onboarding stays on the proven direct adapters even when an
-// instance administrator has opted into Paperclip Runner elsewhere. The
-// experimental flag only exposes the runner in explicit agent configuration.
+// Pick a harness. Runner selection is resolved by the server at creation.
 const ONBOARDING_EXCLUDED_ADAPTER_TYPES = new Set([
   "process",
   "http",
@@ -538,6 +538,19 @@ function OnboardingWizardInner({
   const initialStep = effectiveOnboardingOptions.initialStep ?? 1;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
 
+  // A route supplies a default landing step, not a fresh instruction on reload.
+  // The outer gate has authorized this draft; keep its progress for this first
+  // matching route request. Explicit dialog options and later navigation still
+  // start their requested step. Retain the path through repeated mount effects
+  // so StrictMode cannot turn the same resume into a reset.
+  const resumedRoutePathRef = useRef<string | null>(
+    saved && effectiveOnboardingOpen && !onboardingOpen &&
+    (!existingCompanyId || existingCompanyId === saved.createdCompanyId) &&
+    (!companyPrefix || existingCompanyId)
+      ? location.pathname
+      : null,
+  );
+
   const [step, setStep] = useState<Step>((saved?.step as Step) ?? initialStep);
   // The step this run *entered* on, which bounds how far back it can walk.
   // Captured once, when the wizard opens, for the same reason the step itself
@@ -594,7 +607,7 @@ function OnboardingWizardInner({
     (saved?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
   );
   const [adapterType, setAdapterType] = useState<AdapterType>(() =>
-    restoreOnboardingAdapterType(saved?.adapterType),
+    restoreOnboardingAdapterType(saved?.adapterType === "paperclip_runner" ? agentHarnessType("paperclip_runner", (saved?.adapterSchemaValues as Record<string, unknown>) ?? {}) : saved?.adapterType),
   );
   /**
    * Whether a model source has been chosen, as opposed to which one
@@ -618,14 +631,13 @@ function OnboardingWizardInner({
    * `adapterType` still restores; it is what the hire needs. This is only about
    * whether the row has been *answered* on this visit.
    */
+  const [runnerChoice, setRunnerChoice] = useState<AgentRunnerChoice>(saved?.runnerChoice === "legacy" ? "legacy" : saved?.runnerChoice === "paperclip" || saved?.adapterType === "paperclip_runner" ? "paperclip" : "auto");
   const [sourcePicked, setSourcePicked] = useState(false);
   const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
-  // Native drafts may carry provider-specific configuration that is invalid
-  // for the legacy adapter selected above. Keep the portable working
-  // directory, but clear runner-specific execution fields while restoring.
+  // Decode old runner drafts into their harness while retaining their model.
   const [model, setModel] = useState(
-    savedNativeRunnerDraft ? "" : (saved?.model as string) ?? "",
+    (saved?.model as string) ?? "",
   );
   const [command, setCommand] = useState(
     savedNativeRunnerDraft ? "" : (saved?.command as string) ?? "",
@@ -776,8 +788,8 @@ function OnboardingWizardInner({
   // query does: a retry, a background refetch, a cache invalidation. An effect that
   // depended on it would re-run on every such change and call setStep, moving
   // a customer who is already mid-flow. Reading it through a ref breaks that
-  // dependency, so the effect runs when the wizard *opens* or when the company
-  // changes, and takes whatever the step is at that moment.
+  // dependency, so the effect runs when the wizard *opens* or when the route
+  // or company changes, and takes whatever the step is at that moment.
   const initialStepRef = useRef<Step | undefined>(undefined);
   initialStepRef.current = effectiveOnboardingOptions.initialStep;
 
@@ -814,18 +826,25 @@ function OnboardingWizardInner({
   //
   // The step belongs to the request that opened the wizard, not to the latest
   // value of the expression that produced it - see `initialStepRef` above for
-  // why those differ. This effect is therefore keyed on the two things that
-  // make a *new* request: the wizard opening, and the company changing.
+  // why those differ. This effect is therefore keyed on what makes a *new*
+  // request: the wizard opening, the route changing, and the company changing.
   // Navigating from one company's onboarding path to another re-decides the
   // step; the same request re-deriving a fresher value does not.
   useEffect(() => {
+    const routeCompanyId = effectiveOnboardingOptions.companyId ?? null;
+    if (
+      !effectiveOnboardingOpen || onboardingOpen ||
+      resumedRoutePathRef.current !== location.pathname ||
+      (routeCompanyId && routeCompanyId !== saved?.createdCompanyId)
+    ) {
+      resumedRoutePathRef.current = null;
+    }
     if (!effectiveOnboardingOpen) return;
-    // If explicit options are provided, they take precedence over saved state
-    if (initialStepRef.current) {
+    // Explicit requests take precedence; a matching initial route resumes.
+    if (initialStepRef.current && resumedRoutePathRef.current === null) {
       setStep(initialStepRef.current);
       setEntryStep(initialStepRef.current);
     }
-    const routeCompanyId = effectiveOnboardingOptions.companyId ?? null;
     if (routeCompanyId) {
       // Claim ownership only when the route *introduces* a company. A route
       // that merely names the one already in hand - the wizard created it,
@@ -875,7 +894,7 @@ function OnboardingWizardInner({
       routeCompanyIdRef.current = null;
       clearCompanyScopedState();
     }
-  }, [effectiveOnboardingOpen, effectiveOnboardingOptions.companyId]);
+  }, [effectiveOnboardingOpen, effectiveOnboardingOptions.companyId, onboardingOpen, location.pathname]);
 
   // Backfill issue prefix for an existing company once companies are loaded.
   useEffect(() => {
@@ -904,7 +923,7 @@ function OnboardingWizardInner({
     if (!effectiveOnboardingOpen) return;
     const state = {
       step, companyName,
-      agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
+      agentName, agentAppearance, agentRole, adapterType, runnerChoice, cwd, model, command, args, url,
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
@@ -913,7 +932,7 @@ function OnboardingWizardInner({
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
     effectiveOnboardingOpen, step, companyName,
-    agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
+    agentName, agentAppearance, agentRole, adapterType, runnerChoice, cwd, model, command, args, url,
     credentialMode, credentialModeChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
@@ -1507,7 +1526,7 @@ function OnboardingWizardInner({
       return;
     }
     if (next === "cursor") {
-      setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+      setModel("");
       return;
     }
     setModel("");
@@ -1827,7 +1846,7 @@ function OnboardingWizardInner({
           : adapterType === "kimi_local"
             ? model || DEFAULT_KIMI_LOCAL_MODEL
           : adapterType === "cursor"
-            ? model || DEFAULT_CURSOR_LOCAL_MODEL
+            ? model || (runnerChoice === "legacy" ? DEFAULT_CURSOR_LOCAL_MODEL : "")
             : adapterType === "opencode_local"
               ? model || DEFAULT_OPENCODE_LOCAL_MODEL
               : model,
@@ -1947,15 +1966,15 @@ function OnboardingWizardInner({
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
       if (!isCurrent()) return null;
-      const result = await agentsApi.testEnvironment(
-        createdCompanyId,
+      const result = await testAgentSetup({
+        companyId: createdCompanyId,
         adapterType,
-        {
-          adapterConfig: adapterConfigOverride ?? buildAdapterConfig(),
-          ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}),
-          environmentId,
-        }
-      );
+        providerAdapter: agentHarnessType(adapterType, adapterConfigOverride ?? buildAdapterConfig()),
+        runner: runnerChoice,
+        adapterConfig: adapterConfigOverride ?? buildAdapterConfig(),
+        ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}),
+        environmentId,
+      });
       if (!isCurrent()) return null;
       setAdapterEnvResult(result);
       adapterEnvResultAppliedStoredLoginRef.current = appliedStoredClaudeLoginBinding;
@@ -2018,15 +2037,6 @@ function OnboardingWizardInner({
   // doesn't hire a second agent.
   async function handleGiveHeartbeat() {
     if (!createdCompanyId) return;
-    // The grid and restore path both exclude native runner. Keep this final
-    // guard at the mutation boundary so a stale or modified client cannot use
-    // first-run onboarding to create a native agent.
-    if (adapterType === "paperclip_runner") {
-      setAdapterType("claude_local");
-      setModel("");
-      setError("Paperclip Runner is not available during onboarding. Choose a legacy adapter.");
-      return;
-    }
     if (createdAgentId) {
       setStep(5);
       return;
@@ -2178,7 +2188,7 @@ function OnboardingWizardInner({
       const existing = existingAgents?.find(
         (agent) =>
           agent.name.trim().toLowerCase() === hireName.toLowerCase() &&
-          agent.adapterType === adapterType,
+          agentHarnessType(agent.adapterType, agent.adapterConfig) === adapterType,
       );
       if (existing) {
         if (!isCurrent()) return;
@@ -2201,6 +2211,7 @@ function OnboardingWizardInner({
         appearance: agentAppearance,
         role: agentRole,
         adapterType,
+        runner: runnerChoice,
         adapterConfig: hireAdapterConfig,
         ...(shouldApplyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
         // The server owns what the first agent is told now: this marker seeds
@@ -2896,12 +2907,21 @@ function OnboardingWizardInner({
                     ) : null}
                   </motion.div>
 
-                  {/* Conditional adapter fields */}
-                  {/* No model picker. Every adapter this step offers resolves
-                      its own default (see buildAdapterConfig), so the picker
-                      asked the customer to choose a model before they had any
-                      way to judge one — and the agent's model is changeable
-                      later, where its work gives the choice meaning. */}
+                  {adapterType === "cursor" && runnerChoice !== "legacy" && (
+                    <label className="flex flex-col gap-2 text-sm">Cursor model
+                      <Input value={model} placeholder="Choose an explicit model, e.g. composer-2.5"
+                        onChange={event => { setModel(event.target.value); setAdapterEnvResult(null); }} />
+                    </label>
+                  )}
+
+                      {paperclipRunnerProfileForHarness(adapterType) && <details className="space-y-3">
+                        <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                        <label className="flex flex-col gap-2 text-sm">Runner
+                          <SelectPopover aria-label="Runner" value={runnerChoice === "legacy" ? "legacy" : "paperclip"}
+                            onValueChange={value => { setRunnerChoice(value as AgentRunnerChoice); setAdapterEnvResult(null); setAdapterEnvError(null); }}
+                            options={[{ value: "paperclip", label: "Paperclip Runner (default)" }, { value: "legacy", label: "Legacy runner" }]} />
+                        </label>
+                      </details>}
 
                   {/* Progress is shown above; failed checks remain actionable here. */}
                   {/* Not while the hire is in flight. The probe's result lands
@@ -2970,6 +2990,7 @@ function OnboardingWizardInner({
                           </Button>
                         </div>
                       )}
+
 
                       {adapterEnvResult && adapterEnvResult.status === "fail" && (
                         <div className="rounded-md border border-border/70 bg-muted/20 px-2.5 py-2 text-(length:--text-micro) space-y-1.5">

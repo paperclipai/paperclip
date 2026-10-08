@@ -699,8 +699,8 @@ export class CodexAppServerDriver implements HarnessDriver {
         : undefined;
       if (!preset) throw new Error("plan preset is absent");
       const model = text(
-        preset.model,
-        text(threadResponse.model, text(record(threadResponse.thread).model)),
+        this.#options.model,
+        text(threadResponse.model, text(record(threadResponse.thread).model, text(preset.model))),
       );
       if (model.length === 0)
         throw new Error("plan preset did not resolve a model");
@@ -708,7 +708,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         mode: "plan",
         settings: {
           model,
-          reasoning_effort: preset.reasoning_effort ?? null,
+          reasoning_effort: this.#options.reasoningEffort ?? preset.reasoning_effort ?? null,
           developer_instructions: null,
         },
       };

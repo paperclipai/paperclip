@@ -1,3 +1,4 @@
+import { SelectPopover } from "@/components/ui/select";
 import { useEffect, useRef, useState } from "react";
 import {
   ChevronDown,
@@ -421,31 +422,27 @@ export function EnvironmentVariableRow({
               ) : (
                 <div className="grid min-w-0 flex-1 grid-cols-(--gtc-13)">
                   {userSecretsEnabled ? (
-                    <select
+                    <SelectPopover
                       aria-label="User secret"
                       value={row.userSecretKey}
                       disabled={disabled}
-                      onChange={(event) => {
-                        const key = event.target.value;
+                      onValueChange={(key) => {
                         const definition = userSecretDefinitions?.find((candidate) => candidate.key === key);
                         onPatch({
                           userSecretKey: key,
                           ...(definition && !row.name.trim() ? { name: definition.key.toUpperCase() } : {}),
                         });
                       }}
-                      className="min-w-0 bg-transparent px-2 py-1.5 text-sm font-mono outline-none disabled:pointer-events-none"
-                    >
-                      <option value="">Select user secret...</option>
-                      {row.userSecretKey && !userSecretDefinitions?.some((definition) => definition.key === row.userSecretKey) ? (
-                        <option value={row.userSecretKey}>Unknown ({row.userSecretKey})</option>
-                      ) : null}
-                      {(userSecretDefinitions ?? []).map((definition) => (
-                        <option key={definition.id} value={definition.key}>
-                          {definition.name}
-                          {definition.status !== "active" ? ` (${definition.status})` : ""}
-                        </option>
-                      ))}
-                    </select>
+                      options={[
+                        { value: "", label: "Select user secret…" },
+                        ...(row.userSecretKey && !userSecretDefinitions?.some(definition => definition.key === row.userSecretKey)
+                          ? [{ value: row.userSecretKey, label: `Unknown (${row.userSecretKey})` }] : []),
+                        ...(userSecretDefinitions ?? []).map(definition => ({
+                          value: definition.key,
+                          label: `${definition.name}${definition.status !== "active" ? ` (${definition.status})` : ""}`,
+                        })),
+                      ]}
+                    />
                   ) : (
                     <input
                       className={valueTextInputClass}
@@ -457,16 +454,13 @@ export function EnvironmentVariableRow({
                       onChange={(event) => onPatch({ userSecretKey: event.target.value })}
                     />
                   )}
-                  <select
+                  <SelectPopover
                     aria-label="Requirement"
                     value={row.required ? "required" : "optional"}
                     disabled={disabled}
-                    onChange={(event) => onPatch({ required: event.target.value === "required" })}
-                    className="border-l border-border bg-transparent px-2 py-1.5 text-xs font-medium text-muted-foreground outline-none disabled:pointer-events-none"
-                  >
-                    <option value="required">Required</option>
-                    <option value="optional">Optional</option>
-                  </select>
+                    onValueChange={value => onPatch({ required: value === "required" })}
+                    options={[{ value: "required", label: "Required" }, { value: "optional", label: "Optional" }]}
+                  />
                 </div>
               )}
             </div>

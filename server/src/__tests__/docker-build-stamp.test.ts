@@ -107,6 +107,25 @@ describe("Docker Rust dependency cache", () => {
 
 
 describe("Standard image remote provider pack", () => {
+  it("materializes qualified native bridge authority after building without changing legacy target availability", () => {
+    const build = stageBody(dockerfile, "build");
+    const toolchain = stageBody(dockerfile, "rust-toolchain");
+    expect(toolchain).toMatch(/apt-get install -y --no-install-recommends[^\n]*\bpatch\b/);
+    expect(stageBody(dockerfile, "base")).not.toMatch(/apt-get install[^\n]*\bpatch\b/);
+    const materialization = build.indexOf('RUN node scripts/prepare-bundled-package.mjs --docker-provider-graph /app/server "${TARGETARCH}"');
+    expect(materialization).toBeGreaterThan(build.indexOf("RUN pnpm --filter @paperclipai/server build"));
+    expect(build.indexOf("ARG TARGETARCH")).toBeLessThan(materialization);
+    const helper = readFileSync(path.join(repoRoot, "scripts/prepare-bundled-package.mjs"), "utf8");
+    expect(helper).toContain('const target = dockerBundledProviderTarget(architecture, runtimeData)');
+    expect(helper).toContain('if (!target) return');
+    expect(helper).toContain('prepareBundledPackage(source, staged, { sourceRoot, targets: [target] })');
+    expect(helper).toContain('resolve(output, ".paperclip-native-providers")');
+    expect(helper).toContain('runtimeData[agent]?.platforms?.[target]');
+    expect(helper).toContain('"--ignore-scripts"');
+    expect(stageBody(dockerfile, "production")).toContain("COPY --chown=node:node --from=build /app /app");
+    expect(helper).not.toContain('PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT=');
+  });
+
   it("ships the build-owned pack in the production base used by downstream images", () => {
     const pack = stageBody(dockerfile, "runner-provider-pack");
     const production = stageBody(dockerfile, "production");

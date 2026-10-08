@@ -147,11 +147,11 @@ describe("adapter routes", () => {
     }
   });
 
-  it("keeps paperclip_runner hidden from selection unless the rollout flag is enabled", async () => {
+  it("keeps paperclip_runner available independently of the retired rollout flag", async () => {
     const disabledResponse = await request(createApp()).get("/api/adapters");
     expect(disabledResponse.status).toBe(200);
     expect(disabledResponse.body.find((adapter: any) => adapter.type === "paperclip_runner"))
-      .toMatchObject({ disabled: true });
+      .toMatchObject({ disabled: false });
 
     const enabledResponse = await request(createApp({}, {
       getNativeRunnerEnabled: async () => true,
@@ -164,6 +164,10 @@ describe("adapter routes", () => {
           supportsInstructionsBundle: true,
         },
       });
+    const retiredFlag = vi.fn(async () => false);
+    const unchanged = await request(createApp({}, { getNativeRunnerEnabled: retiredFlag, getOpenAiDotEnabled: async () => false })).get("/api/adapters");
+    expect(unchanged.body.find((adapter: any) => adapter.type === "paperclip_runner")).toMatchObject({ disabled: false });
+    expect(retiredFlag).not.toHaveBeenCalled();
   });
 
   it("keeps the shared implementation available for Dot independently, while honoring adapter-admin disabling", async () => {

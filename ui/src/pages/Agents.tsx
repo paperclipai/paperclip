@@ -1,3 +1,4 @@
+import { agentHarnessType } from "@paperclipai/shared";
 import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
@@ -700,7 +701,7 @@ function AgentMetaColumns({
   showEnvironment: boolean;
 }) {
   const model = getConfiguredModel(agent);
-  const adapterLabel = getAdapterLabel(agent.adapterType);
+  const adapterLabel = getAdapterLabel(agentHarnessType(agent.adapterType, agent.adapterConfig));
   return (
     <>
       <div className="w-44 min-w-0 leading-tight">

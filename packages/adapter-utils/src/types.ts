@@ -370,6 +370,8 @@ export interface AdapterEnvironmentTestContext {
   companyId: string;
   adapterType: string;
   config: Record<string, unknown>;
+  /** Controller-owned credential home from the resolved AI connection, never adapter config. */
+  managedAiCredentialHome?: string;
   /**
    * Optional execution target the adapter should run probes against.
    *
@@ -723,6 +725,7 @@ export interface CLIAdapterModule {
 
 export interface CreateConfigValues {
   adapterType: string;
+  runner?: import("@paperclipai/shared").AgentRunnerChoice;
   codexPermissionMode?: "never" | "on-request" | "untrusted";
   paperclipRunnerLifecycleMode?: "per_turn" | "warm";
   paperclipRunnerIdleTimeoutMs?: number;

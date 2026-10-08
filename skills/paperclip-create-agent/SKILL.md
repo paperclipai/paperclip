@@ -186,3 +186,17 @@ For each linked issue, either:
 - Short role drafting guide: `skills/paperclip-create-agent/references/baseline-role-guide.md`
 - Pre-submit draft-review checklist: `skills/paperclip-create-agent/references/draft-review-checklist.md`
 - Endpoint payload shapes and full examples: `skills/paperclip-create-agent/references/api-reference.md`
+
+## Harness and runner selection
+
+Choose the underlying harness in `adapterType` (for example `codex_local` or
+`claude_local`). New agents automatically use Paperclip Runner for qualified
+Codex, Claude Code, OpenCode, Grok Build, and Cursor configurations. Unsupported
+harnesses keep their legacy adapter. The saved response may therefore have
+`adapterType: paperclip_runner`; use that returned configuration for later reads.
+
+The optional creation field `runner` accepts `auto`, `paperclip`, or `legacy`.
+Use `legacy` only when explicitly needed for custom CLI configuration. Native
+setup errors do not silently fall back. Existing agents keep their saved runner
+when edited. The dedicated `hire_agent` tool still inherits the caller's native
+runtime and does not accept caller-supplied runtime or credential overrides.

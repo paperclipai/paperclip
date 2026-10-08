@@ -17,6 +17,7 @@ import { cursorInstructionBinding } from "./cursor-instructions.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
+import { requireVerifiedAcpxModel } from "./model-verification.js";
 
 const HANDLE: AcpRuntimeHandle = {
   sessionKey: "session-key",
@@ -29,6 +30,45 @@ const HANDLE: AcpRuntimeHandle = {
 };
 
 describe("Codex ACPX runtime adapter", () => {
+  it("persists only Grok's live terminal receipt after ACPX saves the prepared User before sending its prompt", async () => {
+    const runtime = fakeRuntime(), pending = pendingExtensionTurn("turn-1");
+    vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
+    let created!: AcpRuntimeOptions;
+    let persisted = { acpxRecordId: "record-1", acpSessionId: "backend-1", agentSessionId: "agent-1",
+      lastRequestId: "previous", request_token_usage: {}, messages: [],
+      acpx: { current_model_id: "grok-4.7" } } as unknown as import("acpx/runtime").AcpSessionRecord;
+    const durableStore: AcpSessionStore = { load: vi.fn(async () => structuredClone(persisted)),
+      save: vi.fn(async value => { persisted = structuredClone(value); }) };
+    const options = openOptions(fakeCommand()); options.profile = resolveQualifiedAcpxProfile("grok", "grok-4.7");
+    const port = await openCodexAcpxRuntime(options, { createRegistry: () => registry(),
+      createStore: () => durableStore, createRuntime: value => { created = value; return runtime; } });
+    await created.sessionStore!.load("record-1");
+    const turn = port.startTurn({ text: "synthetic fixture", requestId: "turn-1" });
+    // Mirror ACPX 0.13.1 prepareRuntimeTurnState and resolveRuntimeTurnReady:
+    // the current User is durable before the outbound prompt notification.
+    await created.sessionStore!.save({ ...persisted, messages: [{ User: { id: "current", content: [] } }] });
+    await created.sessionStore!.save({ ...persisted, lastRequestId: "turn-1" });
+    created.onAcpMessage!("outbound", { method: "session/prompt", params: { sessionId: "backend-1" } });
+    // Numeric-only projection of the qualified 1.0.13 failure receipt, with
+    // synthetic identities. Its persisted stream is not a live notification.
+    const terminal = {
+      sessionUpdate: "turn_completed", prompt_id: "11111111-1111-1111-1111-111111111111",
+      usage: { inputTokens: 413063, outputTokens: 2748, totalTokens: 415811, cachedReadTokens: 381440,
+        cacheCreationTokens: 0, reasoningTokens: 1055, costUsdTicks: 2767840000 },
+    };
+    created.onAcpMessage!("inbound", { method: "_x.ai/session/update", params: { sessionId: "backend-1", update: terminal } });
+    await created.sessionStore!.save({ ...persisted, lastRequestId: "turn-1", messages: [{ User: { id: "current", content: [] } }] });
+    expect(persisted.request_token_usage).toEqual({});
+    expect(persisted.cumulative_cost).toBeUndefined();
+    created.onAcpMessage!("inbound", { method: "_x.ai/session_notification", params: { sessionId: "backend-1", update: terminal } });
+    await created.sessionStore!.save({ ...persisted, lastRequestId: "turn-1", messages: [{ User: { id: "current", content: [] } }] });
+    pending.settle(); await turn.result;
+    expect(await port.getStatus()).toMatchObject({ lastRequestId: "turn-1",
+      usageCost: { amount: 0.276784, currency: "USD" },
+      requestTokenUsage: { current: { input_tokens: 31623, output_tokens: 2748,
+        cache_read_input_tokens: 381440, cache_creation_input_tokens: 0, thought_tokens: 0 } } });
+    await port.close({ reason: "receipt fixture complete" });
+  });
   it("rejects forged permission session identifiers before delegating or applying full-auto policy", async () => {
     const pending = pendingExtensionTurn("turn-1");
     const runtime = fakeRuntime(); vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
@@ -98,6 +138,45 @@ describe("Codex ACPX runtime adapter", () => {
     await expect(openCodexAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
     })).rejects.toThrow("Cursor instruction admission failed");
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalled();
+  });
+
+  it.each(["gpt-5.6-sol", "custom/model[context=272k,reasoning=high]"])("resolves Cursor model %s only from persisted ACP state during cold admission", async model => {
+    const selector = model.includes("[") ? model : `${model}[context=272k,reasoning=medium,fast=false]`;
+    const runtime = fakeRuntime();
+    const options = openOptions(fakeCommand()); options.profile = resolveQualifiedAcpxProfile("cursor", model);
+    let created!: AcpRuntimeOptions;
+    const durableStore = store([selector], "default");
+    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+      const guard = created.protocolGuardFactory!();
+      const binding = cursorInstructionBinding(options.systemInstructions);
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: { modes: { currentModeId: "agent" }, configOptions: [{ id: "mode", currentValue: "agent" }], _meta: { paperclipCursorInstructions: {
+        schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength,
+      } } } });
+      const record = await durableStore.load("record-1");
+      await durableStore.save({ ...record!, acpx: { ...record!.acpx, current_model_id: input.value } });
+    });
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => durableStore, createRuntime: value => { created = value; return runtime; },
+    });
+    const sessionOptions = vi.mocked(runtime.ensureSession).mock.calls[0]![0].sessionOptions;
+    if (model.includes("[")) expect(sessionOptions?.model).toBe(model);
+    else expect(sessionOptions).not.toHaveProperty("model");
+    expect(runtime.setConfigOption).toHaveBeenCalledExactlyOnceWith({ handle: HANDLE, key: "model", value: selector });
+    await expect(requireVerifiedAcpxModel(port, options.profile)).resolves.toMatchObject({ models: { currentModelId: model } });
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    await port.close({ reason: "model fixture cleanup" });
+  });
+
+  it.each([{ models: [] }, { models: ["gpt-5.6-sol[reasoning=medium]", "gpt-5.6-sol[reasoning=high]"] }])("rejects an unknown or ambiguous Cursor catalog before a cold prompt", async ({ models }) => {
+    const runtime = fakeRuntime(), options = openOptions(fakeCommand());
+    options.profile = resolveQualifiedAcpxProfile("cursor", "gpt-5.6-sol");
+    await expect(openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(models, "default"), createRuntime: () => runtime,
+    })).rejects.toThrow(/Cursor .*model/);
+    expect(runtime.setConfigOption).not.toHaveBeenCalled();
     expect(runtime.startTurn).not.toHaveBeenCalled();
     expect(runtime.close).toHaveBeenCalled();
   });
@@ -3185,6 +3264,8 @@ function registry(): AcpAgentRegistry {
   return { resolve: vi.fn(), list: vi.fn() };
 }
 
-function store(): AcpSessionStore {
-  return { load: vi.fn(), save: vi.fn() };
+function store(availableModels = ["gpt-5.6-sol"], currentModel = "gpt-5.6-sol"): AcpSessionStore {
+  let record = { acpxRecordId: "record-1", acpSessionId: "backend-1", agentSessionId: "agent-1",
+    acpx: { current_model_id: currentModel, available_models: availableModels } } as unknown as import("acpx/runtime").AcpSessionRecord;
+  return { load: vi.fn(async () => structuredClone(record)), save: vi.fn(async value => { record = structuredClone(value); }) };
 }

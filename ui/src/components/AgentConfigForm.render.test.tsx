@@ -17,6 +17,8 @@ import { aiConnectionsApi } from "../api/ai-connections";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
+import { buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
+import { resolveAgentRunnerConfig } from "@paperclipai/adapter-utils";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(),
@@ -169,7 +171,7 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
 }));
 
 vi.mock("../adapters/use-disabled-adapters", () => ({
-  useDisabledAdaptersSync: () => [],
+  useDisabledAdaptersSync: () => new Set<string>(),
 }));
 
 vi.mock("./MarkdownEditor", () => ({
@@ -264,6 +266,8 @@ async function renderForm(
   agentOverrides: Partial<Agent> = {},
   options: {
     showAdapterTestEnvironmentButton?: boolean;
+    showAdapterTypeField?: boolean;
+    compactTestFeedback?: boolean;
     content?: "configuration" | "secrets";
     environmentVariablesPlacement?: "configuration" | "secrets";
     hideInlineSave?: boolean;
@@ -301,8 +305,9 @@ async function renderForm(
               onDirtyChange={options.onDirtyChange}
               onSaveActionChange={options.onSaveActionChange}
               onCancelActionChange={options.onCancelActionChange}
-              showAdapterTypeField={false}
+              showAdapterTypeField={options.showAdapterTypeField ?? false}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
+              compactTestFeedback={options.compactTestFeedback}
             />
           </TooltipProvider>
         </ToastProvider>
@@ -551,7 +556,11 @@ async function renderCreateClaudeSandbox(
 // `renderCreateForm` harness cannot show the environment-change reset, because
 // its `values` prop never changes. `valuesRef` exposes the current merged
 // values to the test.
-async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
+async function renderStatefulCreateClaudeSandbox(
+  environments: Environment[],
+  valueOverrides: Partial<typeof defaultCreateValues> = {},
+  showAdapterTypeField = false,
+) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
 
   const container = document.createElement("div");
@@ -566,6 +575,7 @@ async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
       ...defaultCreateValues,
       adapterType: "claude_local",
       defaultEnvironmentId: "sandbox-1",
+      ...valueOverrides,
     },
   };
 
@@ -578,7 +588,7 @@ async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
         values={values}
         onChange={(patch) => setValues((prev) => ({ ...prev, ...patch }))}
         hidePromptTemplate
-        showAdapterTypeField={false}
+        showAdapterTypeField={showAdapterTypeField}
         showAdapterTestEnvironmentButton
       />
     );
@@ -600,15 +610,20 @@ async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
   return { container, root, valuesRef };
 }
 
+async function openPicker(container: HTMLElement, label: string) {
+  const trigger = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  expect(trigger).toBeTruthy();
+  await act(async () => trigger!.click());
+  await flushReact();
+  return document.body.querySelector<HTMLElement>(`[role="listbox"][aria-label="${label}"]`)!;
+}
+
 async function selectEnvironment(container: HTMLElement, environmentId: string) {
-  const select = container.querySelector("select");
-  await act(async () => {
-    if (select) {
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-      setter?.call(select, environmentId);
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-  });
+  const menu = await openPicker(container, "Environment override");
+  const option = [...menu.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    .find(item => item.dataset.value === environmentId);
+  expect(option).toBeTruthy();
+  await act(async () => option!.click());
   await flushReact();
 }
 
@@ -788,8 +803,193 @@ describe("AgentConfigForm environment selector", () => {
   });
 
   it.each([
+    ["paperclip_runner", "paperclip", "gemini_local", "gemini_local"],
+    ["paperclip_runner", "paperclip", "claude_local", "paperclip_runner"],
+    ["codex_local", "legacy", "claude_local", "paperclip_runner"],
+    ["codex_local", "legacy", "gemini_local", "gemini_local"],
+  ] as const)("resets %s/%s runner selection when changing the harness to %s", async (adapterType, runner, harness, expectedAdapterType) => {
+    const result = await renderStatefulCreateClaudeSandbox([], {
+      adapterType, runner, defaultEnvironmentId: "", model: "source-codex-model",
+      adapterSchemaValues: adapterType === "paperclip_runner"
+        ? { provider: "codex", model: "source-codex-model" } : {},
+      envBindings: { CODEX_HOME: "/source/account" },
+    }, true);
+    roots.push(result.root);
+    const menu = await openPicker(result.container, "Harness");
+    const option = menu.querySelector<HTMLButtonElement>(`[data-value="${harness}"]`);
+    expect(option).toBeTruthy();
+    await act(async () => option!.click());
+    await flushReact();
+
+    const values = result.valuesRef.current;
+    expect(values.runner).toBe("auto");
+    expect(values.adapterType).toBe(expectedAdapterType);
+    expect(values.envBindings).toEqual({});
+    expect(JSON.stringify(values.adapterSchemaValues)).not.toContain("source-codex-model");
+    expect(resolveAgentRunnerConfig({
+      adapterType: values.adapterType,
+      runner: values.runner,
+      adapterConfig: values.adapterType === "paperclip_runner" ? buildPaperclipRunnerConfig(values) : {},
+    }).adapterType).toBe(expectedAdapterType);
+    if (harness === "gemini_local") {
+      await runTest(result.container);
+      expect(mockAgentsApi.testEnvironment).toHaveBeenLastCalledWith("company-1", "gemini_local", expect.objectContaining({ runner: "auto" }));
+    }
+  });
+
+  it.each([
+    ["codex_local", "legacy"],
+    ["paperclip_runner", "paperclip"],
+  ] as const)("preserves explicit %s/%s creation settings when the selected harness is picked again", async (adapterType, runner) => {
+    const result = await renderStatefulCreateClaudeSandbox([], {
+      adapterType, runner, defaultEnvironmentId: "", model: "source-codex-model",
+      thinkingEffort: "high", envBindings: { CODEX_HOME: "/source/account" },
+      adapterSchemaValues: adapterType === "paperclip_runner" ? { provider: "codex", modelReasoningEffort: "high" } : {},
+    }, true);
+    roots.push(result.root);
+    const before = structuredClone(result.valuesRef.current);
+    const menu = await openPicker(result.container, "Harness");
+    await act(async () => menu.querySelector<HTMLButtonElement>('[data-value="codex_local"]')!.click());
+    await flushReact();
+    expect(result.valuesRef.current).toEqual(before);
+  });
+
+  it("keeps an existing legacy agent on its saved runner when its current harness is picked again", async () => {
+    const result = await renderForm([], {
+      adapterType: "codex_local",
+      adapterConfig: { model: "source-codex-model", search: true, command: "/source/codex" },
+    }, { showAdapterTypeField: true });
+    roots.push(result.root);
+    const menu = await openPicker(result.container, "Harness");
+    await act(async () => menu.querySelector<HTMLButtonElement>('[data-value="codex_local"]')!.click());
+    await flushReact();
+    expect(result.container.textContent).not.toContain("Unsaved changes");
+    expect(result.container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Legacy runner");
+    expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("does not resurrect a saved connection cleared by a harness change with compact feedback=%s", async (compactTestFeedback) => {
+    const savedConnection = { mode: "responsible_user", provider: "openai", method: "api_key" } as const;
+    const accountList = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({
+      currentUserId: "you",
+      canManageConnections: true,
+      connections: [],
+    });
+    try {
+      const result = await renderForm([], {
+        adapterType: "codex_local",
+        runtimeConfig: { aiConnection: savedConnection, heartbeat: { enabled: false } },
+      }, { showAdapterTypeField: true, showAdapterTestEnvironmentButton: true, compactTestFeedback });
+      roots.push(result.root);
+
+      // With no pending runtime edit, Test still uses the saved connection.
+      await clickByText(result.container, compactTestFeedback ? "Run test" : "Test");
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
+      for (const call of mockAgentsApi.testEnvironment.mock.calls) {
+        expect(call[2]).toMatchObject({ aiConnection: savedConnection });
+      }
+      mockAgentsApi.testEnvironment.mockClear();
+
+      const menu = await openPicker(result.container, "Harness");
+      await act(async () => menu.querySelector<HTMLButtonElement>('[data-value="claude_local"]')!.click());
+      await flushReact();
+      expect(result.container.textContent).toContain("Existing authentication");
+
+      await clickByText(result.container, compactTestFeedback ? "Run test" : "Test");
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalled();
+      const runtimeRequest = mockAgentsApi.testEnvironment.mock.calls[0];
+      expect(runtimeRequest).toEqual([
+        "company-1", "paperclip_runner", expect.objectContaining({
+          adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "claude" }),
+        }),
+      ]);
+      for (const call of mockAgentsApi.testEnvironment.mock.calls) {
+        expect(call[2].aiConnection).toBeUndefined();
+      }
+      await clickByText(result.container, "Save");
+      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
+        runtimeConfig: { aiConnection: null, heartbeat: { enabled: false } },
+      }));
+    } finally {
+      accountList.mockRestore();
+    }
+  });
+
+  it.each(["modelReasoningEffort", "reasoningEffort", "effort"].flatMap(sourceEffortKey => ([
+    ["an unrelated edit", "name"],
+    ["a lower effort", "low"],
+    ["automatic effort", ""],
+  ] as const).map(([label, edit]) => [sourceEffortKey, label, edit] as const)))("edits a saved native Codex %s after %s", async (sourceEffortKey, _, edit) => {
+    const adapterConfig = {
+      provider: "codex", model: "gpt-5.4", [sourceEffortKey]: "high", codexPermissionMode: "never",
+      lifecycleMode: "per_turn", customPolicy: { retained: true },
+      env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "company-1-openai", version: "latest" } },
+    };
+    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig });
+    roots.push(result.root);
+    expect(result.container.querySelector('[aria-label="Thinking effort"]')?.textContent).toBe("High");
+    if (edit === "name") {
+      await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]')!, "Renamed Codex"));
+    } else {
+      const menu = await openPicker(result.container, "Thinking effort");
+      const option = menu.querySelector<HTMLButtonElement>(`[data-value="${edit}"]`);
+      expect(option).toBeTruthy();
+      await act(async () => option!.click());
+    }
+    await flushReact();
+    await clickByText(result.container, "Save");
+    const patch = JSON.parse(JSON.stringify(result.onSave.mock.calls[0]?.[0]));
+    if (edit === "name") {
+      expect(patch).toEqual({ name: "Renamed Codex" });
+    } else {
+      const expectedConfig = { ...adapterConfig } as Record<string, unknown>;
+      for (const key of ["modelReasoningEffort", "reasoningEffort", "effort"]) delete expectedConfig[key];
+      if (edit) expectedConfig.modelReasoningEffort = edit;
+      expect(patch).toEqual({ adapterConfig: expectedConfig, replaceAdapterConfig: true });
+    }
+  });
+
+  it.each([
+    ["new", "openrouter/deepseek/deepseek-v4-flash-0731"],
+    ["imported", "openrouter/anthropic/claude-sonnet-4.6"],
+  ])("persists the selected OpenCode model for a %s native agent", async (_, originalModel) => {
+    const selectedModel = "openrouter/openai/gpt-5.5";
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: originalModel, label: "Original model" },
+      { id: selectedModel, label: "Selected model" },
+    ]);
+    const result = await renderStatefulCreateClaudeSandbox([], {
+      adapterType: "paperclip_runner",
+      defaultEnvironmentId: "",
+      model: originalModel,
+      adapterSchemaValues: {
+        provider: "opencode",
+        model: originalModel,
+        opencodePermissionMode: "allow",
+        lifecycleMode: "per_turn",
+        instructionsBundleMode: "inline",
+      },
+    });
+    roots.push(result.root);
+    await openPicker(result.container, "Model");
+    const selected = document.querySelector(`[role="listbox"][aria-label="Models"] [title="${selectedModel}"]`)?.closest("button");
+    expect(selected).toBeTruthy();
+    await act(async () => selected!.click());
+    await flushReact();
+
+    expect(result.container.querySelector('[aria-label="Model"]')?.textContent).toContain("Selected model");
+    expect(buildPaperclipRunnerConfig(result.valuesRef.current)).toMatchObject({
+      provider: "opencode",
+      model: selectedModel,
+      opencodePermissionMode: "allow",
+      lifecycleMode: "per_turn",
+      instructionsBundleMode: "inline",
+    });
+  });
+
+  it.each([
     ["Codex", "codex", undefined, DEFAULT_CODEX_LOCAL_MODEL],
-    ["ACP agents", "acpx", "claude", "claude-sonnet-5"],
+    ["Claude Code", "acpx", "claude", "claude-sonnet-5"],
     ["Claude Managed", "claude_managed", undefined, "claude-sonnet-5"],
   ])("saves the %s harness default without the previous OpenCode model prefix", async (label, provider, acpxAgent, model) => {
     const accountList = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({
@@ -802,19 +1002,24 @@ describe("AgentConfigForm environment selector", () => {
         adapterType: "paperclip_runner",
         adapterConfig: { provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.6" },
         runtimeConfig: { aiConnection: { mode: "responsible_user", provider: "openrouter", method: "api_key" } },
-      });
+      }, { showAdapterTypeField: true });
       roots.push(result.root);
+      if (provider === "claude_managed") {
+        const menu = await openPicker(result.container, "Managed harness");
+        await act(async () => menu.querySelector<HTMLButtonElement>('[data-value="claude_managed"]')!.click());
+      } else {
       await act(async () => {
-        result.container.querySelector('[aria-label="Harness"]')!
-          .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        result.container.querySelector<HTMLButtonElement>('[aria-label="Harness"]')!
+          .click();
       });
       await flushReact();
-      const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      const option = [...document.querySelectorAll<HTMLElement>("button")]
         .find(element => element.textContent === label)!;
       expect(option).toBeTruthy();
       await act(async () => {
-        option.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        option.click();
       });
+      }
       await flushReact();
       await clickByText(result.container, "Save");
       expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
@@ -823,6 +1028,34 @@ describe("AgentConfigForm environment selector", () => {
     } finally {
       accountList.mockRestore();
     }
+  });
+
+  it.each([false, true])("keeps experimental Dot in Advanced with its independent opt-in=%s", async (enabled) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableOpenAiDot: enabled, enableNativeRunner: false });
+    const result = await renderStatefulCreateClaudeSandbox([], {
+      adapterType: "paperclip_runner", model: "gpt-6", defaultEnvironmentId: "",
+      adapterSchemaValues: { provider: "codex", modelReasoningEffort: "high" },
+    }, true);
+    roots.push(result.root);
+    const menu = await openPicker(result.container, "Managed harness");
+    const dotOption = menu.querySelector<HTMLButtonElement>('[data-value="openai_dot"]')!;
+    expect(dotOption.disabled).toBe(!enabled);
+    await act(async () => dotOption.click());
+    await flushReact();
+    if (!enabled) {
+      expect(buildPaperclipRunnerConfig(result.valuesRef.current).provider).toBe("codex");
+      return;
+    }
+    expect(result.valuesRef.current.adapterType).toBe("paperclip_runner");
+    expect(buildPaperclipRunnerConfig(result.valuesRef.current)).toEqual({
+      provider: "openai_dot", lifecycleMode: "per_turn", allowUnmeteredProvider: false, dotWorkspaceAccess: false, dotAttachmentAccess: false,
+    });
+    expect(result.container.textContent).toContain("Save the agent, then return here to pair your Dot.");
+    for (const label of ["Model", "Runner", "Runner lifecycle", "ACP agent", "Thinking effort"]) {
+      expect(result.container.querySelector(`[aria-label="${label}"]`)).toBeNull();
+    }
+    expect(result.container.querySelectorAll('[aria-label="Harness"]')).toHaveLength(1);
+    expect(result.container.querySelector("select")).toBeNull();
   });
 
   it("saves Grok 4.7 reasoning effort using the runtime key", async () => {
@@ -849,7 +1082,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     expect(result.container.textContent).not.toContain("Environment override");
-    expect(result.container.querySelector("select")).toBeNull();
+    expect(result.container.querySelector('select:not([aria-label="Runner"])')).toBeNull();
   });
 
   it("renders GPT-6 Astra and its model-specific reasoning efforts", async () => {
@@ -976,7 +1209,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = await openPicker(result.container, "Environment override");
 
     expect(text).toContain("Environment");
     expect(text).toContain("Environment override");
@@ -1003,7 +1236,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = await openPicker(result.container, "Environment override");
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("E2B · sandbox");
@@ -1025,7 +1258,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = await openPicker(result.container, "Environment override");
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("E2B · sandbox");
@@ -1047,7 +1280,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = await openPicker(result.container, "Environment override");
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("Default: Local");
@@ -1067,7 +1300,7 @@ describe("AgentConfigForm environment selector", () => {
     ]);
     roots.push(result.root);
 
-    const selector = result.container.querySelector("select");
+    const selector = await openPicker(result.container, "Environment override");
 
     expect(selector?.textContent).toContain("Default: Paperclip Computer");
     expect(selector?.textContent).toContain("Paperclip Computer");
@@ -2469,15 +2702,7 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
     expect(findButton(result.container, "Sign in")).toBeTruthy();
 
-    const select = result.container.querySelector("select");
-    await act(async () => {
-      if (select) {
-        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-        setter?.call(select, "");
-        select.dispatchEvent(new Event("change", { bubbles: true }));
-      }
-    });
-    await flushReact();
+    await selectEnvironment(result.container, "");
 
     expect(findButton(result.container, "Sign in")).toBeFalsy();
   });

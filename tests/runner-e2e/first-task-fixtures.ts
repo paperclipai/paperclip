@@ -1,7 +1,28 @@
-import { normalizePaperclipOperationalSkillPreference } from "../../packages/adapter-utils/src/server-utils.js";
+import { agentHarnessType, agentRunner } from "../../packages/shared/src/agent-runner.js";
 import type { RunnerApi } from "./api.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { CredentialName, MatrixExecution } from "./types.js";
+
+export const FIRST_TASK_BUDGET_CENTS = 500;
+
+/** Bound paid onboarding work without changing the wizard's execution choice. */
+export async function boundFirstTaskBudget(input: {
+  api: Pick<RunnerApi, "patch">;
+  companyId: string;
+  agentId: string;
+}) {
+  const paths = [
+    `/api/companies/${input.companyId}/budgets`,
+    `/api/agents/${input.agentId}/budgets`,
+  ];
+  const saved = await Promise.all(paths.map(path => input.api.patch<{ budgetMonthlyCents: number }>(
+    path,
+    { budgetMonthlyCents: FIRST_TASK_BUDGET_CENTS },
+  )));
+  if (saved.some(record => record.budgetMonthlyCents !== FIRST_TASK_BUDGET_CENTS)) {
+    throw new Error("Onboarding fixture budget hard stop was not saved");
+  }
+}
 
 /** Provision only credentials for the UI-created company. The production wizard
  * remains the sole creator/configurer of its first agent and onboarding task. */
@@ -59,34 +80,21 @@ export async function provisionFirstTaskFixtures(input: {
   };
 }
 
-/** Reuse the qualified runtime configuration only, never the QA persona from
- * buildAgent. Native onboarding is not offered by the production wizard yet. */
-export function firstTaskNativeRuntimePatch(
+/** Validate what the production wizard saved. Never repair its runtime in a fixture. */
+export function assertFirstTaskRuntime(
   execution: MatrixExecution,
-  fixtures: LiveFixtureValues,
   agent: Record<string, any>,
 ) {
-  if (!["runner-codex", "runner-acpx-claude"].includes(execution.profile.id))
-    throw new Error("Unsupported native first-task profile");
-  const built = execution.profile.buildAgent({
-    environmentId: fixtures.environment.id,
-    environmentFixtureId: "local",
-    workspacePath: agent.adapterConfig?.cwd ?? "",
-    secretRefs: fixtures.secretRefs,
-    executionId: execution.id,
-  });
-  const config = {
-    ...agent.adapterConfig,
-    ...(built.adapterConfig as Record<string, unknown>),
-  };
-  // Preserve the wizard's model choice (including its unset provider default).
-  if (agent.adapterConfig?.model == null) delete config.model;
-  else config.model = agent.adapterConfig.model;
+  const harness = execution.profile.credential === "OPENAI_API_KEY" ? "codex_local" : "claude_local";
+  const expectedRunner = execution.profile.generation === "native" ? "paperclip" : "legacy";
+  if (agentRunner(agent.adapterType) !== expectedRunner || agentHarnessType(agent.adapterType, agent.adapterConfig ?? {}) !== harness) {
+    throw new Error("Onboarding saved an unexpected harness or runner");
+  }
   return {
-    adapterType: "paperclip_runner",
-    adapterConfig: normalizePaperclipOperationalSkillPreference(
-      "paperclip_runner",
-      config,
-    ),
+    mode: "production-wizard" as const,
+    runnerChoice: expectedRunner === "paperclip" ? "auto" as const : "legacy" as const,
+    originalAdapterType: agent.adapterType as string,
+    testedAdapterType: agent.adapterType as string,
+    originalModel: agent.adapterConfig?.model ?? null,
   };
 }

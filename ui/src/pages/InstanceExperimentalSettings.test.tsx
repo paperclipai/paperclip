@@ -368,25 +368,10 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     )).toBeNull();
   });
 
-  it("keeps Paperclip Runner default-off and exposes an explicit opt-in", async () => {
+  it("omits the retired Paperclip Runner experiment", async () => {
     await renderPage();
-
-    expect(container.textContent).toContain("Paperclip Runner");
-    expect(container.textContent).toContain("Onboarding continues to use legacy adapters");
-    const toggle = container.querySelector<HTMLButtonElement>(
-      PAPERCLIP_RUNNER_TOGGLE_SELECTOR,
-    );
-    expect(toggle?.getAttribute("aria-checked")).toBe("false");
-
-    await act(async () => {
-      toggle?.click();
-    });
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
-      enableNativeRunner: true,
-    });
-    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelector(PAPERCLIP_RUNNER_TOGGLE_SELECTOR)).toBeNull();
+    expect(container.textContent).not.toContain("Onboarding continues to use legacy adapters");
   });
 
   it("renders and patches the Classic Task Interface experimental toggle on and off", async () => {

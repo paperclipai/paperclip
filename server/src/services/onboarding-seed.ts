@@ -37,11 +37,7 @@ function seededAgentAdapterType() {
   const configured = process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE?.trim()
     || process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE?.trim()
     || FALLBACK_SEEDED_AGENT_ADAPTER_TYPE;
-  // Server-seeded onboarding deliberately stays on a direct adapter. Native
-  // runner rollout is an explicit post-onboarding configuration choice.
-  return configured === "paperclip_runner"
-    ? FALLBACK_SEEDED_AGENT_ADAPTER_TYPE
-    : configured;
+  return configured;
 }
 
 /**

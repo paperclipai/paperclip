@@ -272,6 +272,15 @@ describe("trusted report catalog discovery", () => {
         },
       ]),
     ).toThrow("result.billing.llm.runCount");
+    const estimated = { ...measured, billing: { ...measured.billing!, estimatedLlmCostUsd: 0.2,
+      llm: { ...measured.billing!.llm, runsWithEstimatedCost: 1, estimatedCostUsd: 0.2, costStatus: "estimated" as const,
+        estimateProvenance: [{ source: "rate_card" as const, version: "fixture-rate-card" }] } } };
+    expect(() => campaign([estimated])).not.toThrow();
+    for (const llm of [
+      { ...estimated.billing.llm, runsWithEstimatedCost: -1 },
+      { ...estimated.billing.llm, estimatedCostUsd: "0.2" },
+      { ...estimated.billing.llm, estimateProvenance: [{ source: "invented", version: "fixture" }] },
+    ]) expect(() => campaign([{ ...estimated, billing: { ...estimated.billing, llm } } as RunnerE2EResult])).toThrow("result.billing.llm");
   });
 
   it("does not certify a same-sized replacement matrix or changed suite definition", () => {

@@ -1,4 +1,5 @@
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
+import { assertNativeRunnerSetupReady, assertRemoteAcpxSetupReady, testNativeAcpxAuthentication, testNativeRunnerAuthentication, withRemoteNativeSetupArtifacts, type RemoteNativeSetupArtifacts } from "../services/native-runtime/setup-readiness.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
@@ -409,84 +410,98 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       return { adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
         checks: [{ code: "dot_event_test_required", level: "warn" as const, message: "Dot manages its model and billing. Validate the dedicated agent binding and event round trip in Paperclip; this read-only check does not wake the Dot." }] };
     }
-    if (profile.provider === "acpx") {
-      if (["copilot", "pi"].includes(profile.acpxAgent)) {
-        // The profile resolver already validated the isolated host's exact
-        // qualification pair. Do not report a production readiness pass.
-        return {
-          adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
-          checks: [{ code: "acpx_candidate_qualification_only", level: "warn" as const,
-            message: "This exact candidate and model are admitted for operator-controlled qualification only. Verified runtime installation, bound credentials, and model access are checked before execution; production support remains pending." }],
-        };
-      }
+    const testSelectedRuntime = async (artifacts?: RemoteNativeSetupArtifacts) => {
       try {
-        if (profile.acpxAgent !== "claude" && profile.acpxAgent !== "grok" && profile.acpxAgent !== "cursor") throw new Error("Select Codex to use the native Codex runner.");
-        const target = context.executionTarget;
-        if (target?.kind === "remote") {
-          const probe = await runAdapterExecutionTargetShellCommand(
-            `acpx-platform-${crypto.randomUUID()}`, target, "uname -s && uname -m",
-            { cwd: target.remoteCwd, env: {}, timeoutSec: 15 },
-          );
-          if (probe.timedOut || probe.exitCode !== 0) throw new Error("Could not verify the remote ACPX runner platform.");
-          const [os, arch] = probe.stdout.trim().split(/\s+/);
-          if (!((os === "Linux" && arch === "x86_64") || (os === "Darwin" && (arch === "arm64" || (profile.acpxAgent !== "grok" && arch === "x86_64"))))) {
-            throw new Error(`ACPX ${profile.acpxAgent} requires a qualified Linux x64 or macOS architecture.`);
-          }
-          return {
-            adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
-            checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" as const,
-              message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
-          };
+        // SSH Codex's native hello stages and verifies the task's exact daemon
+        // and CLI. A preinstalled-only check would reject supported SSH hosts.
+        if (!(profile.provider === "codex" && context.executionTarget?.kind === "remote" && context.executionTarget.transport === "ssh")) {
+          await assertNativeRunnerSetupReady(context, artifacts);
         }
-        const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxCursorInstallation } = await import("../vendor/paperclip-runner/live/index.js");
-        await (profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : profile.acpxAgent === "cursor" ? probeAcpxCursorInstallation : probeAcpxClaudeInstallation)(profile.model);
-        return {
-          adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
-          checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: `ACPX ${profile.acpxAgent} runtime is installed and verified. Model access is checked when it runs.` }],
-        };
       } catch (error) {
         return {
           adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(),
-          checks: [{ code: "acpx_runtime_unavailable", level: "error" as const, message: error instanceof Error ? error.message : "ACPX Claude runtime could not be verified." }],
+          checks: [{ code: "paperclip_runner_runtime_unavailable", level: "error" as const,
+            message: error instanceof Error ? error.message : "Paperclip Runner could not start. Install it or select Legacy runner in Advanced." }],
         };
       }
+      if (profile.provider === "acpx") {
+        if (["copilot", "pi"].includes(profile.acpxAgent)) {
+          // The profile resolver already validated the isolated host's exact
+          // qualification pair. Do not report a production readiness pass.
+          return {
+            adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+            checks: [{ code: "acpx_candidate_qualification_only", level: "warn" as const,
+              message: "This exact candidate and model are admitted for operator-controlled qualification only. Verified runtime installation, bound credentials, and model access are checked before execution; production support remains pending." }],
+          };
+        }
+        try {
+          if (profile.acpxAgent !== "claude" && profile.acpxAgent !== "grok" && profile.acpxAgent !== "cursor") throw new Error("Select Codex to use the native Codex runner.");
+          const target = context.executionTarget;
+          if (target?.kind === "remote") {
+            const probe = await runAdapterExecutionTargetShellCommand(
+              `acpx-platform-${crypto.randomUUID()}`, target, "uname -s && uname -m",
+              { cwd: target.remoteCwd, env: {}, timeoutSec: 15 },
+            );
+            if (probe.timedOut || probe.exitCode !== 0) throw new Error("Could not verify the remote ACPX runner platform.");
+            const [os, arch] = probe.stdout.trim().split(/\s+/);
+            if (!((os === "Linux" && arch === "x86_64") || (os === "Darwin" && (arch === "arm64" || (profile.acpxAgent !== "grok" && arch === "x86_64"))))) {
+              throw new Error(`ACPX ${profile.acpxAgent} requires a qualified Linux x64 or macOS architecture.`);
+            }
+            await assertRemoteAcpxSetupReady(context, profile.acpxAgent, profile.model, artifacts);
+            const authentication = await testNativeAcpxAuthentication(context, profile.acpxAgent, profile.model, artifacts);
+            return { ...authentication, checks: [{ code: "acpx_runtime_ready", level: "info" as const,
+              message: `Paperclip Runner and ACPX ${profile.acpxAgent} are installed and verified in the selected environment.` }, ...authentication.checks] };
+          }
+          const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxCursorInstallation } = await import("../vendor/paperclip-runner/live/index.js");
+          await (profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : profile.acpxAgent === "cursor" ? probeAcpxCursorInstallation : probeAcpxClaudeInstallation)(profile.model);
+          const authentication = await testNativeAcpxAuthentication(context, profile.acpxAgent, profile.model, artifacts);
+          return { ...authentication, checks: [{ code: "acpx_runtime_ready", level: "info" as const,
+            message: `ACPX ${profile.acpxAgent} runtime is installed and verified.` }, ...authentication.checks] };
+        } catch (error) {
+          return {
+            adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(),
+            checks: [{ code: "acpx_runtime_unavailable", level: "error" as const, message: error instanceof Error ? error.message : "ACPX Claude runtime could not be verified." }],
+          };
+        }
+      }
+      if (profile.provider === "claude_managed") {
+        return {
+          adapterType: "paperclip_runner",
+          status: "warn" as const,
+          testedAt: new Date().toISOString(),
+          checks: [{
+            code: "claude_managed_profile_selected",
+            level: "info" as const,
+            message: `Claude Managed profile ${profile.managedProfileId} is selected with retention acknowledged. Its stored qualification, API-key binding, and spend ceiling are verified before the first turn.`,
+          }, {
+            code: "claude_managed_retention_notice",
+            level: "warn" as const,
+            message: "Claude Managed is a stateful beta service and is not eligible for ZDR or HIPAA modes.",
+          }],
+        };
+      }
+      if (profile.provider === "aws_agentcore") {
+        return {
+          adapterType: "paperclip_runner",
+          status: "warn" as const,
+          testedAt: new Date().toISOString(),
+          checks: [{
+            code: "aws_agentcore_profile_selected",
+            level: "info" as const,
+            message: `AWS AgentCore profile ${profile.agentCoreProfileId} is selected with retention acknowledged. Its stored qualification, invocation limits, and estimated spend ceiling are verified before the first turn.`,
+          }, {
+            code: "aws_agentcore_retention_notice",
+            level: "warn" as const,
+            message: "AgentCore Memory retains short-term events for 90 days; the spend ceiling is an estimate, not an AWS currency hard stop.",
+          }],
+        };
+      }
+      return testNativeRunnerAuthentication(context, profile.provider, profile.model, artifacts);
+    };
+    if (profile.provider === "codex" || profile.provider === "opencode" || (profile.provider === "acpx" && ["claude", "grok", "cursor"].includes(profile.acpxAgent))) {
+      return withRemoteNativeSetupArtifacts(context, profile.provider, profile.model, testSelectedRuntime);
     }
-    if (profile.provider === "claude_managed") {
-      return {
-        adapterType: "paperclip_runner",
-        status: "warn" as const,
-        testedAt: new Date().toISOString(),
-        checks: [{
-          code: "claude_managed_profile_selected",
-          level: "info" as const,
-          message: `Claude Managed profile ${profile.managedProfileId} is selected with retention acknowledged. Its stored qualification, API-key binding, and spend ceiling are verified before the first turn.`,
-        }, {
-          code: "claude_managed_retention_notice",
-          level: "warn" as const,
-          message: "Claude Managed is a stateful beta service and is not eligible for ZDR or HIPAA modes.",
-        }],
-      };
-    }
-    if (profile.provider === "aws_agentcore") {
-      return {
-        adapterType: "paperclip_runner",
-        status: "warn" as const,
-        testedAt: new Date().toISOString(),
-        checks: [{
-          code: "aws_agentcore_profile_selected",
-          level: "info" as const,
-          message: `AWS AgentCore profile ${profile.agentCoreProfileId} is selected with retention acknowledged. Its stored qualification, invocation limits, and estimated spend ceiling are verified before the first turn.`,
-        }, {
-          code: "aws_agentcore_retention_notice",
-          level: "warn" as const,
-          message: "AgentCore Memory retains short-term events for 90 days; the spend ceiling is an estimate, not an AWS currency hard stop.",
-        }],
-      };
-    }
-    const result = profile.provider === "opencode"
-      ? await openCodeTestEnvironment(context)
-      : await codexTestEnvironment(context);
-    return { ...result, adapterType: "paperclip_runner" };
+    return testSelectedRuntime();
   },
   listSkills: listCodexSkills,
   syncSkills: syncCodexSkills,
@@ -1162,6 +1177,14 @@ export function setOverridePaused(type: string, paused: boolean): boolean {
 /** Check whether the external override for a builtin type is currently paused. */
 export function isOverridePaused(type: string): boolean {
   return pausedOverrides.has(type);
+}
+
+export function hasActiveAdapterOverride(type: string): boolean {
+  const registered = adaptersByType.get(type);
+  return builtinFallbacks.has(type)
+    && registered !== undefined
+    && registered !== builtinFallbacks.get(type)
+    && !pausedOverrides.has(type);
 }
 
 /** Get the set of types whose overrides are currently paused. */

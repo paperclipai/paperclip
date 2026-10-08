@@ -41,10 +41,7 @@ export interface InstanceGeneralSettings {
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
-  /**
-   * Exposes the experimental Paperclip Runner adapter for new selections.
-   * Existing native runs ignore later flag changes so they remain recoverable.
-   */
+  /** @deprecated Compatibility only; always enabled. */
   enableNativeRunner: boolean;
   enableAiConnectionRouters: boolean;
   /**
@@ -132,8 +129,8 @@ export interface InstanceExperimentalSettings {
    */
   enableSandboxDuplexBridge: boolean;
   /**
-   * @deprecated Compatibility-only. Provider WebSocket ingress now follows
-   * enableNativeRunner and this value has no runtime effect.
+   * @deprecated Compatibility-only. Provider WebSocket ingress is always enabled;
+   * this value has no runtime effect.
    */
   enableRunnerPreviewIngress: boolean;
   /**

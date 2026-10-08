@@ -58,6 +58,7 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
         name: agents.name,
         role: agents.role,
         adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
         permissions: agents.permissions,
       })
       .from(agents)
@@ -65,7 +66,7 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
     return new Map(rows.map((row) => [row.name, row]));
   }
 
-  it("installs core-exec-team end-to-end with no caller overrides and creates 3 claude_local agents", async () => {
+  it("installs core-exec-team end-to-end with no caller overrides and creates 3 native Claude agents", async () => {
     const companyId = await seedEmptyCompany();
     const svc = teamsCatalogService(db);
 
@@ -78,12 +79,13 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
     expect(byName.size).toBe(3);
 
     const adapterTypes = Array.from(byName.values()).map((row) => row.adapterType);
-    expect(adapterTypes).toEqual(["claude_local", "claude_local", "claude_local"]);
+    expect(adapterTypes).toEqual(["paperclip_runner", "paperclip_runner", "paperclip_runner"]);
     expect(adapterTypes).not.toContain("process");
+    for (const row of byName.values()) expect(row.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude" });
     expect(adapterTypes).not.toContain("http");
   });
 
-  it("installs product-design end-to-end with no caller overrides and uses claude_local", async () => {
+  it("installs product-design end-to-end with no caller overrides and uses native Claude", async () => {
     const companyId = await seedEmptyCompany();
     const svc = teamsCatalogService(db);
 
@@ -95,11 +97,12 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
     const byName = await listAdapterTypesByName(companyId);
     expect(byName.size).toBe(1);
     const adapterTypes = Array.from(byName.values()).map((row) => row.adapterType);
-    expect(adapterTypes).toEqual(["claude_local"]);
+    expect(adapterTypes).toEqual(["paperclip_runner"]);
     expect(adapterTypes).not.toContain("process");
+    for (const row of byName.values()) expect(row.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude" });
   });
 
-  it("installs product-engineering end-to-end with no caller overrides and uses claude_local for every agent", async () => {
+  it("installs product-engineering end-to-end with no caller overrides and uses native Claude for every agent", async () => {
     const companyId = await seedEmptyCompany();
     const svc = teamsCatalogService(db);
 
@@ -111,12 +114,13 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
     const byName = await listAdapterTypesByName(companyId);
     expect(byName.size).toBe(3);
     const adapterTypes = Array.from(byName.values()).map((row) => row.adapterType);
-    expect(adapterTypes).toEqual(["claude_local", "claude_local", "claude_local"]);
+    expect(adapterTypes).toEqual(["paperclip_runner", "paperclip_runner", "paperclip_runner"]);
     expect(adapterTypes).not.toContain("process");
+    for (const row of byName.values()) expect(row.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude" });
     expect(byName.get("CTO")?.permissions).toMatchObject({ canCreateAgents: true });
   });
 
-  it("honors an explicit caller adapter override for a single slug while defaulting the rest to claude_local", async () => {
+  it("honors an explicit caller adapter override for a single slug while defaulting the rest to native Claude", async () => {
     const companyId = await seedEmptyCompany();
     const svc = teamsCatalogService(db);
 
@@ -131,10 +135,11 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
     const byName = await listAdapterTypesByName(companyId);
     expect(byName.size).toBe(3);
     const ctoRow = Array.from(byName.values()).find((row) => row.role === "engineering-manager" || row.name === "CTO");
-    expect(ctoRow?.adapterType).toBe("opencode_local");
+    expect(ctoRow?.adapterType).toBe("paperclip_runner");
+    expect(ctoRow?.adapterConfig).toMatchObject({ provider: "opencode", model: "anthropic/claude-opus-4" });
     const otherAdapters = Array.from(byName.values())
       .filter((row) => row !== ctoRow)
       .map((row) => row.adapterType);
-    expect(otherAdapters).toEqual(["claude_local", "claude_local"]);
+    expect(otherAdapters).toEqual(["paperclip_runner", "paperclip_runner"]);
   });
 });

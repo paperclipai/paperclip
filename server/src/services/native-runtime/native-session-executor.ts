@@ -9861,6 +9861,32 @@ function providerPackRelativePath(value: unknown, field: string): string {
   return value;
 }
 
+export function remoteProviderPackVerificationScript(): string {
+  return [
+    "const fs=require('node:fs')",
+    "const crypto=require('node:crypto')",
+    "const path=require('node:path')",
+    "const root=process.argv[1]",
+    "const expected=Buffer.from(process.argv[2],'base64').toString('utf8')",
+    "const actual=fs.readFileSync(path.join(root,'provider-pack.json'),'utf8').trim()",
+    "const canonical=(v)=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}':JSON.stringify(v)",
+    "const manifest=JSON.parse(actual)",
+    "if(canonical(manifest)!==expected)throw new Error('manifest mismatch')",
+    "const hash=(p)=>'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(path.join(root,p))).digest('hex')",
+    "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
+    "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
+    "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
+    "for(const candidate of Object.values({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(tree(path.join(root,candidate.path))!==candidate.sha256)throw new Error('candidate asset tree digest mismatch')}",
+    "const version=process.versions.node.split('.').map(Number)",
+    "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
+    "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
+    "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)throw new Error('provider pack target mismatch')",
+    "const packageVersion=(pkg)=>JSON.parse(fs.readFileSync(path.join(root,'node_modules',...pkg.split('/'),'package.json'),'utf8')).version",
+    "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
+    "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)throw new Error(pkg+' version mismatch')",
+  ].join(";");
+}
+
 export function readRemoteProviderPackManifest(packRoot: string): RemoteProviderPackManifest {
   return readRemoteProviderPackIdentity(packRoot, true);
 }
@@ -10058,7 +10084,7 @@ export function assertRemoteRunnerBuildMetadata(
   }
 }
 
-async function stageRemoteRunnerFile(input: {
+export async function stageRemoteRunnerFile(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
   sourcePath: string;
@@ -10450,7 +10476,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   }
 }
 
-async function readRemoteRunnerState(input: {
+export async function readRemoteRunnerState(input: {
   runner: CommandManagedRuntimeRunner;
   stateDirectory: string;
 }): Promise<Record<string, unknown>> {
@@ -11000,6 +11026,544 @@ export function remoteCheckpointIncompleteFailure(
   );
 }
 
+/** Task and setup probes share the same release-bound provider-pack preparation. */
+export function createRemoteProviderPackPreparation(input: {
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
+  runner: CommandManagedRuntimeRunner;
+  manifest: RemoteProviderPackManifest;
+  configuredProviderPackRoot: string | null;
+  stagedRemoteProviderPackRoot: string;
+  trace?: NativeRunTrace;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}) {
+  const remoteTarget = input.target;
+  const remoteCommandRunner = input.runner;
+  const expectedProviderPackManifest = input.manifest;
+  const { configuredProviderPackRoot, stagedRemoteProviderPackRoot } = input;
+  const verifyRemoteProviderPack = async (packRoot: string) => {
+    if (!remoteTarget || !remoteCommandRunner || !expectedProviderPackManifest)
+      return;
+    const expected = Buffer.from(
+      canonicalJson(expectedProviderPackManifest),
+      "utf8",
+    ).toString("base64");
+    const providerNodeCommand = posix.join(
+      packRoot,
+      expectedProviderPackManifest.payload.artifacts.nodeCommand.path,
+    );
+    const verifyScript = remoteProviderPackVerificationScript();
+    const verified = await remoteCommandRunner.execute({
+      command: providerNodeCommand,
+      args: ["-e", verifyScript, packRoot, expected],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (verified.exitCode !== 0 || verified.timedOut) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: provider pack verification failed (${verified.stderr.trim().slice(-1_024)})`,
+      );
+    }
+    const opencodeCommand = posix.join(
+      packRoot,
+      expectedProviderPackManifest.payload.artifacts.opencodeCommand.path,
+    );
+    const opencodeVersion = await remoteCommandRunner.execute({
+      command: opencodeCommand,
+      args: ["--version"],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (
+      opencodeVersion.exitCode !== 0 ||
+      opencodeVersion.timedOut ||
+      opencodeVersion.stdout.trim() !== REMOTE_PROVIDER_PACK_PINS.opencode
+    ) {
+      throw new Error(
+        "runner_remote_provider_artifact_incompatible: OpenCode version mismatch",
+      );
+    }
+  };
+
+  const discoverPreinstalledProviderPack = async () => {
+    if (!remoteTarget || !remoteCommandRunner) return null;
+    const result = await remoteCommandRunner.execute({
+      command: "sh",
+      args: [
+        "-c",
+        'for candidate in /opt/paperclip-runner/provider-pack "$HOME/.local/share/paperclip-runner/provider-pack"; do if [ -f "$candidate/provider-pack.json" ]; then printf \'%s\\n\' "$candidate"; break; fi; done',
+      ],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) return null;
+    return parseRemoteExecutableCandidate(result.stdout);
+  };
+
+  return {
+    verify: verifyRemoteProviderPack,
+    prepare: async () => {
+      const packSource = await prepareVerifiedRemoteProviderPack({
+        verifyStaged: () => measureNativeRunnerSpan(
+          input.trace,
+          "provider_pack.verify",
+          () => verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
+        ),
+        usePreinstalled: async () => {
+          let preinstalledProviderPack = await discoverPreinstalledProviderPack();
+          if (preinstalledProviderPack) {
+            try {
+              await measureNativeRunnerSpan(
+                input.trace,
+                "provider_pack.verify_preinstalled",
+                () => verifyRemoteProviderPack(preinstalledProviderPack!),
+              );
+              const escapedSource = preinstalledProviderPack.replaceAll(
+                "'",
+                "'\\''",
+              );
+              const escapedTarget = stagedRemoteProviderPackRoot.replaceAll(
+                "'",
+                "'\\''",
+              );
+              const escapedParent = posix
+                .dirname(stagedRemoteProviderPackRoot)
+                .replaceAll("'", "'\\''");
+              const linked = await remoteCommandRunner.execute({
+                command: "sh",
+                args: [
+                  "-c",
+                  `umask 077; mkdir -p '${escapedParent}' && rm -rf '${escapedTarget}' && ln -s '${escapedSource}' '${escapedTarget}'`,
+                ],
+                cwd: remoteTarget.remoteCwd,
+                bypassSession: true,
+                timeoutMs: 10_000,
+              });
+              if (linked.exitCode !== 0 || linked.timedOut) {
+                throw new Error(
+                  "runner_remote_provider_artifact_incompatible: preinstalled provider pack could not be linked",
+                );
+              }
+              await input.onLog?.(
+                "stderr",
+                "[paperclip-runner] using manifest-matched provider pack from the sandbox image\n",
+              );
+            } catch {
+              preinstalledProviderPack = null;
+            }
+          }
+          return preinstalledProviderPack !== null;
+        },
+        stageAndVerify: async () => {
+          if (!configuredProviderPackRoot) {
+            throw new Error("runner_remote_provider_artifact_incompatible: install the matching Paperclip package and Daytona image; the image provider pack did not match the bundled release identity");
+          }
+          if (!remoteCommandRunner.syncIn) {
+            throw new Error(
+              "runner_remote_provider_artifact_incompatible: this remote transport cannot stage a provider pack; preinstall the exact manifest-matched pack",
+            );
+          }
+          const escapedPackRoot = stagedRemoteProviderPackRoot.replaceAll(
+            "'",
+            "'\\''",
+          );
+          const cleared = await remoteCommandRunner.execute({
+            command: "sh",
+            args: ["-c", `rm -rf '${escapedPackRoot}'`],
+            cwd: remoteTarget.remoteCwd,
+            bypassSession: true,
+            timeoutMs: 10_000,
+          });
+          if (cleared.exitCode !== 0 || cleared.timedOut) {
+            throw new Error(
+              "runner_remote_provider_artifact_incompatible: stale provider pack could not be replaced",
+            );
+          }
+          await stageRemoteRunnerDirectory({
+            target: remoteTarget,
+            runner: remoteCommandRunner,
+            sourcePath: configuredProviderPackRoot,
+            targetPath: stagedRemoteProviderPackRoot,
+            mode: 0o700,
+          });
+          await measureNativeRunnerSpan(input.trace, "provider_pack.verify", () =>
+            verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
+          );
+        },
+      });
+      if (packSource === "staged") {
+        await input.onLog?.(
+          "stderr",
+          "[paperclip-runner] reusing manifest-matched provider pack from the workspace\n",
+        );
+      }
+      return packSource;
+    },
+  };
+}
+
+/** The shared task/setup staging path for a remote native daemon and Codex CLI. */
+export function createRemoteNativeArtifactPreparation(input: {
+  target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
+  runner: CommandManagedRuntimeRunner;
+  remoteBinary: string;
+  controllerRunnerBinary: string;
+  remoteRuntimeRoot: string;
+  remoteCodexBinary?: string | null;
+  runnerRemoteBinaryPath?: string | null;
+  runnerRemoteCodexPath?: string | null;
+  runnerRemoteCodexNpmSpec?: string | null;
+  model?: string | null;
+  reuseRetainedRunner?: boolean;
+  trace?: NativeRunTrace;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}) {
+  const remoteTarget = input.target;
+  const remoteCommandRunner = input.runner;
+  const { remoteBinary, controllerRunnerBinary, remoteRuntimeRoot } = input;
+  const remoteCodexBinary = input.remoteCodexBinary ?? null;
+  const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
+  const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
+  if (explicitRemoteCodex && remoteCodexNpmSpec) throw new Error("runner_remote_codex_source_conflict");
+  const verifyRemoteRunner = async (
+    requiredMode: "dial_wss" | "listen_ws",
+    executable = remoteBinary,
+  ) => {
+    if (!remoteTarget || !remoteCommandRunner || !executable) return;
+    const metadataResult = await remoteCommandRunner.execute({
+      command: executable,
+      args: ["--build-metadata"],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (metadataResult.exitCode !== 0 || metadataResult.timedOut) {
+      throw new Error("runner_remote_artifact_verification_failed");
+    }
+    let metadata: Record<string, unknown>;
+    try {
+      metadata = JSON.parse(metadataResult.stdout) as Record<string, unknown>;
+    } catch (error) {
+      throw new Error("runner_remote_artifact_metadata_invalid", {
+        cause: error,
+      });
+    }
+    assertRemoteRunnerBuildMetadata(metadata, requiredMode);
+  };
+
+  const reportedCodexVersions = new Set<string>();
+  const verifyRemoteCodex = async (executable = remoteCodexBinary) => {
+    if (!remoteTarget || !remoteCommandRunner || !executable) return;
+    const versionResult = await remoteCommandRunner.execute({
+      command: executable,
+      args: ["--version"],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 30_000,
+    });
+    if (versionResult.exitCode !== 0 || versionResult.timedOut) {
+      throw new Error("runner_remote_codex_artifact_verification_failed");
+    }
+    const versionOutput = `${versionResult.stdout}\n${versionResult.stderr}`;
+    const version = parseCodexCliVersion(versionOutput);
+    if (!version || !isSupportedRemoteCodexVersion(version)) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: supported Codex versions ${REMOTE_CODEX_SUPPORTED_RANGE}, received ${version ?? "an unrecognized or prerelease version"}; install a supported stable Codex release or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@${REMOTE_PROVIDER_PACK_PINS.codex}`,
+      );
+    }
+    // A Codex inside the compatibility window can still be too old for the
+    // configured model: the ChatGPT backend rejects a model from clients
+    // below the model's floor on every turn. Fail before launch with the
+    // exact gap, so a stale sandbox image is not reported as an account
+    // problem. When a preinstalled Codex fails here and an npm spec is
+    // configured, the caller falls back to installing the pinned release.
+    const configuredModel = input.model ?? null;
+    const modelMinimum = minimumCodexCliVersionForModel(configuredModel);
+    if (modelMinimum && !codexCliVersionAtLeast(version, modelMinimum)) {
+      throw new Error(
+        `runner_remote_provider_artifact_incompatible: ${normalizeCodexModel(configuredModel)} requires Codex ${modelMinimum} or newer with ChatGPT sign-in, received ${version} from the sandbox image; promote a sandbox image with Codex ${REMOTE_PROVIDER_PACK_PINS.codex} or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@${REMOTE_PROVIDER_PACK_PINS.codex}`,
+      );
+    }
+    if (version !== REMOTE_PROVIDER_PACK_PINS.codex && !reportedCodexVersions.has(version)) {
+      reportedCodexVersions.add(version);
+      await input.onLog?.(
+        "stderr",
+        `[paperclip-runner] using compatible Codex ${version} (supported ${REMOTE_CODEX_SUPPORTED_RANGE}; install pin ${REMOTE_PROVIDER_PACK_PINS.codex})\n`,
+      );
+    }
+  };
+
+  // Image policy: keep one latest stable CLI installation shared by native and
+  // local adapters. Preferred bin entries must point to that same installation;
+  // never bake an older global CLI alongside a private runner-only version.
+  const discoverPreinstalledExecutable = async (
+    name: "paperclip-runnerd" | "codex",
+  ) => {
+    if (!remoteTarget || !remoteCommandRunner) return null;
+    return discoverRemoteExecutable(remoteCommandRunner, remoteTarget.remoteCwd, name);
+  };
+
+  const linkPreinstalledExecutable = async (
+    sourcePath: string,
+    targetPath: string,
+  ) => {
+    if (!remoteTarget || !remoteCommandRunner) return;
+    const escapedSource = sourcePath.replaceAll("'", "'\\''");
+    const escapedTarget = targetPath.replaceAll("'", "'\\''");
+    const escapedDirectory = posix.dirname(targetPath).replaceAll("'", "'\\''");
+    const result = await remoteCommandRunner.execute({
+      command: "sh",
+      args: [
+        "-c",
+        targetPath === remoteCodexBinary
+          ? buildRemoteCodexLauncherCommand(sourcePath, targetPath)
+          : `umask 077; mkdir -p '${escapedDirectory}' && ` +
+            `ln -sfn '${escapedSource}' '${escapedTarget}'`,
+      ],
+      cwd: remoteTarget.remoteCwd,
+      bypassSession: true,
+      timeoutMs: 10_000,
+    });
+    if (result.exitCode !== 0 || result.timedOut) {
+      throw new Error("runner_remote_preinstalled_link_failed");
+    }
+  };
+
+  const prepare = async (requiredMode: "dial_wss" | "listen_ws") => {
+    // Compatibility metadata does not prove artifact identity. Reuse only the
+    // exact controller-owned bytes when the controller artifact is available.
+    const matchesControllerRunnerArtifact = async (executable: string): Promise<boolean> => {
+      const expected = createHash("sha256")
+        .update(readFileSync(controllerRunnerBinary))
+        .digest("hex");
+      try {
+        const probe = await remoteCommandRunner.execute({
+          command: "sh",
+          args: [
+            "-c",
+            'test -x "$1" || exit 1; if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi',
+            "paperclip-runner-artifact",
+            executable,
+          ],
+          cwd: remoteTarget.remoteCwd,
+          bypassSession: true,
+          timeoutMs: 10_000,
+        });
+        return probe.exitCode === 0 && !probe.timedOut &&
+          /^[a-f0-9]{64}\s/.test(probe.stdout) &&
+          probe.stdout.trim().split(/\s+/)[0] === expected;
+      } catch {
+        // An unavailable checksum uses the verified staging path.
+        return false;
+      }
+    };
+    let runnerArtifactPrepared = false;
+    if (
+      input.reuseRetainedRunner === true &&
+      existsSync(controllerRunnerBinary)
+    ) {
+      runnerArtifactPrepared = await measureNativeRunnerSpan(
+        input.trace,
+        "runner.artifact.verify_retained",
+        () => matchesControllerRunnerArtifact(remoteBinary),
+      );
+    }
+    const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
+    if (!runnerArtifactPrepared && mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
+      const preinstalledRunner = await measureNativeRunnerSpan(
+        input.trace,
+        "runner.artifact.discover",
+        () => discoverPreinstalledExecutable("paperclip-runnerd"),
+      );
+      if (preinstalledRunner) {
+        try {
+          await measureNativeRunnerSpan(
+            input.trace,
+            "runner.artifact.verify_preinstalled",
+            () => verifyRemoteRunner(requiredMode, preinstalledRunner),
+          );
+          if (existsSync(controllerRunnerBinary) &&
+              !await matchesControllerRunnerArtifact(preinstalledRunner)) {
+            throw new Error("runner_remote_preinstalled_artifact_mismatch");
+          }
+          await measureNativeRunnerSpan(
+            input.trace,
+            "runner.artifact.link",
+            () => linkPreinstalledExecutable(preinstalledRunner, remoteBinary),
+          );
+          runnerArtifactPrepared = true;
+          await input.onLog?.(
+            "stderr",
+            "[paperclip-runner] using preinstalled runnerd from the sandbox image\n",
+          );
+        } catch {
+          runnerArtifactPrepared = false;
+        }
+      }
+    }
+    if (!runnerArtifactPrepared) {
+      // Upload the same artifact used for the controller identity. The server
+      // vendors the runner under vendor/paperclip-runner/bin, so the package
+      // development fallback cannot locate it in a deployed server.
+      const sourceBinary = controllerRunnerBinary;
+      if (!existsSync(sourceBinary)) {
+        throw new Error("runner_remote_artifact_unavailable");
+      }
+      if (!explicitRemoteBinary) {
+        const platform = await remoteCommandRunner.execute({
+          command: "sh",
+          args: ["-c", "uname -s; uname -m"],
+          cwd: remoteTarget.remoteCwd,
+          bypassSession: true,
+          timeoutMs: 10_000,
+        });
+        const [remoteOs = "", remoteArch = ""] = platform.stdout
+          .trim()
+          .split(/\r?\n/);
+        const localOs =
+          process.platform === "darwin"
+            ? "Darwin"
+            : process.platform === "linux"
+              ? "Linux"
+              : process.platform;
+        const localArch =
+          process.arch === "x64"
+            ? "x86_64"
+            : process.arch === "arm64"
+              ? "aarch64"
+              : process.arch;
+        const archMatches =
+          remoteArch === localArch ||
+          (localArch === "aarch64" && remoteArch === "arm64");
+        if (
+          platform.exitCode !== 0 ||
+          platform.timedOut ||
+          remoteOs !== localOs ||
+          !archMatches
+        ) {
+          throw new Error(
+            "runner_remote_artifact_platform_mismatch: configure PAPERCLIP_RUNNER_REMOTE_BINARY_PATH for the remote OS and architecture",
+          );
+        }
+      }
+      await stageRemoteRunnerFile({
+        target: remoteTarget,
+        runner: remoteCommandRunner,
+        sourcePath: sourceBinary,
+        targetPath: remoteBinary,
+        mode: 0o700,
+      });
+    }
+    await measureNativeRunnerSpan(input.trace, "runner.artifact.verify", () =>
+      verifyRemoteRunner(requiredMode),
+    );
+    if (remoteCodexBinary && explicitRemoteCodex) {
+      if (!existsSync(explicitRemoteCodex)) {
+        throw new Error("runner_remote_codex_artifact_unavailable");
+      }
+      await stageRemoteRunnerFile({
+        target: remoteTarget,
+        runner: remoteCommandRunner,
+        sourcePath: explicitRemoteCodex,
+        targetPath: remoteCodexBinary,
+        mode: 0o700,
+      });
+      await verifyRemoteCodex();
+    }
+    if (remoteCodexBinary && remoteCodexNpmSpec) {
+      let usedPreinstalledCodex = false;
+      const preinstalledCodex = await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.discover",
+        () => discoverPreinstalledExecutable("codex"),
+      );
+      if (preinstalledCodex) {
+        try {
+          await measureNativeRunnerSpan(
+            input.trace,
+            "harness.artifact.verify_preinstalled",
+            () => verifyRemoteCodex(preinstalledCodex),
+          );
+          await measureNativeRunnerSpan(
+            input.trace,
+            "harness.artifact.link",
+            () =>
+              linkPreinstalledExecutable(preinstalledCodex, remoteCodexBinary),
+          );
+          usedPreinstalledCodex = true;
+          await input.onLog?.(
+            "stderr",
+            "[paperclip-runner] using preinstalled Codex from the sandbox image\n",
+          );
+        } catch {
+          usedPreinstalledCodex = false;
+        }
+      }
+      if (!usedPreinstalledCodex) {
+        const installRoot = posix.join(
+          remoteRuntimeRoot!,
+          "harnesses",
+          "codex",
+        );
+        const installResult = await remoteCommandRunner.execute({
+          command: "npm",
+          args: [
+            "install",
+            "--prefix",
+            installRoot,
+            "--no-audit",
+            "--no-fund",
+            remoteCodexNpmSpec,
+          ],
+          cwd: remoteTarget.remoteCwd,
+          bypassSession: true,
+          timeoutMs: 180_000,
+        });
+        if (installResult.exitCode !== 0 || installResult.timedOut) {
+          throw new Error("runner_remote_codex_install_failed");
+        }
+      }
+      await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.verify",
+        () => verifyRemoteCodex(),
+      );
+    }
+    if (remoteCodexBinary && !explicitRemoteCodex && !remoteCodexNpmSpec) {
+      const preinstalledCodex = await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.discover",
+        () => discoverPreinstalledExecutable("codex"),
+      );
+      if (!preinstalledCodex) {
+        throw new Error(
+          "runner_remote_codex_artifact_unavailable: install codex in the sandbox image or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC",
+        );
+      }
+      await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.verify_preinstalled",
+        () => verifyRemoteCodex(preinstalledCodex),
+      );
+      await measureNativeRunnerSpan(input.trace, "harness.artifact.link", () =>
+        linkPreinstalledExecutable(preinstalledCodex, remoteCodexBinary),
+      );
+      await measureNativeRunnerSpan(
+        input.trace,
+        "harness.artifact.verify",
+        () => verifyRemoteCodex(),
+      );
+      await input.onLog?.(
+        "stderr",
+        "[paperclip-runner] using preinstalled Codex from the sandbox image\n",
+      );
+    }
+  };
+  return { prepare, verifyRemoteRunner, verifyRemoteCodex };
+}
+
 /** Production runnerd backend seam, exported so provider wiring can be regression tested. */
 export async function createRunnerdBackend(input: {
   db: Db;
@@ -11374,195 +11938,19 @@ async function createRunnerdBackendWithinSessionClaim(
       })
     : Promise.resolve();
 
-  const verifyRemoteRunner = async (
-    requiredMode: "dial_wss" | "listen_ws",
-    executable = remoteBinary,
-  ) => {
-    if (!remoteTarget || !remoteCommandRunner || !executable) return;
-    const metadataResult = await remoteCommandRunner.execute({
-      command: executable,
-      args: ["--build-metadata"],
-      cwd: remoteTarget.remoteCwd,
-      bypassSession: true,
-      timeoutMs: 30_000,
-    });
-    if (metadataResult.exitCode !== 0 || metadataResult.timedOut) {
-      throw new Error("runner_remote_artifact_verification_failed");
-    }
-    let metadata: Record<string, unknown>;
-    try {
-      metadata = JSON.parse(metadataResult.stdout) as Record<string, unknown>;
-    } catch (error) {
-      throw new Error("runner_remote_artifact_metadata_invalid", {
-        cause: error,
-      });
-    }
-    assertRemoteRunnerBuildMetadata(metadata, requiredMode);
-  };
+  const { prepare: prepareNativeArtifacts, verifyRemoteRunner, verifyRemoteCodex } = remoteTarget && remoteCommandRunner && remoteBinary && remoteRuntimeRoot
+    ? createRemoteNativeArtifactPreparation({
+        target: remoteTarget, runner: remoteCommandRunner, remoteBinary, controllerRunnerBinary, remoteRuntimeRoot, remoteCodexBinary,
+        runnerRemoteBinaryPath: input.runnerRemoteBinaryPath, runnerRemoteCodexPath: explicitRemoteCodex, runnerRemoteCodexNpmSpec: remoteCodexNpmSpec,
+        model: input.execution.provider.kind === "codex" ? input.execution.provider.model : null,
+        reuseRetainedRunner: sandboxLeaseAcquisition?.outcome === "resumed", trace: input.trace, onLog: input.onLog,
+      })
+    : { prepare: async (_mode: "dial_wss" | "listen_ws") => {}, verifyRemoteRunner: async (_mode: "dial_wss" | "listen_ws") => {}, verifyRemoteCodex: async () => {} };
 
-  const reportedCodexVersions = new Set<string>();
-  const verifyRemoteCodex = async (executable = remoteCodexBinary) => {
-    if (!remoteTarget || !remoteCommandRunner || !executable) return;
-    const versionResult = await remoteCommandRunner.execute({
-      command: executable,
-      args: ["--version"],
-      cwd: remoteTarget.remoteCwd,
-      bypassSession: true,
-      timeoutMs: 30_000,
-    });
-    if (versionResult.exitCode !== 0 || versionResult.timedOut) {
-      throw new Error("runner_remote_codex_artifact_verification_failed");
-    }
-    const versionOutput = `${versionResult.stdout}\n${versionResult.stderr}`;
-    const version = parseCodexCliVersion(versionOutput);
-    if (!version || !isSupportedRemoteCodexVersion(version)) {
-      throw new Error(
-        `runner_remote_provider_artifact_incompatible: supported Codex versions ${REMOTE_CODEX_SUPPORTED_RANGE}, received ${version ?? "an unrecognized or prerelease version"}; install a supported stable Codex release or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@${REMOTE_PROVIDER_PACK_PINS.codex}`,
-      );
-    }
-    // A Codex inside the compatibility window can still be too old for the
-    // configured model: the ChatGPT backend rejects a model from clients
-    // below the model's floor on every turn. Fail before launch with the
-    // exact gap, so a stale sandbox image is not reported as an account
-    // problem. When a preinstalled Codex fails here and an npm spec is
-    // configured, the caller falls back to installing the pinned release.
-    const configuredModel = input.execution.provider.kind === "codex"
-      ? input.execution.provider.model
-      : null;
-    const modelMinimum = minimumCodexCliVersionForModel(configuredModel);
-    if (modelMinimum && !codexCliVersionAtLeast(version, modelMinimum)) {
-      throw new Error(
-        `runner_remote_provider_artifact_incompatible: ${normalizeCodexModel(configuredModel)} requires Codex ${modelMinimum} or newer with ChatGPT sign-in, received ${version} from the sandbox image; promote a sandbox image with Codex ${REMOTE_PROVIDER_PACK_PINS.codex} or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@${REMOTE_PROVIDER_PACK_PINS.codex}`,
-      );
-    }
-    if (version !== REMOTE_PROVIDER_PACK_PINS.codex && !reportedCodexVersions.has(version)) {
-      reportedCodexVersions.add(version);
-      await input.onLog?.(
-        "stderr",
-        `[paperclip-runner] using compatible Codex ${version} (supported ${REMOTE_CODEX_SUPPORTED_RANGE}; install pin ${REMOTE_PROVIDER_PACK_PINS.codex})\n`,
-      );
-    }
-  };
-
-  const verifyRemoteProviderPack = async (packRoot: string) => {
-    if (!remoteTarget || !remoteCommandRunner || !expectedProviderPackManifest)
-      return;
-    const expected = Buffer.from(
-      canonicalJson(expectedProviderPackManifest),
-      "utf8",
-    ).toString("base64");
-    const providerNodeCommand = posix.join(
-      packRoot,
-      expectedProviderPackManifest.payload.artifacts.nodeCommand.path,
-    );
-    const verifyScript = [
-      "const fs=require('node:fs')",
-      "const crypto=require('node:crypto')",
-      "const path=require('node:path')",
-      "const root=process.argv[1]",
-      "const expected=Buffer.from(process.argv[2],'base64').toString('utf8')",
-      "const actual=fs.readFileSync(path.join(root,'provider-pack.json'),'utf8').trim()",
-      "const canonical=(v)=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')+'}':JSON.stringify(v)",
-      "const manifest=JSON.parse(actual)",
-      "if(canonical(manifest)!==expected)throw new Error('manifest mismatch')",
-      "const hash=(p)=>'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(path.join(root,p))).digest('hex')",
-      "const tree=(treeRoot)=>{const digest=crypto.createHash('sha256');const visit=(directory,prefix='')=>{for(const entry of fs.readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const relative=prefix?prefix+'/'+entry.name:entry.name;const absolute=path.join(directory,entry.name);if(entry.isDirectory()){digest.update('directory\\0'+relative+'\\n');visit(absolute,relative)}else if(entry.isFile()){digest.update('file\\0'+relative+'\\0'+'sha256:'+crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex')+'\\n')}else if(entry.isSymbolicLink()){digest.update('symlink\\0'+relative+'\\0'+fs.readlinkSync(absolute)+'\\n')}else throw new Error('unsupported dist entry '+relative)}};visit(treeRoot);return 'sha256:'+digest.digest('hex')}",
-      "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)throw new Error(name+' digest mismatch')}",
-      "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)throw new Error('dist tree digest mismatch')",
-      "for(const candidate of Object.values({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(tree(path.join(root,candidate.path))!==candidate.sha256)throw new Error('candidate asset tree digest mismatch')}",
-      "const version=process.versions.node.split('.').map(Number)",
-      "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
-      "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))throw new Error('Node version incompatible')",
-      "if(process.platform!==manifest.payload.target.platform||process.arch!==manifest.payload.target.architecture)throw new Error('provider pack target mismatch')",
-      "const packageVersion=(pkg)=>JSON.parse(fs.readFileSync(path.join(root,'node_modules',...pkg.split('/'),'package.json'),'utf8')).version",
-      "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
-      "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)throw new Error(pkg+' version mismatch')",
-    ].join(";");
-    const verified = await remoteCommandRunner.execute({
-      command: providerNodeCommand,
-      args: ["-e", verifyScript, packRoot, expected],
-      cwd: remoteTarget.remoteCwd,
-      bypassSession: true,
-      timeoutMs: 30_000,
-    });
-    if (verified.exitCode !== 0 || verified.timedOut) {
-      throw new Error(
-        `runner_remote_provider_artifact_incompatible: provider pack verification failed (${verified.stderr.trim().slice(-1_024)})`,
-      );
-    }
-    const opencodeCommand = posix.join(
-      packRoot,
-      expectedProviderPackManifest.payload.artifacts.opencodeCommand.path,
-    );
-    const opencodeVersion = await remoteCommandRunner.execute({
-      command: opencodeCommand,
-      args: ["--version"],
-      cwd: remoteTarget.remoteCwd,
-      bypassSession: true,
-      timeoutMs: 30_000,
-    });
-    if (
-      opencodeVersion.exitCode !== 0 ||
-      opencodeVersion.timedOut ||
-      opencodeVersion.stdout.trim() !== REMOTE_PROVIDER_PACK_PINS.opencode
-    ) {
-      throw new Error(
-        "runner_remote_provider_artifact_incompatible: OpenCode version mismatch",
-      );
-    }
-  };
-
-  const discoverPreinstalledProviderPack = async () => {
-    if (!remoteTarget || !remoteCommandRunner) return null;
-    const result = await remoteCommandRunner.execute({
-      command: "sh",
-      args: [
-        "-c",
-        'for candidate in /opt/paperclip-runner/provider-pack "$HOME/.local/share/paperclip-runner/provider-pack"; do if [ -f "$candidate/provider-pack.json" ]; then printf \'%s\\n\' "$candidate"; break; fi; done',
-      ],
-      cwd: remoteTarget.remoteCwd,
-      bypassSession: true,
-      timeoutMs: 10_000,
-    });
-    if (result.exitCode !== 0 || result.timedOut) return null;
-    return parseRemoteExecutableCandidate(result.stdout);
-  };
-
-  // Image policy: keep one latest stable CLI installation shared by native and
-  // local adapters. Preferred bin entries must point to that same installation;
-  // never bake an older global CLI alongside a private runner-only version.
-  const discoverPreinstalledExecutable = async (
-    name: "paperclip-runnerd" | "codex",
-  ) => {
-    if (!remoteTarget || !remoteCommandRunner) return null;
-    return discoverRemoteExecutable(remoteCommandRunner, remoteTarget.remoteCwd, name);
-  };
-
-  const linkPreinstalledExecutable = async (
-    sourcePath: string,
-    targetPath: string,
-  ) => {
-    if (!remoteTarget || !remoteCommandRunner) return;
-    const escapedSource = sourcePath.replaceAll("'", "'\\''");
-    const escapedTarget = targetPath.replaceAll("'", "'\\''");
-    const escapedDirectory = posix.dirname(targetPath).replaceAll("'", "'\\''");
-    const result = await remoteCommandRunner.execute({
-      command: "sh",
-      args: [
-        "-c",
-        targetPath === remoteCodexBinary
-          ? buildRemoteCodexLauncherCommand(sourcePath, targetPath)
-          : `umask 077; mkdir -p '${escapedDirectory}' && ` +
-            `ln -sfn '${escapedSource}' '${escapedTarget}'`,
-      ],
-      cwd: remoteTarget.remoteCwd,
-      bypassSession: true,
-      timeoutMs: 10_000,
-    });
-    if (result.exitCode !== 0 || result.timedOut) {
-      throw new Error("runner_remote_preinstalled_link_failed");
-    }
-  };
+  const providerPackPreparation = remoteTarget && remoteCommandRunner && expectedProviderPackManifest && stagedRemoteProviderPackRoot
+    ? createRemoteProviderPackPreparation({ target: remoteTarget, runner: remoteCommandRunner, manifest: expectedProviderPackManifest,
+      configuredProviderPackRoot, stagedRemoteProviderPackRoot, trace: input.trace, onLog: input.onLog })
+    : null;
 
   const prepareRemoteRunner = async (
     requiredMode: "dial_wss" | "listen_ws",
@@ -11578,342 +11966,20 @@ async function createRunnerdBackendWithinSessionClaim(
     if (input.restartRecovery?.kind === "reattach_remote_runner") {
       await verifyRemoteRunner(requiredMode);
       if (requiresRemoteProviderPack && stagedRemoteProviderPackRoot) {
-        await verifyRemoteProviderPack(stagedRemoteProviderPackRoot);
+        await providerPackPreparation!.verify(stagedRemoteProviderPackRoot);
         activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
       }
       remotePrepared = true;
       return;
     }
-    // Compatibility metadata does not prove artifact identity. Reuse only the
-    // exact controller-owned bytes when the controller artifact is available.
-    const matchesControllerRunnerArtifact = async (executable: string): Promise<boolean> => {
-      const expected = createHash("sha256")
-        .update(readFileSync(controllerRunnerBinary))
-        .digest("hex");
-      try {
-        const probe = await remoteCommandRunner.execute({
-          command: "sh",
-          args: [
-            "-c",
-            'test -x "$1" || exit 1; if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi',
-            "paperclip-runner-artifact",
-            executable,
-          ],
-          cwd: remoteTarget.remoteCwd,
-          bypassSession: true,
-          timeoutMs: 10_000,
-        });
-        return probe.exitCode === 0 && !probe.timedOut &&
-          /^[a-f0-9]{64}\s/.test(probe.stdout) &&
-          probe.stdout.trim().split(/\s+/)[0] === expected;
-      } catch {
-        // An unavailable checksum uses the verified staging path.
-        return false;
-      }
-    };
-    let runnerArtifactPrepared = false;
-    if (
-      sandboxLeaseAcquisition?.outcome === "resumed" &&
-      existsSync(controllerRunnerBinary)
-    ) {
-      runnerArtifactPrepared = await measureNativeRunnerSpan(
-        input.trace,
-        "runner.artifact.verify_retained",
-        () => matchesControllerRunnerArtifact(remoteBinary),
-      );
-    }
-    const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
-    if (!runnerArtifactPrepared && mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
-      const preinstalledRunner = await measureNativeRunnerSpan(
-        input.trace,
-        "runner.artifact.discover",
-        () => discoverPreinstalledExecutable("paperclip-runnerd"),
-      );
-      if (preinstalledRunner) {
-        try {
-          await measureNativeRunnerSpan(
-            input.trace,
-            "runner.artifact.verify_preinstalled",
-            () => verifyRemoteRunner(requiredMode, preinstalledRunner),
-          );
-          if (existsSync(controllerRunnerBinary) &&
-              !await matchesControllerRunnerArtifact(preinstalledRunner)) {
-            throw new Error("runner_remote_preinstalled_artifact_mismatch");
-          }
-          await measureNativeRunnerSpan(
-            input.trace,
-            "runner.artifact.link",
-            () => linkPreinstalledExecutable(preinstalledRunner, remoteBinary),
-          );
-          runnerArtifactPrepared = true;
-          await input.onLog?.(
-            "stderr",
-            "[paperclip-runner] using preinstalled runnerd from the sandbox image\n",
-          );
-        } catch {
-          runnerArtifactPrepared = false;
-        }
-      }
-    }
-    if (!runnerArtifactPrepared) {
-      // Upload the same artifact used for the controller identity. The server
-      // vendors the runner under vendor/paperclip-runner/bin, so the package
-      // development fallback cannot locate it in a deployed server.
-      const sourceBinary = controllerRunnerBinary;
-      if (!existsSync(sourceBinary)) {
-        throw new Error("runner_remote_artifact_unavailable");
-      }
-      if (!explicitRemoteBinary) {
-        const platform = await remoteCommandRunner.execute({
-          command: "sh",
-          args: ["-c", "uname -s; uname -m"],
-          cwd: remoteTarget.remoteCwd,
-          bypassSession: true,
-          timeoutMs: 10_000,
-        });
-        const [remoteOs = "", remoteArch = ""] = platform.stdout
-          .trim()
-          .split(/\r?\n/);
-        const localOs =
-          process.platform === "darwin"
-            ? "Darwin"
-            : process.platform === "linux"
-              ? "Linux"
-              : process.platform;
-        const localArch =
-          process.arch === "x64"
-            ? "x86_64"
-            : process.arch === "arm64"
-              ? "aarch64"
-              : process.arch;
-        const archMatches =
-          remoteArch === localArch ||
-          (localArch === "aarch64" && remoteArch === "arm64");
-        if (
-          platform.exitCode !== 0 ||
-          platform.timedOut ||
-          remoteOs !== localOs ||
-          !archMatches
-        ) {
-          throw new Error(
-            "runner_remote_artifact_platform_mismatch: configure PAPERCLIP_RUNNER_REMOTE_BINARY_PATH for the remote OS and architecture",
-          );
-        }
-      }
-      await stageRemoteRunnerFile({
-        target: remoteTarget,
-        runner: remoteCommandRunner,
-        sourcePath: sourceBinary,
-        targetPath: remoteBinary,
-        mode: 0o700,
-      });
-    }
-    await measureNativeRunnerSpan(input.trace, "runner.artifact.verify", () =>
-      verifyRemoteRunner(requiredMode),
-    );
-    if (remoteCodexBinary && explicitRemoteCodex) {
-      if (!existsSync(explicitRemoteCodex)) {
-        throw new Error("runner_remote_codex_artifact_unavailable");
-      }
-      await stageRemoteRunnerFile({
-        target: remoteTarget,
-        runner: remoteCommandRunner,
-        sourcePath: explicitRemoteCodex,
-        targetPath: remoteCodexBinary,
-        mode: 0o700,
-      });
-      await verifyRemoteCodex();
-    }
-    if (remoteCodexBinary && remoteCodexNpmSpec) {
-      let usedPreinstalledCodex = false;
-      const preinstalledCodex = await measureNativeRunnerSpan(
-        input.trace,
-        "harness.artifact.discover",
-        () => discoverPreinstalledExecutable("codex"),
-      );
-      if (preinstalledCodex) {
-        try {
-          await measureNativeRunnerSpan(
-            input.trace,
-            "harness.artifact.verify_preinstalled",
-            () => verifyRemoteCodex(preinstalledCodex),
-          );
-          await measureNativeRunnerSpan(
-            input.trace,
-            "harness.artifact.link",
-            () =>
-              linkPreinstalledExecutable(preinstalledCodex, remoteCodexBinary),
-          );
-          usedPreinstalledCodex = true;
-          await input.onLog?.(
-            "stderr",
-            "[paperclip-runner] using preinstalled Codex from the sandbox image\n",
-          );
-        } catch {
-          usedPreinstalledCodex = false;
-        }
-      }
-      if (!usedPreinstalledCodex) {
-        const installRoot = posix.join(
-          remoteRuntimeRoot!,
-          "harnesses",
-          "codex",
-        );
-        const installResult = await remoteCommandRunner.execute({
-          command: "npm",
-          args: [
-            "install",
-            "--prefix",
-            installRoot,
-            "--no-audit",
-            "--no-fund",
-            remoteCodexNpmSpec,
-          ],
-          cwd: remoteTarget.remoteCwd,
-          bypassSession: true,
-          timeoutMs: 180_000,
-        });
-        if (installResult.exitCode !== 0 || installResult.timedOut) {
-          throw new Error("runner_remote_codex_install_failed");
-        }
-      }
-      await measureNativeRunnerSpan(
-        input.trace,
-        "harness.artifact.verify",
-        () => verifyRemoteCodex(),
-      );
-    }
-    if (remoteCodexBinary && !explicitRemoteCodex && !remoteCodexNpmSpec) {
-      const preinstalledCodex = await measureNativeRunnerSpan(
-        input.trace,
-        "harness.artifact.discover",
-        () => discoverPreinstalledExecutable("codex"),
-      );
-      if (!preinstalledCodex) {
-        throw new Error(
-          "runner_remote_codex_artifact_unavailable: install codex in the sandbox image or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC",
-        );
-      }
-      await measureNativeRunnerSpan(
-        input.trace,
-        "harness.artifact.verify_preinstalled",
-        () => verifyRemoteCodex(preinstalledCodex),
-      );
-      await measureNativeRunnerSpan(input.trace, "harness.artifact.link", () =>
-        linkPreinstalledExecutable(preinstalledCodex, remoteCodexBinary),
-      );
-      await measureNativeRunnerSpan(
-        input.trace,
-        "harness.artifact.verify",
-        () => verifyRemoteCodex(),
-      );
-      await input.onLog?.(
-        "stderr",
-        "[paperclip-runner] using preinstalled Codex from the sandbox image\n",
-      );
-    }
+    await prepareNativeArtifacts(requiredMode);
     if (
       requiresRemoteProviderPack &&
       expectedProviderPackManifest &&
       stagedRemoteProviderPackRoot
     ) {
-      const packSource = await prepareVerifiedRemoteProviderPack({
-        verifyStaged: () => measureNativeRunnerSpan(
-          input.trace,
-          "provider_pack.verify",
-          () => verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
-        ),
-        usePreinstalled: async () => {
-          let preinstalledProviderPack = await discoverPreinstalledProviderPack();
-          if (preinstalledProviderPack) {
-            try {
-              await measureNativeRunnerSpan(
-                input.trace,
-                "provider_pack.verify_preinstalled",
-                () => verifyRemoteProviderPack(preinstalledProviderPack!),
-              );
-              const escapedSource = preinstalledProviderPack.replaceAll(
-                "'",
-                "'\\''",
-              );
-              const escapedTarget = stagedRemoteProviderPackRoot.replaceAll(
-                "'",
-                "'\\''",
-              );
-              const escapedParent = posix
-                .dirname(stagedRemoteProviderPackRoot)
-                .replaceAll("'", "'\\''");
-              const linked = await remoteCommandRunner.execute({
-                command: "sh",
-                args: [
-                  "-c",
-                  `umask 077; mkdir -p '${escapedParent}' && rm -rf '${escapedTarget}' && ln -s '${escapedSource}' '${escapedTarget}'`,
-                ],
-                cwd: remoteTarget.remoteCwd,
-                bypassSession: true,
-                timeoutMs: 10_000,
-              });
-              if (linked.exitCode !== 0 || linked.timedOut) {
-                throw new Error(
-                  "runner_remote_provider_artifact_incompatible: preinstalled provider pack could not be linked",
-                );
-              }
-              activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
-              await input.onLog?.(
-                "stderr",
-                "[paperclip-runner] using manifest-matched provider pack from the sandbox image\n",
-              );
-            } catch {
-              preinstalledProviderPack = null;
-            }
-          }
-          return preinstalledProviderPack !== null;
-        },
-        stageAndVerify: async () => {
-          if (!configuredProviderPackRoot) {
-            throw new Error("runner_remote_provider_artifact_incompatible: install the matching Paperclip package and Daytona image; the image provider pack did not match the bundled release identity");
-          }
-          if (!remoteCommandRunner.syncIn) {
-            throw new Error(
-              "runner_remote_provider_artifact_incompatible: this remote transport cannot stage a provider pack; preinstall the exact manifest-matched pack",
-            );
-          }
-          const escapedPackRoot = stagedRemoteProviderPackRoot.replaceAll(
-            "'",
-            "'\\''",
-          );
-          const cleared = await remoteCommandRunner.execute({
-            command: "sh",
-            args: ["-c", `rm -rf '${escapedPackRoot}'`],
-            cwd: remoteTarget.remoteCwd,
-            bypassSession: true,
-            timeoutMs: 10_000,
-          });
-          if (cleared.exitCode !== 0 || cleared.timedOut) {
-            throw new Error(
-              "runner_remote_provider_artifact_incompatible: stale provider pack could not be replaced",
-            );
-          }
-          await stageRemoteRunnerDirectory({
-            target: remoteTarget,
-            runner: remoteCommandRunner,
-            sourcePath: configuredProviderPackRoot,
-            targetPath: stagedRemoteProviderPackRoot,
-            mode: 0o700,
-          });
-          await measureNativeRunnerSpan(input.trace, "provider_pack.verify", () =>
-            verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
-          );
-          activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
-        },
-      });
+      await providerPackPreparation!.prepare();
       activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
-      if (packSource === "staged") {
-        await input.onLog?.(
-          "stderr",
-          "[paperclip-runner] reusing manifest-matched provider pack from the workspace\n",
-        );
-      }
     }
     remotePrepared = true;
   };
@@ -12203,8 +12269,8 @@ async function createRunnerdBackendWithinSessionClaim(
       }
 
       // Codex launch credentials are intentionally excluded from failover
-      // backups. Re-materialize only those launch-time files into a fresh or
-      // replacement sandbox after the durable history has been restored.
+      // backups. Re-materialize this invocation's launch files after the
+      // durable history has been restored.
       if (directory.name !== "codex-home") continue;
       const localDirectory = resolve(root, directory.name);
       for (const name of ["auth.json", "config.toml"] as const) {
@@ -12217,6 +12283,46 @@ async function createRunnerdBackendWithinSessionClaim(
           targetPath: posix.join(targetPath, name),
           mode: 0o600,
         });
+      }
+
+      // The transport materializes the current assigned skills on the
+      // controller. Codex discovers (and receives explicit skill inputs from)
+      // its remote home, rather than the separately staged context bundles.
+      // Publish a fresh snapshot so resume replaces revised/revoked skills
+      // instead of merging stale assignments from retained provider history.
+      const localSkills = resolve(localDirectory, "skills");
+      if (!existsSync(localSkills)) {
+        throw new Error("runner_remote_runtime_context_skills_missing");
+      }
+      const remoteSkills = posix.join(targetPath, "skills");
+      const nonce = randomUUID();
+      const stagingSkills = posix.join(targetPath, `.paperclip-skills-staging-${nonce}`);
+      const previousSkills = posix.join(targetPath, `.paperclip-skills-previous-${nonce}`);
+      await stageRemoteRunnerDirectory({
+        target: remoteTarget,
+        runner: remoteCommandRunner,
+        sourcePath: localSkills,
+        targetPath: stagingSkills,
+        // Assigned trees retain their sealed modes from the materializer;
+        // the parent stays writable for Codex's generated .system skills.
+        mode: 0o700,
+      });
+      const published = await remoteCommandRunner.execute({
+        command: "sh",
+        args: ["-c", [
+          'set -eu; skills="$1"; staged="$2"; previous="$3";',
+          '[ -d "$staged" ] && [ ! -L "$staged" ];',
+          '[ ! -e "$previous" ] && [ ! -L "$previous" ];',
+          'if [ -L "$skills" ] || { [ -e "$skills" ] && [ ! -d "$skills" ]; }; then exit 1; fi;',
+          'if [ -d "$skills" ]; then mv "$skills" "$previous"; fi;',
+          'if ! mv "$staged" "$skills"; then if [ -d "$previous" ]; then mv "$previous" "$skills"; fi; exit 1; fi;',
+          'if [ -d "$previous" ]; then find "$previous" -type d -exec chmod u+w {} +; rm -rf "$previous"; fi;',
+        ].join("\n"), "paperclip-runner-publish-skills", remoteSkills, stagingSkills, previousSkills],
+        bypassSession: true,
+        timeoutMs: 10_000,
+      });
+      if (published.exitCode !== 0 || published.timedOut) {
+        throw new Error("runner_remote_runtime_context_skills_staging_failed");
       }
     }
   };
@@ -12238,7 +12344,7 @@ async function createRunnerdBackendWithinSessionClaim(
                 "runner_remote_provider_artifact_incompatible: provider pack was not prepared",
               );
             }
-            await verifyRemoteProviderPack(activeRemoteProviderPackRoot);
+            await providerPackPreparation!.verify(activeRemoteProviderPackRoot);
           }
         } catch {
           remotePrepared = false;
@@ -12421,7 +12527,8 @@ async function createRunnerdBackendWithinSessionClaim(
         if (!stageLaunchAssets) return;
         // Resume can prepare/rotate durable state before the transport creates
         // this invocation's isolated Codex auth/config. The later launch must
-        // still stage those fresh files even when history was already restored.
+        // still stage those fresh files and assigned skills even when history
+        // was already restored.
         // Launch material is never recovered from a failover backup.
         await materializeRemoteHarnessLaunchState();
         if (

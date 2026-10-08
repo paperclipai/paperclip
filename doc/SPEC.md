@@ -751,6 +751,10 @@ in standard, ask, and planning modes. Submission never changes task disposition
 or routes feedback externally. See [Agent commentary](agent-commentary.md) for
 authentication, replay, document-sized limits, inspection, and deletion semantics.
 
+### Harness and runner selection
+
+New agents select a harness and default to Paperclip Runner on qualified targets; unsupported combinations use the existing adapter. Existing agents preserve their saved execution choice. Advanced provides an explicit legacy override. See [the runner contract](agent-runners.md) for supported harnesses, request fields, compatibility and approval/import behavior.
+
 ### Managed decision models
 
 A company may configure a shared decision model for optional Paperclip features. The instance owns credential resolution, authorization, budget admission, and attributable service charges. Company-sponsored background use is enabled by default during configuration; explicit opt-out persists. User and agent requests keep their own access boundaries and cannot become sponsored background requests after denial. Availability is a cheap local capability check, and metadata-only request history makes service usage inspectable. The implemented V1 contract is in [decision-models.md](decision-models.md).

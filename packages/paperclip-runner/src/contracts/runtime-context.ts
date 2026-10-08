@@ -167,12 +167,22 @@ export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextS
   return { ...parsed, aggregateDigest };
 }
 
-export function composeNativeSystemInstructions(context: NativeRuntimeContextSnapshot, entryContent: string): string {
+export const REGISTERED_INSTRUCTION_TOOL_GUIDANCE =
+  "Your agent instruction entry is already included in these system instructions. Its registered private copy is outside this task workspace; do not read or edit that copy with provider-native file tools. Use read_agent_instructions for the current content and revision. To save a change, call update_agent_instructions with the returned entryFile and revision.id as baseRevisionId, or null when no revision exists. Current responsible-user permissions and revision checks still apply. Check the tool's durable save receipt before claiming persistence.";
+
+export function composeNativeSystemInstructions(
+  context: NativeRuntimeContextSnapshot,
+  entryContent: string,
+  options: { workingCopyAccess?: "native" | "semantic-tools" } = {},
+): string {
   return [
     context.prompt.text,
     entryContent.trim(),
     context.connectionInstructions?.text,
-    context.instructions.workingCopy?.kind === "agent_files"
+    context.instructions.workingCopy && context.instructions.workingCopy.kind !== "agent_files"
+      && options.workingCopyAccess === "semantic-tools"
+      ? REGISTERED_INSTRUCTION_TOOL_GUIDANCE
+      : context.instructions.workingCopy?.kind === "agent_files"
       ? `Your persistent agent directory (AGENT_HOME) is ${context.instructions.workingCopy.rootPath}. Your instruction entry is ${context.instructions.workingCopy.entryPath}, relative to that directory. All supported files and subfolders there are restored across tasks and sessions, and collected after this provider stops. Write task deliverables in the task working directory. Only changed or deleted files synchronize; the last sync wins for the same file. Temporary copies are cleaned up without retaining file history. Check the save receipt before claiming persistence.`
       : context.instructions.workingCopy
       ? `Your editable agent instruction file is ${context.instructions.workingCopy.rootPath}/${context.instructions.workingCopy.entryPath}. Edit this registered private copy normally. After this run stops, Paperclip saves changed content as a persistent revision if your responsible user still has permission and the baseline has not changed. Check the run's instruction-save receipt before claiming persistence. Conflicts are preserved for explicit resolution. Repository instruction files, skills, and this run's loaded prompt are separate and are not collected.`

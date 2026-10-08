@@ -161,7 +161,7 @@ describe("approvalService resolution idempotency", () => {
       expect.objectContaining({
         adapterConfig: approved.payload.adapterConfig,
       }),
-      { createdByUserId: expectedCreator },
+      { runnerResolved: true, createdByUserId: expectedCreator },
     );
   });
 });

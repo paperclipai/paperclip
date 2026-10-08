@@ -55,6 +55,9 @@ export function persistedAcpxTurnUsage(
     || piReceipt.provenance === "assistant_message_and_compaction_receipts";
   const estimate = piReceiptVerified && typeof piReceipt.cost_usd === "number"
     && Number.isFinite(piReceipt.cost_usd) && piReceipt.cost_usd >= 0 ? piReceipt.cost_usd : undefined;
+  const costDelta = agent === "claude" || agent === "grok"
+    ? qualifiedPromptCostDelta(record(before), current, previousReceipts)
+    : undefined;
   return {
     type: "status",
     tag: "usage_update",
@@ -62,6 +65,7 @@ export function persistedAcpxTurnUsage(
     // Pi calculates cost from catalog prices, not billing receipts. Never feed
     // this estimate into the authoritative/cumulative provider spend channel.
     cost: agent === "pi" ? undefined : current.usageCost,
+    ...(costDelta === undefined ? {} : { costDelta }),
     ...(piReceiptVerified ? { usageProvenance: `pi_${piReceipt.provenance}` } : {}),
     ...(estimate === undefined ? {} : { pricingEstimateUsd: estimate }),
     breakdown: {
@@ -73,6 +77,27 @@ export function persistedAcpxTurnUsage(
       totalTokens: usage.total_tokens,
     },
   };
+}
+
+/** A terminal prompt receipt binds this delta to exactly one new prompt. ACPX
+ * cost itself is cumulative; never copy that total into per-run accounting. */
+function qualifiedPromptCostDelta(before: Record<string, unknown>, after: Record<string, unknown>, priorReceipts: Record<string, unknown>) {
+  const units = (value: unknown): number | null => {
+    const cost = record(value);
+    if (typeof cost.currency !== "string" || cost.currency.toUpperCase() !== "USD"
+      || typeof cost.amount !== "number" || !Number.isFinite(cost.amount) || cost.amount < 0) return null;
+    const rounded = Math.round(cost.amount * 1_000_000_000);
+    return Number.isSafeInteger(rounded) ? rounded : null;
+  };
+  const current = units(after.usageCost);
+  const reportedPrior = units(before.usageCost);
+  // Only a genuinely fresh record can establish the initial zero baseline.
+  // A prior prompt without a cost receipt makes the cumulative bill unknown.
+  const fresh = before.lastRequestId == null && Object.keys(priorReceipts).length === 0
+    && (!Array.isArray(before.promptMessageIds) || before.promptMessageIds.length === 0);
+  const prior = reportedPrior ?? (fresh ? 0 : null);
+  if (current === null || prior === null || current < prior) return undefined;
+  return { amount: (current - prior) / 1_000_000_000, currency: "USD" };
 }
 
 /** Preserve the estimate for inspection while keeping billing authority separate. */

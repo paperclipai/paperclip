@@ -17,3 +17,4 @@ export * from "./mock-core/capability-mock-control-plane-adapter.js";
 export * from "./protocol/conformance-fixture.js";
 export * from "./protocol/replay-loader.js";
 export * from "./tracer/conformance-runner.js";
+export { requireVerifiedAcpxModel } from "./drivers/acpx/model-verification.js";

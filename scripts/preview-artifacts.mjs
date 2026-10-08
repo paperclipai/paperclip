@@ -164,7 +164,26 @@ export function packPreview(source, output, sha, { exec = execFileSync } = {}) {
   }
 }
 
-export async function publishPreview(dir, sha, { fetchImpl = fetch, exec = execFileSync, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+function previewVisibilityPolling(env) {
+  const integer = (name, fallback, maximum) => {
+    const raw = env[name];
+    if (raw === undefined || raw === "") return fallback;
+    if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw)) || Number(raw) > maximum) {
+      throw new Error(`${name} must be a positive integer no greater than ${maximum}.`);
+    }
+    return Number(raw);
+  };
+  // Match the trusted release workflow's existing propagation allowance. A
+  // preview must not quietly use a shorter poll than an ordinary release.
+  const attempts = integer("NPM_PUBLISH_VERIFY_ATTEMPTS", 180, 180);
+  const delayMs = integer("NPM_PUBLISH_VERIFY_DELAY_SECONDS", 10, 60) * 1000;
+  const timeoutMs = attempts * delayMs;
+  if (timeoutMs > 30 * 60_000) throw new Error("Preview npm visibility polling must not exceed 30 minutes.");
+  return { attempts, delayMs, timeoutMs };
+}
+
+export async function publishPreview(dir, sha, { fetchImpl = fetch, exec = execFileSync, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), env = process.env, now = Date.now } = {}) {
+  const polling = previewVisibilityPolling(env);
   // Validate the entire pair before publishing either immutable package.
   const packages = ["shared", "db"].map((short) => {
     const name = `@paperclipai/${short}`;
@@ -183,17 +202,26 @@ export async function publishPreview(dir, sha, { fetchImpl = fetch, exec = execF
   }
   // npm accepts a package without resolving its dependencies. Submit both
   // packages before waiting so their registry propagation can overlap.
-  for (let attempt = 0; pending.size && attempt < 60; attempt++) {
-    const checks = await Promise.all([...pending].map(async (name) => ({ name, visible: await packageExists(name, sha, fetchImpl) })));
+  const deadline = now() + polling.timeoutMs;
+  for (let attempt = 0; pending.size && attempt < polling.attempts; attempt++) {
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) break;
+    const budgetSignal = AbortSignal.timeout(remainingMs);
+    const boundedFetch = (url, options) => fetchImpl(url, { ...options, signal: AbortSignal.any([options.signal, budgetSignal]) });
+    const checks = await Promise.all([...pending].map(async (name) => ({ name, visible: await packageExists(name, sha, boundedFetch) })));
     for (const { name, visible } of checks) {
       if (visible) {
         pending.delete(name);
         console.log(`Visible ${name}@${versionFor(sha)}`);
       }
     }
-    if (pending.size) await sleep(10_000);
+    if (pending.size && attempt + 1 < polling.attempts) {
+      const remainingMs = deadline - now();
+      if (remainingMs <= 0) break;
+      await sleep(Math.min(polling.delayMs, remainingMs));
+    }
   }
-  if (pending.size) throw new Error(`npm accepted the preview but it is not yet visible: ${[...pending].join(", ")}. Retry reuses published packages.`);
+  if (pending.size) throw new Error(`npm accepted the preview but it is not yet visible: ${[...pending].join(", ")}. Wait for these exact versions to become public before retrying; do not republish them.`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

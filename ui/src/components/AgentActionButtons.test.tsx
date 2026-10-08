@@ -126,12 +126,14 @@ describe("AgentActionButtons", () => {
   });
 
   function render(agent: Agent, props: Partial<ComponentProps<typeof AgentActionButtons>> = {}) {
-    root ??= createRoot(container);
-    root.render(
-      <QueryClientProvider client={queryClient}>
-        <AgentActionButtons agent={agent} companyId="company-1" runLabel="Run Heartbeat" {...props} />
-      </QueryClientProvider>,
-    );
+    const currentRoot = root ??= createRoot(container);
+    flushSync(() => {
+      currentRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <AgentActionButtons agent={agent} companyId="company-1" runLabel="Run Heartbeat" {...props} />
+        </QueryClientProvider>,
+      );
+    });
   }
 
   it("replaces the pause slot with Clear error for error agents", async () => {
@@ -262,16 +264,26 @@ describe("AgentActionButtons", () => {
     });
     await flushReact();
 
+    const actionsButton = container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]');
+    expect(actionsButton).not.toBeNull();
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+      actionsButton!.click();
     });
     await flushReact();
     const terminateButton = Array.from(document.body.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Terminate"));
+    expect(terminateButton).toBeDefined();
     await act(async () => {
-      terminateButton?.click();
+      terminateButton!.click();
     });
     await flushReact();
+
+    expect(onBeforeNavigate).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(mockAgentsApi.terminate).toHaveBeenCalledWith("agent-1", "company-1");
+    }, { timeout: 1_000, interval: 10 });
+    expect(mockAgentsApi.terminate).toHaveBeenCalledOnce();
+    expect(onTerminateSuccess).not.toHaveBeenCalled();
 
     render(agent, {
       hasPendingNavigationChanges: true,
@@ -282,7 +294,9 @@ describe("AgentActionButtons", () => {
     resolveTermination(makeAgent({ status: "terminated" }));
     await flushReact();
 
-    expect(onBeforeNavigate).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => {
+      expect(onBeforeNavigate).toHaveBeenCalledTimes(2);
+    }, { timeout: 1_000, interval: 10 });
     expect(onTerminateSuccess).not.toHaveBeenCalled();
   });
 });

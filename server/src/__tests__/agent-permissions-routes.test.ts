@@ -752,6 +752,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(path)
       .send({
+        runner: "legacy",
         name: "Trace attempt",
         role: "engineer",
         adapterType: "process",
@@ -1027,7 +1028,8 @@ describe("agent permission routes", () => {
     const app = await createApp({ type: "agent", agentId, companyId, source: "agent_key", runId: "run-1" });
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(path)
-      .send({ name: "Host process", role: "engineer", adapterType: "process", adapterConfig: { command: "sh" } }));
+      .send({
+        runner: "legacy", name: "Host process", role: "engineer", adapterType: "process", adapterConfig: { command: "sh" } }));
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("host-executed process adapters");
@@ -1041,7 +1043,8 @@ describe("agent permission routes", () => {
     const app = await createApp({ type: "agent", agentId, companyId, source: "agent_key", runId: "run-1" });
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(path)
-      .send({ name: "Local peer", role: "engineer", adapterType: "claude_local", adapterConfig: { engine: "cli", command: "/tmp/untrusted" } }));
+      .send({
+        runner: "legacy", name: "Local peer", role: "engineer", adapterType: "claude_local", adapterConfig: { engine: "cli", command: "/tmp/untrusted" } }));
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("host-executed local adapter settings");
@@ -1184,6 +1187,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(`/api/companies/${companyId}/agent-hires`)
       .send({
+        runner: "legacy",
         name: "Injected",
         role: "engineer",
         adapterType: "codex_local",
@@ -1213,6 +1217,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(`/api/companies/${companyId}/agents`)
       .send({
+        runner: "legacy",
         name: "Backdoor",
         role: "engineer",
         adapterType: "process",
@@ -1239,6 +1244,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(`/api/companies/${companyId}/agents`)
       .send({
+        runner: "legacy",
         name: "Builder",
         role: "engineer",
         adapterType: "process",
@@ -1251,7 +1257,7 @@ describe("agent permission routes", () => {
       expect.objectContaining({
         status: "idle",
       }),
-      { createdByUserId: "agent-admin-user", claudeLogin: { storedSessionId: null, ownerUserId: "agent-admin-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, createdByUserId: "agent-admin-user", claudeLogin: { storedSessionId: null, ownerUserId: "agent-admin-user", applyExistingWithoutClaim: false } },
     );
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
       companyId,
@@ -1279,6 +1285,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(`/api/companies/${companyId}/agents`)
       .send({
+        runner: "legacy",
         name: "Builder",
         role: "engineer",
         adapterType: "process",
@@ -1304,6 +1311,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(`/api/companies/${companyId}/agents`)
       .send({
+        runner: "legacy",
         name: "Builder",
         role: "engineer",
         adapterType: "process",
@@ -1358,6 +1366,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(`/api/companies/${companyId}/agents`)
       .send({
+        runner: "legacy",
         name: "Builder",
         role: "engineer",
         adapterType: "codex_local",
@@ -1381,7 +1390,7 @@ describe("agent permission routes", () => {
           },
         },
       }),
-      { createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1401,6 +1410,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(`/api/companies/${companyId}/agents`)
       .send({
+        runner: "legacy",
         name: "OpenCode Builder",
         role: "engineer",
         adapterType: "opencode_local",
@@ -1417,7 +1427,7 @@ describe("agent permission routes", () => {
           model: DEFAULT_OPENCODE_LOCAL_MODEL,
         }),
       }),
-      { createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1437,6 +1447,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(`/api/companies/${companyId}/agents`)
       .send({
+        runner: "legacy",
         name: "OpenCode Builder",
         role: "engineer",
         adapterType: "opencode_local",
@@ -1455,7 +1466,7 @@ describe("agent permission routes", () => {
           model: "anthropic/claude-sonnet-4-5",
         }),
       }),
-      { createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1471,6 +1482,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(`/api/companies/${companyId}/agent-hires`)
       .send({
+        runner: "legacy",
         name: "Builder",
         role: "engineer",
         adapterType: "codex_local",
@@ -1495,6 +1507,7 @@ describe("agent permission routes", () => {
         },
       }),
       {
+        runnerResolved: true,
         createdByUserId: "board-user",
         claudeLogin: {
           storedSessionId: null,
@@ -1713,6 +1726,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(`/api/companies/${companyId}/agents`)
       .send({
+        runner: "legacy",
         name: "Builder",
         role: "engineer",
         adapterType: "process",
@@ -1726,7 +1740,7 @@ describe("agent permission routes", () => {
       expect.objectContaining({
         defaultEnvironmentId: environmentId,
       }),
-      { createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1750,6 +1764,7 @@ describe("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .post(`/api/companies/${companyId}/agents`)
       .send({
+        runner: "legacy",
         name: "Builder",
         role: "engineer",
         adapterType: "process",
@@ -1798,6 +1813,7 @@ describe("agent permission routes", () => {
       const res = await requestApp(app, (baseUrl) => request(baseUrl)
         .post(`/api/companies/${companyId}/agents`)
         .send({
+        runner: adapterCase.adapterType === "paperclip_runner" ? "paperclip" : "legacy",
           name: adapterCase.name,
           role: "engineer",
           adapterType: adapterCase.adapterType,
@@ -1812,7 +1828,7 @@ describe("agent permission routes", () => {
           adapterType: adapterCase.adapterType,
           defaultEnvironmentId: environmentId,
         }),
-        { createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+        { runnerResolved: true, createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
       );
     });
   }

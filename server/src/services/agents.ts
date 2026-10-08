@@ -1,6 +1,9 @@
 import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
 import type { ActivityPublication } from "./activity-log.js";
+import { agentHarnessType } from "@paperclipai/shared";
+import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import type { AgentRunnerChoice } from "@paperclipai/shared";
 import { agentAppearanceSchema, randomAgentAppearance, resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
@@ -135,6 +138,8 @@ interface UpdateAgentOptions {
 }
 
 interface CreateAgentOptions {
+  /** Configuration was already resolved before route validation or approval. */
+  runnerResolved?: boolean;
   createdByUserId?: string | null;
   aiConnectionInstall?: { connectionId: string; memberConnectionIds?: string[]; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
@@ -664,7 +669,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         if (
           !parent ||
           parent.companyId !== input.companyId ||
-          parent.adapterType !== CLAUDE_LOCAL_ADAPTER_TYPE ||
+          agentHarnessType(parent.adapterType, parent.adapterConfig) !== CLAUDE_LOCAL_ADAPTER_TYPE ||
           !claudeOAuthBindingsMatchExactly(parentBinding, childBinding)
         ) {
           throw claudeOAuthClaimRejectedError();
@@ -756,6 +761,10 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
+    if (existing.metadata?.paperclipBuiltInSetupRequired === true && isPlainRecord(data.adapterConfig)
+      && ["model", "command", "url", "baseUrl", "endpoint", "script"].some(key => typeof data.adapterConfig?.[key] === "string" && String(data.adapterConfig[key]).trim() && data.adapterConfig[key] !== existing.adapterConfig?.[key])) {
+      normalizedPatch.metadata = { ...existing.metadata, ...data.metadata, paperclipBuiltInSetupRequired: false };
+    }
     if (data.permissions !== undefined) {
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
     }
@@ -763,6 +772,14 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
       isPlainRecord(normalizedPatch.adapterConfig)
     ) {
+      // Internal callers can patch credentials without resending runner identity.
+      // Keep that identity before credential validation and provider defaults.
+      if ((normalizedPatch.adapterType ?? existing.adapterType) === "paperclip_runner"
+        && existing.adapterType === "paperclip_runner" && normalizedPatch.adapterConfig.provider === undefined) {
+        normalizedPatch.adapterConfig = { ...existing.adapterConfig, ...normalizedPatch.adapterConfig };
+      }
+      assertClaudeOAuthBindingInvariant({ adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string,
+        nextConfig: normalizedPatch.adapterConfig, priorConfig: existing.adapterConfig });
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         existing.companyId,
         normalizedPatch.adapterConfig,
@@ -912,7 +929,9 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
     getById,
 
-    create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">, options?: CreateAgentOptions) => {
+    create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId"> & { runner?: AgentRunnerChoice }, options?: CreateAgentOptions) => {
+      const { runner, ...agentData } = data;
+      data = options?.runnerResolved ? agentData : { ...agentData, ...await resolveNewAgentRunnerForCompany(db, companyId, { ...agentData, runner }) };
       assertBuiltInAgentMetadataMutationAllowed(null, data.metadata, options);
       if (data.reportsTo) {
         await ensureManager(companyId, data.reportsTo);
@@ -932,6 +951,21 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
         : {};
       const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
+      if (adapterType === "paperclip_runner" && !options?.runnerResolved) {
+        const { resolvePaperclipRunnerProviderProfile, validatePaperclipRunnerDotConfig } = await import("./native-runtime/provider-profile.js");
+        if (adapterConfig.provider === "openai_dot") {
+          validatePaperclipRunnerDotConfig(adapterConfig, false);
+        } else {
+          const profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
+          if (profile.provider === "claude_managed") {
+            const { managedAgentProfileService } = await import("./managed-agent-profiles.js");
+            await managedAgentProfileService(db).requireQualified(companyId, profile.managedProfileId);
+          } else if (profile.provider === "aws_agentcore") {
+            const { remoteAgentProfileService } = await import("./remote-agent-profiles.js");
+            await remoteAgentProfileService(db).requireQualified(companyId, profile.agentCoreProfileId, "aws_bedrock_agentcore_harness");
+          }
+        }
+      }
       // Run the server-enforced binding invariant after generic normalization
       // and before any database write. A create has no prior config.
       const bindingDecision = assertClaudeOAuthBindingInvariant({

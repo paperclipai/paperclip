@@ -6,7 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
@@ -19,12 +19,18 @@ import {
   type NativeExecutionInput,
 } from "../contracts/native-execution.js";
 import {
+  composeNativeSystemInstructions,
+  REGISTERED_INSTRUCTION_TOOL_GUIDANCE,
+  type NativeRuntimeContextSnapshot,
+} from "../contracts/runtime-context.js";
+import {
   nativeSystemInstructions,
   nativeTaskSkillInputs,
   nativeTaskConstraints,
 } from "./runtime-context.js";
 
 const temporaryRoots: string[] = [];
+type RuntimeContextInput = NativeExecutionInput & { runtimeContext: NativeRuntimeContextSnapshot };
 
 function runtimeInput(
   rootPath: string,
@@ -58,6 +64,86 @@ describe("native runtime context files", () => {
     expect(
       nativeSystemInstructions(runtimeInput(bundleRoot, "AGENTS.md")),
     ).toContain("Stay inside the bundle.");
+  });
+
+  function instructionCopyInput(copyDirectory: string, kind?: "agent_files") {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), "paperclip-grok-instructions-"));
+    temporaryRoots.push(temporaryRoot);
+    const bundleRoot = join(temporaryRoot, "bundle");
+    const cwd = join(temporaryRoot, "workspace");
+    mkdirSync(bundleRoot);
+    writeFileSync(join(bundleRoot, "AGENTS.md"), "Follow the inline agent instructions.\n");
+    const input = runtimeInput(bundleRoot, "AGENTS.md") as RuntimeContextInput;
+    return {
+      ...input,
+      provider: { kind: "acpx", agent: "grok" },
+      workspace: { cwd },
+      runtimeContext: {
+        ...input.runtimeContext,
+        aggregateDigest: "f".repeat(64),
+        instructions: {
+          ...input.runtimeContext.instructions,
+          workingCopy: { rootPath: resolve(cwd, copyDirectory), entryPath: "AGENTS.md", ...(kind ? { kind } : {}) },
+        },
+      },
+    } as unknown as RuntimeContextInput;
+  }
+
+  it.each([
+    ["outside", "../agent-copy", true],
+    ["inside", "agent-copy", false],
+    ["workspace root", ".", false],
+    ["shared path prefix", "../workspace-neighbor", true],
+    ["normalized inside", "agent-copy/../instructions", false],
+  ] as const)("uses instruction tools for Grok only when the registered entry is outside its %s workspace", (_name, directory, outside) => {
+    const input = instructionCopyInput(directory);
+    const snapshot = structuredClone(input);
+    const system = nativeSystemInstructions(input);
+    const constraints = nativeTaskConstraints(input).join("\n");
+    expect(system).toContain("Follow the inline agent instructions.");
+    expect(system.endsWith(`Read-only instruction sibling root: ${input.runtimeContext.instructions.bundle.rootPath}`)).toBe(true);
+    expect(input).toEqual(snapshot);
+    if (outside) {
+      for (const text of [system, constraints]) {
+        expect(text).toContain(REGISTERED_INSTRUCTION_TOOL_GUIDANCE);
+        expect(text).toContain("read_agent_instructions");
+        expect(text).toContain("update_agent_instructions");
+        expect(text).toContain("returned entryFile and revision.id as baseRevisionId");
+        expect(text).toContain("Current responsible-user permissions and revision checks still apply");
+        expect(text).not.toContain(input.runtimeContext.instructions.workingCopy!.rootPath);
+        expect(text).not.toContain("Edit this registered private copy normally");
+        expect(text).not.toContain("Ordinary edits save after the provider stops");
+      }
+    } else {
+      expect(system).toBe(composeNativeSystemInstructions(input.runtimeContext, "Follow the inline agent instructions.\n"));
+      expect(system).toContain("Edit this registered private copy normally");
+      expect(constraints).toContain("Ordinary edits save after the provider stops");
+      expect(system).not.toContain(REGISTERED_INSTRUCTION_TOOL_GUIDANCE);
+    }
+  });
+
+  it("preserves Grok's persistent agent-files contract rather than applying instruction-only tools to personal files", () => {
+    const input = instructionCopyInput("../agent-copy", "agent_files");
+    const snapshot = structuredClone(input);
+    expect(nativeSystemInstructions(input)).toBe(composeNativeSystemInstructions(input.runtimeContext, "Follow the inline agent instructions.\n"));
+    expect(nativeSystemInstructions(input)).not.toContain(REGISTERED_INSTRUCTION_TOOL_GUIDANCE);
+    const constraints = nativeTaskConstraints(input).join("\n");
+    expect(constraints).not.toContain(REGISTERED_INSTRUCTION_TOOL_GUIDANCE);
+    expect(constraints).toContain("AGENT_HOME is");
+    expect(input).toEqual(snapshot);
+  });
+
+  it.each([
+    { kind: "codex" },
+    { kind: "opencode" },
+    { kind: "acpx", agent: "claude" },
+    { kind: "acpx", agent: "cursor" },
+  ] as const)("preserves native instruction rendering for %j", (provider) => {
+    const input = { ...instructionCopyInput("../agent-copy"), provider } as RuntimeContextInput;
+    const snapshot = structuredClone(input);
+    expect(nativeSystemInstructions(input)).toBe(composeNativeSystemInstructions(input.runtimeContext, "Follow the inline agent instructions.\n"));
+    expect(nativeTaskConstraints(input).join("\n")).toContain("Ordinary edits save after the provider stops");
+    expect(input).toEqual(snapshot);
   });
 
   it("requires semantic completion before the final assistant response", () => {

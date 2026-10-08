@@ -55,6 +55,7 @@ it("does not report a connection when runtime readiness passes but provider auth
     "company-1",
     "claude_local",
     {
+      runner: "legacy",
       agentId: "agent-1",
       environmentId: "sandbox-1",
       adapterConfig: { ...input.adapterConfig, engine: "cli" },
@@ -65,14 +66,15 @@ it("does not report a connection when runtime readiness passes but provider auth
     "claude_hello_probe_failed",
   ]);
 });
-it("probes native Grok credentials with the pinned prerequisite in the selected sandbox", async () => {
+it.each(["paperclip_runner", "grok_local"])("probes resolved native Grok credentials from %s with the pinned prerequisite", async adapterType => {
   testEnvironment.mockResolvedValueOnce(ready).mockResolvedValueOnce({ ...ready,
     checks: [{ code: "grok_hello_probe_passed", level: "info", message: "Hello" }],
   });
-  const result = await testAgentSetup({ ...input, providerAdapter: "grok_local",
+  const result = await testAgentSetup({ ...input, adapterType, providerAdapter: "grok_local",
     adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" },
   });
   expect(testEnvironment).toHaveBeenLastCalledWith("company-1", "grok_local", {
+    runner: "legacy",
     agentId: "agent-1", environmentId: "sandbox-1",
     adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", engine: "cli", command: "/opt/paperclip/providers/grok/1.0.13/grok" },
   });

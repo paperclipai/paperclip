@@ -281,6 +281,8 @@ exit 7
     }
   });
 
+  // This integration fixture restores a real archive through several child
+  // processes. Cold CI hosts need more than the default five-second allowance.
   it("reruns sandbox command resolution after managed runtime setup and keeps the original sandbox home", async () => {
     setPrepareCursorSandboxCommand.mockReset();
     const prepareInputs: PrepareCursorSandboxCommandInput[] = [];
@@ -439,7 +441,7 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       else process.env.HOME = previousHome;
       await fs.rm(rootDir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it("rebuilds the full assignment after an unknown-session resume", async () => {
     setPrepareCursorSandboxCommand.mockReset();

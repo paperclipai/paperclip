@@ -28,6 +28,16 @@ describe("OpenCode runnerd proxy event boundary", () => {
     expect([...announced]).toEqual(["turn-1"]);
   });
 
+  it("preserves the observed model on the same final assistant item", () => {
+    const model = { provider: "openrouter", id: "actual/model" };
+    const frame = openCodeProxyItemNotification({ eventType: "item.completed", threadId: "session-1", turnId: "turn-1", itemId: "final-1",
+      payload: { kind: "agentMessage", channel: "final", text: "hello", item: { id: "final-1", type: "agentMessage", phase: "final_answer", model } } });
+    expect(frame).toMatchObject({ method: "item/completed", params: { turnId: "turn-1", item: { id: "final-1", model } } });
+    const historical = openCodeProxyItemNotification({ eventType: "item.completed", threadId: "session-1", turnId: "old-turn", itemId: "old-item",
+      payload: { kind: "agentMessage", text: "Historical response" } });
+    expect((historical.params.item as Record<string, unknown>).model).toBeUndefined();
+  });
+
   it("recognizes canonical progress messages without dropping legacy text events", () => {
     expect(
       openCodeProxyAssistantText({

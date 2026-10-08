@@ -1,3 +1,4 @@
+import { SelectPopover } from "../../components/ui/select";
 import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
@@ -97,20 +98,20 @@ export function ClaudeLocalAdvancedFields({
         the same way `runnerManaged` hides them for the Paperclip Runner.
       */}
       {!managedSandboxOnly && <Field label="Execution engine" hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.">
-        <select
-          className={inputClass}
+        <SelectPopover aria-label="Execution engine"
           value={engine}
-          onChange={(e) => {
-            const value = e.target.value === "acp" ? "acp" : e.target.value === "cli" ? "cli" : "auto";
+          onValueChange={(selection) => {
+            const value = selection === "acp" ? "acp" : selection === "cli" ? "cli" : "auto";
             isCreate
               ? set!({ claudeEngine: value })
               : mark("adapterConfig", "engine", value === "auto" ? undefined : value);
           }}
-        >
-          <option value="auto">Default (ACP)</option>
-          <option value="cli">Claude CLI</option>
-          <option value="acp">ACP</option>
-        </select>
+         options={[
+           { value: "auto", label: "Default (ACP)" },
+           { value: "cli", label: "Claude CLI" },
+           { value: "acp", label: "ACP" },
+         ]}
+       />
       </Field>}
       {acpSelected && (
         <>
@@ -137,45 +138,45 @@ export function ClaudeLocalAdvancedFields({
             </Field>
           )}
           <Field configSection="runPolicy" label="ACP session mode" hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run.">
-            <select
-              className={inputClass}
+            <SelectPopover aria-label="ACP session mode"
               value={
                 isCreate
                   ? values!.claudeAcpMode ?? "persistent"
                   : eff("adapterConfig", "mode", String(config.mode ?? "persistent"))
               }
-              onChange={(e) => {
-                const value = e.target.value === "oneshot" ? "oneshot" : "persistent";
+              onValueChange={(selection) => {
+                const value = selection === "oneshot" ? "oneshot" : "persistent";
                 isCreate
                   ? set!({ claudeAcpMode: value })
                   : mark("adapterConfig", "mode", value);
               }}
-            >
-              <option value="persistent">Persistent</option>
-              <option value="oneshot">One-shot</option>
-            </select>
+             options={[
+               { value: "persistent", label: "Persistent" },
+               { value: "oneshot", label: "One-shot" },
+             ]}
+           />
           </Field>
           <Field
             label="ACP non-interactive permissions"
             hint="Fallback if the ACP agent asks for input outside an interactive session."
           >
-            <select
-              className={inputClass}
+            <SelectPopover aria-label="ACP non-interactive permissions"
               value={
                 isCreate
                   ? values!.claudeAcpNonInteractivePermissions ?? "deny"
                   : eff("adapterConfig", "nonInteractivePermissions", String(config.nonInteractivePermissions ?? "deny"))
               }
-              onChange={(e) => {
-                const value = e.target.value === "fail" ? "fail" : "deny";
+              onValueChange={(selection) => {
+                const value = selection === "fail" ? "fail" : "deny";
                 isCreate
                   ? set!({ claudeAcpNonInteractivePermissions: value })
                   : mark("adapterConfig", "nonInteractivePermissions", value);
               }}
-            >
-              <option value="deny">Deny</option>
-              <option value="fail">Fail</option>
-            </select>
+             options={[
+               { value: "deny", label: "Deny" },
+               { value: "fail", label: "Fail" },
+             ]}
+           />
           </Field>
           {!managedSandboxOnly && (
             <Field

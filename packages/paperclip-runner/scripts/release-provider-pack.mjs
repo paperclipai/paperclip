@@ -7,7 +7,14 @@ const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(
     : JSON.stringify(value);
 
 /** Release assembly must reject a self-consistent pack built for another release. */
-export function verifyReleaseProviderPack(identity, sourceRevision) {
+export function verifyReleaseProviderPack(identity, sourceRevision, sourceProfiles = profiles, sourceDistributions = distributions) {
+  if (sourceProfiles?.schema !== "paperclip.acpx-profiles.v1" || typeof sourceProfiles.acpxVersion !== "string" || !sourceProfiles.acpxVersion
+    || ["grok", "claude", "codex", "cursor"].some(agent => !/^sha256:[a-f0-9]{64}$/.test(sourceProfiles?.profiles?.[agent]?.commandDigest ?? ""))
+    || typeof sourceProfiles?.profiles?.cursor?.agentServerVersion !== "string" || !sourceProfiles.profiles.cursor.agentServerVersion
+    || sourceDistributions?.schema !== "paperclip.cursor_distribution.v1"
+    || !/^[a-f0-9]{64}$/.test(sourceDistributions?.platforms?.["linux-x64"]?.closureSha256 ?? "")) {
+    throw new Error("Invalid release qualification snapshots");
+  }
   const payload = identity?.payload;
   if (identity?.schema !== "paperclip-runner/remote-provider-pack/v1" || !payload
     || payload.target?.platform !== "linux" || payload.target?.architecture !== "x64"
@@ -15,14 +22,14 @@ export function verifyReleaseProviderPack(identity, sourceRevision) {
   if (identity.digest !== `sha256:${createHash("sha256").update(canonical(payload)).digest("hex")}`) {
     throw new Error("Remote provider-pack payload digest mismatch");
   }
-  if (payload.pins?.acpx !== profiles.acpxVersion
-    || ["grok", "claude", "codex"].some(agent => payload.acpxProfileDigests?.[agent] !== profiles.profiles[agent].commandDigest)) {
+  if (payload.pins?.acpx !== sourceProfiles.acpxVersion
+    || ["grok", "claude", "codex"].some(agent => payload.acpxProfileDigests?.[agent] !== sourceProfiles.profiles[agent].commandDigest)) {
     throw new Error("Remote provider-pack ACPX profiles do not match this release");
   }
-  const current = profiles.profiles.cursor;
+  const current = sourceProfiles.profiles.cursor;
   for (const cursor of [payload.providers?.cursor, ...(Object.hasOwn(payload.candidateProviders ?? {}, "cursor") ? [payload.candidateProviders.cursor] : [])]) {
     if (!cursor || cursor.version !== current.agentServerVersion || cursor.profileDigest !== current.commandDigest
-      || cursor.closureDigest !== `sha256:${distributions.platforms["linux-x64"].closureSha256}`
+      || cursor.closureDigest !== `sha256:${sourceDistributions.platforms["linux-x64"].closureSha256}`
       || cursor.qualification !== "qualified" || cursor.path !== "provider-assets/cursor/linux-x64"
       || !/^sha256:[a-f0-9]{64}$/.test(cursor.sha256 ?? "")) {
       throw new Error("Remote provider-pack Cursor identity does not match this release");

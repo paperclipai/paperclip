@@ -74,7 +74,7 @@ test("new-task assignee, model, and project sheets scroll by touch and retain th
     }));
   }
   // Keep the provider catalog deterministic; task UI, agents, and drafts are real.
-  await page.route(`**/api/companies/${company.id}/adapters/codex_local/models*`, (route) => route.fulfill({
+  await page.route(`**/api/companies/${company.id}/adapters/paperclip_runner/models*`, (route) => route.fulfill({
     json: Array.from({ length: 24 }, (_, index) => ({
       id: `touch-model-${String(index + 1).padStart(2, "0")}`,
       label: `Touch Model ${String(index + 1).padStart(2, "0")}`,
@@ -174,7 +174,7 @@ test.describe("desktop picker scrolling", () => {
         data: { name: `Wheel Project ${String(index).padStart(2, "0")}` },
       }));
     }
-    await page.route(`**/api/companies/${company.id}/adapters/codex_local/models*`, (route) => route.fulfill({
+    await page.route(`**/api/companies/${company.id}/adapters/paperclip_runner/models*`, (route) => route.fulfill({
       json: Array.from({ length: 24 }, (_, index) => ({
         id: `wheel-model-${String(index + 1).padStart(2, "0")}`,
         label: `Wheel Model ${String(index + 1).padStart(2, "0")}`,

@@ -1,5 +1,4 @@
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
-import { AdapterMark } from "../../components/AdapterMark";
+import { SelectPopover } from "../../components/ui/select";
 import { DotRunnerConnection } from "../../components/DotRunnerConnection";
 import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
@@ -22,7 +21,6 @@ import {
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS,
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
-  PAPERCLIP_RUNNER_ACPX_PROFILES,
   isPaperclipRunnerProvider,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
@@ -38,14 +36,7 @@ const defaultOpenCodeRunnerModel = "openrouter/deepseek/deepseek-v4-flash-0731";
 const defaultAcpxClaudeModel = "claude-sonnet-5";
 const defaultClaudeManagedModel = "claude-sonnet-5";
 const defaultAwsAgentCoreModel = "global.anthropic.claude-sonnet-4-6";
-const runnerHarnessOptions = [
-  { value: "codex", label: "Codex", adapter: "codex_local" },
-  { value: "opencode", label: "OpenCode 1.18.34", adapter: "opencode_local" },
-  { value: "claude_managed", label: "Claude Managed", adapter: "claude_local" },
-  { value: "aws_agentcore", label: "AWS AgentCore", adapter: "aws_agentcore" },
-  { value: "acpx", label: "ACP agents", adapter: "acpx_local" },
-  { value: "grok", label: "Grok Build", adapter: "grok_local" },
-];
+
 
 export function CodexLocalConfigFields({
   section,
@@ -176,14 +167,13 @@ export function CodexLocalConfigFields({
           label="Execution engine"
           hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it."
         >
-          <select
-            className={inputClass}
+          <SelectPopover aria-label="Execution engine"
             value={engine}
-            onChange={(e) => {
+            onValueChange={(selection) => {
               const value =
-                e.target.value === "acp"
+                selection === "acp"
                   ? "acp"
-                  : e.target.value === "cli"
+                  : selection === "cli"
                     ? "cli"
                     : "auto";
               isCreate
@@ -194,71 +184,12 @@ export function CodexLocalConfigFields({
                     value === "auto" ? undefined : value,
                   );
             }}
-          >
-            <option value="auto">Default (ACP)</option>
-            <option value="cli">Codex CLI</option>
-            <option value="acp">ACP</option>
-          </select>
-        </Field>
-      )}
-      {runnerManaged && runnerProvider !== "openai_dot" && (
-        <Field configSection="adapter"
-          label="Harness"
-          hint="Choose the agent harness that runs your tasks."
-        >
-          <Select
-            value={runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") === "grok" ? "grok" : runnerProvider}
-            onValueChange={(value) => {
-              const grok = value === "grok";
-              const provider = grok ? "acpx" : isPaperclipRunnerProvider(value)
-                ? value
-                : "codex";
-              const model =
-                provider === "openai_dot"
-                  ? ""
-                  : provider === "opencode"
-                  ? defaultOpenCodeRunnerModel
-                  : provider === "claude_managed"
-                    ? defaultClaudeManagedModel
-                    : provider === "aws_agentcore"
-                      ? defaultAwsAgentCoreModel
-                      : provider === "acpx"
-                        ? grok ? "grok-4.7" : defaultAcpxClaudeModel
-                        : DEFAULT_CODEX_LOCAL_MODEL;
-              if (isCreate) {
-                set!({
-                  model,
-                  adapterSchemaValues: {
-                    ...values!.adapterSchemaValues,
-                    provider,
-                    acpxSessionMode: undefined,
-                    ...(provider === "acpx" ? { acpxAgent: grok ? "grok" : "claude" } : {}),
-                  },
-                });
-              } else {
-                mark("adapterConfig", "provider", provider);
-                mark("adapterConfig", "acpxSessionMode", undefined);
-                mark("adapterConfig", "model", model);
-                if (provider === "openai_dot") {
-                  mark("adapterConfig", "lifecycleMode", "per_turn");
-                  for (const key of ["cwd", "env", "instructionsFilePath", "command", "extraArgs", "engine", "modelReasoningEffort", "workspaceStrategy", "workspaceRuntime", "idleTimeoutMs", "acpxAgent", "managedProfileId", "agentCoreProfileId"]) mark("adapterConfig", key, undefined);
-                }
-                if (provider === "acpx") {
-                  mark("adapterConfig", "acpxAgent", grok ? "grok" : "claude");
-                }
-              }
-            }}
-          >
-            <SelectTrigger className="w-full" aria-label="Harness"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {runnerHarnessOptions.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  <AdapterMark type={option.adapter} className="size-4" />
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+           options={[
+             { value: "auto", label: "Default (ACP)" },
+             { value: "cli", label: "Codex CLI" },
+             { value: "acp", label: "ACP" },
+           ]}
+         />
         </Field>
       )}
       {runnerManaged && runnerProvider === "openai_dot" && <>
@@ -272,42 +203,19 @@ export function CodexLocalConfigFields({
         <ToggleField label="Allow externally billed provider" hint="Dot does not report token usage or cost. Paperclip cannot enforce a provider spend ceiling; known company and agent budget limits still apply."
           checked={runnerSchemaValue("allowUnmeteredProvider", false) === true} onChange={value => updateRunnerSchemaValue("allowUnmeteredProvider", value)} />
       </>}
-      {runnerManaged && runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") !== "grok" && (
-        <Field configSection="adapter" label="ACP agent" hint="Cursor uses Paperclip questions; per-run cost is unavailable. GitHub Copilot and Pi await qualification.">
-          <Select
-            value={String(isCreate ? values!.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude"))}
-            onValueChange={(value) => {
-              const profile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(entry => entry.value === value);
-              const acpxSessionMode = profile?.value === "cursor" ? "agent" : undefined;
-              if (!profile?.qualified) return;
-              if (isCreate) set!({ model: profile.value === "claude" ? defaultAcpxClaudeModel : "",
-                adapterSchemaValues: { ...values!.adapterSchemaValues, acpxAgent: profile.value, acpxSessionMode } });
-              else { mark("adapterConfig", "acpxAgent", profile.value); mark("adapterConfig", "acpxSessionMode", acpxSessionMode); mark("adapterConfig", "model", profile.value === "claude" ? defaultAcpxClaudeModel : ""); }
-            }}>
-            <SelectTrigger className="w-full" aria-label="ACP agent"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {PAPERCLIP_RUNNER_ACPX_PROFILES.map(profile => (
-                <SelectItem key={profile.value} value={profile.value} disabled={!profile.qualified}>
-                  <AdapterMark type={profile.value === "cursor" ? "cursor" : `${profile.value}_local`} className="size-4" />
-                  {profile.label}{profile.qualified ? "" : " — qualification pending"}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
-      )}
       {runnerManaged && runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") === "cursor" && (
         <Field configSection="adapter" label="Cursor mode" hint="Select Cursor's session mode. Permissions and company approval rules still apply.">
-          <select className={inputClass} aria-label="Cursor mode"
+          <SelectPopover aria-label="Cursor mode"
             value={String(runnerSchemaValue("acpxSessionMode", "agent"))}
-            onChange={(event) => updateRunnerSchemaValue("acpxSessionMode", event.target.value)}>
-            {!["agent", "plan", "ask"].includes(String(runnerSchemaValue("acpxSessionMode", "agent"))) && (
-              <option value={String(runnerSchemaValue("acpxSessionMode", "agent"))} disabled>Unsupported saved mode — select Agent, Plan, or Ask</option>
-            )}
-            <option value="agent">Agent</option>
-            <option value="plan">Plan</option>
-            <option value="ask">Ask</option>
-          </select>
+            onValueChange={value => updateRunnerSchemaValue("acpxSessionMode", value)}
+            options={[
+              ...(!["agent", "plan", "ask"].includes(String(runnerSchemaValue("acpxSessionMode", "agent")))
+                ? [{ value: String(runnerSchemaValue("acpxSessionMode", "agent")), label: "Unsupported saved mode — select Agent, Plan, or Ask", disabled: true }] : []),
+              { value: "agent", label: "Agent" },
+              { value: "plan", label: "Plan" },
+              { value: "ask", label: "Ask" },
+            ]}
+          />
         </Field>
       )}
       {runnerManaged && runnerProvider === "claude_managed" && (
@@ -449,7 +357,7 @@ export function CodexLocalConfigFields({
           label="Permission mode"
           hint={`${runnerPermissionCapability.description} The selected mode does not widen Paperclip's workspace, network, credential, or planning boundaries.`}
         >
-          <Select
+          <SelectPopover aria-label="Permission mode" className="font-sans"
             value={
               runnerPermissionModeUnsupported
                 ? "__unsupported__"
@@ -475,27 +383,11 @@ export function CodexLocalConfigFields({
                 );
               }
             }}
-          >
-            <SelectTrigger aria-label="Permission mode" className="w-full font-sans">
-              <SelectValue>
-                {runnerPermissionModeUnsupported
-                  ? "Unsupported saved mode — select a qualified mode"
-                  : runnerPermissionCapability.options.find((option) => option.value === runnerPermissionMode)?.label}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {runnerPermissionModeUnsupported && (
-                <SelectItem value="__unsupported__" disabled>
-                  Unsupported saved mode — select a qualified mode
-                </SelectItem>
-              )}
-              {runnerPermissionCapability.options.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            options={[
+              ...(runnerPermissionModeUnsupported ? [{ value: "__unsupported__", label: "Unsupported saved mode — select a qualified mode", disabled: true }] : []),
+              ...runnerPermissionCapability.options,
+            ]}
+          />
           {runnerPermissionModeUnsupported && runnerProvider === "codex" && (
             <p className="mt-1 text-xs text-destructive" role="alert">
               This saved Codex mode cannot start or recover a Paperclip Runner
@@ -509,19 +401,19 @@ export function CodexLocalConfigFields({
           label="Runner lifecycle"
           hint="Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs."
         >
-          <select
-            className={inputClass}
+          <SelectPopover aria-label="Runner lifecycle"
             value={runnerLifecycleMode}
-            onChange={(event) => {
-              const value = event.target.value === "warm" ? "warm" : "per_turn";
+            onValueChange={(selection) => {
+              const value = selection === "warm" ? "warm" : "per_turn";
               isCreate
                 ? set!({ paperclipRunnerLifecycleMode: value })
                 : mark("adapterConfig", "lifecycleMode", value);
             }}
-          >
-            <option value="per_turn">Turn by turn</option>
-            <option value="warm">Warm session</option>
-          </select>
+           options={[
+             { value: "per_turn", label: "Turn by turn" },
+             { value: "warm", label: "Warm session" },
+           ]}
+         />
         </Field>
       )}
       {runnerManaged && runnerProvider !== "openai_dot" && runnerLifecycleMode === "warm" && (
@@ -595,8 +487,7 @@ export function CodexLocalConfigFields({
             label="ACP session mode"
             hint="Persistent keeps ACP session state between runs. One-shot starts fresh each run."
           >
-            <select
-              className={inputClass}
+            <SelectPopover aria-label="ACP session mode"
               value={
                 isCreate
                   ? (values!.codexAcpMode ?? "persistent")
@@ -606,24 +497,24 @@ export function CodexLocalConfigFields({
                       String(config.mode ?? "persistent"),
                     )
               }
-              onChange={(e) => {
+              onValueChange={(selection) => {
                 const value =
-                  e.target.value === "oneshot" ? "oneshot" : "persistent";
+                  selection === "oneshot" ? "oneshot" : "persistent";
                 isCreate
                   ? set!({ codexAcpMode: value })
                   : mark("adapterConfig", "mode", value);
               }}
-            >
-              <option value="persistent">Persistent</option>
-              <option value="oneshot">One-shot</option>
-            </select>
+             options={[
+               { value: "persistent", label: "Persistent" },
+               { value: "oneshot", label: "One-shot" },
+             ]}
+           />
           </Field>
           <Field
             label="ACP non-interactive permissions"
             hint="Fallback if the ACP agent asks for input outside an interactive session."
           >
-            <select
-              className={inputClass}
+            <SelectPopover aria-label="ACP non-interactive permissions"
               value={
                 isCreate
                   ? (values!.codexAcpNonInteractivePermissions ?? "deny")
@@ -633,16 +524,17 @@ export function CodexLocalConfigFields({
                       String(config.nonInteractivePermissions ?? "deny"),
                     )
               }
-              onChange={(e) => {
-                const value = e.target.value === "fail" ? "fail" : "deny";
+              onValueChange={(selection) => {
+                const value = selection === "fail" ? "fail" : "deny";
                 isCreate
                   ? set!({ codexAcpNonInteractivePermissions: value })
                   : mark("adapterConfig", "nonInteractivePermissions", value);
               }}
-            >
-              <option value="deny">Deny</option>
-              <option value="fail">Fail</option>
-            </select>
+             options={[
+               { value: "deny", label: "Deny" },
+               { value: "fail", label: "Fail" },
+             ]}
+           />
           </Field>
           {!managedSandboxOnly && (
             <Field

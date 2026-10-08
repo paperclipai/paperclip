@@ -1,3 +1,4 @@
+import { agentRunnerChoiceSchema } from "./agent.js";
 import { agentAppearanceSchema } from "../agent-appearance.js";
 import { z } from "zod";
 import { PERMISSION_KEYS } from "../constants.js";
@@ -71,6 +72,7 @@ export const portabilityBlobManifestEntrySchema = z.object({
 });
 
 export const portabilityAgentManifestEntrySchema = z.object({
+  runner: agentRunnerChoiceSchema.optional(),
   slug: z.string().min(1),
   name: z.string().min(1),
   path: z.string().min(1),
@@ -324,6 +326,7 @@ export const companyPortabilityPreviewSchema = z.object({
 export type CompanyPortabilityPreview = z.infer<typeof companyPortabilityPreviewSchema>;
 
 export const portabilityAdapterOverrideSchema = z.object({
+  runner: agentRunnerChoiceSchema.optional(),
   adapterType: z.string().min(1),
   adapterConfig: z.record(z.string(), z.unknown()).optional(),
 });

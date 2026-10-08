@@ -8,7 +8,7 @@ use paperclip_runner_core::generated_acpx_sidecar_contract::{
     classify_generated_acpx_tool_operation, GeneratedAcpxSidecarEventType,
 };
 use paperclip_runner_core::provider_events::normalize_acpx_runtime_event;
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn normalize(
     kind: AcpxRuntimeEventKind,
@@ -242,6 +242,31 @@ fn preserves_usage_counters_across_sidecar_payload_redaction() {
     assert_eq!(events[0].payload["runDelta"]["outputTokens"], 7);
     assert_eq!(events[0].payload["runDelta"]["cacheReadTokens"], 2);
     assert_eq!(events[0].payload["runDelta"]["cacheWriteTokens"], 0);
+}
+
+#[test]
+fn uses_only_a_prompt_bound_cost_delta_for_turn_spend() {
+    let payload = json!({
+        "type":"status", "tag":"usage_update",
+        "breakdown":{"inputTokens":12,"outputTokens":4,"thoughtTokens":0,
+            "cachedReadTokens":2,"cachedWriteTokens":0},
+        "cost":{"amount":0.312112,"currency":"USD"},
+        "costDelta":{"amount":0.1,"currency":"USD"}
+    });
+    let usage = normalize(AcpxRuntimeEventKind::Status, payload.clone());
+    assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 0.312112);
+    assert_eq!(usage[0].payload["runDelta"]["providerCostUsd"], 0.1);
+    for delta in [
+        Value::Null,
+        json!({"amount":-1,"currency":"USD"}),
+        json!({"amount":1,"currency":"EUR"}),
+        json!({"currency":"USD"}),
+    ] {
+        let mut invalid = payload.clone();
+        invalid["costDelta"] = delta;
+        let usage = normalize(AcpxRuntimeEventKind::Status, invalid);
+        assert_eq!(usage[0].payload["runDelta"]["providerCostUsd"], 0.0);
+    }
 }
 
 #[test]

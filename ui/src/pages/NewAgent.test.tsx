@@ -143,6 +143,16 @@ async function render(adapter = "pi_local", runnerProvider = "codex") {
   );
   await settle();
 }
+async function openEnvironment() {
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Environment"]')!.click());
+  await settle();
+  return document.querySelector<HTMLElement>('[role="listbox"][aria-label="Environment"]')!;
+}
+async function chooseEnvironment(value: string) {
+  const menu = await openEnvironment();
+  await act(async () => menu.querySelector<HTMLButtonElement>(`[data-value="${value}"]`)!.click());
+  await settle();
+}
 async function connect(provider: string) {
   await click(provider + "Subscription");
   await click("Connect");
@@ -200,7 +210,19 @@ afterEach(async () => {
   container.remove();
 });
 describe("New agent setup", () => {
-  it("creates Dot through its independent choice without CLI or model setup, then routes to pairing", async () => {
+  it("sends the AgentCore retention acknowledgement with its qualified profile", async () => {
+    await render("paperclip_runner", "aws_agentcore");
+    await fill("Managed profile", "qualified-agentcore-profile");
+    const acknowledgement = [...container.querySelectorAll("label")].find(label => label.textContent?.includes("Acknowledge AgentCore retention"))?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(acknowledgement).toBeTruthy();
+    await act(async () => acknowledgement!.click());
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+      adapterConfig: expect.objectContaining({ provider: "aws_agentcore", agentCoreProfileId: "qualified-agentcore-profile", agentCoreRetentionAcknowledged: true }),
+    }));
+  });
+
+  it("creates Dot through advanced harness configuration without CLI or model setup, then routes to pairing", async () => {
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true, enablePublicMcp: true });
     await render("paperclip_runner", "openai_dot");
     expect(container.textContent).toContain("OpenAI Dot");
@@ -232,7 +254,7 @@ describe("New agent setup", () => {
     api.getAdapterAuthSignal.mockResolvedValue({ status: "missing" });
     await render(adapterType);
     expect(container.textContent).toContain("does not support browser sign-in");
-    expect(container.querySelector('select[aria-label="Environment"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Environment"]')).toBeNull();
     await click("2Configure");
     expect(container.querySelector('button[type="submit"]')).toBeNull();
     expect([...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Run test")?.disabled).toBe(true);
@@ -240,13 +262,8 @@ describe("New agent setup", () => {
     expect(api.testEnvironment).not.toHaveBeenCalled();
     expect(api.hire).not.toHaveBeenCalled();
     await click("2Configure");
-    const select = container.querySelector('select[aria-label="Environment"]') as HTMLSelectElement;
-    await act(async () => {
-      select.value = "login-env";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await settle();
-    expect(container.querySelector('select[aria-label="Environment"]')).toBeNull();
+    await chooseEnvironment("login-env");
+    expect(container.querySelector('button[aria-label="Environment"]')).toBeNull();
     await click("Complete subscription login");
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1]).toMatchObject({ defaultEnvironmentId: "login-env", runtimeConfig: { aiConnection: { method: "subscription" } } });
@@ -275,16 +292,14 @@ describe("New agent setup", () => {
       secret: { companyId: "company-1", status: "active" },
     }]);
     await render("paperclip_runner", "grok");
-    expect(container.querySelector('select[aria-label="Environment"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Environment"]')).toBeNull();
     await click("GrokAPI key");
     await click("Use saved API key");
-    const select = container.querySelector('select[aria-label="Environment"]') as HTMLSelectElement;
-    expect(select.disabled).toBe(false);
-    expect([...select.options].some((option) => option.value === "local-1")).toBe(!managedOnly);
-    await act(async () => {
-      select.value = "grok-sandbox";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Environment"]')!;
+    expect(trigger.disabled).toBe(false);
+    const menu = await openEnvironment();
+    expect(Boolean(menu.querySelector('[data-value="local-1"]'))).toBe(!managedOnly);
+    await act(async () => menu.querySelector<HTMLButtonElement>('[data-value="grok-sandbox"]')!.click());
     await settle();
     if (container.querySelector('[role="radiogroup"][aria-label="Connection type"]')) {
       await click("GrokAPI key");
@@ -294,11 +309,11 @@ describe("New agent setup", () => {
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].defaultEnvironmentId).toBe("grok-sandbox");
   });
-  it.each([false, true])("blocks direct runner setup links when the experiment is disabled (cloud=%s)", async (cloud) => {
+  it.each([false, true])("accepts old runner setup links regardless of the obsolete flag (cloud=%s)", async (cloud) => {
     cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: cloud } });
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     await render("paperclip_runner");
-    expect(container.textContent).toContain("This adapter is unavailable");
+    expect(container.textContent).not.toContain("This adapter is unavailable");
     expect(api.hire).not.toHaveBeenCalled();
   });
   it("blocks direct setup links for unsupported Cloud adapters", async () => {
@@ -342,11 +357,11 @@ describe("New agent setup", () => {
         provider: "xai", method: "api_key", apiKey: "example-test-secret",
       }));
     }
-    const model = adapterType === "paperclip_runner" ? "grok-4.7" : "grok-code-fast-1";
+    const model = "grok-4.7";
     await fill("Model", model);
     await click("Run test");
     const binding = { provider: "xai", method, mode: "responsible_user" };
-    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", adapterType, expect.objectContaining({
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
       environmentId: "sandbox-1",
       adapterConfig: expect.objectContaining({ model, ...(adapterType === "paperclip_runner" ? { provider: "acpx", acpxAgent: "grok", acpxPermissionMode: "approve-all" } : {}) }),
       aiConnection: binding,
@@ -355,7 +370,7 @@ describe("New agent setup", () => {
     await click("Finish setup");
     expect(api.hire).toHaveBeenCalledTimes(1);
     expect(api.hire.mock.calls[0][1]).toMatchObject({
-      adapterType,
+      adapterType: "paperclip_runner",
       defaultEnvironmentId: "sandbox-1",
       adapterConfig: { model, ...(adapterType === "paperclip_runner" ? { provider: "acpx", acpxAgent: "grok", acpxPermissionMode: "approve-all" } : {}) },
       runtimeConfig: { aiConnection: binding, heartbeat: { enabled: false } },
@@ -407,6 +422,7 @@ describe("New agent setup", () => {
     ["hermes_local", "OPENROUTER_API_KEY"],
   ])("provides %s credentials to tests and stores only a secret reference", async (adapter, key) => {
     await render(adapter);
+    if (adapter === "cursor") await fill("Model", "claude-sonnet-5");
     await fill(key, "adapter-test-key");
     await click("Finish setup");
     expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({ [key]: "adapter-test-key" });
@@ -507,14 +523,14 @@ describe("New agent setup", () => {
       await connect(adapter === "claude_local" ? "Claude" : "OpenAI");
       expect(api.testEnvironment).toHaveBeenCalledWith(
         "company-1",
-        adapter,
+        "paperclip_runner",
         expect.objectContaining({ environmentId: "local-1" }),
       );
       await click("Finish setup");
       expect(api.hire).toHaveBeenCalledTimes(1);
       expect(api.hire.mock.calls[0][1]).toMatchObject({
         name: "Atlas",
-        adapterType: adapter,
+        adapterType: "paperclip_runner",
         reportsTo: "ceo",
         runtimeConfig: { heartbeat: { enabled: false } },
       });
@@ -707,7 +723,7 @@ describe("New agent setup", () => {
     }));
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1]).toEqual(expect.objectContaining({
-      adapterType: "opencode_local",
+      adapterType: "paperclip_runner",
       runtimeConfig: expect.objectContaining({ aiConnection: binding }),
       adapterConfig: expect.objectContaining({ model }),
     }));

@@ -203,7 +203,6 @@ export function InstanceExperimentalSettings() {
     getWorktreeInstanceId(),
   );
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
-  const enableNativeRunner = experimentalQuery.data?.enableNativeRunner === true;
   const enableChatConnectors = experimentalQuery.data?.enableChatConnectors === true;
   const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
@@ -471,7 +470,7 @@ export function InstanceExperimentalSettings() {
 
         <ExperimentalToggleCard
           title="OpenAI Dot"
-          description="Add OpenAI Dot as a standalone agent choice. Pair your Dot and verify event delivery before assigning work."
+          description="Enable OpenAI Dot in advanced agent configuration. Pair your Dot and verify event delivery before assigning work."
           footnote="Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."
           checked={experimentalQuery.data?.enableOpenAiDot === true}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableOpenAiDot: checked })}
@@ -479,19 +478,6 @@ export function InstanceExperimentalSettings() {
           settingKey="enableOpenAiDot"
           managed={managedKeys.enableOpenAiDot}
           ariaLabel="Toggle OpenAI Dot experimental setting"
-        />
-
-        <ExperimentalToggleCard
-          title="Paperclip Runner"
-          description="Allow new Codex agents to select the experimental Rust Paperclip Runner, including authenticated runner ingress when a sandbox requires it. Onboarding continues to use legacy adapters. Turning this off hides the choice without affecting existing native runs."
-          checked={enableNativeRunner}
-          onCheckedChange={(checked) =>
-            toggleMutation.mutate({ enableNativeRunner: checked })
-          }
-          disabled={toggleMutation.isPending}
-          settingKey="enableNativeRunner"
-          managed={managedKeys.enableNativeRunner}
-          ariaLabel="Toggle Paperclip Runner experimental setting"
         />
 
         <ExperimentalToggleCard

@@ -154,6 +154,8 @@ export interface GitWorktreeBranchIncoherenceEvidence {
 }
 
 export interface HeartbeatRun {
+  /** Immutable execution identity, when recorded for this run. */
+  adapterType?: string | null;
   execution?: import("./execution-projection.js").ExecutionProjection | null;
   id: string;
   companyId: string;

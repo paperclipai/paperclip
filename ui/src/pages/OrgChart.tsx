@@ -1,3 +1,4 @@
+import { agentHarnessType } from "@paperclipai/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { Link, useNavigate } from "@/lib/router";
@@ -647,7 +648,7 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
                     </span>
                     {agent && (
                       <span className="text-(length:--text-nano) text-muted-foreground/60 font-mono leading-tight mt-1">
-                        {getAdapterLabel(agent.adapterType)}
+                        {getAdapterLabel(agentHarnessType(agent.adapterType, agent.adapterConfig))}
                       </span>
                     )}
                     {agent && agent.capabilities && (

@@ -1,11 +1,7 @@
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useState } from "react";
 import type { Agent } from "@paperclipai/shared";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { SelectPopover, SelectPopoverItem } from "@/components/ui/select";
 import { User } from "lucide-react";
 import { cn } from "../lib/utils";
 import { roleLabels } from "./agent-config-primitives";
@@ -15,6 +11,7 @@ export function ReportsToPicker({
   value,
   onChange,
   disabled = false,
+  compact = true,
   excludeAgentIds = [],
   disabledEmptyLabel = "Reports to: N/A (CEO)",
   chooseLabel = "Reports to...",
@@ -23,6 +20,7 @@ export function ReportsToPicker({
   value: string | null;
   onChange: (id: string | null) => void;
   disabled?: boolean;
+  compact?: boolean;
   excludeAgentIds?: string[];
   disabledEmptyLabel?: string;
   chooseLabel?: string;
@@ -37,18 +35,10 @@ export function ReportsToPicker({
   const unknownManager = Boolean(value && !current);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            "inline-flex max-w-full min-w-0 items-center gap-1.5 overflow-hidden rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-            terminatedManager && "border-amber-600/45 bg-amber-500/5",
-            disabled && "opacity-60 cursor-not-allowed",
-          )}
-          disabled={disabled}
-        >
-          {unknownManager ? (
+    <SelectPopover aria-label="Reports to" value={value ?? ""}
+      open={open} onOpenChange={setOpen} disabled={disabled}
+      className={cn(compact && "w-auto max-w-full data-[size=default]:h-auto px-2 py-1 text-xs", terminatedManager && "border-amber-600/45 bg-amber-500/5")}
+      displayValue={<span className="inline-flex min-w-0 items-center gap-1.5">{unknownManager ? (
             <>
               <User className="h-3 w-3 shrink-0 text-muted-foreground" />
               <span className="min-w-0 truncate text-muted-foreground">Unknown manager (stale ID)</span>
@@ -72,12 +62,11 @@ export function ReportsToPicker({
                 {disabled ? disabledEmptyLabel : chooseLabel}
               </span>
             </>
-          )}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-48 p-1" align="start">
-        <button
-          type="button"
+          )}</span>}
+    >
+      <div role="listbox" aria-label="Reports to">
+        <SelectPopoverItem
+          selected={value === null}
           className={cn(
             "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
             value === null && "bg-accent",
@@ -88,7 +77,7 @@ export function ReportsToPicker({
           }}
         >
           No manager
-        </button>
+        </SelectPopoverItem>
         {terminatedManager && (
           <div className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 text-xs text-muted-foreground border-b border-border mb-0.5">
             <AgentAvatar agent={current} size={16} className="shrink-0 h-3 w-3"/>
@@ -103,8 +92,8 @@ export function ReportsToPicker({
           </div>
         )}
         {rows.map((a) => (
-          <button
-            type="button"
+          <SelectPopoverItem
+            selected={a.id === value}
             key={a.id}
             className={cn(
               "flex items-center gap-2 w-full min-w-0 px-2 py-1.5 text-xs rounded hover:bg-accent/50 overflow-hidden",
@@ -118,9 +107,9 @@ export function ReportsToPicker({
             <AgentAvatar agent={a} size={16} className="shrink-0 h-3 w-3 text-muted-foreground"/>
             <span className="min-w-0 truncate">{a.name}</span>
             <span className="text-muted-foreground ml-auto shrink-0">{roleLabels[a.role] ?? a.role}</span>
-          </button>
+          </SelectPopoverItem>
         ))}
-      </PopoverContent>
-    </Popover>
+      </div>
+    </SelectPopover>
   );
 }

@@ -1,4 +1,4 @@
-import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
+import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals, connectionSetupCategories, connectionSetupDependencies, connectionSetupHttpStatuses } from "./connection-evidence.js";
 import type { RunnerE2EResult } from "./types.js";
 
 type Rule = (value: unknown, at: string) => void;
@@ -52,6 +52,11 @@ const shape =
     for (const [key, rule] of Object.entries(fields))
       rule((value as Record<string, unknown>)[key], `${at}.${key}`);
   };
+const closedShape = (fields: Record<string, Rule>): Rule => (value, at) => {
+  object(value, at);
+  for (const key of Object.keys(value as object)) if (!Object.hasOwn(fields, key)) invalid(`${at}.${key}`);
+  shape(fields)(value, at);
+};
 const date: Rule = (value, at) => {
   string(value, at);
   if (!Number.isFinite(Date.parse(value as string))) invalid(at);
@@ -104,12 +109,15 @@ const llm = shape({
   runCount: integer,
   runsWithTokenUsage: integer,
   runsWithReportedCost: integer,
+  runsWithEstimatedCost: optional(integer),
   inputTokens: number,
   outputTokens: number,
   cachedInputTokens: number,
   totalTokens: number,
   reportedCostUsd: number,
-  costStatus: oneOf("reported", "partial", "unpriced", "unavailable"),
+  estimatedCostUsd: optional(number),
+  estimateProvenance: optional(array(shape({ source: oneOf("rate_card"), version: string }))),
+  costStatus: oneOf("reported", "estimated", "partial", "unpriced", "unavailable"),
 });
 const billing = shape({
   judge: optional(shape({ inputTokens: nullable(number), outputTokens: nullable(number), estimatedCostUsd: nullable(number), reservedCostUsd: number })),
@@ -117,6 +125,7 @@ const billing = shape({
   llm,
   runtime,
   reportedCostUsd: number,
+  estimatedLlmCostUsd: optional(number),
   estimatedRuntimeCostUsd: number,
   observedAndEstimatedCostUsd: nullable(number),
   complete: boolean,
@@ -254,7 +263,11 @@ const fields = {
     waits: array(shape({ kind: oneOf("board_login", "provider_login"), startedAt: date, finishedAt: optional(date) })),
     artifactChecks: optional(array(shape({ filename: string, runId: string, sha256: string, fields: object, exactFields: boolean }))),
     inputTransport: optional(oneOf("prompt_base64")),
-    setupChecks: optional(array(shape({ code: string, level: oneOf("info", "warn", "error") }))),
+    setupChecks: optional(array(closedShape({ code: string, level: oneOf("info", "warn", "error"), diagnostic: optional(closedShape({
+      boundary: oneOf("runtime_preparation", "hello_probe"), category: oneOf(...connectionSetupCategories),
+      httpStatus: optional((value, at) => { if (!connectionSetupHttpStatuses.includes(value as typeof connectionSetupHttpStatuses[number])) invalid(at); }),
+      dependency: optional(oneOf(...connectionSetupDependencies)), inputTruncated: boolean,
+    })) }))),
     runDiagnostics: optional(array(shape({ runId: string, status: oneOf("succeeded", "failed", "cancelled", "interrupted", "timed_out", "unknown"), signals: array(oneOf(...connectionRunSignals)), logAvailable: boolean }))),
     creationFailure: optional(shape({ status: integer, code: oneOf("ai_connection_api_key_rejected", "ai_connection_verification_failed", "connection_request_rejected") })),
     connectionId: optional(string), agentId: optional(string), companyId: optional(string), artifactSha256: optional(string), model: optional(string), cleanupRetained: optional(boolean), companyArchived: optional(boolean),

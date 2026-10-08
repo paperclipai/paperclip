@@ -2,26 +2,72 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { HeartbeatRun } from "@paperclipai/shared";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { buildTranscript as parseTranscript } from "../adapters/transcript";
+import type { TranscriptParserSource } from "../adapters/types";
 import { LogViewer } from "./AgentDetail";
 import { LogViewer as ProductionLogViewer } from "./AgentDetail.production";
 
-const { log, events, empty } = vi.hoisted(() => ({ log: vi.fn(), events: vi.fn(async () => []), empty: [] }));
+const { log, events, empty, getUIAdapter, buildTranscript } = vi.hoisted(() => ({
+  log: vi.fn(), events: vi.fn(async () => []), empty: [], getUIAdapter: vi.fn(), buildTranscript: vi.fn(),
+}));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { log, events } }));
 vi.mock("@tanstack/react-query", async (original) => ({
   ...await original<typeof import("@tanstack/react-query")>(),
   useQuery: () => ({ data: empty }),
 }));
 vi.mock("../adapters", () => ({
-  getUIAdapter: () => null,
+  getUIAdapter,
   onAdapterChange: () => () => {},
-  buildTranscript: (lines: unknown[]) => lines,
+  buildTranscript,
 }));
 vi.mock("../components/transcript/RunTranscriptView", () => ({
-  RunTranscriptView: ({ entries }: { entries: Array<{ chunk: string }> }) => <div>{entries.map(line => line.chunk).join(" ")}</div>,
+  RunTranscriptView: ({ entries }: { entries: Array<{ chunk?: string; text?: string }> }) => <div>{entries.map(line => line.text ?? line.chunk).join(" ")}</div>,
 }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); log.mockReset(); events.mockClear(); });
+beforeEach(() => { getUIAdapter.mockReturnValue(null); buildTranscript.mockImplementation((lines: unknown[]) => lines); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); log.mockReset(); events.mockClear(); getUIAdapter.mockReset(); buildTranscript.mockReset(); });
+
+it.each([
+  { recorded: "codex_local", current: "paperclip_runner" },
+  { recorded: "paperclip_runner", current: "codex_local" },
+])("parses recorded $recorded history independently of the current $current runner", async ({ recorded, current }) => {
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const sources: Record<string, TranscriptParserSource> = {
+    codex_local: { parseStdoutLine: vi.fn<TranscriptParserSource["parseStdoutLine"]>((line, ts) => [{ kind: "stdout", ts, text: `legacy parser: ${line}` }]) },
+    paperclip_runner: { parseStdoutLine: vi.fn<TranscriptParserSource["parseStdoutLine"]>((line, ts) => [{ kind: "stdout", ts, text: `native parser: ${line}` }]) },
+  };
+  getUIAdapter.mockImplementation((type: string) => sources[type]);
+  buildTranscript.mockImplementation(parseTranscript);
+  const chunk = JSON.stringify({ seq: 1, ts: "2026-09-10T12:00:01Z", stream: "stdout", chunk: "retained history\n" }) + "\n";
+  log.mockResolvedValueOnce({ content: chunk, nextOffset: chunk.length });
+  const run = { id: "recorded-run", companyId: "company-1", agentId: "agent-1", status: "succeeded", logRef: "log", adapterType: recorded } as HeartbeatRun;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const marker = recorded === "codex_local" ? "legacy parser" : "native parser";
+  const otherMarker = recorded === "codex_local" ? "native parser" : "legacy parser";
+  try {
+    await act(async () => root.render(<LogViewer run={run} adapterType={current} />));
+    expect(getUIAdapter).toHaveBeenLastCalledWith(recorded);
+    expect(buildTranscript).toHaveBeenLastCalledWith(expect.any(Array), sources[recorded], expect.any(Object));
+    expect(sources[recorded].parseStdoutLine).toHaveBeenCalledWith("retained history", "2026-09-10T12:00:01Z");
+    expect(sources[current].parseStdoutLine).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(`${marker}: retained history`);
+    expect(container.textContent).not.toContain(`${otherMarker}: retained history`);
+    getUIAdapter.mockClear();
+    buildTranscript.mockClear();
+    await act(async () => root.render(<LogViewer run={run} adapterType={recorded} />));
+    expect(getUIAdapter).toHaveBeenLastCalledWith(recorded);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain(`${marker}: retained history`);
+    expect(container.textContent).not.toContain(`${otherMarker}: retained history`);
+    expect(sources[current].parseStdoutLine).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
 
 it.each([LogViewer, ProductionLogViewer])("retains legacy history and reads only the next offset on visibility recovery (%#)", async (Viewer) => {
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");

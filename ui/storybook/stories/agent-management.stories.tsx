@@ -480,18 +480,20 @@ function StorybookQueryFixtures({ children }: { children: ReactNode }) {
   return children;
 }
 
-function AgentConfigFormStory() {
+function AgentConfigFormStory({ runner = "auto" }: { runner?: "auto" | "paperclip" | "legacy" }) {
   const [values, setValues] = useState<CreateConfigValues>({
     ...defaultCreateValues,
-    adapterType: "codex_local",
+    adapterType: runner === "legacy" ? "codex_local" : "paperclip_runner",
+    runner,
+    adapterSchemaValues: runner === "legacy" ? {} : { provider: "codex", codexPermissionMode: "never" },
     command: "codex",
     model: "gpt-5.4",
     thinkingEffort: "high",
-    search: true,
+    search: runner === "legacy",
     dangerouslyBypassSandbox: true,
     promptTemplate:
       "You are {{ agent.name }}. Read the assigned issue, make a small verified change, and update the task.",
-    extraArgs: "--full-auto, --search",
+    extraArgs: runner === "legacy" ? "--full-auto, --search" : "",
     envBindings: {
       OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-openai", version: "latest" },
       PAPERCLIP_TRACE: { type: "plain", value: "storybook" },
@@ -920,4 +922,26 @@ export const ForcedKubernetesExecution: Story = {
  */
 export const ForcedKubernetesMissingEnvironment: Story = {
   render: () => <ForcedKubernetesStory environmentFixtures={[]} />,
+};
+
+export const NativeRunnerDefault: Story = {
+  render: () => <StorybookQueryFixtures><AgentConfigFormStory /></StorybookQueryFixtures>,
+};
+
+export const ExplicitLegacyRunner: Story = {
+  render: () => <StorybookQueryFixtures><AgentConfigFormStory runner="legacy" /></StorybookQueryFixtures>,
+};
+
+function ExistingLegacyRunnerStory() {
+  const [agent, setAgent] = useState(agentManagementAgents[0]!);
+  return <StorybookQueryFixtures>
+    <AgentConfigForm mode="edit" agent={agent} sectionLayout="cards" showAdapterTypeField
+      showAdapterTestEnvironmentButton={false}
+      onSave={patch => setAgent(current => ({ ...current, ...patch } as Agent))} />
+  </StorybookQueryFixtures>;
+}
+
+export const ExistingLegacyRunner: Story = {
+  parameters: { docs: { description: { story: "An existing Codex agent keeps its legacy runner and custom CLI settings. Harness, Runner, Managed harness, Model, Thinking effort, and advanced runtime choices share the production dropdown surface." } } },
+  render: () => <ExistingLegacyRunnerStory />,
 };

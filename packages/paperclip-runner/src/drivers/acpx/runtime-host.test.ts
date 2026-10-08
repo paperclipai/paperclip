@@ -888,6 +888,42 @@ describe("ACPX runtime host", () => {
     await host.close({ reason: "verified" });
   });
 
+  it.each([false, true])("binds Cursor's bare requested model only after verifying its advertised full selector (already selected: %s)", async alreadySelected => {
+    const fixture = await hostFixture();
+    const selector = "gpt-5.6-sol[context=272k,reasoning=medium,fast=false]";
+    let currentModelId = alreadySelected ? selector : "default";
+    const setModel = vi.fn(async model => { currentModelId = model; });
+    const runtime = runtimePort({
+      identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", mode: "agent" }),
+      getStatus: async () => ({ models: { currentModelId, availableModelIds: [selector] } }),
+      setModel,
+    });
+    const host = await AcpxRuntimeHost.open({ ...fixture.options, agent: "cursor", model: "gpt-5.6-sol", permissionMode: "deny-all", environment: { CURSOR_API_KEY: "selected-fixture-account" } },
+      fixture.dependencies({ openRuntime: async () => runtime }));
+    expect(host.identity().effectiveModel).toBe("gpt-5.6-sol");
+    expect(host.binding()).toMatchObject({ requestedModel: "gpt-5.6-sol", effectiveModel: "gpt-5.6-sol" });
+    expect((await host.status()).models?.currentModelId).toBe(selector);
+    if (alreadySelected) expect(setModel).not.toHaveBeenCalled();
+    else expect(setModel).toHaveBeenCalledExactlyOnceWith(selector);
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    await host.close({ reason: "Cursor model verified" });
+  });
+
+  it("rejects an unadvertised Cursor model before binding or a provider turn", async () => {
+    const fixture = await hostFixture();
+    const setModel = vi.fn();
+    const runtime = runtimePort({
+      identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", mode: "agent" }),
+      getStatus: async () => ({ models: { currentModelId: "default", availableModelIds: ["different-model[context=272k]"] } }),
+      setModel,
+    });
+    await expect(AcpxRuntimeHost.open({ ...fixture.options, agent: "cursor", model: "gpt-5.6-sol", permissionMode: "deny-all", environment: { CURSOR_API_KEY: "selected-fixture-account" } },
+      fixture.dependencies({ openRuntime: async () => runtime }))).rejects.toMatchObject({ code: "ACPX_MODEL_SELECTION_UNAVAILABLE" });
+    expect(setModel).not.toHaveBeenCalled();
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
+  });
+
   it("rejects recovery drift before opening the provider", async () => {
     const fixture = await hostFixture();
     const openRuntime = vi.fn(async () => runtimePort());

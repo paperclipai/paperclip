@@ -25,6 +25,7 @@ const sourceUrl = new URL(
   import.meta.url,
 );
 const runnerTesting = await import(sourceUrl.href) as RunnerTestingModule;
+export const requireVerifiedAcpxModel = runnerTesting.requireVerifiedAcpxModel;
 
 export const CAPABILITY_HIGH_RISK_SEMANTIC_VECTORS:
   RunnerTestingModule["CAPABILITY_HIGH_RISK_SEMANTIC_VECTORS"] =

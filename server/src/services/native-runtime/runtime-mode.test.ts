@@ -43,13 +43,31 @@ describe("resolveNativeRuntimeMode", () => {
     }
   });
 
-  it("rejects a fresh Paperclip Runner start while the rollout flag is disabled", () => {
-    expect(() => resolveNativeRuntimeMode({
+  it("starts a fresh Paperclip Runner even with the retired flag disabled", () => {
+    expect(resolveNativeRuntimeMode({
       ...eligible,
       enabled: false,
-    })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_rollout_disabled",
+    })).toEqual(expect.objectContaining({
+      kind: "native",
     }));
+  });
+
+  it("retains Dot's separate admission gate while ordinary native execution is available", () => {
+    const dot = {
+      ...eligible,
+      adapterConfig: {
+        provider: "openai_dot", dotBindingId: "11111111-1111-4111-8111-111111111111", allowUnmeteredProvider: true,
+      },
+    };
+    expect(() => resolveNativeRuntimeMode({ ...dot, dotEnabled: false })).toThrow(expect.objectContaining({
+      code: "paperclip_runner_dot_disabled",
+    }));
+    expect(resolveNativeRuntimeMode({ ...dot, enabled: false, dotEnabled: true })).toMatchObject({
+      kind: "native", profile: { backend: "openai_dot_mcp" },
+    });
+    expect(resolveNativeRuntimeMode({ ...eligible, enabled: false, dotEnabled: false })).toMatchObject({
+      kind: "native", profile: { backend: "codex_app_server" },
+    });
   });
 
   it("rejects unknown Paperclip Runner providers", () => {
@@ -189,7 +207,7 @@ describe("resolveNativeRuntimeMode", () => {
     }));
   });
 
-  it("keeps a persisted active run native while the global flag rejects a fresh runner start", () => {
+  it("keeps both persisted and fresh runs native regardless of the retired flag", () => {
     const disabled = { ...eligible, enabled: false };
     expect(resolveHeartbeatNativeRuntimeMode({
       ...disabled,
@@ -203,11 +221,11 @@ describe("resolveNativeRuntimeMode", () => {
       reason: "eligible_opt_in",
       authorityDecision: expect.objectContaining({ reasonCode: "live_continuation_registered" }),
     }));
-    expect(() => resolveHeartbeatNativeRuntimeMode({
+    expect(resolveHeartbeatNativeRuntimeMode({
       ...disabled,
       persisted: { runtimeMode: null, runtimeModeReason: null, runtimeModeResolvedAt: null },
-    })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_rollout_disabled",
+    })).toEqual(expect.objectContaining({
+      kind: "native",
     }));
   });
 
@@ -456,10 +474,10 @@ describe("resolveHeartbeatRuntimeMode compatibility", () => {
       reason: "persisted_native_selection",
       provider: "codex",
     });
-    expect(() => resolveHeartbeatRuntimeMode({
+    expect(resolveHeartbeatRuntimeMode({
       ...compatibilityInput,
       enabled: false,
       adapterType: "paperclip_runner",
-    })).toThrow(NativeRunnerSelectionError);
+    })).toMatchObject({ kind: "native" });
   });
 });

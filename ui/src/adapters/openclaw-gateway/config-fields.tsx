@@ -1,3 +1,4 @@
+import { SelectPopover } from "../../components/ui/select";
 import { configFieldsForSection } from "../config-sections";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
@@ -205,23 +206,23 @@ export function OpenClawGatewayConfigFields({
       </Field>
 
       <Field label="Session strategy">
-        <select
+        <SelectPopover aria-label="Session strategy"
           value={
             isCreate
               ? values!.sessionKeyStrategy ?? "fixed"
               : sessionStrategy
           }
-          onChange={(e) =>
+          onValueChange={(selection) =>
             isCreate
-              ? set!({ sessionKeyStrategy: e.target.value })
-              : mark("adapterConfig", "sessionKeyStrategy", e.target.value)
+              ? set!({ sessionKeyStrategy: selection })
+              : mark("adapterConfig", "sessionKeyStrategy", selection)
           }
-          className={inputClass}
-        >
-          <option value="fixed">Fixed</option>
-          <option value="issue">Per issue</option>
-          <option value="run">Per run</option>
-        </select>
+         options={[
+           { value: "fixed", label: "Fixed" },
+           { value: "issue", label: "Per issue" },
+           { value: "run", label: "Per run" },
+         ]}
+       />
       </Field>
 
       {(isCreate ? values!.sessionKeyStrategy ?? "fixed" : sessionStrategy) === "fixed" && (

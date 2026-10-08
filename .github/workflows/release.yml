@@ -164,7 +164,8 @@ jobs:
     needs: [plan_preview, package_preview]
     if: github.ref == 'refs/heads/master' && needs.plan_preview.outputs.packages == 'true' && needs.package_preview.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Allow the bounded 30-minute registry visibility check plus setup/publish.
+    timeout-minutes: 45
     # A manual preview and a merge-triggered migrator may compile in parallel.
     # Serialize only publication so they cannot race an immutable npm version,
     # without making the migrator wait for a preview's separate image build.
@@ -337,8 +338,11 @@ jobs:
         run: node scripts/cloud-source-verification.mjs "$SOURCE_SHA"
 
   publish_canary:
-    if: github.event_name == 'push'
-    needs: verify_canary
+    if: >-
+      !cancelled() && github.event_name == 'push' && needs.verify_canary.result == 'success' &&
+      needs.pin_runner_release_source.result == 'success' &&
+      (needs.pin_runner_release_source.outputs.required != 'true' || needs.release_runner_assets.result == 'success')
+    needs: [verify_canary, pin_runner_release_source, release_runner_assets]
     runs-on: ubuntu-latest
     timeout-minutes: 150
     environment: npm-canary
@@ -350,10 +354,14 @@ jobs:
       # For the explicit docker.yml dispatch below.
       actions: write
 
+    defaults:
+      run:
+        working-directory: source
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          path: source
           fetch-depth: 0
 
       - name: Setup pnpm
@@ -366,6 +374,33 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Checkout trusted release transfer tools
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Download this run's verified runner data
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.release_runner_assets.outputs.runner_assets_artifact }}
+          path: ${{ runner.temp }}/runner-release-archive
+      - name: Validate runner data against the selected source before publishing
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        env:
+          SOURCE_SHA: ${{ needs.pin_runner_release_source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          node "$GITHUB_WORKSPACE/trusted/scripts/release-runner-artifacts.mjs" unpack "$SOURCE_SHA" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz.sha256" \
+            "$RUNNER_TEMP/runner-release-assets" "$GITHUB_WORKSPACE/source"
+          echo "PAPERCLIP_RELEASE_RUNNER_ASSETS=$RUNNER_TEMP/runner-release-assets" >> "$GITHUB_ENV"
 
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
@@ -587,11 +622,13 @@ jobs:
       artifact_name: nightly-release-smoke
 
   publish_nightly:
-    needs: [select_nightly, smoke_nightly]
+    needs: [select_nightly, smoke_nightly, pin_runner_release_source, release_runner_assets]
     # Publish when smoke passed, or when smoke was deliberately skipped by a
     # dry-run dispatch (the publish itself is a dry-run in that case).
     if: >-
       !cancelled() &&
+      needs.pin_runner_release_source.result == 'success' &&
+      (needs.pin_runner_release_source.outputs.required != 'true' || needs.release_runner_assets.result == 'success') &&
       needs.select_nightly.outputs.proceed == 'true' &&
       (needs.smoke_nightly.result == 'success' ||
        (needs.smoke_nightly.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.dry_run))
@@ -611,10 +648,14 @@ jobs:
       id-token: write
       actions: write
 
+    defaults:
+      run:
+        working-directory: source
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          path: source
           ref: ${{ needs.select_nightly.outputs.sha }}
           fetch-depth: 0
 
@@ -628,6 +669,33 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Checkout trusted release transfer tools
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Download this run's verified runner data
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.release_runner_assets.outputs.runner_assets_artifact }}
+          path: ${{ runner.temp }}/runner-release-archive
+      - name: Validate runner data against the selected source before publishing
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        env:
+          SOURCE_SHA: ${{ needs.pin_runner_release_source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          node "$GITHUB_WORKSPACE/trusted/scripts/release-runner-artifacts.mjs" unpack "$SOURCE_SHA" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz.sha256" \
+            "$RUNNER_TEMP/runner-release-assets" "$GITHUB_WORKSPACE/source"
+          echo "PAPERCLIP_RELEASE_RUNNER_ASSETS=$RUNNER_TEMP/runner-release-assets" >> "$GITHUB_ENV"
 
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
@@ -855,9 +923,11 @@ jobs:
       ref: ${{ needs.select_beta.outputs.sha }}
 
   publish_beta:
-    needs: [select_beta, verify_beta_candidate]
+    needs: [select_beta, verify_beta_candidate, pin_runner_release_source, release_runner_assets]
     if: >-
       !cancelled() &&
+      needs.pin_runner_release_source.result == 'success' &&
+      (needs.pin_runner_release_source.outputs.required != 'true' || needs.release_runner_assets.result == 'success') &&
       needs.select_beta.result == 'success' &&
       (needs.verify_beta_candidate.result == 'success' ||
        (needs.verify_beta_candidate.result == 'skipped' && needs.select_beta.outputs.mode == 'promote'))
@@ -877,10 +947,14 @@ jobs:
     outputs:
       beta_version: ${{ steps.result.outputs.beta_version }}
 
+    defaults:
+      run:
+        working-directory: source
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          path: source
           ref: ${{ needs.select_beta.outputs.sha }}
           fetch-depth: 0
 
@@ -894,6 +968,33 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Checkout trusted release transfer tools
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Download this run's verified runner data
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.release_runner_assets.outputs.runner_assets_artifact }}
+          path: ${{ runner.temp }}/runner-release-archive
+      - name: Validate runner data against the selected source before publishing
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        env:
+          SOURCE_SHA: ${{ needs.pin_runner_release_source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          node "$GITHUB_WORKSPACE/trusted/scripts/release-runner-artifacts.mjs" unpack "$SOURCE_SHA" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz.sha256" \
+            "$RUNNER_TEMP/runner-release-assets" "$GITHUB_WORKSPACE/source"
+          echo "PAPERCLIP_RELEASE_RUNNER_ASSETS=$RUNNER_TEMP/runner-release-assets" >> "$GITHUB_ENV"
 
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
@@ -1240,17 +1341,24 @@ jobs:
       ref: ${{ needs.preflight_stable.outputs.sha }}
 
   preview_stable:
-    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && inputs.dry_run
-    needs: [preflight_stable, verify_stable]
+    if: >-
+      !cancelled() && github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && inputs.dry_run &&
+      needs.verify_stable.result == 'success' && needs.pin_runner_release_source.result == 'success' &&
+      (needs.pin_runner_release_source.outputs.required != 'true' || needs.release_runner_assets.result == 'success')
+    needs: [preflight_stable, verify_stable, pin_runner_release_source, release_runner_assets]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
 
+    defaults:
+      run:
+        working-directory: source
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          path: source
           fetch-depth: 0
           ref: ${{ needs.preflight_stable.outputs.sha }}
 
@@ -1264,6 +1372,33 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Checkout trusted release transfer tools
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Download this run's verified runner data
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.release_runner_assets.outputs.runner_assets_artifact }}
+          path: ${{ runner.temp }}/runner-release-archive
+      - name: Validate runner data against the selected source before publishing
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        env:
+          SOURCE_SHA: ${{ needs.pin_runner_release_source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          node "$GITHUB_WORKSPACE/trusted/scripts/release-runner-artifacts.mjs" unpack "$SOURCE_SHA" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz.sha256" \
+            "$RUNNER_TEMP/runner-release-assets" "$GITHUB_WORKSPACE/source"
+          echo "PAPERCLIP_RELEASE_RUNNER_ASSETS=$RUNNER_TEMP/runner-release-assets" >> "$GITHUB_ENV"
 
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
@@ -1282,8 +1417,11 @@ jobs:
           ./scripts/release.sh "${args[@]}"
 
   publish_stable:
-    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && !inputs.dry_run
-    needs: [preflight_stable, verify_stable]
+    if: >-
+      !cancelled() && github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && !inputs.dry_run &&
+      needs.verify_stable.result == 'success' && needs.pin_runner_release_source.result == 'success' &&
+      (needs.pin_runner_release_source.outputs.required != 'true' || needs.release_runner_assets.result == 'success')
+    needs: [preflight_stable, verify_stable, pin_runner_release_source, release_runner_assets]
     runs-on: ubuntu-latest
     timeout-minutes: 150
     environment: npm-stable
@@ -1294,10 +1432,14 @@ jobs:
     outputs:
       stable_version: ${{ steps.tag.outputs.version }}
 
+    defaults:
+      run:
+        working-directory: source
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          path: source
           fetch-depth: 0
           ref: ${{ needs.preflight_stable.outputs.sha }}
 
@@ -1311,6 +1453,33 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+          cache-dependency-path: source/pnpm-lock.yaml
+
+      - name: Checkout trusted release transfer tools
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Download this run's verified runner data
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.release_runner_assets.outputs.runner_assets_artifact }}
+          path: ${{ runner.temp }}/runner-release-archive
+      - name: Validate runner data against the selected source before publishing
+        if: needs.pin_runner_release_source.outputs.required == 'true'
+        env:
+          SOURCE_SHA: ${{ needs.pin_runner_release_source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          node "$GITHUB_WORKSPACE/trusted/scripts/release-runner-artifacts.mjs" unpack "$SOURCE_SHA" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz" \
+            "$RUNNER_TEMP/runner-release-archive/runner-release-assets.tar.gz.sha256" \
+            "$RUNNER_TEMP/runner-release-assets" "$GITHUB_WORKSPACE/source"
+          echo "PAPERCLIP_RELEASE_RUNNER_ASSETS=$RUNNER_TEMP/runner-release-assets" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
@@ -1477,3 +1646,63 @@ jobs:
             echo "- Open and merge the PR (a human opens it so CI runs):"
             echo "  https://github.com/${GITHUB_REPOSITORY}/compare/master...${branch}?expand=1"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Resolve one applicable release channel after its existing gate. Optional
+  # channels are deliberately skipped, so use explicit results, never an
+  # implicit all-needs-success dependency that would suppress promotions.
+  pin_runner_release_source:
+    needs: [verify_canary, select_nightly, select_beta, verify_beta_candidate, preflight_stable, verify_stable]
+    if: >-
+      !cancelled() &&
+      ((github.event_name == 'push' && needs.verify_canary.result == 'success') ||
+       (needs.select_nightly.result == 'success' && needs.select_nightly.outputs.proceed == 'true') ||
+       (needs.select_beta.result == 'success' &&
+        (needs.verify_beta_candidate.result == 'success' || needs.select_beta.outputs.mode == 'promote')) ||
+       (needs.preflight_stable.result == 'success' && needs.verify_stable.result == 'success'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.pin.outputs.source_sha }}
+      required: ${{ steps.pin.outputs.required }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin the gated source and identify its release assembly contract
+        id: pin
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CANARY_SHA: ${{ github.sha }}
+          NIGHTLY_SHA: ${{ needs.select_nightly.outputs.sha }}
+          BETA_SHA: ${{ needs.select_beta.outputs.sha }}
+          STABLE_SHA: ${{ needs.preflight_stable.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == push ]]; then source_sha="$CANARY_SHA";
+          elif [[ -n "$NIGHTLY_SHA" ]]; then source_sha="$NIGHTLY_SHA";
+          elif [[ -n "$BETA_SHA" ]]; then source_sha="$BETA_SHA";
+          else source_sha="$STABLE_SHA"; fi
+          [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
+          git cat-file -e "$source_sha^{commit}"
+          required=false
+          # Promoted older sources retain their original contract. New sources
+          # opt in with the checked-in hook and may never publish partial assets.
+          if git show "$source_sha:scripts/release.sh" | grep -F 'PAPERCLIP_RELEASE_RUNNER_ASSETS' >/dev/null; then
+            git cat-file -e "$source_sha:scripts/release-runner-artifacts.mjs"
+            required=true
+          fi
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "required=$required" >> "$GITHUB_OUTPUT"
+
+  release_runner_assets:
+    needs: pin_runner_release_source
+    if: needs.pin_runner_release_source.outputs.required == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-verify.yml
+    with:
+      ref: ${{ needs.pin_runner_release_source.outputs.source_sha }}
+      runner_assets_only: true

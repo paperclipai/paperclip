@@ -1,3 +1,4 @@
+import { SelectPopover } from "../components/ui/select";
 import { schemaFieldSection } from "./config-sections";
 import { useState, useEffect, useRef, useCallback } from "react";
 
@@ -14,46 +15,6 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 import { ChevronDown } from "lucide-react";
 
-// ── Select field (extracted to keep hooks at component top level) ──────
-function SelectField({
-  value,
-  options,
-  onChange,
-}: {
-  value: string;
-  options: Array<{ value: string; label: string }>;
-  onChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const selectedOpt = options.find((o) => o.value === value);
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-          <span className={!value ? "text-muted-foreground" : ""}>
-            {selectedOpt?.label ?? value ?? "Select..."}
-          </span>
-          <ChevronDown className="h-3 w-3 text-muted-foreground" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
-        {options.map((opt) => (
-          <button
-            key={opt.value}
-            className={`flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50 ${opt.value === value ? "bg-accent" : ""}`}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              onChange(opt.value);
-              setOpen(false);
-            }}
-          >
-            <span>{opt.label}</span>
-          </button>
-        ))}
-      </PopoverContent>
-    </Popover>
-  );
-}
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
@@ -420,10 +381,11 @@ export function SchemaConfigFields({
               const currentVal = String(readValue(field) ?? "");
               return (
                 <Field key={field.key} label={field.label} hint={field.hint}>
-                  <SelectField
+                  <SelectPopover
+                    aria-label={field.label}
                     value={currentVal}
                     options={field.options ?? []}
-                    onChange={(v) => writeValue(field, v)}
+                    onValueChange={(v) => writeValue(field, v)}
                   />
                 </Field>
               );

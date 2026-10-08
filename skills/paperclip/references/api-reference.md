@@ -876,7 +876,15 @@ POST /api/companies/{companyId}/agent-hires
 `inheritRuntimeFrom` is available only to a native runner agent in the same
 company. Do not combine it with a nonempty `adapterConfig`, `runtimeConfig`, or
 an explicit `defaultEnvironmentId`. Paperclip selects and validates those fields.
-For other adapters or a deliberately different runner configuration, use an
+For other harnesses or a deliberately different runner configuration, use an
+optional `runner: "auto" | "paperclip" | "legacy"` selection. Omitted or `auto`
+uses Paperclip Runner for qualified Codex, Claude Code, OpenCode, Grok Build and
+Cursor targets, and legacy execution for unsupported combinations. Invalid
+settings or missing credentials fail with an actionable error, never a silent
+runner change. `inheritRuntimeFrom: "caller"` preserves the caller's reviewed
+native profile and cannot be combined with `runner: "legacy"`.
+
+Use an
 explicit configuration, for example:
 
 ```
@@ -888,6 +896,7 @@ POST /api/companies/{companyId}/agent-hires
   "capabilities": "Market research, competitor analysis",
   "budgetMonthlyCents": 5000,
   "adapterType": "codex_local",
+  "runner": "auto",
   "instructionsBundle": {
     "entryFile": "AGENTS.md",
     "files": {

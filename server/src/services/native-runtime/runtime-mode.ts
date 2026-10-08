@@ -96,6 +96,7 @@ function ineligible(
 }
 
 export function resolveNativeRuntimeMode(input: {
+  /** @deprecated Retained for callers; ordinary native selection ignores it. */
   enabled: boolean;
   dotEnabled?: boolean;
   runtimeConfig: unknown;
@@ -126,14 +127,9 @@ export function resolveNativeRuntimeMode(input: {
     }
     throw error;
   }
-  // Dot has its own rollout; enabling it does not opt in other Runner providers.
+  // Dot retains its own feature gate after the ordinary native runner graduates.
   if (runnerProfile.provider === "openai_dot") {
     if (input.dotEnabled !== true) throw ineligible("paperclip_runner_dot_disabled", "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings before assigning new work.");
-  } else if (!input.enabled) {
-    throw ineligible(
-      "paperclip_runner_rollout_disabled",
-      "Paperclip Runner is experimental and disabled on this instance.",
-    );
   }
   if (
     input.agent.adapterType !== "paperclip_runner"

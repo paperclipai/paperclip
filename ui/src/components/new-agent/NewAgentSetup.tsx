@@ -1,3 +1,4 @@
+import { agentRunner, agentHarnessType, paperclipRunnerProfileForHarness, type AgentRunnerChoice } from "@paperclipai/shared";
 import { useConnectionModels } from "../ai-connections/useConnectionModels";
 import { AgentCharacter } from "../AgentCharacter";
 import { useAgentAppearanceDraft } from "../../hooks/useAgentAppearanceDraft";
@@ -54,7 +55,7 @@ import { Field, ToggleField } from "../agent-config-primitives";
 import { SecretPicker } from "../environment-variables-editor/SecretPicker";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { NativeSelect, nativeSelectClassName } from "../ui/select";
+import { SelectPopover } from "../ui/select";
 import {
   OnboardingCard,
   OnboardingHeading,
@@ -68,7 +69,6 @@ import {
 } from "./AgentProviderConnection";
 import { adapterCuratesModelOrder } from "../../lib/model-utils";
 
-const controlClass = nativeSelectClassName;
 const blocking = (result: AdapterEnvironmentTestResult) =>
   result.status === "fail" ||
   result.checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE);
@@ -84,11 +84,12 @@ export function NewAgentSetup() {
     );
   return (
     <Setup
-      key={`${selectedCompanyId}:${params.get("name")}:${params.get("adapterType")}:${params.get("runnerProvider")}`}
+      key={`${selectedCompanyId}:${params.get("name")}:${params.get("adapterType")}:${params.get("runnerProvider")}:${params.get("runner")}`}
       companyId={selectedCompanyId}
       name={params.get("name") ?? ""}
       adapterType={params.get("adapterType") ?? ""}
       runnerProvider={params.get("runnerProvider") ?? "codex"}
+      initialRunner={params.get("runner") === "legacy" ? "legacy" : params.get("runner") === "paperclip" || params.get("adapterType") === "paperclip_runner" ? "paperclip" : "auto"}
       createdAgentId={params.get("createdAgentId")}
     />
   );
@@ -97,31 +98,37 @@ export function NewAgentSetup() {
 function Setup({
   companyId,
   name,
-  adapterType,
-  runnerProvider,
+  adapterType: requestedAdapter,
+  runnerProvider: requestedProvider,
+  initialRunner,
   createdAgentId,
 }: {
   companyId: string;
   name: string;
   adapterType: string;
   runnerProvider: string;
+  initialRunner: AgentRunnerChoice;
   createdAgentId: string | null;
 }) {
   const navigate = useNavigate();
   const cache = useQueryClient();
   const { openNewIssue } = useDialogActions();
   const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
-  const isRunner = adapterType === "paperclip_runner";
-  const isDot = isRunner && runnerProvider === "openai_dot";
-  const brandType = isDot ? "openai_dot" : isRunner
-    ? runnerProvider === "grok"
-      ? "grok_local"
-      : runnerProvider === "claude"
-      ? "claude_local"
-      : runnerProvider === "opencode"
-        ? "opencode_local"
-        : "codex_local"
-    : adapterType;
+  const adapters = useQuery({ queryKey: queryKeys.adapters.all, queryFn: adaptersApi.list });
+  const [runner, setRunner] = useState<AgentRunnerChoice>(initialRunner);
+  const brandType = agentHarnessType(requestedAdapter, {
+    provider: ["claude", "grok", "cursor"].includes(requestedProvider) ? "acpx" : requestedProvider,
+    acpxAgent: requestedProvider,
+  });
+  const managedHarness = ["claude_managed", "aws_agentcore"].includes(brandType);
+  const isDot = brandType === "openai_dot";
+  const [managedProfileId, setManagedProfileId] = useState("");
+  const [retentionAcknowledged, setRetentionAcknowledged] = useState(false);
+  const profile = paperclipRunnerProfileForHarness(brandType);
+  const registryRunner = adapters.data?.find(adapter => adapter.type === brandType)?.defaultRunner;
+  const isRunner = isDot || runner === "paperclip" || (runner === "auto" && Boolean(profile) && registryRunner !== "legacy");
+  const adapterType = isRunner ? "paperclip_runner" : brandType;
+  const runnerProvider = isDot ? "openai_dot" : profile?.acpxAgent ?? profile?.provider ?? requestedProvider;
   const connectionAdapter =
     brandType === "claude_local" || brandType === "codex_local" || brandType === "grok_local"
       ? brandType
@@ -131,7 +138,7 @@ function Setup({
   const providerKeys = setupProviderKeys(brandType);
   const chooseProvider = multiProvider || brandType === "hermes_local";
   const hasCredentialField =
-    chooseProvider || Boolean(SETUP_CREDENTIAL_KEYS[adapterType]);
+    chooseProvider || Boolean(SETUP_CREDENTIAL_KEYS[brandType]);
   const showModel = !isDot && !["cursor_cloud", "hermes_gateway"].includes(adapterType);
   const [allowUnmeteredProvider, setAllowUnmeteredProvider] = useState(false);
   const [gatewayUrl, setGatewayUrl] = useState("");
@@ -141,8 +148,8 @@ function Setup({
   const [screen, setScreen] = useState<"connect" | "runtime" | "saved">(
     createdAgentId ? "saved" : connectionAdapter ? "connect" : "runtime",
   );
-  const [model, setModel] = useState("");
-  const efforts = isRunner ? [] : setupEfforts(adapterType, model);
+  const [model, setModel] = useState(brandType === "claude_managed" ? "claude-sonnet-5" : brandType === "aws_agentcore" ? "global.anthropic.claude-sonnet-4-6" : "");
+  const efforts = isRunner && brandType !== "codex_local" ? [] : setupEfforts(brandType, model);
   const [effort, setEffort] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
   const [environmentOverride, setEnvironmentOverride] = useState("");
@@ -197,10 +204,6 @@ function Setup({
     resetTest();
     setScreen("connect");
   };
-  const adapters = useQuery({
-    queryKey: queryKeys.adapters.all,
-    queryFn: adaptersApi.list,
-  });
   const agents = useQuery({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
@@ -227,7 +230,7 @@ function Setup({
   });
   const models = useQuery({
     queryKey: queryKeys.agents.adapterModels(companyId, brandType, null, aiBinding?.provider),
-    queryFn: () => agentsApi.adapterModels(companyId, brandType, { provider: aiBinding?.provider }),
+    queryFn: () => agentsApi.adapterModels(companyId, managedHarness ? "paperclip_runner" : brandType, { provider: managedHarness ? brandType : aiBinding?.provider }),
     enabled: Boolean(brandType) && showModel && !connectionModels,
     retry: false,
   });
@@ -280,7 +283,7 @@ function Setup({
     environment?.driver === "sandbox" &&
     caps.data?.sandboxProviders?.[sandboxProvider]?.supportsLoginPty === true;
   const envKey =
-    SETUP_CREDENTIAL_KEYS[adapterType] ?? providerKeys[provider] ?? "API_KEY";
+    SETUP_CREDENTIAL_KEYS[brandType] ?? providerKeys[provider] ?? "API_KEY";
   const savedKey = userSecrets.data?.find(
     (entry) => entry.definition.key === envKey && entry.secret,
   );
@@ -308,15 +311,15 @@ function Setup({
     adapterType === "kimi_local" && Boolean(apiKey.trim() || selectedBinding);
   const cloud = Boolean(useCloudInstance());
   const available =
-    isNewAgentAdapterAllowed(adapterType, {
+    (managedHarness ? !cloud : isNewAgentAdapterAllowed(brandType, {
       cloud,
       nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
       openAiDotEnabled: experimental.data?.enableOpenAiDot === true,
       runnerProvider,
-    }) &&
+    })) &&
     adapters.data?.some(
       (adapter) =>
-        adapter.type === adapterType &&
+        adapter.type === (managedHarness || isDot ? "paperclip_runner" : brandType) &&
         adapter.loaded &&
         !adapter.disabled &&
         !getAdapterDisplay(adapterType).comingSoon,
@@ -355,9 +358,9 @@ function Setup({
       ...(isRunner
         ? {
             adapterSchemaValues: {
-              provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
+              provider: (["claude", "grok", "cursor"].includes(runnerProvider)) ? "acpx" : runnerProvider,
               ...(isDot ? { allowUnmeteredProvider } : {}),
-              ...((runnerProvider === "claude" || runnerProvider === "grok") ? { acpxAgent: runnerProvider } : {}),
+              ...((["claude", "grok", "cursor"].includes(runnerProvider)) ? { acpxAgent: runnerProvider } : {}),
             },
           }
         : {}),
@@ -365,10 +368,13 @@ function Setup({
     const config = getUIAdapter(adapterType).buildAdapterConfig(values);
     if (isRunner)
       Object.assign(config, {
-        provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
-        ...((runnerProvider === "claude" || runnerProvider === "grok") ? { acpxAgent: runnerProvider } : {}),
+        provider: (["claude", "grok", "cursor"].includes(runnerProvider)) ? "acpx" : runnerProvider,
+        ...((["claude", "grok", "cursor"].includes(runnerProvider)) ? { acpxAgent: runnerProvider } : {}),
         ...(model ? { model } : {}),
       });
+    if (managedHarness) Object.assign(config, brandType === "claude_managed"
+      ? { managedProfileId: managedProfileId.trim(), managedAgentsRetentionAcknowledged: retentionAcknowledged }
+      : { agentCoreProfileId: managedProfileId.trim(), agentCoreRetentionAcknowledged: retentionAcknowledged });
     if (!aiBinding && !nextConnection?.aiConnection && hasCredentialField && binding) {
       if (adapterType === "hermes_gateway") config.apiKey = binding;
       else
@@ -449,6 +455,7 @@ function Setup({
         companyId,
         adapterType,
         providerAdapter: brandType,
+        runner: isDot ? "paperclip" : runner,
         adapterConfig: config,
         testCredentials: pendingCredentials(nextConnection),
         aiConnection: runtimeAiBinding ?? nextConnection?.aiConnection,
@@ -521,6 +528,7 @@ function Setup({
         ...(leader ? { reportsTo: leader.id } : {}),
         adapterType,
         adapterConfig: config,
+        runner,
         defaultEnvironmentId:
           environmentOverride ||
           (forced.forced || managedOnly ? environmentId : null),
@@ -540,7 +548,7 @@ function Setup({
       appearanceDraft.clear();
       setScreen("saved");
       navigate(
-        `/agents/new?${new URLSearchParams({ name: response.agent.name, adapterType, runnerProvider, createdAgentId: response.agent.id })}`,
+        `/agents/new?${new URLSearchParams({ name: response.agent.name, adapterType: brandType, runner: agentRunner(response.agent.adapterType), createdAgentId: response.agent.id })}`,
         { replace: true },
       );
       cache.setQueryData(
@@ -653,14 +661,7 @@ function Setup({
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <AdapterMark type={brandType} />
               <span>{getAdapterDisplay(brandType).label}</span>
-              {isRunner && !isDot && (
-                <span>
-                  ·{" "}
-                  {runnerProvider === "codex"
-                    ? "Native app server runner"
-                    : "Paperclip Runner"}
-                </span>
-              )}
+
             </div>
           </div>
         </header>
@@ -799,7 +800,7 @@ function Setup({
                       </h2>
                       <dl className="grid grid-cols-2 gap-4 text-sm">
                         <dt className="text-muted-foreground">Adapter</dt>
-                        <dd>{getAdapterDisplay(isDot ? "openai_dot" : adapterType).label}</dd>
+                        <dd>{getAdapterDisplay(brandType).label}</dd>
                         {showModel && (
                           <>
                             <dt className="text-muted-foreground">Model</dt>
@@ -849,6 +850,28 @@ function Setup({
                       Configure your agent
                     </h2>
                     <fieldset disabled={busy} className="space-y-8">
+                      {profile && <details className="space-y-3">
+                        <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                        <Field label="Runner">
+                          <SelectPopover aria-label="Runner" value={isRunner ? "paperclip" : "legacy"}
+                            onValueChange={value => { setRunner(value as AgentRunnerChoice); resetTest(); }}
+                            options={[
+                              { value: "paperclip", label: `Paperclip Runner${registryRunner !== "legacy" ? " (default)" : ""}` },
+                              { value: "legacy", label: `Legacy runner${registryRunner === "legacy" ? " (default)" : ""}` },
+                            ]} />
+                        </Field>
+                      </details>}
+                      {managedHarness && <section className="space-y-3">
+                        <Field label={brandType === "claude_managed" ? "Managed Agent profile" : "AgentCore profile"}>
+                          <Input aria-label="Managed profile" value={managedProfileId} onChange={event => { setManagedProfileId(event.target.value); resetTest(); }} placeholder="Qualified organization profile ID or key" />
+                        </Field>
+                        <label className="flex items-start gap-2 text-sm">
+                          <input type="checkbox" checked={retentionAcknowledged} onChange={event => { setRetentionAcknowledged(event.target.checked); resetTest(); }} />
+                          <span>{brandType === "claude_managed"
+                            ? "Acknowledge managed retention. Claude Managed is a stateful beta service and is not eligible for ZDR or HIPAA modes."
+                            : "Acknowledge AgentCore retention. AWS AgentCore retains managed sessions according to the organization's profile policy."}</span>
+                        </label>
+                      </section>}
                       <section className="space-y-5">
                         {isDot && <>
                           <p className="text-sm text-muted-foreground">Create this agent, then copy its pairing prompt to your Dot.</p>
@@ -866,7 +889,7 @@ function Setup({
                           <div className="grid items-start gap-5 sm:grid-cols-2">
                             {showModel && !usingKimiApi && (
                               <ModelDropdown
-                                presentation="native"
+                                presentation="select"
                                 models={connectionModels?.models ?? models.data ?? []}
                                 loadingModels={connectionModels?.isLoading ?? models.isLoading}
                                 onRefreshModels={connectionModels?.refreshModels}
@@ -876,7 +899,7 @@ function Setup({
                                   setModel(connectionModels?.resolveModel(value) ?? value);
                                   if (
                                     effort &&
-                                    !setupEfforts(adapterType, value).includes(
+                                    !setupEfforts(brandType, value).includes(
                                       effort,
                                     )
                                   )
@@ -904,63 +927,29 @@ function Setup({
                             )}
                             {efforts.length > 0 && (
                               <Field label="Thinking effort">
-                                <NativeSelect
-                                  aria-label="Thinking effort"
-                                  value={effort}
-                                  onChange={(event) => {
-                                    setEffort(event.target.value);
-                                    resetTest();
-                                  }}
-                                >
-                                  <option value="">Auto</option>
-                                  {efforts.map((value) => (
-                                    <option key={value} value={value}>
-                                      {value}
-                                    </option>
-                                  ))}
-                                </NativeSelect>
+                                <SelectPopover aria-label="Thinking effort" value={effort}
+                                  onValueChange={value => { setEffort(value); resetTest(); }}
+                                  options={[{ value: "", label: "Auto" }, ...efforts.map(value => ({ value, label: value }))]} />
                               </Field>
                             )}
                           </div>
                         )}
-                        {!aiBinding && SETUP_LOGIN_HINTS[adapterType] && (
+                        {!aiBinding && SETUP_LOGIN_HINTS[brandType] && (
                           <p className="text-sm text-muted-foreground">
-                            {SETUP_LOGIN_HINTS[adapterType]}
+                            {SETUP_LOGIN_HINTS[brandType]}
                           </p>
                         )}
                         {hasCredentialField && !aiBinding && (
                           <div className="grid gap-5 sm:grid-cols-2">
                             {chooseProvider && (
                               <Field label="API key provider">
-                                <select
-                                  aria-label="API key provider"
-                                  className={controlClass}
-                                  value={provider}
-                                  onChange={(event) => {
-                                    setProvider(event.target.value);
-                                    setModel("");
-                                    setApiKey("");
-                                    setProviderBinding(null);
-                                    resetTest();
+                                <SelectPopover aria-label="API key provider" value={provider}
+                                  onValueChange={value => {
+                                    setProvider(value); setModel(""); setApiKey(""); setProviderBinding(null); resetTest();
                                   }}
-                                >
-                                  {Object.keys(providerKeys).map((key) => (
-                                    <option key={key} value={key}>
-                                      {key === "openrouter"
-                                        ? "OpenRouter"
-                                        : key === "openai"
-                                          ? "OpenAI"
-                                          : key === "anthropic"
-                                            ? "Anthropic"
-                                            : ({
-                                                google: "Google",
-                                                xai: "xAI",
-                                                groq: "Groq",
-                                                opencode: "OpenCode",
-                                              }[key] ?? key)}
-                                    </option>
-                                  ))}
-                                </select>
+                                  options={Object.keys(providerKeys).map(key => ({ value: key,
+                                    label: ({ openrouter: "OpenRouter", openai: "OpenAI", anthropic: "Anthropic", google: "Google", xai: "xAI", groq: "Groq", opencode: "OpenCode" }[key] ?? key),
+                                  }))} />
                               </Field>
                             )}
                             <div
@@ -1070,21 +1059,9 @@ function Setup({
                               />
                             </Field>
                             <Field label="Kimi API protocol">
-                              <select
-                                aria-label="Kimi API protocol"
-                                className={controlClass}
-                                value={kimiProtocol}
-                                onChange={(event) => {
-                                  setKimiProtocol(event.target.value);
-                                  resetTest();
-                                }}
-                              >
-                                {["kimi", "anthropic", "openai"].map(
-                                  (value) => (
-                                    <option key={value}>{value}</option>
-                                  ),
-                                )}
-                              </select>
+                              <SelectPopover aria-label="Kimi API protocol" value={kimiProtocol}
+                                onValueChange={value => { setKimiProtocol(value); resetTest(); }}
+                                options={["kimi", "anthropic", "openai"].map(value => ({ value, label: value }))} />
                             </Field>
                             <Field
                               label="Kimi API base URL"
@@ -1134,29 +1111,16 @@ function Setup({
                       ) && (
                         <section className="space-y-5">
                           <h3 className="text-sm font-semibold">Environment</h3>
-                          <select
-                            aria-label="Environment"
-                            className={controlClass}
-                            value={environmentOverride}
-                            disabled={forced.forced}
-                            onChange={(event) => {
-                              setEnvironmentOverride(event.target.value);
-                              setConnection(null);
-                              resetTest();
+                          <SelectPopover aria-label="Environment" value={environmentOverride} disabled={forced.forced}
+                            onValueChange={value => {
+                              setEnvironmentOverride(value); setConnection(null); resetTest();
                               if (connectionAdapter) setScreen("connect");
                             }}
-                          >
-                            <option value="">
-                              Default: {environmentLabel}
-                            </option>
-                            {(envs.data ?? [])
-                              .filter((env) => env.status === "active" && (!managedOnly || env.driver !== "local"))
-                              .map((env) => (
-                                <option key={env.id} value={env.id}>
-                                  {environmentDisplayLabel(env)}
-                                </option>
-                              ))}
-                          </select>
+                            options={[
+                              { value: "", label: `Default: ${environmentLabel}` },
+                              ...(envs.data ?? []).filter(env => env.status === "active" && (!managedOnly || env.driver !== "local"))
+                                .map(env => ({ value: env.id, label: environmentDisplayLabel(env) })),
+                            ]} />
                         </section>
                       )}
                     </fieldset>

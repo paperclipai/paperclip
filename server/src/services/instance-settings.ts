@@ -222,7 +222,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   if (parsed.success) {
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
-      enableNativeRunner: parsed.data.enableNativeRunner ?? true,
+      enableNativeRunner: true,
       enableAiConnectionRouters: parsed.data.enableAiConnectionRouters ?? false,
       enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
@@ -342,7 +342,7 @@ export function applyManagedExperimentalOverlay(
   >) {
     // Existing Cloud stack configs may still carry retired flags. Accept the
     // document during rollout, but never let retired flags disable Apps or MCP aggregators.
-    if (key === "enableApps" || key === "enableMcpAggregators") continue;
+    if (key === "enableApps" || key === "enableMcpAggregators" || key === "enableNativeRunner") continue;
     next[key] = value;
     managedKeys[key] = { managed: true, managedBy: PAPERCLIP_CLOUD_MANAGED_BY };
   }
@@ -386,7 +386,7 @@ export function applyCloudCatalogDefaults(
  * `updateExperimental` persists the whole normalized object, and the schema
  * normalizes an omitted flag to its self-hosted default. Without this step an
  * unrelated experimental write (say, turning on pipelines) would store
- * `enableNativeRunner: true` on a managed instance whose tenant row had never
+ * an enabled optional feature on a managed instance whose tenant row had never
  * mentioned the flag; every later read would then treat the stored boolean as
  * an explicit tenant choice and stop re-asserting the Cloud default.
  *
@@ -444,7 +444,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       applyCloudCatalogDefaults(normalizeExperimentalSettings(raw), raw, managedConfig),
       managedConfig,
     );
-    // Self-hosted responses stay byte-identical: no managedKeys field at all.
+    // Compatibility key only: native execution is no longer experimental.
+    experimental.enableNativeRunner = true;
+    delete managedKeys.enableNativeRunner;
+    // Self-hosted responses omit managedKeys.
     return managedConfig ? { ...experimental, managedKeys } : experimental;
   }
 

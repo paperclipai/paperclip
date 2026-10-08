@@ -186,14 +186,31 @@ function verifiedFirstTaskOutputs(checkpoint: FirstTaskCheckpoint): Row[] {
 /** Provider identities, not generic sessionReused flags, prove continuity. */
 export function gradeNativeSessionContinuity(runs: Row[], issueId: string): FirstTaskCheck {
   const parent = [...new Map(runs.filter((run) => run.nativeIssueId === issueId).map((run) => [run.id, run])).values()];
-  const identities = parent.map((run) => ({
-    run: run.id,
-    session: run.nativeSessionId,
-    provider: run.runnerProfileJson?.sessionCheckpoint?.providerSessionId,
-    workspace: run.runnerProfileJson?.nativeExecutionInput?.binding?.executionWorkspaceId,
-  }));
-  const passed = parent.length >= 2 && ["session", "provider", "workspace"].every((key) =>
-    identities.every((identity) => typeof identity[key as "session"] === "string" && identity[key as "session"].length > 0) &&
+  const nonempty = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+  const identities = parent.map((run) => {
+    const execution = run.runnerProfileJson?.nativeExecutionInput;
+    const binding = execution?.binding;
+    const ownerMatches = nonempty(issueId) && nonempty(run.id) && nonempty(run.companyId) && nonempty(run.agentId) &&
+      binding?.runId === run.id && binding?.companyId === run.companyId && binding?.agentId === run.agentId && binding?.issueId === issueId;
+    let workspace: string | undefined;
+    if (ownerMatches && nonempty(binding?.executionWorkspaceId)) {
+      if (binding.executionWorkspaceId === binding.runId) {
+        // The native executor records run.id for a transient workspace, then
+        // scopes its session by these stable workspace fields. Never normalize
+        // a missing/mismatched binding or a real managed workspace identifier.
+        const descriptor = execution.workspace;
+        if (nonempty(descriptor?.cwd) && ["repoUrl", "repoRef", "branchName"].every(key => descriptor[key] === null || nonempty(descriptor[key]))) {
+          workspace = `transient:${digestText(JSON.stringify({ cwd: descriptor.cwd, repoUrl: descriptor.repoUrl, repoRef: descriptor.repoRef, branchName: descriptor.branchName }))}`;
+        }
+      } else {
+        workspace = `managed:${binding.executionWorkspaceId}`;
+      }
+    }
+    return { run: run.id, company: run.companyId, agent: run.agentId,
+      session: run.nativeSessionId, provider: run.runnerProfileJson?.sessionCheckpoint?.providerSessionId, workspace };
+  });
+  const passed = parent.length >= 2 && ["company", "agent", "session", "provider", "workspace"].every((key) =>
+    identities.every((identity) => nonempty(identity[key as "session"])) &&
     new Set(identities.map((identity) => identity[key as "session"])).size === 1,
   );
   return { id: "native-session-continuity", passed, evidence: ["finished"],

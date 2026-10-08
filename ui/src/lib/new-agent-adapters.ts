@@ -10,7 +10,6 @@ export function isNewAgentAdapterAllowed(
   type: string,
   {
     cloud,
-    nativeRunnerEnabled,
     openAiDotEnabled = false,
     runnerProvider,
   }: { cloud: boolean; nativeRunnerEnabled: boolean; openAiDotEnabled?: boolean; runnerProvider?: string },
@@ -18,7 +17,7 @@ export function isNewAgentAdapterAllowed(
   if (type === "openai_dot" || (type === "paperclip_runner" && runnerProvider === "openai_dot")) {
     return !cloud && openAiDotEnabled;
   }
-  if (type === "paperclip_runner") return nativeRunnerEnabled;
+  if (type === "paperclip_runner") return false;
   if (cloud) return CLOUD_ADAPTERS.has(type);
   return true;
 }

@@ -1,3 +1,5 @@
+import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { agentHarnessType, type AgentRunnerChoice } from "@paperclipai/shared";
 import fs from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -66,6 +68,7 @@ export interface BuiltInAgentState {
 }
 
 export interface BuiltInAgentProvisionInput {
+  runner?: AgentRunnerChoice;
   adapterType?: string;
   adapterConfig?: Record<string, unknown>;
   budgetMonthlyCents?: number;
@@ -689,8 +692,8 @@ function selectPreferredAdapterType(
   return selected?.adapterType ?? fallback;
 }
 
-function assertAdapterAllowed(definition: BuiltInAgentDefinition, adapterType: string) {
-  if (definition.allowedAdapterTypes && !definition.allowedAdapterTypes.includes(adapterType)) {
+function assertAdapterAllowed(definition: BuiltInAgentDefinition, adapterType: string, config: Record<string, unknown> = {}) {
+  if (definition.allowedAdapterTypes && !definition.allowedAdapterTypes.includes(agentHarnessType(adapterType, config))) {
     throw unprocessable(`Adapter type ${adapterType} is not allowed for built-in agent ${definition.key}`, {
       code: "built_in_agent_adapter_not_allowed",
       key: definition.key,
@@ -713,11 +716,11 @@ function hasCompleteAdapterConfig(adapterType: string, adapterConfig: unknown) {
   return nonEmptyString(adapterConfig.model);
 }
 
-export function deriveBuiltInAgentStatus(agent: Pick<Agent, "adapterType" | "adapterConfig" | "status" | "pausedAt"> | null): BuiltInAgentStatus {
+export function deriveBuiltInAgentStatus(agent: Pick<Agent, "adapterType" | "adapterConfig" | "status" | "pausedAt"> & { metadata?: Agent["metadata"] } | null): BuiltInAgentStatus {
   if (!agent) return "not_provisioned";
   if (agent.status === "pending_approval") return "pending_approval";
   if (agent.status === "paused" || agent.pausedAt) return "paused";
-  return hasCompleteAdapterConfig(agent.adapterType, agent.adapterConfig) ? "ready" : "needs_setup";
+  return agent.metadata?.paperclipBuiltInSetupRequired !== true && hasCompleteAdapterConfig(agent.adapterType, agent.adapterConfig) ? "ready" : "needs_setup";
 }
 
 function builtInMetadata(definition: BuiltInAgentDefinition, existing?: Record<string, unknown> | null) {
@@ -729,8 +732,9 @@ function builtInMetadata(definition: BuiltInAgentDefinition, existing?: Record<s
 
 function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput = {}) {
   const adapterType = input.adapterType ?? defaultAdapterType(definition);
-  assertAdapterAllowed(definition, adapterType);
+  assertAdapterAllowed(definition, adapterType, input.adapterConfig);
   return {
+    runner: input.runner,
     name: definition.displayName,
     role: definition.defaultRole,
     title: definition.defaultTitle ?? null,
@@ -752,7 +756,7 @@ async function assertKnownBuiltInAgentModel(
   const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
   if (!model || !hasCompleteAdapterConfig(adapterType, adapterConfig)) return;
 
-  const models = await listAdapterModels(adapterType);
+  const models = await listAdapterModels(agentHarnessType(adapterType, adapterConfig));
   if (models.length === 0 || models.some((candidate) => candidate.id === model)) return;
 
   throw unprocessable(`Model "${model}" is not available for adapter ${adapterType}.`, {
@@ -775,7 +779,7 @@ function builtInAgentNotConfiguredError(state: BuiltInAgentState) {
 }
 
 function hasProvisionSetupInput(input: BuiltInAgentProvisionInput) {
-  return input.adapterType !== undefined || input.adapterConfig !== undefined || input.budgetMonthlyCents !== undefined;
+  return input.adapterType !== undefined || input.adapterConfig !== undefined || input.runner !== undefined || input.budgetMonthlyCents !== undefined;
 }
 
 function rowIsBuiltInAgent(row: typeof agents.$inferSelect, key: string) {
@@ -883,13 +887,13 @@ export function builtInAgentService(db: Db) {
       .from(agents)
       .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
     const candidate = rows.find((row) =>
-      definition.allowedAdapterTypes?.includes(row.adapterType)
+      definition.allowedAdapterTypes?.includes(agentHarnessType(row.adapterType, row.adapterConfig))
       && hasCompleteAdapterConfig(row.adapterType, row.adapterConfig)
     );
     if (!candidate) return input;
     return {
       ...input,
-      adapterType: candidate.adapterType,
+      adapterType: agentHarnessType(candidate.adapterType, candidate.adapterConfig),
       adapterConfig: {},
     };
   }
@@ -1735,7 +1739,7 @@ export function builtInAgentService(db: Db) {
       && !existingPendingApproval
       && input.adapterType === undefined
       && input.adapterConfig === undefined
-      && hasCompleteAdapterConfig(existing.adapterType, existing.adapterConfig),
+      && input.runner === undefined,
     );
     const resolvedInput = existingPendingApproval || preserveExistingAdapter
       ? input
@@ -1749,12 +1753,17 @@ export function builtInAgentService(db: Db) {
       };
       if (
         !existingPendingApproval
-        && (resolvedInput.adapterType !== undefined || resolvedInput.adapterConfig !== undefined)
+        && (resolvedInput.adapterType !== undefined || resolvedInput.adapterConfig !== undefined || resolvedInput.runner !== undefined)
       ) {
         const adapterType = resolvedInput.adapterType ?? existing.adapterType;
-        assertAdapterAllowed(definition, adapterType);
-        patch.adapterType = adapterType;
-        patch.adapterConfig = resolvedInput.adapterConfig ?? existing.adapterConfig;
+        assertAdapterAllowed(definition, adapterType, resolvedInput.adapterConfig ?? existing.adapterConfig);
+        Object.assign(patch, resolvedInput.runner === undefined && existing.metadata?.paperclipBuiltInSetupRequired !== true && hasCompleteAdapterConfig(existing.adapterType, existing.adapterConfig)
+          ? { adapterType, adapterConfig: resolvedInput.adapterConfig ?? existing.adapterConfig }
+          : await resolveNewAgentRunnerForCompany(db, companyId, { defaultEnvironmentId: existing.defaultEnvironmentId, adapterType, adapterConfig: resolvedInput.adapterConfig ?? existing.adapterConfig, runner: resolvedInput.runner }));
+      }
+      if (!existingPendingApproval && (input.adapterType !== undefined || input.adapterConfig !== undefined || input.runner !== undefined)
+        && hasCompleteAdapterConfig(patch.adapterType ?? existing.adapterType, patch.adapterConfig ?? existing.adapterConfig)) {
+        patch.metadata = { ...patch.metadata, paperclipBuiltInSetupRequired: false };
       }
       if (!existingPendingApproval && resolvedInput.budgetMonthlyCents !== undefined) {
         patch.budgetMonthlyCents = resolvedInput.budgetMonthlyCents;
@@ -1793,7 +1802,7 @@ export function builtInAgentService(db: Db) {
           : null,
         pausedAt: definition.defaultStatus === "paused" ? new Date() : null,
         reportsTo,
-        metadata: builtInMetadata(definition),
+        metadata: { ...builtInMetadata(definition), paperclipBuiltInSetupRequired: !hasCompleteAdapterConfig(definitionPatch(definition, resolvedInput).adapterType, definitionPatch(definition, resolvedInput).adapterConfig) },
         runtimeConfig: definition.defaultRuntimeConfig ?? {},
         permissions: definition.defaultPermissions ?? {},
         spentMonthlyCents: 0,
@@ -1858,7 +1867,7 @@ export function builtInAgentService(db: Db) {
         };
       }
 
-      const providesAdapterSetup = input.adapterType !== undefined || input.adapterConfig !== undefined;
+      const providesAdapterSetup = input.adapterType !== undefined || input.adapterConfig !== undefined || input.runner !== undefined;
 
       // A built-in row that has never completed adapter setup (incomplete
       // config, i.e. `needs_setup`) is still first-time configuration, not a
@@ -1868,7 +1877,7 @@ export function builtInAgentService(db: Db) {
       // adapterConfig is still empty. Completing that setup applies directly, as
       // it does when board approval is not required, instead of dead-ending on a
       // fresh board-approval requirement the operator can never satisfy.
-      if (providesAdapterSetup && !hasCompleteAdapterConfig(existing.adapterType, existing.adapterConfig)) {
+      if (providesAdapterSetup && (existing.metadata?.paperclipBuiltInSetupRequired === true || !hasCompleteAdapterConfig(existing.adapterType, existing.adapterConfig))) {
         return { state: await ensure(companyId, key, input), approval: null };
       }
 
@@ -1894,7 +1903,7 @@ export function builtInAgentService(db: Db) {
         ...definitionPatch(definition, input),
         status: "pending_approval",
         reportsTo,
-        metadata: builtInMetadata(definition),
+        metadata: { ...builtInMetadata(definition), paperclipBuiltInSetupRequired: !hasCompleteAdapterConfig(definitionPatch(definition, input).adapterType, definitionPatch(definition, input).adapterConfig) },
         runtimeConfig: definition.defaultRuntimeConfig ?? {},
         permissions: definition.defaultPermissions ?? {},
         spentMonthlyCents: 0,

@@ -252,21 +252,27 @@ export interface RunnerE2EBillingSummary {
     runCount: number;
     runsWithTokenUsage: number;
     runsWithReportedCost: number;
+    /** Ready accounting receipts priced by a recorded rate card, not forecasts. */
+    runsWithEstimatedCost?: number;
     inputTokens: number;
     outputTokens: number;
     cachedInputTokens: number;
     totalTokens: number;
     reportedCostUsd: number;
-    costStatus: Exclude<RunnerE2ECostStatus, "estimated" | "not_metered">;
+    estimatedCostUsd?: number;
+    estimateProvenance?: Array<{ source: "rate_card"; version: string }>;
+    costStatus: Exclude<RunnerE2ECostStatus, "not_metered">;
   };
   runtime: RunnerE2ERuntimeUsage;
   /** Provider-reported model spend only; never includes unknown/unpriced runs. */
   reportedCostUsd: number;
+  /** Recorded ready model receipts priced by a versioned rate card. */
+  estimatedLlmCostUsd?: number;
   /** Public-list-price estimate for metered execution infrastructure. */
   estimatedRuntimeCostUsd: number;
   /** Separately recorded post-processing judge usage; absent when not judged. */
   judge?: { inputTokens: number | null; outputTokens: number | null; estimatedCostUsd: number | null; reservedCostUsd: number };
-  /** Reported model subtotal plus runtime and judge list-price estimates. */
+  /** Reported model subtotal plus recorded model, runtime and judge estimates. */
   observedAndEstimatedCostUsd: number | null;
   complete: boolean;
 }
@@ -373,6 +379,7 @@ export interface RunnerE2EAggregateBillingSummary {
   leaseDurationMs: number;
   llm: RunnerE2EBillingSummary["llm"];
   reportedLlmCostUsd: number;
+  estimatedLlmCostUsd?: number;
   estimatedRuntimeCostUsd: number;
   observedAndEstimatedCostUsd: number | null;
   testsWithCompleteBilling: number;

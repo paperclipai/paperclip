@@ -31,8 +31,17 @@ vi.mock("@/adapters/metadata", () => ({
 
 // Stub the shared pickers so the test can drive them without the full form.
 vi.mock("@/components/AgentConfigForm", () => ({
-  AdapterTypeDropdown: ({ value }: { value: string }) => (
-    <div data-testid="adapter-dropdown" data-value={value} />
+  AdapterTypeDropdown: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
+    <select
+      data-testid="adapter-dropdown"
+      data-value={value}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      <option value="codex_local">Codex</option>
+      <option value="claude_local">Claude</option>
+      <option value="process">Process</option>
+    </select>
   ),
   ModelDropdown: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
     <input
@@ -70,6 +79,41 @@ function makeState(overrides: Partial<BuiltInAgentState> = {}): BuiltInAgentStat
     pauseReason: null,
     ...overrides,
   };
+}
+
+function makeConfiguredState(adapterType: "codex_local" | "paperclip_runner"): BuiltInAgentState {
+  return makeState({
+    status: "ready",
+    agentId: "a1",
+    agent: {
+      id: "a1",
+      companyId: "c1",
+      name: "Briefs Agent",
+      urlKey: "briefs-agent",
+      role: "general",
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType,
+      adapterConfig: {
+        model: "gpt-5.4",
+        cwd: "/qa/workspace",
+        ...(adapterType === "paperclip_runner" ? { provider: "codex", lifecycleMode: "per_turn" } : {}),
+      },
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date("2026-10-07T00:00:00Z"),
+      updatedAt: new Date("2026-10-07T00:00:00Z"),
+    },
+  });
 }
 
 async function flushReact() {
@@ -154,6 +198,7 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
     await flushReact();
 
     expect(provisionMock).toHaveBeenCalledWith("c1", "briefs", {
+      runner: "auto",
       adapterType: "codex_local",
       adapterConfig: { model: "gpt-5" },
     });
@@ -184,10 +229,106 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
     await flushReact();
 
     expect(provisionMock).toHaveBeenCalledWith("c1", "briefs", {
+      runner: "auto",
       adapterType: "claude_local",
       adapterConfig: { model: "claude-haiku-4-5" },
     });
   });
+
+  it.each(["codex_local", "paperclip_runner"] as const)(
+    "preserves an existing %s runner and config on a budget edit",
+    async (adapterType) => {
+      const state = makeConfiguredState(adapterType);
+      provisionMock.mockResolvedValue(state);
+      await renderModal(state);
+
+      const budgetInput = document.body.querySelector('input[type="number"]') as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+      flushSync(() => {
+        setter.call(budgetInput, "20");
+        budgetInput.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await flushReact();
+      flushSync(() => {
+        findButton("Configure")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(provisionMock).toHaveBeenCalledWith("c1", "briefs", {
+        adapterType,
+        runner: adapterType === "paperclip_runner" ? "paperclip" : "legacy",
+        adapterConfig: state.agent!.adapterConfig,
+        budgetMonthlyCents: 2000,
+      });
+    },
+  );
+
+  it.each(["codex_local", "paperclip_runner"] as const)(
+    "resolves the runner automatically when an existing %s agent changes to Process",
+    async (adapterType) => {
+      const state = makeConfiguredState(adapterType);
+      state.definition.allowedAdapterTypes = ["codex_local", "claude_local", "process"];
+      provisionMock.mockResolvedValue({ ...state, status: "needs_setup" });
+      await renderModal(state);
+
+      const picker = document.body.querySelector('[data-testid="adapter-dropdown"]') as HTMLSelectElement;
+      flushSync(() => {
+        picker.value = "process";
+        picker.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(document.body.querySelector('[aria-label="Runner"]')).toBeNull();
+      expect(document.body.querySelector('[data-testid="model-input"]')).toBeNull();
+      expect(findButton("Provision")!.disabled).toBe(false);
+      flushSync(() => {
+        findButton("Provision")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(provisionMock).toHaveBeenCalledWith("c1", "briefs", {
+        adapterType: "process",
+        runner: "auto",
+        adapterConfig: {},
+      });
+    },
+  );
+
+  it.each(["codex_local", "paperclip_runner"] as const)(
+    "resolves the runner automatically and clears old config when an existing %s agent changes to Claude",
+    async (adapterType) => {
+      const state = makeConfiguredState(adapterType);
+      provisionMock.mockResolvedValue(state);
+      await renderModal(state);
+
+      const picker = document.body.querySelector('[data-testid="adapter-dropdown"]') as HTMLSelectElement;
+      flushSync(() => {
+        picker.value = "claude_local";
+        picker.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await flushReact();
+
+      const modelInput = document.body.querySelector('[data-testid="model-input"]') as HTMLInputElement;
+      expect(modelInput.value).toBe("");
+      expect(findButton("Configure")!.disabled).toBe(true);
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+      flushSync(() => {
+        setter.call(modelInput, "claude-haiku-4-5");
+        modelInput.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await flushReact();
+      flushSync(() => {
+        findButton("Configure")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(provisionMock).toHaveBeenCalledWith("c1", "briefs", {
+        adapterType: "claude_local",
+        runner: "auto",
+        adapterConfig: { model: "claude-haiku-4-5" },
+      });
+    },
+  );
 
   it("shows a visible error and blocks provisioning for an unknown model", async () => {
     adapterModelsMock.mockResolvedValue([
@@ -241,6 +382,7 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
 
     expect(provisionMock).toHaveBeenCalled();
     expect(provisionMock).toHaveBeenCalledWith("c1", "briefs", {
+      runner: "auto",
       adapterType: "codex_local",
       adapterConfig: { model: "gpt-5" },
       budgetMonthlyCents: 5000,
@@ -268,6 +410,7 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
     await flushReact();
 
     expect(provisionMock).toHaveBeenCalledWith("c1", "briefs", {
+      runner: "auto",
       adapterType: "process",
       adapterConfig: {},
     });

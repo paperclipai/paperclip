@@ -161,3 +161,5 @@ export type {
   SandboxCallbackBridgeWorkerHandle,
   StartedSandboxCallbackBridgeServer,
 } from "./sandbox-callback-bridge.js";
+
+export * from "./agent-runner-config.js";

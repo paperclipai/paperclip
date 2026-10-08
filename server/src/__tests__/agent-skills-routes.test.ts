@@ -50,6 +50,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
 }));
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(),
   getExperimental: vi.fn(),
 }));
 
@@ -279,6 +280,7 @@ describe("agent skill routes", () => {
       agent: makeAgent("claude_local"),
     });
     mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: { env: {} } });
+    mockInstanceSettingsService.get.mockResolvedValue({});
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBetaSkills: false });
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
@@ -987,6 +989,7 @@ describe("agent skill routes", () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
       .send({
+        runner: "legacy",
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
@@ -1005,7 +1008,7 @@ describe("agent skill routes", () => {
           }),
         }),
       }),
-      { createdByUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, createdByUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
     );
     expect(mockTrackAgentCreated).toHaveBeenCalledWith(
       expect.anything(),
@@ -1020,6 +1023,7 @@ describe("agent skill routes", () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
       .send({
+        runner: "legacy",
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
@@ -1039,6 +1043,7 @@ describe("agent skill routes", () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
       .send({
+        runner: "legacy",
         name: "Security Engineer",
         role: "security",
         adapterType: "claude_local",
@@ -1055,7 +1060,7 @@ describe("agent skill routes", () => {
       expect.objectContaining({
         role: "security",
       }),
-      { createdByUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, createdByUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
     );
     expect(mockTrackAgentCreated).toHaveBeenCalledWith(
       expect.anything(),
@@ -1070,6 +1075,7 @@ describe("agent skill routes", () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
       .send({
+        runner: "legacy",
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
@@ -1106,6 +1112,7 @@ describe("agent skill routes", () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
       .send({
+        runner: "legacy",
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
@@ -1132,6 +1139,7 @@ describe("agent skill routes", () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post(`/api/companies/company-1/${route}`)
       .send({
+        runner: adapterType === "paperclip_runner" ? "paperclip" : "legacy",
         name: "CEO",
         role: "ceo",
         adapterType,
@@ -1162,6 +1170,7 @@ describe("agent skill routes", () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post(`/api/companies/company-1/${route}`)
       .send({
+        runner: adapterType === "paperclip_runner" ? "paperclip" : "legacy",
         name: "Research Lead",
         role: "ceo",
         adapterType,
@@ -1188,6 +1197,7 @@ describe("agent skill routes", () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
       .send({
+        runner: "legacy",
         name: "Engineer",
         role: "engineer",
         adapterType: "claude_local",
@@ -1215,6 +1225,7 @@ describe("agent skill routes", () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .post("/api/companies/company-1/agents")
       .send({
+        runner: "legacy",
         name: "Ada",
         role: "general",
         adapterType: "claude_local",
@@ -1255,6 +1266,7 @@ describe("agent skill routes", () => {
     const res = await request(await createApp(createDb(route === "agent-hires")))
       .post(`/api/companies/company-1/${route}`)
       .send({
+        runner: adapterType === "paperclip_runner" ? "paperclip" : "legacy",
         name: "Chiff", role: "general", adapterType,
         onboardingFirstAgent: true,
         desiredSkills: [{ key: skill, versionId }],
@@ -1272,7 +1284,8 @@ describe("agent skill routes", () => {
   it.each(["agents", "agent-hires"])("leaves ordinary general agents' defaults unchanged via %s", async (route) => {
     const res = await request(await createApp())
       .post(`/api/companies/company-1/${route}`)
-      .send({ name: "Biff", role: "general", adapterType: "codex_local" });
+      .send({
+        runner: "legacy", name: "Biff", role: "general", adapterType: "codex_local" });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync).toBeUndefined();
   });
@@ -1280,7 +1293,8 @@ describe("agent skill routes", () => {
   it.each(["agents", "agent-hires"])("does not assign first-task to ordinary CEOs via %s", async (route) => {
     const res = await request(await createApp())
       .post(`/api/companies/company-1/${route}`)
-      .send({ name: "CEO", role: "ceo", adapterType: "codex_local" });
+      .send({
+        runner: "legacy", name: "CEO", role: "ceo", adapterType: "codex_local" });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     const desiredSkills = mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync.desiredSkills;
     expect(desiredSkills).toContain("paperclipai/paperclip/paperclip");
@@ -1293,7 +1307,8 @@ describe("agent skill routes", () => {
       type: "agent", agentId: "11111111-1111-4111-8111-111111111111", companyId: "company-1",
     }))
       .post("/api/companies/company-1/agent-hires")
-      .send({ name: "Biff", role: "general", adapterType: "claude_local", onboardingFirstAgent: true });
+      .send({
+        runner: "legacy", name: "Biff", role: "general", adapterType: "claude_local", onboardingFirstAgent: true });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync).toBeUndefined();
     await vi.waitFor(() => expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalled());
@@ -1327,6 +1342,7 @@ describe("agent skill routes", () => {
     const res = await request(await createApp(db))
       .post("/api/companies/company-1/agent-hires")
       .send({
+        runner: "legacy",
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
@@ -1352,6 +1368,7 @@ describe("agent skill routes", () => {
     const res = await request(await createApp(createDb(true)))
       .post("/api/companies/company-1/agent-hires")
       .send({
+        runner: "legacy",
         name: "First Lead",
         role: "ceo",
         adapterType: "claude_local",
@@ -1387,6 +1404,7 @@ describe("agent skill routes", () => {
     const res = await request(await createApp(createDb(true)))
       .post("/api/companies/company-1/agent-hires")
       .send({
+        runner: "paperclip",
         name: "Native Lead",
         role: "ceo",
         adapterType: "paperclip_runner",
@@ -1409,6 +1427,7 @@ describe("agent skill routes", () => {
     const res = await request(await createApp(createDb(true)))
       .post("/api/companies/company-1/agent-hires")
       .send({
+        runner: "legacy",
         name: "First Lead",
         role: "ceo",
         adapterType: "claude_local",
@@ -1430,6 +1449,7 @@ describe("agent skill routes", () => {
     const res = await request(await createApp(createDb(true)))
       .post("/api/companies/company-1/agent-hires")
       .send({
+        runner: "legacy",
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
@@ -1447,6 +1467,7 @@ describe("agent skill routes", () => {
     const res = await request(await createApp(createDb(true)))
       .post("/api/companies/company-1/agent-hires")
       .send({
+        runner: "legacy",
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
@@ -1470,6 +1491,7 @@ describe("agent skill routes", () => {
     const res = await request(await createApp(db))
       .post("/api/companies/company-1/agent-hires")
       .send({
+        runner: "legacy",
         name: "Security Engineer",
         role: "engineer",
         icon: "crown",
@@ -1491,6 +1513,7 @@ describe("agent skill routes", () => {
         }),
       }),
       {
+        runnerResolved: true,
         createdByUserId: "local-board",
         claudeLogin: {
           storedSessionId: null,
@@ -1523,6 +1546,7 @@ describe("agent skill routes", () => {
     const res = await request(await createApp(createDb(true)))
       .post("/api/companies/company-1/agent-hires")
       .send({
+        runner: "legacy",
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",
@@ -1559,6 +1583,7 @@ describe("agent skill routes", () => {
     const res = await request(await createApp(createDb(true)))
       .post("/api/companies/company-1/agent-hires")
       .send({
+        runner: "legacy",
         name: "QA Agent",
         role: "engineer",
         adapterType: "claude_local",

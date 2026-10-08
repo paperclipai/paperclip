@@ -129,10 +129,25 @@ export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
 export const parsePaperclipQuestionResponse =
   runner.parsePaperclipQuestionResponse;
 export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
+export const probeQualifiedAcpxEnvironment = runner.probeQualifiedAcpxEnvironment;
+// Keep the source-mode shim typed while a serving checkout's previous dist
+// declarations remain intact. The server build replaces this shim entirely.
+type NativeRunnerProbe = (options: {
+  runtimeDirectory: string; provider: "codex" | "opencode"; model: string | null;
+  reasoningEffort?: string; environment: NodeJS.ProcessEnv; timeoutMs?: number; workingDirectory?: string;
+  transportOptions?: import("@paperclipai/paperclip-runner").RunnerdCodexTransportOptions;
+  onCodexCredentialRefresh?: (filename: string) => Promise<void>;
+  onCleanupConfirmed?: () => Promise<void>;
+}) => Promise<{ provider: "codex" | "opencode"; providerDriver: string; effectiveModel: string; helloProbePassed: true }>;
+export const probeNativeRunnerEnvironment: NativeRunnerProbe = (runner as RunnerModule & { probeNativeRunnerEnvironment: NativeRunnerProbe }).probeNativeRunnerEnvironment;
 export const QUALIFIED_ACPX_PROFILES = runner.QUALIFIED_ACPX_PROFILES;
 export const QUALIFIED_ACPX_VERSION = runner.QUALIFIED_ACPX_VERSION;
 export const CURSOR_DISTRIBUTION_PINS = runner.CURSOR_DISTRIBUTION_PINS;
 export const resolveSourceCodexHome = runner.resolveSourceCodexHome;
+export const resolvePinnedCodexCommand = runner.resolvePinnedCodexCommand;
+export const resolvePinnedClaudeCommand = runner.resolvePinnedClaudeCommand;
+export const resolvePinnedOpenCodeCommand = runner.resolvePinnedOpenCodeCommand;
+export const QUALIFIED_OPENCODE_VERSION = runner.QUALIFIED_OPENCODE_VERSION;
 export const validatePrpEvent = runner.validatePrpEvent;
 export const validatePrpStructuredRunResult =
   runner.validatePrpStructuredRunResult;

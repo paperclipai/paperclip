@@ -100,7 +100,7 @@ function campaignRow(campaign: RunnerE2EHistoryCampaign) {
     </td>
     <td data-label="Cost">
       <strong>${html(usd(billing.observedAndEstimatedCostUsd))}</strong>
-      <small>${html(usd(billing.reportedLlmCostUsd))} LLM · ${html(usd(billing.estimatedRuntimeCostUsd))} runtime</small>
+      <small>${html(usd(billing.reportedLlmCostUsd))} reported LLM${(billing.llm.runsWithEstimatedCost ?? 0) > 0 ? ` · ${html(usd(billing.estimatedLlmCostUsd ?? 0))} LLM rate-card estimate` : ""} · ${html(usd(billing.estimatedRuntimeCostUsd))} runtime estimate</small>
     </td>
     <td data-label="Time">
       <strong>${html(duration(billing.agentRunDurationMs))}</strong>

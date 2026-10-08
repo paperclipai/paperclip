@@ -889,15 +889,16 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         }
         if (
           activeResolution.kind !== "native"
-          || freshMode !== "rejected"
-          || freshReason !== "paperclip_runner_rollout_disabled"
+          || freshMode !== "native"
+          || freshReason !== "eligible_opt_in"
+          || options.disableLiveEntrypoint === "rollout"
           || runtimeConfig.nativeRunner.mode !== "native"
         ) {
-          throw new Error(`${fixture.id}: global kill-switch transition missing`);
+          throw new Error(`${fixture.id}: deprecated rollout compatibility transition missing`);
         }
         semanticConsumer = "native-migration-status";
         consumerDecision = pushDecisionConsumer(semanticConsumer, activeResolution.authorityDecision);
-        operationalEffects.add("fresh_flag_off_run_rejected");
+        operationalEffects.add("fresh_flag_off_run_native");
         consumerExecutions.push({
           consumer: "heartbeat-runtime-selection",
           observed: {
@@ -1756,8 +1757,8 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       } else if (consumer === "heartbeat-runtime-selection") {
         if (
           execution.observed.activeMode !== "native"
-          || execution.observed.freshMode !== "rejected"
-          || execution.observed.freshReason !== "paperclip_runner_rollout_disabled"
+          || execution.observed.freshMode !== "native"
+          || execution.observed.freshReason !== "eligible_opt_in"
           || execution.observed.profileMode !== "native"
         ) continue;
       }
@@ -1950,7 +1951,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     }).effects.map((effect) => effect.kind)).toContain("finish_as_native");
     await expect(executeFixture(byId("migration-kill-switch-rollback"), {
       disableLiveEntrypoint: "rollout",
-    })).rejects.toThrow("global kill-switch transition missing");
+    })).rejects.toThrow("deprecated rollout compatibility transition missing");
 
     const pendingFixture = byId("crash-after-decision-commit");
     const seeded = await seedFixture(pendingFixture);

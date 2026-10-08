@@ -275,19 +275,61 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     await runGitHubCurl(["--fail", "--silent", "--show-error", "--location", "--output", archivePath, `https://codeload.github.com/${repo}/tar.gz/${sha}`], runCommand, { maxBuffer: 4 * 1024 * 1024 });
     await runCommand("tar", ["-xzf", archivePath, "--strip-components=1", "-C", checkoutPath], { maxBuffer: 4 * 1024 * 1024 });
     await runCommand("corepack", ["enable", "pnpm", "--install-directory", pnpmShimDir], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 4 * 1024 * 1024 });
+    // Exact source commits can precede the lockfile bot. Resolve only inside this
+    // downloaded checkout, without lifecycle scripts, before its frozen install.
+    await runCommand("corepack", ["pnpm", "install", "--resolution-only", "--ignore-scripts", "--no-frozen-lockfile"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    // Bundled package staging bypasses the server's prepack hook. Produce its
+    // declared UI files from this same checkout before staging that package.
+    await runCommand("corepack", ["pnpm", "--dir", "server", "prepare:ui-dist"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    // Match release.sh's runtime-skill preparation. These packages declare
+    // skills separately from their build output; bundled staging bypasses it.
+    for (const packageDir of ["server", "packages/adapters/claude-local", "packages/adapters/codex-local"]) {
+      const destination = path.join(checkoutPath, packageDir, "skills");
+      fs.rmSync(destination, { recursive: true, force: true });
+      fs.cpSync(path.join(checkoutPath, "skills"), destination, { recursive: true });
+    }
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
+    const workspaceVersions = new Map(workspacePackages.map((entry) => {
+      const packageJson = JSON.parse(fs.readFileSync(path.join(checkoutPath, entry.dir, "package.json"), "utf8")) as { version?: unknown };
+      if (typeof packageJson.version !== "string" || !EXACT_VERSION_PATTERN.test(packageJson.version)) {
+        throw new Error(`Git install cannot stage ${entry.name}: its package version must be an exact version.`);
+      }
+      return [entry.name, packageJson.version] as const;
+    }));
     for (const [index, workspacePackage] of workspacePackages.entries()) {
       const packageDir = path.join(checkoutPath, workspacePackage.dir);
-      const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { bundleDependencies?: string[]; bundledDependencies?: string[] };
+      const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as {
+        bundleDependencies?: string[]; bundledDependencies?: string[];
+        dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; peerDependencies?: Record<string, string>;
+      };
       const bundledDependencies = packageJson.bundleDependencies ?? packageJson.bundledDependencies ?? [];
       if (bundledDependencies.length > 0) {
         const stagedPackage = path.join(stagingRoot, `workspace-package-${index}`);
         await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), packageDir, stagedPackage], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
-        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
+        // Release packaging gives workspace packages one version. A Git checkout
+        // can retain independent versions, so bind each staged workspace reference
+        // to that dependency's actual package rather than the owning package.
+        const stagedManifestPath = path.join(stagedPackage, "package.json");
+        const stagedManifest = JSON.parse(fs.readFileSync(stagedManifestPath, "utf8")) as typeof packageJson;
+        for (const section of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
+          for (const [name, specifier] of Object.entries(packageJson[section] ?? {})) {
+            if (!specifier.startsWith("workspace:")) continue;
+            const version = workspaceVersions.get(name);
+            if (!version) throw new Error(`Git install cannot stage workspace dependency ${name}: its package version is missing.`);
+            const range = specifier.slice("workspace:".length);
+            const prefix = range === "^" || range === "~" ? range : "";
+            stagedManifest[section] = { ...stagedManifest[section], [name]: `${prefix}${version}` };
+          }
+        }
+        fs.writeFileSync(stagedManifestPath, `${JSON.stringify(stagedManifest, null, 2)}\n`);
+        // The stage contains compiled runtime files, not the source workspace.
+        // Match release packaging: source-only prepack/postpack hooks must not
+        // rebuild it or remove its prepared assets. Consumer install hooks stay enabled.
+        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot, "--ignore-scripts"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
       } else {
         await runCommand("corepack", ["pnpm", "--dir", workspacePackage.dir, "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv({ PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }), maxBuffer: 32 * 1024 * 1024 });
       }

@@ -110,19 +110,19 @@ describe("TeamCatalog routes", () => {
     });
   });
 
-  it("fails closed for Paperclip Runner until adapter availability is loaded and enabled", () => {
+  it("offers harnesses and preserves explicit native packages", () => {
     expect(listTeamInstallAdapterTypes(new Set(), false)).not.toContain("paperclip_runner");
     expect(listTeamInstallAdapterTypes(new Set(), false)).not.toContain("process");
     expect(listTeamInstallAdapterTypes(new Set(), false)).not.toContain("http");
     expect(listTeamInstallAdapterTypes(new Set(["paperclip_runner"]), true))
       .not.toContain("paperclip_runner");
-    expect(listTeamInstallAdapterTypes(new Set(), true)).toContain("paperclip_runner");
+    expect(listTeamInstallAdapterTypes(new Set(), true)).not.toContain("paperclip_runner");
     expect(resolveTeamInstallAdapterType("paperclip_runner", ["claude_local", "codex_local"]))
-      .toBe("claude_local");
+      .toBe("paperclip_runner");
     expect(resolveTeamInstallAdapterType("paperclip_runner", ["codex_local"]))
-      .toBe("codex_local");
+      .toBe("paperclip_runner");
     expect(resolveTeamInstallAdapterType("paperclip_runner", []))
-      .toBeNull();
+      .toBe("paperclip_runner");
   });
 });
 

@@ -1,6 +1,8 @@
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { evalProviderTransportOptions } from "../../cli/eval-provider-runtime.js";
+import { resolvePinnedCodexCommand } from "./codex-command.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -12,6 +14,70 @@ import {
 } from "./codex-security-config.js";
 
 describe("Codex security configuration", () => {
+  it("uses the same actual pinned executable for native defaults and direct evals without a global Codex PATH", () => {
+    const command = resolvePinnedCodexCommand();
+    expect(evalProviderTransportOptions("codex").codexCommand).toBe(command);
+    expect(execFileSync(command, ["--version"], { env: { PATH: dirname(process.execPath) },
+      encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe("codex-cli 0.160.0");
+  });
+
+  it("resolves an isolated public server dependency graph and rejects missing, mismatched or escaped commands", () => {
+    // Vitest adds its dependency directories to global module lookup paths.
+    // Use the existing Node/tsx boundary so an absent fixture dependency cannot
+    // be supplied by the test runner's installed bridge instead.
+    const source = `
+      import assert from "node:assert/strict";
+      import { execFileSync } from "node:child_process";
+      import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+      import { tmpdir } from "node:os";
+      import { dirname, join } from "node:path";
+      import { resolvePinnedCodexCommand } from ${JSON.stringify(new URL("./codex-command.ts", import.meta.url).href)};
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "paperclip-pinned-codex-test-")));
+      const issuer = join(root, "node_modules/@paperclipai/server/dist/vendor/paperclip-runner/drivers/codex/codex-command.js");
+      const adapter = join(root, "node_modules/@paperclipai/adapter-codex-local");
+      const bridge = join(adapter, "node_modules/@agentclientprotocol/codex-acp");
+      const codex = join(bridge, "node_modules/@openai/codex");
+      const executable = join(codex, "bin/codex.js");
+      const metadata = { name: "@openai/codex", version: "0.160.0", bin: { codex: "bin/codex.js" } };
+      try {
+        mkdirSync(dirname(issuer), { recursive: true });
+        mkdirSync(join(codex, "bin"), { recursive: true });
+        writeFileSync(join(adapter, "package.json"), JSON.stringify({ name: "@paperclipai/adapter-codex-local", exports: { "./server": "./server.js" } }));
+        writeFileSync(join(adapter, "server.js"), "");
+        writeFileSync(join(bridge, "package.json"), JSON.stringify({ name: "@agentclientprotocol/codex-acp", version: "1.6.2" }));
+        writeFileSync(join(codex, "package.json"), JSON.stringify(metadata));
+        writeFileSync(executable, "#!" + process.execPath + "\\nif (process.argv.slice(2).join(' ') !== '--version') process.exit(9); console.log('codex-cli 0.160.0');\\n", { mode: 0o755 });
+        assert.equal(resolvePinnedCodexCommand(issuer), executable);
+        assert.equal(execFileSync(resolvePinnedCodexCommand(issuer), ["--version"], { env: { PATH: "/missing-codex-command" },
+          encoding: "utf8", timeout: 5_000 }).trim(), "codex-cli 0.160.0");
+
+        for (const bin of ["../../escaped-codex", "/usr/bin/codex", {}, ""]) {
+          writeFileSync(join(codex, "package.json"), JSON.stringify({ ...metadata, bin }));
+          assert.throws(() => resolvePinnedCodexCommand(issuer), /contained executable|escapes its package/);
+        }
+        writeFileSync(join(codex, "package.json"), JSON.stringify({ ...metadata, version: "0.159.0" }));
+        assert.throws(() => resolvePinnedCodexCommand(issuer), /version mismatch.*0\\.160\\.0/);
+        writeFileSync(join(codex, "package.json"), JSON.stringify(metadata));
+        chmodSync(executable, 0o600);
+        assert.throws(() => resolvePinnedCodexCommand(issuer), /runtime unavailable/);
+        rmSync(executable);
+        writeFileSync(join(root, "external-codex"), "external executable", { mode: 0o755 });
+        symlinkSync(join(root, "external-codex"), executable);
+        assert.throws(() => resolvePinnedCodexCommand(issuer), /escapes its package/);
+        rmSync(executable);
+        assert.throws(() => resolvePinnedCodexCommand(issuer), /runtime unavailable/);
+        rmSync(codex, { recursive: true });
+        assert.throws(() => resolvePinnedCodexCommand(issuer), /runtime unavailable.*Legacy runner/);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+      process.stdout.write("PINNED_CODEX_ISOLATION_VERIFIED");
+    `;
+    expect(execFileSync(process.execPath, [
+      "--no-global-search-paths", "--import", createRequire(import.meta.url).resolve("tsx"),
+      "--input-type=module", "--eval", source,
+    ], { env: { ...process.env, NODE_PATH: "", NODE_OPTIONS: "" }, encoding: "utf8", timeout: 10_000,
+      maxBuffer: 32 * 1024 })).toBe("PINNED_CODEX_ISOLATION_VERIFIED");
+  });
+
   it("allows only the registered private instruction directory while keeping shared context read-only", () => {
     const args = createIsolatedCodexAppServerArgs({ HOME: "/host/home" }, ["/runtime/immutable-context"], "/runtime/instruction-edits/run-1").join("\n");
     expect(args).toContain('"/runtime/instruction-edits/run-1"="write"');

@@ -166,7 +166,38 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
   const deadlineTimer = setTimeout(() => { stopped = "cell_deadline_reached"; stopBrowserActions(); }, execution.task.attemptTimeoutMs?.[execution.environment.id] ?? 30 * 60_000);
   try {
     assertActive();
-    const identity = await verifyConnectionTarget(origin, config);
+    // Cloud's edge requires a real tenant session even for health. Authenticate
+    // with this owned QA profile before inspecting the exact Core revision;
+    // provider credentials remain unread until that identity check passes.
+    let identity: Awaited<ReturnType<typeof verifyConnectionTarget>>;
+    if (config.target.mode === "attach" && config.target.deploymentMode === "authenticated") {
+      browser = await openConnectionBrowser(config, repositoryRoot, origin);
+      assertActive();
+      try { identity = await verifyConnectionTarget(origin, config, browser.context.request); }
+      catch (error) {
+        if (!(error instanceof ConnectionBlock) || error.code !== "board_login_required") throw error;
+        if (!config.browser.headed) throw error;
+        const loginPage = browser.context.pages()[0] ?? await browser.context.newPage();
+        await loginPage.goto(origin, { waitUntil: "domcontentloaded" });
+        evidence.assisted = true;
+        evidence.waits.push({ kind: "board_login", startedAt: new Date().toISOString() });
+        await checkpoint("awaiting_board_login");
+        console.log(`[provider-connections] Sign in to Paperclip at ${origin} in the QA browser; this test resumes automatically.`);
+        const deadline = Date.now() + config.browser.loginTimeoutMs;
+        let ready: typeof identity | undefined;
+        while (Date.now() < deadline) {
+          assertActive();
+          try { ready = await verifyConnectionTarget(origin, config, browser.context.request); break; }
+          catch (next) {
+            if (!(next instanceof ConnectionBlock) || next.code !== "board_login_required") throw next;
+            await connectionDelay(1000);
+          }
+        }
+        if (!ready) throw new ConnectionBlock("awaiting_user", "board_login_deadline_reached");
+        identity = ready;
+        evidence.waits.at(-1)!.finishedAt = new Date().toISOString();
+      }
+    } else identity = await verifyConnectionTarget(origin, config);
     Object.assign(evidence.target, identity);
     evidence.checkpoints.target = true;
     assertActive();
@@ -178,7 +209,7 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
     const secret = await resolveConnectionSecret(config, settings.credentialEnv);
     if (secret) secrets.push(secret);
     assertActive();
-    browser = await openConnectionBrowser(config, repositoryRoot, origin);
+    browser ??= await openConnectionBrowser(config, repositoryRoot, origin);
     assertActive();
     const page = browser.context.pages()[0] ?? await browser.context.newPage();
     const api = new ConnectionApi(browser.context.request, origin);
@@ -258,13 +289,6 @@ async function connectionAttempt(execution: MatrixExecution, config: ConnectionC
       const selectedId = config.target.mode === "attach" ? config.target.environmentId : undefined;
       const environment = selectedId ? environments.find(env => env.id === selectedId) : environments.find(env => env.status === "active" && (execution.environment.id === "local" ? env.driver === "local" : env.driver === "sandbox" && env.config?.provider === "daytona"));
       if (!environment || (execution.environment.id === "local" ? environment.driver !== "local" : environment.config?.provider !== "daytona")) throw new ConnectionBlock("blocked_target", "configured_execution_environment_required");
-      if (execution.profile.generation === "native") {
-        const experimental = await api.get("/api/instance/settings/experimental");
-        if (!experimental.enableNativeRunner) {
-          if (config.target.mode === "attach") throw new ConnectionBlock("blocked_target", "native_runner_disabled_on_target");
-          await api.patch("/api/instance/settings/experimental", { enableNativeRunner: true });
-        }
-      }
       return environment;
     } });
     fixtures = await registry.setupAll();

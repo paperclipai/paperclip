@@ -82,10 +82,13 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   },
   paperclip_runner: {
     label: "Paperclip Runner",
-    description: "Experimental Rust runner with a Codex provider",
+    description: "Paperclip execution runtime",
+    hideFromVisualSelection: true,
     icon: Cpu,
-    experimental: true,
+
   },
+  claude_managed: { label: "Claude Managed", description: "Managed Claude profile", icon: Sparkles },
+  aws_agentcore: { label: "AWS AgentCore", description: "Managed AgentCore profile", icon: Cpu },
   gemini_local: {
     label: "Gemini CLI",
     description: "Gemini CLI harness",

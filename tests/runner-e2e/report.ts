@@ -283,7 +283,7 @@ async function main() {
     failureClass: entry.errors.length > 0
       ? entry.evidence?.leaks?.length ? "secret_leak" as const : "permanent_infrastructure" as const
       : entry.result.failureClass,
-    billing: summarizeExecutionBilling(entry.result),
+    billing: entry.result.usage ? summarizeExecutionBilling(entry.result) : entry.result.billing ?? summarizeExecutionBilling(entry.result),
   }));
   const generatedAt = new Date().toISOString();
   const campaign = buildRunnerCampaign({
@@ -358,12 +358,13 @@ async function main() {
     `Tokens: ${billingCoverageLabel(`${billing.llm.inputTokens} input / ${billing.llm.outputTokens} output / ${billing.llm.cachedInputTokens} cached`, billing.llm.runsWithTokenUsage, billing.llm.runCount)}`,
     "",
     `Provider-reported LLM cost: ${billingCoverageLabel(`$${billing.reportedLlmCostUsd.toFixed(6)}`, billing.llm.runsWithReportedCost, billing.llm.runCount)}`,
+    ...((billing.llm.runsWithEstimatedCost ?? 0) > 0 ? ["", `Recorded LLM rate-card estimate: ${billingCoverageLabel(`$${(billing.estimatedLlmCostUsd ?? 0).toFixed(6)}`, billing.llm.runsWithEstimatedCost ?? 0, billing.llm.runCount)}; ${(billing.llm.estimateProvenance ?? []).map(source => `${source.source}: ${source.version}`).join(", ")}`] : []),
     "",
     `Estimated Daytona list-price runtime cost: $${billing.estimatedRuntimeCostUsd.toFixed(6)}`,
     ...(billing.judge ? [`Estimated judge cost: ${billing.judge.estimatedCostUsd === null ? "unknown" : `$${billing.judge.estimatedCostUsd.toFixed(6)}`}; ${billing.judge.attempts} attempts; ${billing.judge.attemptsWithUnknownUsage} with unknown usage; $${billing.judge.reservedCostUsd.toFixed(6)} reserved`] : []),
     "",
-    "| Cell | Attempt | Result | Runtime | Duration | Tokens (in/out) | LLM reported | Runtime estimate | Detail |",
-    "|---|---:|---|---|---:|---:|---:|---:|---|",
+    "| Cell | Attempt | Result | Runtime | Duration | Tokens (in/out) | LLM reported | LLM rate-card estimate | Runtime estimate | Detail |",
+    "|---|---:|---|---|---:|---:|---:|---:|---:|---|",
     ...selected.map((entry, index) => {
       const detail = [entry.result.error, ...entry.errors].filter(Boolean).join("; ").replaceAll("|", "\\|") || "ok";
       const resolved = resolvedResults[index]!;
@@ -372,7 +373,7 @@ async function main() {
       const cell = publicCampaignUrl
         ? `[${resolved.executionId}](${publicCampaignUrl}#execution-${encodeURIComponent(resolved.executionId)})`
         : resolved.executionId;
-      return `| ${cell} | ${resolved.attempt} | ${entry.valid ? "pass" : "fail"} | ${resolved.runtimeMode} | ${Math.round(resolved.durationMs / 1000)}s | ${billingCoverageLabel(`${cellBilling.llm.inputTokens}/${cellBilling.llm.outputTokens}`, cellBilling.llm.runsWithTokenUsage, cellBilling.llm.runCount)} | ${billingCoverageLabel(`$${cellBilling.reportedCostUsd.toFixed(6)}`, cellBilling.llm.runsWithReportedCost, cellBilling.llm.runCount)} | ${runtimeCost === undefined ? cellBilling.runtime.costStatus : `$${runtimeCost.toFixed(6)} est.`} | ${detail} |`;
+      return `| ${cell} | ${resolved.attempt} | ${entry.valid ? "pass" : "fail"} | ${resolved.runtimeMode} | ${Math.round(resolved.durationMs / 1000)}s | ${billingCoverageLabel(`${cellBilling.llm.inputTokens}/${cellBilling.llm.outputTokens}`, cellBilling.llm.runsWithTokenUsage, cellBilling.llm.runCount)} | ${billingCoverageLabel(`$${cellBilling.reportedCostUsd.toFixed(6)}`, cellBilling.llm.runsWithReportedCost, cellBilling.llm.runCount)} | ${billingCoverageLabel(`$${(cellBilling.estimatedLlmCostUsd ?? 0).toFixed(6)} est.`, cellBilling.llm.runsWithEstimatedCost ?? 0, cellBilling.llm.runCount)} | ${runtimeCost === undefined ? cellBilling.runtime.costStatus : `$${runtimeCost.toFixed(6)} est.`} | ${detail} |`;
     }),
     "",
   ];

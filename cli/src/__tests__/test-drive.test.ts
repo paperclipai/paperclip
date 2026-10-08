@@ -193,12 +193,14 @@ describe("test-drive bootstrap validation", () => {
       ["claude", "claude_local", "ANTHROPIC_API_KEY"],
       ["codex", "codex_local", "OPENAI_API_KEY"],
       ["opencode", "opencode_local", "OPENROUTER_API_KEY"],
+      ["grok", "grok_local", "XAI_API_KEY"],
+      ["cursor", "cursor", "CURSOR_API_KEY"],
     ];
     for (const [harness, adapterType, credentialTarget] of cases) {
       const resolved = resolveTestDriveBootstrap(
         {
           harness,
-          ...(harness === "opencode" ? { model: "openrouter/anthropic/claude-sonnet-4.5" } : {}),
+          ...(harness === "opencode" ? { model: "openrouter/anthropic/claude-sonnet-4.5" } : harness === "cursor" ? { model: "gpt-5.6-luna" } : {}),
         },
         { [credentialTarget]: "provider-secret" },
       );
@@ -282,6 +284,8 @@ describe("test-drive API bootstrap", () => {
   it.each([
     ["claude", "claude_local", "ANTHROPIC_API_KEY", undefined],
     ["codex", "codex_local", "OPENAI_API_KEY", undefined],
+    ["grok", "grok_local", "XAI_API_KEY", "grok-4.7"],
+    ["cursor", "cursor", "CURSOR_API_KEY", "gpt-5.6-luna"],
     ["opencode", "opencode_local", "OPENROUTER_API_KEY", "openrouter/anthropic/claude-sonnet-4.5"],
   ] as const)("creates exactly one company and one CEO for %s", async (
     harness,

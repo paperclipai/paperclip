@@ -21,13 +21,12 @@ function managedConfig(features: ManagedInstanceConfig["features"] = {}): Manage
 }
 
 describe("applyCloudCatalogDefaults", () => {
-  it("pins the catalog so this rule has something to guard", () => {
-    // The rule exists for flags that default on for self-hosted and off for
-    // Cloud. If that set ever empties, the helper is dead code and should go.
+  it("excludes the graduated runner from Cloud opt-in flags", () => {
+    // Runner execution is available on self-hosted and Cloud instances.
     const guarded = Object.entries(INSTANCE_FEATURE_CATALOG)
       .filter(([, entry]) => entry.selfHostedDefault === true && entry.cloudDefault === false)
       .map(([key]) => key);
-    expect(guarded).toContain("enableNativeRunner");
+    expect(guarded).not.toContain("enableNativeRunner");
   });
 
   it("leaves self-hosted instances on the schema default", () => {
@@ -35,13 +34,13 @@ describe("applyCloudCatalogDefaults", () => {
     expect(experimental.enableNativeRunner).toBe(true);
   });
 
-  it("re-asserts the Cloud default when the tenant row and the overlay omit the flag", () => {
+  it("keeps the graduated runner enabled when Cloud omits the flag", () => {
     const experimental = applyCloudCatalogDefaults(
       normalizeExperimentalSettings({}),
       {},
       managedConfig(),
     );
-    expect(experimental.enableNativeRunner).toBe(false);
+    expect(experimental.enableNativeRunner).toBe(true);
     // Flags with matching defaults are untouched.
     expect(experimental.enableStreamlinedUi).toBe(true);
   });
@@ -56,8 +55,8 @@ describe("applyCloudCatalogDefaults", () => {
     expect(experimental.enableNativeRunner).toBe(true);
   });
 
-  it("lets a managed feature value win through the overlay", () => {
-    const config = managedConfig({ enableNativeRunner: true });
+  it("ignores the retired managed runner opt-out", () => {
+    const config = managedConfig({ enableNativeRunner: false });
     const { experimental } = applyManagedExperimentalOverlay(
       applyCloudCatalogDefaults(normalizeExperimentalSettings({}), {}, config),
       config,
@@ -96,20 +95,20 @@ describe("stripCloudCatalogDefaultEchoes", () => {
     ).experimental;
   }
 
-  it("does not persist the self-hosted default on Cloud during an unrelated write", () => {
+  it("preserves the graduated default on Cloud during an unrelated write", () => {
     const config = managedConfig();
     const stored = persisted({}, { enablePipelines: true }, config);
     expect(stored.enablePipelines).toBe(true);
-    expect("enableNativeRunner" in stored).toBe(false);
-    // The Cloud default still applies on the next read.
-    expect(readBack(stored, config).enableNativeRunner).toBe(false);
+    expect(stored.enableNativeRunner).toBe(true);
+    // Deprecated writes cannot disable execution.
+    expect(readBack(stored, config).enableNativeRunner).toBe(true);
   });
 
-  it("treats a full-GET echo of the Cloud default as no choice", () => {
+  it("ignores a retired opt-out in a full settings write", () => {
     const config = managedConfig();
     const stored = persisted({}, { enableNativeRunner: false, enablePipelines: true }, config);
-    expect("enableNativeRunner" in stored).toBe(false);
-    expect(readBack(stored, config).enableNativeRunner).toBe(false);
+    expect(stored.enableNativeRunner).toBe(true);
+    expect(readBack(stored, config).enableNativeRunner).toBe(true);
   });
 
   it("persists an explicit Cloud opt-in", () => {

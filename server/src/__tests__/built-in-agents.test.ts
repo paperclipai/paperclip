@@ -257,14 +257,14 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(configured.status).toBe("ready");
     expect(configured.agentId).toBe(created.agentId);
     expect(configured.agent).toMatchObject({
-      adapterType: "codex_local",
+      adapterType: "paperclip_runner",
       adapterConfig: { model: "gpt-5.4" },
     });
 
     const reconciled = await svc.ensure(companyId, "briefs");
     expect(reconciled.status).toBe("ready");
     expect(reconciled.agent).toMatchObject({
-      adapterType: "codex_local",
+      adapterType: "paperclip_runner",
       adapterConfig: { model: "gpt-5.4" },
     });
 
@@ -383,7 +383,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     await expect(builtIns.get(companyId, "briefs")).resolves.toMatchObject({
       status: "ready",
       agentId: ready.agentId,
-      agent: { adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } },
+      agent: { adapterType: "paperclip_runner", adapterConfig: { model: "gpt-5.4" } },
     });
   });
 
@@ -410,7 +410,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       agentId: seeded.agentId,
       agent: {
         status: "idle",
-        adapterType: "codex_local",
+        adapterType: "paperclip_runner",
         adapterConfig: { model: "gpt-5.4" },
         budgetMonthlyCents: 2500,
       },
@@ -577,7 +577,7 @@ describeEmbeddedPostgres("built-in agents", () => {
         role: "general",
         title: null,
         capabilities: "Prepares concise operational briefs for the board and agent company.",
-        adapterType: "codex_local",
+        adapterType: "paperclip_runner",
         adapterConfig: { model: "gpt-5.4" },
       },
     });
@@ -624,7 +624,7 @@ describeEmbeddedPostgres("built-in agents", () => {
         role: "general",
         title: "Reflection Coach",
         icon: "eye",
-        adapterType: "codex_local",
+        adapterType: "paperclip_runner",
         permissions: {
           canCreateAgents: false,
           canCreateSkills: false,
@@ -1240,7 +1240,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       title: "Reflection Coach",
       icon: "eye",
       reportsTo: root.id,
-      adapterType: "codex_local",
+      adapterType: "paperclip_runner",
       budgetMonthlyCents: 0,
     });
     expect(state.status).toBe("paused");
@@ -1316,7 +1316,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       icon: "sparkles",
       role: "general",
       reportsTo: root.id,
-      adapterType: "claude_local",
+      adapterType: "paperclip_runner",
       adapterConfig: { model: "claude-haiku-4-5" },
       budgetMonthlyCents: 0,
     });

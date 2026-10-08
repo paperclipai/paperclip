@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,7 +40,8 @@ const mockAgentsApi = vi.hoisted(() => ({
   testEnvironment: vi.fn(),
   getClaudeOAuthTokenStatus: vi.fn(),
 }));
-const mockCompaniesApi = vi.hoisted(() => ({ create: vi.fn() }));
+const mockCompaniesApi = vi.hoisted(() => ({ create: vi.fn(), list: vi.fn(), detachInflightList: vi.fn() }));
+const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
 // The hire path resolves the Test environment before it probes: it reads the
 // environment list, the instance settings, and the experimental settings. The
 // test stubs these so the resolution settles on the local default, the same as
@@ -71,6 +72,10 @@ const companyState = vi.hoisted(() => ({
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
 vi.mock("@/api/adapters", () => ({ adaptersApi: mockAdaptersApi }));
 vi.mock("../api/companies", () => ({ companiesApi: mockCompaniesApi }));
+vi.mock("../api/auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/auth")>();
+  return { ...actual, authApi: { ...actual.authApi, getSession: mockAuthApi.getSession } };
+});
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/approvals", () => ({ approvalsApi: { create: vi.fn() } }));
 vi.mock("../api/issues", () => ({ issuesApi: { create: vi.fn() } }));
@@ -96,7 +101,7 @@ vi.mock("../context/CompanyContext", () => ({
 vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
 vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
-const { OnboardingWizard } = await import("./OnboardingWizard");
+const { OnboardingWizard, ONBOARDING_STORAGE_KEY } = await import("./OnboardingWizard");
 
 /** The agent step renders this input; the org-name step ("other") does not. */
 function currentStep(): "agent" | "closed" | "other" {
@@ -134,14 +139,15 @@ describe("OnboardingWizard — which step it lands on", () => {
   let queryClient: QueryClient;
   let root: Root | null = null;
 
-  async function render() {
+  async function render(strict = false) {
     root = createRoot(container);
     await act(async () => {
-      root!.render(
+      const wizard = (
         <QueryClientProvider client={queryClient}>
           <OnboardingWizard />
-        </QueryClientProvider>,
+        </QueryClientProvider>
       );
+      root!.render(strict ? <StrictMode>{wizard}</StrictMode> : wizard);
     });
   }
 
@@ -179,6 +185,11 @@ describe("OnboardingWizard — which step it lands on", () => {
     dialogState.onboardingOptions = {};
     dialogState.onboardingRouteDismissed = false;
     mockAdaptersApi.list.mockResolvedValue([]);
+    mockCompaniesApi.list.mockResolvedValue(companyState.companies);
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "qa-session", userId: "qa-user" },
+      user: { id: "qa-user", name: "QA", email: "qa@example.test", image: null },
+    });
     mockGoalsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     // The hire step lists the company's agents first so it can adopt one that
@@ -204,6 +215,77 @@ describe("OnboardingWizard — which step it lands on", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableManagedSandboxOnly: false,
     });
+  });
+
+  function saveModelSourceDraft() {
+    localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({
+      step: 4, companyName: "Acme", agentName: "QA Lead",
+      createdCompanyId: "company-1", adapterType: "codex_local", runnerChoice: "auto",
+    }));
+  }
+
+  it.each([
+    ["bare", "/onboarding", false],
+    ["company", "/PC1/onboarding", false],
+    ["managed", "/onboarding", true],
+  ] as const)("resumes the %s route's model-source draft after a reload", async (_label, pathname, managed) => {
+    saveModelSourceDraft();
+    routerState.pathname = pathname;
+    if (managed) {
+      queryClient.setQueryData(queryKeys.health, { cloud: { workspaceId: "qa-workspace" } });
+      // A managed instance has its one pre-provisioned company.
+      companyState.companies = companyState.companies.slice(0, 1);
+      mockCompaniesApi.list.mockResolvedValue(companyState.companies);
+    }
+    try {
+      await render(true);
+      await settle();
+      expect(document.body.querySelector('[role="radiogroup"][aria-label="Model source"]')).not.toBeNull();
+      expect(document.body.querySelector('[role="radio"][aria-checked="true"]')).toBeNull();
+      expect(JSON.parse(localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({
+        step: 4, companyName: "Acme", agentName: "QA Lead", createdCompanyId: "company-1",
+        adapterType: "codex_local", runnerChoice: "auto",
+      });
+      expect(mockCompaniesApi.create).not.toHaveBeenCalled();
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+    } finally {
+      if (managed) companyState.companies = [
+        { id: "company-1", name: "Acme", issuePrefix: "PC1" },
+        { id: "company-2", name: "Globex", issuePrefix: "PC2" },
+      ];
+    }
+  });
+
+  it("honors explicit dialog options over a saved route draft", async () => {
+    saveModelSourceDraft();
+    routerState.pathname = "/onboarding";
+    dialogState.onboardingOpen = true;
+    dialogState.onboardingOptions = { companyId: "company-1", initialStep: ONBOARDING_AGENT_STEP };
+    await render();
+    await settle();
+    expect(currentStep()).toBe("agent");
+    expect(JSON.parse(localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ step: 3, createdCompanyId: "company-1" });
+  });
+
+  it("leaves a resumed draft when navigation requests a different company and then a fresh company", async () => {
+    saveModelSourceDraft();
+    routerState.pathname = "/PC1/onboarding";
+    await render();
+    await settle();
+    expect(document.body.querySelector('[role="radiogroup"][aria-label="Model source"]')).not.toBeNull();
+
+    routerState.pathname = "/PC2/onboarding";
+    await rerender();
+    await settle();
+    expect(currentStep()).toBe("agent");
+    expect(JSON.parse(localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ step: 3, createdCompanyId: "company-2" });
+
+    routerState.pathname = "/onboarding";
+    await rerender();
+    await settle();
+    expect(document.body.textContent).toContain("What is the name of your organization?");
+    expect(JSON.parse(localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ step: 1, createdCompanyId: null });
   });
 
   afterEach(async () => {
