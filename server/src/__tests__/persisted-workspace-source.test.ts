@@ -9,6 +9,7 @@ import { resolvePersistedGitWorkspaceSource } from "../services/persisted-worksp
 const exec = promisify(execFile);
 const roots: string[] = [];
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -221,6 +222,25 @@ describe("persisted Git workspace source", () => {
       candidateBaseCwds: [path.join(scoped, "new-clone")], materializeOriginalRepository,
     })).rejects.toMatchObject({ resultJson: { workspaceValidation: { reasonCode: "source_repository_unavailable" } } });
     expect(materializeOriginalRepository).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("keeps bounded Git inspection evidence before restoring a retained source (missing=%s)", async missing => {
+    const { root, original, worktree, input } = await fixture();
+    if (missing) await exec("git", ["-C", original, "worktree", "remove", "--force", worktree]);
+    const realGit = (await exec("/bin/sh", ["-c", "command -v git"])).stdout.trim();
+    const bin = path.join(root, "bin");
+    await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), `#!${process.execPath}\nconst args=process.argv.slice(2);\nif(args[0]==="worktree"&&args[1]==="list"){process.stderr.write("private-provider-output /private/path");process.exitCode=128;}else{const r=require("node:child_process").spawnSync(${JSON.stringify(realGit)},args,{stdio:"inherit"});process.exitCode=r.status??1;}\n`, { mode: 0o755 });
+    vi.stubEnv("PATH", `${bin}${path.delimiter}${process.env.PATH ?? ""}`);
+    const materializeOriginalRepository = vi.fn();
+    const failure = await resolvePersistedGitWorkspaceSource({ ...input, materializeOriginalRepository }).catch(error => error);
+    expect(failure).toMatchObject({ code: "workspace_validation_failed", resultJson: { workspaceValidation: {
+      reason: "git_worktree_not_reusable", reasonCode: "git_inspection_failed",
+      inspectionDiagnostic: { command: "worktree_list", failure: "nonzero_exit", exitCode: 128 },
+    } } });
+    expect(JSON.stringify(failure.resultJson)).not.toContain("private");
+    expect(materializeOriginalRepository).not.toHaveBeenCalled();
+    if (!missing) expect(await fs.readFile(path.join(worktree, "retained.txt"), "utf8")).toBe("keep this work\n");
   });
 
   it("rebuilds a missing worktree only from the retained source, not a new primary", async () => {

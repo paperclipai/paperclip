@@ -591,7 +591,9 @@ uses the same two fields with the fixed reason codes `source_scope_mismatch`,
 `source_repository_unavailable`. These distinguish an unverified original source
 from a missing Git registration. Paths, repository URLs, and workspace IDs stay
 out of the diagnostic fields. The task remains blocked until its original source
-is available or the owner intentionally selects a different workspace.
+is available or the owner intentionally selects a different workspace. A failed
+Git registration probe retains `git_inspection_failed` and the same bounded
+inspection fields, including when it occurs during original-source selection.
 
 When available, the saved `workspaceRestoreDiagnostic` adds the bounded fields
 `workspaceRestorePhase`, `workspaceRestoreStep`, `workspaceRestoreErrorCode`,

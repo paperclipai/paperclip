@@ -4,7 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { inspectManagedGitWorktreeBranch, WorkspaceRuntimeValidationFailure } from "./workspace-runtime.js";
-import type { PersistedWorkspaceSourceReasonCode } from "./workspace-validation-diagnostics.js";
+import type { ManagedGitInspectionDiagnostic, PersistedWorkspaceSourceReasonCode } from "./workspace-validation-diagnostics.js";
 
 const exec = promisify(execFile);
 type SourceWorkspace = Pick<ExecutionWorkspace,
@@ -16,6 +16,14 @@ function fail(workspace: SourceWorkspace, reasonCode: PersistedWorkspaceSourceRe
     "The selected execution workspace's original repository could not be verified. "
       + "Restore its original project source. Before intentionally clearing the task's existing-workspace binding to choose another repository, review and preserve its retained work.",
     { workspaceValidation: { reason: "persisted_workspace_source_conflict", reasonCode, executionWorkspaceId: workspace.id } },
+  );
+}
+
+function failInspection(workspace: SourceWorkspace, diagnostic: ManagedGitInspectionDiagnostic): never {
+  throw new WorkspaceRuntimeValidationFailure(
+    "The original repository's complete Git worktree registration could not be inspected. Inspect the source before retrying; its workspace binding was preserved.",
+    { workspaceValidation: { reason: "git_worktree_not_reusable", reasonCode: "git_inspection_failed",
+      executionWorkspaceId: workspace.id, inspectionDiagnostic: diagnostic } },
   );
 }
 
@@ -149,9 +157,11 @@ export async function resolvePersistedGitWorkspaceSource(input: {
     const dotGit = await fs.lstat(path.join(existing, ".git")).catch(() => null);
     if (!dotGit?.isFile()) fail(workspace, "source_registration_unproven");
     let repositoryMismatch = false;
+    let failedInspection: ManagedGitInspectionDiagnostic | null = null;
     for (const owner of knownRoots) {
       if (owner === existing) continue;
       const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: existing, repoRoot: owner, expectedBranchName: null });
+      if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
       if (!inspection.valid || !await hasLinkedWorktreeStorage(existing, owner)) continue;
       if (workspace.repoUrl && await readOrigin(owner) !== workspace.repoUrl.trim()) {
         repositoryMismatch = true;
@@ -159,6 +169,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
       }
       return owner;
     }
+    if (failedInspection) failInspection(workspace, failedInspection);
     fail(workspace, repositoryMismatch ? "source_repository_mismatch" : "source_registration_unproven");
   }
 
@@ -168,11 +179,14 @@ export async function resolvePersistedGitWorkspaceSource(input: {
 
   // Reconstruct only from a source authorized by the old binding. A new project
   // primary is never a fallback for a missing historical worktree.
+  let failedInspection: ManagedGitInspectionDiagnostic | null = null;
   for (const candidate of knownRoots) {
     if (workspace.repoUrl && await readOrigin(candidate) !== workspace.repoUrl.trim()) continue;
     const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: candidate, repoRoot: candidate, expectedBranchName: null });
     if (inspection.valid) return candidate;
+    if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
   }
+  if (failedInspection) failInspection(workspace, failedInspection);
   if (workspace.repoUrl && input.materializeOriginalRepository) {
     if (input.candidateBaseCwds.length === 0 || !(await Promise.all(input.candidateBaseCwds.map(
       candidate => canMaterializeManagedCandidate(input.managedSourceRoot, candidate),
