@@ -2440,6 +2440,57 @@ describe("effective run session config freshness", () => {
     });
   });
 
+  it("does not reset for project row timestamps but still resets for project policy", async () => {
+    const base = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        projectConfigRevisionAt: "2026-06-01T00:00:00.000Z",
+        projectPolicy: null,
+      },
+    });
+    const projectTouched = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        projectConfigRevisionAt: "2026-06-01T00:05:00.000Z",
+        projectPolicy: null,
+      },
+    });
+    const policyChanged = await buildSessionConfigMetadata({
+      workspaceConfig: {
+        requestedMode: "agent_default",
+        effectiveMode: "agent_default",
+        projectConfigRevisionAt: "2026-06-01T00:05:00.000Z",
+        projectPolicy: { enabled: true, defaultMode: "isolated_workspace" },
+      },
+    });
+
+    expect(
+      resolveTaskSessionConfigFreshness({
+        hasTaskSession: true,
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(base),
+        configMetadata: projectTouched,
+      }),
+    ).toMatchObject({
+      reset: false,
+      changedCategories: [],
+      reasons: [],
+    });
+    expect(
+      resolveTaskSessionConfigFreshness({
+        hasTaskSession: true,
+        configuredModel: "gpt-5.4-mini",
+        taskSessionParams: sessionParamsWithConfigMetadata(base),
+        configMetadata: policyChanged,
+      }),
+    ).toMatchObject({
+      reset: true,
+      changedCategories: ["workspaceConfig"],
+    });
+  });
+
   it("does not reset when a reusable execution workspace becomes realized", async () => {
     const base = await buildSessionConfigMetadata({
       workspaceConfig: {

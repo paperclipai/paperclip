@@ -6690,6 +6690,10 @@ function buildSessionConfigCategoryValues(input: {
   // the timestamp here makes every comment invalidate an otherwise reusable
   // task session.
   delete workspaceConfig.issueConfigRevisionAt;
+  // projects.updatedAt advances for the same kind of non-configuration row
+  // writes (e.g. budget pause/resume). Real project workspace configuration
+  // still reaches this category through projectPolicy.
+  delete workspaceConfig.projectConfigRevisionAt;
   // This row is runtime state, not requested configuration. It is absent
   // before the first reusable run is realized and present on the next turn;
   // fingerprinting that transition would rotate the native session exactly
