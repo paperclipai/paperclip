@@ -2572,8 +2572,77 @@ async function materializeManagedProjectWorkspace(
       if (!snapshot) throw new Error("Configured repository folder is not a Git checkout");
       let baseline;
       try {
-        baseline = await captureDirectorySnapshot(cloneTmpDir, { exclude: [".git", ".paperclip-runtime", PROJECT_REPOSITORIES_DIR], ignoredPaths: snapshot.ignoredPaths, diskBacked: true });
+        baseline = await captureDirectorySnapshot(cloneTmpDir, {
+          exclude: [".git", ".paperclip", ".paperclip-runtime", ".worktrees", PROJECT_REPOSITORIES_DIR],
+          ignoredPaths: snapshot.ignoredPaths,
+          diskBacked: true,
+        });
         await mergeDirectoryWithBaseline({ baseline, sourceDir: input.localSource, targetDir: cloneTmpDir });
+        // Runtime roots are excluded from the directory overlay so nested Paperclip
+        // workspaces cannot recursively copy themselves. They are still legal Git
+        // paths, though, so replay tracked edits and deletions explicitly.
+        const replayOperationalPatch = async (kind: "staged" | "unstaged") => {
+          const patchPath = path.join(cloneTmpDir, ".git", `paperclip-operational-${kind}.patch`);
+          try {
+            await execFile(
+              "git",
+              [
+                "-C", input.localSource!, "diff", "--binary", "--full-index",
+                ...(kind === "staged" ? ["--cached", "HEAD"] : []),
+                `--output=${patchPath}`, "--", ".paperclip", ".worktrees",
+              ],
+              { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS },
+            );
+            if ((await fs.stat(patchPath)).size === 0) return;
+            await execFile(
+              "git",
+              [
+                "-C", cloneTmpDir, "apply", "--binary",
+                ...(kind === "staged" ? ["--index"] : []),
+                "--whitespace=nowarn", patchPath,
+              ],
+              { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS },
+            );
+          } finally {
+            await fs.rm(patchPath, { force: true });
+          }
+        };
+        await replayOperationalPatch("staged");
+        await replayOperationalPatch("unstaged");
+        const unstagedPaths = await execFile(
+          "git",
+          ["-C", input.localSource, "diff", "--name-only", "-z", "--", ".paperclip", ".worktrees"],
+          { timeout: 10_000, maxBuffer: 64 * 1024 * 1024 },
+        );
+        for (const relative of unstagedPaths.stdout.split("\0").filter(Boolean)) {
+          const indexEntry = await execFile(
+            "git",
+            ["-C", input.localSource, "ls-files", "-s", "--", relative],
+            { timeout: 10_000, maxBuffer: 16 * 1024 },
+          );
+          if (!indexEntry.stdout.startsWith("160000 ")) continue;
+          const sourceSubmodule = path.join(input.localSource, relative);
+          const targetSubmodule = path.join(cloneTmpDir, relative);
+          await fs.rm(targetSubmodule, { recursive: true, force: true });
+          await fs.mkdir(path.dirname(targetSubmodule), { recursive: true });
+          await execFile(
+            "git",
+            ["clone", "--no-hardlinks", "--", sourceSubmodule, targetSubmodule],
+            { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS },
+          );
+          const sourceOrigin = await execFile(
+            "git",
+            ["-C", sourceSubmodule, "remote", "get-url", "origin"],
+            { timeout: 10_000, maxBuffer: 16 * 1024 },
+          ).then((value) => value.stdout.trim()).catch(() => null);
+          if (sourceOrigin) {
+            await execFile(
+              "git",
+              ["-C", targetSubmodule, "remote", "set-url", "origin", sourceOrigin],
+              { timeout: 10_000 },
+            );
+          }
+        }
       } finally {
         if (baseline) await disposeDirectorySnapshot(baseline);
         await disposeGitWorkspaceSnapshot(snapshot);
