@@ -3631,6 +3631,79 @@ const heartbeatRunSqlAsciiSafeColumns = {
   stderrExcerpt: sql<string | null>`NULL`.as("stderrExcerpt"),
 } as const;
 
+// jsonb text projection used by session compaction to derive a terminal-failure
+// category for the handoff summary. It decomposes result_json, so it shares the
+// SQL_ASCII hazard below and is nulled on encoding-unsafe clusters.
+const sessionCompactionTerminalFailureCategory = sql<string | null>`case
+        when jsonb_typeof(${heartbeatRuns.resultJson} -> 'terminalSessionFailure') = 'object'
+        then coalesce(left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,category}', 32), 'unknown') end`;
+
+// Run-history projection used by session compaction. It only *needs*
+// id/createdAt/usageJson to decide whether to rotate; the `error` column and
+// the jsonb `result_json` text decompositions (heartbeatRunListResultColumns +
+// terminalFailureCategory) merely feed the optional handoff summary. On legacy
+// SQL_ASCII clusters those text/jsonb projections can throw `invalid byte
+// sequence for encoding "UTF8"` when a single poisoned row is in scope, which
+// killed heartbeat setup in an infinite continuation-retry loop (COR-2671).
+// Mirror the safe-projection guard already used by heartbeat.list / getRun:
+// drop the unsafe projections and let the handoff summary fall back to null.
+const sessionCompactionRunColumns = {
+  id: heartbeatRuns.id,
+  createdAt: heartbeatRuns.createdAt,
+  usageJson: heartbeatRuns.usageJson,
+  error: heartbeatRuns.error,
+  terminalFailureCategory: sessionCompactionTerminalFailureCategory,
+  ...heartbeatRunListResultColumns,
+} as const;
+
+const sessionCompactionRunSqlAsciiSafeColumns = {
+  id: heartbeatRuns.id,
+  createdAt: heartbeatRuns.createdAt,
+  usageJson: heartbeatRuns.usageJson,
+  error: sql<string | null>`NULL`.as("error"),
+  terminalFailureCategory: sql<string | null>`NULL`.as(
+    "terminalFailureCategory",
+  ),
+  resultSummary: sql<string | null>`NULL`.as("resultSummary"),
+  resultResult: sql<string | null>`NULL`.as("resultResult"),
+  resultMessage: sql<string | null>`NULL`.as("resultMessage"),
+  resultError: sql<string | null>`NULL`.as("resultError"),
+  resultTotalCostUsd: sql<string | null>`NULL`.as("resultTotalCostUsd"),
+  resultCostUsd: sql<string | null>`NULL`.as("resultCostUsd"),
+  resultCostUsdCamel: sql<string | null>`NULL`.as("resultCostUsdCamel"),
+} as const;
+
+/**
+ * Pick the session-compaction run-history projection. When the database is an
+ * encoding-unsafe (SQL_ASCII) cluster, omit the `error` column and the
+ * `result_json` text decompositions so a poisoned row cannot throw during the
+ * heartbeat-setup query. Exported for unit testing.
+ */
+export function selectSessionCompactionRunColumns(
+  unsafeTextProjection: boolean,
+) {
+  return unsafeTextProjection
+    ? sessionCompactionRunSqlAsciiSafeColumns
+    : sessionCompactionRunColumns;
+}
+
+/**
+ * Postgres raises SQLSTATE 22021 (character_not_in_repertoire), surfaced as
+ * `invalid byte sequence for encoding "UTF8"`, when a query decodes invalid
+ * bytes stored in a legacy SQL_ASCII cluster. Used to log-and-degrade the
+ * session-compaction query instead of wedging heartbeat setup.
+ */
+export function isInvalidEncodingByteSequenceError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  if (code === "22021") return true;
+  const message = (err as { message?: unknown }).message;
+  return (
+    typeof message === "string" &&
+    message.includes("invalid byte sequence for encoding")
+  );
+}
+
 const heartbeatRunLogAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
@@ -11882,26 +11955,49 @@ export function heartbeatService(
       policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0,
       4,
     );
-    const runs = await db
-      .select({
-        id: heartbeatRuns.id,
-        createdAt: heartbeatRuns.createdAt,
-        usageJson: heartbeatRuns.usageJson,
-        error: heartbeatRuns.error,
-        terminalFailureCategory: sql<string | null>`case
-          when jsonb_typeof(${heartbeatRuns.resultJson} -> 'terminalSessionFailure') = 'object'
-          then coalesce(left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,category}', 32), 'unknown') end`,
-        ...heartbeatRunListResultColumns,
-      })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.agentId, agent.id),
-          eq(heartbeatRuns.sessionIdAfter, sessionId),
-        ),
-      )
-      .orderBy(desc(heartbeatRuns.createdAt))
-      .limit(fetchLimit);
+    const unsafeTextProjection = await hasUnsafeTextProjectionDatabase();
+    const ENCODING_DEGRADE = Symbol("session-compaction-encoding-degrade");
+    const runHistory = await (async () => {
+      try {
+        return await db
+          .select(selectSessionCompactionRunColumns(unsafeTextProjection))
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.agentId, agent.id),
+              eq(heartbeatRuns.sessionIdAfter, sessionId),
+            ),
+          )
+          .orderBy(desc(heartbeatRuns.createdAt))
+          .limit(fetchLimit);
+      } catch (err) {
+        // Self-heal: a single poisoned row (invalid bytes in a legacy
+        // SQL_ASCII cluster) must never wedge heartbeat setup. If the
+        // run-history query still fails with SQLSTATE 22021 — e.g. the
+        // encoding probe under-reported the cluster — log-and-degrade by
+        // rotating the session (with a null handoff) instead of letting the
+        // error kill the run.
+        if (!isInvalidEncodingByteSequenceError(err)) {
+          throw err;
+        }
+        logger.warn(
+          { err, agentId: agent.id, sessionId, unsafeTextProjection },
+          "session compaction run-history query hit an invalid byte sequence; rotating session to recover",
+        );
+        return ENCODING_DEGRADE;
+      }
+    })();
+
+    if (runHistory === ENCODING_DEGRADE) {
+      return {
+        rotate: true,
+        reason:
+          "session compaction query failed on legacy encoding; rotating to recover",
+        handoffMarkdown: null,
+        previousRunId: null,
+      };
+    }
+    const runs = runHistory;
 
     if (runs.length === 0) {
       return {
