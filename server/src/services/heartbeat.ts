@@ -2948,6 +2948,52 @@ async function isGitCheckout(cwd: string | null | undefined) {
     .catch(() => false);
 }
 
+async function probeGitWorktreeBase(cwd: string) {
+  try {
+    const result = await execFile("git", ["rev-parse", "--show-toplevel"], {
+      cwd,
+      env: { ...process.env, LC_ALL: "C" },
+    });
+    return { isCheckout: Boolean(readNonEmptyString(result.stdout)), notRepository: false };
+  } catch (error) {
+    const failure = error as { code?: unknown; signal?: unknown; stderr?: unknown };
+    // Git's absence result is only a candidate: damaged metadata can produce
+    // the same message. Verify its absence too. Missing Git, permission errors,
+    // corruption and I/O failures must remain reportable in Sentry.
+    const notRepository = failure.code === 128 && failure.signal == null &&
+      typeof failure.stderr === "string" &&
+      /^fatal: not a git repository \(or any of the parent directories\): \.git\r?\n?$/.test(failure.stderr) &&
+      !process.env.GIT_DIR && !process.env.GIT_WORK_TREE && !process.env.GIT_COMMON_DIR &&
+      await hasNoGitMetadataInWorkspaceAncestors(cwd);
+    return { isCheckout: false, notRepository };
+  }
+}
+
+async function hasNoGitMetadataInWorkspaceAncestors(cwd: string): Promise<boolean> {
+  try {
+    let directory = await fs.realpath(cwd);
+    if (!(await fs.stat(directory)).isDirectory()) return false;
+    for (;;) {
+      // Damaged repositories can produce the same "not a git repository"
+      // message as ordinary directories. Retain those failures in Sentry.
+      // lstat deliberately recognizes dangling .git links as metadata too.
+      for (const name of [".git", "HEAD", "objects", "refs"]) {
+        try {
+          await fs.lstat(path.join(directory, name));
+          return false;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+        }
+      }
+      const parent = path.dirname(directory);
+      if (parent === directory) return true;
+      directory = parent;
+    }
+  } catch {
+    return false;
+  }
+}
+
 function sameResolvedPath(
   left: string | null | undefined,
   right: string | null | undefined,
@@ -3005,6 +3051,8 @@ export async function assertGitWorktreeBaseWorkspaceReady(input: {
   anchor?: {
     baseCwdFallback?: boolean;
     materializationFailures?: WorkspaceMaterializationFailure[];
+    /** Selected database workspace is an explicit local path with no repository URL. */
+    localPathOnlyWorkspace?: boolean;
   } | null;
 }) {
   if (!input.issue) return;
@@ -3073,10 +3121,19 @@ export async function assertGitWorktreeBaseWorkspaceReady(input: {
     );
   }
 
-  if (!(await isGitCheckout(input.base.baseCwd))) {
+  const checkoutProbe = await probeGitWorktreeBase(input.base.baseCwd);
+  if (!checkoutProbe.isCheckout) {
+    const knownLocalPathMismatch = checkoutProbe.notRepository &&
+      input.anchor?.localPathOnlyWorkspace === true &&
+      input.anchor.baseCwdFallback === false && materializationFailures.length === 0 &&
+      input.base.source === "project_primary" && Boolean(input.base.projectId) &&
+      Boolean(input.base.workspaceId) && !readNonEmptyString(input.base.repoUrl);
     fail(
       "git_worktree_base_not_git_checkout",
       `Issue ${issueLabel} requested ${input.requestedExecutionWorkspaceMode} with git_worktree, but base workspace "${input.base.baseCwd}" is not a git checkout. ${remediation}`,
+      knownLocalPathMismatch
+        ? { configurationReason: "local_path_requires_git_checkout" }
+        : {},
     );
   }
 
@@ -3888,6 +3945,8 @@ export type ResolvedWorkspaceForRun = {
   baseCwdFallback: boolean;
   /** Failed materialization attempts behind {@link baseCwdFallback}; empty when every candidate resolved or none was attempted. */
   materializationFailures: WorkspaceMaterializationFailure[];
+  /** True only for an explicitly configured local project path without a repository URL. */
+  localPathOnlyWorkspace?: boolean;
   /**
    * Read-only referenced (mentioned) project workspaces for this run, one per authorized
    * additional project. The array is empty unless the multi-project workspace-sync flag is on
@@ -12669,6 +12728,10 @@ export function heartbeatService(
             ].filter((value): value is string => Boolean(value)),
             baseCwdFallback: false,
             materializationFailures,
+            localPathOnlyWorkspace:
+              (workspace.sourceType === "local_path" || workspace.sourceType === "non_git_path") &&
+              Boolean(readNonEmptyString(workspace.cwd)) && workspace.cwd !== REPO_ONLY_CWD_SENTINEL &&
+              !readNonEmptyString(workspace.repoUrl),
           };
         }
         if (preferredWorkspace?.id === workspace.id) {
@@ -22267,6 +22330,7 @@ export function heartbeatService(
         anchor: {
           baseCwdFallback: resolvedWorkspace.baseCwdFallback,
           materializationFailures: resolvedWorkspace.materializationFailures,
+          localPathOnlyWorkspace: resolvedWorkspace.localPathOnlyWorkspace,
         },
       });
       const workspaceStrategyForFingerprint = parseObject(

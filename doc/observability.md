@@ -440,8 +440,17 @@ This requires a failed `configuration_incomplete` run in the preparing stage,
 a setup-phase report, explicit proof that provider work did not start, and a
 nonempty list of recognized missing or inactive secret bindings. Process exit
 evidence, unknown binding reasons, secret-provider failures, ambiguous missing
-secret-definition lookups, and workspace failures remain reportable. This filter
-does not change task recovery, credentials, or execution policy.
+secret-definition lookups remain reportable. This filter does not change task
+recovery, credentials, or execution policy.
+
+A workspace policy conflict also stays local when the resolver proves that an
+explicit `local_path` or `non_git_path` project workspace has no repository URL,
+Git confirms the selected directory is not a repository, and the task requests
+a Git worktree. The run must fail during setup before provider work starts.
+Its existing validation error, blocked task and board recovery action remain.
+Git command failures, permissions, corrupt repositories, failed materialization,
+fallback paths, and generic missing or unrestorable workspaces remain reportable;
+the error text or `workspace_validation_failed` code alone never suppresses them.
 
 The `run_failure` context also includes the recorded process `exitCode` and
 `signal`, so a generic adapter error can still distinguish a nonzero exit from

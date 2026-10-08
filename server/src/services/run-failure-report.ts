@@ -84,6 +84,25 @@ function isMissingSecretConfigurationBlocker(run: HeartbeatRun, options: RunFail
   });
 }
 
+/** The workspace resolver proved an explicit local-path/worktree policy mismatch. */
+function isLocalPathWorkspaceConfigurationBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== "workspace_validation_failed" ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+
+  const validation = asRecord(run.resultJson?.workspaceValidation);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return validation?.reason === "git_worktree_base_not_git_checkout" &&
+    validation.configurationReason === "local_path_requires_git_checkout" &&
+    validation.resolvedWorkspaceSource === "project_primary" &&
+    validation.workspaceStrategyType === "git_worktree" &&
+    (validation.requestedExecutionWorkspaceMode === "isolated_workspace" ||
+      validation.requestedExecutionWorkspaceMode === "operator_branch") &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 /**
  * Report a terminal run failure to Sentry. Returns at once for any status
  * other than failures and unexpected started cancellations. Never throws — a Sentry failure or a
@@ -99,6 +118,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
   if (!isRunFailureStatus(run.status)) return Promise.resolve();
   if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
   if (isMissingSecretConfigurationBlocker(run, options)) return Promise.resolve();
+  if (isLocalPathWorkspaceConfigurationBlocker(run, options)) return Promise.resolve();
   const runStatus = run.status;
   const report = captureTerminalRunFailure(db, run, runStatus, options);
   pendingRunFailureReports.add(report);

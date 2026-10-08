@@ -212,6 +212,79 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
   });
 
+  function localPathConfigurationRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      errorCode: "workspace_validation_failed",
+      executionStage: "preparing",
+      resultJson: {
+        workspaceValidation: {
+          reason: "git_worktree_base_not_git_checkout",
+          configurationReason: "local_path_requires_git_checkout",
+          resolvedWorkspaceSource: "project_primary",
+          workspaceStrategyType: "git_worktree",
+          requestedExecutionWorkspaceMode: "isolated_workspace",
+        },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each(["isolated_workspace", "operator_branch"])("keeps proven local-path policy conflicts actionable locally: %s", async (mode) => {
+    await seedCompanyAndAgent();
+    const run = localPathConfigurationRun();
+    (run.resultJson!.workspaceValidation as Record<string, unknown>).requestedExecutionWorkspaceMode = mode;
+    const before = structuredClone(run);
+
+    await reportRunFailure(db, run, { phase: "setup" });
+
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+    expect(run).toEqual(before);
+  });
+
+  it.each([
+    { configurationReason: undefined },
+    { configurationReason: "unknown_reason" },
+    { reason: "git_worktree_base_materialization_failed" },
+    { reason: "git_worktree_not_reusable" },
+    { reason: "inherited_workspace_reuse_unavailable" },
+    { resolvedWorkspaceSource: "agent_home" },
+    { workspaceStrategyType: "project_primary" },
+    { requestedExecutionWorkspaceMode: "agent_default" },
+  ])("reports unproven and other workspace failures: %j", async (validation) => {
+    await seedCompanyAndAgent();
+    const run = localPathConfigurationRun();
+    Object.assign(run.resultJson!.workspaceValidation as object, validation);
+    await reportRunFailure(db, run, { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: "timed_out" }, { errorCode: "setup_failed" }, { executionStage: "executing" },
+    { exitCode: 1 }, { signal: "SIGTERM" }, { resultJson: {} },
+    { resultJson: { workspaceValidation: { reason: "git_worktree_base_not_git_checkout", configurationReason: "local_path_requires_git_checkout" } } },
+  ])("reports workspace failures without an exact pre-dispatch outcome: %j", async (overrides) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, localPathConfigurationRun(overrides), { phase: "setup" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, "execute"] as const)("reports local-path markers outside the setup report: %s", async (phase) => {
+    await seedCompanyAndAgent();
+    await reportRunFailure(db, localPathConfigurationRun(), { phase });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, { kind: "bootstrap" }, { kind: "bootstrap", providerWorkStarted: true }])(
+    "reports local-path markers without affirmative unstarted-provider evidence: %j", async (executionRecovery) => {
+      await seedCompanyAndAgent();
+      const run = localPathConfigurationRun();
+      run.resultJson!.executionRecovery = executionRecovery;
+      await reportRunFailure(db, run, { phase: "setup" });
+      expect(mockCaptureRunFailure).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("captures once for the status timed_out", async () => {
     await seedCompanyAndAgent();
     const run = buildRun({ status: "timed_out" });

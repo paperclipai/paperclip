@@ -5541,6 +5541,56 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(validationComment).toBeTruthy();
   });
 
+  it("keeps an explicit local-path/worktree conflict blocked with a board action and no Sentry event", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-local-workspace-policy-"));
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const heartbeat = heartbeatService(db);
+    const previousSettings = await instanceSettingsService(db).getExperimental();
+    try {
+      await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+      await db.insert(projects).values({ id: projectId, companyId, name: "Local documents", status: "in_progress" });
+      await db.insert(projectWorkspaces).values({
+        id: workspaceId, companyId, projectId, name: "Documents", sourceType: "local_path", cwd, isPrimary: true,
+      });
+      await db.update(issues).set({
+        projectId, projectWorkspaceId: workspaceId, executionWorkspaceSettings: { mode: "isolated_workspace" },
+      }).where(eq(issues.id, issueId));
+      await db.update(agents).set({ adapterConfig: { workspaceStrategy: { type: "git_worktree" } } }).where(eq(agents.id, agentId));
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      await waitForPendingRunFailureReports();
+
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run).toMatchObject({
+        status: "failed", errorCode: "workspace_validation_failed", processStartedAt: null,
+        resultJson: {
+          workspaceValidation: { reason: "git_worktree_base_not_git_checkout", configurationReason: "local_path_requires_git_checkout" },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        },
+      });
+      expect(run.error).toContain("is not a git checkout");
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue).toMatchObject({ status: "blocked", executionRunId: null, projectId, projectWorkspaceId: workspaceId });
+      const [action] = await db.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+      ));
+      expect(action).toMatchObject({ status: "active", kind: "workspace_validation", ownerType: "board" });
+      expect(action.nextAction).toContain("workspace");
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      expect(comments.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
+      expect(mockCaptureRunFailure.mock.calls.filter(([event]) => event.runId === runId)).toEqual([]);
+    } finally {
+      await heartbeat.waitForRunExecutionDrain(runId);
+      await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: previousSettings.enableIsolatedWorkspaces });
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it.each(["throw", "result"])("redacts opaque environment-bound credentials from Sentry diagnostics: %s", async (mode) => {
     const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
     const svc = secretService(db);
