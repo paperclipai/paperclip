@@ -547,6 +547,10 @@ describe("paperclip skill utils", () => {
     expect(skillBody).toContain("Verify writes — never infer them");
     expect(skillBody).toContain("An empty response body means the write FAILED");
     expect(skillBody).toContain("Never pipe a disposition write through `head`/`tail`");
+    expect(skillBody).toContain("resolved relative to this installed `SKILL.md`, not the task workspace");
+    expect(skillBody).toContain("do not search the filesystem for it");
+    expect(skillBody).toContain('bash "$paperclip_skill_dir/scripts/paperclip-issue-update.sh"');
+    expect(skillBody).not.toMatch(/^scripts\/paperclip-issue-update\.sh/m);
     // The helper's verification behavior (HTTP status parsing, retry
     // classification, attempt bound, exit codes) is exercised end-to-end in
     // paperclip-issue-update-helper.test.ts against a live local server.
