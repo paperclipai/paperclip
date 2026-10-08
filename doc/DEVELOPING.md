@@ -1240,8 +1240,8 @@ Run preparation is in `server/src/services/heartbeat/run-preparation.ts`. It own
 issue and wake context, responsible-user resolution, routine environment snapshots,
 skill mentions, adapter environment configuration, and MCP/tool access setup.
 `createHeartbeatRunPreparation(db)` binds the context loaders to a service's database
-without doing database work during construction. `heartbeat.ts` keeps queueing,
-dispatch, cancellation, and execution order, and re-exports the existing
+without doing database work during construction. `heartbeat.ts` composes queue
+dispatch with cancellation and execution, and re-exports the existing
 public helpers and configuration-incomplete error class. Keep preparation policy
 changes in this module and its tests.
 
@@ -1271,6 +1271,15 @@ callbacks without starting work. The service supplies its shutdown flag callback
 and shared execution sets so separate service instances keep the same ownership
 and shutdown barriers. Cleanup single-flight state stays at module scope.
 Keep recovery policy changes separate from retry scheduling and execution changes.
+
+Queue admission and wakeup dispatch are in `server/src/services/heartbeat/queue.ts`.
+It owns wake coalescing and batching, queued-run claims, daily heartbeat caps,
+concurrency and priority checks, timer admission, and native status wake intents.
+`createHeartbeatQueue` binds these operations without querying or starting work.
+The service supplies lifecycle effects, execution callbacks, worktree gates, and
+its process-wide execution and wakeup promise sets. Forwarding callbacks preserve
+construction order for retry and recovery services. Keep queue policy changes
+separate from this extraction and from adapter execution changes.
 
 ## Wake Context Delivery
 
