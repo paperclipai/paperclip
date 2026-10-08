@@ -84,7 +84,7 @@
           "type": "password",
           "required": true,
           "secret": true,
-          "helperMd": "Choose intended permissions and teams when creating the personal API key. Read-only is supported with Read permission only.",
+          "helperMd": "Grant Read and Write only when those actions are intended. A Read-only key is supported; the key cannot exceed the owning user\u2019s workspace access.",
           "placeholder": "Paste your Linear API key"
         }
       ],
@@ -97,10 +97,8 @@
         "docs": "https://linear.app/docs/api-and-webhooks"
       },
       "warnings": [
-        "Linear’s standard MCP endpoint exposes read and write tools; review the discovered catalog and Paperclip action policies."
+        "Linear\u2019s standard MCP endpoint exposes read and write tools; review the discovered catalog and Paperclip action policies."
       ]
     }
-  ],
-  "docsUrl": "https://linear.app/docs/mcp",
-  "redirectConstraints": "https-or-loopback-http"
+  ]
 }

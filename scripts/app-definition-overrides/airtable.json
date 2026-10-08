@@ -69,7 +69,7 @@
           "required": true,
           "placeholder": "pat...",
           "secret": true,
-          "helperMd": "Choose provider scopes and resource bases for intended actions; token and user/base role permissions both restrict access."
+          "helperMd": "Choose the scopes and base resources required for your supported read and write actions. Airtable permissions and selected base resources still apply; Paperclip cannot increase an issued token’s access."
         }
       ],
       "keyPlacement": {

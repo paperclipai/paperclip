@@ -290,9 +290,13 @@ const support = await getEmbeddedPostgresTestSupport();
       await instanceSettingsService(db).updateExperimental({ enableChatConnectors: enabled });
       try {
         const result = await service.search(claims, "agentmail");
-        expect(result.results[0]?.methods).toEqual([expect.objectContaining({
-          key: "email-agent", purpose: "channel", setupPath: `/AGG/apps/chat/connect?provider=agentmail&purpose=chat&agentId=${claims.sub}`,
-        })]);
+        expect(result.results[0]?.methods).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            key: "email-agent", purpose: "channel", setupPath: `/AGG/apps/chat/connect?provider=agentmail&purpose=chat&agentId=${claims.sub}`,
+          }),
+          expect.objectContaining({ key: "mcp-oauth", purpose: "tool", auth: "oauth" }),
+          expect.objectContaining({ key: "mcp-api-key", purpose: "tool", auth: "api_key" }),
+        ]));
         expect(result.instruction).toContain("connection_request");
         const requested = await service.request(claims, "agentmail");
         expect(requested).toMatchObject({ state: "needs_user_action", interactionId: expect.any(String) });
@@ -347,7 +351,6 @@ const support = await getEmbeddedPostgresTestSupport();
       ["help me find tools for circle back", "circleback-mcp"],
       ["Can you connect Circleback MCP to get all our meeting notes?", "circleback-mcp"],
       ["Find Attio tools to review all our customer contacts before next week's meeting", "attio"],
-      ["Help me find a ClickUp connection to organize our team's projects", "clickup"],
     ])("finds verified aggregator apps in natural-language queries: %s", async (query, target) => {
       await resetQuestions();
       const result = await connectionIntentService(db).search(claims, query);
@@ -357,6 +360,21 @@ const support = await getEmbeddedPostgresTestSupport();
       })]));
       expect(result.providerQuestion?.options.map(option => option.id)).toContain(`via:composio:${target}`);
       await expect(connectionIntentService(db).request(claims, `via:composio:${target}`)).rejects.toThrow();
+    });
+    it("prefers the native ClickUp connector over an aggregator match", async () => {
+      await resetQuestions();
+      const result = await connectionIntentService(db).search(
+        claims,
+        "Help me find a ClickUp connection to organize our team's projects",
+      );
+      expect(result.results[0]).toMatchObject({
+        service: "clickup",
+        source: "catalog",
+        state: "available",
+        methods: [expect.objectContaining({ key: "mcp-oauth", purpose: "tool" })],
+      });
+      expect(result.results.some((item) => item.service === "via:composio:clickup")).toBe(false);
+      expect(result.providerQuestion).toBeUndefined();
     });
     it.each([false, true])("prefers an exact Motion match over fuzzy Notion (Notion denied: %s)", async denied => {
       await resetQuestions();

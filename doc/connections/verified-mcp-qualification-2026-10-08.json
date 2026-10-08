@@ -1,0 +1,373 @@
+{
+  "as_of": "2026-10-08",
+  "scope": "Eleven providers with successful bounded Paperclip browser action tests; seven new catalog definitions and four existing providers.",
+  "live_read_passes": 11,
+  "provider_write_calls": 0,
+  "actual_agent_runs": 0,
+  "providers": [
+    {
+      "provider": "Airtable",
+      "slug": "airtable",
+      "live_read": "passed-account-tool-test",
+      "live_write": "not-run",
+      "methods": [
+        {
+          "key": "mcp-oauth",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "server_url": "https://mcp.airtable.com/mcp"
+        },
+        {
+          "key": "mcp-pat",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "server_url": "https://mcp.airtable.com/mcp"
+        }
+      ],
+      "proof": {
+        "surface": "Paperclip browser action Test dialog",
+        "grant": "the selected test base only (one base/one workspace); records including delete, comments, fields/tables read/write.",
+        "tool": "Search for an Airtable base",
+        "result": "Bounded query the selected test base returned that base in 0.6s; ID omitted, no record data read.",
+        "catalog_actions": 46,
+        "read_actions": 24,
+        "write_actions": 22,
+        "write_policy": "All 22 write actions Off; persisted after reload",
+        "human_audience": "Just me",
+        "agent_installation_audience": "Any agent company installation; UI did not allow narrowing.",
+        "actual_adapter_run": false
+      }
+    },
+    {
+      "provider": "Linear",
+      "slug": "linear",
+      "live_read": "passed-account-tool-test",
+      "live_write": "not-run",
+      "methods": [
+        {
+          "key": "mcp-oauth",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "server_url": "https://mcp.linear.app/mcp"
+        },
+        {
+          "key": "mcp-api-key",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "server_url": "https://mcp.linear.app/mcp"
+        }
+      ],
+      "proof": {
+        "surface": "Paperclip browser action Test dialog",
+        "tool": "List teams",
+        "result": "One workspace team returned in 0.3s; IDs omitted.",
+        "catalog_actions": 68,
+        "read_actions": 38,
+        "write_actions": 30,
+        "grant": "User-approved read/write; selected workspace selected.",
+        "agent_installation_audience": "Any agent company installation; UI did not allow narrowing. No actual agent ran.",
+        "human_audience": "Just me",
+        "write_policy": "All write actions Off; persisted after reload",
+        "reload": "persisted",
+        "actions_refresh": "passed",
+        "actual_adapter_run": false
+      }
+    },
+    {
+      "provider": "Make",
+      "slug": "make",
+      "live_read": "passed-account-tool-test",
+      "live_write": "not-run",
+      "methods": [
+        {
+          "key": "mcp-oauth",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "server_url": "https://mcp.make.com"
+        },
+        {
+          "key": "mcp-api-token",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "server_url_template": "https://{zone}/mcp"
+        }
+      ],
+      "proof": {
+        "surface": "Paperclip browser action Test dialog",
+        "actor_label": "Connector Tester",
+        "tool": "environment_get",
+        "result": "Organization/team context returned; account values omitted.",
+        "reload": "persisted",
+        "actions_refresh": "passed",
+        "catalog_actions": 133,
+        "write_actions": 59,
+        "write_policy": "Off; retained after reload",
+        "agent_installation_audience": "Company-wide in isolated test company; UI does not permit narrowing while globally installed.",
+        "actual_adapter_run": false
+      }
+    },
+    {
+      "provider": "Exa",
+      "slug": "exa",
+      "live_read": "passed-public-tool-test",
+      "live_write": "not-run",
+      "methods": [
+        {
+          "key": "public-search",
+          "transport": "mcp_remote",
+          "auth": "none",
+          "server_url": "https://mcp.exa.ai/mcp"
+        }
+      ],
+      "proof": {
+        "surface": "Paperclip browser action Test dialog",
+        "actor_label": "Connector Tester",
+        "query": "Official Paperclip public project repository",
+        "expected_url": "https://github.com/paperclipai/paperclip",
+        "reload": "persisted",
+        "actions_refresh": "passed",
+        "latency_seconds": 2.0,
+        "tool": "web_search_exa"
+      }
+    },
+    {
+      "provider": "Firecrawl",
+      "slug": "firecrawl",
+      "live_read": "passed-public-tool-test",
+      "live_write": "not-run",
+      "methods": [
+        {
+          "key": "mcp-oauth",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "server_url": "https://mcp.firecrawl.dev/v2/mcp-oauth"
+        },
+        {
+          "key": "mcp-api-key",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "server_url": "https://mcp.firecrawl.dev/v2/mcp"
+        },
+        {
+          "key": "keyless",
+          "transport": "mcp_remote",
+          "auth": "none",
+          "server_url": "https://mcp.firecrawl.dev/v2/mcp"
+        }
+      ],
+      "proof": {
+        "surface": "Paperclip browser action Test dialog",
+        "actor_label": "Connector Tester",
+        "tool": "firecrawl_scrape",
+        "url": "https://paperclip.ing",
+        "expected": "Paperclip public site markdown; title and sourceURL; HTTP 200",
+        "latency_seconds": 0.6,
+        "reload": "persisted",
+        "actions_refresh": "passed"
+      }
+    },
+    {
+      "provider": "PostHog",
+      "slug": "posthog",
+      "live_read": "passed-account-tool-test",
+      "live_write": "not-run",
+      "methods": [
+        {
+          "key": "mcp-oauth",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "server_url": "https://mcp.posthog.com/mcp"
+        },
+        {
+          "key": "mcp-api-key",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "server_url": "https://mcp.posthog.com/mcp"
+        }
+      ],
+      "proof": {
+        "surface": "Paperclip browser action Test dialog",
+        "tool": "Get user (@me)",
+        "result": "Authenticated profile returned in 0.7s; identity values omitted.",
+        "catalog_actions": 380,
+        "read_actions": 373,
+        "write_actions": 7,
+        "grant": "Provider read-only preset; active Paperclip project only.",
+        "agent_installation_audience": "Any agent company installation; UI did not allow narrowing. No actual agent ran.",
+        "human_audience": "Just me",
+        "write_policy": "All write actions Off; persisted after reload",
+        "reload": "persisted",
+        "actions_refresh": "passed",
+        "actual_adapter_run": false
+      }
+    },
+    {
+      "provider": "Tavily",
+      "slug": "tavily",
+      "live_read": "passed-account-tool-test",
+      "live_write": "not-run",
+      "methods": [
+        {
+          "key": "mcp-oauth",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "server_url": "https://mcp.tavily.com/mcp"
+        }
+      ],
+      "proof": {
+        "surface": "Paperclip browser action Test dialog",
+        "account_identity": "the verified user verified on provider Settings",
+        "catalog_actions": 5,
+        "read_actions": 5,
+        "write_actions": 0,
+        "actions_refresh": "passed",
+        "reload": "persisted",
+        "actual_adapter_run": false,
+        "read_failures": 2,
+        "http_status": 400,
+        "tool": "Search",
+        "result": "Query-only public web search returned five rows in 1.7s, including official paperclipai/paperclip GitHub result after proactive MCP initialization.",
+        "human_audience": "Just me",
+        "agent_installation_audience": "Any agent company installation; UI did not allow narrowing. No actual agent ran.",
+        "session_initialization": "Curated true default; refreshed actions before one new call.",
+        "diagnostic_limit": "Earlier two calls returned HTTP 400; later pass supports but does not prove the missing-session hypothesis."
+      }
+    },
+    {
+      "provider": "Parallel Search",
+      "slug": "parallel-search",
+      "live_read": "passed-public-tool-test",
+      "live_write": "not-run",
+      "methods": [
+        {
+          "key": "public-search",
+          "transport": "mcp_remote",
+          "auth": "none",
+          "server_url": "https://search.parallel.ai/mcp"
+        }
+      ],
+      "proof": {
+        "surface": "Paperclip browser action Test dialog",
+        "actor_label": "Connector Tester",
+        "query": "Official Paperclip public project repository",
+        "expected_url": "https://github.com/paperclipai/paperclip",
+        "reload": "persisted",
+        "actions_refresh": "passed",
+        "latency_seconds": 0.8,
+        "tool": "web_search"
+      }
+    },
+    {
+      "provider": "Calendly",
+      "slug": "calendly",
+      "live_read": "passed-account-tool-test",
+      "live_write": "not-run",
+      "methods": [
+        {
+          "key": "mcp-oauth",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "server_url": "https://mcp.calendly.com"
+        }
+      ],
+      "proof": {
+        "surface": "Paperclip browser action Test dialog",
+        "grant": "Same HTTPS Paperclip client, Calendly MCP resource, mcp:scheduling:read and mcp:scheduling:write",
+        "tool": "lookup_current_user",
+        "result": "Succeeded in 2.5s; profile details omitted",
+        "catalog_actions": 36,
+        "read_actions": 25,
+        "write_actions": 11,
+        "write_policy": "All 11 write/destructive actions Off; persisted after reload",
+        "human_audience": "Just me",
+        "agent_installation_audience": "Any agent; narrowing disabled for installation",
+        "authorization_retry": "Initial generic failure; same grant succeeded on retry",
+        "actual_adapter_run": false
+      }
+    },
+    {
+      "provider": "Windsor.ai",
+      "slug": "windsor-ai",
+      "live_read": "passed-account-tool-test",
+      "live_write": "not-run",
+      "methods": [
+        {
+          "key": "mcp-oauth",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "server_url": "https://mcp.windsor.ai/"
+        },
+        {
+          "key": "mcp-api-key",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "server_url": "https://mcp.windsor.ai/"
+        }
+      ],
+      "proof": {
+        "surface": "Paperclip browser action Test dialog",
+        "tool": "Get Fields (searchconsole), Get Data",
+        "result": "54 field definitions; bounded last_7d request returned 5 daily rows dated 2026-10-01 through 2026-10-05 in 1.5s; metric values omitted.",
+        "catalog_actions": 19,
+        "read_actions": 14,
+        "write_actions": 5,
+        "grant": "User-approved create/delete/offline_access MCP scopes; separately approved read-only Search Console source, the selected Search Console property only.",
+        "agent_installation_audience": "Just agents I pick; no agents selected.",
+        "human_audience": "Just me",
+        "write_policy": "All write actions Off; persisted after reload",
+        "reload": "persisted",
+        "actions_refresh": "passed",
+        "actual_adapter_run": false
+      }
+    },
+    {
+      "provider": "GSC Wizard",
+      "slug": "gsc-wizard",
+      "live_read": "passed-source-tool-test",
+      "live_write": "not-run",
+      "methods": [
+        {
+          "key": "mcp-oauth",
+          "transport": "mcp_remote",
+          "auth": "oauth",
+          "server_url": "https://mcp.gscwizard.com/mcp"
+        },
+        {
+          "key": "mcp-api-key",
+          "transport": "mcp_remote",
+          "auth": "api_key",
+          "server_url": "https://mcp.gscwizard.com/mcp"
+        }
+      ],
+      "proof": {
+        "surface": "Paperclip browser action Test dialog",
+        "mcp_scopes": [
+          "mcp:read",
+          "mcp:write"
+        ],
+        "google_identity_scopes_observed": "Name/profile picture/email only",
+        "google_data_scopes": "Not independently verified; MCP scopes are not Google scopes",
+        "tools": [
+          "Get account info",
+          "List Search Console properties",
+          "Get site performance summary"
+        ],
+        "result": "Account read succeeded in 0.6s; property list returned only the selected Search Console property, readable/activated/siteOwner; bounded seven-day performance summary succeeded in 1.1s through settled 2026-10-06. Metrics omitted.",
+        "catalog_actions": 112,
+        "write_actions": 32,
+        "write_policy": "All 32 write/destructive actions Off; persisted after reload",
+        "human_audience": "Just me",
+        "agent_installation_audience": "Any agent; narrowing disabled for installation",
+        "provider_access_metadata": "level paid with trial end 7 days after connectedAt; provisioning provenance unknown; no payment action",
+        "actual_adapter_run": false
+      }
+    }
+  ],
+  "limits": [
+    "Live proof covers the recorded auth method only. Other documented methods are not independently live-qualified.",
+    "Provider writes, expiry refresh, and real agent-adapter sessions are unqualified.",
+    "GSC Wizard underlying Google data scopes and identity-flow completion provenance were not independently verified; no purchase was performed.",
+    "Tests ran against isolated qualification state; credentials, codes, provider response data, and private account identifiers are omitted."
+  ],
+  "repository_checks": "Pending final scoped branch checks; see PR verification."
+}

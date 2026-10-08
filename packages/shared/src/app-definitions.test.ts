@@ -273,7 +273,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(53);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(60);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -437,15 +437,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 56 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 63 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(56);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(63);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 56);
+    ).toHaveProperty("size", 63);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -537,6 +537,30 @@ describe("AppDefinition catalog", () => {
     for (const method of app.methods)
       for (const credentialField of method.credentialFields ?? [])
         expect(credentialField).not.toHaveProperty("defaultValue");
+  });
+
+  it("exposes Make with its reviewed browser OAuth and MCP token alternatives", () => {
+    const app = APP_STORE_DEFINITIONS.find((entry) => entry.slug === "make");
+    expect(app).toBeTruthy();
+    expect(APP_STORE_HIDDEN_SLUGS.has("make")).toBe(false);
+    expect(CONNECTABLE_APP_DEFINITIONS.some((entry) => entry.slug === "make")).toBe(true);
+    expect(getAvailableConnectionMethods(app!).map((method) => method.key)).toEqual([
+      "mcp-oauth",
+      "mcp-api-token",
+    ]);
+    expect(app!.methods[0]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      defaults: { serverUrl: "https://mcp.make.com" },
+    });
+    expect(app!.methods[1]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      defaults: { serverUrlTemplate: "https://{zone}/mcp" },
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
   });
 
   it("uses the reviewed current endpoints and configuration modes", () => {
@@ -834,7 +858,6 @@ describe("AppDefinition catalog", () => {
       "embat",
       "kernel",
       "local-falcon",
-      "make",
       "manufact",
       "oreilly",
       "planetscale",
@@ -845,7 +868,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(69);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(77);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1244,6 +1267,7 @@ describe("AppDefinition catalog", () => {
     expect(required).toEqual([
       "clickhouse:mcp-oauth:serviceId",
       "honcho:mcp-api-key:workspaceId",
+      "make:mcp-api-token:zone",
       "shopify:storefront-mcp:storeDomain",
       "shopify:ucp-commerce:storeDomain",
       "supabase:mcp-api-key:projectRef",
@@ -1365,4 +1389,22 @@ it("validates native pool catalog entries without inventing an authentication me
   expect(appDefinitionSchema.safeParse({ ...entry, aiConnectionRouter: undefined }).success).toBe(false);
   expect(appDefinitionSchema.safeParse({ ...entry, methods: APP_STORE_DEFINITIONS[0]!.methods }).success).toBe(false);
   expect(appDefinitionSchema.safeParse({ ...entry, categories: ["developer"] }).success).toBe(false);
+});
+
+it("limits explicit DCR registration preference to remote MCP OAuth methods with DCR ownership", () => {
+  const entry = structuredClone(APP_DEFINITIONS.find((app) => app.slug === "airtable")!);
+  entry.methods[0]!.oauthClientRegistration = "dcr";
+  expect(appDefinitionSchema.parse(entry).methods[0]!.oauthClientRegistration).toBe("dcr");
+
+  const customerOwned = structuredClone(entry);
+  customerOwned.methods[0]!.ownershipModes = ["customer"];
+  expect(appDefinitionSchema.safeParse(customerOwned).success).toBe(false);
+
+  const apiKey = structuredClone(entry);
+  apiKey.methods[0]!.auth = "api_key";
+  expect(appDefinitionSchema.safeParse(apiKey).success).toBe(false);
+
+  const nonMcp = structuredClone(entry);
+  nonMcp.methods[0]!.transport = "rest_api";
+  expect(appDefinitionSchema.safeParse(nonMcp).success).toBe(false);
 });

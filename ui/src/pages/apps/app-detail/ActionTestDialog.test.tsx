@@ -6,7 +6,8 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolCatalogEntry } from "@paperclipai/shared";
-import { ActionTestDialog, errorHints } from "./ActionTestDialog";
+import type { JsonSchemaNode } from "@/components/JsonSchemaForm";
+import { ActionTestDialog, errorHints, prepareActionTestParameters } from "./ActionTestDialog";
 
 const listTestAgentsMock = vi.hoisted(() => vi.fn());
 const getTestAgentAccessMock = vi.hoisted(() => vi.fn());
@@ -157,6 +158,152 @@ afterEach(async () => {
 });
 
 describe("Permissions action Test dialog", () => {
+  it("omits blank optional Firecrawl branches before ActionTester validation", () => {
+    const schema: JsonSchemaNode = {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        profile: {
+          type: "object",
+          required: ["name"],
+          properties: { name: { type: "string" } },
+        },
+        queryOptions: {
+          type: "object",
+          required: ["prompt"],
+          properties: {
+            mode: { type: "string", enum: ["directQuote", "freeform"], default: "freeform" },
+            prompt: { type: "string" },
+          },
+        },
+        screenshotOptions: {
+          type: "object",
+          properties: {
+            viewport: {
+              type: "object",
+              required: ["width", "height"],
+              properties: { width: { type: "number" }, height: { type: "number" } },
+            },
+          },
+        },
+      },
+    };
+
+    const prepared = prepareActionTestParameters(schema, {
+      url: "https://paperclip.ing",
+      profile: { name: "" },
+      queryOptions: { mode: "freeform", prompt: "" },
+      screenshotOptions: { viewport: { width: undefined, height: undefined } },
+    });
+
+    expect(prepared).toEqual({
+      parameters: { url: "https://paperclip.ing" },
+      errors: {},
+    });
+  });
+
+  it("still validates required descendants after an optional Firecrawl branch has user input", () => {
+    const schema: JsonSchemaNode = {
+      type: "object",
+      properties: {
+        queryOptions: {
+          type: "object",
+          required: ["prompt"],
+          properties: {
+            mode: { type: "string", default: "freeform" },
+            prompt: { type: "string" },
+          },
+        },
+        screenshotOptions: {
+          type: "object",
+          properties: {
+            viewport: {
+              type: "object",
+              required: ["width", "height"],
+              properties: { width: { type: "number" }, height: { type: "number" } },
+            },
+          },
+        },
+      },
+    };
+
+    expect(prepareActionTestParameters(schema, {
+      queryOptions: { mode: "freeform", prompt: "Extract the title" },
+      screenshotOptions: { viewport: { width: 1280 } },
+    })).toEqual({
+      parameters: {
+        queryOptions: { mode: "freeform", prompt: "Extract the title" },
+        screenshotOptions: { viewport: { width: 1280 } },
+      },
+      errors: { "/screenshotOptions/viewport/height": "This field is required" },
+    });
+  });
+
+  it("runs the actual ActionTester with Firecrawl's minimal URL input after opening More options", async () => {
+    const firecrawlEntry = {
+      ...entry,
+      id: "firecrawl-scrape",
+      toolName: "firecrawl_scrape",
+      title: "Firecrawl scrape",
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: { type: "string" },
+          profile: { type: "object", required: ["name"], properties: { name: { type: "string" } } },
+          queryOptions: {
+            type: "object",
+            required: ["prompt"],
+            properties: {
+              mode: { type: "string", enum: ["directQuote", "freeform"], default: "freeform" },
+              prompt: { type: "string" },
+            },
+          },
+          screenshotOptions: {
+            type: "object",
+            properties: {
+              viewport: {
+                type: "object",
+                required: ["width", "height"],
+                properties: { width: { type: "number" }, height: { type: "number" } },
+              },
+            },
+          },
+        },
+      },
+    } as ToolCatalogEntry;
+    getTestAgentAccessMock.mockResolvedValue({
+      access: {
+        connectionId: "conn-1", toolCount: 1, allowedCount: 1, askFirstCount: 0, offCount: 0,
+        lastChangedAt: null, lastChangedByAgentId: null, lastChangedByName: null,
+        tools: [{ toolName: "firecrawl_scrape", gatewayToolName: "firecrawl__firecrawl_scrape", displayName: "Firecrawl scrape", risk: "read", decision: "allowed", reasonCode: null, matchedPolicyIds: [] }],
+      },
+    });
+    runTestCallMock.mockResolvedValue({ decision: "allowed", invocationId: "firecrawl-minimal" });
+
+    await renderDialog(firecrawlEntry);
+    const moreOptions = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "More options");
+    expect(moreOptions).toBeTruthy();
+    await act(() => moreOptions!.click());
+    const urlInput = document.body.querySelector<HTMLInputElement>('input[aria-label="Url"]');
+    expect(urlInput, document.body.textContent).toBeTruthy();
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    await act(() => {
+      setValue!.call(urlInput, "https://paperclip.ing");
+      urlInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const runButton = [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Run");
+    expect(runButton).toBeTruthy();
+    await act(() => runButton!.click());
+    await flushReact();
+
+    expect(document.body.textContent).not.toContain("This field is required");
+    expect(runTestCallMock).toHaveBeenCalledWith("conn-1", {
+      agentId: "agent-ceo",
+      toolName: "firecrawl_scrape",
+      parameters: { url: "https://paperclip.ing" },
+    });
+  });
+
   it("renders structured MCP rows and keeps the full response behind the raw disclosure", async () => {
     runTestCallMock.mockResolvedValue({
       decision: "allowed", invocationId: "structured",

@@ -1209,7 +1209,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("collects customer-owned OAuth client details for a curated manual OAuth app", async () => {
-    listGalleryMock.mockResolvedValue({ apps: [BOX] });
+    listGalleryMock.mockResolvedValue({
+      apps: [BOX],
+      oauthCallbackUrl: "https://paperclip.example.test/api/tools/oauth/callback",
+    });
     mockParams.appKey = "box";
     await render();
     await passAccessStep();
@@ -1222,7 +1225,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
     expect(container.textContent).toContain("Paperclip callback URL");
     expect(container.textContent).toContain(
-      "http://localhost:3000/api/tools/oauth/callback",
+      "https://paperclip.example.test/api/tools/oauth/callback",
     );
     expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
 

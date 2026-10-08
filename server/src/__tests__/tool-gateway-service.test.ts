@@ -1275,11 +1275,19 @@ describeEmbeddedPostgres("tool gateway service", () => {
     }
   });
 
-  it("initializes a fresh Streamable HTTP session before a stateful tools/call", async () => {
+  it.each([
+    ["persisted session preference", true],
+    ["retained connection curated default", false],
+  ] as const)("initializes Tavily's session before its first tools/call from the %s", async (_caseName, persistPreference) => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);
     await db.update(toolConnections).set({
-      config: { url: "https://example.invalid/mcp", mcpSessionRequired: true },
+      config: {
+        url: "https://mcp.tavily.com/mcp",
+        sourceTemplateKey: "tavily",
+        connectionMethodKey: "mcp-oauth",
+        ...(persistPreference ? { mcpSessionRequired: true } : {}),
+      },
     }).where(eq(toolConnections.id, connection.id));
     await db.insert(toolPolicies).values({
       companyId: company.id,
@@ -1339,6 +1347,36 @@ describeEmbeddedPostgres("tool gateway service", () => {
       { method: "notifications/initialized", sessionId: "session-123", protocolVersion: "2025-06-18" },
       { method: "tools/call", sessionId: "session-123", protocolVersion: "2025-06-18" },
     ]);
+  });
+
+  it("keeps direct tools/call for generic connections without the curated session preference", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection } = await createRemoteMcpToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Allow read tools",
+      policyType: "allow",
+      selectors: { riskLevel: "read" },
+    });
+    const requests: string[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        const payload = JSON.parse(String(init.body)) as { method?: string; id?: string };
+        requests.push(payload.method ?? "");
+        return Response.json({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: { content: [{ type: "text", text: "generic ok" }] },
+        });
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((candidate) => candidate.providerType === "mcp_remote_http");
+
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool!.name, parameters: {} }))
+      .resolves.toMatchObject({ status: "completed" });
+    expect(requests).toEqual(["tools/call"]);
   });
 
   it("hides cached Chat unread filters and blocks agent and board requests before provider dispatch", async () => {

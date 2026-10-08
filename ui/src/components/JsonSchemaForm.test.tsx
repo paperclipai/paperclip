@@ -3,7 +3,12 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { JsonSchemaForm, getDefaultValues } from "./JsonSchemaForm";
+import {
+  JsonSchemaForm,
+  type JsonSchemaNode,
+  getDefaultValues,
+  validateJsonSchemaForm,
+} from "./JsonSchemaForm";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -602,6 +607,93 @@ describe("JsonSchemaForm enum rendering", () => {
 
     await act(async () => {
       root.unmount();
+    });
+  });
+});
+
+describe("JsonSchemaForm optional nested objects", () => {
+  const schema: JsonSchemaNode = {
+    type: "object",
+    properties: {
+      url: { type: "string" },
+      profile: {
+        type: "object",
+        required: ["Name"],
+        properties: {
+          Name: { type: "string" },
+          locale: { type: "string" },
+        },
+      },
+      queryOptions: {
+        type: "object",
+        required: ["Prompt"],
+        properties: {
+          Prompt: { type: "string" },
+          mode: { type: "string" },
+        },
+      },
+      screenshotOptions: {
+        type: "object",
+        properties: {
+          viewport: {
+            type: "object",
+            required: ["Width", "Height"],
+            properties: {
+              Width: { type: "integer" },
+              Height: { type: "integer" },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  it("omits untouched optional object trees and accepts their defaults", () => {
+    const defaults = getDefaultValues(schema);
+
+    expect(defaults).toEqual({});
+    expect(validateJsonSchemaForm(schema, defaults)).toEqual({});
+    expect(
+      validateJsonSchemaForm(schema, {
+        profile: {},
+        queryOptions: {},
+        screenshotOptions: { viewport: {} },
+      }),
+    ).toEqual({});
+
+    const nestedSchema: JsonSchemaNode = {
+      type: "object",
+      required: ["config"],
+      properties: {
+        config: {
+          type: "object",
+          properties: {
+            enabled: { type: "boolean" },
+            queryOptions: {
+              type: "object",
+              required: ["Prompt"],
+              properties: { Prompt: { type: "string" } },
+            },
+          },
+        },
+      },
+    };
+    const nestedDefaults = getDefaultValues(nestedSchema);
+    expect(nestedDefaults).toEqual({ config: { enabled: false } });
+    expect(validateJsonSchemaForm(nestedSchema, nestedDefaults)).toEqual({});
+  });
+
+  it("validates required descendants once an optional object is populated", () => {
+    expect(
+      validateJsonSchemaForm(schema, {
+        profile: { locale: "en" },
+        queryOptions: { mode: "search" },
+        screenshotOptions: { viewport: { Width: 1280 } },
+      }),
+    ).toEqual({
+      "/profile/Name": "This field is required",
+      "/queryOptions/Prompt": "This field is required",
+      "/screenshotOptions/viewport/Height": "This field is required",
     });
   });
 });

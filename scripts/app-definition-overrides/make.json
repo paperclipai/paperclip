@@ -75,7 +75,7 @@
           "required": true,
           "placeholder": "Paste your MCP token",
           "secret": true,
-          "helperMd": "Provider-issued Make token. Include documented mcp:use and only additional scopes required by selected scenarios; exact scopes are user selected."
+          "helperMd": "Create a Make API token that includes the provider-documented mcp:use scope and only other scopes needed by the scenario tools you intend to use."
         }
       ],
       "keyPlacement": {
