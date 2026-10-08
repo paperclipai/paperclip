@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useLayoutEffect, useState, type ReactNode } from "react";
 import type { Preview } from "@storybook/react-vite";
 import { MINIMAL_VIEWPORTS } from "storybook/viewport";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -734,9 +734,13 @@ function applyStorybookTheme(theme: "light" | "dark") {
 function StorybookProviders({
   children,
   theme,
+  initialViewportWidth,
+  initialEntries,
 }: {
   children: ReactNode;
   theme: "light" | "dark";
+  initialViewportWidth?: number;
+  initialEntries?: string[];
 }) {
   const [queryClient] = useState(
     () =>
@@ -754,14 +758,37 @@ function StorybookProviders({
     installStorybookApiFixtures();
   }
 
-  useEffect(() => {
+  const [viewportReady, setViewportReady] = useState(() => !initialViewportWidth || window.parent === window || window.innerWidth === initialViewportWidth);
+  useLayoutEffect(() => {
+    if (viewportReady) return;
+    const checkViewport = () => {
+      if (window.innerWidth === initialViewportWidth) setViewportReady(true);
+    };
+    checkViewport();
+    window.addEventListener("resize", checkViewport);
+    // A custom viewport, browser zoom, or unavailable manager must never leave
+    // a story blank indefinitely. Mount at the actual size after a bounded wait.
+    const fallback = window.setTimeout(() => setViewportReady(true), 500);
+    return () => { window.removeEventListener("resize", checkViewport); window.clearTimeout(fallback); };
+  }, [initialViewportWidth, viewportReady]);
+
+  const [themeReady, setThemeReady] = useState(false);
+  useLayoutEffect(() => {
     applyStorybookTheme(theme);
+    setThemeReady(true);
   }, [theme]);
+
+  // ThemeProvider reads the document on mount. Prepare it before mounting any
+  // app providers so they cannot paint the previous story's color mode.
+  // Fixed-viewport page stories should mount their responsive providers after
+  // the manager sizes the iframe, rather than briefly showing desktop navigation.
+  // Standalone iframe URLs use their actual browser width immediately.
+  if (!themeReady || !viewportReady) return null;
 
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <MemoryRouter initialEntries={["/PAP/storybook"]}>
+        <MemoryRouter initialEntries={initialEntries ?? ["/PAP/storybook"]}>
           <CompanyProvider>
             <EditorAutocompleteProvider>
               <ToastProvider>
@@ -787,8 +814,13 @@ const preview: Preview = {
   decorators: [
     (Story, context) => {
       const theme = context.globals.theme === "light" ? "light" : "dark";
+      const viewport = context.globals.viewport;
+      const styles = context.parameters.viewport?.options?.[viewport?.value]?.styles;
+      const width = styles?.[viewport?.isRotated ? "height" : "width"];
+      const initialViewportWidth = context.parameters.waitForViewport && typeof width === "string" && /^\d+px$/.test(width)
+        ? Number.parseInt(width, 10) : undefined;
       return (
-        <StorybookProviders key={`${context.id}:${theme}`} theme={theme}>
+        <StorybookProviders key={`${context.id}:${theme}`} theme={theme} initialViewportWidth={initialViewportWidth} initialEntries={context.parameters.initialEntries}>
           <Story />
         </StorybookProviders>
       );

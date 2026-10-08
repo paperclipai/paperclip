@@ -8,8 +8,11 @@ describe("tool app gallery URL matching", () => {
   it("matches pasted links against gallery URL patterns", () => {
     expect(getAppDefinitionForUrl("https://mcp.zapier.com/api/mcp")?.slug).toBe("zapier");
     expect(getAppDefinitionForUrl("https://api.githubcopilot.com/mcp/")?.slug).toBe("github");
+    expect(getAppDefinitionForUrl("https://github.com/paperclipai/paperclip/pull/1")?.slug).toBe("github");
     expect(getAppDefinitionForUrl("https://docs.google.com/spreadsheets/d/sheet_123/edit")?.slug).toBe("google-sheets");
     expect(getAppDefinitionForUrl("https://gmailmcp.googleapis.com/mcp/v1")?.slug).toBe("gmail");
+    expect(getAppDefinitionForUrl("https://mcp.neon.tech/mcp")?.slug).toBe("neon");
+    expect(getAppDefinitionForUrl("https://www.superagent.sh/mcp")?.slug).toBe("superagent");
   });
 
   it("returns null for invalid or unknown links", () => {
@@ -40,11 +43,20 @@ describe("tool app gallery URL matching", () => {
     ]);
   });
 
-  it("keeps every gallery entry reachable through at least one pattern", () => {
-    for (const app of CONNECTABLE_APP_DEFINITIONS) {
+  it("keeps tool gallery entries reachable through at least one pattern", () => {
+    for (const app of CONNECTABLE_APP_DEFINITIONS.filter((app) => app.methods.some((method) => method.purpose !== "channel" && method.purpose !== "ai"))) {
       const example = app.urlPatterns[0]?.replace("*", "example");
       expect(example, `${app.slug} has a pattern`).toBeTruthy();
       expect(getAppDefinitionForUrl(example!)?.slug).toBe(app.slug);
     }
+  });
+
+  it("offers region and custom model connections without claiming arbitrary URLs", () => {
+    for (const slug of ["bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
+      const app = CONNECTABLE_APP_DEFINITIONS.find(app => app.slug === slug);
+      expect(app?.methods.every(method => method.purpose === "ai")).toBe(true);
+      expect(app?.urlPatterns).toEqual([]);
+    }
+    expect(getAppDefinitionForUrl("https://customer-gateway.example/v1")).toBeNull();
   });
 });

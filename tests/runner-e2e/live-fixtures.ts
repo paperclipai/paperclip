@@ -1,6 +1,9 @@
+import { NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
 import path from "node:path";
+import { installedReleaseDaytonaPlugin } from "./installed-release.js";
 import { isManagedHiringCase } from "./chat-cases.js";
 import { FixtureRegistry } from "./fixture-registry.js";
+import { TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
 import { stageGrokSubscriptionFixture } from "./grok-subscription-fixture.js";
 import type { RunnerApi } from "./api.js";
 import type {
@@ -37,7 +40,7 @@ interface AgentRecord {
 interface ManagedAccountFixture {
   connectionId: string;
   binding: {
-    provider: "openai" | "anthropic";
+    provider: "openai" | "anthropic" | "openrouter";
     method: "api_key";
     mode: "responsible_user";
   };
@@ -113,7 +116,9 @@ export async function setupLiveFixtures(input: {
       id: "sandbox-provider",
       async setup() {
         return api.post<PluginRecord>("/api/plugins/install", {
-          packageName: path.resolve(
+          packageName: process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI
+            ? installedReleaseDaytonaPlugin(process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI, process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN, process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN_VERSION)
+            : path.resolve(
             import.meta.dirname,
             "../../packages/plugins/sandbox-providers/daytona",
           ),
@@ -134,7 +139,10 @@ export async function setupLiveFixtures(input: {
       return api.post<CompanyRecord>("/api/companies", {
         name: `Runner E2E ${execution.id} ${input.executionNonce}`,
         description: "Ephemeral paid full-stack runner acceptance fixture",
-        budgetMonthlyCents: 0,
+        budgetMonthlyCents: ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
+          || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id)) ? NATIVE_COMPLETION_BUDGET_CENTS
+          : execution.suite.id === "task-titles" ? TASK_TITLE_BUDGET_CENTS
+          : execution.suite.id === "stock-harness" ? 1_000 : 0,
       });
     },
     async teardown() {
@@ -240,10 +248,11 @@ export async function setupLiveFixtures(input: {
       dependencies: ["company"],
       async setup(resolved) {
         const company = value<CompanyRecord>(resolved, "company");
-        const provider =
-          execution.profile.provider === "acpx" ? "anthropic" : "openai";
-        const key =
-          provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+        const key = execution.profile.credential;
+        const provider = key === "ANTHROPIC_API_KEY" ? "anthropic"
+          : key === "OPENROUTER_API_KEY" ? "openrouter"
+          : key === "OPENAI_API_KEY" ? "openai" : null;
+        if (!provider) throw new Error(`Unsupported managed hiring credential ${key}`);
         const apiKey = input.credentials[key];
         if (!apiKey) throw new Error(`Missing credential ${key}`);
         const account = await api.postSensitive<{ connectionId: string }>(
@@ -286,6 +295,10 @@ export async function setupLiveFixtures(input: {
         secretRefs,
         executionId: input.executionNonce,
       });
+      if (["stock-harness", "native-connection-guidance"].includes(execution.suite.id)
+        || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id))) {
+        agent.budgetMonthlyCents = 1_000;
+      }
       if (managedHiring) {
         const account = value<ManagedAccountFixture>(resolved, "ai-connection");
         const config = agent.adapterConfig as Record<string, unknown>;
@@ -306,7 +319,8 @@ export async function setupLiveFixtures(input: {
     },
   });
 
-  if (execution.environment.configurationKey === "warm-reuse-v1") {
+  if (execution.task.flow === "warm_three_turn"
+    || (execution.suite.id === "extended-harnesses" && execution.task.id === "file-edit-validate")) {
     registry.register<ProjectRecord>({
       id: "project",
       dependencies: ["company", "environment"],
@@ -316,9 +330,9 @@ export async function setupLiveFixtures(input: {
         return api.post<ProjectRecord>(
           `/api/companies/${company.id}/projects`,
           {
-            name: `Runner E2E warm project ${input.executionNonce}`,
+            name: `Runner E2E workspace project ${input.executionNonce}`,
             description:
-              "Ephemeral project anchoring a reusable Daytona execution workspace",
+              "Ephemeral project anchoring the fixture execution workspace and file copy-back",
             executionWorkspacePolicy: {
               enabled: true,
               defaultMode: "shared_workspace",

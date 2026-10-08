@@ -607,6 +607,72 @@ describe("execute", () => {
     expect(result.errorMessage).toContain("host.docker.internal");
   });
 
+  it.each([
+    ["http://127.0.0.1:8642", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642 }],
+    ["http://[::1]:8642", { code: "ECONNREFUSED", syscall: "connect", address: "::1", port: 8642 }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", errors: [
+      { code: "ECONNREFUSED", syscall: "connect", address: "::1", port: 8642 },
+      { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642 },
+    ] }],
+    ["https://localhost", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 443 }],
+    ["http://localhost", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 80 }],
+  ])("explains the server-side loopback gateway at %s without claiming non-dispatch", async (apiBaseUrl, cause) => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      throw Object.assign(new Error("fetch failed"), { cause });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl, apiKey: "gateway-private-key" });
+    ctx.onDispatch = vi.fn();
+    const result = await execute(ctx);
+
+    expect(result.errorMessage).toContain("refers to the Paperclip server, not an agent sandbox");
+    expect(result.errorMessage).toContain("adapterConfig.apiBaseUrl");
+    expect(result.errorMessage).toContain("hermes_local");
+    expect(result.errorMessage).not.toContain("gateway-private-key");
+    expect(result.errorMeta).toEqual({ category: "gateway_loopback_connection_refused", phase: "create_run" });
+    expect(result).toMatchObject({ exitCode: 1, signal: null, timedOut: false,
+      errorCode: "hermes_gateway_connect_failed", errorFamily: "transient_upstream", retryNotBefore: null });
+    expect(result.executionRecovery).toBeUndefined();
+    expect(result.resultJson).toBeUndefined();
+    expect(ctx.onDispatch).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]?.[1]?.redirect).toBeUndefined();
+  });
+
+  it.each([
+    ["https://gateway.example.test:8642", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642 }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", syscall: "connect", address: "192.0.2.1", port: 8642 }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 9000 }],
+    ["http://127.0.0.2:8642", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642 }],
+    ["http://localhost:8642", { code: "ETIMEDOUT", syscall: "connect", address: "127.0.0.1", port: 8642 }],
+    ["http://localhost:8642", { code: "EHOSTUNREACH", syscall: "connect", address: "127.0.0.1", port: 8642 }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", address: "127.0.0.1", port: 8642 }],
+    ["http://localhost:8642", { message: "ECONNREFUSED connect 127.0.0.1:8642" }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", errors: [] }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", errors: [
+      { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642 },
+      { code: "ETIMEDOUT", syscall: "connect", address: "::1", port: 8642 },
+    ] }],
+  ])("keeps ambiguous or nonmatching transport errors generic at %s", async (apiBaseUrl, cause) => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw Object.assign(new Error("fetch failed"), { cause }); }));
+    const result = await execute(makeCtx({ apiBaseUrl, apiKey: "secret-key" }));
+    expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+    expect(result.errorMessage).not.toContain("refers to the Paperclip server");
+    expect(result.errorMeta).toEqual({});
+    expect(result.executionRecovery).toBeUndefined();
+  });
+
+  it("does not infer loopback refusal from an HTTP provider response", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642,
+    }), { status: 503 })));
+    const result = await execute(makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" }));
+    expect(result.errorCode).toBe("hermes_gateway_upstream_error");
+    expect(result.errorMeta?.category).toBeUndefined();
+    expect(result.errorMessage).not.toContain("refers to the Paperclip server");
+    expect(result.executionRecovery).toBeUndefined();
+  });
+
   it("redacts echoed auth material from HTTP error payloads", async () => {
     vi.stubGlobal(
       "fetch",

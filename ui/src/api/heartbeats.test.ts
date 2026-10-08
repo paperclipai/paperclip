@@ -55,6 +55,12 @@ describe("heartbeatsApi.liveRunsForCompany", () => {
 
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/live-runs?minCount=50&limit=50");
   });
+
+  it("requests distinct task cards before the server applies the dashboard limit", async () => {
+    await heartbeatsApi.liveRunsForCompany("company-1", { minCount: 4, limit: 4, distinctTasks: true });
+
+    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/live-runs?minCount=4&limit=4&distinctTasks=true");
+  });
 });
 
 describe("heartbeatsApi.downloadProviderTrace", () => {

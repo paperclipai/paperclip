@@ -1,3 +1,7 @@
+import { runHiringTemplateFlow } from "./hiring-template-flow.js";
+import { gradeHiringTemplateTurns } from "./hiring-template-turn-accounting.js";
+import type { HiringTemplateEvidence } from "./hiring-template-scoring.js";
+import { runAmbiguousConfirmationReply, runUnansweredQuestionReturn } from "./confirmation-replies.js";
 import { expect, type Page } from "@playwright/test";
 import { pollUntil, type RunnerApi } from "./api.js";
 import type {
@@ -14,6 +18,21 @@ import { enableChatThroughSettings, runChatInterruption, runChatSettingsLifecycl
 import { runActiveReassignment, runWorkerCrash, runAnswerQuality } from "./chat-qualification.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
 import { runChatCompletionUpdate } from "./completion-update-flow.js";
+
+/** Hiring alone admits bounded, verified lifecycle notifications. Other suites keep their count contract. */
+export function assertChatFlowRunCount(input: {
+  suiteId: string; task: Parameters<typeof matchesRunCount>[0]; runs: ChatRun[];
+  hiringEvidence?: HiringTemplateEvidence; hiringApiState?: unknown;
+}) {
+  expect(matchesRunCount(input.task, input.runs.length), "Declared total provider-run bounds").toBe(true);
+  if (input.suiteId !== "hiring-templates") return;
+  const accounting = gradeHiringTemplateTurns({
+    evidence: input.hiringEvidence ? { ...input.hiringEvidence, runs: input.runs } : undefined,
+    apiState: input.hiringApiState,
+  });
+  expect(accounting.passed, `Hiring lifecycle: ${accounting.predicates.filter(p => !p.passed).map(p => p.id).join(", ")}`).toBe(true);
+  return accounting;
+}
 
 // Public API observations only: this driver never fabricates provider results or writes DB state.
 export interface ChatIssue {
@@ -39,6 +58,9 @@ export interface ChatRun {
   error?: string | null;
   errorCode?: string | null;
   runtimeMode?: string;
+  runtimeModeResolvedAt?: string | null;
+  logStore?: string | null;
+  logRef?: string | null;
   contextSnapshot?: Record<string, unknown>;
   resultJson?: Record<string, unknown>;
   sessionIdBefore?: string | null;
@@ -77,6 +99,37 @@ export function assertChatBacklogCreation(input: {
 /** Clarification may request information imperatively rather than end in a question mark. */
 export function isChatClarificationReply(body: string): boolean {
   if (body.includes("?")) return true;
+  // A present-tense request can introduce the required information directly,
+  // without a noun such as "brief" or "details" before the list.
+  const listRequest = body.match(/\b(?:I|we)(?:'ll|\s+will)?\s+need\s*:\s*([\s\S]*)/i);
+  if (listRequest) {
+    const items: string[] = [];
+    let paragraphBoundary = false;
+    // Only the directly introduced list belongs to this request. A later
+    // paragraph can introduce a separate plan without invalidating it.
+    for (const line of listRequest[1].split(/\r?\n/)) {
+      if (!line.trim()) {
+        paragraphBoundary = true;
+        continue;
+      }
+      const item = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/);
+      if (!item) {
+        // Markdown permits soft-wrapped item text without indentation. A
+        // separate paragraph or heading ends the introduced information list.
+        if (items.length && !paragraphBoundary && !/^\s*#|:\s*$/.test(line)) {
+          items[items.length - 1] += ` ${line.trim()}`;
+          continue;
+        }
+        break;
+      }
+      items.push(item[1].replace(/^\[[ xX]\]\s*/, "").replace(/^[*_`]+/, ""));
+      paragraphBoundary = false;
+    }
+    // Positively identify questions or brief fields. Unknown bullets are not
+    // evidence of clarification merely because their verbs are unlisted.
+    const information = /^(?:(?:who|what|where|when|whether|how)\b|(?:(?:any|the|your|preferred|intended|required|target|desired|existing|delivery|must-include)\s+){0,3}(?:(?:club|company|project|team|event|organization)\s+name|audience|readers|recipients|tone|voice|format|length|deadline|date|purpose|context|details|requirements|constraints|examples|links|name|budget|location|venue|schedule|timezone|language|accessibility|contact|scope|goals|background|references|assets|brand|style)\b)/i;
+    if (items.length >= 2 && items.every(item => information.test(item))) return true;
+  }
   const request = body.match(
     /\b(?:please\s+(?:share|provide|clarify|confirm)|tell me|let me know)\b([\s\S]*)/i,
   ) ?? body.match(
@@ -231,14 +284,20 @@ export async function readRunningChatLog(
   return ((await response.json()) as { content?: string }).content;
 }
 
-/** Synthetic reset runs have durable events but never start a provider log. */
+/** Reset/blocked runs and proven pre-provider failures may have no provider log.
+ * Preserve their durable events; missing logs for real provider work still fail. */
 export async function collectChatRunEvidence(
   api: Pick<RunnerApi, "get">,
   run: ChatRun,
 ) {
+  const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  const providerNeverStarted = run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
+    run.logStore === null && run.logRef === null && ["failed", "interrupted"].includes(run.status) &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   return {
     runId: run.id,
-    log: isResetRun(run) || isBlockedUnstartedWake({ ...run })
+    ...(providerNeverStarted ? { logOmissionReason: "provider_not_started" } : {}),
+    log: isResetRun(run) || isBlockedUnstartedWake({ ...run }) || providerNeverStarted
       ? null
       : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
     events: await collectRunEvents((afterSeq, limit) =>
@@ -304,6 +363,7 @@ export interface ChatFlowInput {
   observe: (issue: ChatIssue, runs: ChatRun[]) => void;
   capture: (id: string, label: string, file: string) => Promise<void>;
   evidence: (name: string, data: unknown) => Promise<void>;
+  check?: (id: string, passed: boolean, detail: string) => void;
 }
 export async function runChatFlow(input: ChatFlowInput) {
   const { page, api, fixtures: f, execution, nonce } = input;
@@ -376,6 +436,8 @@ export async function runChatFlow(input: ChatFlowInput) {
     await idle(count);
   };
   const noTasks = async () => expect(await tasks()).toHaveLength(0);
+  let hiringEvidence: HiringTemplateEvidence | undefined;
+  let refreshHiringEvidence: (() => Promise<HiringTemplateEvidence>) | undefined;
   try {
     if (caseId === "enable-disable-resume") await enableChatThroughSettings(input);
     else await api.patch("/api/instance/settings/experimental", {
@@ -390,9 +452,17 @@ export async function runChatFlow(input: ChatFlowInput) {
     expect(await api.get(chatPath)).toBeNull();
     expect(await allRuns()).toHaveLength(0);
 
-    if (caseId === "handoff-completion-idle") {
+    if (caseId === "confirmation-ambiguous") {
+      await runAmbiguousConfirmationReply({ input, issue: () => issue!, idle, comments });
+    } else if (caseId === "unanswered-question-return") {
+      await runUnansweredQuestionReturn({ input, issue: () => issue!, idle, comments });
+    } else if (caseId.startsWith("handoff-completion-")) {
       await runChatCompletionUpdate({ input, marker, allRuns, issue: () => issue!,
         refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); if (issue) input.observe(issue, await allRuns()); } });
+    } else if (execution.suite.id === "hiring-templates") {
+      const hiring = await runHiringTemplateFlow({ input, issue: () => issue!, turn, tasks, allRuns });
+      hiringEvidence = hiring.evidence;
+      refreshHiringEvidence = hiring.refresh;
     } else if (execution.suite.id === "agent-chat-qualification") {
       const context = { input, marker, issue: () => issue!, idle, allRuns, comments, expectedStops,
         refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); input.observe(issue, await allRuns()); } };
@@ -933,7 +1003,17 @@ export async function runChatFlow(input: ChatFlowInput) {
       });
     }
     await idle(minimumRunCount(execution.task));
-    expect(matchesRunCount(execution.task, runs.filter((run) => !isResetRun(run)).length)).toBe(true);
+    if (execution.suite.id === "hiring-templates") {
+      // Refresh the whole consistent evidence generation for the final guard.
+      hiringEvidence = await refreshHiringEvidence!();
+      runs = hiringEvidence.runs;
+    }
+    assertChatFlowRunCount({ suiteId: execution.suite.id, task: execution.task,
+      // Hiring must account for every actual company run, including unexpected resets.
+      runs: execution.suite.id === "hiring-templates" ? runs : runs.filter((run) => !isResetRun(run)),
+      hiringEvidence, hiringApiState: execution.suite.id === "hiring-templates"
+        ? hiringEvidence!.turnApiState : undefined,
+    });
     for (const run of runs.filter((run) => !isResetRun(run))) {
       expect(run.runtimeMode).toBe(execution.profile.expectedRuntimeMode);
       expect(run.status).toBe(

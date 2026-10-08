@@ -36,6 +36,7 @@ import { Workspaces } from "./pages/Workspaces";
 import { Issues } from "./pages/Issues";
 import { Search } from "./pages/Search";
 import { IssueDetail } from "./pages/IssueDetail";
+import { AgentChats } from "./pages/AgentChats";
 import { AgentChat } from "./pages/AgentChat";
 import { IssueChatLongThreadPerf } from "./pages/IssueChatLongThreadPerf";
 import { Routines } from "./pages/Routines";
@@ -52,7 +53,9 @@ import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { CompanyActivity } from "./pages/audit/CompanyActivity";
 import { AuditHub } from "./pages/audit/AuditHub";
+import { Costs } from "./pages/Costs";
 import { Inbox } from "./pages/Inbox";
+import { useCombinedInboxTasksEnabled } from "./hooks/useCombinedInboxTasksEnabled";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
 import { DecisionQueuePage } from "./pages/DecisionQueuePage";
 import { BoardChat } from "./pages/BoardChat";
@@ -81,6 +84,7 @@ import { PaperclipCloudOAuthHandoffPage } from "./pages/apps/PaperclipCloudOAuth
 import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
 import { GatewayDetail } from "./pages/apps/gateways/GatewayDetail";
 import { CompanySkills } from "./pages/CompanySkills";
+import { SkillSources } from "./pages/SkillSources";
 import { SkillStudio } from "./pages/SkillStudio";
 import { Secrets } from "./pages/Secrets";
 import { CompanyImport } from "./pages/CompanyImport";
@@ -95,6 +99,8 @@ import { PluginPage } from "./pages/PluginPage";
 import { NewAgent } from "./pages/NewAgent";
 import { AuthPage } from "./pages/Auth";
 import { BoardClaimPage } from "./pages/BoardClaim";
+import { AssistantConnection } from "./pages/apps/AssistantConnection";
+import { McpConnectPage, McpDevicePage, AssistantConnectionsPage } from "./pages/McpConnect";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
@@ -102,6 +108,7 @@ import { NotFoundPage } from "./pages/NotFound";
 import { useCompany } from "./context/CompanyContext";
 import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
+import { TASK_VIEW_PARAM, taskViewForInboxTab, type TaskViewKey } from "./lib/task-views";
 import {
   isOnboardingWizardActive,
   onboardingStepForCompany,
@@ -132,9 +139,6 @@ const ProductionCompanySkills = lazy(() =>
 const ProductionCompanyActivity = lazy(() =>
   import("./pages/audit/CompanyActivity.production").then((module) => ({ default: module.CompanyActivity })),
 );
-const ProductionCosts = lazy(() =>
-  import("./pages/Costs.production").then((module) => ({ default: module.Costs })),
-);
 const ProductionOrgChart = lazy(() =>
   import("./pages/OrgChart.production").then((module) => ({ default: module.OrgChart })),
 );
@@ -143,7 +147,9 @@ function ProductionSurface({ children }: { children: ReactNode }) {
   return <Suspense fallback={<PaperclipLoading />}>{children}</Suspense>;
 }
 
-function boardRoutes(streamlinedUiEnabled: boolean) {
+function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: boolean) {
+  // Combined Inbox + Task List (PAP-670) only exists in the streamlined shell.
+  const mergedTasks = streamlinedUiEnabled && combinedInboxTasksEnabled;
   return (
     <>
       <Route index element={<Navigate to="dashboard" replace />} />
@@ -193,6 +199,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="tools" element={<LegacyToolsRedirect />} />
       <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
       <Route path="apps" element={<Browse />} />
+      <Route path="apps/assistant-connection" element={<AssistantConnection />} />
       <Route path="apps/browse" element={<Navigate to="/apps" replace />} />
       <Route path="apps/connections" element={<Navigate to="/apps" replace />} />
       <Route path="apps/byo" element={<AppsConnect byoOnly />} />
@@ -255,6 +262,8 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
       </Route>
       <Route path="company/settings/:settingsRoutePath/*" element={<CompanySettingsPluginPage />} />
+      <Route path="skills/sources" element={<SkillSources />} />
+      <Route path="skills/sources/:sourceId" element={<SkillSources />} />
       <Route path="skills/studio" element={<SkillStudio />} />
       <Route path="skills/studio/new" element={<SkillStudio />} />
       <Route path="skills/studio/:skillId" element={<SkillStudio />} />
@@ -299,11 +308,25 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="issues" element={<Issues />} />
       <Route path="tasks" element={<Navigate to="/issues" replace />} />
       <Route path="search" element={<Search />} />
-      <Route path="issues/all" element={<Navigate to="/issues" replace />} />
-      <Route path="issues/active" element={<Navigate to="/issues" replace />} />
-      <Route path="issues/backlog" element={<Navigate to="/issues" replace />} />
-      <Route path="issues/done" element={<Navigate to="/issues" replace />} />
-      <Route path="issues/recent" element={<Navigate to="/issues" replace />} />
+      {mergedTasks ? (
+        <>
+          {/* Combined Inbox + Task List: the status presets are real views, not aliases of /issues. */}
+          <Route path="issues/all" element={<TaskViewRedirect view="all" />} />
+          <Route path="issues/active" element={<TaskViewRedirect view="active" />} />
+          <Route path="issues/backlog" element={<TaskViewRedirect view="backlog" />} />
+          <Route path="issues/done" element={<TaskViewRedirect view="done" />} />
+          <Route path="issues/recent" element={<TaskViewRedirect view="recent" />} />
+        </>
+      ) : (
+        <>
+          <Route path="issues/all" element={<Navigate to="/issues" replace />} />
+          <Route path="issues/active" element={<Navigate to="/issues" replace />} />
+          <Route path="issues/backlog" element={<Navigate to="/issues" replace />} />
+          <Route path="issues/done" element={<Navigate to="/issues" replace />} />
+          <Route path="issues/recent" element={<Navigate to="/issues" replace />} />
+        </>
+      )}
+      <Route path="chats" element={<AgentChats />} />
       <Route path="chats/:agentRef" element={<AgentChat />} />
       <Route path="issues/:issueId" element={<IssueDetail />} />
       {import.meta.env.DEV ? (
@@ -399,7 +422,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         </>
       ) : (
         <>
-          <Route path="costs" element={<ProductionSurface><ProductionCosts /></ProductionSurface>} />
+          <Route path="costs" element={<Costs />} />
           <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
         </>
       )}
@@ -418,14 +441,32 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       ) : null}
       <Route path="decisions" element={<WhatNeedsMe />} />
       <Route path="decisions/queues/:key" element={<DecisionQueuePage />} />
-      <Route path="inbox" element={<InboxRootRedirect />} />
-      <Route path="inbox/mine" element={<Inbox />} />
-      <Route path="inbox/recent" element={<Inbox />} />
-      <Route path="inbox/unread" element={<Inbox />} />
-      <Route path="inbox/blocked" element={<Inbox />} />
-      <Route path="inbox/all" element={<Inbox />} />
+      {/* Combined Inbox + Task List: Inbox is a view inside Tasks. Every /inbox/* URL still
+          resolves — it redirects into the matching view — and with the flag off
+          (or in the legacy shell) the standalone pages stay. /inbox/requests
+          stays its own page either way; Settings → Members links straight to it. */}
+      {mergedTasks ? (
+        <>
+          <Route path="inbox" element={<InboxRootRedirect />} />
+          <Route path="inbox/mine" element={<TaskViewRedirect view="mine" />} />
+          <Route path="inbox/recent" element={<TaskViewRedirect view="recent" />} />
+          <Route path="inbox/unread" element={<TaskViewRedirect view="unread" />} />
+          <Route path="inbox/blocked" element={<TaskViewRedirect view="blocked" />} />
+          <Route path="inbox/all" element={<TaskViewRedirect view="everything" />} />
+          <Route path="inbox/new" element={<TaskViewRedirect view="mine" />} />
+        </>
+      ) : (
+        <>
+          <Route path="inbox" element={<InboxRootRedirect />} />
+          <Route path="inbox/mine" element={<Inbox />} />
+          <Route path="inbox/recent" element={<Inbox />} />
+          <Route path="inbox/unread" element={<Inbox />} />
+          <Route path="inbox/blocked" element={<Inbox />} />
+          <Route path="inbox/all" element={<Inbox />} />
+          <Route path="inbox/new" element={<Navigate to="/inbox/mine" replace />} />
+        </>
+      )}
       <Route path="inbox/requests" element={<JoinRequestQueue />} />
-      <Route path="inbox/new" element={<Navigate to="/inbox/mine" replace />} />
       <Route path="u/:userSlug" element={<UserProfile />} />
       <Route path="design-guide" element={<DesignGuide />} />
       <Route path="instance/settings/adapters" element={<AdapterManager />} />
@@ -449,7 +490,19 @@ function AppsConnectEntryRoute({
 }
 
 function InboxRootRedirect() {
-  return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
+  return streamlinedUiEnabled && combinedInboxTasksEnabled
+    ? <TaskViewRedirect view={taskViewForInboxTab(loadLastInboxTab())} />
+    : <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
+}
+
+/** Sends a retired Inbox/Tasks URL to its view on the merged Tasks surface. */
+function TaskViewRedirect({ view }: { view: TaskViewKey }) {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  params.set(TASK_VIEW_PARAM, view);
+  return <Navigate to={`/issues?${params.toString()}${location.hash}`} replace />;
 }
 
 function LegacySkillStudioRedirect() {
@@ -740,6 +793,7 @@ function NoCompaniesStartPage() {
 
 export function App() {
   const { enabled: streamlinedUiEnabled, loaded: streamlinedUiLoaded } = useStreamlinedUiEnabled();
+  const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
 
   return (
     <>
@@ -747,6 +801,9 @@ export function App() {
         <Route path="oauth-handoff" element={<PaperclipCloudOAuthHandoffPage />} />
         <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
+        <Route path="mcp-connect/:id" element={<McpConnectPage />} />
+        <Route path="mcp-device" element={<McpDevicePage />} />
+        <Route path="assistant-connections" element={<AssistantConnectionsPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />
         <Route path="invite/:token" element={<InviteLandingPage />} />
         <Route element={streamlinedUiLoaded ? <CloudAccessGate allowMembershipRequest /> : <PaperclipLoading />}>
@@ -830,7 +887,7 @@ export function App() {
           <Route path="execution-workspaces/:workspaceId/issues" element={<UnprefixedExecutionWorkspaceRedirect />} />
           <Route path="execution-workspaces/:workspaceId/routines" element={<UnprefixedExecutionWorkspaceRedirect />} />
           <Route path=":companyPrefix" element={streamlinedUiEnabled ? <Layout /> : <ProductionLayout />}>
-            {boardRoutes(streamlinedUiEnabled)}
+            {boardRoutes(streamlinedUiEnabled, combinedInboxTasksEnabled)}
           </Route>
           <Route path="*" element={<NotFoundPage scope="global" />} />
         </Route>

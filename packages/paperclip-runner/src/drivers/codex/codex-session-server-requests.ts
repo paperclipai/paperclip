@@ -1,3 +1,5 @@
+import { isAcpxCanonicalInputMethod } from "../acpx/profile-extensions.js";
+import { isSemanticToolOutcomeUnknownError } from "../../contracts/native-session-backend.js";
 import type { HarnessRuntimeRequest, PaperclipQuestionSet } from "../../contracts/harness-driver.js";
 import {
   CODEX_BLOCK_TOOL_NAME,
@@ -146,6 +148,10 @@ async function handleServerRequestBody(
             );
             return dynamicToolResponse(result);
           } catch (error) {
+            // Preserve uncertain effects for the durable controller. A normal
+            // failed tool response would falsely settle this call and permit
+            // the provider to continue as if the write had not happened.
+            if (isSemanticToolOutcomeUnknownError(error)) throw error;
             const message = boundedText(
               error instanceof Error ? error.message : error,
             );
@@ -199,7 +205,7 @@ async function handleServerRequestBody(
               text:
                 tool === CODEX_BLOCK_TOOL_NAME
                   ? "paperclip_block requires reportedWorkDisposition=blocked."
-                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake continuation.",
+                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake or persisted monitor continuation.",
             },
           ],
         };
@@ -292,7 +298,7 @@ async function handleServerRequestBody(
       prompt: runtimeRequestPrompt(requestKind, request.params),
       details: record(redactCodexValue(boundedCodexValue(request.params))),
       ...(input !== null ? { input } : {}),
-      origin: request.method === "elicitation/create" ? {
+      origin: isAcpxCanonicalInputMethod(request.method) || request.method === "session/request_permission" ? {
         adapter: "acpx-runtime-sidecar",
         provider: text(record(request.params.origin).provider, "acpx"),
         method: request.method,

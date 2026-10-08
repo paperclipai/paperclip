@@ -1,4 +1,6 @@
 import { MAX_ACPX_RUNTIME_EXECUTABLE_BYTES, ACPX_PRIVATE_SNAPSHOT_ENV, createAcpxPrivateSnapshot, type AcpxPrivateSnapshot } from "./private-snapshot.js";
+import { createNativeAcpxDistributionSnapshot, NATIVE_ACPX_BOOTSTRAP_NAME, readNativeAcpxDistributionEntries, type NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
+export type { NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
 import { createHash } from "node:crypto";
 import {
   spawn as spawnChildProcess,
@@ -46,13 +48,13 @@ const VERIFIED_PROVIDER_RUNTIME_TARGET_ENV =
 
 const QUALIFIED_CLAUDE_LINUX_X64_RUNTIME = Object.freeze({
   runtimePackageName: "@anthropic-ai/claude-agent-sdk",
-  runtimePackageVersion: "0.3.280",
+  runtimePackageVersion: "0.3.286",
   packageName: "@anthropic-ai/claude-agent-sdk-linux-x64",
-  packageVersion: "0.3.280",
-  dependencyDeclaration: "0.3.280",
+  packageVersion: "0.3.286",
+  dependencyDeclaration: "0.3.286",
   relativeExecutable: "claude",
   executableDigest:
-    "sha256:1e08503dbdf3c2cb0d706d32f3408277388d1c76ef108673e8fe42c1b322925b",
+    "sha256:fe503f65c6289d59c23e5b21ae44f03583f997dd33a2cbfc75ab4f96fb8fc73f",
   environmentVariable: "CLAUDE_CODE_EXECUTABLE",
 });
 
@@ -60,24 +62,24 @@ const QUALIFIED_CLAUDE_DARWIN_RUNTIMES = {
   arm64: Object.freeze({
     ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
     packageName: "@anthropic-ai/claude-agent-sdk-darwin-arm64",
-    executableDigest: "sha256:387a5c5dcdbb815085edf0baf79591f9d8894efe922bceaf3d75b1b08055229d",
+    executableDigest: "sha256:75e3016e9d2570767b08e43a7467d4817a4f149232c169ca295f2c95fef21433",
   }),
   x64: Object.freeze({
     ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
     packageName: "@anthropic-ai/claude-agent-sdk-darwin-x64",
-    executableDigest: "sha256:c1d32d87630482250633208ab77855429b24010ae3086a7ff7539b57b93168d4",
+    executableDigest: "sha256:53e6a936e89519d695230f9cc97943991286b72766674fba11bee845f0a7c047",
   }),
 };
 
 const QUALIFIED_CODEX_LINUX_X64_RUNTIME = Object.freeze({
   runtimePackageName: "@openai/codex",
-  runtimePackageVersion: "0.156.0",
+  runtimePackageVersion: "0.160.0",
   packageName: "@openai/codex-linux-x64",
-  packageVersion: "0.156.0-linux-x64",
-  dependencyDeclaration: "npm:@openai/codex@0.156.0-linux-x64",
+  packageVersion: "0.160.0-linux-x64",
+  dependencyDeclaration: "npm:@openai/codex@0.160.0-linux-x64",
   relativeExecutable: "vendor/x86_64-unknown-linux-musl/bin/codex",
   executableDigest:
-    "sha256:78a11f06e0a2dda42d13fba1d50dc62e8cbdb2d5f69789722f4d4d99b5cdbe30",
+    "sha256:12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
   environmentVariable: "CODEX_PATH",
 });
 
@@ -93,8 +95,8 @@ const QUALIFIED_CLAUDE_PROVIDER_DEPENDENCIES = Object.freeze([
   }),
   Object.freeze({
     packageName: "@anthropic-ai/claude-agent-sdk",
-    packageVersion: "0.3.280",
-    // The package's own package.json still declares 0.3.257 — 0.3.280 is
+    packageVersion: "0.3.286",
+    // The package's own package.json still declares 0.3.257 — 0.3.286 is
     // only what pnpm resolves, forced by the
     // "claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk" override in
     // the workspace root. This field binds the declared string, not the
@@ -405,6 +407,43 @@ export interface VerifiedAcpxInstallation {
   readonly agentServerPackageJsonPath: string | null;
   readonly agentRuntimePackageJsonPath: string | null;
   openCommand(): Promise<VerifiedAcpxCommandLease>;
+}
+
+/**
+ * Native candidate distribution primitive. This verifies bytes and lifetime
+ * ownership; it does not qualify or enable a provider profile. The caller must
+ * source every expected value from its trusted, versioned profile declaration.
+ */
+export async function verifyNativeAcpxInstallation(
+  input: NativeAcpxDistributionInput,
+): Promise<VerifiedAcpxInstallation> {
+  const declaration: NativeAcpxDistributionInput = Object.freeze({
+    ...input, fixedArguments: Object.freeze([...input.fixedArguments]),
+  });
+  const entries = await readNativeAcpxDistributionEntries(declaration);
+  return Object.freeze({
+    commandDigest: `sha256:${declaration.expectedClosureSha256}`,
+    agentServerPackageJsonPath: declaration.manifestPath,
+    agentRuntimePackageJsonPath: null,
+    async openCommand(): Promise<VerifiedAcpxCommandLease> {
+      const native = await createNativeAcpxDistributionSnapshot(declaration, entries);
+      const lease = commandLease(
+        native.snapshot.roots[0]!, NATIVE_ACPX_BOOTSTRAP_NAME, "commonjs",
+        native.bootstrap, native.commandDirectory, [], 0, "commonjs", [],
+        null, null, native.snapshot,
+      );
+      return {
+        spawn(args = [], options = {}, lifetime) {
+          if (args.length !== 0) throw new Error("Native ACPX distribution accepts only its fixed profile arguments");
+          return lease.spawn([], { ...options, env: {
+            ...(options.env ?? process.env),
+            PAPERCLIP_ACPX_NATIVE_GUARDED: lifetime === undefined ? "0" : "1",
+          } }, lifetime);
+        },
+        close: () => lease.close(),
+      };
+    },
+  });
 }
 
 export interface VerifiedAcpxCommandLease {

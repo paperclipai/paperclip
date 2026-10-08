@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertAgentCoreProfileRecoveryBinding,
   assertManagedProfileRecoveryBinding,
+  projectPaperclipRunnerTaskConfig,
   resolvePaperclipRunnerNativeProviderInput,
 } from "./native-runtime/provider-profile.js";
 
@@ -42,6 +43,54 @@ describe("Paperclip Runner native provider configuration", () => {
         },
       }),
     ).toThrow("codexPermissionMode set to never");
+  });
+
+  it("projects Codex effort only when the selected model supports it", () => {
+    expect(resolvePaperclipRunnerNativeProviderInput({
+      backend: "codex_app_server",
+      adapterConfig: { provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "ultra" },
+    })).toMatchObject({ provider: "codex", model: "gpt-6-astra", codexReasoningEffort: "ultra" });
+    expect(() => resolvePaperclipRunnerNativeProviderInput({
+      backend: "codex_app_server",
+      adapterConfig: { provider: "codex", model: "gpt-6-luna", modelReasoningEffort: "ultra" },
+    })).toThrow("reasoning effort is not supported");
+  });
+
+  it("uses only task model and effort overrides without changing the Runner provider", () => {
+    const base = { provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "ultra", codexPermissionMode: "never" };
+    const projected = projectPaperclipRunnerTaskConfig("codex_app_server", base, {
+      provider: "opencode", model: "gpt-6-luna", managedProfileId: "other-profile",
+    });
+    expect(projected).toEqual({ provider: "codex", model: "gpt-6-luna", codexPermissionMode: "never" });
+    expect(resolvePaperclipRunnerNativeProviderInput({
+      backend: "codex_app_server", adapterConfig: projected,
+    })).toEqual({ provider: "codex", model: "gpt-6-luna", codexApprovalPolicy: "never" });
+    expect(projectPaperclipRunnerTaskConfig("codex_app_server", base, { modelReasoningEffort: "high" }))
+      .toMatchObject({ provider: "codex", model: "gpt-6-astra", modelReasoningEffort: "high" });
+  });
+
+  it("uses an OpenCode task model without changing the Runner provider", () => {
+    const projected = projectPaperclipRunnerTaskConfig(
+      "opencode_server",
+      { provider: "opencode", model: "openrouter/qwen/qwen3-coder-next", opencodePermissionMode: "deny" },
+      { provider: "codex", model: "openrouter/deepseek/deepseek-v4-flash-0731", modelReasoningEffort: "ultra" },
+    );
+    expect(projected).toEqual({
+      provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", opencodePermissionMode: "deny",
+    });
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "opencode_server", adapterConfig: projected }))
+      .toEqual({
+        provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", opencodePermissionMode: "deny",
+      });
+  });
+
+  it("keeps the connection's authoritative model namespace in durable input", () => {
+    const projected = projectPaperclipRunnerTaskConfig("opencode_server",
+      { provider: "opencode", model: "openai/gpt-5.4" },
+      { provider: "codex", model: "team-alias" },
+      "paperclip/team-alias");
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "opencode_server", adapterConfig: projected }))
+      .toMatchObject({ provider: "opencode", model: "paperclip/team-alias" });
   });
 
   it("requires persisted Claude recovery to use the qualified identity and current profile secret", () => {
@@ -391,6 +440,6 @@ describe("Paperclip Runner native provider configuration", () => {
         backend: "acpx_runtime",
         adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "pi-model" },
       }),
-    ).toThrow("Pi is not available");
+    ).toThrow("Pi is awaiting local and Daytona qualification");
   });
 });

@@ -5,6 +5,8 @@ import {
   resolvePaperclipRunnerModel,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
+  resolvePaperclipRunnerCursorMode,
+  PAPERCLIP_RUNNER_ACPX_PROFILES,
   type CreateConfigValues,
 } from "@paperclipai/adapter-utils";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "../index.js";
@@ -95,7 +97,16 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const provider = isPaperclipRunnerProvider(providerCandidate)
     ? providerCandidate
     : "codex";
-  const acpxAgent = schemaValues.acpxAgent === "grok" ? "grok" : "claude";
+  if (provider === "openai_dot") {
+    return { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: schemaValues.allowUnmeteredProvider === true, dotWorkspaceAccess: schemaValues.dotWorkspaceAccess === true, dotAttachmentAccess: schemaValues.dotAttachmentAccess === true,
+      ...(typeof schemaValues.dotBindingId === "string" ? { dotBindingId: schemaValues.dotBindingId } : {}) };
+  }
+  const selectedAcpxProfile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === schemaValues.acpxAgent);
+  if (provider === "acpx" && selectedAcpxProfile && !selectedAcpxProfile.qualified) {
+    throw new Error(`${selectedAcpxProfile.label} is not enabled for production`);
+  }
+  const acpxAgent = selectedAcpxProfile?.value ?? "claude";
+  const cursorMode = resolvePaperclipRunnerCursorMode(provider, acpxAgent, schemaValues.acpxSessionMode);
 
   const schemaModel = typeof schemaValues.model === "string"
     ? schemaValues.model.trim()
@@ -103,6 +114,9 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const configuredModel = typeof config.model === "string"
     ? config.model.trim()
     : "";
+  if (provider === "acpx" && acpxAgent === "cursor" && !configuredModel && !schemaModel) {
+    throw new Error(`${acpxAgent} requires an explicit provider model`);
+  }
   const managedProfileId = typeof schemaValues.managedProfileId === "string"
     ? schemaValues.managedProfileId.trim()
     : "";
@@ -177,6 +191,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     "codexPermissionMode",
     "opencodePermissionMode",
     "acpxPermissionMode",
+    "acpxSessionMode",
     "managedProfileId",
     "managedAgentsRetentionAcknowledged",
     "maxSessionListCostUsd",
@@ -235,6 +250,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     ...(provider === "acpx"
       ? {
           acpxAgent,
+          ...(cursorMode === undefined ? {} : { acpxSessionMode: cursorMode }),
           model: configuredModel || schemaModel || (acpxAgent === "grok" ? "grok-4.7" : resolvePaperclipRunnerModel("acpx", undefined)),
         }
       : {}),

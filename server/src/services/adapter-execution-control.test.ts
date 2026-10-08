@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { AdapterStopTimeoutError } from "./adapter-stop-timeout.js";
 import {
   adapterExecutionControls,
   captureAdapterStopOwnership,
@@ -8,6 +9,16 @@ import {
 } from "./adapter-execution-control.js";
 
 afterEach(() => vi.useRealTimers());
+
+async function stopTimeout(pending: Promise<void>): Promise<AdapterStopTimeoutError> {
+  try {
+    await pending;
+  } catch (error) {
+    expect(error).toBeInstanceOf(AdapterStopTimeoutError);
+    return error as AdapterStopTimeoutError;
+  }
+  throw new Error("Stop unexpectedly settled");
+}
 
 it("holds readiness for every exact-run no-owner Stop and releases owners idempotently", async () => {
   const runId = "registration-after-two-stops";
@@ -119,4 +130,77 @@ it("bounds Stop when an adapter does not settle", async () => {
   await vi.advanceTimersByTimeAsync(1000);
   await assertion;
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("records the exact unconfirmed run without finishing or removing its control", async () => {
+  vi.useFakeTimers();
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const control = createAdapterExecutionControl();
+  await registerAdapterExecutionControl(runId, control);
+  control.controller.abort();
+  let finished = false;
+  void control.settled.then(() => { finished = true; });
+  const result = waitForAdapterStop(control.settled, 1000, {
+    runId, adapterType: "claude_local", runtimeMode: "legacy", abortRequested: control.controller.signal.aborted,
+  }).catch((error: unknown) => error);
+  try {
+    await vi.advanceTimersByTimeAsync(1000);
+    const error = await result;
+    expect(error).toBeInstanceOf(AdapterStopTimeoutError);
+    expect((error as AdapterStopTimeoutError).diagnostics).toEqual({
+      runId, adapterType: "claude_local", runtimeMode: "legacy", abortRequested: true, timeoutMs: 1000,
+      phase: "unknown", phaseElapsedMs: null,
+    });
+    expect(adapterExecutionControls.get(runId)).toBe(control);
+    expect(finished).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    control.finish();
+    await control.settled;
+    expect(finished).toBe(true);
+  } finally {
+    control.finish();
+    adapterExecutionControls.delete(runId);
+  }
+});
+
+it("samples the pending phase at each Stop timeout without settling the executor", async () => {
+  vi.useFakeTimers();
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const control = createAdapterExecutionControl();
+  await registerAdapterExecutionControl(runId, control);
+  const read = vi.spyOn(control.phases, "snapshot");
+  const pending = stopTimeout(waitForAdapterStop(control.settled, 1000, { runId }, control));
+  expect(read).not.toHaveBeenCalled();
+  control.phases.enter("instruction_collection");
+  await vi.advanceTimersByTimeAsync(1000);
+  const first = await pending;
+  expect(first.diagnostics).toMatchObject({ phase: "instruction_collection", phaseElapsedMs: expect.any(Number) });
+  const secondWait = stopTimeout(waitForAdapterStop(control.settled, 1000, { runId }, control));
+  control.phases.enter("lease_release");
+  await vi.advanceTimersByTimeAsync(1000);
+  expect((await secondWait).diagnostics.phase).toBe("lease_release");
+  expect(first.diagnostics.phase).toBe("instruction_collection");
+  expect(Object.isFrozen(first.diagnostics)).toBe(true);
+  expect(adapterExecutionControls.get(runId)).toBe(control);
+  control.finish();
+  adapterExecutionControls.delete(runId);
+});
+
+it.each(["replaced", "wrong_run", "wrong_promise", "throwing_reader"])("omits pending phase for a %s control", async (scenario) => {
+  vi.useFakeTimers();
+  const runId = "11111111-1111-4111-8111-111111111111";
+  const owner = createAdapterExecutionControl();
+  const other = createAdapterExecutionControl();
+  await registerAdapterExecutionControl(runId, owner);
+  owner.phases.enter("instruction_collection");
+  const pending = stopTimeout(waitForAdapterStop(scenario === "wrong_promise" ? other.settled : owner.settled, 1000,
+    { runId: scenario === "wrong_run" ? "22222222-2222-4222-8222-222222222222" : runId }, owner));
+  if (scenario === "replaced") await registerAdapterExecutionControl(runId, other);
+  if (scenario === "throwing_reader") vi.spyOn(owner.phases, "snapshot").mockImplementation(() => { throw new Error("private fixture payload"); });
+  await vi.advanceTimersByTimeAsync(1000);
+  expect((await pending).diagnostics).toMatchObject({ phase: "unknown", phaseElapsedMs: null });
+  expect(JSON.stringify((await pending).diagnostics)).not.toContain("private fixture payload");
+  owner.finish();
+  other.finish();
+  adapterExecutionControls.delete(runId);
 });

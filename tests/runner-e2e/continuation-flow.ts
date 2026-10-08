@@ -223,7 +223,7 @@ export async function runContinuationFlow(input: {
     await api.patch("/api/instance/settings/experimental", {
       enableClassicTaskInterface: false,
     });
-    await createTaskThroughUi({
+    const createdTask = await createTaskThroughUi({
       page,
       issuePrefix: fixtures.company.issuePrefix!,
       agentName: fixtures.agent.name,
@@ -236,7 +236,7 @@ export async function runContinuationFlow(input: {
       deadlineAt: input.deadlineAt,
       load: async () =>
         (await api.get<Row[]>(tasksPath)).find(
-          (t) => t.title === execution.task.buildTitle(input.nonce),
+          (t) => t.id === createdTask.issueId,
         ),
       accept: Boolean,
     });

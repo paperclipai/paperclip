@@ -22,6 +22,7 @@ import {
   failedRequestConfirmationInteraction,
   failedToolActionInteraction,
   pendingRequestConfirmationInteraction,
+  pendingRequestCheckboxConfirmationInteraction,
   pendingToolActionDestructiveInteraction,
   pendingToolActionWriteInteraction,
   issueThreadInteractionFixtureMeta,
@@ -580,6 +581,26 @@ describe("IssueThreadInteractionCard", () => {
       expect.objectContaining({ kind: "request_confirmation" }),
       "Needs a smaller phase split",
     );
+  });
+
+  it.each([
+    pendingRequestConfirmationInteraction,
+    pendingRequestCheckboxConfirmationInteraction,
+    pendingSecretProposalInteraction,
+  ])("keeps $kind approval disabled while preparing without disabling rejection", async (fixture) => {
+    const onAcceptInteraction = vi.fn();
+    const host = renderCard({
+      interaction: { ...fixture, acceptanceBlocker: "workspace_sync_pending" },
+      onAcceptInteraction,
+      onRejectInteraction: vi.fn(),
+    });
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("Preparing approval…");
+    const approve = host.querySelector<HTMLButtonElement>('[data-testid="confirmation-actions"] button')!;
+    expect(approve.disabled).toBe(true);
+    await act(() => approve.click());
+    expect(onAcceptInteraction).not.toHaveBeenCalled();
+    const reject = [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => ["Reject", "Revise…", "Add reason…"].includes(button.textContent ?? ""));
+    expect(reject?.disabled).toBe(false);
   });
 
   it("invokes the confirm callback with pending request confirmations", async () => {

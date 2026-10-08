@@ -1,3 +1,4 @@
+import type { SetIssueTitle } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
 import type {
   AcceptedPlanDecompositionSummary,
@@ -10,6 +11,10 @@ import type {
   FeedbackTrace,
   FeedbackVote,
   Issue,
+  IssueAccessGrant,
+  IssueAccessGrantSubjectType,
+  IssueVisibility,
+  IssuePrivacyConstraints,
   IssueChanges,
   IssueAttachment,
   IssueCostSummary,
@@ -35,7 +40,7 @@ import type {
   UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
-import { api, ApiError, type RequestOptions } from "./client";
+import { api, ApiError, detachInflightGet, type RequestOptions } from "./client";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 
 function hasCommentReceipt(value: unknown): boolean {
@@ -256,6 +261,8 @@ export const issuesApi = {
     api.delete<{ id: string; archivedAt: Date } | { ok: true }>(
       `/issues/${id}/inbox-archive`,
     ),
+  setTitle: (id: string, data: SetIssueTitle) =>
+    api.put<{ id: string; title: string; titleNeedsGeneration: boolean; changed: boolean }>(`/issues/${id}/title`, data),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) => {
@@ -586,17 +593,35 @@ export const issuesApi = {
       form,
     );
   },
-  deleteAttachment: (id: string) =>
-    api.delete<{ ok: true }>(`/attachments/${id}`),
+  deleteAttachment: (id: string) => api.delete<{ ok: true }>(`/attachments/${id}`),
+  // --- Privacy / sharing (PAP-16066) -------------------------------------
+  // Enriched grants for the share sheet: implicit-by-source rows (assignment /
+  // project) plus explicit grants, each carrying subjectDisplayName / avatar /
+  // agentVisibility from the server enrichment pass.
+  privacyConstraints: (id: string) => api.get<IssuePrivacyConstraints>(`/issues/${id}/privacy-constraints`),
+  listAccessGrants: (id: string, options?: RequestOptions) =>
+    options
+      ? api.get<IssueAccessGrant[]>(`/issues/${id}/access-grants`, options)
+      : api.get<IssueAccessGrant[]>(`/issues/${id}/access-grants`),
+  createAccessGrant: (
+    id: string,
+    data: { subjectType: IssueAccessGrantSubjectType; subjectId: string },
+  ) => api.post<IssueAccessGrant>(`/issues/${id}/access-grants`, data),
+  revokeAccessGrant: (id: string, grantId: string) =>
+    api.post<IssueAccessGrant>(`/issues/${id}/access-grants/${grantId}/revoke`, {}),
+  setVisibility: (id: string, visibility: IssueVisibility) =>
+    api.patch<IssueUpdateResponse>(`/issues/${id}`, { visibility }),
   listApprovals: (id: string) => api.get<Approval[]>(`/issues/${id}/approvals`),
   linkApproval: (id: string, approvalId: string) =>
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
   unlinkApproval: (id: string, approvalId: string) =>
     api.delete<{ ok: true }>(`/issues/${id}/approvals/${approvalId}`),
-  listWorkProducts: (id: string, options?: { refreshPullRequests?: boolean }) =>
-    api.get<IssueWorkProduct[]>(
-      `/issues/${id}/work-products${options?.refreshPullRequests ? "?refreshPullRequests=true" : ""}`,
-    ),
+  listWorkProducts: (id: string, options?: { refreshPullRequests?: boolean; signal?: AbortSignal; fresh?: boolean }) => {
+    const path = `/issues/${id}/work-products${options?.refreshPullRequests ? "?refreshPullRequests=true" : ""}`;
+    // Query invalidations must not rejoin a request that read rows before the write.
+    if (options?.fresh) detachInflightGet(path);
+    return api.get<IssueWorkProduct[]>(path, { signal: options?.signal });
+  },
   ensureWorkProductReviewDocument: (id: string, workProductId: string) =>
     api.post<IssueDocument>(
       `/issues/${id}/work-products/${workProductId}/review-document`,

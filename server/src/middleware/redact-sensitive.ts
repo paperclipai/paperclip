@@ -73,6 +73,8 @@ const SENSITIVE_KEYS = new Set<string>([
   // reach a log line.
   "browsercode",
   "authorization_code",
+  "code_verifier",
+  "codeverifier",
   "authorizationcode",
   // The workspace login handoff ticket (PAP-17572). It is a signed bearer
   // credential carried as a query parameter, so it must never reach a log line

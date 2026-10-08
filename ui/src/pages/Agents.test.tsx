@@ -229,7 +229,6 @@ function makeInstanceSettings({
     defaultEnvironmentId,
     general: {
       censorUsernameInLogs: true,
-      keyboardShortcuts: true,
       feedbackDataSharingPreference: "prompt",
       backupRetention: {
         dailyDays: 7,
@@ -1006,13 +1005,16 @@ describe("Agents", () => {
     expect(container.querySelector(".min-w-\\(--sz-7rem\\)")).toBeNull();
   });
 
-  it("keeps row membership actions reachable while hiding star actions on mobile", async () => {
+  it.each([
+    ["streamlined", Agents],
+    ["production", ProductionAgents],
+  ] as const)("omits star and leave/join actions from %s agent index list and org views", async (_mode, AgentList) => {
     root = createRoot(container);
     await act(async () => {
       root!.render(
         <QueryClientProvider client={queryClient}>
           <ToastProvider>
-            <Agents />
+            <AgentList />
           </ToastProvider>
         </QueryClientProvider>,
       );
@@ -1020,29 +1022,31 @@ describe("Agents", () => {
     await flushReact();
     await flushReact();
 
-    // List view (default).
-    const orgAction = container.querySelector('[aria-label="Leave Alpha"]');
-    const orgStar = container.querySelector('[aria-label="Star Alpha"]');
-    expect(orgAction).not.toBeNull();
-    expect(orgStar).not.toBeNull();
-    expect(orgAction?.closest(".hidden")).toBeNull();
-    expect(orgStar?.closest(".hidden")).not.toBeNull();
-
-    // List view remains stable after explicitly selecting it.
-    const listToggle = Array.from(container.querySelectorAll("button")).find(
-      (btn) => btn.querySelector("svg.lucide-list"),
-    );
+    // Explicitly select the list view and assert the row renders there.
+    const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
+    expect(listToggle).not.toBeNull();
     await act(async () => {
       listToggle!.click();
     });
     await flushReact();
+    const listRow = findAgentRow(container, "Alpha");
+    expect(listRow).not.toBeNull();
+    expect(container.querySelector('[aria-label="Leave Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Join Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Star Alpha"]')).toBeNull();
 
-    const listAction = container.querySelector('[aria-label="Leave Alpha"]');
-    const listStar = container.querySelector('[aria-label="Star Alpha"]');
-    expect(listAction).not.toBeNull();
-    expect(listStar).not.toBeNull();
-    expect(listAction?.closest(".hidden")).toBeNull();
-    expect(listStar?.closest(".hidden")).not.toBeNull();
+    // Explicitly select the org view and assert no membership actions there.
+    const orgToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Org chart view"]');
+    expect(orgToggle).not.toBeNull();
+    await act(async () => {
+      orgToggle!.click();
+    });
+    await flushReact();
+    await flushReact();
+    expect(container.textContent).toContain("Alpha");
+    expect(container.querySelector('[aria-label="Leave Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Join Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Star Alpha"]')).toBeNull();
   });
 
   it("does not dim left-membership agent names on mobile", async () => {

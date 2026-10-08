@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { DEFAULT_CODEX_LOCAL_MODEL } from "../../packages/adapters/codex-local/src/index.js";
-import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
+import { ACPX_QUALIFICATION_MODELS } from "../acpx-qualification-models.js";
 import { QUALIFIED_OPENCODE_MODEL } from "../../packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.js";
 import { BUILTIN_ADAPTER_TYPES } from "../../server/src/adapters/builtin-adapter-types.js";
 
@@ -126,11 +126,11 @@ export const nativeAcceptanceProfiles: readonly RunnerAcceptanceProfile[] = [
     id: "runner-acpx-claude",
     label: "Paperclip Runner ACPX Claude",
     provider: "acpx",
-    model: QUALIFIED_ACPX_PROFILES.claude.qualificationModel,
+    model: ACPX_QUALIFICATION_MODELS.claude,
     adapterConfig: {
       provider: "acpx",
       acpxAgent: "claude",
-      model: QUALIFIED_ACPX_PROFILES.claude.qualificationModel,
+      model: ACPX_QUALIFICATION_MODELS.claude,
       acpxPermissionMode: "approve-reads",
       lifecycleMode: "per_turn",
     },
@@ -139,11 +139,11 @@ export const nativeAcceptanceProfiles: readonly RunnerAcceptanceProfile[] = [
     id: "runner-acpx-codex",
     label: "Paperclip Runner ACPX Codex",
     provider: "acpx",
-    model: QUALIFIED_ACPX_PROFILES.codex.qualificationModel,
+    model: ACPX_QUALIFICATION_MODELS.codex,
     adapterConfig: {
       provider: "acpx",
       acpxAgent: "codex",
-      model: QUALIFIED_ACPX_PROFILES.codex.qualificationModel,
+      model: ACPX_QUALIFICATION_MODELS.codex,
       acpxPermissionMode: "approve-reads",
       lifecycleMode: "per_turn",
     },

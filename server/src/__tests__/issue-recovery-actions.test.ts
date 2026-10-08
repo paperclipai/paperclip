@@ -4,9 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import {
+  costEvents,
   agents,
   agentRuntimeState,
   authUsers,
@@ -154,6 +156,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
@@ -361,12 +364,16 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   it.each(["company", "issue", "legacy", "finished"])("rejects an apparently live run with the wrong %s authority", async (mismatch) => {
     const { companyId, sourceIssueId, runId, svc } = await seedNativeFinalizationRecovery("running");
     const other = await seedCompany();
-    await db.update(heartbeatRuns).set({
+    // Exercise service rejection of historical corruption behind the immutable binding trigger.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.update(heartbeatRuns).set({
       ...(mismatch === "company" ? { companyId: other.companyId, agentId: other.coderId } : {}),
       ...(mismatch === "issue" ? { nativeIssueId: other.sourceIssueId } : {}),
       ...(mismatch === "legacy" ? { runtimeMode: "legacy" } : {}),
       ...(mismatch === "finished" ? { finishedAt: new Date() } : {}),
     }).where(eq(heartbeatRuns.id, runId));
+    });
     expect((await svc.getActiveForIssue(companyId, sourceIssueId))?.nativeRunActivity).toBeNull();
   });
 
@@ -1777,6 +1784,29 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       nextAction: "Repair the worktree, then return the issue to the coder.",
       routingFallbackReason: null,
     });
+  });
+
+  it.each(["resolved", "cancelled"])("omits %s recovery instructions when the original worker resumes", async (status) => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "stranded_assigned_issue", ownerType: "board",
+      returnOwnerAgentId: coderId, cause: "stranded_assigned_issue", fingerprint: "finished-recovery",
+      evidence: { failureSummary: "Retry budget exhausted during cleanup." },
+      nextAction: "Repair the runtime, then retry the original owner.", wakePolicy: null,
+    });
+    await db.update(issueRecoveryActions).set({ status, outcome: "handed_back", resolvedAt: new Date() })
+      .where(eq(issueRecoveryActions.id, action.id));
+    const payload = await buildPaperclipWakePayload({ db, companyId, contextSnapshot: {
+      issueId: sourceIssueId, wakeReason: "issue_recovery_action_restored",
+      recoveryActionId: action.id, recoveryCause: action.cause,
+    } });
+    expect(payload?.issue?.id).toBe(sourceIssueId);
+    expect(payload?.recovery).toBeNull();
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Implement backend recovery");
+    expect(prompt).not.toContain("Recovery contract:");
+    expect(prompt).not.toContain(action.nextAction);
+    expect(prompt).not.toContain("Do not produce the deliverable");
   });
 
   it("accepts new verified evidence after an automatic no-replay disposition without reopening on duplicate requests", async () => {

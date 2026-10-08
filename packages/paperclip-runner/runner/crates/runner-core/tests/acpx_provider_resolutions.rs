@@ -42,14 +42,16 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
             shutdown_grace: Duration::from_millis(100),
         },
         agent: "codex".to_owned(),
-        model: "gpt-5.6-sol".to_owned(),
+        model: "explicit-test-model".to_owned(),
         run_id: "run-1".to_owned(),
         catalog_revision: 1,
         runtime_directory: std::env::temp_dir(),
         normalized_session_id: "session-1".to_owned(),
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
+        mode: None,
         permission_mode_pinned: true,
+        provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
         runtime_context: serde_json::Value::Null,
         tool_set: tool_set(),
@@ -98,9 +100,9 @@ fn commits_each_resolution_only_after_sidecar_acknowledgement() {
         .unwrap();
     assert!(session.state().pending_tool("call-1").is_none());
     assert!(session.state().pending_question_set("input-1").is_none());
-    assert!(session
+    session
         .deliver_tool_result(&tool_result("issues.read"))
-        .is_err());
+        .expect("an identical result replay must be idempotent");
     session.shutdown("test complete").unwrap();
 }
 
@@ -199,7 +201,9 @@ fn redacts_failed_tool_payload_without_losing_correlation_or_retry() {
     failed.operation_id = "issues.read".to_owned();
     session.deliver_tool_result(&failed).unwrap();
     assert!(session.state().pending_tool("call-1").is_none());
-    assert!(session.deliver_tool_result(&failed).is_err());
+    session
+        .deliver_tool_result(&failed)
+        .expect("the failure receipt also deduplicates");
     session.shutdown("test complete").unwrap();
 }
 
@@ -259,4 +263,96 @@ fn fails_closed_when_a_resolution_is_not_acknowledged() {
         .to_string();
     assert!(error.contains("did not confirm tool resolution"), "{error}");
     assert!(session.shutdown("already closed").is_ok());
+}
+
+#[test]
+fn interactive_permission_requires_an_offered_action_and_acknowledgement() {
+    for mode in ["permissions-interactive", "permissions-wrong-ack"] {
+        let mut cfg = config(mode);
+        cfg.agent = "claude".to_owned();
+        let mut session = AcpxProviderSession::start(&cfg).unwrap();
+        session
+            .start_turn("turn-1", "Run validation", &std::env::temp_dir())
+            .unwrap();
+        session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(session.state().pending_permission("permission-1").is_some());
+        assert!(session
+            .resolve_permission("permission-1", "old-turn", &json!({"action":"accept"}))
+            .is_err());
+        assert!(session
+            .resolve_permission(
+                "permission-1",
+                "turn-1",
+                &json!({"action":"accept_for_session"})
+            )
+            .is_err());
+        assert!(session.state().pending_permission("permission-1").is_some());
+        let result =
+            session.resolve_permission("permission-1", "turn-1", &json!({"action":"accept"}));
+        if mode == "permissions-wrong-ack" {
+            assert!(result.is_err());
+            assert!(session.state().pending_permission("permission-1").is_some());
+        } else {
+            result.unwrap();
+            assert!(session.state().pending_permission("permission-1").is_none());
+            assert!(session
+                .resolve_permission("permission-1", "turn-1", &json!({"action":"accept"}))
+                .is_err());
+        }
+        session.shutdown("verified").unwrap();
+    }
+}
+
+#[test]
+fn permission_origin_is_bound_to_the_admitted_connection_and_survives_projection() {
+    for agent in ["claude", "copilot", "cursor", "pi"] {
+        let mut cfg = config("permissions-interactive");
+        cfg.agent = agent.to_owned();
+        if agent == "cursor" {
+            cfg.mode = Some("agent".to_owned());
+        }
+        cfg.provider_policy = Some(
+            paperclip_runner_core::acpx_provider_session::AcpxProviderRuntimePolicy {
+                read_only: false,
+            },
+        );
+        let mut session = AcpxProviderSession::start(&cfg).unwrap();
+        session
+            .start_turn("turn-1", "Request permission", &std::env::temp_dir())
+            .unwrap();
+        let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        let expected = json!({"adapter":"acpx-runtime-sidecar","provider":agent,"method":"session/request_permission"});
+        let projected = project_acpx_state_event(
+            &AcpxEventProjectionContext {
+                run_id: "run-1".to_owned(),
+                normalized_session_id: "session-1".to_owned(),
+                turn_id: "turn-1".to_owned(),
+                provider_turn_id: None,
+                item_id: "permission-1".to_owned(),
+            },
+            &events[0],
+        )
+        .unwrap();
+        assert_eq!(projected[0].payload["request"]["origin"], expected);
+        assert_eq!(projected[0].payload["request"]["turnId"], "turn-1");
+        assert_eq!(projected[0].payload["request"]["requestId"], "permission-1");
+        session.shutdown("provenance checked").unwrap();
+    }
+}
+
+#[test]
+fn rejects_a_permission_origin_claim_from_another_provider() {
+    let mut cfg = config("permissions-forged-origin");
+    cfg.agent = "claude".to_owned();
+    let mut session = AcpxProviderSession::start(&cfg).unwrap();
+    session
+        .start_turn("turn-1", "Request permission", &std::env::temp_dir())
+        .unwrap();
+    assert!(session
+        .poll_event(Duration::from_secs(1))
+        .unwrap_err()
+        .to_string()
+        .contains("origin conflicts"));
+    assert!(session.state().pending_permission("permission-1").is_none());
+    session.shutdown("rejected provenance").unwrap();
 }

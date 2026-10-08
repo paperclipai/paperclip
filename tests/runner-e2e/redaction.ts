@@ -4,6 +4,7 @@ import path from "node:path";
 import { redactDiagnosticText } from "../../packages/adapter-utils/src/command-redaction.js";
 
 const SECRET_SHAPES = [
+  /\b(?:github_pat_|ghp_)[A-Za-z0-9_]{16,}\b/g,
   /\bsk-ant-[A-Za-z0-9_-]{16,}\b/g,
   /\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g,
   /\b(?:openrouter|daytona)[-_]?(?:api)?[-_]?key["'=:\s]+[A-Za-z0-9._-]{12,}\b/gi,
@@ -54,6 +55,14 @@ export function isEphemeralCodexRuntimeAuthFile(
       relative,
     )
   );
+}
+
+/** Browser navigation diagnostics need a route, never OAuth query credentials. */
+export function browserDiagnosticUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? url.origin + url.pathname : "[non-HTTP URL]";
+  } catch { return "[invalid URL]"; }
 }
 
 export function redactText(value: string, secrets: readonly string[]) {

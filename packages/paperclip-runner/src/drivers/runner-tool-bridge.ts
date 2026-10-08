@@ -10,8 +10,10 @@ import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 
 import {
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_BLOCK_TOOL_DESCRIPTION,
   PRP_BLOCK_TOOL_NAME,
   PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
   PRP_COMPLETION_TOOL_NAME,
 } from "../contracts/completion-result.js";
 
@@ -70,12 +72,12 @@ const MAX_RESULT_CHUNK_BYTES = 64 * 1024;
 const RESERVED_TOOLS: readonly RunnerToolDefinition[] = [
   {
     name: PRP_COMPLETION_TOOL_NAME,
-    description: "Return the semantic completion result.",
+    description: PRP_COMPLETION_TOOL_DESCRIPTION,
     inputSchema: PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
   },
   {
     name: PRP_BLOCK_TOOL_NAME,
-    description: "Return the semantic blocked result.",
+    description: PRP_BLOCK_TOOL_DESCRIPTION,
     inputSchema: PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
   },
 ];

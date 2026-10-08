@@ -5,6 +5,8 @@ import {
   companies,
   pluginEntities,
   pluginManagedResources,
+  plugins,
+  activityLog,
 } from "@paperclipai/db";
 import type {
   Agent,
@@ -12,11 +14,13 @@ import type {
   PluginManagedAgentDeclaration,
   PluginManagedAgentResolution,
 } from "@paperclipai/shared";
-import { notFound } from "../errors.js";
+import { isUuidLike } from "@paperclipai/shared";
+import { conflict, forbidden, notFound } from "../errors.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
 import { logActivity } from "./activity-log.js";
 import { agentInstructionsBundleMode, agentInstructionsService } from "./agent-instructions.js";
+import { agentInstructionRevisionService } from "./agent-instruction-revisions.js";
 
 const MANAGED_AGENT_ENTITY_TYPE = "managed_agent";
 const DEFAULT_MANAGED_AGENT_ADAPTER_TYPE = "process";
@@ -180,7 +184,7 @@ export function pluginManagedAgentService(
 ) {
   const agentSvc = agentService(db);
   const approvalSvc = approvalService(db);
-  const instructions = agentInstructionsService();
+  const instructions = agentInstructionsService(db);
 
   function declarationFor(agentKey: string) {
     const declaration = options.manifest?.agents?.find((agent) => agent.agentKey === agentKey);
@@ -190,8 +194,8 @@ export function pluginManagedAgentService(
     return declaration;
   }
 
-  async function getBinding(companyId: string, agentKey: string) {
-    return db
+  async function getBinding(companyId: string, agentKey: string, client: Pick<Db, "select"> = db) {
+    return client
       .select()
       .from(pluginEntities)
       .where(
@@ -210,6 +214,7 @@ export function pluginManagedAgentService(
     agentId: string,
     extraData: Record<string, unknown> = {},
     effectiveAdapterType?: string,
+    client: Pick<Db, "select" | "insert" | "update"> = db,
   ) {
     const adapterType = effectiveAdapterType ?? (await resolveManagedAdapterType(companyId, declaration));
     const defaultsJson = {
@@ -227,7 +232,7 @@ export function pluginManagedAgentService(
       budgetMonthlyCents: declaration.budgetMonthlyCents ?? 0,
       instructions: declaration.instructions ?? null,
     };
-    const managedResource = await db
+    const managedResource = await client
       .select({ id: pluginManagedResources.id })
       .from(pluginManagedResources)
       .where(and(
@@ -238,12 +243,12 @@ export function pluginManagedAgentService(
       ))
       .then((rows) => rows[0] ?? null);
     if (managedResource) {
-      await db
+      await client
         .update(pluginManagedResources)
         .set({ resourceId: agentId, defaultsJson, updatedAt: new Date() })
         .where(eq(pluginManagedResources.id, managedResource.id));
     } else {
-      await db.insert(pluginManagedResources).values({
+      await client.insert(pluginManagedResources).values({
         companyId,
         pluginId: options.pluginId,
         pluginKey: options.pluginKey,
@@ -265,9 +270,9 @@ export function pluginManagedAgentService(
       lastReconciledAt: new Date().toISOString(),
       ...extraData,
     };
-    const existing = await getBinding(companyId, declaration.agentKey);
+    const existing = await getBinding(companyId, declaration.agentKey, client);
     if (existing) {
-      return db
+      return client
         .update(pluginEntities)
         .set({
           scopeKind: "company",
@@ -281,7 +286,7 @@ export function pluginManagedAgentService(
         .returning()
         .then((rows) => rows[0]);
     }
-    return db
+    return client
       .insert(pluginEntities)
       .values({
         pluginId: options.pluginId,
@@ -303,6 +308,48 @@ export function pluginManagedAgentService(
       .from(agents)
       .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
     return rows.find((row) => rowIsManagedAgent(row, options.pluginKey, declaration.agentKey)) ?? null;
+  }
+
+  async function relinkManagedAgent(companyId: string, declaration: PluginManagedAgentDeclaration, agentId: string) {
+    const adapterType = await resolveManagedAdapterType(companyId, declaration);
+    return db.transaction(async (tx) => {
+      const [agent] = await tx.select().from(agents).where(and(
+        eq(agents.id, agentId), eq(agents.companyId, companyId), ne(agents.status, "terminated"),
+      )).for("update");
+      if (!agent || !rowIsManagedAgent(agent, options.pluginKey, declaration.agentKey)) {
+        throw conflict("Managed agent ownership changed before relink");
+      }
+      const [plugin] = await tx.select().from(plugins).where(and(
+        eq(plugins.id, options.pluginId), eq(plugins.pluginKey, options.pluginKey),
+      )).for("share");
+      if (!plugin || plugin.status !== "ready" || !plugin.manifestJson.capabilities.includes("agents.managed")
+        || !plugin.manifestJson.agents?.some((entry) => entry.agentKey === declaration.agentKey)) {
+        throw forbidden("Plugin relink is limited to its registered managed agent declaration");
+      }
+      const marker = agent.metadata!.paperclipManagedResource as Record<string, unknown>;
+      const previousPluginId = marker.pluginId;
+      if (typeof previousPluginId !== "string" || !isUuidLike(previousPluginId)) throw forbidden("Managed agent has no plugin owner");
+      if (previousPluginId !== options.pluginId) {
+        const [previousPlugin] = await tx.select({ id: plugins.id }).from(plugins).where(eq(plugins.id, previousPluginId));
+        if (previousPlugin) throw forbidden("Managed agent still belongs to another installed plugin");
+      }
+      // Hard uninstall cascades the bindings, but deliberately leaves the agent
+      // and its canonical history. Transfer only its proven stable-key marker to
+      // the replacement installation, atomically with the new scoped bindings.
+      await upsertBinding(companyId, declaration, agentId, {}, adapterType, tx);
+      await tx.update(agents).set({
+        metadata: managedMetadata(options.pluginId, options.pluginKey, declaration, agent.metadata),
+        updatedAt: new Date(),
+      }).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).returning();
+      await tx.insert(activityLog).values({
+        companyId, actorType: "plugin", actorId: options.pluginId,
+        action: "plugin.managed_agent.relinked", entityType: "agent", entityId: agentId,
+        details: { sourcePluginKey: options.pluginKey, managedResourceKey: declaration.agentKey, previousPluginId },
+      });
+      const relinked = await agentService(tx as unknown as Db).getById(agentId);
+      if (!relinked) throw notFound("Managed agent not found after relink");
+      return relinked as Agent;
+    });
   }
 
   async function companyAdapterUsage(companyId: string) {
@@ -336,23 +383,39 @@ export function pluginManagedAgentService(
     const declared = declaredInstructionFiles(declaration, variables);
     if (!declared) return agent;
 
-    const materialized = await instructions.materializeManagedBundle(
-      agent,
-      declared.files,
-      {
-        entryFile: declared.entryFile,
-        replaceExisting: materializeOptions.replaceExisting,
-        clearLegacyPromptTemplate: true,
-      },
-    );
+    let adapterConfig: Record<string, unknown>;
+    if (materializeOptions.replaceExisting) {
+      const revisions = agentInstructionRevisionService(db);
+      const target = { companyId, agentId: agent.id };
+      const actor = { type: "plugin" as const, pluginId: options.pluginId, pluginKey: options.pluginKey, agentKey: declaration.agentKey };
+      const baseline = await revisions.readForPluginReset(target, actor);
+      const receipt = await revisions.commitPluginReset({ ...target, entryFile: declared.entryFile,
+        baseRevisionId: baseline.snapshot?.revision.id ?? null, configuredEntryFile: baseline.configuredEntryFile, content: declared.files[declared.entryFile] ?? "" }, actor);
+      if (receipt.materialization === "pending") throw conflict("Instruction revision saved; retry reset to repair its disk copy", { revisionId: receipt.revision.id });
+      const refreshed = await agentSvc.getById(agent.id);
+      if (!refreshed) throw notFound("Managed agent not found");
+      for (const [file, content] of Object.entries(declared.files)) {
+        if (file !== declared.entryFile) await instructions.writeFile(refreshed, file, content);
+      }
+      // A stock reset owns declared instruction paths, not the agent's other
+      // persistent files (including a formerly configured entry).
+      adapterConfig = { ...refreshed.adapterConfig };
+      delete adapterConfig.promptTemplate;
+      delete adapterConfig.bootstrapPromptTemplate;
+    } else {
+      const materialized = await instructions.materializeManagedBundle(agent, declared.files, {
+        entryFile: declared.entryFile, replaceExisting: false, clearLegacyPromptTemplate: true,
+      });
+      adapterConfig = materialized.adapterConfig;
+    }
     const updated = await agentSvc.update(agent.id, {
-      adapterConfig: materialized.adapterConfig,
+      adapterConfig,
     }, {
       recordRevision: {
         source: `plugin:${optionsForRevisionSource()}:managed-agent-instructions`,
       },
     });
-    return (updated as Agent | null) ?? { ...agent, adapterConfig: materialized.adapterConfig };
+    return (updated as Agent | null) ?? { ...agent, adapterConfig };
   }
 
   async function managedInstructionDefaultDrift(
@@ -375,8 +438,7 @@ export function pluginManagedAgentService(
       return { entryFile: declared.entryFile, changedFiles: [declared.entryFile] };
     }
 
-    const paths = new Set([...Object.keys(declared.files), ...Object.keys(exported.files)]);
-    const changedFiles = [...paths]
+    const changedFiles = Object.keys(declared.files)
       .filter((filePath) => (exported.files[filePath] ?? null) !== (declared.files[filePath] ?? null))
       .sort((left, right) => left.localeCompare(right));
     if (exported.entryFile !== declared.entryFile && !changedFiles.includes(declared.entryFile)) {
@@ -433,7 +495,7 @@ export function pluginManagedAgentService(
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     }) as Agent;
-    created = await materializeDeclaredInstructions(companyId, created, declaration, { replaceExisting: true });
+    created = await materializeDeclaredInstructions(companyId, created, declaration, { replaceExisting: false });
 
     let approvalId: string | null = null;
     if (requiresApproval) {
@@ -574,9 +636,7 @@ export function pluginManagedAgentService(
 
       const relinkCandidate = await findRelinkCandidate(companyId, declaration);
       if (relinkCandidate) {
-        await upsertBinding(companyId, declaration, relinkCandidate.id);
-        const relinkedAgent = await agentSvc.getById(relinkCandidate.id) as Agent | null;
-        if (!relinkedAgent) throw notFound("Managed agent not found");
+        const relinkedAgent = await relinkManagedAgent(companyId, declaration, relinkCandidate.id);
         const agent = await backfillManagedPauseReason(
           companyId,
           declaration,
@@ -596,8 +656,19 @@ export function pluginManagedAgentService(
         ? reconciled.agent.metadata
         : {};
       const adapterType = await resolveManagedAdapterType(companyId, declaration);
+      // Reset content through the canonical CAS path before changing defaults.
+      // A conflict must leave the existing adapter configuration untouched.
+      const withInstructions = await materializeDeclaredInstructions(companyId, reconciled.agent, declaration, { replaceExisting: true });
+      const defaults = declarationPatch(declaration, { adapterType });
+      const adapterConfig = { ...defaults.adapterConfig } as Record<string, unknown>;
+      if (declaration.instructions) {
+        for (const key of ["instructionsBundleMode", "instructionsRootPath", "instructionsEntryFile", "instructionsFilePath"]) {
+          if (withInstructions.adapterConfig[key] !== undefined) adapterConfig[key] = withInstructions.adapterConfig[key];
+        }
+      }
       const updated = await agentSvc.update(reconciled.agent.id, {
-        ...declarationPatch(declaration, { adapterType }),
+        ...defaults,
+        adapterConfig,
         metadata: managedMetadata(options.pluginId, options.pluginKey, declaration, currentMetadata),
       }, {
         recordRevision: {
@@ -605,7 +676,7 @@ export function pluginManagedAgentService(
         },
       });
       if (!updated) throw notFound("Managed agent not found");
-      const updatedAgent = await materializeDeclaredInstructions(companyId, updated as Agent, declaration, { replaceExisting: true });
+      const updatedAgent = updated as Agent;
       await upsertBinding(companyId, declaration, updatedAgent.id, {}, adapterType);
       await logActivity(db, {
         companyId,

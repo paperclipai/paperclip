@@ -189,6 +189,7 @@ export function onboardingSeedService(db: Db) {
     dbx: Db,
     companyId: string,
     seed: ApplyOnboardingSeed,
+    audit?: OnboardingSeedAuditActor,
   ): Promise<OnboardingSeedApplication> {
     const agentSvc = agentService(dbx);
     const goalSvc = goalService(dbx);
@@ -255,7 +256,7 @@ export function onboardingSeedService(db: Db) {
           status: "idle",
           spentMonthlyCents: 0,
           lastHeartbeatAt: null,
-        });
+        }, { createdByUserId: audit?.actorType === "user" ? audit.actorId : null });
         agentId = created.id;
       }
     }
@@ -404,7 +405,7 @@ export function onboardingSeedService(db: Db) {
         sql`select pg_advisory_xact_lock(hashtextextended(${`paperclip:onboarding-seed:${companyId}`}, 0))`,
       );
       const dbx = tx as unknown as Db;
-      const applied = await applyWithin(dbx, companyId, seed);
+      const applied = await applyWithin(dbx, companyId, seed, audit);
 
       if (applied.changed && audit) {
         await logActivity(

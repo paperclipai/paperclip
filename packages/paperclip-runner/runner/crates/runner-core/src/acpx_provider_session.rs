@@ -1,3 +1,4 @@
+use crate::generated_acpx_profiles::acpx_release_profile;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -10,7 +11,8 @@ use crate::acpx_provider_state::{
 };
 use crate::acpx_sidecar_transport::{AcpxSidecarTransport, AcpxSidecarTransportConfig};
 use crate::generated_acpx_sidecar_contract::{
-    GeneratedAcpxSidecarCommand, GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+    GeneratedAcpxSidecarCommand, GeneratedAcpxSidecarEventType,
+    GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
 };
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::{
@@ -35,7 +37,7 @@ pub enum AcpxPermissionMode {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpxProviderSessionIdentity {
     pub kind: String,
     pub normalized_session_id: String,
@@ -48,7 +50,15 @@ pub struct AcpxProviderSessionIdentity {
     pub effective_model: String,
     #[serde(default)]
     pub permission_mode: Option<AcpxPermissionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
     pub provider_lifetime_fence_candidates: [u16; 3],
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpxProviderRuntimePolicy {
+    pub read_only: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -62,7 +72,9 @@ pub struct AcpxProviderSessionConfig {
     pub normalized_session_id: String,
     pub working_directory: PathBuf,
     pub permission_mode: AcpxPermissionMode,
+    pub mode: Option<String>,
     pub permission_mode_pinned: bool,
+    pub provider_policy: Option<AcpxProviderRuntimePolicy>,
     pub system_instructions: String,
     pub runtime_context: Value,
     pub tool_set: AuthorizedToolSet,
@@ -72,23 +84,18 @@ pub struct AcpxProviderSessionConfig {
 impl AcpxProviderSessionConfig {
     pub fn validate(&self) -> Result<(), LocalRunnerError> {
         self.transport.validate()?;
-        let qualified_model = match self.agent.as_str() {
-            "claude" => "claude-sonnet-5",
-            "grok" => "grok-4.7",
-            "codex" => "gpt-5.6-sol",
-            _ => {
-                return Err(LocalRunnerError::invalid(
-                    "ACPX agent must be claude, codex, or grok",
-                ))
-            }
-        };
-        if self.agent != "claude" && self.agent != "grok" && self.model != qualified_model {
-            return Err(LocalRunnerError::invalid(format!(
-                "ACPX {} profile requires exact model {qualified_model}",
-                self.agent
-            )));
-        }
+        let profile = acpx_release_profile(&self.agent).ok_or_else(|| {
+            LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
+        })?;
         validate_text(&self.model, MAX_MODEL_CHARS, "ACPX model")?;
+        if let Some(mode) = self.mode.as_deref() {
+            validate_text(mode, MAX_ID_CHARS, "ACPX provider mode")?;
+        }
+        if profile.requires_provider_policy && self.provider_policy.is_none() {
+            return Err(LocalRunnerError::invalid(
+                "ACPX candidate requires explicit provider read-only policy",
+            ));
+        }
         validate_stable_id(&self.run_id, SHORT_STABLE_ID_CHARS, "ACPX run id")?;
         validate_stable_id(
             &self.normalized_session_id,
@@ -153,6 +160,7 @@ impl AcpxProviderSessionConfig {
                 || expected_identity.requested_model != self.model
                 || expected_identity.effective_model != self.model
                 || expected_identity.permission_mode != Some(self.permission_mode)
+                || expected_identity.mode != self.mode
             {
                 return Err(LocalRunnerError::invalid(
                     "ACPX expected identity conflicts with the requested session",
@@ -169,6 +177,9 @@ impl AcpxProviderSessionIdentity {
             return Err(LocalRunnerError::invalid(
                 "ACPX session identity kind is invalid",
             ));
+        }
+        if let Some(mode) = self.mode.as_deref() {
+            validate_text(mode, MAX_ID_CHARS, "ACPX provider mode")?;
         }
         for (value, label) in [
             (&self.normalized_session_id, "normalized session"),
@@ -209,6 +220,30 @@ impl AcpxProviderSessionIdentity {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpxTurnControlCapabilities {
+    pub steering: bool,
+    pub queued_follow_up: bool,
+}
+
+fn verified_turn_controls(
+    value: Option<&Value>,
+    agent: &str,
+) -> Result<AcpxTurnControlCapabilities, LocalRunnerError> {
+    let Some(value) = value else {
+        return Ok(AcpxTurnControlCapabilities::default());
+    };
+    let controls: AcpxTurnControlCapabilities = serde_json::from_value(value.clone())
+        .map_err(|_| LocalRunnerError::invalid("ACPX negotiated turn controls are malformed"))?;
+    if agent != "pi" && (controls.steering || controls.queued_follow_up) {
+        return Err(LocalRunnerError::invalid(
+            "ACPX profile cannot advertise these turn controls",
+        ));
+    }
+    Ok(controls)
+}
+
 pub struct AcpxProviderSession {
     transport: AcpxSidecarTransport,
     config: AcpxProviderSessionConfig,
@@ -216,10 +251,12 @@ pub struct AcpxProviderSession {
     tool_bridge: ProviderToolBridge,
     reserved_tool_bridge: ProviderToolBridge,
     identity: AcpxProviderSessionIdentity,
+    turn_controls: AcpxTurnControlCapabilities,
     catalog_revision: u64,
     working_directory: PathBuf,
     closed: bool,
     transport_terminated: bool,
+    runtime_retired: bool,
 }
 
 impl AcpxProviderSession {
@@ -235,7 +272,7 @@ impl AcpxProviderSession {
         let mut transport =
             AcpxSidecarTransport::start_for_agent(&config.transport, &config.agent)?;
         let bootstrap = bootstrap(&mut transport, config);
-        let (identity, state) = match bootstrap {
+        let (identity, state, turn_controls) = match bootstrap {
             Ok(value) => value,
             Err(error) => {
                 let cleanup = transport.shutdown();
@@ -249,11 +286,17 @@ impl AcpxProviderSession {
             tool_bridge,
             reserved_tool_bridge,
             identity,
+            turn_controls,
             catalog_revision: config.catalog_revision,
             working_directory: config.working_directory.clone(),
             closed: false,
             transport_terminated: false,
+            runtime_retired: false,
         })
+    }
+
+    pub fn runtime_retired(&self) -> bool {
+        self.runtime_retired
     }
 
     pub fn process_id(&self) -> u32 {
@@ -262,6 +305,10 @@ impl AcpxProviderSession {
 
     pub fn identity(&self) -> &AcpxProviderSessionIdentity {
         &self.identity
+    }
+
+    pub fn turn_control_capabilities(&self) -> AcpxTurnControlCapabilities {
+        self.turn_controls
     }
 
     pub fn state(&self) -> &AcpxProviderState {
@@ -297,6 +344,11 @@ impl AcpxProviderSession {
         working_directory: &Path,
     ) -> Result<Value, LocalRunnerError> {
         self.ensure_open()?;
+        if self.runtime_retired {
+            return Err(LocalRunnerError::invalid(
+                "ACPX provider runtime was retired by cancellation",
+            ));
+        }
         validate_stable_id(turn_id, DURABLE_STABLE_ID_CHARS, "ACPX turn id")?;
         validate_turn_message(message)?;
         if working_directory != self.working_directory {
@@ -307,6 +359,11 @@ impl AcpxProviderSession {
         if self.state.active_turn_id().is_some() {
             return Err(LocalRunnerError::invalid(
                 "ACPX provider session already has an active turn",
+            ));
+        }
+        if self.state.has_pending_tools() {
+            return Err(LocalRunnerError::invalid(
+                "ACPX provider session still has unsettled semantic tools",
             ));
         }
         let rotate_turn_identity_ledger = self.state.settled_turn_identity_capacity_reached();
@@ -378,11 +435,64 @@ impl AcpxProviderSession {
                 "ACPX sidecar did not confirm the requested turn",
             )));
         }
+        self.turn_controls =
+            match verified_turn_controls(response.get("turnControls"), &self.config.agent) {
+                Ok(controls) => controls,
+                Err(error) => return Err(self.fail_closed(error)),
+            };
         if let Err(error) = self.state.begin_turn(turn_id) {
             return Err(self.fail_closed(error));
         }
         self.tool_bridge = next_tool_bridge;
         self.reserved_tool_bridge = next_reserved_tool_bridge;
+        Ok(response)
+    }
+
+    pub fn steer_turn(
+        &mut self,
+        turn_id: &str,
+        control_id: &str,
+        mode: &str,
+        message: &str,
+    ) -> Result<Value, LocalRunnerError> {
+        self.ensure_open()?;
+        validate_stable_id(turn_id, DURABLE_STABLE_ID_CHARS, "ACPX turn id")?;
+        validate_stable_id(control_id, SHORT_STABLE_ID_CHARS, "ACPX control id")?;
+        if !matches!(mode, "steer" | "follow_up")
+            || message.trim().is_empty()
+            || message.len() > 65_536
+            || message.contains('\0')
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX turn control violates its bounded contract",
+            ));
+        }
+        let supported = if mode == "steer" {
+            self.turn_controls.steering
+        } else {
+            self.turn_controls.queued_follow_up
+        };
+        if !supported {
+            return Err(LocalRunnerError::invalid(
+                "ACPX turn control was not negotiated",
+            ));
+        }
+        self.state.reserve_turn_control(turn_id, control_id)?;
+        // The sidecar checks the negotiated live capability. An error may follow
+        // delivery, so the reservation must never be released for automatic retry.
+        let response = self.transport.request(
+            GeneratedAcpxSidecarCommand::TurnSteer,
+            json!({"turnId": turn_id, "controlId": control_id, "mode": mode, "message": message}),
+        )?;
+        if response.get("accepted").and_then(Value::as_bool) != Some(true)
+            || response.get("turnId").and_then(Value::as_str) != Some(turn_id)
+            || response.get("controlId").and_then(Value::as_str) != Some(control_id)
+            || response.get("mode").and_then(Value::as_str) != Some(mode)
+        {
+            return Err(self.fail_closed(LocalRunnerError::invalid(
+                "ACPX sidecar did not acknowledge the exact turn control",
+            )));
+        }
         Ok(response)
     }
 
@@ -410,6 +520,9 @@ impl AcpxProviderSession {
                 "ACPX sidecar did not confirm turn cancellation",
             )));
         }
+        // Polling still owns the terminal frame queued before this response.
+        // Only future prompt admission is revoked by the confirmed close.
+        self.runtime_retired = response.get("sessionClosed").and_then(Value::as_bool) == Some(true);
         Ok(response)
     }
 
@@ -422,9 +535,27 @@ impl AcpxProviderSession {
             Ok(event) => event,
             Err(error) => return Err(self.fail_closed(error)),
         };
-        let Some(event) = event else {
+        let Some(mut event) = event else {
             return Ok(None);
         };
+        if event.event_type == GeneratedAcpxSidecarEventType::RuntimePermissionRequested {
+            // Authority comes from this admitted connection's profile. A sidecar
+            // claim cannot relabel another provider; old frames may omit origin.
+            let origin = json!({"adapter":"acpx-runtime-sidecar", "provider":self.config.agent,
+                "method":"session/request_permission"});
+            if event
+                .payload
+                .get("origin")
+                .is_some_and(|claimed| claimed != &origin)
+            {
+                return Err(self.fail_closed(LocalRunnerError::invalid(
+                    "ACPX permission origin conflicts with the admitted provider profile",
+                )));
+            }
+            if let Some(payload) = event.payload.as_object_mut() {
+                payload.insert("origin".to_owned(), origin);
+            }
+        }
         let mut next_state = self.state.clone();
         let events = match next_state.accept_event(&event) {
             Ok(events) => events,
@@ -519,52 +650,50 @@ impl AcpxProviderSession {
                     }
                 }
                 AcpxProviderStateEvent::TurnTerminal { .. } => {
-                    let settlements = match next_bridge.settle_turn("acpx_turn_settled") {
-                        Ok(settlements) => settlements,
-                        Err(error) => {
-                            return Err(self.fail_closed(LocalRunnerError::invalid(format!(
+                    next_bridge
+                        .settle_turn("acpx_turn_settled")
+                        .map_err(|error| {
+                            self.fail_closed(LocalRunnerError::invalid(format!(
                                 "ACPX provider tool settlement failed: {error}"
-                            ))));
-                        }
-                    };
-                    let reserved_settlements = match next_reserved_bridge
-                        .settle_turn("acpx_reserved_terminal_unsettled")
-                    {
-                        Ok(settlements) => settlements,
-                        Err(error) => {
-                            return Err(self.fail_closed(LocalRunnerError::invalid(format!(
-                                "ACPX reserved terminal settlement failed: {error}"
-                            ))));
-                        }
-                    };
-                    if !reserved_settlements.is_empty() {
-                        return Err(self.fail_closed(LocalRunnerError::invalid(
-                            "ACPX turn terminated before its reserved terminal invocation produced a correlated result",
-                        )));
-                    }
-                    // `accept_event` clears the candidate reducer's pending
-                    // tools while the bridge clones settle the corresponding
-                    // calls above. Prove both halves reached the same terminal
-                    // state before committing any of them to the reusable
-                    // session.
-                    if next_state.has_pending_tools()
-                        || next_bridge.pending_calls().next().is_some()
-                        || next_reserved_bridge.pending_calls().next().is_some()
+                            )))
+                        })?;
+                    next_reserved_bridge
+                        .settle_turn("acpx_turn_settled")
+                        .map_err(|error| {
+                            self.fail_closed(LocalRunnerError::invalid(format!(
+                                "ACPX reserved tool settlement failed: {error}"
+                            )))
+                        })?;
+                    // Both ledgers must retain exactly the same dispatched
+                    // effects. Ending the provider turn cannot determine whether
+                    // a server-side operation committed.
+                    let pending: Vec<_> = next_bridge
+                        .pending_calls()
+                        .chain(next_reserved_bridge.pending_calls())
+                        .collect();
+                    if pending.len() != next_state.pending_tool_count()
+                        || pending.iter().any(|call| {
+                            next_state.pending_tool(&call.call_id).is_none_or(|other| {
+                                other.operation_id != call.operation_id || other.input != call.input
+                            })
+                        })
                     {
                         return Err(self.fail_closed(LocalRunnerError::invalid(
                             "ACPX terminal settlement left provider tool state inconsistent",
                         )));
                     }
-                    reconciled_events.extend(
-                        settlements
-                            .into_iter()
-                            .map(AcpxProviderStateEvent::ToolResult),
-                    );
                 }
                 AcpxProviderStateEvent::PermissionRequest { .. } => {
-                    return Err(self.fail_closed(LocalRunnerError::invalid(
-                        "ACPX permission request violated the pinned runner policy",
-                    )));
+                    if self.config.agent == "codex"
+                        || matches!(
+                            self.config.permission_mode,
+                            AcpxPermissionMode::ApproveAll | AcpxPermissionMode::DenyAll
+                        )
+                    {
+                        return Err(self.fail_closed(LocalRunnerError::invalid(
+                            "ACPX permission request violated the pinned runner policy",
+                        )));
+                    }
                 }
                 _ => {}
             }
@@ -579,9 +708,11 @@ impl AcpxProviderSession {
     }
 
     pub fn deliver_tool_result(&mut self, result: &ToolResult) -> Result<(), LocalRunnerError> {
-        let turn_id = self.ensure_active_turn()?.to_owned();
+        self.ensure_open()?;
         let mut next_state = self.state.clone();
-        next_state.complete_tool(&result.call_id, &result.operation_id)?;
+        if next_state.pending_tool(&result.call_id).is_some() {
+            next_state.complete_tool(&result.call_id, &result.operation_id)?;
+        }
         let mut next_bridge = self.tool_bridge.clone();
         let mut next_reserved_bridge = self.reserved_tool_bridge.clone();
         let bridge = if is_reserved_terminal_operation(&result.operation_id) {
@@ -589,9 +720,24 @@ impl AcpxProviderSession {
         } else {
             &mut next_bridge
         };
+        let duplicate = bridge.has_completed_call(&result.call_id);
+        let detached = bridge.turn_closed();
         bridge.apply_result(result.clone()).map_err(|error| {
-            LocalRunnerError::invalid(format!("ACPX tool result is invalid: {error}"))
+            LocalRunnerError::invalid(format!(
+                "ACPX tool result for call {} operation {} is invalid: {error}",
+                result.call_id, result.operation_id
+            ))
         })?;
+        if duplicate {
+            return Ok(());
+        }
+        if detached {
+            self.state = next_state;
+            self.tool_bridge = next_bridge;
+            self.reserved_tool_bridge = next_reserved_bridge;
+            return Ok(());
+        }
+        let turn_id = self.ensure_active_turn()?.to_owned();
         let resolution = if result.is_error {
             // The durable result remains authoritative for correlation and
             // retry bookkeeping, but provider-facing failures expose only a
@@ -626,6 +772,52 @@ impl AcpxProviderSession {
         self.state = next_state;
         self.tool_bridge = next_bridge;
         self.reserved_tool_bridge = next_reserved_bridge;
+        Ok(())
+    }
+
+    pub fn resolve_permission(
+        &mut self,
+        request_id: &str,
+        turn_id: &str,
+        resolution: &Value,
+    ) -> Result<(), LocalRunnerError> {
+        self.ensure_bound_turn(turn_id)?;
+        let details = self.state.pending_permission(request_id).ok_or_else(|| {
+            LocalRunnerError::invalid("ACPX permission request is stale or unknown")
+        })?;
+        let object = resolution.as_object().ok_or_else(|| {
+            LocalRunnerError::invalid("ACPX permission resolution must be an object")
+        })?;
+        let action = object.get("action").and_then(Value::as_str).unwrap_or("");
+        if object.len() != 1
+            || !matches!(
+                action,
+                "accept" | "accept_for_session" | "decline" | "cancel"
+            )
+            || !details
+                .get("choices")
+                .and_then(Value::as_array)
+                .is_some_and(|choices| {
+                    choices
+                        .iter()
+                        .any(|choice| choice.get("key").and_then(Value::as_str) == Some(action))
+                })
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX permission resolution is not an offered choice",
+            ));
+        }
+        let mut next_state = self.state.clone();
+        next_state.complete_permission(request_id)?;
+        let response = match self.transport.request(
+            GeneratedAcpxSidecarCommand::PermissionResolve,
+            json!({"requestId":request_id,"turnId":turn_id,"resolution":resolution}),
+        ) {
+            Ok(response) => response,
+            Err(error) => return Err(self.fail_closed(error)),
+        };
+        self.verify_resolution(&response, "permission")?;
+        self.state = next_state;
         Ok(())
     }
 
@@ -786,12 +978,13 @@ impl AcpxProviderSession {
             &restart_config.transport,
             &restart_config.agent,
         )?;
-        let (replacement_identity, _) = match bootstrap(&mut replacement, &restart_config) {
-            Ok(value) => value,
-            Err(error) => {
-                return Err(self.reject_replacement(replacement, error));
-            }
-        };
+        let (replacement_identity, _, turn_controls) =
+            match bootstrap(&mut replacement, &restart_config) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(self.reject_replacement(replacement, error));
+                }
+            };
         if replacement_identity != self.identity {
             return Err(self.reject_replacement(
                 replacement,
@@ -801,6 +994,7 @@ impl AcpxProviderSession {
             ));
         }
         self.transport = replacement;
+        self.turn_controls = turn_controls;
         self.transport_terminated = false;
         Ok(())
     }
@@ -1034,10 +1228,38 @@ impl Drop for AcpxProviderSession {
     }
 }
 
+fn session_open_params(config: &AcpxProviderSessionConfig, sidecar_tools: &[Value]) -> Value {
+    let mut params = json!({
+        "runtimeDirectory": config.runtime_directory,
+        "normalizedSessionId": config.normalized_session_id,
+        "workingDirectory": config.working_directory,
+        "agent": config.agent,
+        "model": config.model,
+        "permissionMode": config.permission_mode,
+        "permissionModePinned": config.permission_mode_pinned,
+        "providerPolicy": config.provider_policy,
+        "systemInstructions": config.system_instructions,
+        "runtimeContext": config.runtime_context,
+        "tools": &sidecar_tools,
+        "expectedIdentity": config.expected_identity,
+    });
+    if let Some(mode) = config.mode.as_deref() {
+        params["mode"] = json!(mode);
+    }
+    params
+}
+
 fn bootstrap(
     transport: &mut AcpxSidecarTransport,
     config: &AcpxProviderSessionConfig,
-) -> Result<(AcpxProviderSessionIdentity, AcpxProviderState), LocalRunnerError> {
+) -> Result<
+    (
+        AcpxProviderSessionIdentity,
+        AcpxProviderState,
+        AcpxTurnControlCapabilities,
+    ),
+    LocalRunnerError,
+> {
     let sidecar_tools = sidecar_run_tool_operations(&config.tool_set);
     let initialized = transport.request(
         GeneratedAcpxSidecarCommand::Initialize,
@@ -1047,21 +1269,10 @@ fn bootstrap(
 
     let opened = transport.request(
         GeneratedAcpxSidecarCommand::SessionOpen,
-        json!({
-            "runtimeDirectory": config.runtime_directory,
-            "normalizedSessionId": config.normalized_session_id,
-            "workingDirectory": config.working_directory,
-            "agent": config.agent,
-            "model": config.model,
-            "permissionMode": config.permission_mode,
-            "permissionModePinned": config.permission_mode_pinned,
-            "systemInstructions": config.system_instructions,
-            "runtimeContext": config.runtime_context,
-            "tools": &sidecar_tools,
-            "expectedIdentity": config.expected_identity,
-        }),
+        session_open_params(config, &sidecar_tools),
     )?;
     let identity = verify_open_response(&opened, transport.process_id(), config)?;
+    let turn_controls = verified_turn_controls(opened.get("turnControls"), &config.agent)?;
 
     let attached = transport.request(
         GeneratedAcpxSidecarCommand::RunAttach,
@@ -1078,7 +1289,11 @@ fn bootstrap(
             "ACPX sidecar did not confirm the requested run attachment",
         ));
     }
-    Ok((identity, AcpxProviderState::new(&config.run_id)?))
+    Ok((
+        identity,
+        AcpxProviderState::new(&config.run_id)?,
+        turn_controls,
+    ))
 }
 
 fn verify_initialize_response(value: &Value, process_id: u32) -> Result<(), LocalRunnerError> {
@@ -1140,6 +1355,7 @@ fn verify_open_response(
         || identity.requested_model != config.model
         || identity.effective_model != config.model
         || identity.permission_mode != Some(config.permission_mode)
+        || identity.mode != config.mode
         || config
             .expected_identity
             .as_ref()
@@ -1270,6 +1486,35 @@ fn with_cleanup_error(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn turn_controls_require_exact_live_pi_capability_fields() {
+        use super::*;
+        assert_eq!(
+            verified_turn_controls(None, "pi").unwrap(),
+            AcpxTurnControlCapabilities::default()
+        );
+        assert!(
+            verified_turn_controls(Some(&json!({"steering":true,"queuedFollowUp":true})), "pi")
+                .unwrap()
+                .steering
+        );
+        for value in [
+            Value::Null,
+            json!({}),
+            json!({"steering":1,"queuedFollowUp":false}),
+            json!({"steering":true,"queuedFollowUp":true,"extra":true}),
+        ] {
+            assert!(verified_turn_controls(Some(&value), "pi").is_err());
+        }
+        for agent in ["codex", "claude", "cursor", "copilot"] {
+            assert!(verified_turn_controls(
+                Some(&json!({"steering":true,"queuedFollowUp":false})),
+                agent
+            )
+            .is_err());
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -1331,5 +1576,171 @@ mod permission_mode_tests {
         assert!(
             serde_json::from_value::<AcpxPermissionMode>(serde_json::json!("unknown")).is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    fn config() -> AcpxProviderSessionConfig {
+        let operations = Vec::new();
+        AcpxProviderSessionConfig {
+            transport: AcpxSidecarTransportConfig {
+                command: std::env::current_exe().unwrap(),
+                args: Vec::new(),
+                verified_launch: None,
+                request_timeout: Duration::from_secs(1),
+                shutdown_grace: Duration::from_millis(100),
+            },
+            agent: "cursor".to_owned(),
+            model: "explicit-model".to_owned(),
+            run_id: "run-1".to_owned(),
+            catalog_revision: 1,
+            runtime_directory: std::env::temp_dir(),
+            normalized_session_id: "session-1".to_owned(),
+            working_directory: std::env::temp_dir(),
+            permission_mode: AcpxPermissionMode::ApproveReads,
+            mode: Some("plan".to_owned()),
+            permission_mode_pinned: true,
+            provider_policy: Some(AcpxProviderRuntimePolicy { read_only: false }),
+            system_instructions: String::new(),
+            runtime_context: Value::Null,
+            tool_set: AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            },
+            expected_identity: None,
+        }
+    }
+    fn identity() -> AcpxProviderSessionIdentity {
+        AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: format!("sha256:{}", "1".repeat(64)),
+            workspace_digest: format!("sha256:{}", "2".repeat(64)),
+            requested_model: "explicit-model".to_owned(),
+            effective_model: "explicit-model".to_owned(),
+            permission_mode: Some(AcpxPermissionMode::ApproveReads),
+            mode: Some("plan".to_owned()),
+            provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+        }
+    }
+    #[test]
+    fn model_is_explicit_and_provider_verified_for_every_agent() {
+        let mut config = config();
+        for agent in ["claude", "codex", "pi", "grok", "cursor", "copilot"] {
+            config.agent = agent.to_owned();
+            config.model = "custom/model[context=272k,reasoning=medium]".to_owned();
+            config.validate().unwrap();
+            assert_eq!(
+                session_open_params(&config, &[])["model"],
+                json!(config.model)
+            );
+            for invalid in [
+                "".to_owned(),
+                " ".to_owned(),
+                "x".repeat(241),
+                "model\0".to_owned(),
+            ] {
+                config.model = invalid;
+                assert!(config.validate().is_err());
+            }
+        }
+    }
+    #[test]
+    fn mode_is_opaque_bounded_and_not_defaulted_in_rust() {
+        let mut config = config();
+        // Generic transport accepts ids beyond Cursor's vocabulary and leaves
+        // capability checks and native translation to the provider adapter.
+        for agent in ["cursor", "copilot"] {
+            config.agent = agent.to_owned();
+            for mode in [
+                None,
+                Some("architect".to_owned()),
+                Some("custom/build".to_owned()),
+            ] {
+                config.mode = mode;
+                config.validate().unwrap();
+            }
+        }
+        for invalid in [
+            "".to_owned(),
+            " ".to_owned(),
+            "x".repeat(241),
+            "plan\0".to_owned(),
+        ] {
+            config.mode = Some(invalid.clone());
+            assert!(config.validate().is_err());
+            let mut identity = identity();
+            identity.mode = Some(invalid);
+            assert!(identity.validate().is_err());
+        }
+        for invalid in [json!(1), json!({})] {
+            let mut value = serde_json::to_value(identity()).unwrap();
+            value["mode"] = invalid;
+            assert!(serde_json::from_value::<AcpxProviderSessionIdentity>(value).is_err());
+        }
+    }
+    #[test]
+    fn open_wire_and_identity_bind_exact_mode() {
+        let mut config = config();
+        for mode in [
+            "agent".to_owned(),
+            "architect".to_owned(),
+            "custom/build".to_owned(),
+        ] {
+            config.mode = Some(mode.clone());
+            assert_eq!(session_open_params(&config, &[])["mode"], json!(mode));
+            let mut identity = identity();
+            identity.mode = Some(mode.clone());
+            let response = json!({"sidecarPid": 100, "status": {}, "identity": identity});
+            assert_eq!(
+                verify_open_response(&response, 100, &config).unwrap().mode,
+                Some(mode.clone())
+            );
+            for wrong in [
+                None,
+                Some("agent".to_owned()),
+                Some("plan".to_owned()),
+                Some("ask".to_owned()),
+            ] {
+                if wrong == Some(mode.clone()) {
+                    continue;
+                }
+                let mut changed = response.clone();
+                changed["identity"]["mode"] = json!(wrong);
+                assert!(verify_open_response(&changed, 100, &config).is_err());
+            }
+        }
+        config.agent = "copilot".to_owned();
+        config.mode = None;
+        assert!(session_open_params(&config, &[]).get("mode").is_none());
+        let mut other = identity();
+        other.mode = None;
+        assert!(serde_json::to_value(&other).unwrap().get("mode").is_none());
+        let response = json!({"sidecarPid": 100, "status": {}, "identity": other});
+        verify_open_response(&response, 100, &config).unwrap();
+    }
+    #[test]
+    fn warm_reopen_and_suspension_reject_mode_changes() {
+        let mut config = config();
+        let identity = identity();
+        config.expected_identity = Some(identity.clone());
+        config.validate().unwrap();
+        config.mode = Some("ask".to_owned());
+        assert!(config.validate().is_err());
+        let mut changed = identity.clone();
+        changed.mode = Some("agent".to_owned());
+        assert!(verify_suspend_response(
+            &json!({"suspended": true, "identity": changed}),
+            &identity
+        )
+        .is_err());
     }
 }

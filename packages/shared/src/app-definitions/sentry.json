@@ -26,7 +26,14 @@
       "whenToUse": "Use the provider-hosted connection for the quickest setup.",
       "defaults": {
         "serverUrl": "https://mcp.sentry.dev/mcp",
-        "discoveryUrl": "https://sentry.io/.well-known/oauth-authorization-server"
+        "discoveryUrl": "https://sentry.io/.well-known/oauth-authorization-server",
+        "scopesHint": [
+          "org:read",
+          "project:write",
+          "team:write",
+          "event:write",
+          "alerts:write"
+        ]
       },
       "guidanceMd": "Connect the Sentry organization and projects agents need for incident work.",
       "riskTier": "S2",

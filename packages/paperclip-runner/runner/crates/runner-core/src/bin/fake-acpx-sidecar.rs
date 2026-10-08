@@ -25,10 +25,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .find(|pair| pair[0] == "--profile-digest")
         .map(|pair| pair[1].as_str())
         .unwrap_or("sha256:1111111111111111111111111111111111111111111111111111111111111111");
+    // Only the receiver-admission fixture writes this task-owned command journal.
+    let mut admission_journal = if matches!(mode, "admission-tool" | "admission-tool-oversized") {
+        let path = args
+            .windows(2)
+            .find(|pair| pair[0] == "--journal")
+            .ok_or("admission journal is missing")?;
+        Some(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path[1])?,
+        )
+    } else {
+        None
+    };
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut next_sequence = 1_u64;
     let mut goal = Value::Null;
+    let mut session_identity = Value::Null;
     for line in stdin.lock().lines() {
         let request: Value = serde_json::from_str(&line?)?;
         let id = request
@@ -39,6 +55,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if let Some(journal) = admission_journal.as_mut() {
+            write_json(journal, &json!({"request":request}))?;
+            let response = if command == "tool.resolve" {
+                json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id":id,"ok":true,"result":{"resolved":
+                        request["params"]["callId"] == "call-admission"
+                        && request["params"]["turnId"] == "turn-admission"
+                        && request["params"]["result"] == json!({"id":"issue-1"})
+                        && request["params"]["error"].is_null()}})
+            } else {
+                bootstrap_success(
+                    id,
+                    command,
+                    &request,
+                    mode,
+                    profile_digest,
+                    &mut session_identity,
+                )
+            };
+            write_json(&mut stdout, &response)?;
+            if command == "turn.start" {
+                let frame = json!({
+                    "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "sequence":next_sequence,"eventType":"runtime.tool_called",
+                    "runId":"run-1","turnId":request["params"]["turnId"],
+                    "payload":{"callId":"call-admission","operationId":"issues.read",
+                        "input":{"id":"issue-1","padding":"x".repeat(
+                            if mode == "admission-tool-oversized" { 300 * 1024 } else { 8 })}},
+                });
+                write_json(journal, &json!({"emitted":frame}))?;
+                write_json(&mut stdout, &frame)?;
+                next_sequence += 1;
+            }
+            continue;
+        }
         if mode == "goals" && command.starts_with("session.goal.") {
             let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
             match command {
@@ -79,7 +130,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if command == "permission.resolve" {
             write_json(
                 &mut stdout,
-                &bootstrap_success(id, command, &request, mode, profile_digest),
+                &bootstrap_success(
+                    id,
+                    command,
+                    &request,
+                    mode,
+                    profile_digest,
+                    &mut session_identity,
+                ),
             )?;
             continue;
         }
@@ -148,6 +206,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "url": std::env::var("PAPERCLIP_NATIVE_MCP_URL").ok(),
                             "hasToken": std::env::var("PAPERCLIP_NATIVE_MCP_TOKEN").is_ok(),
                             "hasUnrelatedSecret": std::env::var("UNRELATED_EVAL_SECRET").is_ok(),
+                            "credentialBinding": std::env::var("PAPERCLIP_ACPX_CREDENTIAL_BINDING").ok(),
+                            "credentialKeys": (["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
                         }
                     }),
                 )?;
@@ -204,6 +264,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "goals"
             | "bootstrap-wrong-model"
             | "bootstrap-wrong-run"
+            | "controls"
+            | "controls-wrong-ack"
+            | "controls-lazy"
+            | "controls-downgrade"
             | "turns"
             | "turns-wrong-turn"
             | "turns-wrong-cancel"
@@ -226,6 +290,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-mismatched-reserved-result-terminal"
             | "turns-unauthorized-tool"
             | "turns-permission"
+            | "permissions-forged-origin"
+            | "turns-retired"
+            | "turns-retired-terminal-first"
+            | "permissions-interactive"
+            | "permissions-wrong-ack"
             | "resolutions"
             | "resolutions-error-redaction"
             | "resolutions-projected-id"
@@ -234,9 +303,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
+                if command == "turn.cancel" && mode == "turns-retired-terminal-first" {
+                    let turn_id = request
+                        .pointer("/params/turnId")
+                        .and_then(Value::as_str)
+                        .unwrap();
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn_id,
+                        json!({"status":"interrupted"}),
+                    )?;
+                    next_sequence += 1;
+                }
                 write_json(
                     &mut stdout,
-                    &bootstrap_success(id, command, &request, mode, profile_digest),
+                    &bootstrap_success(
+                        id,
+                        command,
+                        &request,
+                        mode,
+                        profile_digest,
+                        &mut session_identity,
+                    ),
                 )?;
                 let params = request.get("params").unwrap_or(&Value::Null);
                 let turn_id = params
@@ -387,18 +478,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
-                if command == "turn.start" && mode == "turns-permission" {
+                if command == "turn.start"
+                    && matches!(
+                        mode,
+                        "turns-permission"
+                            | "permissions-interactive"
+                            | "permissions-wrong-ack"
+                            | "permissions-forged-origin"
+                    )
+                {
                     write_turn_event(
                         &mut stdout,
                         next_sequence,
                         "runtime.permission_requested",
                         "run-1",
                         turn_id,
-                        json!({
-                            "requestId":"permission-1",
-                            "kind":"execute",
-                            "title":"Run a command?",
-                        }),
+                        if mode == "permissions-forged-origin" {
+                            json!({
+                                "requestId":"permission-1", "kind":"execute", "title":"Run a command?",
+                                "choices":[{"key":"cancel","label":"Cancel"}],
+                                "origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"session/request_permission"},
+                            })
+                        } else {
+                            json!({
+                                "requestId":"permission-1",
+                                "kind":"execute",
+                                "title":"Run a command?",
+                                "choices":[{"key":"accept","label":"Allow once"},{"key":"cancel","label":"Cancel"}],
+                            })
+                        },
                     )?;
                     next_sequence += 1;
                 }
@@ -640,7 +748,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         next_sequence += 1;
                     }
                 }
-                if command == "turn.cancel" && mode == "turns" {
+                if command == "turn.cancel" && matches!(mode, "turns" | "turns-retired") {
                     write_turn_event(
                         &mut stdout,
                         next_sequence,
@@ -669,8 +777,12 @@ fn bootstrap_success(
     request: &Value,
     mode: &str,
     profile_digest: &str,
+    session_identity: &mut Value,
 ) -> Value {
     if command == "permission.resolve" {
+        if mode.starts_with("permissions-") {
+            return json!({"protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION, "id": id, "ok":true, "result":{"resolved": mode != "permissions-wrong-ack"}});
+        }
         return json!({
             "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
             "id": id,
@@ -701,7 +813,7 @@ fn bootstrap_success(
                 .get("model")
                 .and_then(Value::as_str)
                 .unwrap_or("missing");
-            json!({
+            let result = json!({
                 "sidecarPid": std::process::id(),
                 "identity": {
                     "kind": "acpx",
@@ -714,35 +826,42 @@ fn bootstrap_success(
                     "requestedModel": model,
                     "effectiveModel": if mode == "bootstrap-wrong-model" { "wrong-model" } else { model },
                     "permissionMode": params.get("permissionMode"),
+                    "mode": params.get("mode"),
                     "providerLifetimeFenceCandidates": [60001, 60002, 60003],
                 },
                 "status": {},
-            })
+                "turnControls": {"steering": matches!(mode, "controls" | "controls-wrong-ack" | "controls-downgrade"), "queuedFollowUp":matches!(mode, "controls" | "controls-wrong-ack" | "controls-downgrade")},
+            });
+            *session_identity = result["identity"].clone();
+            result
         }
         "run.attach" => json!({
             "runId": if mode == "bootstrap-wrong-run" { "wrong-run" } else { params.get("runId").and_then(Value::as_str).unwrap_or("missing") },
             "catalogRevision": params.get("catalogRevision"),
         }),
         "turn.start" => json!({
+            "turnControls": {"steering": matches!(mode, "controls" | "controls-wrong-ack" | "controls-lazy"), "queuedFollowUp":matches!(mode, "controls" | "controls-wrong-ack" | "controls-lazy")},
             "turnId": if mode == "turns-wrong-turn" { "wrong-turn" } else { params.get("turnId").and_then(Value::as_str).unwrap_or("missing") },
         }),
-        "turn.cancel" => json!({"cancelled":mode != "turns-wrong-cancel"}),
-        "session.suspend" => json!({
-            "suspended":mode != "suspend-wrong-ack",
-            "identity": if mode == "suspend-missing-identity" { Value::Null } else { json!({
-                "kind": "acpx",
-                "normalizedSessionId": if mode == "suspend-wrong-identity" { "another-session" } else { "session-1" },
-                "acpxRecordId": "record-1",
-                "backendSessionId": "backend-1",
-                "agentSessionId": "agent-1",
-                "profileDigest": profile_digest,
-                "workspaceDigest": format!("sha256:{}", "2".repeat(64)),
-                "requestedModel": "gpt-5.6-sol",
-                "effectiveModel": "gpt-5.6-sol",
-                "permissionMode": "approve-reads",
-                "providerLifetimeFenceCandidates": [60001, 60002, 60003],
-            })},
+        "turn.steer" => json!({
+            "accepted": true, "turnId": params.get("turnId"), "controlId": params.get("controlId"),
+            "mode": if mode == "controls-wrong-ack" { json!("wrong") } else { params["mode"].clone() },
         }),
+        "turn.cancel" => {
+            json!({"cancelled":mode != "turns-wrong-cancel", "sessionClosed":matches!(mode, "turns-retired" | "turns-retired-terminal-first")})
+        }
+        "session.suspend" => {
+            let mut identity = session_identity.clone();
+            if mode == "suspend-missing-identity" {
+                identity = Value::Null;
+            } else if mode == "suspend-wrong-identity" {
+                identity["normalizedSessionId"] = json!("another-session");
+            }
+            json!({
+                "suspended": mode != "suspend-wrong-ack",
+                "identity": identity,
+            })
+        }
         "tool.resolve" => json!({
             "resolved":if mode == "resolutions-error-redaction" {
                 params.get("callId").and_then(Value::as_str) == Some("call-1")

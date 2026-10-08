@@ -96,16 +96,31 @@ impl AcpxSidecarTransport {
         agent: &str,
     ) -> Result<Self, LocalRunnerError> {
         let credential_keys: &[&str] = match agent {
-            "claude" => &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
-            "codex" => &["OPENAI_API_KEY", "CODEX_API_KEY"],
+            "claude" => &[
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_AUTH_TOKEN",
+                "AWS_BEARER_TOKEN_BEDROCK",
+            ],
+            "codex" => &[
+                "OPENAI_API_KEY",
+                "CODEX_API_KEY",
+                "PAPERCLIP_AI_PROVIDER_KEY",
+            ],
             "grok" => &["XAI_API_KEY", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"],
+            "pi" => &["OPENROUTER_API_KEY"],
+            "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
+            "copilot" => &["COPILOT_GITHUB_TOKEN"],
             _ => {
                 return Err(LocalRunnerError::invalid(
-                    "ACPX sidecar credentials require a qualified claude, codex, or grok agent",
+                    "ACPX sidecar credentials require a known agent profile",
                 ))
             }
         };
         let mut keys = vec![
+            "PAPERCLIP_AGENT_KEY_ID",
+            "PAPERCLIP_AGENT_PUBLIC_KEY",
+            "PAPERCLIP_AGENT_PRIVATE_KEY",
             "LANGUAGE",
             "SSL_CERT_FILE",
             "SSL_CERT_DIR",
@@ -128,6 +143,26 @@ impl AcpxSidecarTransport {
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];
+        if matches!(agent, "pi" | "cursor" | "copilot") {
+            // Credential values alone are not proof of an explicit task binding.
+            // The sidecar checks this controller-minted provider/session marker.
+            keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
+        }
+        if agent == "claude" {
+            keys.extend_from_slice(&[
+                "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "AWS_REGION",
+                "AWS_DEFAULT_REGION",
+                "AWS_EC2_METADATA_DISABLED",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+                "ANTHROPIC_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "CLAUDE_CODE_SUBAGENT_MODEL",
+            ]);
+        }
         keys.extend_from_slice(credential_keys);
         Self::start_with_environment_keys(config, &keys)
     }
@@ -687,7 +722,13 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "AGENT_STARTUP_FAILED.EXIT_NONZERO" => return "agent_startup_exit_nonzero",
         "AGENT_STARTUP_FAILED.OTHER" => return "agent_startup_other",
         "AGENT_DISCONNECTED" => return "agent_disconnected",
+        "ACPX_TOOL_CALL_STALE" => return "provider_tool_call_retired",
         "AUTH_REQUIRED" => return "authentication_required",
+        "COPILOT_AUTH_REQUIRED" => return "authentication_required",
+        "COPILOT_POLICY_VIOLATION" => return "copilot_policy_violation",
+        "COPILOT_DETACHED_WORK_UNSUPPORTED" => return "copilot_detached_work_unsupported",
+        "COPILOT_ENTITLEMENT_DENIED" => return "provider_entitlement_denied",
+        "COPILOT_MODEL_UNAVAILABLE" => return "requested_model_unsupported",
         "SESSION_RESUME_REQUIRED" => return "session_resume_required",
         "SESSION_MODE_REPLAY_FAILED" => return "session_mode_replay_failed",
         "SESSION_MODEL_REPLAY_FAILED" => return "session_model_replay_failed",
@@ -799,6 +840,32 @@ mod tests {
     }
 
     #[test]
+    fn candidate_auth_diagnostics_use_only_closed_codes_and_never_provider_text() {
+        for (code, expected) in [
+            ("ACPX_TOOL_CALL_STALE", "provider_tool_call_retired"),
+            ("ACPX_TOOL_CALL_STALE_EXTRA", "unclassified"),
+            ("COPILOT_AUTH_REQUIRED", "authentication_required"),
+            ("COPILOT_ENTITLEMENT_DENIED", "provider_entitlement_denied"),
+            ("COPILOT_MODEL_UNAVAILABLE", "requested_model_unsupported"),
+            ("COPILOT_AUTH_REQUIRED_EXTRA", "unclassified"),
+            ("COPILOT_REQUEST_FAILED", "unclassified"),
+            ("UNKNOWN_CANDIDATE_FAILURE", "unclassified"),
+        ] {
+            let error = ResponseError {
+                code: code.to_owned(),
+                message:
+                    "private-token-canary COPILOT_AUTH_REQUIRED https://user:secret@example.invalid"
+                        .to_owned(),
+                retryable: false,
+            };
+            let classification = response_error_classification(&error);
+            assert_eq!(classification, expected);
+            assert!(!classification.contains("canary"));
+            assert!(!classification.contains("secret"));
+        }
+    }
+
+    #[test]
     fn classifies_only_allowlisted_internal_sidecar_failures() {
         let error = |code: &str, message: &str| ResponseError {
             code: code.to_owned(),
@@ -853,6 +920,11 @@ mod tests {
             "provider_lifetime_owned"
         );
         let admission_failures = [
+            ("COPILOT_POLICY_VIOLATION", "copilot_policy_violation"),
+            (
+                "COPILOT_DETACHED_WORK_UNSUPPORTED",
+                "copilot_detached_work_unsupported",
+            ),
             (
                 "ACPX_RUNTIME_ADMISSION_VERIFICATION_TIMEOUT",
                 "runtime_admission_verification_timeout",

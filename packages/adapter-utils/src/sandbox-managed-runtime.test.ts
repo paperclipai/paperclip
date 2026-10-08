@@ -6,6 +6,9 @@ import path from "node:path";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as gitSync from "./git-workspace-sync.js";
+import * as restoreMerge from "./workspace-restore-merge.js";
+import { getWorkspaceRestoreDiagnostic } from "./workspace-restore-diagnostics.js";
 import {
   resetLocalGitIndexToHead,
   runLocalGit,
@@ -835,6 +838,93 @@ describe("sandbox managed runtime", () => {
     },
   );
 
+  it("restores a sandbox rebase without merging it with unchanged host history", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-rebase-"));
+    cleanupDirs.push(rootDir);
+    const host = path.join(rootDir, "host");
+    const remote = path.join(rootDir, "remote");
+    await mkdir(host);
+    await git(host, ["init"]);
+    await git(host, ["checkout", "-b", "work"]);
+    await git(host, ["config", "user.name", "Paperclip Test"]);
+    await git(host, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(host, "pins.txt"), "base\n");
+    await writeFile(path.join(host, "notes.txt"), "original notes\n");
+    await git(host, ["add", "."]);
+    await git(host, ["commit", "-m", "base"]);
+    const base = await git(host, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(host, "pins.txt"), "feature\n");
+    await git(host, ["commit", "-am", "feature"]);
+    const startingHead = await git(host, ["rev-parse", "HEAD"]);
+    await git(host, ["checkout", "-b", "upstream", base]);
+    await writeFile(path.join(host, "pins.txt"), "upstream\n");
+    await git(host, ["commit", "-am", "upstream"]);
+    await git(host, ["checkout", "work"]);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "rebase", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client: makeFilesystemClient(),
+      workspaceLocalDir: host,
+    });
+    await git(remote, ["config", "user.name", "Paperclip Test"]);
+    await git(remote, ["config", "user.email", "test@paperclip.dev"]);
+    await git(remote, ["fetch", "--unshallow", host, "+refs/heads/*:refs/remotes/source/*"]);
+    await expect(git(remote, ["rebase", "refs/remotes/source/upstream"])).rejects.toMatchObject({ code: 1 });
+    await writeFile(path.join(remote, "pins.txt"), "resolved pins\n");
+    await git(remote, ["add", "pins.txt"]);
+    await git(remote, ["-c", "core.editor=true", "rebase", "--continue"]);
+    const rebasedHead = await git(remote, ["rev-parse", "HEAD"]);
+    expect(rebasedHead).not.toBe(startingHead);
+    await writeFile(path.join(host, "notes.txt"), "host edits during the run\n");
+    await writeFile(path.join(host, "local-only.txt"), "local file\n");
+    await writeFile(path.join(remote, "output.txt"), "sandbox output\n");
+
+    await prepared.restoreWorkspace();
+
+    expect(await git(host, ["rev-parse", "HEAD"])).toBe(rebasedHead);
+    expect(await git(host, ["symbolic-ref", "--short", "HEAD"])).toBe("work");
+    expect(await readFile(path.join(host, "pins.txt"), "utf8")).toBe("resolved pins\n");
+    expect(await readFile(path.join(host, "notes.txt"), "utf8")).toBe("host edits during the run\n");
+    expect(await readFile(path.join(host, "local-only.txt"), "utf8")).toBe("local file\n");
+    expect(await readFile(path.join(host, "output.txt"), "utf8")).toBe("sandbox output\n");
+    expect(await git(host, ["diff", "--cached", "--name-only"])).toBe("");
+  });
+
+  it("restores a sandbox reset to an ancestor with the matching clean working tree", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-reset-"));
+    cleanupDirs.push(rootDir);
+    const host = path.join(rootDir, "host");
+    const remote = path.join(rootDir, "remote");
+    await mkdir(host);
+    await git(host, ["init"]);
+    await git(host, ["checkout", "-b", "work"]);
+    await git(host, ["config", "user.name", "Paperclip Test"]);
+    await git(host, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(host, "tracked.txt"), "original\n");
+    await git(host, ["add", "."]);
+    await git(host, ["commit", "-m", "original"]);
+    const ancestor = await git(host, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(host, "tracked.txt"), "change to discard\n");
+    await git(host, ["commit", "-am", "later change"]);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "reset", remoteCwd: remote, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client: makeFilesystemClient(),
+      workspaceLocalDir: host,
+    });
+    await git(remote, ["fetch", "--unshallow", host, "work"]);
+    await git(remote, ["reset", "--hard", ancestor]);
+
+    await prepared.restoreWorkspace();
+
+    expect(await git(host, ["rev-parse", "HEAD"])).toBe(ancestor);
+    expect(await git(host, ["symbolic-ref", "--short", "HEAD"])).toBe("work");
+    expect(await readFile(path.join(host, "tracked.txt"), "utf8")).toBe("original\n");
+    expect(await git(host, ["status", "--porcelain"])).toBe("");
+  });
+
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-git-"));
     cleanupDirs.push(rootDir);
@@ -1212,7 +1302,9 @@ describe("sandbox managed runtime", () => {
   });
 
   it.each(["symlink", "root_symlink", "root_alias", "root_alias_retarget", "case_alias", "EACCES", "EIO", "ENOENT"])("handles an overlay source changed after the snapshot: %s", async (change) => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-overlay-source-"));
+    // The runtime pins a realpath root before staging. Match that spelling so
+    // injected I/O errors also reach the selected file on macOS's /var alias.
+    const rootDir = await fsPromises.realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-overlay-source-")));
     cleanupDirs.push(rootDir);
     const workspaceLocalDir = path.join(rootDir, "workspace");
     await initGitRepo(workspaceLocalDir);
@@ -1301,6 +1393,7 @@ describe("sandbox managed runtime", () => {
         expect(syncIn).toHaveBeenCalledOnce();
       } else {
         await expect(preparing).rejects.toThrow(change.endsWith("symlink") ? /overlay.*directory/i : failure.message);
+        if (statSpy) expect(statSpy).toHaveBeenCalledWith(selectedPath);
         expect(syncIn).not.toHaveBeenCalled();
       }
     } finally {
@@ -3972,14 +4065,14 @@ describe("sandbox managed runtime outbound coordinator", () => {
     ]);
   }
 
-  it("records each failed restore phase without changing stable failure ordering", async () => {
+  it.each([false, true])("records each failed restore phase in stable order (shared error: %s)", async (sharedError) => {
     const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home", "private-asset"]);
     const { control, gate } = makeOutboundControl();
     const client = makeGatedOutboundClient(true, gate);
     const workspaceError = Object.assign(new Error("private workspace path"), { code: "EACCES" });
     control.failWith("workspace", workspaceError);
-    control.failWith("home", Object.assign(new Error("private credential"), { status: 404 }));
-    control.failWith("private-asset", new Error("private asset error"));
+    control.failWith("home", sharedError ? workspaceError : Object.assign(new Error("private credential"), { status: 404 }));
+    control.failWith("private-asset", sharedError ? workspaceError : new Error("private asset error"));
     const prepared = await prepareSandboxManagedRuntime({
       spec: makeSpec(remoteWorkspaceDir), adapterKey: "codex", client, workspaceLocalDir: workspaceDir,
       assets: [
@@ -3992,11 +4085,14 @@ describe("sandbox managed runtime outbound coordinator", () => {
     const diagnostics = lines.filter((line) => line.includes("Workspace restore diagnostic:"));
     expect(diagnostics).toHaveLength(3);
     expect(diagnostics).toEqual(expect.arrayContaining([
-      '[paperclip] Workspace restore diagnostic: {"phase":"workspace","errorCode":"EACCES"}\n',
-      '[paperclip] Workspace restore diagnostic: {"phase":"asset","errorCode":"unknown","httpStatus":404}\n',
-      '[paperclip] Workspace restore diagnostic: {"phase":"asset","errorCode":"unknown"}\n',
+      '[paperclip] Workspace restore diagnostic: {"phase":"workspace","step":"workspace_transfer","errorCode":"EACCES"}\n',
+      sharedError ? '[paperclip] Workspace restore diagnostic: {"phase":"asset","step":"asset_restore","errorCode":"EACCES"}\n'
+        : '[paperclip] Workspace restore diagnostic: {"phase":"asset","step":"asset_restore","errorCode":"unknown","httpStatus":404}\n',
+      sharedError ? '[paperclip] Workspace restore diagnostic: {"phase":"asset","step":"asset_restore","errorCode":"EACCES"}\n'
+        : '[paperclip] Workspace restore diagnostic: {"phase":"asset","step":"asset_restore","errorCode":"unknown"}\n',
     ]));
     expect(diagnostics.join("")).not.toContain("private");
+    expect(getWorkspaceRestoreDiagnostic(workspaceError)).toEqual({ phase: "workspace", step: "workspace_transfer", errorCode: "EACCES" });
     expect(control.settled).toEqual(expect.arrayContaining(["workspace", "home", "private-asset"]));
   });
 
@@ -4351,6 +4447,48 @@ describe("sandbox git-bundle export transport", () => {
       .flatMap((operation) => operation.files)
       .filter((mapping) => path.posix.basename(mapping.sourcePath) === "git-delta.bundle");
   }
+
+  it.each([
+    "git_export", "git_import", "workspace_transfer", "workspace_extract",
+    "directory_merge", "git_integration", "index_reset", "git_ref_cleanup",
+  ] as const)("identifies the actual %s failure during workspace restore", async (step) => {
+    const { localWorkspaceDir, remoteWorkspaceDir } = await setupGitBackedWorkspace("paperclip-restore-diagnostic-");
+    const client = makeTransportClient(step !== "workspace_extract", { syncOutOperations: [], readFilePaths: [] });
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: gitSpec(remoteWorkspaceDir), adapterKey: "test-adapter", client, workspaceLocalDir: localWorkspaceDir,
+    });
+    await commitInSandbox(remoteWorkspaceDir);
+    const failure = Object.assign(new Error("private-restore-command /private-restore-path"), { code: 7, stderr: "private-restore-stderr" });
+    if (step === "git_export") client.run = async () => { throw failure; };
+    if (step === "git_import") vi.spyOn(gitSync, "fetchGitBundleIntoLocalRef").mockRejectedValueOnce(failure);
+    if (step === "directory_merge") vi.spyOn(restoreMerge, "mergeDirectoryWithBaseline").mockRejectedValueOnce(failure);
+    if (step === "git_integration") vi.spyOn(gitSync, "integrateImportedGitHead").mockRejectedValueOnce(failure);
+    if (step === "index_reset") vi.spyOn(gitSync, "resetLocalGitIndexToHead").mockRejectedValueOnce(failure);
+    if (step === "git_ref_cleanup") vi.spyOn(gitSync, "deleteLocalGitRef").mockRejectedValueOnce(failure);
+    if (step === "workspace_transfer") {
+      const syncOut = client.syncOut!;
+      client.syncOut = async (operations) => {
+        if (operations.some((operation) => operation.files.some((file) => file.kind === "directory"))) throw failure;
+        return syncOut(operations);
+      };
+    }
+    if (step === "workspace_extract") {
+      const readRemote = client.readFile;
+      client.readFile = async (remotePath, options) => remotePath.endsWith("workspace-download.tar")
+        ? Buffer.from("invalid archive") : readRemote(remotePath, options);
+    }
+    const lines: string[] = [];
+    try {
+      const thrown = await prepared.restoreWorkspace((line) => { lines.push(line); }).then(() => undefined, (error: unknown) => error);
+      expect(thrown).toBeInstanceOf(Error);
+      if (step !== "workspace_extract") expect(thrown).toBe(failure);
+      expect(getWorkspaceRestoreDiagnostic(thrown)).toMatchObject({ phase: "workspace", step, errorCode: "unknown" });
+      if (step !== "workspace_extract") expect(getWorkspaceRestoreDiagnostic(thrown)?.exitCode).toBe(7);
+      const diagnostics = lines.filter((line) => line.includes("Workspace restore diagnostic:"));
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]).not.toContain("private-restore-");
+    } finally { vi.restoreAllMocks(); }
+  });
 
   it("moves the bundle through one native syncOut file mapping, never through readFile", async () => {
     const capture: TransportCapture = { syncOutOperations: [], readFilePaths: [] };

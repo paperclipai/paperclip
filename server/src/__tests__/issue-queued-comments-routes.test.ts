@@ -30,6 +30,7 @@ import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
+import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -44,7 +45,7 @@ vi.mock("../services/native-runtime/native-session-executor.js", async (importOr
 const { NativeSessionSteeringError } = await import("../services/native-runtime/native-session-executor.js");
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -1449,6 +1450,22 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     });
   });
 
+  it.each(["paperclip_runner", "codex_local"])("keeps Steer during native preparation even after agent settings change to %s", async adapterType => {
+    const seeded = await seedQueue();
+    const steeringCalls = steerNativeSessionMock.mock.calls.length;
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", runtimeModeResolvedAt: null,
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(agents).set({ adapterType }).where(eq(agents.id, seeded.agentId));
+    const client = app(seeded.companyId);
+    const initial = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(initial.body).toMatchObject({ protocol: "paperclip_runner_v1", steeringDisposition: "temporarily_unavailable" });
+    const edited = await request(client).patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+      .send({ queueId: seeded.wakeId, revision: initial.body.revision, body: "Updated direction" }).expect(200);
+    expect(edited.body).toMatchObject({ protocol: "paperclip_runner_v1", steeringDisposition: "temporarily_unavailable" });
+    expect(steerNativeSessionMock.mock.calls).toHaveLength(steeringCalls);
+  });
+
   it("serializes discard against queued-run claim", async () => {
     const seeded = await seedQueue();
     await db.delete(issueComments).where(eq(issueComments.id, seeded.commentIds[1]));
@@ -1577,6 +1594,65 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       turnId: "turn-1",
       duplicate: false,
     });
+  });
+
+  it("allows the runner to persist its acknowledgement while steering, preserving concurrent run updates", async () => {
+    const seeded = await seedQueue();
+    await seedDispatchIdentity(seeded);
+    const originalProfile = { adapterDispatch: { adapterType: "paperclip_runner" },
+      nativeExecutionInput: { provider: { kind: "codex", model: "gpt-5.6-sol", reasoningEffort: "medium" } } };
+    await db.update(heartbeatRuns).set({ runnerProfileJson: originalProfile }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ assigneeAdapterOverrides: { model: "gpt-6-sol", reasoningEffort: "xhigh" } })
+      .where(eq(issues.id, seeded.issueId));
+    steerNativeSessionMock.mockImplementationOnce(async () => {
+      await db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout = '1000ms'`);
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, {
+          companyId: seeded.companyId, agentId: seeded.agentId, runId: seeded.runId,
+          eventType: "item.completed", payload: { kind: "steering_acknowledgement" },
+        });
+        await tx.update(heartbeatRuns).set({ resultJson: { concurrentProviderReceipt: "preserve" } })
+          .where(eq(heartbeatRuns.id, seeded.runId));
+      });
+      return { turnId: "turn-before-model-change" };
+    });
+    const initial = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`);
+    const steered = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision });
+    expect(steered.status, JSON.stringify(steered.body)).toBe(200);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run.status).toBe("running");
+    expect(run.runnerProfileJson).toEqual(originalProfile);
+    expect(steerNativeSessionMock).toHaveBeenCalledWith(expect.objectContaining({ runId: seeded.runId,
+      message: "First queued message", correlationId: seeded.commentIds[0] }));
+    expect(run.resultJson).toMatchObject({ concurrentProviderReceipt: "preserve", queuedSteeringAcknowledgements: {
+      [seeded.commentIds[0]]: { status: "acknowledged", turnId: "turn-before-model-change" },
+    } });
+    expect(steered.body.entries.map((entry: any) => entry.comment.id)).toEqual([seeded.commentIds[1]]);
+  });
+
+  it.each(["cancelled", "failed", "succeeded"] as const)("preserves queued input when the run stops during acknowledgement (%s)", async status => {
+    const seeded = await seedQueue();
+    await seedDispatchIdentity(seeded);
+    steerNativeSessionMock.mockImplementationOnce(async () => {
+      await db.update(heartbeatRuns).set({ status, finishedAt: new Date(), resultJson: { terminalReceipt: "preserve" } })
+        .where(eq(heartbeatRuns.id, seeded.runId));
+      return { turnId: "turn-that-stopped" };
+    });
+    const initial = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`);
+    const response = await request(app(seeded.companyId))
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision });
+    expect(response.status).toBe(409);
+    expect(response.body.details).toMatchObject({ code: "queued_comment_stale_target" });
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(wake.status).toBe("deferred_issue_execution");
+    expect((wake.payload as any)._paperclipWakeContext.wakeCommentIds).toEqual(seeded.commentIds);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run.resultJson).toEqual({ terminalReceipt: "preserve" });
+    const activity = await db.select().from(activityLog).where(eq(activityLog.action, "issue.queued_comment_steered"));
+    expect(activity).toHaveLength(0);
   });
 
   it("keeps the identity pending after a steering timeout, then reconciles it on a later acknowledgement", async () => {

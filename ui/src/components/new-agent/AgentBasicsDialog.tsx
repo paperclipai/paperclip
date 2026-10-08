@@ -1,5 +1,6 @@
 import { useCompany } from "@/context/CompanyContext";
 import { useAgentAppearanceDraft } from "@/hooks/useAgentAppearanceDraft";
+import { AdapterMark } from "../AdapterMark";
 import { AgentCharacter } from "../AgentCharacter";
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -25,62 +26,8 @@ export type AgentBasics = {
   adapterType: string;
   runnerProvider: string;
 };
-const brandMarks: Record<string, { src: string; dark?: string }> = {
-  claude_local: { src: "/brands/claude-color.svg" },
-  codex_local: { src: "/brands/codex-color.svg" },
-  gemini_local: { src: "/brands/adapters/gemini-color.svg" },
-  kimi_local: {
-    src: "/brands/adapters/kimi-color-light.svg",
-    dark: "/brands/adapters/kimi-color.svg",
-  },
-  ...Object.fromEntries(
-    [
-      ["cursor", "cursor"],
-      ["cursor_cloud", "cursor"],
-      ["grok_local", "grok"],
-      ["hermes_local", "hermesagent"],
-      ["hermes_gateway", "hermesagent"],
-      ["pi_local", "pi"],
-    ].map(([type, icon]) => [
-      type,
-      {
-        src: `/brands/adapters/${icon}.svg`,
-        dark: `/brands/adapters/${icon}-dark.svg`,
-      },
-    ]),
-  ),
-};
-export function AdapterMark({
-  type,
-  className = "size-6",
-}: {
-  type: string;
-  className?: string;
-}) {
-  const Icon = getAdapterDisplay(type).icon;
-  const mark = brandMarks[type];
-  if (!mark) return <Icon className={className} />;
-  return (
-    <>
-      <img
-        src={mark.src}
-        className={cn(
-          "shrink-0 object-contain",
-          mark.dark && "dark:hidden",
-          className,
-        )}
-        alt=""
-      />
-      {mark.dark && (
-        <img
-          src={mark.dark}
-          className={cn("hidden shrink-0 object-contain dark:block", className)}
-          alt=""
-        />
-      )}
-    </>
-  );
-}
+export { AdapterMark } from "../AdapterMark";
+
 function AgentBasicsCharacter() {
   const { selectedCompanyId } = useCompany();
   const { appearance } = useAgentAppearanceDraft(`${selectedCompanyId}:new-agent`);
@@ -132,6 +79,12 @@ export function AgentBasicsDialog({
       !["process", "http"].includes(adapter.type) &&
       !getAdapterDisplay(adapter.type).comingSoon,
   );
+  const runner = adapters?.find(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled);
+  if (runner && isNewAgentAdapterAllowed("openai_dot", {
+    cloud,
+    nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
+    openAiDotEnabled: experimental.data?.enableOpenAiDot === true,
+  })) choices.push({ ...runner, type: "openai_dot" });
   const validAdapter = choices.some((adapter) => adapter.type === adapterType);
   return (
     <Dialog
@@ -169,7 +122,9 @@ export function AgentBasicsDialog({
             if (!name.trim()) return;
             if (step === "name") setStep("adapter");
             else if (validAdapter)
-              onContinue({ name: name.trim(), adapterType, runnerProvider });
+              onContinue({ name: name.trim(),
+                adapterType: adapterType === "openai_dot" ? "paperclip_runner" : adapterType,
+                runnerProvider: adapterType === "openai_dot" ? "openai_dot" : runnerProvider });
           }}
         >
           <div className="flex min-h-0 flex-col gap-7 overflow-y-auto px-6 pb-8 sm:px-10">

@@ -5,6 +5,7 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   agents,
   agentRuntimeState,
   agentWakeupRequests,
@@ -151,6 +152,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
   }
 
   async function cleanupFixtureOnce() {
+    await db.delete(costEvents);
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueComments);
@@ -523,8 +525,8 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(retryRuns).toHaveLength(0);
   });
 
-  it("defers a run whose issue targets a busy shared workspace and schedules a bounded retry", async () => {
-    const fixture = await seedWorkspaceFixture();
+  it.each([0, 35 * 60_000])("defers a run in a busy shared workspace after %i ms of holder silence", async (silenceMs) => {
+    const fixture = await seedWorkspaceFixture({ holderActivityAt: new Date(Date.now() - silenceMs) });
 
     const run = await heartbeat.invoke(
       fixture.agentId,
@@ -633,23 +635,19 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(executedRunIds).toContain(retryRun!.id);
   });
 
-  it("defers a non-assignee run and executes its retry despite the assignee mismatch", async () => {
+  it("preserves a legacy accepted mention run through workspace retry", async () => {
     const fixture = await seedWorkspaceFixture();
 
-    // A comment-mention wake for an agent that is NOT the issue assignee —
-    // the interaction-wake shape that legitimately reaches adapter dispatch
-    // without assignee-ship.
-    const run = await heartbeat.invoke(
-      fixture.nonAssigneeAgentId,
-      "on_demand",
-      {
-        issueId: fixture.issueId,
-        wakeReason: "issue_comment_mentioned",
-        commentId: randomUUID(),
+    // Existing queued work can contain coalesced assignment or feedback.
+    // Only new mention requests are ignored; keep accepted work's rules.
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: fixture.companyId, agentId: fixture.nonAssigneeAgentId,
+      invocationSource: "on_demand", status: "queued", responsibleUserId: "responsible-user",
+      contextSnapshot: {
+        issueId: fixture.issueId, wakeReason: "issue_comment_mentioned", commentId: randomUUID(),
       },
-      "system",
-    );
-    expect(run).not.toBeNull();
+    }).returning();
+    await heartbeat.resumeQueuedRuns();
 
     const deferred = await waitForRunToLeaveActiveStates(run!.id);
     expect(deferred?.status).toBe("cancelled");

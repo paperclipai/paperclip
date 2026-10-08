@@ -30,6 +30,7 @@ export const sessionCodec: AdapterSessionCodec = {
       ...(readString(record.mode) ? { mode: readString(record.mode) } : {}),
       ...(readString(record.stateDir) ? { stateDir: readString(record.stateDir) } : {}),
       ...(readString(record.configFingerprint) ? { configFingerprint: readString(record.configFingerprint) } : {}),
+      ...(readString(record.mcpFingerprint) ? { mcpFingerprint: readString(record.mcpFingerprint) } : {}),
       ...(readString(record.workspaceId) ? { workspaceId: readString(record.workspaceId) } : {}),
       ...(readString(record.repoUrl) ? { repoUrl: readString(record.repoUrl) } : {}),
       ...(readString(record.repoRef) ? { repoRef: readString(record.repoRef) } : {}),

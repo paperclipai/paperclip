@@ -13,7 +13,7 @@ import {
   parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkScope,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
-import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
@@ -49,6 +49,7 @@ import {
   stageCodexHomeForSync,
 } from "./codex-home.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { checkCodexCliVersionForModel } from "./cli-version.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -330,6 +331,8 @@ export function resolveCodexAcpBillingIdentity(
   ctx: Pick<AdapterExecutionContext, "config"> &
     Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
 ): { provider: string; biller: string; billingType: AdapterBillingType } {
+  const managedBilling = resolveManagedOpenAiBilling(ctx.config.managedAiRouting);
+  if (managedBilling) return managedBilling;
   const envConfig = parseObject(parseObject(ctx.config).env);
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
@@ -644,6 +647,32 @@ export async function testCodexAcpEnvironment(
         hint: "Provide credentials for this adapter, or start login in the environment.",
       });
     }
+  }
+
+  if (targetIsRemote && commandResolvable) {
+    // The ACP server spawns the shared `codex` installed in the environment.
+    // Models with a verified CLI floor are checked against that executable so
+    // a stale sandbox image is named here, before a run fails on every turn
+    // with the backend's "not supported when using Codex with a ChatGPT
+    // account" rejection. Models without a floor skip the probe.
+    //
+    // Remote ACP runs receive the adapter's string-valued env entries (see
+    // buildCodexAcpConfig), so the probe gets the same ones. An agent that
+    // selects its Codex install through PATH is then measured against that
+    // install rather than the image default.
+    const probeEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(envConfig)) {
+      if (typeof value === "string") probeEnv[key] = value;
+    }
+    const versionCheck = await checkCodexCliVersionForModel({
+      runId: `codex-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      model: asString(config.model, ""),
+      command: "codex",
+      target,
+      cwd: resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd()),
+      env: probeEnv,
+    });
+    if (versionCheck) checks.push(versionCheck.check);
   }
 
   const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;

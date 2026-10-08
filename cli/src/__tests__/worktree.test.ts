@@ -157,12 +157,12 @@ async function seedValidWorktreeSource(
     userId,
     role: "instance_admin",
   });
-  await db.insert(companies).values({
-    id: companyId,
-    name: "Seed Source",
-    issuePrefix: "SEED",
-    requireBoardApprovalForNewAgents: false,
-  });
+  // Seed only columns present in the historical source schema. The current
+  // model includes accounting columns that the worktree migration adds later.
+  await db.$client`
+    insert into companies (id, name, issue_prefix, require_board_approval_for_new_agents)
+    values (${companyId}, 'Seed Source', 'SEED', false)
+  `;
   await db.insert(companyMemberships).values({
     companyId,
     principalType: "user",
@@ -511,7 +511,8 @@ describe("worktree helpers", () => {
     expect(minimal.excludedTables).toContain("agent_task_sessions");
     expect(minimal.nullifyColumns.issues).toEqual(["checkout_run_id", "execution_run_id"]);
 
-    expect(full.excludedTables).toEqual([]);
+    expect(full.excludedTables).toEqual(["agent_identity_keys"]);
+    expect(minimal.excludedTables).toContain("agent_identity_keys");
     expect(full.nullifyColumns).toEqual({});
   });
 
@@ -1383,7 +1384,7 @@ describe("worktree helpers", () => {
         .select()
         .from(executionWorkspaces)
         .where(eq(executionWorkspaces.id, executionWorkspaceId));
-      expect(executionWorkspace?.metadata).toEqual({
+      expect(executionWorkspace?.metadata).toMatchObject({
         keep: "execution-metadata",
         config: {
           environmentId: "environment-1",
@@ -1467,6 +1468,36 @@ describe("worktree helpers", () => {
 
       expect(fs.readFileSync(targetKeyPath, "utf8")).toBe("inline-source-master-key");
     } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("creates an explicitly empty worktree without inherited signing secrets or deferred copying", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-empty-"));
+    const originalCwd = process.cwd();
+    const originalJwt = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const originalSigning = process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
+    try {
+      const repoRoot = path.join(tempRoot, "repo");
+      fs.mkdirSync(repoRoot, { recursive: true });
+      process.chdir(repoRoot);
+      process.env.PAPERCLIP_AGENT_JWT_SECRET = "source-jwt-secret";
+      process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = "source-signing-secret";
+      await worktreeInitCommand({ empty: true, fromConfig: path.join(tempRoot, "missing.json"), home: path.join(tempRoot, "instances") });
+      const env = fs.readFileSync(path.join(repoRoot, ".paperclip/.env"), "utf8");
+      expect(env).not.toContain("source-jwt-secret");
+      expect(env).not.toContain("source-signing-secret");
+      expect(env).toContain("PAPERCLIP_AGENT_JWT_SECRET=");
+      expect(fs.existsSync(path.join(repoRoot, ".paperclip/seed-manifest.json"))).toBe(false);
+      expect(fs.existsSync(path.join(repoRoot, ".paperclip/seed-pending"))).toBe(false);
+      expect(fs.existsSync(path.join(repoRoot, ".paperclip/seed-empty"))).toBe(true);
+      await worktreeInitCommand({ seed: false, force: true, fromConfig: path.join(tempRoot, "missing.json"), home: path.join(tempRoot, "instances") });
+      expect(fs.existsSync(path.join(repoRoot, ".paperclip/seed-empty"))).toBe(false);
+      expect(readWorktreeSeedManifest(path.join(repoRoot, ".paperclip/config.json"))?.state).toBe("pending");
+    } finally {
+      process.chdir(originalCwd);
+      if (originalJwt === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET; else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalJwt;
+      if (originalSigning === undefined) delete process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET; else process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = originalSigning;
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
@@ -1661,10 +1692,13 @@ describe("worktree helpers", () => {
       // A lagging source must also have the prior schema. Deleting only the
       // newest receipt from a fully migrated schema relied on that particular
       // migration being idempotent and breaks when the new migration creates a
-      // table. Build the actual all-but-last schema before shuffling its history.
+      // table. Build the schema before the identity-repair migration, so this
+      // regression keeps testing that repair as later migrations are added.
       const migrationsRoot = new URL("../../../packages/db/src/migrations/", import.meta.url);
       const journal = JSON.parse(fs.readFileSync(new URL("meta/_journal.json", migrationsRoot), "utf8"));
-      const priorEntries = journal.entries.slice(0, -1);
+      const repairIndex = journal.entries.findIndex((entry: { tag: string }) => entry.tag === "0309_loving_the_hood");
+      expect(repairIndex).toBeGreaterThan(0);
+      const priorEntries = journal.entries.slice(0, repairIndex);
       const priorMigrations = path.join(tempRoot, "prior-migrations");
       fs.mkdirSync(path.join(priorMigrations, "meta"), { recursive: true });
       fs.writeFileSync(path.join(priorMigrations, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: priorEntries }));
@@ -1673,7 +1707,19 @@ describe("worktree helpers", () => {
       }
       const sourceDbClient = createDb(sourceDb.connectionString);
       await migrate(drizzle(sourceDbClient.$client), { migrationsFolder: priorMigrations });
-      await seedValidWorktreeSource(sourceDb.connectionString);
+      const seed = await seedValidWorktreeSource(sourceDb.connectionString);
+      // An older filtered JavaScript backup retained event IDs but lost the
+      // identity generator. The pending migration must repair that schema.
+      const legacyAgentId = randomUUID();
+      await sourceDbClient.$client`
+        INSERT INTO agents (id, company_id, name, status)
+        VALUES (${legacyAgentId}, ${seed.companyId}, 'Legacy paused agent', 'paused')
+      `;
+      await sourceDbClient.$client`
+        INSERT INTO resource_lifecycle_events (company_id, resource_type, resource_id, action)
+        VALUES (${seed.companyId}, 'agent', ${legacyAgentId}, 'pause')
+      `;
+      await sourceDbClient.$client.unsafe('ALTER TABLE resource_lifecycle_events ALTER COLUMN id DROP IDENTITY');
       await sourceDbClient.$client.unsafe(`
         WITH pair AS (
           SELECT
@@ -1704,7 +1750,7 @@ describe("worktree helpers", () => {
       if (laggingMigrationState.status !== "needsMigrations") {
         throw new Error("Expected the source migration journal to lag the code journal");
       }
-      expect(laggingMigrationState.pendingMigrations).toHaveLength(1);
+      expect(laggingMigrationState.pendingMigrations).toHaveLength(journal.entries.length - repairIndex);
       const expectedAppliedPrefix = laggingMigrationState.availableMigrations.slice(
         0,
         laggingMigrationState.appliedMigrations.length,
@@ -1786,6 +1832,16 @@ describe("worktree helpers", () => {
       );
       const seededUsers = await targetDb.select().from(authUsers);
       expect(seededUsers.some((row) => row.email === "existing@paperclip.ing")).toBe(true);
+      const restoredEvents = await targetDb.$client`
+        SELECT id, action FROM resource_lifecycle_events WHERE resource_id = ${legacyAgentId} ORDER BY id
+      `;
+      expect(restoredEvents.map(row => row.action)).toEqual(["pause", "create"]);
+      expect(Number(restoredEvents[1].id)).toBeGreaterThan(Number(restoredEvents[0].id));
+      const [identity] = await targetDb.$client`
+        SELECT is_identity FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'resource_lifecycle_events' AND column_name = 'id'
+      `;
+      expect(identity.is_identity).toBe("YES");
     },
   );
 
@@ -2045,8 +2101,8 @@ describe("worktree helpers", () => {
     }
   });
 
-  it("uses streaming backup selection for full seeds and transformed backup selection for minimal seeds", () => {
-    expect(resolveWorktreeSeedBackupEngine(resolveWorktreeSeedPlan("full"))).toBe("auto");
+  it("uses transformed backups for both seed modes to omit agent identities", () => {
+    expect(resolveWorktreeSeedBackupEngine(resolveWorktreeSeedPlan("full"))).toBe("javascript");
     expect(resolveWorktreeSeedBackupEngine(resolveWorktreeSeedPlan("minimal"))).toBe("javascript");
   });
 

@@ -92,10 +92,12 @@ export async function refreshPullRequestWorkProductMetadata(
   return await Promise.all(products.map(async (product) => {
     if (product.type !== "pull_request") return product;
     const metadata = product.metadata ?? {};
-    const repo = typeof metadata.repo === "string" ? metadata.repo : null;
+    const repo = typeof metadata.repo === "string" ? metadata.repo
+      : typeof metadata.repository === "string" ? metadata.repository : null;
     const number = nonNegativeInteger(metadata.number);
     const references = extractGitHubPullRequestReferences([
       product.url,
+      typeof metadata.url === "string" ? metadata.url : null,
       repo && number ? `${repo}#${number}` : null,
     ]);
     const reference = references[0];

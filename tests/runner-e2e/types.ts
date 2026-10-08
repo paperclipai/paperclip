@@ -5,7 +5,10 @@ export const CREDENTIAL_NAMES = [
   "KIMI_MODEL_API_KEY",
   "XAI_API_KEY",
   "GROK_AUTH_JSON",
+  "GEMINI_API_KEY",
   "DAYTONA_API_KEY",
+  "CURSOR_AUTH_TOKEN",
+  "COPILOT_GITHUB_TOKEN",
 ] as const;
 
 export type CredentialName = (typeof CREDENTIAL_NAMES)[number];
@@ -13,6 +16,10 @@ export type RunnerGeneration = "legacy" | "native";
 export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
+  | "provider_connection"
+  | "plan_task_guidance"
+  | "blocker_guidance"
+  | "public_mcp"
   | "everyday_workflow"
   | "context_integrity"
 
@@ -25,7 +32,11 @@ export type RunnerTaskFlow =
   | "plan_revision_acceptance"
   | "question_resume_completion"
   | "plan_approval_completion"
-  | "warm_three_turn";
+  | "warm_three_turn"
+  | "instruction_persistence"
+  | "native_active_stop"
+  | "native_provider_loss"
+  | "cursor_native";
 
 export interface SecretReference {
   type: "secret_ref";
@@ -63,9 +74,11 @@ export interface RunnerProfileFixture {
     source:
       | "adapter_constant"
       | "qualified_runner_profile"
+      | "candidate_runner_profile"
       | "openrouter_rankings_snapshot";
     qualificationId: string;
   };
+  qualificationCandidate?: "cursor" | "copilot" | "pi";
   ranking?: {
     rank: number;
     canonicalModelId: string;
@@ -120,6 +133,7 @@ export type Matcher =
   | { kind: "file_exact"; path: string; expected: string }
   | { kind: "file_contains"; path: string; expected: string }
   | { kind: "artifact_exists"; name: string; mimeType?: string }
+  | { kind: "artifact_exact"; name: string; expected: string; mimeType?: string }
   | { kind: "json_path"; path: string; expected: unknown }
   | { kind: "json_schema"; schema: Record<string, unknown> };
 
@@ -132,6 +146,8 @@ export interface RunnerTaskFixture {
   expectedRunCount: number;
   /** Optional lower bound; expectedRunCount remains the maximum/cost estimate. */
   minimumExpectedRunCount?: number;
+  /** Admit only the first attempt, including provider or infrastructure failures. */
+  automaticRetryPolicy?: "single_attempt";
   attemptTimeoutMs: Readonly<Record<RunnerEnvironmentId, number>>;
   expectedTerminalState: {
     issue: "done" | "in_review" | "blocked" | "in_progress";
@@ -231,6 +247,7 @@ export interface RunnerE2ERuntimeUsage {
 }
 
 export interface RunnerE2EBillingSummary {
+  assistant?: import("./public-mcp-model.js").AssistantUsage;
   llm: {
     runCount: number;
     runsWithTokenUsage: number;
@@ -315,7 +332,11 @@ export interface RunnerE2EResult {
     sha256?: string;
   }>;
   firstTask?: import("./first-task-scoring.js").FirstTaskEvidence;
+  providerConnection?: import("./connection-evidence.js").ConnectionEvidence;
+  completionQuality?: import("./completion-quality.js").CompletionQualityRecord[];
   firstTaskQuality?: import("./first-task-quality.js").FirstTaskQuality;
+  /** External assistant API calls, separate from the team's heartbeat executions. */
+  publicMcp?: import("./public-mcp-model.js").AssistantUsage;
   cleanup: "not_started" | "passed" | "failed";
 }
 
@@ -345,6 +366,7 @@ export interface RunnerE2EJudgeBillingSummary {
 }
 
 export interface RunnerE2EAggregateBillingSummary {
+  assistant?: { requests: number; inputTokens: number; outputTokens: number; cachedInputTokens: number; estimatedCostUsd: number };
   judge?: RunnerE2EJudgeBillingSummary;
   testCount: number;
   agentRunDurationMs: number;

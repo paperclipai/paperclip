@@ -642,6 +642,7 @@ describe("claude CLI local hello probe hardening", () => {
   it.each([
     ["claude-fable-5-1", "2.1.251"],
     ["claude-opus-5-5", "2.1.280"],
+    ["claude-sonnet-5-5", "2.1.284"],
   ])("warns without executing %s when runtime PATH selects a different executable", async (model, minimumVersion) => {
     const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-runtime-path-"));
     const runtimeClaudePath = path.join(runtimeDir, "claude");

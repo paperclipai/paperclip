@@ -1,9 +1,13 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
+
 export interface ProcessObservation {
   pid: number;
   parentPid: number;
   processGroupId: number;
   started: string;
   kind: string;
+  state?: string;
 }
 
 export interface ObservedProcessGroup {
@@ -139,4 +143,87 @@ export function refreshContinuouslyLiveProcessGroups(
         ]
       : [];
   });
+}
+
+const diagnosticProcessKinds = new Set([
+  "bash",
+  "chrome",
+  "codex",
+  "google-chrome",
+  "node",
+  "paperclip-runnerd",
+  "playwright",
+  "pnpm",
+  "postgres",
+  "sh",
+  "tsx",
+]);
+
+export async function readProcessTable(startInspector?: () => ChildProcess): Promise<ProcessObservation[] | null> {
+  if (process.platform === "win32") {
+    return null;
+  }
+  return await new Promise<ProcessObservation[] | null>((resolve) => {
+    const inspector = startInspector ? startInspector() : spawn(
+      "ps",
+      ["-e", "-o", "pid=,ppid=,pgid=,lstart=,stat=,comm="],
+      {
+        env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+        stdio: ["ignore", "pipe", "ignore"],
+        // A wrapper-group shutdown must not interrupt its own bounded audit.
+        detached: true,
+      },
+    );
+    let output = "";
+    let settled = false;
+    let truncated = false;
+    const finish = (value: ProcessObservation[] | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(inspectionTimeout);
+      resolve(value);
+    };
+    const inspectionTimeout = setTimeout(() => {
+      inspector.kill("SIGKILL");
+      finish(null);
+    }, 5_000);
+    inspectionTimeout.unref();
+    inspector.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+      if (output.length + chunk.length > 1024 * 1024) {
+        truncated = true;
+        inspector.kill("SIGKILL");
+        finish(null);
+        return;
+      }
+      output += chunk;
+    });
+    inspector.once("error", () => finish(null));
+    inspector.once("close", (code) => {
+      if (code !== 0 || truncated) { finish(null); return; }
+      const observations = output
+        .split(/\r?\n/)
+        .map((line) =>
+          /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(\S+)\s+(.+?)\s*$/.exec(
+            line,
+          ),
+        )
+        .filter((match): match is RegExpExecArray => match !== null)
+        .map((match): ProcessObservation => {
+          // A target process can choose its own argv and process name. Emit a
+          // fixed category instead of target-controlled text so diagnostics
+          // can never turn that metadata into a secret-exfiltration channel.
+          const command = path.basename(match[6]!);
+          const kind = diagnosticProcessKinds.has(command) ? command : "other";
+          return {
+            pid: Number(match[1]),
+            parentPid: Number(match[2]),
+            processGroupId: Number(match[3]),
+            started: match[4]!,
+            kind,
+            state: match[5]!,
+          };
+        });
+      finish(observations);
+    });
+  }).catch(() => null);
 }

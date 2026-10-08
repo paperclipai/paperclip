@@ -2,6 +2,33 @@ import { describe, expect, it } from "vitest";
 import { paperclipRunnerUIAdapter } from "./index";
 
 describe("paperclip runner transcript projection", () => {
+  it("omits unrelated provider diagnostics and legacy notices from streaming chat", () => {
+    const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
+    const event = (eventType: string, payload: Record<string, unknown>) => parse(JSON.stringify({
+      type: "paperclip.prp.event",
+      event: { eventType, payload },
+    }), "2026-10-02T12:00:00.000Z");
+    const legacyNotice = {
+      schema: "paperclip.provider.notice.v1",
+      severity: "warning",
+      category: "warning",
+      summary: "ignored unrelated provider information",
+      userActionable: true,
+    };
+    expect(event("harness.diagnostic", { code: "codex_unrelated_information" })).toEqual([]);
+    expect(event("provider.notice.recorded", legacyNotice)).toEqual([]);
+    expect(event("provider.notice.recorded", { ...legacyNotice, summary: "Repository is not trusted" }))
+      .toEqual([expect.objectContaining({ family: "provider_notice" })]);
+    expect(event("provider.notice.recorded", { ...legacyNotice, severity: "error" }))
+      .toEqual([expect.objectContaining({ family: "provider_notice" })]);
+    expect(event("provider.notice.recorded", { ...legacyNotice, category: "configWarning" }))
+      .toEqual([expect.objectContaining({ family: "provider_notice" })]);
+    expect(event("harness.diagnostic", { code: "provider_identity_failure", message: "Thread mismatch" }))
+      .toEqual([expect.objectContaining({ kind: "system", text: "Runner: Thread mismatch" })]);
+    expect(event("item.completed", { kind: "agentMessage", channel: "final", text: "Here is the answer." }))
+      .toEqual([expect.objectContaining({ kind: "assistant", text: "Here is the answer." })]);
+  });
+
   it("renders committed PRP semantic tool items with the existing chat parts", () => {
     const started = paperclipRunnerUIAdapter.parseStdoutLine(JSON.stringify({
       type: "paperclip.prp.event",
@@ -198,6 +225,37 @@ describe("paperclip runner transcript projection", () => {
       referenceId: "unsafe",
       path: "../secrets.env",
     })).toEqual([expect.objectContaining({ kind: "system", text: expect.stringContaining("unsafe") })]);
+  });
+
+  it("preserves complete native plan context and revision identity through replay", () => {
+    const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
+    const description = "# Plan\n" + "x".repeat(99_981) + "\nFINAL-CHECK";
+    expect(description.length).toBe(100_000);
+    const questionId = `plan-${"a".repeat(64)}`;
+    const event = (eventType: string, payload: Record<string, unknown>) => parse(JSON.stringify({
+      type: "paperclip.prp.event", event: { eventType, payload },
+    }), "2026-09-28T12:00:00.000Z");
+    expect(event("runtime_request.created", { request: {
+      requestId: "native-plan", requestKind: "runtime", type: "input", input: {
+        schema: "paperclip.question_set.v1", description,
+        questions: [{ id: questionId, prompt: "Review", required: true, answerMode: "single_select", options: [{ id: "accept", label: "Accept plan" }, { id: "reject", label: "Reject plan" }, { id: "cancel", label: "Cancel plan request" }] }],
+      },
+    } })).toEqual([expect.objectContaining({ questionSet: expect.objectContaining({ description, questions: [expect.objectContaining({ id: questionId })] }) })]);
+    expect(event("runtime_request.resolved", { requestId: "native-plan", response: {
+      schema: "paperclip.question_response.v1", answers: { [questionId]: { selectedOptionIds: ["accept"] } },
+    } })).toEqual([expect.objectContaining({ questionSet: expect.objectContaining({ description }), response: expect.objectContaining({ answers: { [questionId]: { selectedOptionIds: ["accept"] } } }) })]);
+  });
+
+  it("rejects oversized native plan context instead of showing an incomplete decision", () => {
+    const entries = paperclipRunnerUIAdapter.parseStdoutLine(JSON.stringify({
+      type: "paperclip.prp.event", event: { eventType: "runtime_request.created", payload: { request: {
+        requestId: "oversized-plan", type: "input", input: {
+          schema: "paperclip.question_set.v1", description: "x".repeat(100_001),
+          questions: [{ id: "plan-revision", prompt: "Review", answerMode: "single_select", options: [{ id: "accept", label: "Accept" }] }],
+        },
+      } } },
+    }), "2026-09-28T12:00:00.000Z");
+    expect(entries).toEqual([{ kind: "system", ts: "2026-09-28T12:00:00.000Z", text: expect.stringContaining("No decision can be submitted") }]);
   });
 
   it("coalesces runtime request lifecycle data and emits terminal state", () => {

@@ -1,5 +1,29 @@
 # Runner E2E security for a public repository
 
+## Attended connection authentication
+
+See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
+`provider-connections` suite, local/staging target ownership, dedicated browser
+profiles, credential handoffs, private evidence, and cleanup contract.
+
+Provider-connection results may retain closed diagnostic codes and terminal run
+status before managed-instance teardown. Only error records and failed tool
+receipts are inspected; raw error messages, child stderr, model output and
+reasoning are not retained. Unknown causes and unavailable logs stay explicit.
+The optional installed-Gemini filesystem smoke uses synthetic credentials and
+loopback model responses, makes no real provider calls, and removes its
+disposable home/workspace.
+
+The explicit [public MCP suite](PUBLIC-MCP.md) also creates a disposable browser
+account and OAuth grant. Signup and token exchange use Node fetch, credentials
+stay outside model context, and dynamic cookie/code/token values join the
+attempt's redaction set. Tracing, video and automatic screenshots are disabled
+for that suite; only reviewed fixture task routes may produce public screenshots.
+External API evidence retains visible answers and tool outcomes, never raw model
+reasoning. Empty provider configuration directories prevent operator plugins and
+MCP credentials from being inherited. All grants are revoked during cleanup and
+the launcher removes the isolated database and provider homes.
+
 This suite can spend provider money, expose selected local and workflow API credentials to isolated
 test processes, publish a container, retain private visual evidence, and write
 public structured evidence. Treat changes to the workflow, harness, fixture
@@ -278,3 +302,19 @@ specific process signal, never a name-based or machine-wide process kill.
 The bounded fixture command is released even on failure; normal instance cleanup
 still owns all disposable processes and files. No credentials enter the prompt,
 fault metadata, or structured grading fixtures.
+
+### Candidate ACP qualification
+
+The explicit-only `extended-harnesses` launcher removes ambient candidate
+admission, then authorizes only selected candidate/model pairs in its isolated
+server process. The server never reads admission from agent configuration,
+resolved credential bindings, or provider environment. Invalid, duplicate and
+mismatched authorization fails closed. Verified packaging and normal company
+and tool governance still apply. `CURSOR_AUTH_TOKEN` and
+`COPILOT_GITHUB_TOKEN` enter via encrypted company secret references, and all
+Cursor, Copilot, GitHub and GH environment variables are stripped from the
+server environment. GitHub PAT shapes are included in retained-evidence scans.
+Candidates have no automatic infrastructure retries; spending must be reconciled
+before a deliberate repeat.
+
+The private resource-admission marker and raw cleanup results control recovery-state retention independently of evidence packaging. A worker crash after admission keeps the owner-only recovery database; a confirmed pre-allocation bootstrap failure does not. Neither the marker nor the database enters published evidence.
