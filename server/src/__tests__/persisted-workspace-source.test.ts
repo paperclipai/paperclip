@@ -205,10 +205,12 @@ describe("persisted Git workspace source", () => {
   it("rejects a materializer result outside the retained source candidates", async () => {
     const { root, original, input } = await fixture();
     const missingWorktree = path.join(root, "missing-worktree");
+    const materializeOriginalRepository = vi.fn(async () => original);
     await expect(resolvePersistedGitWorkspaceSource({ ...input,
       workspace: { ...input.workspace, cwd: missingWorktree, providerRef: missingWorktree },
-      candidateBaseCwds: [], materializeOriginalRepository: async () => original,
+      candidateBaseCwds: [path.join(root, "expected-clone")], materializeOriginalRepository,
     })).rejects.toMatchObject({ resultJson: { workspaceValidation: { reasonCode: "source_repository_unavailable" } } });
+    expect(materializeOriginalRepository).toHaveBeenCalledTimes(1);
   });
 
   it("does not invoke materialization through a managed project symlink", async () => {
@@ -251,4 +253,44 @@ describe("persisted Git workspace source", () => {
       resultJson: { workspaceValidation: { reasonCode: "source_repository_unavailable" } },
     });
   });
+  it("accepts a symlink for the configured instance root only", async () => {
+    const { root, original, input } = await fixture();
+    const alias = `${root}-alias`;
+    roots.push(alias);
+    await fs.symlink(root, alias);
+    expect(await resolvePersistedGitWorkspaceSource({ ...input, managedSourceRoot: alias,
+      candidateBaseCwds: [path.join(alias, "original")] })).toBe(original);
+  });
+
+  it("mismatched saved paths never materialize another source", async () => {
+    const { replacement, input } = await fixture();
+    const materializeOriginalRepository = vi.fn();
+    await expect(resolvePersistedGitWorkspaceSource({ ...input,
+      workspace: { ...input.workspace, providerRef: replacement }, materializeOriginalRepository,
+    })).rejects.toMatchObject({ resultJson: { workspaceValidation: { reasonCode: "source_path_unproven" } } });
+    expect(materializeOriginalRepository).not.toHaveBeenCalled();
+  });
+
+  it("a dangling saved-worktree symlink is not replaced", async () => {
+    const { root, input } = await fixture();
+    const dangling = path.join(root, "dangling-task");
+    await fs.symlink(path.join(root, "absent-target"), dangling);
+    const materializeOriginalRepository = vi.fn();
+    await expect(resolvePersistedGitWorkspaceSource({ ...input,
+      workspace: { ...input.workspace, cwd: dangling, providerRef: dangling }, materializeOriginalRepository,
+    })).rejects.toMatchObject({ resultJson: { workspaceValidation: { reasonCode: "source_path_unproven" } } });
+    expect(materializeOriginalRepository).not.toHaveBeenCalled();
+    expect((await fs.lstat(dangling)).isSymbolicLink()).toBe(true);
+  });
+
+  it("a substituted worktree backlink cannot authorize reuse", async () => {
+    const { original, worktree, input } = await fixture();
+    const storage = (await exec("git", ["-C", worktree, "rev-parse", "--absolute-git-dir"])).stdout.trim();
+    await fs.writeFile(path.join(storage, "gitdir"), path.join(original, ".git") + "\n");
+    await expect(resolvePersistedGitWorkspaceSource(input)).rejects.toMatchObject({ resultJson: {
+      workspaceValidation: { reasonCode: "source_registration_unproven" },
+    } });
+    expect(await fs.readFile(path.join(worktree, "retained.txt"), "utf8")).toBe("keep this work\n");
+  });
+
 });
