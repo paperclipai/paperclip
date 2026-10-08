@@ -26,6 +26,31 @@ describe("Runner workspace bridge", () => {
     expect((await readWorkspaceUploadFile(directory, "hello.txt")).toString()).toBe("updated");
     await expect(executeWorkspaceTool(directory, "workspace_read", { path: "outside/private.txt" }, authorize)).rejects.toThrow("symlink");
   });
+  it.each(["workspace", "skill"])("preserves Unicode characters across %s text pages", async mode => {
+    const text = "a".repeat(5999) + "🌍" + "z".repeat(6000) + "🚀";
+    const directory = await root();
+    await writeFile(join(directory, "unicode.txt"), text);
+    const bundle = await materializeAsset([{ path: "SKILL.md", content: Buffer.from(text), mode: 0o444 }]);
+    const context = { skills: [{ key: "unicode", runtimeName: "unicode", versionId: "version-1", bundle }] } as any;
+    const read = async (offset: number) => (mode === "workspace"
+      ? executeWorkspaceTool(directory, "workspace_read", { path: "unicode.txt", offset }, authorize)
+      : readAssignedSkill(context, { skill: "unicode", offset })) as Promise<{ text: string; nextOffset: number | null; sha256: string; byteSize: number }>;
+    const first = await read(0);
+    expect(first.nextOffset).toBe(5999);
+    expect(first.text).toBe("a".repeat(5999));
+    let combined = first.text, next = first.nextOffset;
+    while (next !== null) {
+      const page = await read(next);
+      expect(page.sha256).toBe(first.sha256);
+      expect(page.byteSize).toBe(Buffer.byteLength(text));
+      expect(page.text).not.toMatch(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/u);
+      combined += page.text;
+      next = page.nextOffset;
+    }
+    expect(combined).toBe(text);
+    await expect(read(6000)).rejects.toThrow("offset_splits_character");
+  });
+
   it("serializes overlapping writes so only one observed hash can commit", async () => {
     const directory = await root();
     const initial = await executeWorkspaceTool(directory, "workspace_write", { path: "shared.txt", text: "initial", expectedSha256: null }, authorize) as any;

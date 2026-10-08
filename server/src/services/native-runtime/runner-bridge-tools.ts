@@ -67,10 +67,17 @@ async function readFilePage(file: string, offset: number) {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size > 16 * 1024 * 1024) throw new Error("runner_bridge_file_size_limit");
     const bytes = await handle.readFile();
-    // Character pagination avoids splitting UTF-8 sequences; size and hash remain byte-based.
+    // Offsets remain UTF-16 units, but page boundaries preserve complete code points.
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    const page = text.slice(offset, offset + 6000);
-    return { text: page, sha256: digest(bytes), byteSize: bytes.length, nextOffset: offset + page.length < text.length ? offset + page.length : null };
+    const splitsCharacter = (at: number) => {
+      const before = text.charCodeAt(at - 1), after = text.charCodeAt(at);
+      return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+    };
+    if (splitsCharacter(offset)) throw new Error("runner_bridge_offset_splits_character");
+    let end = Math.min(offset + 6000, text.length);
+    if (splitsCharacter(end)) end--;
+    const page = text.slice(offset, end);
+    return { text: page, sha256: digest(bytes), byteSize: bytes.length, nextOffset: end < text.length ? end : null };
   } finally { await handle.close(); }
 }
 export async function readAssignedSkill(context: NativeRuntimeContextSnapshot, raw: unknown) {

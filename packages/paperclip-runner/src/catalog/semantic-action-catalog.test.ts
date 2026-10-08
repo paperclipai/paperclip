@@ -49,6 +49,18 @@ describe("semantic action catalog", () => {
     }
   });
 
+  it("advertises human assignment in both task creation contracts", () => {
+    const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
+    for (const schema of [createTaskAction.live.descriptor.inputSchema, paperclipSemanticAction("create_task")!.inputSchema]) {
+      const validate = ajv.compile(schema);
+      const input = { title: "Hello", idempotencyKey: "hello", assigneeUserId: "company-owner" };
+      expect(validate(input), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...input, assigneeUserId: null })).toBe(true);
+      expect(validate({ ...input, assigneeUserId: 42 })).toBe(false);
+      expect(validate({ ...input, undeclaredField: true })).toBe(false);
+    }
+  });
+
   it("accepts project handoff receipts and preserves ordinary child task receipts", () => {
     const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
     const validate = ajv.compile(createTaskAction.live.descriptor.outputSchema);

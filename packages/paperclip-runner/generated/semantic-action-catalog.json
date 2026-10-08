@@ -2149,7 +2149,15 @@
       "additionalProperties": false,
       "properties": {
         "assigneeActorId": {
-          "description": "Optional actor assignee.",
+          "description": "Optional actor assignee. Mutually exclusive with assigneeUserId.",
+          "maxLength": 200,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "assigneeUserId": {
+          "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId.",
           "maxLength": 200,
           "type": [
             "string",
