@@ -20,7 +20,8 @@ export function AgentCharacter({ agent, appearance, size = 256, state = "idle", 
   const slotId = useRef(Symbol("agent-character"));
   const owner = useSyncExternalStore(characterSlot.subscribe, characterSlot.getSnapshot, () => null);
   const [visible, setVisible] = useState(false), [reduced, setReduced] = useState(true), [failed, setFailed] = useState(false), [ready, setReady] = useState(false);
-  const active = visible && !reduced && !failed && motion === "auto" && state !== "rest";
+  // An uploaded image replaces the animated character; the static AgentAvatar below renders it.
+  const active = visible && !reduced && !failed && motion === "auto" && state !== "rest" && !identity.image;
   useEffect(() => {
     if (typeof matchMedia !== "function" || typeof IntersectionObserver !== "function") return;
     const media = matchMedia("(prefers-reduced-motion: reduce)");

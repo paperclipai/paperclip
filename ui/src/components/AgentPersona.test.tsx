@@ -56,6 +56,17 @@ describe("agent persona presentation", () => {
     await act(async () => root.render(null));
     expect(renderer.destroy).toHaveBeenCalledTimes(2);
   });
+  it("shows an uploaded image instead of the live character and falls back to the palette on error", async () => {
+    const image = "/api/assets/asset-1/content";
+    await act(async () => root.render(<AgentCharacter appearance={{ ...appearance, image }} />));
+    await show();
+    expect(createCharacter).not.toHaveBeenCalled();
+    expect(host.querySelector("img")?.getAttribute("src")).toBe(image);
+    await act(async () => { host.querySelector("img")!.dispatchEvent(new Event("error")); });
+    expect(host.querySelector("img")?.getAttribute("src")).toContain("/api/agent-avatars/cap-v1/bubblegum-sky/");
+    await act(async () => { host.querySelector("img")!.dispatchEvent(new Event("error")); });
+    expect(host.querySelector("img")).toBeNull();
+  });
   it("uses only static images for reduced motion and an explicit still policy", async () => {
     reduced = true;
     await act(async () => root.render(<><AgentCharacter appearance={appearance} /><AgentCharacter appearance={appearance} motion="still" /></>));

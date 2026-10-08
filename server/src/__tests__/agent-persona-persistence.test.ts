@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { agents, companies, createDb } from "@paperclipai/db";
-import { agentAppearanceSchema, appearanceForPalette, legacyAgentAppearance } from "@paperclipai/shared";
+import { agentAppearanceSchema, appearanceForPalette, legacyAgentAppearance, updateAgentSchema } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.js";
 
@@ -34,6 +34,26 @@ describe("persisted agent personas", () => {
     expect((await agentService(db).getById(original.id))?.avatarUrl).toContain("/arctic-blue/rest.png?size=512");
     const [row] = await db.select().from(agents).where(eq(agents.id, original.id));
     expect(row.appearance).toEqual(appearance);
+  });
+  it("keeps an agent-writable avatar on the asset route and never renders a remote one", async () => {
+    const service = agentService(db);
+    const agent = await service.create(companyId, { name: "Uploaded", role: "engineer", adapterType: "process" });
+    const image = `/api/assets/${randomUUID()}/content`;
+    const uploaded = { ...appearanceForPalette("coral-mint"), image };
+    expect((await service.update(agent.id, { appearance: uploaded }))?.appearance).toEqual(uploaded);
+    // An agent may update its own appearance through `PATCH /api/agents/:id`, so
+    // a remote host here would make every viewer of an agent surface beacon to a
+    // host the agent chose. The route schema is what rejects it.
+    expect(updateAgentSchema.safeParse({
+      appearance: { ...appearanceForPalette("coral-mint"), image: "https://example.com/agent.png" },
+    }).success).toBe(false);
+    expect(updateAgentSchema.safeParse({ appearance: uploaded }).success).toBe(true);
+    // A row written before the restriction degrades to the palette on read
+    // instead of being requested.
+    await db.update(agents)
+      .set({ appearance: { ...appearanceForPalette("coral-mint"), image: "https://example.com/agent.png" } })
+      .where(eq(agents.id, agent.id));
+    expect((await service.getById(agent.id))?.appearance).toEqual(legacyAgentAppearance(agent.id));
   });
   it("backfills legacy IDs with exactly the same persisted identity as the runtime fallback", async () => {
     const ids = Array.from({ length: 20 }, () => randomUUID());

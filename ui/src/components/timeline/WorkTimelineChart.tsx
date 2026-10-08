@@ -182,9 +182,29 @@ function ActorGlyph({
   r: number;
   clipId: string;
 }) {
+  const [failedImage, setFailedImage] = useState<string | null>(null);
+
   if (actor.type === "agent") {
     const size = r > 10 ? 24 : 16;
     const appearance = resolveAgentAppearance(actor.appearance, actor.id.replace(/^agent:/, ""));
+    // An uploaded image is circle-cropped like a user avatar; the palette portrait is not.
+    // If it fails (e.g. an imported company without the asset), fall back to the portrait like AgentAvatar does.
+    const image = appearance.image && failedImage !== appearance.image ? appearance.image : null;
+    if (image) {
+      return (
+        <g>
+          <defs>
+            <clipPath id={clipId}>
+              <circle cx={cx} cy={cy} r={r} />
+            </clipPath>
+          </defs>
+          <image data-testid="timeline-agent-icon" href={image}
+            x={cx - r} y={cy - r} width={2 * r} height={2 * r}
+            preserveAspectRatio="xMidYMid slice" clipPath={`url(#${clipId})`}
+            onError={() => setFailedImage(image)} />
+        </g>
+      );
+    }
     return <image data-testid="timeline-agent-icon" href={agentAvatarUrl(appearance, size, 2)}
       x={cx - size / 2} y={cy - size / 2} width={size} height={size} preserveAspectRatio="xMidYMid meet" />;
   }

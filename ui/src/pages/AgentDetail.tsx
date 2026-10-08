@@ -4,7 +4,7 @@ import { AgentConnectionInstructions } from "@/features/connections/ConnectionIn
 import type { AgentInstructionCandidate, AgentInstructionsBundle } from "@paperclipai/shared";
 import { InstructionHistory } from "../components/InstructionHistory";
 import { AgentCharacter } from "../components/AgentCharacter";
-import { characterStateForAgent } from "@paperclipai/shared";
+import { characterStateForAgent, resolveAgentAppearance } from "@paperclipai/shared";
 import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
@@ -759,6 +759,54 @@ function WorkspaceOperationsSection({
   );
 }
 
+/** The agent header avatar: click it to upload an image, or remove the uploaded one. */
+export function AgentAvatarField({ agent, companyId, agentRef, onUpdated, onError }: {
+  agent: Agent;
+  companyId: string | null;
+  agentRef: string;
+  onUpdated: () => void;
+  onError: (message: string | null) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  // A file uploads a new avatar image, null removes it; the palette character is the fallback either way.
+  const updateImage = useMutation({
+    mutationFn: async (file: File | null) => {
+      if (!companyId) throw new Error("Agent is still loading.");
+      const { image: _previous, ...appearance } = resolveAgentAppearance(agent.appearance, agent.id);
+      const image = file
+        ? (await assetsApi.uploadImage(companyId, file, `agents/${agent.id}`)).contentPath
+        : undefined;
+      return agentsApi.update(agentRef, { appearance: image ? { ...appearance, image } : appearance }, companyId);
+    },
+    onSuccess: () => {
+      onError(null);
+      onUpdated();
+    },
+    onError: (err) => onError(err instanceof Error ? err.message : "Failed to update avatar"),
+  });
+  return (
+    <div className="relative shrink-0">
+      <button type="button" aria-label={`Upload ${agent.name} avatar image`} title="Upload avatar image"
+        className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+        disabled={updateImage.isPending} onClick={() => inputRef.current?.click()}>
+        <AgentCharacter agent={agent} state={characterStateForAgent(agent.status)} size={96} trackingScope="page" label={`${agent.name} avatar`} />
+      </button>
+      <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="sr-only" tabIndex={-1}
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (file) updateImage.mutate(file);
+        }} />
+      {agent.appearance?.image ? (
+        <button type="button" className="absolute left-1/2 top-full -translate-x-1/2 whitespace-nowrap text-xs text-muted-foreground hover:text-foreground disabled:opacity-60"
+          disabled={updateImage.isPending} onClick={() => updateImage.mutate(null)}>
+          Remove image
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export function AgentDetail() {
   const { companyPrefix, agentId, tab: urlTab, runId: urlRunId } = useParams<{
     companyPrefix?: string;
@@ -1022,6 +1070,14 @@ export function AgentDetail() {
     },
   });
 
+  const invalidateAgentAppearance = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
+    if (resolvedCompanyId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
+    }
+  }, [queryClient, routeAgentRef, agentLookupRef, resolvedCompanyId]);
+
   const updatePermissions = useMutation({
     mutationFn: (permissions: AgentPermissionUpdate) =>
       agentsApi.updatePermissions(agentLookupRef, permissions, resolvedCompanyId ?? undefined),
@@ -1244,9 +1300,8 @@ export function AgentDetail() {
       {/* Header */}
       <header className="flex flex-wrap items-center justify-between gap-5 border-b border-border pb-6">
         <div className="flex min-w-0 items-center gap-4">
-          <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
-            <AgentCharacter agent={agent} state={characterStateForAgent(agent.status)} size={96} trackingScope="page" />
-          </div>
+          <AgentAvatarField agent={agent} companyId={resolvedCompanyId} agentRef={agentLookupRef}
+            onUpdated={invalidateAgentAppearance} onError={setActionError} />
           <div className="min-w-0 space-y-1">
             <div className="flex items-center gap-2"><h1 className="truncate text-2xl font-semibold tracking-tight">{agent.name}</h1><PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} /></div>
             <div className="flex items-center gap-2 text-xs text-muted-foreground">

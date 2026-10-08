@@ -177,6 +177,20 @@ const profileImageSchema = z
   .max(4000)
   .refine(isValidProfileImage, { message: "Invalid profile image URL" });
 
+// A user profile image may be remote because it comes from the OAuth provider.
+// Agent-writable images may not: an agent can set its own appearance, so a
+// remote URL there would make every viewer of an agent surface contact a host
+// the agent picked. Uploaded company assets only — same rule the attachment
+// work-product media schema applies.
+export const uploadedImagePathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(4000)
+  .refine((value) => profileImageAssetPathPattern.test(value), {
+    message: "Image must point to the same-origin asset content route",
+  });
+
 export const currentUserProfileSchema = z.object({
   id: z.string().min(1),
   email: z.preprocess(

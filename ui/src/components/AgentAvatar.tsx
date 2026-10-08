@@ -23,10 +23,15 @@ export function AgentAvatar({ agent, appearance, size = 24, name, label, pose = 
   const identity = resolveAgentAppearance(appearance ?? agent?.appearance, agent?.id);
   const src = agentAvatarUrl(identity, size, 1, pose, muted);
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const [failedImage, setFailedImage] = useState<string | null>(null);
+  // An uploaded image wins; if it fails (e.g. an imported company without the asset), fall back to the character.
+  const image = identity.image && failedImage !== identity.image ? identity.image : null;
   return (
     <span data-slot="agent-avatar" className={cn("relative inline-flex shrink-0 items-center justify-center align-middle", avatarSizeClasses[size], className)}
       role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true}>
-      {failedUrl === src ? <span className="text-xs text-muted-foreground">{deriveInitials(name ?? agent?.name ?? "Agent")}</span> :
+      {image ? <img src={image} alt="" width={size} height={size} decoding="async" loading="lazy"
+          className={cn("size-full rounded-full object-cover", muted && "opacity-50 grayscale")} onError={() => setFailedImage(image)} /> :
+        failedUrl === src ? <span className="text-xs text-muted-foreground">{deriveInitials(name ?? agent?.name ?? "Agent")}</span> :
         <img src={src} srcSet={`${agentAvatarUrl(identity, size, 2, pose, muted)} 2x`} alt="" width={size} height={size}
           decoding="async" loading="lazy" className="size-full object-contain" onError={() => setFailedUrl(src)} />}
     </span>

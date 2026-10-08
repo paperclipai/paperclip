@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { uploadedImagePathSchema } from "./validators/access.js";
 
 export const AGENT_PALETTE_IDS = ["bubblegum-sky", "pink-lemonade", "orchid-peach", "coral-mint", "lime-lagoon", "arctic-blue", "solar-flare", "violet-ember", "deep-tide", "coral-current", "golden-hour", "tangerine-cobalt", "electric-grove", "flamingo-jade", "cherry-pop", "turquoise-cherry", "ultraviolet-tide"] as const;
 export type AgentPaletteId = typeof AGENT_PALETTE_IDS[number];
@@ -11,6 +12,8 @@ export const agentAppearanceSchema = z.object({
   schemaVersion: z.literal(1),
   characterVersion: z.literal("cap-v1"),
   paletteId: z.enum(AGENT_PALETTE_IDS),
+  /** Uploaded avatar; overrides the character. The palette stays the fallback. */
+  image: uploadedImagePathSchema.optional(),
 }).strict();
 export type AgentAppearance = z.infer<typeof agentAppearanceSchema>;
 
