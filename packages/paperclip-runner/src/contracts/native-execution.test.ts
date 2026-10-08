@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, type NativeExecutionInputV1 } from "./native-execution.js";
+import { HISTORICAL_PAPERCLIP_EXECUTION_PROMPTS } from "./execution-prompt-history.js";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,
@@ -56,6 +57,35 @@ const input: NativeExecutionInputV1 = {
 };
 
 describe("NativeExecutionInputV1", () => {
+  it.each(Object.entries(HISTORICAL_PAPERCLIP_EXECUTION_PROMPTS))(
+    "preserves a saved %s execution through recovery parsing",
+    (revision, text) => {
+      const digest = "0".repeat(64);
+      const context = {
+        prompt: { revision: revision as keyof typeof HISTORICAL_PAPERCLIP_EXECUTION_PROMPTS, text, digest: createHash("sha256").update(text).digest("hex") },
+        instructions: {
+          entryPath: "AGENTS.md",
+          bundle: { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/runtime/instructions", fileCount: 1, totalBytes: 42 },
+        },
+        skills: [],
+        mcp: { assignmentSetId: "none", digest, bindingId: null },
+      };
+      for (const schema of ["paperclip.native-execution-input.v3", "paperclip.native-execution-input.v4", "paperclip.native-execution-input.v5", NATIVE_EXECUTION_INPUT_SCHEMA]) {
+        const persisted = JSON.parse(JSON.stringify({
+          ...input,
+          schema,
+          provider: schema === "paperclip.native-execution-input.v3" ? input.provider : { ...input.provider, approvalPolicy: "never" },
+          executionMode: "default",
+          planningContext: null,
+          runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
+        }));
+        const recovered = parseNativeExecutionInput(persisted);
+        expect(recovered.runtimeContext).toEqual(persisted.runtimeContext);
+        expect(parseNativeExecutionInput(recovered)).toEqual(recovered);
+      }
+    },
+  );
+
   it("parses v3 immutable runtime context without changing the model task envelope", () => {
     const digest = "0".repeat(64);
     const context = {

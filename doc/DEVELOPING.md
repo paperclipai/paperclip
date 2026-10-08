@@ -1374,6 +1374,14 @@ registers a correlated recovery request before it signals the dev supervisor.
 An uncoordinated server restart uses the same durable recovery classifier
 without trusting a handoff marker.
 
+Recovery retains each run's pinned execution prompt, revision, and context
+digest across server upgrades. The shared parser accepts exact released prompt
+revisions and checks their text, SHA-256, and aggregate context digest. New runs
+use the current prompt. When changing that prompt, move the previous text into
+`packages/paperclip-runner/src/contracts/execution-prompt-history.ts` and retain
+its historical digest test. Do not rewrite saved execution inputs to the latest
+prompt. Unknown revisions and altered prompt text still fail validation.
+
 Startup binds the HTTP and PRP listener before it classifies native runs. Public
 health reports a startup state until every candidate is reattached, dispatched
 for same-run resume, finalized from durable evidence, or held for explicit
