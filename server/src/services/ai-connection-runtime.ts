@@ -8,6 +8,7 @@ import { type Db, companySecrets, connectionGrants } from "@paperclipai/db";
 import {
   AI_CONNECTION_CAPABILITIES,
   aiConnectionMetadataSchema, aiRoutingHarness,
+  isAiConnectionManagedAdapter,
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { managedProviderRouting } from "./ai-provider-routing.js";
@@ -221,6 +222,12 @@ export async function prepareManagedAiRuntime(
     config: Record<string, unknown>;
   },
 ) {
+  if (!isAiConnectionManagedAdapter(input.adapterType)) {
+    throw unprocessable(
+      "This adapter manages its own provider credentials and cannot use a Paperclip AI connection",
+      { code: "ai_connection_incompatible" },
+    );
+  }
   const configuredEnv =
     input.config.env && typeof input.config.env === "object"
       ? (input.config.env as Record<string, unknown>)

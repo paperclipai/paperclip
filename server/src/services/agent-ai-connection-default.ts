@@ -2,6 +2,7 @@ import {
   AI_PROVIDERS,
   aiRuntimeConnectionBindingSchema,
   isAiConnectionCompatible,
+  isAiConnectionManagedAdapter,
   type AiConnectionBinding,
   type AiRuntimeConnectionBinding,
   type AiProvider,
@@ -23,6 +24,10 @@ export function defaultAiConnectionForHire(
   config: Record<string, unknown>,
   managerBinding: unknown,
 ): AiRuntimeConnectionBinding | undefined {
+  // Self-authenticated adapters never inherit an AI connection binding: the
+  // binding would be stored without ever being installed and would then block
+  // the first run as "connection not permitted" (Greptile P1 on #15513).
+  if (!isAiConnectionManagedAdapter(adapterType)) return undefined;
   const compatible = (binding: AiConnectionBinding) =>
     isAiConnectionCompatible(binding, adapterType, config.model, config.provider, config.acpxAgent);
   const inherited = aiRuntimeConnectionBindingSchema.safeParse(managerBinding);

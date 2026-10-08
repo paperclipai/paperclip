@@ -54,7 +54,7 @@ import { admitExplicitNativeContinuation, admitExplicitContinuationRetry, undeli
 import { canRetryStoppedRun, isCancelledNativeStartup } from "./cancelled-native-startup.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { managedAiSessionFingerprintConfig, prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, isAiConnectionBusy, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
-import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type AiConnectionRouterSelection } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, isAiConnectionManagedAdapter, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings } from "./ai-connection-router.js";
 import { aiConnectionSessionCompatibilityInputs, managedAiSessionIdentityCompatible } from "./ai-connection-session.js";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
@@ -21282,7 +21282,16 @@ export function heartbeatService(
         : null;
       const routerHasPersistedInput = Object.keys(parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput)).length > 0;
       const persistedRouterPoolId = routerHasPersistedInput ? readNonEmptyString(parseObject(context.aiRouterSelection).poolId) : null;
-      const requestedAiBinding = persistedRouterPoolId ? { mode: "router" as const, connectionId: persistedRouterPoolId } : agent.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
+      // Self-authenticated adapters authenticate in their own adapter
+      // configuration. A stale or inherited AI-connection binding must never
+      // route them through managed provider setup or pool selection.
+      const requestedAiBinding = !isAiConnectionManagedAdapter(agent.adapterType)
+        ? undefined
+        : persistedRouterPoolId
+          ? { mode: "router" as const, connectionId: persistedRouterPoolId }
+          : agent.runtimeConfig?.aiConnection
+            ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection)
+            : undefined;
       let aiBinding = requestedAiBinding?.mode === "router" ? undefined : requestedAiBinding;
       const originalAiIssueOverrides = issueAssigneeOverrides;
       if (requestedAiBinding?.mode === "router") {

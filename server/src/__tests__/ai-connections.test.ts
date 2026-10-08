@@ -26,7 +26,8 @@ import { execute as executeGemini, testEnvironment as testGeminiEnvironment } fr
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
-import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
+import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible, isAiConnectionManagedAdapter } from "@paperclipai/shared";
 import express from "express";
 import request from "supertest";
 import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
@@ -1499,6 +1500,36 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(isAiConnectionCompatible(binding, "paperclip_runner", "same-model", "acpx", "claude")).toBe(true);
     expect(isAiConnectionCompatible(binding, "paperclip_runner", "same-model", "acpx", "codex")).toBe(false);
     expect(isAiConnectionCompatible({ provider: "openrouter", method: "api_key" }, "opencode_local", "anthropic/model")).toBe(false);
+    expect(isAiConnectionManagedAdapter("hermes_gateway")).toBe(false);
+    expect(isAiConnectionCompatible({ provider: "anthropic", method: "api_key" }, "hermes_gateway")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "anthropic", method: "api_key" }, "openclaw_gateway")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "anthropic", method: "api_key" }, "unknown_adapter")).toBe(false);
+  });
+  it("never lets a self-authenticated adapter inherit a manager binding on hire (Greptile P1)", () => {
+    const managerBinding = { provider: "anthropic", method: "api_key", mode: "responsible_user" };
+    for (const adapter of ["hermes_gateway", "cursor_cloud", "kimi_local", "pi_local", "cursor", "openclaw_gateway"]) {
+      expect(defaultAiConnectionForHire(adapter, { model: "test", provider: "acpx" }, managerBinding)).toBeUndefined();
+    }
+    // Managed harnesses still inherit a compatible binding.
+    const managedResult = defaultAiConnectionForHire("claude_local", { model: "test", provider: "acpx" }, managerBinding);
+    expect(managedResult).toBeDefined();
+    expect(managedResult?.provider).toBe("anthropic");
+    // Managed harnesses without a provider default keep inheriting an installed connection.
+    expect(defaultAiConnectionForHire("hermes_local", { model: "test", provider: "acpx" }, {
+      provider: "anthropic", method: "api_key", mode: "shared",
+      connectionId: randomUUID(), grantId: randomUUID(),
+    })).toBeDefined();
+    expect(defaultAiConnectionForHire("gemini_local", { model: "test", provider: "google" }, { provider: "google", method: "api_key", mode: "responsible_user" })).toBeDefined();
+  });
+  it("keeps self-authenticated adapters out of the managed runtime", async () => {
+    await expect(prepareManagedAiRuntime(db, {
+      companyId,
+      agentId,
+      responsibleUserId: "alice",
+      adapterType: "hermes_gateway",
+      binding,
+      config: {},
+    })).rejects.toMatchObject({ details: { code: "ai_connection_incompatible" } });
   });
   it("does not let a forged delegation bypass human access or accept an expired subscription attempt", async () => {
     const selected = await service.select({ ...input, userId: "alice" });

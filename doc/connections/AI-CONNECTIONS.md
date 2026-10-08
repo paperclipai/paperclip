@@ -59,6 +59,15 @@ the selected connection owns its provider routing.
 Changing those separately may make a binding incompatible; saving then requires
 a compatible choice. Agent configuration cannot grant access to another account.
 
+Self-authenticated adapters — `hermes_gateway`, `openclaw_gateway`,
+`cursor_cloud`, `cursor`, `kimi_local`, and `pi_local` — own their provider
+login inside the adapter configuration. They never inherit, validate, install,
+or run a managed AI connection: an explicit `runtimeConfig.aiConnection` for
+such an agent is dropped on create, hire, and update, a row persisted by an
+older release is purged on the next update and ignored by the heartbeat, and
+switching the agent to a managed harness re-validates and installs the binding
+before the agent runs.
+
 Personal defaults are unique per company, user, and provider. A Claude bot can use one user’s subscription and another user’s API key without changing its harness or model. Explicit shared selections remain pinned to the selected account and method.
 The first successful personal connection sets a default only when none exists.
 The additive `ai_provider_defaults` table preserves the legacy per-method preferences. Migration selects each user’s most recently updated provider preference (including unavailable accounts), and rerunning it never overwrites a provider default. New writes maintain the legacy table for older servers. A database trigger propagates older servers’ explicit default updates to the provider default. Inserting an additional method default does not replace an existing provider default.
