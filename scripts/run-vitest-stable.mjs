@@ -79,13 +79,15 @@ const generalServerWithoutChatGroupName = "general-server-without-chat";
 const generalChatGroupName = "general-chat";
 const generalServerNativeRunnerGroupName = "general-server-native-runner";
 const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
-// This suite rebuilds the Runner release binaries with cargo in beforeAll.
+// The first suite rebuilds the Runner release binaries with cargo in beforeAll.
 // Inside the PR workflow's plain server shards, which carry no Rust cache,
 // that build was a ~4m30s cold compile of every third-party crate on each run
 // (277s of a 291s shard vitest step, actions run 35246999382, 2026-09-17).
 const nativeRunnerSuites = [
   "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
   "server/src/__tests__/dot-runner.test.ts",
+  // These process cases otherwise skip in server shards without Runner binaries.
+  "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts",
 ];
 // In the PR workflow (pr.yml, the caller of pr-trusted.yml — reusable
 // workflows inherit the caller's GITHUB_WORKFLOW), the last Verify Paperclip
