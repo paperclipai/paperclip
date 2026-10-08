@@ -89,6 +89,7 @@ import type { createHeartbeatRunState, getAdapterSessionCodec } from "./run-stat
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import type { Db, agents } from "@paperclipai/db";
 import { setupCommandFailureResultJson } from "../workspace-setup-command-failure.js";
+import { isAiAuthenticationFailure } from "../ai-auth-failure.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
@@ -894,6 +895,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       }
       const skipRunIssueComment =
         parseObject(livenessRun.contextSnapshot).skipIssueComment === true;
+      // A rejected provider login is not an agent response. The
+      // authentication repair card explains the failure to the user.
+      const providerAuthFailure =
+        livenessRun.status === "failed" &&
+        isAiAuthenticationFailure(livenessRun.errorCode);
       let resolvedPresentationDecision: RunPresentationDecision | null =
         null;
       try {
@@ -954,6 +960,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         if (
           issueId &&
           !skipRunIssueComment &&
+          !providerAuthFailure &&
           presentationDecision.commentAction === "create" &&
           resolved.text
         ) {
@@ -1010,7 +1017,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               ...presentationDecision.reasonCodes,
               skipRunIssueComment
                 ? "issue_comment_suppressed"
-                : "run_has_no_issue",
+                : issueId && providerAuthFailure
+                  ? "provider_auth_failure_comment_suppressed"
+                  : "run_has_no_issue",
             ],
           };
         }
