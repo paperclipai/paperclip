@@ -29,10 +29,6 @@ services:
       # ── LLM provider keys (at least one is needed for agents to work) ──
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
-      # OpenAI-compatible providers for the OpenCode adapter (JSON in OpenCode's `provider` shape)
-      PAPERCLIP_OPENCODE_PROVIDERS: "${PAPERCLIP_OPENCODE_PROVIDERS:-}"
-      PAPERCLIP_OPENCODE_SMALL_MODEL: "${PAPERCLIP_OPENCODE_SMALL_MODEL:-}"
-      LLAMA_SWAP_KEY: "${LLAMA_SWAP_KEY:-}"
 
       # ── Deployment settings ──
       # "authenticated" requires login, "local_trusted" skips auth
