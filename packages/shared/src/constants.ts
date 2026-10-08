@@ -1387,6 +1387,11 @@ export const PLUGIN_CAPABILITIES = [
   "agent.sessions.create",
   "agent.sessions.list",
   "agent.sessions.send",
+  // Attribute a plugin session send to a paired board user (the wake's
+  // requesting and responsible user). Impersonation surface: the host
+  // independently re-verifies the actor is an active, non-viewer human member
+  // of the company before applying it.
+  "agent.sessions.send_human_attributed",
   "agent.sessions.close",
   "activity.log.write",
   "metrics.write",

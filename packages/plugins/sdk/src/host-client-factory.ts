@@ -1009,6 +1009,13 @@ export function createHostClientHandlers(
       return services.agentSessions.list(params);
     }),
     "agents.sessions.sendMessage": gated("agents.sessions.sendMessage", async (params) => {
+      if (params.actorUserId && !capabilitySet.has("agent.sessions.send_human_attributed")) {
+        throw new CapabilityDeniedError(
+          pluginId,
+          "agents.sessions.sendMessage",
+          "agent.sessions.send_human_attributed",
+        );
+      }
       return services.agentSessions.sendMessage(params);
     }),
     "agents.sessions.close": gated("agents.sessions.close", async (params) => {

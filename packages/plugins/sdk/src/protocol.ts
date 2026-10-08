@@ -2147,7 +2147,16 @@ export interface WorkerToHostMethods {
     result: Array<{ sessionId: string; agentId: string; companyId: string; status: "active" | "closed"; createdAt: string }>,
   ];
   "agents.sessions.sendMessage": [
-    params: { sessionId: string; companyId: string; prompt: string; reason?: string },
+    params: {
+      sessionId: string;
+      companyId: string;
+      prompt: string;
+      reason?: string;
+      /** Active human company member the wake is attributed to. Requires `agent.sessions.send_human_attributed`. */
+      actorUserId?: string;
+      /** Same-company project the wake runs under (its workspace and env, budget gate, and cost scope), like an issue in that project. */
+      projectId?: string;
+    },
     result: { runId: string },
   ];
   "agents.sessions.close": [

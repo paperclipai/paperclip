@@ -1013,8 +1013,8 @@ export function buildHostServices(
    * web app's own board routes apply — a plugin can only ever attribute an
    * action to an identity that could have taken it in the web app itself.
    * Used by any plugin capability that accepts an `actorUserId`
-   * (`createComment`'s human-attributed path, `respondInteraction`, and
-   * `approvals.decide`).
+   * (`createComment`'s human-attributed path, `respondInteraction`,
+   * `approvals.decide`, and `agentSessions.sendMessage`'s attributed path).
    *
    * All current call sites are non-safe (write) actions, so by default this
    * also rejects a `viewer`-role member — the web app's board write-routes
@@ -3513,6 +3513,18 @@ export function buildHostServices(
           .then((rows) => rows[0] ?? null);
         if (!session) throw new Error(`Session not found: ${params.sessionId}`);
 
+        // Optional attribution. The capability for `actorUserId` is gated in
+        // the SDK host-client layer; here the host independently verifies the
+        // user and project against this company before the wake is queued.
+        const actorUserId = params.actorUserId ?? null;
+        if (actorUserId) {
+          await requireActiveHumanMember(companyId, actorUserId);
+        }
+        const projectId = params.projectId ?? null;
+        if (projectId) {
+          requireInCompany("Project", await projects.getById(projectId), companyId);
+        }
+
         const run = await heartbeat.wakeup(session.agentId, {
           source: "automation",
           triggerDetail: "system",
@@ -3520,6 +3532,12 @@ export function buildHostServices(
           payload: { prompt: params.prompt },
           contextSnapshot: {
             taskKey: session.taskKey,
+            // A project-scoped send runs like an issue in that project: the
+            // heartbeat reads `projectId` from the wake context to bind the
+            // project's workspace, execution-workspace policy and env, to
+            // apply the project budget gate, and to scope the run's cost
+            // events (ledger scope) to the project.
+            ...(projectId ? { projectId } : {}),
             wakeReason: params.reason ?? null,
             wakeSource: "automation",
             wakeTriggerDetail: "system",
@@ -3530,10 +3548,38 @@ export function buildHostServices(
               sessionId: params.sessionId,
             },
           },
-          requestedByActorType: "system",
-          requestedByActorId: pluginId,
+          // A verified human sender becomes the wake's requesting user. This
+          // relies on the heartbeat's responsible-user fallback order
+          // (resolveResponsibleUserIdForRunSeed, after any explicit operator
+          // identity): comment author, retry
+          // origin, context responsibleUserId, existing run, routine, manual
+          // user run, issue, parent issue, then — with no issue in context, as
+          // for every session send — the requesting user, before the company
+          // default. So the run's responsibleUserId, and through the run the
+          // cost events that reference it, land on that person.
+          requestedByActorType: actorUserId ? "user" : "system",
+          requestedByActorId: actorUserId ?? pluginId,
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
+
+        // Plugin-originated wakeups write activity entries (PLUGIN_SPEC). An
+        // unattributed send keeps its previous behaviour and writes none.
+        if (actorUserId || projectId) {
+          await logPluginActivity({
+            companyId,
+            action: "agent.session_wakeup_requested",
+            entityType: "agent",
+            entityId: session.agentId,
+            actor: { actorUserId },
+            details: {
+              agentId: session.agentId,
+              sessionId: params.sessionId,
+              runId: run.id,
+              reason: params.reason ?? null,
+              ...(projectId ? { projectId } : {}),
+            },
+          });
+        }
 
         // Subscribe to live events and forward to the plugin worker as notifications.
         // Track the subscription so it can be cleaned up on dispose() if the run

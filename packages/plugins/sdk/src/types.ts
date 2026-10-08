@@ -1743,6 +1743,8 @@ export interface AgentSessionSendResult {
  *
  * Requires `agent.sessions.create` for create, `agent.sessions.list` for list,
  * `agent.sessions.send` for sendMessage, `agent.sessions.close` for close.
+ * A sendMessage call that passes `actorUserId` also requires
+ * `agent.sessions.send_human_attributed`.
  */
 export interface PluginAgentSessionsClient {
   /** Create a new conversational session with an agent. Requires `agent.sessions.create`. */
@@ -1758,10 +1760,32 @@ export interface PluginAgentSessionsClient {
    * Send a message to a session and receive streaming events via the `onEvent` callback.
    * Returns immediately with `{ runId }`. Events are delivered asynchronously.
    * Requires `agent.sessions.send`.
+   *
+   * Leave `actorUserId` and `projectId` out and the wake is requested by the
+   * plugin itself, exactly as before.
    */
   sendMessage(sessionId: string, companyId: string, opts: {
     prompt: string;
     reason?: string;
+    /**
+     * Attribute the wake to this human company member: they become the
+     * wake's requesting user, so the run's responsible user and its cost
+     * land on them. Requires the additional
+     * `agent.sessions.send_human_attributed` capability. The host verifies
+     * the user is an active, non-viewer human member of `companyId` and
+     * refuses the send otherwise.
+     */
+    actorUserId?: string;
+    /**
+     * Run the wake under this project, like an issue in that project: the
+     * run uses the project's workspace, execution-workspace policy and env,
+     * the project budget hard-stop applies, and the run's cost events carry
+     * the project. Must belong to `companyId`, otherwise the send is
+     * refused. Needs only `agent.sessions.send`. Older hosts silently drop
+     * this field and there is no runtime signal, so a plugin that relies on
+     * it must state a minimum host version.
+     */
+    projectId?: string;
     onEvent?: (event: AgentSessionEvent) => void;
   }): Promise<AgentSessionSendResult>;
 

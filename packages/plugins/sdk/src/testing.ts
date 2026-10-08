@@ -2277,6 +2277,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           const session = sessions.get(sessionId);
           if (!session || session.status !== "active") throw new Error(`Session not found or closed: ${sessionId}`);
           if (session.companyId !== companyId) throw new Error(`Session not found: ${sessionId}`);
+          if (opts.actorUserId) {
+            requireCapability(manifest, capabilitySet, "agent.sessions.send_human_attributed");
+            assertActiveHumanMemberCanWrite(companyId, opts.actorUserId);
+          }
+          if (opts.projectId && !isInCompany(projects.get(opts.projectId), companyId)) {
+            throw new Error("Project not found");
+          }
           if (opts.onEvent) {
             sessionEventCallbacks.set(sessionId, opts.onEvent);
           }

@@ -1210,6 +1210,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           async sendMessage(sessionId: string, companyId: string, opts: {
             prompt: string;
             reason?: string;
+            actorUserId?: string;
+            projectId?: string;
             onEvent?: (event: AgentSessionEvent) => void;
           }) {
             if (opts.onEvent) {
@@ -1221,6 +1223,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
                 companyId,
                 prompt: opts.prompt,
                 reason: opts.reason,
+                actorUserId: opts.actorUserId,
+                projectId: opts.projectId,
               });
             } catch (err) {
               sessionEventCallbacks.delete(sessionId);
