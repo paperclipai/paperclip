@@ -488,8 +488,13 @@ describe("startServer feedback export wiring", () => {
       if (fails) {
         vi.mocked(runDatabaseBackup).mockImplementationOnce(writeBackup);
         expect(retry).toEqual(expect.any(Function));
+        const activeBeforeRetry = idleWorkSnapshot().active;
         retry!();
-        await vi.waitFor(() => expect(existsSync(idleBackupWakeMarker(directory))).toBe(false));
+        await vi.waitFor(() => {
+          expect(existsSync(idleBackupWakeMarker(directory))).toBe(false);
+          // Marker removal precedes directory fsync and release of the work receipt.
+          expect(idleWorkSnapshot().active).toBe(activeBeforeRetry);
+        });
         expect(runDatabaseBackup).toHaveBeenCalledTimes(2);
       }
     } finally {
