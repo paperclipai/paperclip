@@ -32,6 +32,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
   releaseLease: vi.fn(),
   listBoundCompanyIds: vi.fn(async () => [] as string[]),
   findManagedSandboxEnvironment: vi.fn(async () => null as Record<string, unknown> | null),
+  findKubernetesEnvironment: vi.fn(async () => null as Record<string, unknown> | null),
 }));
 
 const mockReleaseRunLease = vi.hoisted(() => vi.fn(async () => undefined));
@@ -46,7 +47,7 @@ const mockEnvironmentRuntime = vi.hoisted(() => ({
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn());
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(async () => ({ defaultEnvironmentId: null as string | null })),
-  getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
+  getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false, executionMode: "local" })),
   getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
 }));
 
@@ -121,6 +122,10 @@ vi.mock("../routes/ai-connections.js", async (importOriginal) => ({
   validateAiApiKey: mockValidateAiApiKey,
 }));
 const mockMarkAuthenticationFailed = vi.hoisted(() => vi.fn(async () => undefined));
+const mockCopilotProbe = vi.hoisted(() => vi.fn(async () => ({ status: "verified", promptSent: false })));
+vi.mock("../services/copilot-connection-probe.js", async importOriginal => ({
+  ...(await importOriginal<object>()), probeCopilotExecutionTarget: mockCopilotProbe,
+}));
 vi.mock("../services/ai-connections.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../services/ai-connections.js")>()),
   aiConnectionService: () => ({ markAuthenticationFailed: mockMarkAuthenticationFailed }),
@@ -192,6 +197,8 @@ describe("agent test-environment route", () => {
     vi.resetModules();
     vi.clearAllMocks();
     mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({ censorUsernameInLogs: false, executionMode: "local" });
+    mockEnvironmentService.findKubernetesEnvironment.mockResolvedValue(null);
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
     mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(null);
     mockAccessService.decide.mockResolvedValue({
@@ -325,6 +332,41 @@ describe("agent test-environment route", () => {
       .send({ environmentId: null });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(testEnvironmentSpy).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target }));
+  });
+
+  it.each([null, "33333333-3333-4333-8333-333333333333"])("verifies Copilot on forced Kubernetes before the host selection (%s)", async environmentId => {
+    const kubernetesId = "11111111-1111-4111-8111-111111111111";
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({ censorUsernameInLogs: false, executionMode: "kubernetes" });
+    mockEnvironmentService.findKubernetesEnvironment.mockResolvedValue({ id: kubernetesId });
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "kubernetes", runner: { execute: vi.fn() } };
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue(target);
+    mockPrepareManagedAiRuntime.mockImplementation(async (_db, input) => ({
+      config: { ...input.config, env: { COPILOT_GITHUB_TOKEN: "private-fixture" } },
+      attribution: { provider: "github", method: "api_key" }, cleanup: vi.fn(),
+    }));
+    const app = await createApp();
+    const response = await request(app).post("/api/companies/company-1/adapters/paperclip_runner/test-environment").send({
+      environmentId, adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" },
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.status).toBe("pass");
+    expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({ environment: expect.objectContaining({ id: kubernetesId }) }));
+    expect(mockCopilotProbe).toHaveBeenCalledExactlyOnceWith("private-fixture", target, "gpt-5.6-luna");
+    expect(mockReleaseRunLease).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a Copilot test before credentials when forced Kubernetes is unavailable", async () => {
+    mockInstanceSettingsService.getGeneral.mockResolvedValue({ censorUsernameInLogs: false, executionMode: "kubernetes" });
+    const app = await createApp();
+    const response = await request(app).post("/api/companies/company-1/adapters/paperclip_runner/test-environment").send({
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" },
+    });
+    expect(response.status).toBe(422);
+    expect(response.body.details.code).toBe("copilot_environment_unavailable");
+    expect(mockPrepareManagedAiRuntime).not.toHaveBeenCalled();
+    expect(mockCopilotProbe).not.toHaveBeenCalled();
   });
 
   it("checks the inherited environment's company before resolving credentials", async () => {

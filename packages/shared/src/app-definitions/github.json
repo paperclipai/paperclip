@@ -2,9 +2,10 @@
   "schemaVersion": 1,
   "slug": "github",
   "name": "GitHub",
-  "description": "Give agents access to GitHub repositories, issues, and pull requests.",
+  "description": "Connect GitHub repository access or authenticate GitHub Copilot agents.",
   "categories": [
-    "developer"
+    "developer",
+    "ai"
   ],
   "featured": true,
   "branding": {
@@ -68,7 +69,7 @@
           "required": true,
           "placeholder": "github_pat_...",
           "secret": true,
-          "helperMd": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
+          "helperMd": "Repository contents, issues, pull requests and other granted toolsets; selected repos and installation/PAT permissions apply. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key\u2019s permissions."
         }
       ],
       "keyPlacement": {
@@ -80,6 +81,42 @@
         "organization",
         "repository"
       ]
+    },
+    {
+      "key": "copilot-token",
+      "label": "GitHub Copilot personal access token",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "github",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate the GitHub Copilot agent runtime with a personal or explicitly shared account.",
+      "guidanceMd": "Create a personal fine-grained token with the Copilot Requests permission. Copilot authentication is separate from repository and MCP access. [GitHub authentication instructions](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli).",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "Personal access token",
+          "type": "password",
+          "required": true,
+          "placeholder": "github_pat_...",
+          "secret": true,
+          "helperMd": "Use a personal fine-grained token with Copilot Requests permission."
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "COPILOT_GITHUB_TOKEN"
+      }
     }
   ]
 }

@@ -8,7 +8,7 @@ const { probeInstallation, probeGrokInstallation } = vi.hoisted(() => ({
   probeInstallation: vi.fn(),
   probeGrokInstallation: vi.fn(),
 }));
-vi.mock("@paperclipai/paperclip-runner/live", () => ({
+vi.mock("../vendor/paperclip-runner/live/index.js", () => ({
   probeAcpxClaudeInstallation: probeInstallation,
   probeAcpxGrokInstallation: probeGrokInstallation,
   probeAcpxCursorInstallation: vi.fn(async () => undefined),

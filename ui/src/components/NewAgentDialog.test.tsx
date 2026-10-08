@@ -113,7 +113,19 @@ it("offers native Codex, Claude ACPX, and OpenCode runners", async () => {
   expect(options).toContain("Codex (app server)");
   expect(options).toContain("Claude (ACPX)");
   expect(options).toContain("OpenCode");
+  expect(options).toContain("GitHub Copilot");
   expect(options.join(" ")).not.toContain("ACPX Codex");
+});
+
+it("opens saved-token Copilot setup through the ordinary New Agent picker", async () => {
+  await name();
+  await act(async () => (document.querySelector('input[value="paperclip_runner"]') as HTMLInputElement).click());
+  const select = document.querySelector("select") as HTMLSelectElement;
+  await act(async () => { select.value = "copilot"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await click("Configure agent");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("adapterType")).toBe("paperclip_runner");
+  expect(query.get("runnerProvider")).toBe("copilot");
 });
 
 it.each([false, undefined])(

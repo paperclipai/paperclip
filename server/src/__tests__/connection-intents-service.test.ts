@@ -372,7 +372,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     });
   });
 
-  it("only advertises GitHub tool methods in search and setup options", async () => {
+  it("separates GitHub runtime discovery from tool setup options", async () => {
     const service = connectionIntentService(db);
     const search = await service.search(claims, "github");
     const github = search.results.find((result) => result.service === "github");
@@ -383,6 +383,12 @@ describeEmbeddedPostgres("connectionIntentService", () => {
             key: "mcp-key",
             label: "Personal access token (advanced)",
             auth: "api_key",
+            purpose: "tool",
+          }),
+          expect.objectContaining({
+            key: "copilot-token",
+            purpose: "ai",
+            setupPath: expect.stringContaining("/apps/connect?source=github"),
           }),
         ],
       }),
@@ -407,6 +413,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect(setup.service.methods.map((method) => method.key)).not.toContain(
       "chat-agent",
     );
+    expect(setup.service.methods.map((method) => method.key)).not.toContain("copilot-token");
   });
 
   it("serializes OAuth intent completion behind addressed-user membership revocation", async () => {

@@ -973,6 +973,10 @@ describe("Connectors landing page", () => {
     expect(container.textContent).not.toContain("Chat with agents");
     await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Add key GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
+    const copilot = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Connect Copilot")!;
+    expect(copilot).toBeTruthy();
+    await act(() => void copilot.click());
+    expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github&method=copilot-token");
   });
 
   it("names what the card will actually ask for", async () => {
