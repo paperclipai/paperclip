@@ -64,6 +64,7 @@ import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
+  isSpawnLikeFailureMessage,
 } from "../services/heartbeat.ts";
 
 const mockedAppendHeartbeatRunEvent = vi.mocked(appendHeartbeatRunEvent);
@@ -398,6 +399,83 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("classifies a PATH lookup failure as a spawn-like transient failure", () => {
+    expect(
+      isSpawnLikeFailureMessage('Command not found in PATH: "claude"'),
+    ).toBe(true);
+    expect(isSpawnLikeFailureMessage("spawn claude ENOENT")).toBe(true);
+    expect(isSpawnLikeFailureMessage("some unrelated adapter error")).toBe(
+      false,
+    );
+  });
+
+  it("schedules a bounded retry instead of a terminal failure when an ordinary heartbeat's adapter fails with a PATH lookup error", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    // seedRetryFixture's contextSnapshot ({ issueId, wakeReason: "issue_assigned" })
+    // carries no interactionId/interactionStatus, i.e. an ordinary heartbeat wake,
+    // not a resumed interaction continuation.
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ error: 'Command not found in PATH: "claude"' })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.scheduleTransientSpawnLikeFailureRetry(runId);
+    expect(result).toMatchObject({ outcome: "scheduled" });
+    if (!result || result.outcome !== "scheduled") throw new Error("Expected a bounded retry");
+
+    const retryRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, result.run.id))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun?.status).toBe("scheduled_retry");
+    expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
+  });
+
+  it("does not schedule a transient retry for an unrelated adapter failure", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "adapter_failed" });
+
+    const result = await heartbeat.scheduleTransientSpawnLikeFailureRetry(runId);
+    expect(result).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
+  it("defers to the interaction-continuation retry path instead of double-scheduling", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "adapter_failed" });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        error: 'Command not found in PATH: "claude"',
+        contextSnapshot: {
+          issueId: randomUUID(),
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId: randomUUID(),
+          interactionStatus: "accepted",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.scheduleTransientSpawnLikeFailureRetry(runId);
+    expect(result).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
   });
 
   async function seedMaxTurnFixture(input?: {

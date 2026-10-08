@@ -1167,9 +1167,11 @@ function readTransientRecoveryContractFromRun(
     : null;
 }
 
-function isSpawnLikeFailureMessage(value: unknown) {
+export function isSpawnLikeFailureMessage(value: unknown) {
   if (typeof value !== "string") return false;
-  return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
+  return /failed to start command|spawn\b|\bENOENT\b|not found in PATH/i.test(
+    value,
+  );
 }
 
 // A sandbox provider plugin's worker can be briefly down during its own
@@ -1246,6 +1248,30 @@ function isRetryableInteractionContinuationInfrastructureFailure(
     isSandboxProviderWorkerUnavailableFailureMessage(run.error) ||
     isSandboxProviderWorkerUnavailableFailureMessage(resultJson.errorMessage) ||
     isSandboxProviderWorkerUnavailableFailureMessage(resultJson.message)
+  );
+}
+
+// A spawn-like PATH lookup failure (e.g. resolveSpawnTarget's "Command not
+// found in PATH" in packages/adapter-utils/src/server-utils.ts) can happen on
+// any ordinary heartbeat dispatch, not only one resuming a pending
+// interaction. Unlike isRetryableInteractionContinuationInfrastructureFailure
+// above, this classifier carries no interaction-continuation precondition, so
+// it backs the plain bounded-retry budget instead of the
+// interaction-continuation one.
+function isSpawnLikeAdapterOrSetupFailure(
+  run: Pick<
+    typeof heartbeatRuns.$inferSelect,
+    "error" | "errorCode" | "resultJson"
+  >,
+) {
+  if (run.errorCode !== "adapter_failed" && run.errorCode !== "setup_failed")
+    return false;
+
+  const resultJson = parseObject(run.resultJson);
+  return (
+    isSpawnLikeFailureMessage(run.error) ||
+    isSpawnLikeFailureMessage(resultJson.errorMessage) ||
+    isSpawnLikeFailureMessage(resultJson.message)
   );
 }
 
@@ -16855,6 +16881,28 @@ export function heartbeatService(
     });
   }
 
+  // Ordinary heartbeats (no pending interaction to resume) never reach
+  // scheduleInteractionContinuationInfrastructureRetryIfEligible above, since
+  // that function's own guard requires a resolved interaction-continuation
+  // wake context. A transient spawn/PATH failure on such a run must still get
+  // the generic bounded-retry budget instead of going straight to a terminal
+  // `failed`, so this check is deliberately independent of that context. When
+  // the run IS an interaction-continuation resume, defer to that specialized
+  // retry path (its own reason, budget, and escalation) instead of racing it
+  // with a second retry scheduled here.
+  async function scheduleTransientSpawnLikeFailureRetryIfEligible(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+  ) {
+    if (isResolvedInteractionContinuationWakeContext(run.contextSnapshot))
+      return null;
+    if (!isSpawnLikeAdapterOrSetupFailure(run)) return null;
+
+    return scheduleBoundedRetryForRun(run, agent, {
+      retryReason: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON,
+    });
+  }
+
   async function promoteDueScheduledRetries(now = new Date()) {
     const cutoff = await getWorktreeExecutionCutoff();
     const result = await runDispatch.promoteDueScheduledRetries({
@@ -26771,6 +26819,10 @@ export function heartbeatService(
             livenessRun,
             agent,
           );
+          await scheduleTransientSpawnLikeFailureRetryIfEligible(
+            livenessRun,
+            agent,
+          );
           await releaseIssueExecutionAndPromote(livenessRun, {
             // Native recovery owns the original heartbeat run through
             // exhaustion. Once its durable coordinator has classified a
@@ -27042,6 +27094,15 @@ export function heartbeatService(
               logger.warn(
                 { err: retryError, runId: livenessRun.id },
                 "failed to schedule interaction continuation retry after setup failure",
+              );
+            });
+            await scheduleTransientSpawnLikeFailureRetryIfEligible(
+              livenessRun,
+              failedAgent,
+            ).catch((retryError) => {
+              logger.warn(
+                { err: retryError, runId: livenessRun.id },
+                "failed to schedule transient spawn-like retry after setup failure",
               );
             });
           }
@@ -30868,6 +30929,14 @@ export function heartbeatService(
       const agent = await getAgent(run.agentId);
       if (!agent) return { outcome: "missing_agent" as const };
       return scheduleBoundedRetryForRun(run, agent, opts);
+    },
+
+    scheduleTransientSpawnLikeFailureRetry: async (runId: string) => {
+      const run = await getRun(runId, { unsafeFullResultJson: true });
+      if (!run) return { outcome: "missing_run" as const };
+      const agent = await getAgent(run.agentId);
+      if (!agent) return { outcome: "missing_agent" as const };
+      return scheduleTransientSpawnLikeFailureRetryIfEligible(run, agent);
     },
 
     reconcileStrandedAssignedIssues,
