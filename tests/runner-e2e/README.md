@@ -22,6 +22,10 @@ scheduled execution gets
 a fresh Paperclip home, embedded Postgres database, instance configuration,
 port, workspace, company, encrypted secrets, environment, and agent.
 
+`pnpm test:e2e:runner:unit` runs the native-completion source gates with
+Node's test runner, then the Product support tests with Vitest. A Node test
+file must not be collected as an empty Vitest suite.
+
 ## Native connection guidance (explicit only)
 
 The manual-only native-connection-guidance suite separates connection-policy
@@ -1475,6 +1479,24 @@ screenshot, billing and environment cleanup checks apply. Use
 immutable Daytona image; no private hooks or fixture database writes are used.
 
 ## Extended ACP harnesses (explicit only)
+
+Copilot protection qualification requires a successful `get_task_context` read
+before the tested native action. The v3 completion oracle independently joins
+its read-only native lifecycle, authoritative result receipt, and canonical tool
+events. It then validates the single finish receipt, accepted result, attached
+command exit, and cleanup. The retained v15 context/completion fixture preserves
+the original failed grade; its context receipt cannot stand in for completion.
+Extra semantic actions and missing, late, failed, or mutating context reads fail.
+The authored pending-permission Stop and provider-death prompts require the
+already-exposed dedicated `get_task_context` tool directly before the native
+edit. `search_api` discovers HTTP routes rather than semantic tools; `call_api`
+and a context-like HTTP response cannot replace the dedicated context receipt.
+Historical bounded discovery proof remains attested separately and cannot
+establish context access or completion.
+The denied-write prompt uses that same dedicated-context guidance.
+The provider-death final UI assertion accepts the current Blocked label with
+its blocker-attention explanation. The API settlement still requires exact
+`blocked`, one failed run, no mutation replay, stale-answer refusal, and cleanup.
 
 `--suite extended-harnesses` declares 30 Product E2E cells: Cursor, Copilot,
 and Pi on local and Daytona, each exercising authenticated completion,

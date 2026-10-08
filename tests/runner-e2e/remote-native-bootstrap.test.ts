@@ -1,4 +1,5 @@
 import { explicitlyRequestsFileOutput } from "../../server/src/services/native-runtime/native-deliverable-feedback.js";
+import { copilotProtectionTasks } from "./copilot-protection-tasks.js";
 import type { APIRequestContext, APIResponse } from "@playwright/test";
 import { afterEach, expect, it, vi } from "vitest";
 import { classifyFailure } from "./failure-classifier.js";
@@ -48,6 +49,27 @@ it("keeps negated bootstrap instructions out of the production file-delivery con
   expect(explicitlyRequestsFileOutput(`${prompt}\nCreate a downloadable report.txt file.`)).toBe(true);
 });
 
+it("delivers the required direct Copilot context tool guidance before publishing native actions", () => {
+  const h = harness();
+  const prompt = createRemoteNativeBootstrap({ ...h.input, requireCopilotTaskContext: true }, h.bind).prompt("copilot");
+  expect(prompt).toContain("get_task_context tool is already available directly");
+  expect(prompt).toContain("get_task_context exactly once");
+  expect(prompt).toContain("Do not call search_api or use call_api or an HTTP route as a substitute");
+  expect(explicitlyRequestsFileOutput(prompt)).toBe(false);
+  expect(h.bootstrap.prompt("other-provider")).not.toContain("get_task_context");
+});
+
+it("keeps async completion immediate with a private sentinel and no delivery wait", () => {
+  const task = copilotProtectionTasks.find(task => task.id === "attached-async-settlement")!;
+  const action = task.buildPrompt("nonce");
+  expect(explicitlyRequestsFileOutput(action)).toBe(false);
+  expect(explicitlyRequestsFileOutput(`${harness().bootstrap.prompt("nonce")}\n${action}`)).toBe(false);
+  expect(action).toContain("attempt to finish immediately without calling read_bash or another waiting tool");
+  expect(action).toContain("Do not modify fixture code, manufacture its result, or start another command.");
+  expect(action).toContain("private diagnostic sentinel, not a requested file deliverable");
+  expect(action).toContain("evidence [], verification []");
+  expect(action).not.toContain("register_deliverable");
+});
 
 it("keeps the complete readiness/install reserve when a lease arrives at the admission boundary", async () => {
   vi.useFakeTimers(); vi.setSystemTime(0);

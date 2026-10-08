@@ -18,7 +18,7 @@ export function assertRemoteNativeEvidencePrerequisites(
   environment: NodeJS.ProcessEnv,
 ): void {
   if (!executions.some(execution => execution.environment.id === "daytona"
-    && ["cursor_native", "native_active_stop", "native_provider_loss"].includes(execution.task.flow))) return;
+    && ["copilot_protection", "native_active_stop", "cursor_native", "native_provider_loss"].includes(execution.task.flow))) return;
   const names = ["PAPERCLIP_E2E_DAYTONA_NODE_SHA256", "PAPERCLIP_E2E_DAYTONA_RUNNERD_SHA256"];
   const invalid = names.filter(name => !/^sha256:[a-f0-9]{64}$/u.test(environment[name] ?? ""));
   if (invalid.length) throw new Error(`Native Daytona evidence requires exact image executable digests: ${invalid.join(", ")}`);

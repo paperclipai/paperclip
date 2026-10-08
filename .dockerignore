@@ -44,3 +44,9 @@ packages/paperclip-runner/scripts/*-smoke.mjs
 !packages/paperclip-runner/src/**/*.test.tsx
 
 packages/grok-acp/bin
+
+# The Copilot build-time identity gate reads these sanitized source declarations.
+!packages/paperclip-runner/test/fixtures/copilot-profile-v*-identity.json
+# Images build their pinned Copilot assets instead of copying host binaries.
+/packages/paperclip-runner/provider-assets/
+/server/provider-assets/

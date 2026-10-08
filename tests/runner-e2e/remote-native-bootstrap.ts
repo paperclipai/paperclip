@@ -63,6 +63,7 @@ export async function createRemoteFixtureClient(apiKey: string): Promise<RemoteF
 export function createRemoteNativeBootstrap(input: {
   api: RemoteFixtureApi; daytona: RemoteFixtureDaytona; companyId: string; environmentId: string;
   agentId: string; image: string; nodeSha256: string; runnerdSha256: string; deadlineAt: number;
+  requireCopilotTaskContext?: boolean;
   evidence(name: string, data: unknown): Promise<void>;
 }, bind = bindRemoteNativeFixture): RemoteNativeBootstrap {
   if (!/^sha256:[a-f0-9]{64}$/u.test(input.nodeSha256) || !/^sha256:[a-f0-9]{64}$/u.test(input.runnerdSha256) || !/@sha256:[a-f0-9]{64}$/u.test(input.image)) {
@@ -77,6 +78,10 @@ export function createRemoteNativeBootstrap(input: {
       return [
         `Your task instructions will be published by the operator in the workspace file ${path}.`,
         "Use your native file-read tool to read that exact relative file in the current execution workspace. If it is not present yet, retry the read for up to 20 seconds, then report the setup failure.",
+        ...(input.requireCopilotTaskContext ? [
+          "The dedicated Paperclip get_task_context tool is already available directly. Read this setup file first, then invoke get_task_context exactly once and wait for its successful returned context before performing the supplied native command or edit.",
+          "No discovery is needed. search_api discovers HTTP routes, not semantic tools. Do not call search_api or use call_api or an HTTP route as a substitute for get_task_context.",
+        ] : []),
         "Before reading those instructions: do not infer the task. Do not run shell commands. Do not create or modify any file.",
         "Do not ask replacement questions. Do not mark work complete. Do not create the missing instruction file.",
         "After reading the complete file, perform precisely the supplied task. Treat it as the operator's continuation of this task.",
@@ -183,6 +188,7 @@ export function createRemoteNativeBootstrap(input: {
         fixture = await bind({ api: input.api, daytona: input.daytona, sdkVersion: "0.203.0", nodeSha256: input.nodeSha256, runnerdSha256: input.runnerdSha256,
           authority: { companyId: input.companyId, environmentId: input.environmentId, runId: request.runId, leaseId: lease.id, sandboxId: lease.providerLeaseId, image: input.image },
           targets: [...request.targets], crossRoot: request.crossRoot, actionFile: setup.path, deadlineAt: input.deadlineAt,
+          retainTerminalDiagnostics: diagnostics => input.evidence(`remote-native-terminal-diagnostics-${request.runId}.json`, diagnostics),
         });
       } catch (error) {
         if (lastReadError !== undefined && lastState.phase === "lease_admission") {

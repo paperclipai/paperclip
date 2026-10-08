@@ -369,11 +369,13 @@ describe("active Stop flow wiring", () => {
 describe("explicit active Stop discovery", () => {
   it("adds exactly two versioned cells without enabling them in --all", () => {
     const suite = runnerSuites.find(s => s.id === "native-active-stop")!;
-    const cells = runnerMatrix.filter(e => e.suite === suite);
+    const allCells = runnerMatrix.filter(e => e.suite === suite);
+    expect(allCells).toHaveLength(4);
+    const cells = allCells.filter(e => e.profile.qualificationCandidate === "cursor");
     expect(cells).toHaveLength(2); expect(suite.manualOnly).toBe(true);
     expect(cells.map(e => `${e.profile.qualificationCandidate}/${e.environment.id}`).sort()).toEqual(["cursor/daytona", "cursor/local"]);
     expect(cells.every(e => e.task.expectedRunCount === 1 && e.task.flow === "native_active_stop" && e.task.expectedTerminalState?.run === "cancelled")).toBe(true);
-    expect(suite.definitionMetadata).toMatchObject({ version: 4, evidence: "paperclip.e2e.native-active-stop-settlement.v2", normalCompletionAccepted: false, providerDeath: "not-covered" });
+    expect(suite.definitionMetadata).toMatchObject({ version: 20, evidence: "paperclip.e2e.native-active-stop-settlement.v2", normalCompletionAccepted: false, providerDeath: "not-covered" });
     expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite, definitionMetadata: { ...suite.definitionMetadata, version: 3 } }));
     expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite, definitionMetadata: { ...suite.definitionMetadata, normalCompletionAccepted: true } }));
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(e => e.suite.id === suite.id)).toBe(false);

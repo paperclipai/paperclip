@@ -35,6 +35,7 @@ export type RunnerTaskFlow =
   | "warm_three_turn"
   | "instruction_persistence"
   | "native_active_stop"
+  | "copilot_protection"
   | "native_provider_loss"
   | "cursor_native";
 
