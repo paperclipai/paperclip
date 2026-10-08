@@ -14,6 +14,7 @@ void Promise.all([
       return { status: "ok" };
     },
     async onEnvironmentProbe(params) {
+      if (params.config.crash) process.exit(1);
       await new Promise((resolve) => setTimeout(resolve, params.config.delayMs));
       return { ok: true, summary: "fixture complete" };
     },

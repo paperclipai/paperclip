@@ -1049,10 +1049,10 @@ export function createPluginWorkerHandle(
   // -----------------------------------------------------------------------
 
   function setStatus(newStatus: WorkerStatus): void {
-    const done = beginIdleTrackedWork();
-    done();
     const prev = status;
     if (prev === newStatus) return;
+    const done = beginIdleTrackedWork();
+    done();
     status = newStatus;
     log.debug({ from: prev, to: newStatus }, "worker status change");
     emitter.emit("status", { pluginId, status: newStatus, previousStatus: prev });
@@ -3121,6 +3121,12 @@ export function createPluginWorkerHandle(
     backoffTimer = setTimeout(async () => {
       backoffTimer = null;
       nextRestartAt = null;
+      // A temporary idle hold must not consume the crash-recovery attempt.
+      // Keep the bounded backoff until admission reopens.
+      if (readTaskDrain(new Date())?.ownerId) {
+        scheduleRestart();
+        return;
+      }
       try {
         await startInternal();
       } catch (err) {
@@ -3145,7 +3151,6 @@ export function createPluginWorkerHandle(
   // -----------------------------------------------------------------------
 
   async function startInternal(): Promise<void> {
-    if (readTaskDrain(new Date())?.ownerId) throw new Error("Plugin start is held for idle sleep");
     if (status === "running" || status === "starting") {
       throw new Error(`Worker for plugin "${pluginId}" is already ${status}`);
     }

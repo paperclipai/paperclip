@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPluginWorkerHandle } from "../services/plugin-worker-manager.js";
 import { startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
@@ -51,6 +52,22 @@ describe("plugin manager idle receipts", () => {
       expect(await handle.prepareIdleSleep!(lease)).toBe("present");
       finish();
       await expect.poll(() => handle.prepareIdleSleep!(lease)).toBe("none");
+    } finally { stopTaskDrain(); await handle.stop(); }
+  });
+
+  it("resumes crash recovery after an idle hold without discarding the restart", async () => {
+    const handle = worker();
+    await handle.start();
+    handle.on("crash", () => { hold(); });
+    try {
+      await expect(handle.call("environmentProbe", { driverKey: "fixture", companyId: "fixture", environmentId: "fixture", config: { crash: true } })).rejects.toThrow();
+      await delay(1_600);
+      expect(handle.status).toBe("backoff");
+      expect(handle.diagnostics().nextRestartAt).not.toBeNull();
+      stopTaskDrain();
+      await expect.poll(() => handle.status, { timeout: 5_000 }).toBe("running");
+      // Recovery restores service, but lost completion receipts remain unsafe.
+      expect(await handle.prepareIdleSleep!(hold())).toBe("unknown");
     } finally { stopTaskDrain(); await handle.stop(); }
   });
 });
