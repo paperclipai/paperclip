@@ -14,6 +14,13 @@ describe("agent session wake messages", () => {
         select: () => ({
           from: () => ({
             where: async () => [],
+            // The wake now also looks for files dropped on the task itself,
+            // which joins the asset row behind each attachment.
+            innerJoin: () => ({
+              where: () => ({
+                orderBy: () => ({ limit: async () => [] }),
+              }),
+            }),
           }),
         }),
       } as never,
