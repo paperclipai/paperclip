@@ -12,7 +12,8 @@ function worker(write = false, hostHandler = async () => undefined) {
     entrypointPath: fileURLToPath(new URL("./fixtures/plugin-worker-idle.cjs", import.meta.url)),
     execArgv: ["--import", createRequire(import.meta.url).resolve("tsx")],
     manifest, config: {}, instanceInfo: { instanceId: "fixture", hostVersion: "1.0.0" }, apiVersion: 1,
-    env: { IDLE_TEST_WRITE: write ? "1" : "0" }, hostHandlers: { "state.set": hostHandler },
+    env: { IDLE_TEST_WRITE: write ? "1" : "0" },
+    hostHandlers: { "state.set": hostHandler, "events.subscribe": async () => ({}) },
   });
 }
 function hold() {
@@ -53,6 +54,30 @@ describe("plugin manager idle receipts", () => {
       finish();
       await expect.poll(() => handle.prepareIdleSleep!(lease)).toBe("none");
     } finally { stopTaskDrain(); await handle.stop(); }
+  });
+
+  it("lets a queued notification finish its write while idle preparation is in flight", async () => {
+    let finish!: () => void;
+    let writes = 0;
+    const handle = worker(false, () => new Promise<void>((resolve) => {
+      writes++;
+      finish = resolve;
+    }));
+    await handle.start();
+    try {
+      // Finish setup and its subscription receipt before queuing the event.
+      await handle.call("health", {});
+      handle.notify("onEvent", { event: { eventType: "fixture.write" } });
+      // No await: the host has set its hold before it can read the event's
+      // worker-to-host write. The worker must still be allowed to complete it.
+      const lease = hold();
+      const preparation = handle.prepareIdleSleep!(lease);
+      expect(await preparation).not.toBe("none");
+      await expect.poll(() => writes).toBe(1);
+      expect(await handle.prepareIdleSleep!(lease)).toBe("present");
+      finish();
+      await expect.poll(() => handle.prepareIdleSleep!(lease)).toBe("none");
+    } finally { finish?.(); stopTaskDrain(); await handle.stop(); }
   });
 
   it("resumes crash recovery after an idle hold without discarding the restart", async () => {

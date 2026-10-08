@@ -899,7 +899,7 @@ export function createPluginWorkerHandle(
   // completion receipt. A worker crash cannot manufacture one.
   const unsettledCalls = new Map<string | number, () => void>();
   let activeHostHandlers = 0;
-  let idleHold: { ownerId: string; expiresAt: number } | null = null;
+  let idleHold: { ownerId: string; expiresAt: number; ready: boolean } | null = null;
 
   function releaseIdleSleep(): void {
     const prior = idleHold;
@@ -2733,7 +2733,10 @@ export function createPluginWorkerHandle(
     const done = beginIdleTrackedWork();
     activeHostHandlers++;
     try {
-      if (idleSleepHeld()) {
+      // A queued notification may already be running in the worker while its
+      // prepare request is in flight. Let its writes finish until that worker
+      // has positively acknowledged that all accepted handlers have drained.
+      if (idleSleepHeld() && idleHold?.ready) {
         try {
           sendMessage(createErrorResponse(request.id, PLUGIN_RPC_ERROR_CODES.WORKER_UNAVAILABLE, "Plugin is held for idle sleep"));
         } catch { /* Worker may have exited after sending its request. */ }
@@ -3470,16 +3473,22 @@ export function createPluginWorkerHandle(
       if (unsettledCalls.size || activeHostHandlers || loginPtyRoutesByHostRouteId.size ||
           liveDuplexRoutes.size || openingDuplexRoutes.size || terminalDuplexRoutes.size) return "present";
       if (idleHold && (idleHold.ownerId !== hold.ownerId || idleHold.expiresAt !== hold.expiresAt)) return "unknown";
-      idleHold = hold;
+      const candidate = idleHold ??= { ...hold, ready: false };
       try {
         const result = await callInternal("prepareIdleSleep", hold, Math.min(5_000, hold.expiresAt - Date.now()));
-        if (!idleSleepHeld() || status !== "running" || unsettledCalls.size || activeHostHandlers ||
-            result.ownerId !== hold.ownerId || result.expiresAt !== hold.expiresAt) return "unknown";
-        if (result.backgroundWork === "none") return "none";
+        if (!idleSleepHeld() || idleHold !== candidate || status !== "running" || unsettledCalls.size || activeHostHandlers ||
+            result.ownerId !== hold.ownerId || result.expiresAt !== hold.expiresAt) {
+          if (idleHold === candidate) releaseIdleSleep();
+          return "unknown";
+        }
+        if (result.backgroundWork === "none") {
+          candidate.ready = true;
+          return "none";
+        }
         releaseIdleSleep();
         return result.backgroundWork === "present" ? "present" : "unknown";
       } catch {
-        releaseIdleSleep();
+        if (idleHold === candidate) releaseIdleSleep();
         return "unknown";
       }
     },

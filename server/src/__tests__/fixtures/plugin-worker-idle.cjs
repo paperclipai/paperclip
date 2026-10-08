@@ -5,7 +5,12 @@ void Promise.all([
 ]).then(([{ definePlugin }, { startWorkerRpcHost }]) => {
   let context;
   startWorkerRpcHost({ plugin: definePlugin({
-    async setup(ctx) { context = ctx; },
+    async setup(ctx) {
+      context = ctx;
+      ctx.events.on("fixture.write", async () => {
+        await ctx.state.set({ scopeKind: "instance", stateKey: "event" }, { value: 1 });
+      });
+    },
     async onIdleDrain() { return "none"; },
     async onHealth() {
       if (process.env.IDLE_TEST_WRITE === "1") {

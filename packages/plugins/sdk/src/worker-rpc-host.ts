@@ -2322,7 +2322,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       } else if (notif.method === "agents.sessions.event" && notif.params) {
         const event = notif.params as AgentSessionEvent;
         const cb = sessionEventCallbacks.get(event.sessionId);
-        if (cb) void runNotification(() => cb(event)).catch(() => undefined);
+        if (cb) void runNotification(() => cb(event)).catch((err) => {
+          notifyHost("log", {
+            level: "error",
+            message: `Failed to handle session event notification: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        });
       } else if (notif.method === "onEvent" && notif.params) {
         // Plugin event bus notifications — dispatch to registered event handlers
         Promise.resolve(runNotification(() => handleOnEvent(notif.params as OnEventParams))).catch((err) => {

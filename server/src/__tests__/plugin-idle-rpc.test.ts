@@ -64,4 +64,26 @@ describe("plugin idle RPC", () => {
       expect((await f.call("prepareIdleSleep", hold())).result.backgroundWork).toBe("none");
     } finally { f.close(); }
   });
+
+  it.each([false, true])("logs session callback failures (async: %s)", async (asynchronous) => {
+    let subscribe!: () => Promise<unknown>;
+    const f = fixture({ async setup(ctx) {
+      subscribe = () => ctx.agents.sessions.sendMessage("fixture-session", "fixture-company", {
+        prompt: "fixture",
+        onEvent: asynchronous
+          ? async () => { throw new Error("fixture callback failure"); }
+          : () => { throw new Error("fixture callback failure"); },
+      });
+    } });
+    try {
+      await f.initialize();
+      const subscription = subscribe();
+      const request = f.messages.find((message) => message.method === "agents.sessions.sendMessage");
+      f.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }) + "\n");
+      await subscription;
+      f.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "agents.sessions.event", params: { sessionId: "fixture-session" } }) + "\n");
+      await expect.poll(() => f.messages.find((message) => message.method === "log" &&
+        message.params.level === "error" && message.params.message.includes("fixture callback failure"))).toBeDefined();
+    } finally { f.close(); }
+  });
 });
