@@ -781,6 +781,17 @@ export type PaperclipExternalChatProvider =
 type PaperclipWakePayload = {
   executionContinuation: ExecutionContinuationEnvelope | null;
   reason: string | null;
+  providerQuotaHeldWakes: Array<{
+    issueId: string | null;
+    issueIdentifier: string | null;
+    issueTitle: string | null;
+    source: string | null;
+    reason: string | null;
+    commentIds: string[];
+    commentPreviews: Array<{ id: string; body: string }>;
+  }>;
+  providerQuotaHeldWakeCount: number;
+  providerQuotaHeldWakesTruncated: boolean;
   recovery: PaperclipWakeRecovery | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
@@ -1722,6 +1733,34 @@ export function normalizePaperclipWakePayload(
         )
         .map((entry) => entry.trim())
     : [];
+  const providerQuotaHeldWakes = Array.isArray(payload.providerQuotaHeldWakes)
+    ? payload.providerQuotaHeldWakes.slice(0, 20).map((entry) => {
+        const wake = parseObject(entry);
+        return {
+          issueId: asString(wake.issueId, "").trim() || null,
+          issueIdentifier: asString(wake.issueIdentifier, "").trim().slice(0, 100) || null,
+          issueTitle: asString(wake.issueTitle, "").trim().slice(0, 200) || null,
+          source: asString(wake.source, "").trim().slice(0, 80) || null,
+          reason: asString(wake.reason, "").trim().slice(0, 120) || null,
+          commentIds: Array.isArray(wake.commentIds)
+            ? wake.commentIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0).slice(0, 2)
+            : [],
+          commentPreviews: Array.isArray(wake.commentPreviews)
+            ? wake.commentPreviews.flatMap((value) => {
+                const preview = parseObject(value);
+                const id = asString(preview.id, "").trim();
+                return id ? [{ id, body: asString(preview.body, "").slice(0, 300) }] : [];
+              }).slice(0, 2)
+            : [],
+        };
+      })
+    : [];
+  const providerQuotaHeldWakeCount = typeof payload.providerQuotaHeldWakeCount === "number"
+    ? Math.max(providerQuotaHeldWakes.length, payload.providerQuotaHeldWakeCount)
+    : Array.isArray(payload.providerQuotaHeldWakes)
+      ? payload.providerQuotaHeldWakes.length : providerQuotaHeldWakes.length;
+  const providerQuotaHeldWakesTruncated = payload.providerQuotaHeldWakesTruncated === true ||
+    providerQuotaHeldWakeCount > providerQuotaHeldWakes.length;
   const executionStage = normalizePaperclipWakeExecutionStage(
     payload.executionStage,
   );
@@ -1813,6 +1852,7 @@ export function normalizePaperclipWakePayload(
     commentIds.length === 0 &&
     annotationDeltas.length === 0 &&
     childIssueSummaries.length === 0 &&
+    providerQuotaHeldWakes.length === 0 &&
     unresolvedBlockerIssueIds.length === 0 &&
     unresolvedBlockerSummaries.length === 0 &&
     !activeTreeHold &&
@@ -1835,6 +1875,9 @@ export function normalizePaperclipWakePayload(
 
   return {
     reason: asString(payload.reason, "").trim() || null,
+    providerQuotaHeldWakes,
+    providerQuotaHeldWakeCount,
+    providerQuotaHeldWakesTruncated,
     executionContinuation: parseObject(payload.executionContinuation).version === 1 ? payload.executionContinuation as ExecutionContinuationEnvelope : null,
     recovery,
     issue,
@@ -3058,6 +3101,18 @@ function renderPaperclipWakePromptBody(
     }
     if (normalized.childIssueSummaryTruncated) {
       lines.push("[child issue summaries truncated]");
+    }
+  }
+
+  if (normalized.providerQuotaHeldWakes.length > 0) {
+    lines.push("", `Automatic wakes held during provider quota reset (${normalized.providerQuotaHeldWakeCount}):`);
+    for (const wake of normalized.providerQuotaHeldWakes) {
+      lines.push(`- ${wake.reason ?? "unknown"} for issue ${wake.issueIdentifier ?? wake.issueId ?? "none"}${wake.issueTitle ? `: ${wake.issueTitle}` : ""} (${wake.source ?? "unknown"})${wake.commentIds.length ? `; comment ids: ${wake.commentIds.join(", ")}` : ""}`);
+      for (const preview of wake.commentPreviews) lines.push(`  comment ${preview.id}: ${preview.body}`);
+    }
+    lines.push("Use the issue IDs above to read the current issue and comment state before acting on another issue.");
+    if (normalized.providerQuotaHeldWakesTruncated) {
+      lines.push("More held wakes are stored in this run's context. Read GET /api/heartbeat-runs/$PAPERCLIP_RUN_ID for the complete providerQuotaHeldWakes list.");
     }
   }
 

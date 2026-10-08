@@ -1204,6 +1204,70 @@ describe("issue comment reopen routes", () => {
     );
   });
 
+  it.each(["post", "patch"] as const)("preserves a future quota retry for a %s human comment", async (method) => {
+    const issue = { ...makeIssue("in_progress"), executionRunId: "retry-run-1" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
+      runId: "retry-run-1",
+      status: "scheduled_retry",
+      agentId: issue.assigneeAgentId,
+      scheduledRetryAt: new Date(Date.now() + 60_000),
+      errorFamily: "provider_quota",
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const app = await installActor(createApp());
+    const res = method === "post"
+      ? await request(app).post(`/api/issues/${issue.id}/comments`).send({ body: "New detail during the quota hold." })
+      : await request(app).patch(`/api/issues/${issue.id}`).send({ comment: "New detail during the quota hold." });
+
+    expect(res.status).toBe(method === "post" ? 201 : 200);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      issue.id,
+      expect.objectContaining({ status: "todo" }),
+    );
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        issue.assigneeAgentId,
+        expect.objectContaining({ reason: "issue_commented" }),
+      ),
+    );
+  });
+
+  it.each(["post", "patch"] as const)("passes an explicit Board %s resume to heartbeat admission before superseding a future quota retry", async (method) => {
+    const issue = { ...makeIssue("in_progress"), executionRunId: "retry-run-1" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
+      runId: "retry-run-1",
+      status: "scheduled_retry",
+      agentId: issue.assigneeAgentId,
+      scheduledRetryAt: new Date(Date.now() + 60_000),
+      errorFamily: "provider_quota",
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue, ...patch, updatedAt: new Date(),
+    }));
+    mockHeartbeatService.cancelRun.mockResolvedValue({ id: "retry-run-1", status: "cancelled" });
+
+    const app = await installActor(createApp());
+    const res = method === "post"
+      ? await request(app).post(`/api/issues/${issue.id}/comments`).send({ body: "Retry now.", resume: true })
+      : await request(app).patch(`/api/issues/${issue.id}`).send({ comment: "Retry now.", resume: true });
+
+    expect(res.status).toBe(method === "post" ? 201 : 200);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(issue.id, expect.objectContaining({ status: "todo" }));
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      issue.assigneeAgentId,
+      expect.objectContaining({ reason: "issue_commented", manualUserWake: true }),
+    ));
+  });
+
   it("does not move scheduled-retry issues to todo when POST comment retry cancellation fails", async () => {
     const issue = {
       ...makeIssue("in_progress"),
