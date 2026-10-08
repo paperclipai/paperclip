@@ -273,7 +273,7 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(52);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(53);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
@@ -437,15 +437,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 55 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 56 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(55);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(56);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 55);
+    ).toHaveProperty("size", 56);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -845,7 +845,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(68);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(69);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1129,6 +1129,54 @@ describe("AppDefinition catalog", () => {
       });
       expect(method.warnings?.length).toBe(2);
     }
+  });
+  it("connects Speko's hosted server with an organization API key", () => {
+    const speko = APP_DEFINITIONS.find((app) => app.slug === "speko")!;
+    expect(speko).toMatchObject({
+      name: "Speko",
+      categories: ["communication"],
+      urlPatterns: ["https://mcp.speko.ai/*"],
+      docsUrl: "https://docs.speko.ai/quickstart/mcp",
+      branding: { logoUrl: "/brands/apps/speko.svg" },
+    });
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "speko")).toBe(true);
+    expect(speko.methods).toHaveLength(1);
+    const [apiKey] = speko.methods;
+    expect(apiKey).toMatchObject({
+      key: "mcp-api-key",
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      defaults: { serverUrl: "https://mcp.speko.ai/mcp" },
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+      consoleLinks: {
+        keys: "https://platform.speko.ai/agents/keys",
+        docs: "https://docs.speko.ai/quickstart/mcp",
+      },
+      requiredResourceFilters: ["organization", "agent", "phone_number"],
+    });
+    expect(apiKey!.tenantFields ?? []).toEqual([]);
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({
+        key: "authorization",
+        type: "password",
+        placeholder: "sk_live_...",
+        secret: true,
+        required: true,
+      }),
+    ]);
+    // The key form shows helper text, not method warnings, so the key
+    // boundary and the Ask-first advice must live in the helper text.
+    expect(apiKey!.credentialFields?.[0]?.helperMd).toContain("whole Speko organization");
+    expect(apiKey!.credentialFields?.[0]?.helperMd).toContain("Ask first");
+    expect(apiKey!.warnings).toEqual([
+      expect.stringContaining("reach real people"),
+    ]);
   });
   it("connects Superagent's hosted server with an organization API key only", () => {
     const superagent = APP_DEFINITIONS.find((app) => app.slug === "superagent")!;

@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "slug": "speko",
+  "name": "Speko",
+  "description": "Answer and place phone calls, run voice agents, and read call transcripts and recordings.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/speko.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.speko.ai/*"
+  ],
+  "docsUrl": "https://docs.speko.ai/quickstart/mcp",
+  "methods": [
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Connect with a Speko organization API key.",
+      "defaults": {
+        "serverUrl": "https://mcp.speko.ai/mcp"
+      },
+      "guidanceMd": "Open the Speko dashboard → API keys, create a separate key for Paperclip, and paste it below. Use a key from an organization that holds only the agents and phone numbers these agents may reach.",
+      "riskTier": "S4",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Speko API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "sk_live_...",
+          "secret": true,
+          "helperMd": "A Speko API key reaches its whole Speko organization, including billable outbound calls, phone-number purchases and permanent deletes. Create a separate key for Paperclip in an organization that holds only the agents and phone numbers agents may reach, and set calling, deploy and delete actions to Ask first before agents run unattended."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://platform.speko.ai/agents/keys",
+        "docs": "https://docs.speko.ai/quickstart/mcp"
+      },
+      "warnings": [
+        "Calls and phone numbers bill the Speko organization that owns the key and reach real people. Set calling, deploy, and delete actions to Ask first before agents run unattended."
+      ],
+      "requiredResourceFilters": [
+        "organization",
+        "agent",
+        "phone_number"
+      ]
+    }
+  ]
+}

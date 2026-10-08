@@ -9,7 +9,7 @@ separate contracts and were not changed.
 Methods reviewed after this audit carry their own `reviewedAt` date in the same
 ledger; the counts above are not restated. Later additions: [Neon](./NEON.md)
 (`mcp-oauth`, `mcp-api-key`; 2026-10-02), [Superagent](./SUPERAGENT.md)
-(`mcp-api-key`; 2026-10-06).
+(`mcp-api-key`; 2026-10-06), [Speko](./SPEKO.md) (`mcp-api-key`; 2026-10-07).
 
 ## Shared credential failure
 

@@ -1043,6 +1043,7 @@ const categoryBySlug = {
   sentry: "developer",
   similarweb: "analytics",
   stripe: "commerce",
+  speko: "communication",
   superagent: "developer",
   supabase: "data",
   telem: "ai",
@@ -1145,6 +1146,7 @@ const apiKeySpec = {
     prefix: "Bearer ",
     placeholder: "sbp_...",
   },
+  speko: { name: "Authorization", prefix: "Bearer ", placeholder: "sk_live_..." },
   superagent: { name: "Authorization", prefix: "Bearer ", placeholder: "sk_live_..." },
   telem: {
     name: "Authorization",
@@ -1232,6 +1234,17 @@ const specialMethodsFor = (entry) => {
   // Superagent's hosted server advertises protected-resource metadata, but its
   // authorization server publishes no OAuth metadata, so organization API keys
   // are the only working credential.
+  // Speko's hosted server takes an organization API key as a bearer header.
+  // A key reaches one Speko organization, so the key choice is the resource
+  // boundary until Paperclip applies requiredResourceFilters at runtime.
+  if (entry.slug === "speko") return [
+    apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+      whenToUse: "Connect with a Speko organization API key.",
+      guidanceMd: "Open the Speko dashboard → API keys, create a separate key for Paperclip, and paste it below. Use a key from an organization that holds only the agents and phone numbers these agents may reach.",
+      consoleLinks: { keys: "https://platform.speko.ai/agents/keys", docs: entry.docsUrl },
+      requiredResourceFilters: ["organization", "agent", "phone_number"],
+    }),
+  ];
   if (entry.slug === "superagent") return [
     apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
       whenToUse: "Connect with a Superagent organization API key.",
@@ -1750,7 +1763,7 @@ for (const entry of researchManifest.entries) {
     schemaVersion: 1,
     slug: entry.slug,
     name: entry.name,
-    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", superagent: "Review security findings, start red-team reports, and score content and packages before agents trust them.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers.", telem: "Search the web and read pages across many search providers with one API key." })[entry.slug] ?? (entry.slug === "fireflies"
+    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", speko: "Answer and place phone calls, run voice agents, and read call transcripts and recordings.", superagent: "Review security findings, start red-team reports, and score content and packages before agents trust them.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers.", telem: "Search the web and read pages across many search providers with one API key." })[entry.slug] ?? (entry.slug === "fireflies"
       ? "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines."
       : `Connect ${entry.name}'s provider-hosted MCP server.`),
     categories: [categoryBySlug[entry.slug] ?? "other"],

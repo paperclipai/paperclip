@@ -78,6 +78,10 @@ const APP_COPY: Record<string, AppCopy> = {
     tagline: "Manage Postgres projects, branches, and queries.",
     short: "Sign in with Neon. Project pinning and read-only mode are optional.",
   },
+  speko: {
+    tagline: "Answer and place phone calls with voice agents.",
+    short: "Connect with a Speko API key. Calls, deploys, and deletes stay under action policies.",
+  },
   superagent: {
     tagline: "Review security findings and run red-team checks.",
     short: "Connect with a Superagent API key. Billable and destructive tools stay under action policies.",

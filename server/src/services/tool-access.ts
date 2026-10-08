@@ -2451,7 +2451,9 @@ export function classifyRisk(
     return "write";
   // PostHog exposes a broad and evolving catalog. Unknown tools must never be
   // silently treated as reads; provider annotations can opt known reads in.
-  if (sourceTemplateKey === "posthog")
+  // Speko is the same: test_call, deploy, go_live, and evals.run place real
+  // calls or change live agents, and none uses a generic write verb.
+  if (sourceTemplateKey === "posthog" || sourceTemplateKey === "speko")
     return annotations.readOnlyHint === true ? "read" : "write";
   return "read";
 }

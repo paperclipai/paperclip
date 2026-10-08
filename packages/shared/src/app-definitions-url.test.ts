@@ -13,6 +13,7 @@ describe("tool app gallery URL matching", () => {
     expect(getAppDefinitionForUrl("https://gmailmcp.googleapis.com/mcp/v1")?.slug).toBe("gmail");
     expect(getAppDefinitionForUrl("https://mcp.neon.tech/mcp")?.slug).toBe("neon");
     expect(getAppDefinitionForUrl("https://www.superagent.sh/mcp")?.slug).toBe("superagent");
+    expect(getAppDefinitionForUrl("https://mcp.speko.ai/mcp")?.slug).toBe("speko");
   });
 
   it("returns null for invalid or unknown links", () => {

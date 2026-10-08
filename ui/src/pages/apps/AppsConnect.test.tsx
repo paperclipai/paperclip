@@ -65,6 +65,7 @@ const BOX = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "box")!;
 const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog")!;
 const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
 const SUPERAGENT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
+const SPEKO = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "speko")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
 const SHOPIFY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "shopify")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
@@ -2023,6 +2024,35 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Connect GitHub");
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
+  });
+
+  it("connects Speko with only an organization API key", async () => {
+    mockParams.appKey = "speko";
+    listGalleryMock.mockResolvedValueOnce({ apps: [SPEKO] });
+    await render();
+
+    expect(radioContaining("Sign in with")).toBeFalsy();
+    expect(container.textContent).toContain("set calling, deploy and delete actions to Ask first");
+    const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keyInput).toBeTruthy();
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+
+    await act(async () => {
+      setInputValue(keyInput!, "sk_live_test-key");
+    });
+    await flushReact();
+    const submit = buttonByText("Connect");
+    expect(submit?.disabled).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "speko",
+      connectionMethodKey: "mcp-api-key",
+      credentialValues: { "credentials.authorization": "sk_live_test-key" },
+    }));
   });
 
   it("connects Superagent with only an organization API key", async () => {
