@@ -1241,7 +1241,7 @@ issue and wake context, responsible-user resolution, routine environment snapsho
 skill mentions, adapter environment configuration, and MCP/tool access setup.
 `createHeartbeatRunPreparation(db)` binds the context loaders to a service's database
 without doing database work during construction. `heartbeat.ts` keeps queueing,
-dispatch, retries, cancellation, and execution order, and re-exports the existing
+dispatch, cancellation, and execution order, and re-exports the existing
 public helpers and configuration-incomplete error class. Keep preparation policy
 changes in this module and its tests.
 
@@ -1253,6 +1253,15 @@ during construction. The encoding-check cache belongs to each factory instance.
 `heartbeat.ts` keeps run execution, session-goal recovery, cost accounting writes,
 and status transitions, and re-exports the existing public helpers. Keep session
 policy changes separate from run orchestration changes.
+
+Retry scheduling is in `server/src/services/heartbeat/retries.ts`. It owns bounded
+retry schedules, connection and workspace contention deferrals, shared-workspace
+holder checks, due retry promotion, and retry-now requests. `createHeartbeatRetries`
+binds these operations to the service database and explicit lifecycle callbacks
+without doing work during construction. `heartbeat.ts` supplies status writes,
+run events, issue-lock release, plan-resume reporting, and worktree cutoffs. It
+re-exports the existing retry helpers and workspace-busy error class. Keep retry
+policy changes separate from this extraction.
 
 ## Wake Context Delivery
 
