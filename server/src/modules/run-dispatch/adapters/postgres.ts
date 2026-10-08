@@ -182,6 +182,49 @@ function statusEffect(run: HeartbeatRun, previousStatus: string | null): PostCom
   };
 }
 
+export type AddresseeInteractionWakeInput = {
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  contextSnapshot: Record<string, unknown>;
+};
+
+/**
+ * Reads whether a run context is a server-issued `interaction_pending` wake
+ * whose named addressee is `agentId`, from stored interaction state: the
+ * interaction named in the context must exist, still be `pending`, belong to
+ * the same issue and company, and name the run agent as `addresseeAgentId`.
+ * Callers pass the transaction that owns the decision so the check stays
+ * current through a queued-to-running claim. When the caller holds the
+ * transaction open across the whole claim, pass `lockInteraction: true` so
+ * the read takes a `FOR UPDATE` row lock and a concurrent resolution blocks
+ * instead of landing between this read and the run-status write
+ * (review-flagged race on paperclipai/paperclip#13211).
+ */
+export async function verifyAddresseeInteractionWake(
+  dbOrTx: Db,
+  input: AddresseeInteractionWakeInput & { lockInteraction?: boolean },
+): Promise<boolean> {
+  const wakeReason = readNonEmptyString(input.contextSnapshot.wakeReason);
+  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
+  if (wakeReason !== "interaction_pending" || !interactionId) return false;
+  const query = dbOrTx
+    .select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(
+      and(
+        eq(issueThreadInteractions.id, interactionId),
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issueId),
+        eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+        eq(issueThreadInteractions.status, "pending"),
+      ),
+    )
+    .limit(1);
+  const rows = await (input.lockInteraction ? query.for("update") : query);
+  return Boolean(rows[0]);
+}
+
 export function createPostgresRunDispatchAdapter(
   db: Db,
 ): ScheduledRetryReader & RunDispatchWriter {
@@ -566,6 +609,19 @@ export function createPostgresRunDispatchAdapter(
       continuationParksExecutor = continuationSummaryParksExecutor(continuationSummaryBody);
     }
 
+    // A server-issued `interaction_pending` wake names the interaction it was
+    // created for. Authorize the named addressee from stored state only; the
+    // wake reason alone is not trusted. The same check runs again inside the
+    // queued-to-running claim transaction (see `verifyAddresseeInteractionWake`).
+    const isVerifiedAddresseeInteractionWake = issue
+      ? await verifyAddresseeInteractionWake(dbOrTx, {
+          companyId: input.companyId,
+          issueId: issue.id,
+          agentId: input.agentId,
+          contextSnapshot: context,
+        })
+      : false;
+
     const recoveryActionId = readNonEmptyString(context.recoveryActionId);
     const isAuthorizedSourceScopedRecovery =
       issue && wakeReason === "source_scoped_recovery_action" && recoveryActionId
@@ -609,6 +665,7 @@ export function createPostgresRunDispatchAdapter(
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
+      isVerifiedAddresseeInteractionWake,
       isAuthorizedSourceScopedRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
