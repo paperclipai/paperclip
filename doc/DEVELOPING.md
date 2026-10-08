@@ -1600,6 +1600,35 @@ Environment overrides:
   stale-backup warning threshold
 - `PAPERCLIP_DB_BACKUP_ALERT_FILE=/path/to/failure-marker` lets external cron
   wrappers surface the last failed backup in `/api/health`
+- `PAPERCLIP_DB_BACKUP_TIMEOUT_MINUTES=<minutes>` bounds a single backup run.
+  The default is `60`. A backup that exceeds it fails with a timeout instead of
+  waiting forever, and its database connections are destroyed so an abandoned
+  backend cannot keep pinning the cluster's vacuum horizon. Clamped to between
+  one minute and ~24.8 days — the longest delay Node's timer can hold, above
+  which it would silently fire at once and fail every backup. A value that is
+  not a positive, finite number of minutes is ignored with a warning and the
+  default applies.
+- `PAPERCLIP_DB_BACKUP_STALE_AFTER_MINUTES=<minutes>` is the backstop for the
+  in-flight guard: once a backup has held it this long it is treated as
+  abandoned and the next scheduled run takes over. It exists because a guard
+  released only in a `finally` is not enough — a `finally` runs when a promise
+  settles, and a deadlocked backup never settles at all.
+  **The threshold is clamped on both sides.** The floor is twice
+  `PAPERCLIP_DB_BACKUP_TIMEOUT_MINUTES` (and at least one minute), which is also
+  the default: a threshold below the backup deadline would let the next
+  scheduled run take the lease over while the first backup is still inside its
+  own valid deadline, running two database- and disk-intensive backups at once —
+  the overlap the guard exists to prevent. The ceiling is ~49.7 days, twice the
+  longest configurable deadline and therefore the largest floor this setting can
+  ever have to clear. Past it the threshold is in practice never reached, which
+  turns the guard back into the unreleasable flag it replaced: the abandoned
+  lease is never displaced and every later scheduled backup is refused until the
+  process restarts. A large-but-finite number of minutes arrives at the same
+  place by overflowing to `Infinity` once converted to milliseconds, so the
+  ceiling is applied after that conversion rather than to the minutes. A value
+  outside either bound is moved to the nearer one and logged at `warn`, naming
+  both the requested and the effective value, so the substitution is visible
+  instead of silent.
 - `PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS=<days>` sets how long the
   terminal-workspace reaper waits after an issue tree becomes terminal before it
   archives the execution workspace and deletes the worktree. A person can reopen
