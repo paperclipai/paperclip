@@ -85,7 +85,11 @@ export async function runContinuationFlow(input: {
         const paused = answerableRuntimeRunIds(state.interactions);
         const idle =
           continuationAnswerCommitted(state.interactions, answeredInteractionId) &&
-          continuationCheckpointReady(state) &&
+          continuationCheckpointReady({
+            issue: { status: state.issue.status, executionRunId: state.issue.executionRunId },
+            runs: state.runs.map(r => ({ id: r.id, status: r.status, runtimeMode: r.runtimeMode })),
+            interactions: state.interactions,
+          }) &&
           state.runs.some((r) => !prior.has(r.id) || previousPaused.has(r.id)) &&
           state.runs.every((r) => ["succeeded", "failed", "timed_out", "cancelled"].includes(r.status) ||
             (r.status === "running" && paused.has(r.id))) &&
