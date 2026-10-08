@@ -64,6 +64,9 @@ unknown until startup recovery and HTTP tracking are installed.
 backups enabled into this mode. Keep its database and persistent backup volume
 attached across sleep. All writers must use the instance's admission protocol;
 this mode cannot cover independent writers to the same database.
+On managed instances, checkpoint-enabled safety reads require a verified signed
+Cloud control actor. Tenant instance-admin elevation does not grant platform
+backup authority. Self-hosted instance administrators retain operator access.
 
 Each owned safety read first checks local work, plugin drains and durable work.
 Known local blockers return before opening a database transaction. If every

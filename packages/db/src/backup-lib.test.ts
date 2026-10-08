@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
@@ -75,6 +75,38 @@ describe("createBufferedTextFileWriter", () => {
 });
 
 describeEmbeddedPostgres("runDatabaseBackup", () => {
+  it("preserves a post-pg_dump verification error without falling back or pruning", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("checkpoint-pg-dump-");
+    const executable = path.join(backupDir, "pg-dump-fixture");
+    fs.writeFileSync(executable, "#!/bin/sh\nprintf 'SELECT 1;\\n'\n", { mode: 0o700 });
+    const history = path.join(backupDir, "paperclip-history.sql.gz");
+    const historyBytes = gzipSync("SELECT 'history';");
+    fs.writeFileSync(history, historyBytes);
+    fs.utimesSync(history, new Date(0), new Date(0));
+    const previous = process.env.PAPERCLIP_PG_DUMP_PATH;
+    process.env.PAPERCLIP_PG_DUMP_PATH = executable;
+    const failure = new Error("fixture archive fsync failed");
+    let verified = 0;
+    try {
+      await expect(runDatabaseBackup({
+        connectionString, backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        verifyBeforePrune: async archive => {
+          verified++;
+          expect(gunzipSync(fs.readFileSync(archive)).toString()).toBe("SELECT 1;\n");
+          throw failure;
+        },
+      })).rejects.toBe(failure);
+      expect(verified).toBe(1);
+      expect(fs.readFileSync(history)).toEqual(historyBytes);
+      expect(fs.readdirSync(backupDir).filter(name => name.endsWith(".sql.gz"))).toEqual(["paperclip-history.sql.gz"]);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+      else process.env.PAPERCLIP_PG_DUMP_PATH = previous;
+    }
+  });
+
   it("preserves identity generation, sequence options and progress in JavaScript backups", async () => {
     const source = await createTempDatabase();
     const target = await createSiblingDatabase(source, "identity_restore_target");

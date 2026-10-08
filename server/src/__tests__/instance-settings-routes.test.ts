@@ -1043,6 +1043,27 @@ describe("instance settings routes", () => {
       expect(backup).not.toHaveBeenCalled();
     });
 
+    it("reserves managed checkpoint creation for verified Cloud control actors", async () => {
+      const backup = vi.fn(async () => true);
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "fixture-managed-signal";
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      try {
+        for (const source of ["session", "cloud_tenant", "local_implicit"]) {
+          const tenantAdmin = createApp({ ...adminActor, source }, undefined, backup);
+          await request(tenantAdmin).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner")
+            .set("x-paperclip-cloud-control", "unverified-header").expect(403);
+        }
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+        expect(backup).not.toHaveBeenCalled();
+        const control = createApp({ ...adminActor, source: "cloud_control" }, undefined, backup);
+        await request(control).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
+        expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
+          "fixture-owner", expect.any(Function), undefined, backup);
+      } finally {
+        delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      }
+    });
+
     it.each([
       ["company member", nonAdminActor],
       ["agent", { type: "agent", agentId: "agent-1", companyId: "company-1" }],

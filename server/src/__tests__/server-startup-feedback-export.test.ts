@@ -1,9 +1,12 @@
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
+import * as idleLocalWork from "../services/idle-local-work.js";
+import { idleBackupWakeMarker, markIdleBackupWakeRequired } from "../services/idle-database-backup.js";
 import { reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
 import { runDatabaseBackup } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -439,6 +442,64 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it.each([false, true].flatMap(checkpointMode => [false, true].map(fails => ({ checkpointMode, fails }))))
+  ("finishes restart backup before idle eligibility (checkpoint=$checkpointMode, failure=$fails)", async ({ checkpointMode, fails }) => {
+    const directory = mkdtempSync(path.join(tmpdir(), "startup-idle-backup-"));
+    const previousFlag = process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED;
+    process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED = checkpointMode ? "1" : "0";
+    loadConfigMock.mockReturnValue(buildTestConfig({ databaseBackupEnabled: true, databaseBackupDir: directory }));
+    const eligible = vi.spyOn(idleLocalWork, "markIdleStartupComplete");
+    let retry: (() => void) | undefined;
+    const timers = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, ms: number) => {
+      if (ms === 60 * 60 * 1000) retry = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const writeBackup = async (options: Parameters<typeof runDatabaseBackup>[0]) => {
+      const backupFile = path.join(directory, "paperclip-restart.sql.gz");
+      const bytes = gzipSync("SELECT 'restart recovery';\n");
+      writeFileSync(backupFile, bytes);
+      expect(options.retention).toEqual({ dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 });
+      expect(options.verifyBeforePrune).toEqual(expect.any(Function));
+      await options.verifyBeforePrune!(backupFile);
+      return { backupFile, sizeBytes: bytes.length, prunedCount: 0 };
+    };
+    vi.mocked(runDatabaseBackup).mockImplementationOnce(async options => {
+      await pending;
+      if (fails) throw new Error("fixture restart backup failed");
+      return writeBackup(options);
+    });
+    let starting: ReturnType<typeof startServer> | undefined;
+    try {
+      await markIdleBackupWakeRequired(directory);
+      starting = startServer();
+      await vi.waitFor(() => expect(runDatabaseBackup).toHaveBeenCalledOnce());
+      expect(eligible).not.toHaveBeenCalled();
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      finish();
+      await starting;
+      expect(eligible).toHaveBeenCalledWith({ scheduledBackups: true });
+      const options = createAppMock.mock.calls[0]?.[1] as unknown as { prepareIdleDatabaseBackup?: unknown };
+      expect(Boolean(options.prepareIdleDatabaseBackup)).toBe(checkpointMode);
+      expect(existsSync(idleBackupWakeMarker(directory))).toBe(fails);
+      if (fails) {
+        vi.mocked(runDatabaseBackup).mockImplementationOnce(writeBackup);
+        expect(retry).toEqual(expect.any(Function));
+        retry!();
+        await vi.waitFor(() => expect(existsSync(idleBackupWakeMarker(directory))).toBe(false));
+        expect(runDatabaseBackup).toHaveBeenCalledTimes(2);
+      }
+    } finally {
+      finish();
+      await starting;
+      timers.mockRestore(); eligible.mockRestore();
+      if (previousFlag === undefined) delete process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED;
+      else process.env.PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED = previousFlag;
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it.each(([

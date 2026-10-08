@@ -555,6 +555,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
+      let dumped = false;
       try {
         await closeSql();
         await runPgDumpBackup({
@@ -562,15 +563,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           backupFile,
           connectTimeout,
         });
-        await writer.abort();
-        const sizeBytes = statSync(backupFile).size;
-        await opts.verifyBeforePrune?.(backupFile);
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
-        return {
-          backupFile,
-          sizeBytes,
-          prunedCount,
-        };
+        dumped = true;
       } catch (error) {
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
@@ -581,6 +574,16 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         effectiveBackupEngine = "javascript";
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
         sqlClosed = false;
+      }
+      if (dumped) {
+        // Only an engine failure can select the JavaScript fallback. Once
+        // pg_dump succeeds, archive verification or persistence failures
+        // must retain their original error and must not reuse a closed writer.
+        await writer.abort();
+        const sizeBytes = statSync(backupFile).size;
+        await opts.verifyBeforePrune?.(backupFile);
+        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        return { backupFile, sizeBytes, prunedCount };
       }
     }
 
