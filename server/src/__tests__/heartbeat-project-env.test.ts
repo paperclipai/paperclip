@@ -1340,6 +1340,7 @@ describe("resolveAdditionalProjectWorkspace", () => {
 
   it("clones into the managed directory when configured rows point at missing paths", async () => {
     let ensuredRepoUrl: string | null | undefined;
+    let ensuredRepoRef: string | null | undefined;
     const deps = buildDeps({
       loadProjectWorkspaceRows: async () => [
         workspaceRow({ id: "ws-1", cwd: "/checkout/missing", repoUrl: "https://example.test/a.git", repoRef: "release" }),
@@ -1348,6 +1349,7 @@ describe("resolveAdditionalProjectWorkspace", () => {
       directoryHasContents: async () => false,
       ensureManagedProjectWorkspace: async (input) => {
         ensuredRepoUrl = input.repoUrl;
+        ensuredRepoRef = input.repoRef;
         return { cwd: `/managed/${input.projectId}`, warning: null };
       },
     });
@@ -1363,6 +1365,7 @@ describe("resolveAdditionalProjectWorkspace", () => {
     });
     // The fallback clone reuses the repository URL from the first configured workspace row.
     expect(ensuredRepoUrl).toBe("https://example.test/a.git");
+    expect(ensuredRepoRef).toBe("release");
   });
 });
 

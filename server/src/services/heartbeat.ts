@@ -2415,6 +2415,7 @@ export async function ensureManagedProjectWorkspace(input: {
   companyId: string;
   projectId: string;
   repoUrl: string | null;
+  repoRef?: string | null;
   /** Optional git credential source for cloning private repos; null/absent preserves ambient behavior. */
   resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<{ cwd: string; warning: string | null }> {
@@ -2531,8 +2532,12 @@ async function materializeManagedProjectWorkspace(
         await disposeGitWorkspaceSnapshot(snapshot);
       }
       await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
-    } else if (input.repoRef) {
-      await execFile("git", ["-C", cloneTmpDir, "checkout", input.repoRef], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS });
+    } else if (input.repoRef && input.repoRef !== "origin/HEAD") {
+      // clone already checks out the remote default branch named by origin/HEAD.
+      const remoteBranch = input.repoRef.startsWith("origin/") ? input.repoRef.slice("origin/".length) : null;
+      await execFile("git", ["-C", cloneTmpDir, "checkout", ...(remoteBranch
+        ? ["-B", remoteBranch, input.repoRef]
+        : [input.repoRef])], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS });
     }
   } catch (error) {
     await fs
@@ -2636,6 +2641,7 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
   projectId: string;
   cwd: string | null;
   repoUrl: string | null;
+  repoRef: string | null;
   resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<{ cwd: string; warning: string | null }> {
   const configuredCwd = readNonEmptyString(input.cwd);
@@ -2646,6 +2652,7 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
     companyId: input.companyId,
     projectId: input.projectId,
     repoUrl: readNonEmptyString(input.repoUrl),
+    repoRef: readNonEmptyString(input.repoRef),
     resolveGitAuth: input.resolveGitAuth ?? null,
   });
 }
@@ -2751,6 +2758,7 @@ export async function resolveAdditionalProjectWorkspace(
       projectId,
       cwd: workspace.cwd,
       repoUrl: workspace.repoUrl,
+      repoRef: workspace.repoRef,
     });
     // A directory that exists but holds no content is not a realized workspace. Accept the row only
     // when the resolved directory has real content, so an empty directory never masks a missing one.
@@ -2782,6 +2790,7 @@ export async function resolveAdditionalProjectWorkspace(
     companyId,
     projectId,
     repoUrl: fallbackRepoUrl,
+    repoRef: fallbackRow.repoRef,
   });
   return {
     cwd: managed.cwd,
@@ -12297,6 +12306,7 @@ export function heartbeatService(
               workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
             cwd: workspace.cwd,
             repoUrl: workspace.repoUrl,
+            repoRef: workspace.repoRef,
             resolveGitAuth,
           });
           projectCwd = resolvedCwd.cwd;
