@@ -104,7 +104,7 @@ export function isChatEndpointRepairing(
   );
 }
 
-function ChatConnectionPurpose({ provider, onChat, onTools }: {
+export function ChatConnectionPurpose({ provider, onChat, onTools }: {
   provider: ChatProvider;
   onChat: () => void;
   onTools: () => void;
