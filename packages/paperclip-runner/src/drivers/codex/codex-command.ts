@@ -3,7 +3,11 @@ import { createRequire } from "node:module";
 import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 /** Prefer the installed dependency; compatibility is established by the CLI protocol. */
-export function resolveCodexCommand(issuer: string | URL = import.meta.url, environment: NodeJS.ProcessEnv = process.env): string {
+export function resolveCodexCommand(
+  issuer: string | URL = import.meta.url,
+  environment: NodeJS.ProcessEnv = process.env,
+  workingDirectory = process.cwd(),
+): string {
   try {
     const runnerRequire = createRequire(issuer);
     let manifestPath: string;
@@ -24,7 +28,7 @@ export function resolveCodexCommand(issuer: string | URL = import.meta.url, envi
         manifestPath = runnerRequire.resolve("@openai/codex/package.json");
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") throw error;
-        return resolveCodexOnPath(environment);
+        return resolveCodexOnPath(environment, workingDirectory);
       }
     }
     manifestPath = realpathSync(manifestPath);
@@ -52,14 +56,15 @@ export function resolveCodexCommand(issuer: string | URL = import.meta.url, envi
   }
 }
 
-function resolveCodexOnPath(environment: NodeJS.ProcessEnv): string {
+function resolveCodexOnPath(environment: NodeJS.ProcessEnv, workingDirectory: string): string {
   const names = process.platform === "win32"
     ? ["codex", ...(environment.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean).map(extension => `codex${extension.toLowerCase()}`)]
     : ["codex"];
-  for (const directory of (environment.PATH ?? "").split(delimiter).filter(isAbsolute)) {
+  // Empty PATH components mean cwd; an omitted PATH has no search entries.
+  for (const directory of environment.PATH === undefined ? [] : environment.PATH.split(delimiter)) {
     for (const name of names) {
       try {
-        const executable = realpathSync(resolve(directory, name));
+        const executable = realpathSync(resolve(workingDirectory, directory, name));
         if (!statSync(executable).isFile()) continue;
         accessSync(executable, constants.X_OK);
         return executable;

@@ -54,6 +54,11 @@ sessions retain precedence. Real protocol/login failures remain actionable;
 there is no silent runner fallback. Release pins and the separate ACPX artifact
 qualification stay unchanged. Linux ARM64 keeps its existing legacy login path.
 
+Final review found a relative PATH regression in the retained resolver. Resolve
+relative and empty PATH entries against the selected provider working directory;
+retain installed-dependency preference. Extend the existing fresh-process fixture
+and qualify the resulting commit separately from the green `cb5948e` candidate.
+
 Paperclip npm tarballs retain the patched JavaScript graph and strip Codex native
 payloads. The published server declares official optional host packages. npm
 installs them for the consumer's OS and architecture. This avoids collisions with
@@ -69,11 +74,11 @@ HOME, and working directory. Only executable selection and safe errors change.
 | Gate | Status | Evidence |
 | --- | --- | --- |
 | Preserve original and broader work | Passed | Pushed branches and revisions above |
-| Narrow scope against current master | Passed | 22 files; no workflow, Docker, Git installer, or unrelated fixture diff |
+| Narrow scope against current master | Passed | Installed Codex/npm scope only; no workflow, Docker, Git installer, or unrelated fixture diff |
 | Focused packaging and installed-consumer controls | Passed | 24 packaging tests with actual offline npm tarballs; 9 existing consumer assertion tests |
 | Login controls after narrowing | Passed | 13 existing tests; HOME/config-directory/spawn semantics match frozen master |
 | Codex selection, protocol, sandbox, and ACPX integrity | Passed locally | 21 selection/security/transport/eval tests; 4 npm layout integrity controls; runner TypeScript no-emit |
-| Full checks and fresh review | Pending | Require green current-head CI and fresh 5/5 review with no unresolved comments |
+| Full checks and fresh review | Pending for relative PATH fix | `cb5948e` passed all 47 CI jobs and its clean Linux npm consumer; qualify the final fix with new CI and fresh 5/5 review |
 | Previous broad candidate | Historical | 47 ordinary CI jobs passed at `6f3060b`; not proof for the narrowed candidate |
 | Existing old CLI protocol proof | Historical | Official Codex 0.156.1 completed startup handshake; scope must be matched to retained sources |
 | All-harness live onboarding and cloud qualification | Deferred | Later defaults slices; authentication probes and CI cannot close live journeys |

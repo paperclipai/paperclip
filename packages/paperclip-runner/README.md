@@ -62,11 +62,12 @@ Codex startup and browser login prefer the CLI from the installed dependency
 graph. If that dependency is absent, they use an executable `codex` from the
 selected execution host's `PATH`. An explicit execution command takes precedence,
 and resumed sessions retain their recorded command. Older or newer CLI versions
-are allowed; compatibility is established by the actual protocol or login attempt.
+are allowed. Relative PATH entries use the selected process working directory.
+Compatibility is established by the actual protocol or login attempt.
 Missing executables and real protocol failures still return actionable errors.
 Package identity and executable containment remain checked. Browser login keeps
-its existing provider-specific credential home. Linux ARM64 retains its existing legacy login path because native
-execution is not qualified there.
+its existing provider-specific credential home. Linux ARM64 retains its existing
+legacy login path because native execution is not qualified there.
 
 Exact dependency pins remain release and ACPX artifact-qualification checks.
 They make published builds reproducible and verify sandbox artifacts; they do not

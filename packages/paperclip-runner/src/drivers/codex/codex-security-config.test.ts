@@ -31,7 +31,7 @@ describe("Codex security configuration", () => {
       import { createRequire } from "node:module";
       import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
       import { tmpdir } from "node:os";
-      import { dirname, join } from "node:path";
+      import { delimiter, dirname, isAbsolute, join } from "node:path";
       import { resolveCodexCommand, resolvePinnedCodexCommand } from ${JSON.stringify(new URL("./codex-command.ts", import.meta.url).href)};
       import { codexExecutableReadOnlyRoots, createIsolatedCodexAppServerArgs } from ${JSON.stringify(new URL("./codex-security-config.ts", import.meta.url).href)};
       const root = realpathSync(mkdtempSync(join(tmpdir(), "paperclip-pinned-codex-test-")));
@@ -55,6 +55,41 @@ describe("Codex security configuration", () => {
         assert.equal(resolveCodexCommand(pathOnlyIssuer, commandEnvironment), pathCommand, "Only absent dependency graphs use the selected PATH command");
         assert.equal(execFileSync(resolveCodexCommand(pathOnlyIssuer, commandEnvironment), ["--version"], {
           env: commandEnvironment, encoding: "utf8", timeout: 5_000 }).trim(), "codex-cli 0.141.0");
+        const relativeCommand = resolveCodexCommand(pathOnlyIssuer, { PATH: "./bin" }, pathOnlyRoot);
+        assert.equal(relativeCommand, pathCommand, "Relative PATH entries use the provider working directory");
+        assert.ok(isAbsolute(relativeCommand), "Provider launch receives an absolute executable");
+        assert.equal(execFileSync(relativeCommand, ["--version"], {
+          cwd: root, env: { PATH: "/missing-codex-command" }, encoding: "utf8", timeout: 5_000 }).trim(), "codex-cli 0.141.0");
+        const cwdCommand = join(pathOnlyRoot, "codex");
+        writeFileSync(cwdCommand, "#!" + process.execPath + "\\n", { mode: 0o755 });
+        const secondDirectory = join(pathOnlyRoot, "second-bin");
+        mkdirSync(secondDirectory);
+        const secondCommand = join(secondDirectory, "codex");
+        writeFileSync(secondCommand, "#!" + process.execPath + "\\n", { mode: 0o755 });
+        for (const path of [".", "", "./missing" + delimiter, delimiter + "./bin"]) {
+          assert.equal(resolveCodexCommand(pathOnlyIssuer, { PATH: path }, pathOnlyRoot), cwdCommand,
+            "Dot and empty PATH entries retain their ordered current-directory meaning");
+        }
+        for (const [path, expected] of [
+          ["./bin" + delimiter + ".", pathCommand],
+          ["./bin" + delimiter + "./second-bin", pathCommand],
+          ["./second-bin" + delimiter + "./bin", secondCommand],
+          ["./missing" + delimiter + "./bin", pathCommand],
+        ]) assert.equal(resolveCodexCommand(pathOnlyIssuer, { PATH: path }, pathOnlyRoot), expected,
+          "Relative PATH resolution preserves search ordering and skips missing entries");
+        for (const environment of [{}, { PATH: "/missing-codex-command" }, { PATH: "./missing" }]) {
+          assert.throws(() => resolveCodexCommand(pathOnlyIssuer, environment, pathOnlyRoot),
+            /runtime unavailable.*No installed Codex dependency or executable on PATH/,
+            "An absent PATH must not implicitly authorize the provider working directory");
+        }
+        assert.throws(() => resolveCodexCommand(pathOnlyIssuer, { PATH: "./bin" }, root), /runtime unavailable/,
+          "Relative PATH must not use a different provider working directory");
+        const previousCwd = process.cwd();
+        try {
+          process.chdir(pathOnlyRoot);
+          assert.equal(resolveCodexCommand(pathOnlyIssuer, { PATH: "./bin" }), pathCommand,
+            "Omitted working directory follows the current process directory");
+        } finally { process.chdir(previousCwd); }
         const directCodex = join(pathOnlyRoot, "node_modules/@openai/codex");
         const directCommand = join(directCodex, "bin/codex.js");
         mkdirSync(dirname(directCommand), { recursive: true });

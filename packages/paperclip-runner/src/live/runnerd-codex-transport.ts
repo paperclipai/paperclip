@@ -4612,7 +4612,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const providerNodeCommand =
       this.options.providerNodeCommand ?? process.execPath;
     const effectiveCodexCommand = provider === "codex"
-      ? this.options.codexCommand ?? resolveCodexCommand(undefined, this.options.environment)
+      ? this.options.codexCommand ?? resolveCodexCommand(undefined, this.options.environment, String(params.cwd ?? tmpdir()))
       : undefined;
     const opencodeExecutable =
       provider === "opencode"

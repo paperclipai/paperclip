@@ -6,6 +6,7 @@ import type { CapabilityRunnerdCodexTransportOptions } from "../live/runnerd-cod
 export function evalProviderTransportOptions(
   provider: "codex" | "opencode" | "acpx" | "claude_managed" | "aws_agentcore",
   turnTimeoutMs = 120_000,
+  workingDirectory = process.cwd(),
 ): Pick<CapabilityRunnerdCodexTransportOptions,
   "codexCommand" | "acpxPermissionMode" | "acpxPermissionModePinned" | "turnStartTimeoutMs"
 > {
@@ -20,5 +21,5 @@ export function evalProviderTransportOptions(
     return { acpxPermissionMode: "approve-all", acpxPermissionModePinned: true };
   }
   if (provider !== "codex") return {};
-  return { codexCommand: resolveCodexCommand() };
+  return { codexCommand: resolveCodexCommand(undefined, undefined, workingDirectory) };
 }

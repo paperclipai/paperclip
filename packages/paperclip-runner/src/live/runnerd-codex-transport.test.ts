@@ -1966,7 +1966,7 @@ it.each(["installed", "explicit"] as const)("records the selected %s Codex comma
     expect(template).toMatchObject({ provider: { command, model: "gpt-6.1-sol" } });
     expect(JSON.stringify(template)).toContain(`${JSON.stringify(command).replaceAll('"', '\\"')}=\\"read\\"`);
     if (selection === "explicit") expect(resolver).not.toHaveBeenCalled();
-    else expect(resolver).toHaveBeenCalledExactlyOnceWith(undefined, { PATH: "/missing-ambient-codex" });
+    else expect(resolver).toHaveBeenCalledExactlyOnceWith(undefined, { PATH: "/missing-ambient-codex" }, root);
     expect(launch).not.toHaveBeenCalled();
   } finally {
     resolver.mockRestore();

@@ -379,7 +379,7 @@ export async function runEvalSessionCli(
   const service = options.serviceFactory?.(runnerdPath) ??
     new CapabilityLiveSessionService({
       transportOptions: {
-        ...evalProviderTransportOptions(requestedProvider, request.limits.turnTimeoutMs),
+        ...evalProviderTransportOptions(requestedProvider, request.limits.turnTimeoutMs, request.session.workingDirectory),
         runnerBinary: runnerdPath,
         ...(cli.candidateProfile === undefined ? {} : { acpxCandidateProfile: cli.candidateProfile }),
         runtimeContext,
