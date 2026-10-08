@@ -152,6 +152,10 @@ Notes:
 
 ## 7. Verification Before Hand-off
 
+[feature-map/README.md](feature-map/README.md) is an optional reference for user
+entry points, verification recipes, and coverage gaps. The map records coverage
+scope, not proof that a live journey passed.
+
 Default local/agent test path:
 
 ```sh
@@ -198,6 +202,7 @@ When adding endpoints:
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
+- Form and wizard footers: keep Save & exit (or Cancel/Back) left and the primary action right in the same vertically aligned row. Each step owns the entire footer; never append Save & exit as a separate row. See `DESIGN.md`.
 
 ## 10. Pull Request Requirements
 

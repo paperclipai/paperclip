@@ -17,7 +17,7 @@ const prCallerWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
 const trustedPrWorkflowPath = ".github/workflows/pr-trusted.yml";
 const trustedPrWorkflow = path.join(repoRoot, trustedPrWorkflowPath);
 
-const SHARD_COUNT = 3;
+const SHARD_COUNT = 8;
 
 function runShard(args) {
   const result = spawnSync(process.execPath, [script, ...args], { cwd: repoRoot, encoding: "utf8" });
@@ -317,23 +317,25 @@ test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
     "resolution-only policy must not restore or save a dependency store",
   );
   assert.match(
-    workflow,
+    policy,
     /pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile/,
     "the policy job must resolve the complete merge tree without rewriting platform metadata",
   );
-  assert.match(
-    workflow,
-    /cmp -s "\$RUNNER_TEMP\/pnpm-lock\.before\.yaml" pnpm-lock\.yaml/,
-    "the policy job must upload a lockfile only when regeneration changed it",
-  );
 
-  const restoreSteps = workflow.match(
-    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)\n        if: needs\.policy\.outputs\.lockfile_regenerated == '1'/g,
+  // Test lanes no longer wait on a policy-job artifact: each install step
+  // resolves a stale lockfile inline, so a manifest-changing or stacked PR
+  // still installs while the policy job validates resolution in parallel.
+  const fallbackInstalls = workflow.match(
+    /if ! pnpm install --frozen-lockfile; then\n[\s\S]{0,240}?pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile\n\s+pnpm install --frozen-lockfile\n\s+fi/g,
   ) ?? [];
-  assert.equal(restoreSteps.length, 7, "every downstream install job must restore a required regenerated artifact");
+  assert.equal(
+    fallbackInstalls.length,
+    7,
+    "every downstream install job must resolve a stale lockfile inline",
+  );
   assert.doesNotMatch(
     workflow,
-    /- name: Restore regenerated PR lockfile \(if policy uploaded one\)[\s\S]{0,220}continue-on-error:/,
-    "a missing artifact must fail after the policy job says it uploaded one",
+    /Restore regenerated PR lockfile|lockfile_regenerated|name: pr-lockfile/,
+    "the policy lockfile artifact chain must stay removed; it put the policy job on every lane's critical path",
   );
 });

@@ -1,10 +1,16 @@
+import { TextAttachmentContext } from "@/context/TextAttachmentContext";
+import { isTextAttachment } from "@/lib/issue-attachments";
+import { getAttachmentArtifactWorkProductMetadata } from "@paperclipai/shared";
 import { useContext, useState, type CSSProperties } from "react";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
+import { ArtifactPreview } from "@/components/artifacts/ArtifactCard";
+import { MediaArtifactCard } from "@/components/artifacts/MediaArtifactCard";
 import { ImageGalleryModal } from "@/components/ImageGalleryModal";
-import { isImageContentType, isVideoLikeOutput } from "@/lib/issue-output";
+import { isImageLikeOutput, isVideoLikeOutput } from "@/lib/issue-output";
 import { attachmentDownloadPath } from "@/lib/issue-attachments";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import {
+  ChevronDown,
   ExternalLink,
   Maximize2,
   File,
@@ -18,7 +24,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { GithubIcon } from "@/components/icons/github-icon";
-import { cn } from "@/lib/utils";
+import { cn, formatDateTime } from "@/lib/utils";
 
 type StateChip = {
   label: string;
@@ -124,16 +130,17 @@ function Chip({ chip }: { chip: StateChip }) {
 export interface RichWorkProductCardProps {
   workProduct: IssueWorkProduct;
   href: string | null;
-  variant?: "card" | "compact";
+  variant?: "card" | "compact" | "gallery";
 }
 
 export function RichWorkProductCard({ workProduct, href, variant = "card" }: RichWorkProductCardProps) {
   const openIssueGallery = useContext(IssueGalleryContext);
   const [galleryOpen, setGalleryOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const metadata = workProduct.metadata;
   const contentType = stringMeta(metadata, "contentType") ?? "";
-  const isImage = isImageContentType(contentType);
-  const isVideo = isVideoLikeOutput(contentType, stringMeta(metadata, "originalFilename"));
+  const isImage = isImageLikeOutput(contentType, stringMeta(metadata, "originalFilename") ?? workProduct.title);
+  const isVideo = isVideoLikeOutput(contentType, stringMeta(metadata, "originalFilename") ?? workProduct.title);
   let Icon: LucideIcon = File;
   let meta: Array<string | null> = [];
   let action = "Open preview";
@@ -156,7 +163,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       break;
     case "branch":
       Icon = GitBranch;
-      meta = [stringMeta(metadata, "repository", "repo", "repositoryName"), stringMeta(metadata, "branch", "branchName") ?? workProduct.externalId, urlLabel(workProduct.url)];
+      meta = [href ? "Branch" : "Branch · no remote link", stringMeta(metadata, "repository", "repo", "repositoryName"), stringMeta(metadata, "branch", "branchName") ?? workProduct.externalId, urlLabel(workProduct.url)];
       action = "Open on GitHub";
       break;
     case "artifact": {
@@ -183,6 +190,9 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       break;
   }
 
+  const openText = useContext(TextAttachmentContext);
+  const textMetadata = getAttachmentArtifactWorkProductMetadata(workProduct);
+  const canOpenText = Boolean(openText && textMetadata && isTextAttachment(textMetadata));
   const additions = numberMeta(metadata, "additions");
   const deletions = numberMeta(metadata, "deletions");
   const files = numberMeta(metadata, "files", "changedFiles");
@@ -214,10 +224,6 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   const fileCount = files === null ? null : `${files} ${files === 1 ? "file" : "files"}`;
   const statsLabel = [changeCounts || null, fileCount].filter(Boolean).join(" · ");
   const compact = variant === "compact";
-  const imagePath = isImage
-    ? stringMeta(metadata, "openPath", "contentPath") ?? href
-    : null;
-
   const mediaPath = workProduct.type === "artifact" && (isImage || isVideo)
     ? stringMeta(metadata, "contentPath", "openPath") ?? href
     : null;
@@ -228,14 +234,33 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       ? attachmentDownloadPath({ contentPath: artifactContentPath })
       : href)
     : href;
+  const expandable = !compact && !mediaPath && !actionHref;
+  const summary = workProduct.summary?.trim();
+  const linklessBranch = workProduct.type === "branch" && !href;
   const openGallery = () => {
     if (mediaPath && !openIssueGallery?.(mediaPath)) setGalleryOpen(true);
   };
 
+  if (variant === "gallery" && mediaPath) {
+    return (
+      <MediaArtifactCard
+        id={workProduct.id}
+        title={workProduct.title}
+        contentPath={mediaPath}
+        contentType={contentType}
+        originalFilename={stringMeta(metadata, "originalFilename") ?? workProduct.title}
+        downloadPath={stringMeta(metadata, "downloadPath") ?? undefined}
+        detail={visibleMeta.join(" · ")}
+        badge={chip ? <Chip chip={chip} /> : null}
+      />
+    );
+  }
+
   return (
     <article
       className={cn(
-        "@container flex min-w-0 rounded-md border border-border bg-card/60",
+        "@container relative flex min-w-0 rounded-md border border-border bg-card/60",
+        (mediaPath || actionHref) && "hover:bg-accent/50",
         compact ? "items-center gap-2 px-2.5 py-1.5" : "items-start gap-3 px-3 py-2.5",
       )}
       data-testid={`task-chat-rich-work-product-${workProduct.type}`}
@@ -243,29 +268,63 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
     >
       <div className={cn(
         "flex shrink-0 items-center justify-center overflow-hidden rounded-sm bg-muted/60 text-muted-foreground",
-        compact ? "h-8 w-8" : "h-10 w-10",
+        mediaPath ? "w-20" : compact ? "h-8 w-8" : "h-10 w-10",
       )}>
-        {imagePath ? (
-          <img src={imagePath} alt="" className="h-full w-full object-cover" />
+        {mediaPath ? (
+          <ArtifactPreview artifact={{ contentPath: mediaPath, title: workProduct.title, mediaKind: isVideo ? "video" : "image" }} />
         ) : (
           <Icon aria-hidden className={compact ? "h-4 w-4" : "h-5 w-5"} />
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <strong className="block truncate text-sm font-medium text-foreground">{workProduct.title}</strong>
+        <strong className={cn("block text-sm font-medium text-foreground", expandable ? detailsOpen ? "break-words" : "line-clamp-2 break-words" : "truncate")}>{workProduct.title}</strong>
         {visibleMeta.length > 0 ? <p className="mt-1 truncate text-xs text-muted-foreground">{visibleMeta.join(" · ")}</p> : null}
         {statsLabel ? <p className="mt-1 whitespace-nowrap text-xs text-muted-foreground">{statsLabel}</p> : null}
+        {!compact && summary && !linklessBranch ? <p className={cn("mt-1 text-xs text-muted-foreground", detailsOpen ? "whitespace-pre-wrap break-words" : "line-clamp-2")}>{summary}</p> : null}
+        {expandable && detailsOpen ? (
+          <div className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground">
+            {workProduct.type !== "branch" ? <p>No link was provided for this work product.</p> : null}
+            <p>{workProduct.provider} · {workProduct.status.replaceAll("_", " ")} · Updated {formatDateTime(workProduct.updatedAt)}</p>
+            {linklessBranch && summary ? (
+              <details className="relative z-10 mt-1">
+                <summary className="w-fit cursor-pointer font-medium text-foreground">Saved description</summary>
+                <p className="mt-1 whitespace-pre-wrap break-words">{summary}</p>
+              </details>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       <div className={cn("flex shrink-0 items-center", compact ? "gap-1.5" : "gap-2")}>
         {chip ? <Chip chip={chip} /> : null}
+        {canOpenText ? (
+          <button
+            type="button"
+            onClick={() => openText!(textMetadata!.attachmentId, textMetadata!.originalFilename ?? workProduct.title)}
+            aria-label={`Open in tab: ${workProduct.title}`}
+            className="inline-flex items-center gap-1 text-xs font-medium text-foreground after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring"
+          >
+            {compact ? null : <span className="hidden @sm:inline">Open in tab</span>}<FileText aria-hidden className="h-3 w-3" />
+          </button>
+        ) : null}
         {mediaPath ? (
-          <button type="button" onClick={openGallery} aria-label={`${action}: ${workProduct.title}`} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline">
+          <button type="button" onClick={openGallery} aria-label={`${action}: ${workProduct.title}`} className="inline-flex items-center gap-1 text-xs font-medium text-foreground after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring">
             {compact ? null : <span className="hidden @sm:inline">{action}</span>}<Maximize2 aria-hidden className="h-3 w-3" />
           </button>
         ) : actionHref ? (
-          <a href={actionHref} aria-label={`${action}: ${workProduct.title}`} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline" target={actionHref.startsWith("http") ? "_blank" : undefined} rel={actionHref.startsWith("http") ? "noreferrer" : undefined}>
+          <a href={actionHref} aria-label={`${action}: ${workProduct.title}`} className={cn("inline-flex items-center gap-1 text-xs font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", canOpenText ? "relative z-10" : "after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-ring")} target={actionHref.startsWith("http") ? "_blank" : undefined} rel={actionHref.startsWith("http") ? "noreferrer" : undefined}>
             {compact ? null : <span className="hidden @sm:inline">{action}</span>}<ExternalLink aria-hidden className="h-3 w-3" />
           </a>
+        ) : expandable ? (
+          <button
+            type="button"
+            onClick={() => setDetailsOpen((open) => !open)}
+            aria-label={`${detailsOpen ? "Hide" : "Show"} details: ${workProduct.title}`}
+            aria-expanded={detailsOpen}
+            className="inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-foreground after:absolute after:inset-0 after:rounded-md focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring"
+          >
+            <span>{detailsOpen ? "Hide details" : "Show details"}</span>
+            <ChevronDown aria-hidden className={cn("h-4 w-4", detailsOpen && "rotate-180")} />
+          </button>
         ) : null}
       </div>
       {galleryOpen && mediaPath ? (

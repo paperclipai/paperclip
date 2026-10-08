@@ -89,7 +89,7 @@ export class CodexSessionState {
   readonly normalizedSessionId: string;
   readonly opened: OpenedCodexThread;
   readonly taskEnvelope: CodexTaskEnvelope;
-  readonly conversationMode: "task" | "direct";
+  readonly conversationMode: "task" | "direct" | "prepared";
   readonly now: () => Date;
   readonly runnerInstanceId: string;
   readonly driverKind: string;
@@ -100,6 +100,8 @@ export class CodexSessionState {
   readonly goalAvailability: CodexGoalAvailability;
   readonly goalReasonCode: string | null;
   readonly goalReason: string | null;
+  readonly skillInputs: NonNullable<CodexAppServerDriverOptions["skillInputs"]>;
+  readonly reasoningEffort: string | undefined;
   readonly dynamicTools: readonly Readonly<Record<string, unknown>>[];
   readonly completionFeedback: CodexAppServerDriverOptions["completionFeedback"];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -152,7 +154,7 @@ export class CodexSessionState {
     normalizedSessionId: string;
     opened: OpenedCodexThread;
     taskEnvelope: CodexTaskEnvelope;
-    conversationMode: "task" | "direct";
+    conversationMode: "task" | "direct" | "prepared";
     resumed: boolean;
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
@@ -172,6 +174,8 @@ export class CodexSessionState {
     goalAvailability: CodexGoalAvailability;
     goalReasonCode: string | null;
     goalReason: string | null;
+    skillInputs?: CodexAppServerDriverOptions["skillInputs"];
+    reasoningEffort?: string;
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
     completionFeedback?: CodexAppServerDriverOptions["completionFeedback"];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
@@ -195,6 +199,8 @@ export class CodexSessionState {
     this.goalAvailability = input.goalAvailability;
     this.goalReasonCode = input.goalReasonCode;
     this.goalReason = input.goalReason;
+    this.skillInputs = structuredClone(input.skillInputs ?? []);
+    this.reasoningEffort = input.reasoningEffort;
     this.dynamicTools = input.dynamicTools;
     this.dynamicToolHandler = input.dynamicToolHandler;
     this.completionFeedback = input.completionFeedback;

@@ -9,6 +9,7 @@ import {
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { EXECUTION_CONTROL_DEADLINE_MS } from "./execution-control-deadline.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
@@ -48,10 +49,16 @@ export async function executionProjectionsForRuns(
   companyId: string,
   runIds: string[],
   now = new Date(),
+  options: { retryDatabaseReads?: boolean } = {},
 ) {
   const projections = new Map<string, ExecutionProjection>();
   if (!runIds.length) return projections;
-  const runs = await db
+  // Opt in only with a pooled Db outside a transaction. Issue enrichment also
+  // calls this helper with a transaction, whose failed reads must not replay.
+  const read = <T>(query: () => Promise<T>) => options.retryDatabaseReads
+    ? retryIdempotentDatabaseOperation(query)
+    : query();
+  const runs = await read(async () => db
     .select(executionRunColumns)
     .from(heartbeatRuns)
     .where(
@@ -59,8 +66,8 @@ export async function executionProjectionsForRuns(
         eq(heartbeatRuns.companyId, companyId),
         inArray(heartbeatRuns.id, runIds),
       ),
-    );
-  const coordinators = await db
+    ));
+  const coordinators = await read(async () => db
     .select()
     .from(nativeRunFinalizations)
     .where(
@@ -68,7 +75,7 @@ export async function executionProjectionsForRuns(
         eq(nativeRunFinalizations.companyId, companyId),
         inArray(nativeRunFinalizations.runId, runIds),
       ),
-    );
+    ));
   const issueIds = [
     ...new Set(
       runs
@@ -77,7 +84,7 @@ export async function executionProjectionsForRuns(
     ),
   ];
   const pending = issueIds.length
-    ? await db
+    ? await read(async () => db
         .select({
           issueId: issueThreadInteractions.issueId,
           kind: issueThreadInteractions.kind,
@@ -89,10 +96,10 @@ export async function executionProjectionsForRuns(
             inArray(issueThreadInteractions.issueId, issueIds),
             eq(issueThreadInteractions.status, "pending"),
           ),
-        )
+        ))
     : [];
   const recovery = issueIds.length
-    ? await db
+    ? await read(async () => db
         .select({
           issueId: issueRecoveryActions.sourceIssueId,
           cause: issueRecoveryActions.cause,
@@ -112,7 +119,7 @@ export async function executionProjectionsForRuns(
             ]),
           ),
         )
-        .orderBy(desc(issueRecoveryActions.updatedAt))
+        .orderBy(desc(issueRecoveryActions.updatedAt)))
     : [];
   const coordinatorByRun = new Map(coordinators.map((row) => [row.runId, row]));
   for (const run of runs) {
@@ -239,10 +246,15 @@ export function projectExecution(
     projection.nextAction = "Waiting for the live workspace holder to finish; the scheduled check will revalidate ownership.";
     return set("retry_scheduled", "Waiting for workspace");
   }
-  if (
+  // Cleanup can fail before a finalization coordinator exists. The missing
+  // row must not turn a quarantined native session into an ordinary Retry.
+  const cleanupQuarantined = run.runtimeMode === "native" &&
+    ["failed", "timed_out"].includes(run.status) &&
+    run.errorCode === "native_session_cleanup_quarantined";
+  if (!cleanupQuarantined && (
     coordinator?.phase === "retryable_failure" ||
     run.status === "scheduled_retry"
-  ) {
+  )) {
     projection.recoveryOwner = "agent";
     return set(
       projection.retryAt && new Date(projection.retryAt) > now
@@ -253,8 +265,9 @@ export function projectExecution(
         : "Reconnecting",
     );
   }
-  if (coordinator?.phase === "terminal_failure" || recoveryAction) {
+  if (coordinator?.phase === "terminal_failure" || recoveryAction || cleanupQuarantined) {
     if (
+      !cleanupQuarantined &&
       coordinator?.failureCode === "native_provider_terminal_failed" &&
       !detail.replacementDenied &&
       run.finishedAt &&
@@ -271,6 +284,9 @@ export function projectExecution(
       text(detail.replacementDenied) ??
       projection.cause;
     projection.nextAction = recoveryAction?.nextAction ?? projection.nextAction;
+    if (cleanupQuarantined && !projection.nextAction) {
+      projection.nextAction = "Verify the stopped session and its saved work before starting a new attempt.";
+    }
     projection.permittedActions.push("inspect_recovery");
     return set("recovery_needed", "Recovery needed");
   }

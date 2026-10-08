@@ -33,9 +33,9 @@ fn send(value: Value) -> io::Result<()> {
     stdout.flush()
 }
 
-fn send_split_event_burst(state: &FakeState) -> io::Result<()> {
+fn send_split_event_burst(state: &FakeState, count: usize) -> io::Result<()> {
     let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
-    for index in 0..96 {
+    for index in 0..count {
         send(json!({
             "method": "item/agentMessage/delta",
             "params": {
@@ -607,6 +607,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--require-existing-resume-state")
         && !state_path.exists();
     let call_log = argument(&args, "--call-log").map(PathBuf::from);
+    let request_log = argument(&args, "--request-log").map(PathBuf::from);
     if args.iter().any(|value| value == "--record-process-start") {
         log_call(call_log.as_deref(), "process-start")?;
     }
@@ -618,6 +619,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
     let emit_split_event_burst = args.iter().any(|value| value == "--split-event-burst");
+    let split_event_prefix_count = argument(&args, "--split-event-prefix-count")
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(96);
+    if !(1..=4096).contains(&split_event_prefix_count) {
+        return Err("split event prefix count must be between 1 and 4096".into());
+    }
     let split_event_suffix_count = argument(&args, "--split-event-suffix-count")
         .map(|value| value.parse::<usize>())
         .transpose()?
@@ -644,6 +652,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--require-codex-home-auth");
     let durable_turn_ids = args.iter().any(|value| value == "--durable-turn-ids");
+    let hold_first_durable_turn = args
+        .iter()
+        .any(|value| value == "--hold-first-durable-turn");
     let durable_tool_ids = args.iter().any(|value| value == "--durable-tool-ids");
     let expected_canonical_task_context_file =
         argument(&args, "--expected-canonical-task-context-file");
@@ -839,9 +850,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut delayed_interrupt_terminal_scheduled = false;
     let mut answered_questions = 0u8;
     let mut replayed_completed_tool_calls = 0_u64;
+    let mut rejected_helper_requests = 0_u8;
 
     for line in io::stdin().lock().lines() {
         let message: Value = serde_json::from_str(&line?)?;
+        if message.get("method").is_none()
+            && message
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("helper-request-"))
+        {
+            if message.pointer("/result/success") != Some(&json!(false))
+                && message.get("error").is_none()
+            {
+                return Err("helper request was granted root authority".into());
+            }
+            rejected_helper_requests += 1;
+            log_call(call_log.as_deref(), "helper-request:rejected")?;
+            if rejected_helper_requests == 3 {
+                send(
+                    json!({"id":"tool-request-1", "method":"item/tool/call", "params":{
+                        "threadId":state.thread_id, "turnId":state.active_turn_id,
+                        "callId":"root-after-helper", "tool":"get_task_context", "arguments":{}
+                    }}),
+                )?;
+            }
+            continue;
+        }
         if message.get("method").is_none()
             && message
                 .get("id")
@@ -966,6 +1001,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
         log_call(call_log.as_deref(), method)?;
+        log_call(request_log.as_deref(), &serde_json::to_string(&message)?)?;
+        if require_skill_instructions
+            && matches!(method, "thread/start" | "thread/resume")
+            && message.pointer("/params/config/skills.include_instructions") != Some(&json!(true))
+        {
+            return Err("thread request omitted skills.include_instructions=true".into());
+        }
         let id = message.get("id").cloned();
         match method {
             "initialize" => {
@@ -1309,6 +1351,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .checked_add(1)
                         .ok_or("fake provider turn sequence exhausted")?;
                 }
+                let hold_turn = hold_turn || (hold_first_durable_turn && state.next_turn == 1);
                 if reject_second_turn_start && turn_start_count == 2 {
                     send(json!({
                         "method": "warning",
@@ -1439,7 +1482,46 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
+                if args.iter().any(|value| value == "--account-notifications") {
+                    send(json!({"method":"account/updated", "params":{
+                        "authMode":"chatgpt", "planType":"pro"
+                    }}))?;
+                    send(json!({"method":"account/login/completed", "params":{
+                        "loginId":"fixture-login", "success":true, "error":null
+                    }}))?;
+                }
+                if args.iter().any(|value| value == "--helper-tool-requests") {
+                    if !args.iter().any(|value| value == "--foreign-helper-tool") {
+                        send(json!({"method":"item/completed", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id,
+                            "item":{"id":"spawn-helper", "type":"collabAgentToolCall",
+                                "tool":"spawnAgent", "status":"completed",
+                                "senderThreadId":state.thread_id, "receiverThreadIds":["helper-thread"]}
+                        }}))?;
+                    }
+                    for (index, tool) in ["get_task_context", "paperclip_finish"].iter().enumerate()
+                    {
+                        send(
+                            json!({"id":format!("helper-request-{index}"), "method":"item/tool/call", "params":{
+                                "threadId":"helper-thread", "turnId":"helper-turn",
+                                "callId":format!("helper-call-{index}"), "tool":tool, "arguments":{}
+                            }}),
+                        )?;
+                    }
+                    send(
+                        json!({"id":"helper-request-question", "method":"item/tool/requestUserInput", "params":{
+                            "threadId":"helper-thread", "turnId":"helper-turn", "itemId":"helper-question",
+                            "questions":[]
+                        }}),
+                    )?;
+                    continue;
+                }
                 if descendant_notifications {
+                    // Real Codex announces a child's MCP startup before its
+                    // thread/started notification establishes parent lineage.
+                    send(json!({"method":"mcpServer/startupStatus/updated","params":{
+                        "threadId":"descendant-0", "name":"paperclip", "status":"starting", "error":null
+                    }}))?;
                     // Codex can announce a helper through the root's spawn receipt
                     // before emitting any thread/started notification for that helper.
                     send(json!({"method": "item/completed", "params": {
@@ -1598,7 +1680,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     send_structured_activity(&state)?;
                     finish_turn(&state_path, &mut state, "completed")?;
                 } else if emit_split_event_burst {
-                    send_split_event_burst(&state)?;
+                    send_split_event_burst(&state, split_event_prefix_count)?;
                 } else if emit_question {
                     send_question(&state)?;
                 } else if !hold_turn {
@@ -1624,6 +1706,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     if emit_post_completion_passive_statuses {
                         for notification in [
+                            json!({
+                                "method": "thread/tokenUsage/updated",
+                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id,
+                                    "tokenUsage": {"total": {"inputTokens": 120, "outputTokens": 12},
+                                        "last": {"inputTokens": 20, "outputTokens": 2}}}
+                            }),
                             json!({
                                 "method": "remoteControl/status/changed",
                                 "params": {"status": "disabled", "environmentId": null}

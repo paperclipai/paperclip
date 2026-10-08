@@ -9,6 +9,7 @@ import { heartbeatsApi } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
 import { buildSameOriginWebSocketUrl } from "../../lib/websocket-url";
+import { tryCreateWebSocket } from "../../lib/websocket";
 import {
   mergeRunLogChunks,
   parsePersistedLogContent,
@@ -20,6 +21,8 @@ import {
 // durable fix is server push (SSE/websocket) for transcript deltas so idle tabs
 // do no periodic work at all; the constants below only reduce the churn of the
 // current polling approach.
+const SOCKET_CONNECTING = 0;
+const SOCKET_OPEN = 1;
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
 // When realtime websocket updates are enabled, the frequent log poll is
@@ -420,7 +423,11 @@ export function useLiveRunTranscripts({
       const url = buildSameOriginWebSocketUrl(
         `/api/companies/${encodeURIComponent(companyId)}/events/ws`,
       );
-      socket = new WebSocket(url);
+      socket = tryCreateWebSocket(url);
+      if (!socket) {
+        scheduleReconnect();
+        return;
+      }
 
       socket.onopen = () => {
         if (closed) return;
@@ -506,14 +513,14 @@ export function useLiveRunTranscripts({
         socket.onmessage = null;
         socket.onerror = null;
         socket.onclose = null;
-        if (socket.readyState === WebSocket.CONNECTING) {
+        if (socket.readyState === SOCKET_CONNECTING) {
           // Defer the close until the handshake completes so the browser
           // does not emit a noisy "closed before the connection is established"
           // warning during rapid run teardown.
           socket.onopen = () => {
             socket?.close(1000, "live_run_transcripts_unmount");
           };
-        } else if (socket.readyState === WebSocket.OPEN) {
+        } else if (socket.readyState === SOCKET_OPEN) {
           socket.close(1000, "live_run_transcripts_unmount");
         }
       }

@@ -151,6 +151,8 @@ export type QueuedRunFacts = {
 
   resumeIntent: boolean;
   wakeCommentIdPresent: boolean;
+  /** Verified from current company-scoped parent/child state immediately before dispatch. */
+  isCompletedOnboardingHandoffWake?: boolean;
 
   /** True when the run's wake or retry reason asks for a continuation the parked-summary check must inspect. */
   continuationParkApplies: boolean;
@@ -609,7 +611,10 @@ export function decideQueuedRunStaleness(
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,
-    terminalBypass: facts.resumeIntent || facts.wakeCommentIdPresent,
+    terminalBypass: facts.resumeIntent || facts.wakeCommentIdPresent || (
+      facts.isCompletedOnboardingHandoffWake === true &&
+      facts.wakeReason === "issue_children_completed" && facts.issueStatus === "done"
+    ),
   });
   if (statusOutcome === "terminal") {
     return {

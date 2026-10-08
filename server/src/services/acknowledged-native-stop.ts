@@ -4,19 +4,32 @@ import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 
 /** A server-recorded run-only Stop must not manufacture a recovery incident. */
-export function hasAcknowledgedNativeStopIntent(run: {
+function hasAcknowledgedNativeRunStopReceipt(run: {
   id: string; companyId: string; status: string; nativeIssueId: string | null;
   resultJson: Record<string, unknown> | null;
 }): boolean {
   const result = run.resultJson;
   const intent = result?.nativeCancellation as Record<string, unknown> | undefined;
-  return result?.cancelledByActorType === "user" &&
-    typeof result.cancelledByUserId === "string" && Boolean(result.cancelledByUserId) &&
-    intent?.schema === "paperclip.native-cancellation.v1" && intent.runId === run.id &&
+  return intent?.schema === "paperclip.native-cancellation.v1" && intent.runId === run.id &&
     intent.companyId === run.companyId && intent.issueId === run.nativeIssueId &&
     intent.scope === "run" && intent.reasonCode === "cancellation_run_only" &&
     intent.dispatchState === "acknowledged" && intent.dispatched === true &&
     typeof intent.intentAuditId === "string" && typeof intent.acknowledgementAuditId === "string";
+}
+
+export function hasAcknowledgedNativeStopIntent(run: Parameters<typeof hasAcknowledgedNativeRunStopReceipt>[0]): boolean {
+  return run.resultJson?.cancelledByActorType === "user" &&
+    typeof run.resultJson.cancelledByUserId === "string" && Boolean(run.resultJson.cancelledByUserId) &&
+    hasAcknowledgedNativeRunStopReceipt(run);
+}
+
+/** An intentional handoff retains task state and deferred work for its successor. */
+export function hasAcknowledgedNativeReassignmentStopIntent(run: Parameters<typeof hasAcknowledgedNativeRunStopReceipt>[0]): boolean {
+  return run.resultJson?.reassignmentStopRequested === true && hasAcknowledgedNativeRunStopReceipt(run);
+}
+
+export function isAcknowledgedNativeReassignmentStop(run: Parameters<typeof hasAcknowledgedNativeRunStopReceipt>[0]): boolean {
+  return run.status === "cancelled" && hasAcknowledgedNativeReassignmentStopIntent(run);
 }
 
 export function isAcknowledgedNativeStop(run: Parameters<typeof hasAcknowledgedNativeStopIntent>[0]): boolean {

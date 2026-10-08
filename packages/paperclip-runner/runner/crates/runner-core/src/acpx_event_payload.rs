@@ -1,15 +1,19 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::acpx_event_scope::AcpxEventScope;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
-use crate::durable::{redact_text, sanitize_semantic_tool_input, sanitize_value};
+use crate::durable::{
+    redact_sensitive_text_values, redact_text, sanitize_value, validate_semantic_tool_input,
+};
 use crate::generated_acpx_sidecar_contract::{
     classify_generated_acpx_tool_operation, GeneratedAcpxSidecarEventType,
 };
 use crate::local_runner::LocalRunnerError;
 use crate::provider_bridge::semantic_value_digest;
+use crate::stable_identity::{is_stable_id, SHORT_STABLE_ID_CHARS};
 
 const MAX_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
 const MAX_ID_CHARS: usize = 160;
@@ -40,6 +44,10 @@ pub enum AcpxTurnStatus {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AcpxEventPayload {
+    RichActivity {
+        event_type: String,
+        payload: Value,
+    },
     Runtime {
         kind: AcpxRuntimeEventKind,
         tool_operation: Option<&'static str>,
@@ -53,6 +61,7 @@ pub enum AcpxEventPayload {
         details: Value,
     },
     InputRequested {
+        tool_call_id: Option<String>,
         request_id: String,
         question_set: Value,
         origin: Option<Value>,
@@ -95,6 +104,7 @@ pub fn decode_acpx_event(
     }
 
     match event.event_type {
+        GeneratedAcpxSidecarEventType::RuntimeRichEvent => decode_rich_event(&event.payload),
         GeneratedAcpxSidecarEventType::RuntimeEvent => decode_runtime_event(&event.payload),
         GeneratedAcpxSidecarEventType::RuntimePermissionRequested => {
             Ok(AcpxEventPayload::PermissionRequested {
@@ -113,9 +123,24 @@ pub fn decode_acpx_event(
                 LocalRunnerError::invalid("ACPX input request omitted its question set")
             })?;
             validate_question_set(&question_set)?;
-            let question_set = sanitize_question_set(question_set);
+            let question_set = sanitize_question_set(question_set)?;
             let origin = optional_object(&event.payload, "origin", "input request origin")?;
+            // Native methods are interpreted by the provider adapter. This
+            // transport validates the opaque reference under the event scope.
+            let tool_call_id = if event.payload.get("toolCallId").is_some() {
+                let id =
+                    required_id_with_limit(&event.payload, "toolCallId", "input parent tool", 240)?;
+                if id.len() > 240 || sanitize_value(&json!(id)) != json!(id) {
+                    return Err(LocalRunnerError::invalid(
+                        "ACPX input parent tool identity is invalid",
+                    ));
+                }
+                Some(id)
+            } else {
+                None
+            };
             Ok(AcpxEventPayload::InputRequested {
+                tool_call_id,
                 request_id: required_id_with_limit(
                     &event.payload,
                     "requestId",
@@ -138,7 +163,7 @@ pub fn decode_acpx_event(
             // the event feed. Use the same declared-prose policy as native
             // semantic_tool.input before any generic diagnostic scrub can
             // irreversibly change the task's requirements.
-            let safe_input = sanitize_semantic_tool_input(&operation_id, &input)
+            let safe_input = validate_semantic_tool_input(&operation_id, &input)
                 .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
             Ok(AcpxEventPayload::ToolCalled {
                 call_id: required_id(&event.payload, "callId", "tool call")?,
@@ -192,9 +217,173 @@ pub fn decode_acpx_event(
     }
 }
 
-fn sanitize_question_set(mut value: Value) -> Value {
+// This boundary accepts display activity only. Terminal outcomes, tool dispatch,
+// runtime requests and source references retain their separate authority paths.
+fn rich_event_schema(event_type: &str) -> Option<&'static str> {
+    Some(match event_type {
+        "plan.updated" => "plan",
+        "tool.execution.started" | "tool.execution.progressed" | "tool.execution.completed" => {
+            "toolExecution"
+        }
+        "research.started" | "research.progressed" | "research.completed" => "research",
+        "delegation.started" | "delegation.updated" | "delegation.completed" => "delegation",
+        "model.route.changed" => "modelRoute",
+        "model.verification.updated" => "modelVerification",
+        "context.compacted" => "contextCompacted",
+        "artifact.viewed" => "artifactViewed",
+        "artifact.generated" => "artifactGenerated",
+        "review.mode.changed" => "reviewMode",
+        "hook.started" | "hook.completed" => "hook",
+        "memory.citation.referenced" => "memoryCitation",
+        "safety.review.started" | "safety.review.completed" => "safetyReview",
+        "terminal.input.sent" => "terminalInput",
+        "wait.started" | "wait.completed" => "wait",
+        "provider.notice.recorded" => "providerNotice",
+        _ => return None,
+    })
+}
+
+fn rich_event_validators(
+) -> Result<&'static BTreeMap<String, jsonschema::Validator>, LocalRunnerError> {
+    static VALIDATORS: OnceLock<Result<BTreeMap<String, jsonschema::Validator>, String>> =
+        OnceLock::new();
+    VALIDATORS.get_or_init(|| {
+        let schema: Value = serde_json::from_str(include_str!("../../../../protocol/schemas/provider-event.schema.json"))
+            .map_err(|_| "embedded provider-event schema is invalid".to_owned())?;
+        fn internal_refs(value: &Value) -> bool {
+            match value {
+                Value::Object(object) => object.iter().all(|(key, value)| {
+                    (key != "$ref" || value.as_str().is_some_and(|reference| reference.starts_with("#/"))) && internal_refs(value)
+                }),
+                Value::Array(values) => values.iter().all(internal_refs),
+                _ => true,
+            }
+        }
+        if !internal_refs(&schema) { return Err("provider-event schema may use only internal references".to_owned()); }
+        let definitions = schema.get("$defs").and_then(Value::as_object).ok_or_else(|| "provider-event schema has no definitions".to_owned())?;
+        let mut validators = BTreeMap::new();
+        for name in ["plan", "toolExecution", "research", "delegation", "modelRoute", "modelVerification", "contextCompacted", "artifactViewed", "artifactGenerated", "reviewMode", "hook", "memoryCitation", "safetyReview", "terminalInput", "wait", "providerNotice"] {
+            if !definitions.contains_key(name) { return Err("provider-event schema is missing an admitted definition".to_owned()); }
+            let selected = serde_json::json!({"$schema":"https://json-schema.org/draft/2020-12/schema", "$ref":format!("#/$defs/{name}"), "$defs":definitions});
+            let validator = jsonschema::validator_for(&selected).map_err(|_| "embedded provider-event schema cannot compile".to_owned())?;
+            validators.insert(name.to_owned(), validator);
+        }
+        Ok(validators)
+    }).as_ref().map_err(|message| LocalRunnerError::invalid(message.clone()))
+}
+
+fn decode_rich_event(value: &Value) -> Result<AcpxEventPayload, LocalRunnerError> {
+    let wrapper = value
+        .as_object()
+        .ok_or_else(|| LocalRunnerError::invalid("ACPX rich event must be an object"))?;
+    if wrapper
+        .keys()
+        .any(|key| !matches!(key.as_str(), "eventType" | "itemId" | "payload"))
+    {
+        return Err(LocalRunnerError::invalid(
+            "ACPX rich event cannot supply source references or authority fields",
+        ));
+    }
+    let item_id = wrapper
+        .get("itemId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| LocalRunnerError::invalid("ACPX rich event omitted its display identity"))?;
+    if !is_stable_id(item_id, SHORT_STABLE_ID_CHARS) {
+        return Err(LocalRunnerError::invalid(
+            "ACPX rich event display identity is invalid",
+        ));
+    }
+    let event_type = wrapper
+        .get("eventType")
+        .and_then(Value::as_str)
+        .ok_or_else(|| LocalRunnerError::invalid("ACPX rich event omitted its type"))?;
+    let schema = rich_event_schema(event_type).ok_or_else(|| {
+        LocalRunnerError::invalid("ACPX rich event type is not admitted display activity")
+    })?;
+    let payload = wrapper
+        .get("payload")
+        .ok_or_else(|| LocalRunnerError::invalid("ACPX rich event omitted its payload"))?;
+    let validators = rich_event_validators()?;
+    let validator = validators
+        .get(schema)
+        .ok_or_else(|| LocalRunnerError::invalid("ACPX rich event schema is unavailable"))?;
+    if !validator.is_valid(payload) {
+        return Err(LocalRunnerError::invalid(
+            "ACPX rich event failed its exact provider-event schema",
+        ));
+    }
+    if event_type == "artifact.generated" && payload.get("registered") != Some(&Value::Bool(false))
+    {
+        return Err(LocalRunnerError::invalid(
+            "ACPX display activity cannot register an artifact",
+        ));
+    }
+    if event_type == "plan.updated"
+        && (payload.get("syncStatus").and_then(Value::as_str) != Some("not_applicable")
+            || payload
+                .get("documentRevision")
+                .is_some_and(|revision| !revision.is_null()))
+    {
+        return Err(LocalRunnerError::invalid(
+            "ACPX display activity cannot synchronize a durable plan",
+        ));
+    }
+    for field in ["reference", "target"] {
+        if payload
+            .get(field)
+            .and_then(Value::as_str)
+            .is_some_and(|path| {
+                path.contains('\\') || path.contains(':') || path.chars().any(char::is_control)
+            })
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX activity reference must be a workspace-relative path",
+            ));
+        }
+    }
+    fn sanitize_display(value: &Value) -> Value {
+        match value {
+            Value::String(text) => Value::String(redact_sensitive_text_values(text)),
+            Value::Array(values) => Value::Array(values.iter().map(sanitize_display).collect()),
+            Value::Object(object) => Value::Object(
+                object
+                    .iter()
+                    .map(|(key, value)| (key.clone(), sanitize_display(value)))
+                    .collect(),
+            ),
+            value => value.clone(),
+        }
+    }
+    let payload = sanitize_display(payload);
+    if !validator.is_valid(&payload) {
+        return Err(LocalRunnerError::invalid(
+            "ACPX rich event redaction exceeded its schema bounds",
+        ));
+    }
+    Ok(AcpxEventPayload::RichActivity {
+        event_type: event_type.to_owned(),
+        payload,
+    })
+}
+
+// Durable storage uses this same exact schema gate before lifting diagnostic
+// preview limits. This does not admit an event or grant mutation authority.
+pub(crate) fn has_bounded_rich_display_shape(event_type: &str, payload: &Value) -> bool {
+    let Some(schema) = rich_event_schema(event_type) else {
+        return false;
+    };
+    serde_json::to_vec(payload).is_ok_and(|bytes| bytes.len() <= MAX_EVENT_PAYLOAD_BYTES)
+        && rich_event_validators().is_ok_and(|validators| {
+            validators
+                .get(schema)
+                .is_some_and(|validator| validator.is_valid(payload))
+        })
+}
+
+fn sanitize_question_set(mut value: Value) -> Result<Value, LocalRunnerError> {
+    let original = value.clone();
     let Some(question_set) = value.as_object_mut() else {
-        return value;
+        return Ok(value);
     };
     redact_object_text(question_set, &["title", "description", "submitLabel"]);
     if let Some(questions) = question_set
@@ -223,7 +412,17 @@ fn sanitize_question_set(mut value: Value) -> Value {
             }
         }
     }
-    value
+    if value != original {
+        let description = value
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        value["description"] = Value::String(format!(
+            "Sensitive values were redacted from this request.\n\n{description}"
+        ));
+    }
+    validate_question_set(&value)?;
+    Ok(value)
 }
 
 fn redact_object_text(object: &mut serde_json::Map<String, Value>, keys: &[&str]) {
@@ -231,7 +430,7 @@ fn redact_object_text(object: &mut serde_json::Map<String, Value>, keys: &[&str]
         let Some(text) = object.get(*key).and_then(Value::as_str) else {
             continue;
         };
-        let redacted = redact_text(text);
+        let redacted = redact_sensitive_text_values(text);
         object.insert((*key).to_owned(), Value::String(redacted));
     }
 }
@@ -397,7 +596,16 @@ fn validate_plan(payload: &Value) -> Result<(), LocalRunnerError> {
     Ok(())
 }
 
-fn validate_question_set(value: &Value) -> Result<(), LocalRunnerError> {
+pub(crate) fn validate_question_set(value: &Value) -> Result<(), LocalRunnerError> {
+    if serde_json::to_vec(value)
+        .map_err(|_| LocalRunnerError::invalid("ACPX question set is invalid"))?
+        .len()
+        > 196 * 1024
+    {
+        return Err(LocalRunnerError::invalid(
+            "ACPX question set exceeds its 196 KiB durable byte bound",
+        ));
+    }
     let schema: Value = serde_json::from_str(include_str!(
         "../../../../protocol/schemas/question-set.schema.json"
     ))

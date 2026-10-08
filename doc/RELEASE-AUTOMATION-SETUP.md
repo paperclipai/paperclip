@@ -347,10 +347,21 @@ readiness can succeed. A failed lane does not cancel the other lane.
 Both lanes restore Cargo dependencies with the pinned Rust Cache action. The
 compiler comes from the Runner package's `rust-toolchain.toml` before the action
 computes its key. Compiler and Cargo metadata changes select a new cache. The
-existing `release-runner-v1` shared key avoids separate copies for these lanes.
+`release-runner-v2` shared key avoids separate copies for these lanes.
 Only the Rust lane saves this cache. After verification it also runs `build:rust`
 to warm the debug dependencies used by the protocol lane; its own tests already
 warm release dependencies. The cache writer is shorter than the protocol lane.
+
+GitHub matches a cache entry on its key and on a version hash of the absolute
+paths in the entry. The master writer runs on the RunsOn fleet, where the
+checkout is `/home/runner/_work/paperclip/paperclip`. The trusted PR workflow
+restores the same entry read-only on GitHub-hosted runners, where the checkout
+is `/home/runner/work/paperclip/paperclip`. A `Pin the Runner Rust workspace
+path` step in both workflows links `$HOME/paperclip-runner-rust` to the Runner
+crate and passes that path to the cache action, so both layouts hash the same
+paths and the PR lanes can restore master's entry. The guard tests under
+`.github/scripts/tests/` require this step, with identical text, before every
+Rust cache step in both workflows.
 
 Workspace crates and installed Cargo binaries are excluded. Every run rebuilds
 workspace code and runs all assigned checks, including on a cache hit. Only an

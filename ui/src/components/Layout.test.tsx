@@ -117,6 +117,12 @@ vi.mock("./PropertiesPanel", () => ({
   PropertiesPanel: () => null,
 }));
 
+// Overlay account/company lifecycle has its own integration test. These tests
+// exercise route navigation with intentionally minimal context providers.
+vi.mock("./PluginAppShellOverlays", () => ({
+  PluginAppShellOverlays: () => null,
+}));
+
 vi.mock("./CommandPalette", () => ({
   CommandPalette: () => null,
 }));
@@ -312,7 +318,7 @@ describe("Layout", () => {
       version: "1.2.3",
     });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: false,
+      censorUsernameInLogs: false,
     });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableApps: true,

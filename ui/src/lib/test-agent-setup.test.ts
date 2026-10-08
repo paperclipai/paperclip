@@ -27,6 +27,12 @@ const ready = {
   checks: [{ code: "runtime", level: "info", message: "Ready" }],
 };
 beforeEach(() => testEnvironment.mockReset());
+it("does not launch an ambient provider hello test for a pool preview", async () => {
+  testEnvironment.mockResolvedValue({ ...ready, status: "warn", checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Run a task" }] });
+  await testAgentSetup({ ...input, aiConnection: { mode: "router", connectionId: "pool-id" } });
+  expect(testEnvironment).toHaveBeenCalledTimes(1);
+  expect(testEnvironment.mock.calls[0]?.[2].aiConnection).toEqual({ mode: "router", connectionId: "pool-id" });
+});
 it("does not report a connection when runtime readiness passes but provider authentication fails", async () => {
   testEnvironment
     .mockResolvedValueOnce(ready)
@@ -58,6 +64,19 @@ it("does not report a connection when runtime readiness passes but provider auth
     "runtime",
     "claude_hello_probe_failed",
   ]);
+});
+it("probes native Grok credentials with the pinned prerequisite in the selected sandbox", async () => {
+  testEnvironment.mockResolvedValueOnce(ready).mockResolvedValueOnce({ ...ready,
+    checks: [{ code: "grok_hello_probe_passed", level: "info", message: "Hello" }],
+  });
+  const result = await testAgentSetup({ ...input, providerAdapter: "grok_local",
+    adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" },
+  });
+  expect(testEnvironment).toHaveBeenLastCalledWith("company-1", "grok_local", {
+    agentId: "agent-1", environmentId: "sandbox-1",
+    adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", engine: "cli", command: "/opt/paperclip/providers/grok/1.0.13/grok" },
+  });
+  expect(result.checks.some((check) => check.code === "grok_hello_probe_passed")).toBe(true);
 });
 it("does not repeat a completed model probe", async () => {
   testEnvironment.mockResolvedValue({

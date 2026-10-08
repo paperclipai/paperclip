@@ -1,4 +1,5 @@
 import path from "node:path";
+import { chatNeedsApiTools, isManagedHiringCase } from "./chat-cases.js";
 import { CREDENTIAL_NAMES } from "./types.js";
 import type { MatrixExecution } from "./types.js";
 
@@ -24,7 +25,7 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_PREFIX",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
-const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA)(?:_|$)/;
+const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
 
 export function runnerE2EServerControlPaths(temporaryRoot: string) {
   const controlDirectory = path.join(temporaryRoot, "control");
@@ -104,10 +105,33 @@ export function buildRunnerE2EProcessEnvironment(
   executions: readonly MatrixExecution[],
 ): NodeJS.ProcessEnv {
   const result = { ...source };
+  // Announcements are unrelated to the scenarios and obscure screenshot evidence.
+  result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = "false";
   delete result.OPENCODE_ALLOW_ALL_MODELS;
-  // Hiring needs the opt-in native API surface. Scope this to the explicit
-  // manual hiring story; production and other suites retain their defaults.
-  if (executions.some((e) => e.suite.id === "everyday-workflows" && e.task.id === "hire-reuse")) {
+  // Discard ambient admission. Only explicit candidate cells authorize the
+  // exact model in their isolated server; credentials still use company secrets.
+  delete result.PAPERCLIP_RUNNER_ACPX_QUALIFICATION;
+  const candidates = new Map<string, string>();
+  for (const execution of executions) {
+    const agent = execution.profile.qualificationCandidate;
+    if (!agent || agent === "cursor") continue;
+    const admittedSuite = execution.suite.id === "extended-harnesses"
+      || execution.suite.id === "rich-acp-warm-continuity";
+    if (!admittedSuite || !execution.suite.manualOnly) {
+      throw new Error("Candidate qualification requires an explicit provider qualification suite");
+    }
+    const prior = candidates.get(agent);
+    if (prior !== undefined && prior !== execution.profile.model) throw new Error("Conflicting candidate models");
+    candidates.set(agent, execution.profile.model);
+  }
+  if (candidates.size > 0) {
+    result.PAPERCLIP_RUNNER_ACPX_QUALIFICATION = JSON.stringify(
+      [...candidates].map(([agent, model]) => ({ agent, model })),
+    );
+  }
+  // These stories explicitly require the native API surface. Other suites
+  // retain the server default or any supplied operator restriction.
+  if (executions.some((e) => isManagedHiringCase(e.suite.id, e.task.id) || chatNeedsApiTools(e.suite.id, e.task.id))) {
     result.PAPERCLIP_RUNNER_API_TOOLS_ENABLED = "true";
   }
   if (
@@ -126,7 +150,8 @@ export function buildRunnerE2EProcessEnvironment(
 /**
  * Build the environment inherited by the Paperclip server. Paid credentials
  * deliberately stay in the launcher/Playwright process and cross the server
- * boundary only once, in the encrypted company-secrets API request.
+ * boundary through encrypted company secrets. Explicit subscription fixtures
+ * stage their login in the disposable company's private credential home.
  */
 export function buildPaperclipServerEnvironment(
   source: NodeJS.ProcessEnv,

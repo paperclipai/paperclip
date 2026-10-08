@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { eq, ne } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agentRuntimeState,
   agentTaskSessions,
@@ -112,7 +113,6 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
   }, 20_000);
 
   afterEach(async () => {
-    adapterExecute.mockClear();
     // Await every in-flight background heartbeat run to quiescence before the
     // deletes below. A wakeup claims a run and dispatches its execution
     // fire-and-forget, and that run can dispatch a follow-up wakeup, so a run or
@@ -121,6 +121,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     // wakeup that is still before run registration, which a plain run table
     // status poll cannot see.
     await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+    adapterExecute.mockClear();
     while (tempRoots.length > 0) {
       const root = tempRoots.pop();
       if (root) await rm(root, { recursive: true, force: true }).catch(() => undefined);
@@ -136,6 +137,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       await db.delete(activityLog);
       await db.delete(heartbeatRunEvents);
       try {
+        await db.delete(costEvents);
         await db.delete(heartbeatRuns);
         break;
       } catch (error) {
@@ -535,7 +537,14 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     });
 
     const heartbeat = heartbeatService(db);
-    adapterExecute.mockImplementationOnce(async () => ({
+    adapterExecute.mockImplementationOnce(async () => {
+      // Planning is awaiting a real confirmation, not a prose-only promise.
+      await db.insert(issueThreadInteractions).values({
+        companyId, issueId: sourceIssueId, kind: "request_confirmation", status: "pending",
+        requestedResolverPolicy: "anyone", effectiveResolverPolicy: "anyone",
+        payload: { version: 1, prompt: "Review the source plan" },
+      });
+      return {
       exitCode: 0,
       signal: null,
       timedOut: false,
@@ -544,7 +553,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       summary: "Realized the planning source workspace.",
       provider: "test",
       model: "test-model",
-    }));
+    }; });
 
     const sourceRun = await heartbeat.wakeup(agentId, {
       source: "automation",
@@ -582,6 +591,8 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     await runGit(repoRoot, ["push", "origin", "HEAD:master"]);
     await runGit(repoRoot, ["fetch", "origin", "master"]);
 
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, sourceIssueId));
     const acceptedPlanRevisionId = await seedAcceptedPlanAcceptance({
       companyId,
       issueId: sourceIssueId,
@@ -999,7 +1010,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(adapterInput.context.paperclipTaskMarkdown).not.toContain("Create child issues from the approved plan only");
   }, 20_000);
 
-  it("preserves accepted-plan continuation resume state when the wake issue owns the in-flight claim", async () => {
+  it("preserves accepted-plan instructions but replaces a pre-identity session when the wake issue owns the in-flight claim", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -1129,7 +1140,8 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       runtime: { sessionId: string | null; sessionParams: Record<string, unknown> | null };
       context: Record<string, unknown>;
     };
-    expect(adapterInput.runtime.sessionId).toBe("accepted-plan-retry-session");
+    // The old process predates identity injection and must be replaced.
+    expect(adapterInput.runtime.sessionId).toBeNull();
     expect(adapterInput.context.acceptedPlanWakeRouting).toBeUndefined();
     expect(adapterInput.context.paperclipTaskMarkdown).toContain(
       "Implement the accepted plan on this issue when the work is small and cohesive.",

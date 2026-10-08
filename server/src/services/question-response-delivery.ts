@@ -82,7 +82,7 @@ export interface QuestionResponseDeliveryOutcome {
 
 export interface QuestionResponseDeliveryServiceOptions {
   heartbeat: Heartbeat;
-  /** Optional native steering seam. Direct adapters use the durable wake fallback. */
+  /** Kept for caller compatibility. Answers never implicitly steer an active turn. */
   steer?: QuestionResponseSteer;
   /** Resolve the original in-flight native input request before considering a continuation run. */
   resolveNativeQuestion?: NativeQuestionResponseResolver;
@@ -90,18 +90,6 @@ export interface QuestionResponseDeliveryServiceOptions {
   /** Test-only lease timings. Production callers use the bounded defaults. */
   claimStaleMs?: number;
   claimRefreshMs?: number;
-}
-
-function readSteeringErrorCode(error: unknown): string {
-  if (
-    error &&
-    typeof error === "object" &&
-    "code" in error &&
-    typeof error.code === "string"
-  ) {
-    return error.code;
-  }
-  return "steering_rejected";
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -431,7 +419,6 @@ export function questionResponseDeliveryService(
   db: Db,
   options: QuestionResponseDeliveryServiceOptions,
 ) {
-  const steer = options.steer;
   const resolveNativeQuestion = options.resolveNativeQuestion;
   const now = options.now ?? (() => new Date());
   const claimStaleMs = Math.max(
@@ -1152,39 +1139,10 @@ export function questionResponseDeliveryService(
       }
     }
 
-    let steeringErrorCode: string | null = null;
-    if (
-      !externalChatBoundary &&
-      successorRunning?.runtimeMode === "native" &&
-      steer
-    ) {
-      try {
-        const acknowledgement = await withClaimLease(claimed, () =>
-          steer({
-            runId: successorRunning.id,
-            message: formatQuestionResponseSteeringMessage(envelope),
-            correlationId: claimed.correlationId,
-          }),
-        );
-        return recordTerminal({
-          delivery: claimed,
-          interaction,
-          status: "delivered",
-          mode: "steered",
-          targetRunId: successorRunning.id,
-          targetTurnId: acknowledgement.turnId,
-          adapter: successorRunning.driverKind ?? adapter,
-        });
-      } catch (error) {
-        if (error instanceof DeliveryClaimUnavailableError)
-          return terminalOutcome(interactionId);
-        steeringErrorCode = readSteeringErrorCode(error);
-      }
-    } else if (successorRunning) {
-      steeringErrorCode = externalChatBoundary
-        ? "steering_external_chat_context_incompatible"
-        : "steering_unsupported";
-    }
+    // An answer to an older question is new input, not implicit permission to
+    // steer another active turn. Only the queue's explicit Steer action delivers it.
+    const steeringErrorCode = successorRunning && externalChatBoundary
+      ? "steering_external_chat_context_incompatible" : null;
 
     const actor = actorForInteraction(interaction);
     // This is a new, migration-fenced namespace. The partial unique index on

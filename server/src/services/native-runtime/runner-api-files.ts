@@ -4,12 +4,17 @@ import { isAbsolute } from "node:path";
 
 /** Open a previously authorized canonical path without following raced symlinks. */
 export async function openRunnerApiWorkspaceFile(path: string): Promise<FileHandle> {
+  return openRunnerWorkspaceFile(path, constants.O_RDONLY);
+}
+
+/** Confined open for reads or writes; flags are server-selected, never provider input. */
+export async function openRunnerWorkspaceFile(path: string, flags: number, mode?: number): Promise<FileHandle> {
   if (!isAbsolute(path)) throw new Error("Workspace file must have a canonical absolute path");
   if (process.platform === "darwin") {
     // Darwin sys/fcntl.h: O_NOFOLLOW_ANY rejects symlinks at every component.
     // Node does not expose this flag in fs.constants. Unsupported kernels fail
     // closed instead of falling back to a pathname check followed by open.
-    return open(path, constants.O_RDONLY | constants.O_NONBLOCK | 0x20000000);
+    return open(path, flags | constants.O_NONBLOCK | 0x20000000, mode);
   }
   if (process.platform !== "linux") throw new Error("Workspace uploads require a platform with confined file opens; use an authorized artifact reference");
   const parts = path.split("/").filter(Boolean);
@@ -22,6 +27,6 @@ export async function openRunnerApiWorkspaceFile(path: string): Promise<FileHand
       await directory.close();
       directory = next;
     }
-    return await open(`/proc/self/fd/${directory.fd}/${parts.at(-1)}`, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+    return await open(`/proc/self/fd/${directory.fd}/${parts.at(-1)}`, flags | constants.O_NONBLOCK | constants.O_NOFOLLOW, mode);
   } finally { await directory.close(); }
 }

@@ -364,6 +364,37 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       .where(eq(nativeRunFinalizations.runId, input.fixture.runId));
   }
 
+  it.each([null, process.pid])("claims sandbox recovery without interpreting remote PID %s locally", async (remotePid) => {
+    const fixture = await seedRun(`remote-${remotePid ?? "warm"}`);
+    await fixture.db.update(heartbeatRuns).set({
+      processPid: remotePid,
+      processStartedAt: new Date("2020-01-01T00:00:00Z"),
+      runnerProfileJson: {
+        nativeWorkspaceSync: {
+          schema: "paperclip.native-workspace-sync/v1", state: "prepared",
+          descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
+          workspaceId: "workspace", leaseId: "lease", providerLeaseId: "sandbox",
+          remoteCwd: "/workspace",
+        },
+        sessionCheckpoint: {
+          identity: { companyId, agentId, issueId: fixture.issueId, runId: fixture.runId,
+            sessionId: fixture.native.normalizedSessionId },
+          providerSessionId: "provider-session",
+          process: { providerPid: process.pid },
+        },
+      },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "graceful", runIds: [fixture.runId] });
+    expect(claim).toMatchObject({ kind: "reattach_remote_runner", runId: fixture.runId,
+      providerAttempt: 0, remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } });
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator?.recoveryState).toBe("awaiting_runner_reattach");
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run?.status).toBe("running");
+    expect(run?.processPid).toBe(remotePid);
+  });
+
   realProcessIt("adopts one active runner across hot and hard controller restarts without duplicating steering", async () => {
     const fixture = await seedRun("LIVE");
     const stateDirectory = resolve(runtimeRoot, fixture.runId);
@@ -985,6 +1016,30 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     ).resolves.toEqual([
       { controllerGeneration: 5, providerAttempt: 0 },
     ]);
+  });
+
+  it.each([2, 3])("recovers a checkpointed restart interruption within provider budget %s", async (attempt) => {
+    const fixture = await seedRun(`INTERRUPTED-${attempt}`);
+    await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: { sessionCheckpoint: {
+      driverKind: "codex_app_server",
+      sessionId: fixture.native.normalizedSessionId,
+      identity: { companyId, issueId: fixture.issueId, runId: fixture.runId, agentId, sessionId: fixture.native.normalizedSessionId },
+      providerSessionId: "interrupted-provider",
+      activeTurnId: null,
+      semanticResult: null,
+      terminal: { runTerminalState: "failed", turnTerminalState: "failed" },
+      terminalTurns: [{ turnId: "interrupted-turn", fingerprint: JSON.stringify({
+        terminalState: "failed", result: null,
+        error: { code: "provider_turn_lost_on_restore", recoverable: true },
+      }) }],
+    } } }).where(eq(heartbeatRuns.id, fixture.runId));
+    await fixture.db.update(nativeRunFinalizations).set({ attempt }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const dispositions = await claimNativeRestartRecoveries({
+      db: fixture.db, controller: successor, restartKind: "hot", runIds: [fixture.runId],
+    });
+    expect(dispositions).toEqual([expect.objectContaining(attempt < 3
+      ? { kind: "resume_dead_runner", runId: fixture.runId, providerAttempt: attempt }
+      : { kind: "blocked", runId: fixture.runId, reason: "execution_recovery_budget_exhausted" })]);
   });
 
   it("terminalizes the recorded failed-checkpoint incident atomically instead of resuming it on upgrade", async () => {

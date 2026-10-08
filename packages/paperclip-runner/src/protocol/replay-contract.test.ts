@@ -281,7 +281,7 @@ describe("PRP v1 JSON Schema contract", () => {
   it("fails closed on unsupported nested required schema versions", async () => {
     const fixture = await readFixture();
     const events = fixture.events as Array<Record<string, unknown>>;
-    events[0]!.schemaVersion = 3;
+    events[0]!.schemaVersion = PRP_PROTOCOL_VERSION + 1;
     expect(parsePrpFixtureText(JSON.stringify(fixture))).toMatchObject({
       ok: false,
       issues: [

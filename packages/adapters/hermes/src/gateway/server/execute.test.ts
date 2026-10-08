@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
 
@@ -276,6 +277,57 @@ describe("execute", () => {
     expect(runBodies[1]!.input).not.toContain(description);
   });
 
+  it.each([false, true])("delivers the shared assignment and ordered comments at the HTTP boundary (resumed=%s)", async (resumed) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "completed", output: "done" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      payloadTemplate: { input: "Custom gateway instruction." },
+    });
+    const promptContext = createPromptContextFixture();
+    ctx.context = { ...promptContext, conversationMode: true };
+    if (resumed) ctx.runtime.sessionId = "prior-session";
+
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const runCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const input = JSON.parse(String(runCall?.[1]?.body)).input as string;
+    expect(input).toContain("Custom gateway instruction.");
+    expect(input.indexOf("Append the same ledger entry.")).toBeGreaterThanOrEqual(0);
+    expect(input.indexOf("Append the same ledger entry.")).toBeLessThan(input.indexOf("Change the final scope to the launch checklist."));
+    expect(input.split("Append the same ledger entry.")).toHaveLength(3);
+    expect(input).not.toContain("Structured wake payload JSON:");
+    expect(input.split("Keep this deliberate repetition. Keep this deliberate repetition.")).toHaveLength(2);
+    const continuationHeading = "## Current request and continuation context";
+    const continuationStart = input.indexOf(continuationHeading);
+    const fencedStart = input.indexOf("```text\n", continuationStart);
+    const fencedEnd = input.indexOf("\n```", fencedStart + "```text\n".length);
+    expect(continuationStart).toBeGreaterThanOrEqual(0);
+    expect(fencedStart).toBeGreaterThan(continuationStart);
+    expect(fencedEnd).toBeGreaterThan(fencedStart);
+    const continuation = JSON.parse(input.slice(
+      fencedStart + "```text\n".length,
+      fencedEnd,
+    )) as Record<string, unknown>;
+    expect(continuation.objectiveSource).toEqual(promptContext.executionContinuation.objectiveSource);
+    if (resumed) {
+      expect(input).toContain("## Compact assignment");
+      expect(continuation.objective).toBe("Keep this deliberate repetition. Keep this deliberate repetition.");
+    } else {
+      expect(continuation).not.toHaveProperty("objective");
+    }
+  });
+
   it("routes a bare Hermes dashboard URL on port 9119 through the API prefix", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -319,6 +371,45 @@ describe("execute", () => {
         "http://127.0.0.1:9119/api/v1/runs/run-hermes-1/events",
       ]),
     );
+  });
+
+  it("renders current wake comments once when the gateway task brief owns them", async () => {
+    const commentBody = "Keep this current comment exactly once.";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" });
+    ctx.context = {
+      issueId: "issue-1",
+      paperclipTaskMarkdown: [
+        "Paperclip task context:",
+        '- Issue: "PAP-1"',
+      ].join("\n"),
+      paperclipTurnContext: {
+        version: 1,
+        assignment: { owner: "task_markdown" },
+        events: { owner: "wake_prompt", comments: [{ id: "comment-1", revision: "rev-1" }] },
+      },
+      paperclipWake: {
+        reason: "issue_commented",
+        issue: { id: "issue-1", identifier: "PAP-1", title: "Do the thing", status: "in_progress" },
+        commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+        comments: [{ id: "comment-1", body: commentBody }],
+        fallbackFetchNeeded: false,
+      },
+    };
+
+    await execute(ctx);
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const runCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const prompt = JSON.parse(String(runCall?.[1]?.body)).input as string;
+    expect(prompt.split(commentBody)).toHaveLength(2);
   });
 
   it("routes the default Hermes dashboard chat URL on port 9119 through the API prefix", async () => {
@@ -514,6 +605,72 @@ describe("execute", () => {
     expect(result.errorCode).toBe("hermes_gateway_connect_failed");
     expect(result.errorMessage).toContain("ENOTFOUND");
     expect(result.errorMessage).toContain("host.docker.internal");
+  });
+
+  it.each([
+    ["http://127.0.0.1:8642", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642 }],
+    ["http://[::1]:8642", { code: "ECONNREFUSED", syscall: "connect", address: "::1", port: 8642 }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", errors: [
+      { code: "ECONNREFUSED", syscall: "connect", address: "::1", port: 8642 },
+      { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642 },
+    ] }],
+    ["https://localhost", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 443 }],
+    ["http://localhost", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 80 }],
+  ])("explains the server-side loopback gateway at %s without claiming non-dispatch", async (apiBaseUrl, cause) => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      throw Object.assign(new Error("fetch failed"), { cause });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl, apiKey: "gateway-private-key" });
+    ctx.onDispatch = vi.fn();
+    const result = await execute(ctx);
+
+    expect(result.errorMessage).toContain("refers to the Paperclip server, not an agent sandbox");
+    expect(result.errorMessage).toContain("adapterConfig.apiBaseUrl");
+    expect(result.errorMessage).toContain("hermes_local");
+    expect(result.errorMessage).not.toContain("gateway-private-key");
+    expect(result.errorMeta).toEqual({ category: "gateway_loopback_connection_refused", phase: "create_run" });
+    expect(result).toMatchObject({ exitCode: 1, signal: null, timedOut: false,
+      errorCode: "hermes_gateway_connect_failed", errorFamily: "transient_upstream", retryNotBefore: null });
+    expect(result.executionRecovery).toBeUndefined();
+    expect(result.resultJson).toBeUndefined();
+    expect(ctx.onDispatch).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]?.[1]?.redirect).toBeUndefined();
+  });
+
+  it.each([
+    ["https://gateway.example.test:8642", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642 }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", syscall: "connect", address: "192.0.2.1", port: 8642 }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 9000 }],
+    ["http://127.0.0.2:8642", { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642 }],
+    ["http://localhost:8642", { code: "ETIMEDOUT", syscall: "connect", address: "127.0.0.1", port: 8642 }],
+    ["http://localhost:8642", { code: "EHOSTUNREACH", syscall: "connect", address: "127.0.0.1", port: 8642 }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", address: "127.0.0.1", port: 8642 }],
+    ["http://localhost:8642", { message: "ECONNREFUSED connect 127.0.0.1:8642" }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", errors: [] }],
+    ["http://localhost:8642", { code: "ECONNREFUSED", errors: [
+      { code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642 },
+      { code: "ETIMEDOUT", syscall: "connect", address: "::1", port: 8642 },
+    ] }],
+  ])("keeps ambiguous or nonmatching transport errors generic at %s", async (apiBaseUrl, cause) => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw Object.assign(new Error("fetch failed"), { cause }); }));
+    const result = await execute(makeCtx({ apiBaseUrl, apiKey: "secret-key" }));
+    expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+    expect(result.errorMessage).not.toContain("refers to the Paperclip server");
+    expect(result.errorMeta).toEqual({});
+    expect(result.executionRecovery).toBeUndefined();
+  });
+
+  it("does not infer loopback refusal from an HTTP provider response", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      code: "ECONNREFUSED", syscall: "connect", address: "127.0.0.1", port: 8642,
+    }), { status: 503 })));
+    const result = await execute(makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key" }));
+    expect(result.errorCode).toBe("hermes_gateway_upstream_error");
+    expect(result.errorMeta?.category).toBeUndefined();
+    expect(result.errorMessage).not.toContain("refers to the Paperclip server");
+    expect(result.executionRecovery).toBeUndefined();
   });
 
   it("redacts echoed auth material from HTTP error payloads", async () => {

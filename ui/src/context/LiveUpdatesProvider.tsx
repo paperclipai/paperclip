@@ -49,10 +49,14 @@ import { extractCompanyPrefixFromPath, toCompanyRelativePath } from "../lib/comp
 import { useLocation } from "../lib/router";
 import { agentRouteRef } from "../lib/utils";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
+import { tryCreateWebSocket } from "../lib/websocket";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
 const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
+const RUN_TOAST_MAX_AGE_MS = 5 * 60_000;
+const MAX_OBSERVED_RUN_OUTCOMES = 2000;
+const DISCONNECTED_POLL_INTERVAL_MS = 15_000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
 const TERMINAL_RUN_STATUSES = new Set([
@@ -529,6 +533,7 @@ function invalidateVisibleIssueRunQueries(
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProducts(issueRef) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.workProductPullRequestRefresh(issueRef) });
       queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", issueRef] });
     }
   }
@@ -1211,7 +1216,7 @@ function invalidateHeartbeatQueries(
   queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+  queryClient.invalidateQueries({ queryKey: ["costs", companyId] });
   queryClient.invalidateQueries({
     queryKey: queryKeys.sidebarBadges(companyId),
   });
@@ -1275,7 +1280,11 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
   }
 
-  if (action?.startsWith("resource_membership.")) {
+  if (action?.startsWith("primary_agent.") || action?.startsWith("agent.") || action?.startsWith("resource_membership.")) {
+    queryClient.invalidateQueries({ queryKey: ["primary-agent", companyId] });
+  }
+
+  if (action?.startsWith("resource_membership.") || action?.startsWith("primary_agent.")) {
     const targetUserId = readString(details?.userId);
     if (!targetUserId || targetUserId === currentActor.userId) {
       queryClient.invalidateQueries({
@@ -1285,6 +1294,11 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
+    const knownChat = entityId && queryClient.getQueryData<Issue[]>(chatListKey)?.some(chat => chat.id === entityId);
+    if (knownChat || action === "issue.conversation_opened" && ownActorActivity) {
+      queryClient.invalidateQueries({ queryKey: chatListKey });
+    }
     if (action === "issue.tree_hold_created" || action === "issue.tree_hold_released" || action === "issue.updated") {
       // An ancestor hold or reparenting changes descendants' effective pause.
       queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
@@ -1448,6 +1462,14 @@ function invalidateActivityQueries(
     return;
   }
 
+  if (entityType === "company_skill") {
+    const sourceIssueId = readString((payload.details as Record<string, unknown> | undefined)?.sourceIssueId);
+    if (sourceIssueId) queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(sourceIssueId) });
+    if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(companyId, entityId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(companyId) });
+    return;
+  }
+
   if (entityType === "goal") {
     queryClient.invalidateQueries({
       queryKey: queryKeys.goals.list(companyId),
@@ -1474,10 +1496,11 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "cost_event") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
+    queryClient.invalidateQueries({ queryKey: ["costs", companyId] });
     queryClient.invalidateQueries({
-      queryKey: queryKeys.usageByProvider(companyId),
+      queryKey: ["usage-by-provider", companyId],
     });
+    queryClient.invalidateQueries({ queryKey: ["usage-by-biller", companyId] });
     queryClient.invalidateQueries({
       queryKey: queryKeys.usageWindowSpend(companyId),
     });
@@ -1577,6 +1600,29 @@ function invalidateActivityQueries(
 interface ToastGate {
   cooldownHits: Map<string, number[]>;
   suppressUntil: number;
+  observedRunOutcomes: Set<string>;
+}
+
+function observeRunOutcome(gate: ToastGate, event: LiveEvent): boolean {
+  const payload = event.payload ?? {};
+  const runId = readString(payload.runId);
+  const status = readString(payload.status);
+  if (!runId || !status || !TERMINAL_RUN_STATUSES.has(status)) return false;
+  const key = `${event.companyId}:${runId}:${status}`;
+  const observed = gate.observedRunOutcomes.has(key);
+  // Refresh insertion order so repeated deliveries stay remembered even in a
+  // busy company. Remember suppressed outcomes too (visible task/reconnect).
+  gate.observedRunOutcomes.delete(key);
+  gate.observedRunOutcomes.add(key);
+  if (gate.observedRunOutcomes.size > MAX_OBSERVED_RUN_OUTCOMES) {
+    gate.observedRunOutcomes.delete(gate.observedRunOutcomes.values().next().value!);
+  }
+  // Use the two server timestamps: delivery time is not failure time. This
+  // also keeps historical failures quiet after a reload, without client clock
+  // skew hiding fresh failures. Missing timestamps retain legacy behavior.
+  const finishedAt = Date.parse(readString(payload.finishedAt) ?? "");
+  const deliveredAt = Date.parse(event.createdAt);
+  return observed || deliveredAt - finishedAt > RUN_TOAST_MAX_AGE_MS;
 }
 
 function shouldSuppressToast(gate: ToastGate, category: string): boolean {
@@ -1626,7 +1672,8 @@ function handleLiveEvent(
   // Resolve membership before terminal lifecycle patches remove live-run rows.
   const suppressRunToast =
     event.type === "heartbeat.run.status" &&
-    shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload);
+    (observeRunOutcome(gate, event) ||
+      shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload));
   const liveStatusPatch = readRunLiveStatusPatchFromPayload(
     payload,
     event.createdAt,
@@ -1827,6 +1874,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const gateRef = useRef<ToastGate>({
     cooldownHits: new Map(),
     suppressUntil: 0,
+    observedRunOutcomes: new Set(),
   });
   const pathnameRef = useRef(location.pathname);
   const { data: session, status: sessionStatus } = useQuery({
@@ -1895,6 +1943,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     let closed = false;
     let reconnectAttempt = 0;
     let reconnectTimer: number | null = null;
+    let pollTimer: number | null = null;
     let socket: WebSocket | null = null;
 
     const clearReconnect = () => {
@@ -1904,8 +1953,23 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       }
     };
 
+    const stopPolling = () => {
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    };
+
+    const startPolling = () => {
+      if (closed || pollTimer !== null) return;
+      // Visible queries still need fresh state when realtime is unavailable.
+      pollTimer = window.setInterval(() => {
+        void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
+      }, DISCONNECTED_POLL_INTERVAL_MS);
+    };
+
     const scheduleReconnect = () => {
-      if (closed) return;
+      if (closed || reconnectTimer !== null) return;
       reconnectAttempt += 1;
       const delayMs = Math.min(
         15000,
@@ -1922,7 +1986,12 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       const url = buildSameOriginWebSocketUrl(
         `/api/companies/${encodeURIComponent(liveCompanyId)}/events/ws`,
       );
-      const nextSocket = new WebSocket(url);
+      const nextSocket = tryCreateWebSocket(url);
+      if (!nextSocket) {
+        startPolling();
+        scheduleReconnect();
+        return;
+      }
       socket = nextSocket;
 
       nextSocket.onopen = () => {
@@ -1930,14 +1999,13 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           closeSocketQuietly(nextSocket, "stale_connection");
           return;
         }
+        stopPolling();
         if (reconnectAttempt > 0) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
-          // Reconcile after a gap: events missed while disconnected can't be
-          // replayed yet, so refetch the event-sourced live-runs list once.
-          queryClient.invalidateQueries({
-            queryKey: queryKeys.liveRuns(liveCompanyId),
-          });
         }
+        // The initial page queries can finish before the first subscription,
+        // too. Reconcile that gap as well as reconnects: events are not replayed.
+        void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
         reconnectAttempt = 0;
       };
 
@@ -1981,6 +2049,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         if (socket !== nextSocket) return;
         socket = null;
         if (closed) return;
+        startPolling();
         scheduleReconnect();
       };
     };
@@ -1994,6 +2063,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       closed = true;
       window.clearTimeout(connectTimer);
       clearReconnect();
+      stopPolling();
       const activeSocket = socket;
       socket = null;
       closeSocketQuietly(activeSocket, "provider_unmount");

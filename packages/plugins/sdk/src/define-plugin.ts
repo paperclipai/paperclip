@@ -1,3 +1,4 @@
+import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
  * `definePlugin` — the top-level helper for authoring a Paperclip plugin.
  *
@@ -345,6 +346,9 @@ export interface PluginDefinition {
    *
    * Requires `external.objects.read`.
    */
+  /** Propose a member from host-authorized candidates. Requires ai.connections.route. */
+  onRouteAiConnection?(params: AiConnectionRouterRequest): Promise<AiConnectionRouterResult>;
+
   onResolveExternalObject?(
     params: ResolveExternalObjectParams,
   ): Promise<PluginExternalObjectResolveResult>;
@@ -386,6 +390,13 @@ export interface PluginDefinition {
   onEnvironmentReleaseLease?(
     params: PluginEnvironmentReleaseLeaseParams,
   ): Promise<PluginEnvironmentTerminationReceipt | void>;
+
+  /** Stop this exact allocation and retain all files, regardless of release
+   * policy. Throw if stop cannot be confirmed; never destroy as a fallback.
+   * Separate worker discovery lets the host safely defer older providers. */
+  onEnvironmentStopLease?(
+    params: PluginEnvironmentReleaseLeaseParams,
+  ): Promise<PluginEnvironmentTerminationReceipt>;
 
   /** Called when the host needs to force-destroy provider state. */
   onEnvironmentDestroyLease?(

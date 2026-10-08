@@ -91,3 +91,8 @@ describe("wake context", () => {
     },
   );
 });
+
+ it("preserves non-assignee pool wait authority", () => {
+   expect(isNonAssigneeWorkspaceBusyRetry("ai_connection_pool_wait", { aiConnectionBusyDeferredWhileAssignee: false })).toBe(true);
+   expect(isNonAssigneeWorkspaceBusyRetry("ai_connection_pool_wait", { aiConnectionBusyDeferredWhileAssignee: true })).toBe(false);
+ });

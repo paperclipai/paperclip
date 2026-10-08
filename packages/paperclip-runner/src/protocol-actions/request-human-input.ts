@@ -1,3 +1,5 @@
+import { questionPayloadSchema, questionsPayloadRequirement } from "./question-payload-schema.js";
+
 /** Canonical definition and documentation for `request_human_input`. */
 export const requestHumanInputAction = {
   "id": "request_human_input",
@@ -27,7 +29,7 @@ export const requestHumanInputAction = {
   },
   "documentation": {
     "title": "Request structured human input",
-    "description": "Create a typed, durable interaction on the active task.",
+    "description": "Create a durable human question or approval card on the current Paperclip task bound to this run; Paperclip renders it and authenticates the response. Use questions with continuationPolicy='wake_assignee' when an answer is needed, including otherwise tool-free chat turns. Supply a stable idempotencyKey and reuse it on retries. For one question at a time, ask only the next unanswered question and wait for its real answer. Never fabricate answers or treat ambiguous clarification as approval. For an ordinary confirmation or checkbox card, record a clear user chat answer with call_api POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment, using the source commentId and decision (accept/reject), plus explicit selectedOptionIds for checkbox acceptance. Existing resolver permissions still apply; governed tool, secret, and connection approvals are excluded. Question forms retain their dedicated answer workflow. Preserve existing review gates. Call this tool before claiming a question was asked; if creation fails, report the failure. Do not fabricate answer links or Markdown buttons, post duplicate cards, or use call_api to create the card. Use one complete payload.questionSet for text and choice questions. Paperclip generates compatibility questions; see the payload schema for formats.",
     "note": null
   },
   "examples": {
@@ -74,7 +76,7 @@ export const requestHumanInputAction = {
       "operationId": "request_human_input",
       "version": 1,
       "title": "Request structured human input",
-      "description": "Create a typed, durable interaction on the active task.",
+      "description": "Create a durable human question or approval card on the current Paperclip task bound to this run; Paperclip renders it and authenticates the response. Use questions with continuationPolicy='wake_assignee' when an answer is needed, including otherwise tool-free chat turns. Supply a stable idempotencyKey and reuse it on retries. For one question at a time, ask only the next unanswered question and wait for its real answer. Never fabricate answers or treat ambiguous clarification as approval. For an ordinary confirmation or checkbox card, record a clear user chat answer with call_api POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment, using the source commentId and decision (accept/reject), plus explicit selectedOptionIds for checkbox acceptance. Existing resolver permissions still apply; governed tool, secret, and connection approvals are excluded. Question forms retain their dedicated answer workflow. Preserve existing review gates. Call this tool before claiming a question was asked; if creation fails, report the failure. Do not fabricate answer links or Markdown buttons, post duplicate cards, or use call_api to create the card. Use one complete payload.questionSet for text and choice questions. Paperclip generates compatibility questions; see the payload schema for formats.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [
@@ -84,6 +86,7 @@ export const requestHumanInputAction = {
         "skill_test"
       ],
       "inputSchema": {
+        "allOf": [questionsPayloadRequirement],
         "type": "object",
         "properties": {
           "idempotencyKey": {
@@ -113,11 +116,7 @@ export const requestHumanInputAction = {
             "minLength": 1,
             "maxLength": 10000
           },
-          "payload": {
-            "type": "object",
-            "description": "Kind-specific interaction data. For interactionKind='questions', use exactly {version:1, questions:[{id,prompt,selectionMode:'single'|'multi',required?,options:[{id,label,description?,freeText?}]}]}; option keys are id/label, not value, and question choice cardinality is selectionMode, not type. For confirmation, payload may be {}. Keep all ids stable across retries.",
-            "additionalProperties": true
-          },
+          "payload": questionPayloadSchema,
           "targetRevisionId": {
             "type": [
               "string",
@@ -217,6 +216,7 @@ export const requestHumanInputAction = {
       "title": "Request human input",
       "description": "Create a typed confirmation, checkbox, question, task suggestion, or item-verdict request.",
       "inputSchema": {
+        "allOf": [questionsPayloadRequirement],
         "type": "object",
         "properties": {
           "interactionKind": {
@@ -237,9 +237,7 @@ export const requestHumanInputAction = {
             "type": "string",
             "minLength": 1
           },
-          "payload": {
-            "description": "Kind-specific interaction data. Questions use {version:1, questions:[{id,prompt,selectionMode:'single'|'multi',required?,options:[{id,label,description?,freeText?}]}]}; do not use type:'single_choice' or option.value."
-          },
+          "payload": questionPayloadSchema,
           "targetRevisionId": {
             "oneOf": [
               {

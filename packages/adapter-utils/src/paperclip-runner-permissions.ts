@@ -1,9 +1,9 @@
 export type PaperclipRunnerProvider =
-  "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx" | "openai_dot";
 
 export type CodexPermissionMode = "never" | "on-request" | "untrusted";
 export type OpenCodePermissionMode = "allow" | "ask" | "deny";
-export type AcpxPermissionMode = "approve-all" | "approve-reads" | "deny-all";
+export type AcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
 
 export type PaperclipRunnerPermissionMode =
   CodexPermissionMode | OpenCodePermissionMode | AcpxPermissionMode;
@@ -68,7 +68,7 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
   opencode: {
     configurable: true,
     configKey: "opencodePermissionMode",
-    defaultMode: "ask",
+    defaultMode: "allow",
     description:
       "Controls OpenCode tool permissions inside the assigned Paperclip environment.",
     options: [
@@ -103,10 +103,11 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
     description:
       "AWS AgentCore runs non-interactively under its qualified harness profile and Paperclip policy.",
   },
+  openai_dot: { configurable: false, defaultMode: "provider-managed", options: [], description: "Dot uses the admitted Paperclip tool catalog. OpenAI manages its model and other tools; provider usage and global interruption are unavailable." },
   acpx: {
     configurable: true,
     configKey: "acpxPermissionMode",
-    defaultMode: "approve-reads",
+    defaultMode: "approve-all",
     description:
       "Controls ACPX agent operations inside the assigned Paperclip environment.",
     options: [
@@ -116,10 +117,16 @@ export const PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES = {
         description: "Approve ACPX operations without approval pauses.",
       },
       {
+        value: "approve-paperclip",
+        label: "Automatic Paperclip actions",
+        description:
+          "Automatically run assigned Paperclip planning and task tools, including reassignment. Company permissions and approval requirements still apply. Other operations require permission.",
+      },
+      {
         value: "approve-reads",
         label: "Allow Paperclip reads",
         description:
-          "Automatically allow assigned Paperclip read tools. Other operations stop with an approval-required message because this runner has no interactive approval handler.",
+          "Automatically allow assigned Paperclip read tools. Other operations request a supported permission decision. Company permissions and execution boundaries still apply.",
       },
       {
         value: "deny-all",
@@ -141,7 +148,7 @@ export function isPaperclipRunnerProvider(
     value === "opencode" ||
     value === "claude_managed" ||
     value === "aws_agentcore" ||
-    value === "acpx"
+    value === "acpx" || value === "openai_dot"
   );
 }
 
@@ -154,6 +161,21 @@ export function resolvePaperclipRunnerPermissionMode(
   return capability.options.some((option) => option.value === value)
     ? (value as PaperclipRunnerPermissionMode)
     : capability.defaultMode;
+}
+
+/** Native session behavior is independent of tool permission policy. */
+export function resolvePaperclipRunnerCursorMode(
+  provider: unknown,
+  agent: unknown,
+  value: unknown,
+): "agent" | "plan" | "ask" | undefined {
+  if (provider !== "acpx" || agent !== "cursor") {
+    if (value !== undefined) throw new Error("acpxSessionMode is supported only for Cursor");
+    return undefined;
+  }
+  if (value === undefined) return "agent";
+  if (value === "agent" || value === "plan" || value === "ask") return value;
+  throw new Error("Cursor session mode must be agent, plan, or ask");
 }
 
 export function resolvePaperclipRunnerModel(
@@ -217,3 +239,12 @@ export function normalizeLegacyRunnerProvider(
   } = config;
   return { ...rest, provider: "codex", codexPermissionMode: "never" };
 }
+
+/** Qualification is a release property, never an operator-configurable bypass. */
+export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
+  { value: "grok", label: "Grok Build", qualified: true, credentialEnvironment: ["XAI_API_KEY"] },
+  { value: "claude", label: "Claude", qualified: true, credentialEnvironment: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] },
+  { value: "cursor", label: "Cursor", qualified: true, credentialEnvironment: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },
+  { value: "copilot", label: "GitHub Copilot", qualified: false, credentialEnvironment: ["COPILOT_GITHUB_TOKEN"] },
+  { value: "pi", label: "Pi", qualified: false, credentialEnvironment: ["OPENROUTER_API_KEY"] },
+] as const);

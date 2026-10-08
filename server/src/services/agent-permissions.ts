@@ -1,4 +1,31 @@
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { LOW_TRUST_REVIEW_PRESET, type PermissionKey } from "@paperclipai/shared";
+
+/** Direct grants for newly activated standard agents. Existing agents are not backfilled. */
+export const NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS = [
+  "agents:configure",
+  "agents:suggest-changes",
+  "skills:create",
+  "skills:suggest-changes",
+  "tools:manage_connections",
+  "tools:manage_profiles",
+  "tools:view_audit",
+  "audit:view_agent_actions",
+  "tools:use",
+  "tools:manage_runtime",
+  "inbox:manage",
+  "tasks:assign",
+  "tasks:assign_scope",
+  "tasks:manage_active_checkouts",
+] as const satisfies readonly PermissionKey[];
+
+export function newStandardAgentGrantScope(
+  permissionKey: PermissionKey,
+  agentId: string,
+): Record<string, unknown> | null {
+  if (permissionKey === "tasks:assign_scope") return { subtreeRootAgentId: agentId };
+  if (permissionKey === "inbox:manage") return { responsibleUserOnly: true };
+  return null;
+}
 
 export type NormalizedAgentPermissions = Record<string, unknown> & {
   canCreateAgents: boolean;

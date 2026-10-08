@@ -10,6 +10,7 @@ const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 
 const {
+  completionSweepMock,
   createAppMock,
   createBetterAuthInstanceMock,
   createDbMock,
@@ -33,9 +34,13 @@ const {
   routineServiceFactoryMock,
   routineServiceMock,
 } = vi.hoisted(() => {
+  const completionSweepMock = vi.fn(async () => undefined);
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
-      toolGateway: { sweepActionReviews: vi.fn(async () => ({ scanned: 0 })) },
+      toolGateway: {
+        sweepActionReviews: vi.fn(async () => ({ scanned: 0 })),
+        cleanupExpiredSessions: vi.fn(async () => ({ deletedCount: 0 })),
+      },
       toolActionDeliveries: { sweepPending: vi.fn(async () => ({ scanned: 0, delivered: 0 })) },
     },
   }) as never);
@@ -52,6 +57,7 @@ const {
     reason: null,
   }));
   const heartbeatServiceMock = {
+    reconcileCostAccounting: vi.fn(async () => ({ scanned: 0, accounted: 0 })),
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
     recoverNativeRunsAfterRestart: vi.fn(async () => ({
       restartKind: "hard",
@@ -136,6 +142,7 @@ const {
   const loadConfigMock = vi.fn();
 
   return {
+    completionSweepMock,
     createAppMock,
     createBetterAuthInstanceMock,
     createDbMock,
@@ -349,6 +356,8 @@ vi.mock("../services/index.js", () => ({
   })),
 }));
 
+vi.mock("../services/chat-completion-delivery.js", () => ({ chatCompletionDeliveryService: () => ({ sweepPending: completionSweepMock }) }));
+
 vi.mock("../services/connection-intent-delivery.js", () => ({
   connectionIntentDeliveryService: vi.fn(() => ({
     sweepPending: vi.fn(async () => ({ scanned: 0, failed: 0 })),
@@ -530,6 +539,13 @@ describe("startServer feedback export wiring", () => {
     });
   });
 
+  it("keeps startup available when completion delivery recovery fails", async () => {
+    completionSweepMock.mockRejectedValueOnce(new Error("temporary delivery failure"));
+    const { startServer } = await import("../index.js");
+    await expect(startServer()).resolves.toBeDefined();
+    expect(completionSweepMock).toHaveBeenCalled();
+  });
+
   it("never invokes the retired review detector at startup or on periodic recovery", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,
@@ -544,11 +560,13 @@ describe("startServer feedback export wiring", () => {
     }) as typeof setInterval);
     try {
       await startServer();
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(1);
       expect(intervalCallback).not.toBeNull();
       intervalCallback?.();
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(2);
       expect(retiredDetector).not.toHaveBeenCalled();
     } finally {
       delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;
@@ -645,6 +663,7 @@ describe("startServer feedback export wiring", () => {
       // reaped at startup and on the interval.
       expect(heartbeatServiceFactoryMock).toHaveBeenCalledTimes(1);
       expect(heartbeatServiceMock.sweepPendingCleanupLeases).toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(intervalCallback).not.toBeNull();
       intervalCallback?.();
       await Promise.resolve();
@@ -652,9 +671,30 @@ describe("startServer feedback export wiring", () => {
 
       expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(2);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
     } finally {
       setIntervalSpy.mockRestore();
+    }
+  });
+
+  it.each([false, true])("retries failed accounting recovery with heartbeat scheduling enabled: %s", async (enabled) => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    heartbeatServiceMock.reconcileCostAccounting.mockRejectedValueOnce(new Error("temporary ledger outage"));
+    let tick: (() => void) | undefined;
+    const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
+      tick = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      expect((await startServer()).server).toBe(fakeServer);
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
+      expect(tick).toBeDefined();
+      tick?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(2);
+    } finally {
+      timer.mockRestore();
     }
   });
 

@@ -3,6 +3,7 @@ import {
   expect,
   test,
   type APIRequestContext,
+  type Locator,
   type Page,
 } from "@playwright/test";
 
@@ -95,15 +96,19 @@ const files = [
   },
 ];
 
+async function openAttachmentChooser(page: Page, composer: Locator) {
+  await composer.getByRole("button", { name: "Add to composer" }).click();
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("menuitem", { name: "Files and images", exact: true }).click();
+  return chooser;
+}
+
 async function upload(
   page: Page,
   fixture: Awaited<ReturnType<typeof setup>>,
   file: (typeof files)[number],
 ) {
-  const chooser = page.waitForEvent("filechooser");
-  await fixture.composer
-    .getByRole("button", { name: "Attach file", exact: true })
-    .click();
+  const chooser = await openAttachmentChooser(page, fixture.composer);
   const response = page.waitForResponse(
     (res) =>
       res.request().method() === "POST" &&
@@ -111,7 +116,7 @@ async function upload(
         `/issues/${fixture.issue.id}/attachments`,
       ),
   );
-  await (await chooser).setFiles(file);
+  await chooser.setFiles(file);
   const receipt = await body<Attachment>(await response);
   await expect
     .poll(async () =>
@@ -376,11 +381,8 @@ for (const classic of [false, true])
         await route.fulfill({ response });
       },
     );
-    const chooser = page.waitForEvent("filechooser");
-    await fixture.composer
-      .getByRole("button", { name: "Attach file", exact: true })
-      .click();
-    await (await chooser).setFiles(files[1]!);
+    const chooser = await openAttachmentChooser(page, fixture.composer);
+    await chooser.setFiles(files[1]!);
     await expect.poll(() => arrived).toBe(true);
     await expect(fixture.send).toBeDisabled();
     try {
@@ -430,11 +432,8 @@ test("legacy failed upload can be removed before sending the retained text", asy
         body: JSON.stringify({ error: "Fixture upload rejected" }),
       }),
   );
-  const chooser = page.waitForEvent("filechooser");
-  await fixture.composer
-    .getByRole("button", { name: "Attach file", exact: true })
-    .click();
-  await (await chooser).setFiles(files[0]!);
+  const chooser = await openAttachmentChooser(page, fixture.composer);
+  await chooser.setFiles(files[0]!);
   await expect(
     fixture.composer.getByText("Fixture upload rejected", { exact: true }),
   ).toBeVisible();

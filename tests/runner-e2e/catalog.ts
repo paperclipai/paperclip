@@ -1,13 +1,42 @@
+import { planTaskCases, planTaskProfile, planDefinitionDigest } from "./plan-task-cases.js";
+import { nativeCompletionTasks, nativeCompletionDefinitionDigest } from "./native-completion-cases.js";
+import { NATIVE_INSTRUCTION_SUITE, NATIVE_INSTRUCTION_BASE_SHA, nativeInstructionDefinitionDigest } from "./native-instruction-consolidation.js";
+import { nativeCompletionProfile, NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
+import { chatConfirmationTasks } from "./chat-cases.js";
+import { buildConnectionSuite } from "./connection-cases.js";
+import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDigest } from "./hiring-template-cases.js";
+import { nativeActiveStopTasks } from "./native-active-stop-tasks.js";
+import { cursorNativeTasks } from "./cursor-native-cases.js";
+import { instructionPersistenceTask } from "./instruction-persistence.js";
+import { apiResponseReadingTask } from "./api-response-reading.js";
+import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
+import { blockerTasks, blockerProfile } from "./blocker-cases.js";
+import { accountingTasks } from "./accounting-cases.js";
+import { continuationTasks } from "./continuation-cases.js";
+import { contextIntegrityTasks, paperclipDocumentTask } from "./context-integrity-cases.js";
+import { productionDefaultHireProfile, stockHarnessSourceDigest, stockHarnessSkillSources } from "./stock-harness.js";
+import { lifecycleLiveTasks, lifecycleLiveDefinitionDigest } from "./lifecycle-live-cases.js";
+import { publicMcpTasks, publicMcpExpandedDigest, publicMcpSetupDigest, publicMcpWorkflowDigest, publicMcpWorkerInstructions, publicMcpWorkerSkillDigest } from "./public-mcp-cases.js";
+import { graderVersion as publicMcpGraderVersion } from "./public-mcp-grading.js";
 import { everydayTasks, productionStoryProfile } from "./everyday-cases.js";
-import { chatTasks } from "./chat-cases.js";
+import { CONNECTION_GUIDANCE_SUITE, CONNECTION_GUIDANCE_BUDGET_CENTS, connectionGuidanceTasks, connectionGuidanceDefinitionDigest } from "./connection-guidance-cases.js";
+
+import { firstTaskTasks } from "./first-task-cases.js";
+import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks, chatCompletionTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
 import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "../../packages/adapters/codex-local/src/index.js";
 import { models as claudeModels } from "../../packages/adapters/claude-local/src/index.js";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "../../packages/adapters/kimi-local/src/index.js";
+import { DEFAULT_GROK_LOCAL_MODEL } from "../../packages/adapters/grok-local/src/index.js";
 import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
+import { ACPX_QUALIFICATION_MODELS } from "../acpx-qualification-models.js";
 import { QUALIFIED_OPENCODE_MODEL } from "../../packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.js";
 import { CREDENTIAL_NAMES } from "./types.js";
+import { createGitStreamingTask } from "./daytona-git-streaming.js";
+import { PENDING_PROFILE_PREREQUISITES } from "./prerequisites.js";
 import {
   openRouterProfileId,
   openRouterRankingSnapshot,
@@ -33,6 +62,9 @@ const SELECTABLE_GROUPS = [
   "core",
   "breadth",
   "chat",
+  "onboarding",
+  "context-integrity",
+  "stock-harness",
 ] as const;
 const SAMPLE_UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -54,6 +86,7 @@ function commonAgent(
   fixtureId: string,
   adapterType: string,
   adapterConfig: Record<string, unknown>,
+  additionalInstructions: readonly string[] = [],
 ) {
   return {
     name: `Runner E2E ${fixtureId} ${input.executionId}`,
@@ -79,9 +112,11 @@ function commonAgent(
           ...(adapterType === "paperclip_runner"
             ? []
             : [
+                "Read the assigned paperclip skill before using the Paperclip API. Use its documented request payloads rather than guessing fields from memory.",
                 'For a planning task, do not inspect the OpenAPI schema. PUT /api/issues/$PAPERCLIP_TASK_ID/documents/plan with {title:"Plan",format:"markdown",body,changeSummary}; read latestRevisionId and latestRevisionNumber from that response. Then POST /api/issues/$PAPERCLIP_TASK_ID/interactions with {kind:"request_confirmation",continuationPolicy:"wake_assignee",payload:{version:1,prompt,acceptLabel:"Approve",rejectLabel:"Reject",rejectRequiresReason:true,target:{type:"issue_document",key:"plan",revisionId,revisionNumber}}}, and PATCH the issue to {status:"in_review"}. Include Authorization and X-Paperclip-Run-Id on every write.',
               ]),
           "Never print, persist, or expose credential values, and never create unrelated work.",
+          ...additionalInstructions,
         ].join("\n"),
       },
     },
@@ -92,15 +127,17 @@ function commonAgent(
 function legacyProfile(input: {
   id: string;
   label: string;
-  adapterType: "codex_local" | "claude_local" | "opencode_local";
+  adapterType: "codex_local" | "claude_local" | "opencode_local" | "kimi_local" | "grok_local";
   provider: string;
   model: string;
   credential: RunnerProfileFixture["credential"];
   extraConfig?: Record<string, unknown>;
+  instructions?: readonly string[];
+  modelQualification?: RunnerProfileFixture["modelQualification"];
 }): RunnerProfileFixture {
   return {
     ...input,
-    modelQualification: {
+    modelQualification: input.modelQualification ?? {
       source: "adapter_constant",
       qualificationId: `${input.adapterType}:default-model`,
     },
@@ -126,7 +163,7 @@ function legacyProfile(input: {
         env: {
           [input.credential]: requiredSecret(buildInput, input.credential),
         },
-      });
+      }, input.instructions);
     },
   };
 }
@@ -137,7 +174,8 @@ function nativeProfile(input: {
   provider: "codex" | "opencode" | "acpx";
   model: string;
   credential: RunnerProfileFixture["credential"];
-  acpxAgent?: "claude" | "codex";
+  acpxAgent?: "claude" | "codex" | "grok" | "cursor" | "copilot" | "pi";
+  qualificationCandidate?: RunnerProfileFixture["qualificationCandidate"];
   supportedEnvironments?: readonly (typeof ENVIRONMENT_IDS)[number][];
   modelQualification?: RunnerProfileFixture["modelQualification"];
   ranking?: RunnerProfileFixture["ranking"];
@@ -165,7 +203,9 @@ function nativeProfile(input: {
       provider: input.provider,
     },
     buildAgent(buildInput) {
-      const credentialRef = requiredSecret(buildInput, input.credential);
+      const credentialRef = input.credential === "GROK_AUTH_JSON"
+        ? null
+        : requiredSecret(buildInput, input.credential);
       const permissionConfig =
         input.provider === "codex"
           ? { codexPermissionMode: "never" }
@@ -175,11 +215,12 @@ function nativeProfile(input: {
       return commonAgent(buildInput, input.id, "paperclip_runner", {
         provider: input.provider,
         model: input.model,
+        ...(input.qualificationCandidate ? { timeoutSec: 120 } : {}),
         lifecycleMode: "per_turn",
         idleTimeoutMs: 300_000,
         ...permissionConfig,
         env: {
-          [input.credential]: credentialRef,
+          ...(credentialRef ? { [input.credential]: credentialRef } : {}),
           // Codex's supported automation credential is CODEX_API_KEY. Keep
           // OPENAI_API_KEY as the operator-facing fixture secret name and bind
           // the same encrypted reference to the runtime-specific alias.
@@ -188,6 +229,19 @@ function nativeProfile(input: {
             : {}),
         },
       });
+    },
+  };
+}
+
+/** Chat acceptance exercises the shipped provider defaults, not full-auto fixtures. */
+function defaultPermissionProfile(profile: RunnerProfileFixture): RunnerProfileFixture {
+  if (profile.generation !== "native") return profile;
+  return {
+    ...profile,
+    buildAgent(input) {
+      const payload = profile.buildAgent(input);
+      const { codexPermissionMode: _codex, acpxPermissionMode: _acpx, ...adapterConfig } = payload.adapterConfig as Record<string, unknown>;
+      return { ...payload, adapterConfig };
     },
   };
 }
@@ -260,18 +314,105 @@ export const runnerProfiles: readonly RunnerProfileFixture[] = [
     label: "Runner ACPX Claude",
     provider: "acpx",
     acpxAgent: "claude",
-    model: QUALIFIED_ACPX_PROFILES.claude.qualificationModel,
+    model: ACPX_QUALIFICATION_MODELS.claude,
     credential: "ANTHROPIC_API_KEY",
+  }),
+  nativeProfile({
+    id: "runner-acpx-grok",
+    label: "Runner Grok Build",
+    provider: "acpx",
+    acpxAgent: "grok",
+    model: ACPX_QUALIFICATION_MODELS.grok,
+    credential: "XAI_API_KEY",
   }),
   nativeProfile({
     id: "runner-acpx-codex",
     label: "Runner ACPX Codex",
     provider: "acpx",
     acpxAgent: "codex",
-    model: QUALIFIED_ACPX_PROFILES.codex.qualificationModel,
+    model: ACPX_QUALIFICATION_MODELS.codex,
     credential: "OPENAI_API_KEY",
   }),
 ] as const;
+
+// Explicit qualification choices from authenticated model discovery, not shipped
+// defaults. Cursor has local/Daytona proof; Copilot and Pi remain pending.
+export const extendedHarnessProfiles: readonly RunnerProfileFixture[] = [
+  nativeProfile({
+    id: "runner-acpx-cursor", label: "Runner Cursor", provider: "acpx", acpxAgent: "cursor",
+    qualificationCandidate: "cursor", credential: "CURSOR_AUTH_TOKEN",
+    model: "gpt-5.6-luna[context=272k,reasoning=medium,fast=false]",
+    modelQualification: { source: "qualified_runner_profile", qualificationId: "cursor:2026.09.26-dd393fe:v11:luna:local-daytona-2026-10-04" },
+  }),
+  nativeProfile({
+    id: "runner-acpx-copilot", label: "Runner Copilot (candidate)", provider: "acpx", acpxAgent: "copilot",
+    qualificationCandidate: "copilot", credential: "COPILOT_GITHUB_TOKEN", model: "gpt-5.6-luna",
+    modelQualification: { source: "candidate_runner_profile", qualificationId: "copilot:1.0.88:discovery-2026-09-28" },
+  }),
+  nativeProfile({
+    id: "runner-acpx-pi", label: "Runner Pi (candidate)", provider: "acpx", acpxAgent: "pi",
+    qualificationCandidate: "pi", credential: "OPENROUTER_API_KEY", model: ACPX_QUALIFICATION_MODELS.pi,
+    modelQualification: { source: "candidate_runner_profile", qualificationId: "pi:0.0.33:0.84.2:openrouter" },
+  }),
+];
+
+/** Narrow legacy ACP lanes used only by the explicit context-integrity matrix. */
+export const legacyAcpxProfiles: readonly RunnerProfileFixture[] = [
+  legacyProfile({
+    id: "legacy-acp-codex",
+    label: "Legacy ACP Codex",
+    adapterType: "codex_local",
+    provider: "codex",
+    model: DEFAULT_CODEX_LOCAL_MODEL,
+    credential: "OPENAI_API_KEY",
+    extraConfig: { engine: "acp", mode: "oneshot" },
+  }),
+  legacyProfile({
+    id: "legacy-acp-claude",
+    label: "Legacy ACP Claude",
+    adapterType: "claude_local",
+    provider: "claude",
+    model: claudeLegacyModel,
+    credential: "ANTHROPIC_API_KEY",
+    extraConfig: { engine: "acp", mode: "oneshot" },
+  }),
+] as const;
+
+/** Explicit-only context-integrity profiles; admission is blocked until qualification is complete. */
+export const pendingContextIntegrityProfiles: readonly RunnerProfileFixture[] = [
+  legacyProfile({
+    id: "legacy-kimi-cli",
+    label: "Legacy Kimi CLI (pending qualification)",
+    adapterType: "kimi_local",
+    provider: "kimi",
+    model: DEFAULT_KIMI_LOCAL_MODEL,
+    credential: "KIMI_MODEL_API_KEY",
+    extraConfig: { engine: "cli" },
+  }),
+  legacyProfile({
+    id: "legacy-kimi-acp",
+    label: "Legacy Kimi ACP (pending qualification)",
+    adapterType: "kimi_local",
+    provider: "kimi",
+    model: DEFAULT_KIMI_LOCAL_MODEL,
+    credential: "KIMI_MODEL_API_KEY",
+    extraConfig: { engine: "acp", mode: "oneshot" },
+  }),
+  legacyProfile({
+    id: "legacy-grok",
+    label: "Legacy Grok (pending qualification)",
+    adapterType: "grok_local",
+    provider: "grok",
+    model: DEFAULT_GROK_LOCAL_MODEL,
+    credential: "XAI_API_KEY",
+  }),
+] as const;
+
+export const contextIntegrityProfiles: readonly RunnerProfileFixture[] = [
+  ...runnerProfiles.filter((profile) => ["runner-codex", "runner-acpx-claude", "runner-opencode", "legacy-codex", "legacy-claude"].includes(profile.id)),
+  ...legacyAcpxProfiles,
+  ...pendingContextIntegrityProfiles,
+];
 
 export const openRouterBreadthExcludedModelIds = ["xiaomi/mimo-v2.5"] as const;
 export const openRouterBreadthExcludedExecutionIds = [
@@ -449,7 +590,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
         "Complete this task in a single run.",
         `The exact marker also appears unescaped in the task title: PAPERCLIP_E2E_OK_${nonce}`,
         `Your final visible task-thread response must be exactly this marker: PAPERCLIP_E2E_OK_${nonce}`,
-        `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_OK_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly PAPERCLIP_E2E_OK_${nonce} once as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `In a native runner, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_OK_${nonce}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly PAPERCLIP_E2E_OK_${nonce} once as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
         `In a legacy runner, make exactly one public-API write containing the marker: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"PAPERCLIP_E2E_OK_${nonce}"}. Do not POST to /comments, and do not include the marker in any other write.`,
         "The visible task-thread response is asserted; hidden reasoning or provider terminal output alone does not count.",
         "Use underscore characters exactly as shown and do not insert backslashes.",
@@ -516,7 +657,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
         "Only after the revised plan is accepted, implement it by posting one final visible task-thread response containing exactly " +
           `PAPERCLIP_E2E_PLAN_DONE_${nonce}` +
           " and mark the task Done.",
-        `For a native runner, remain in the requested planning collaboration mode. Call write_document for key \`plan\`, then call request_human_input exactly once with interactionKind \`confirmation\`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy \`wake_assignee\`. For both the initial Plan and the revised Plan, those two tool calls form one indivisible response sequence: immediately after write_document succeeds, request_human_input must be your next action using that call's returned latestRevisionId. Do not emit assistant text, end the response or heartbeat, or stop after write_document alone before the matching confirmation request succeeds. Do not call paperclip_finish while waiting for either Plan confirmation. When an acceptance wake arrives, first call get_task_context. Treat the wake as valid only when that control-plane result is for the current task and identifies the exact revised Plan revision used as the confirmation target as accepted; otherwise do not finish and continue waiting for the matching revision-bound confirmation. After that verification succeeds, your immediate next action must be the paperclip_finish tool call. Do not call list_documents or any other tool, and do not emit any assistant text, acknowledgement, progress note, or preamble between verification and paperclip_finish. Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_PLAN_DONE_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit only PAPERCLIP_E2E_PLAN_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `For a native runner, remain in the requested planning collaboration mode. Call write_document for key \`plan\`, then call request_human_input exactly once with interactionKind \`confirmation\`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy \`wake_assignee\`. For both the initial Plan and the revised Plan, those two tool calls form one indivisible response sequence: immediately after write_document succeeds, request_human_input must be your next action using that call's returned latestRevisionId. Do not emit assistant text, end the response or heartbeat, or stop after write_document alone before the matching confirmation request succeeds. Do not call paperclip_finish while waiting for either Plan confirmation. When an acceptance wake arrives, first call get_task_context. Treat the wake as valid only when that control-plane result is for the current task and identifies the exact revised Plan revision used as the confirmation target as accepted; otherwise do not finish and continue waiting for the matching revision-bound confirmation. After that verification succeeds, your immediate next action must be the paperclip_finish tool call. Do not call list_documents or any other tool, and do not emit any assistant text, acknowledgement, progress note, or preamble between verification and paperclip_finish. Use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal). Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_PLAN_DONE_${nonce}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit only PAPERCLIP_E2E_PLAN_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
         `For a legacy runner, use the public Paperclip API. The first PUT of the \`plan\` issue document creates it. For every later PUT, first GET the current document and set \`baseRevisionId\` to its \`latestRevisionId\`; a 409 means you must GET again and retry with the new latest revision. Create a \`request_confirmation\` targeting the successful PUT response's \`latestRevisionId\` with \`continuationPolicy: wake_assignee\`, and move the issue to \`in_review\` while waiting. After the revised Plan is accepted, write PAPERCLIP_E2E_PLAN_DONE_${nonce} exactly once through one atomic issue PATCH with status \`done\` and that exact comment; do not POST a separate comment or perform a second write.`,
         "Do not create files, child tasks, or unrelated work, and do not expose credentials.",
       ].join("\n"),
@@ -567,7 +708,7 @@ export const runnerTasks: readonly RunnerTaskFixture[] = [
         `Your final visible task-thread answer must be exactly this complete marker, including its final suffix: E2E_ASK_12_${nonce}.`,
         "Do not create or modify files, do not create a plan or additional work, and do not expose credentials.",
         "After posting the direct answer, mark this task Done.",
-        `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"E2E_ASK_12_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. For the entire run, paperclip_finish must be your only tool call: never call report_progress or any other tool before or after it. Wait for that tool call to succeed, then emit exactly E2E_ASK_12_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds.`,
+        `In a native runner, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"E2E_ASK_12_${nonce}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. For the entire run, paperclip_finish must be your only tool call: never call report_progress or any other tool before or after it. Wait for that tool call to succeed, then emit exactly E2E_ASK_12_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds.`,
         `In a legacy runner, make exactly one public-API write containing the marker: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"E2E_ASK_12_${nonce}"}. Do not POST to /comments, do not PATCH the status separately, and do not include the marker in any other API write.`,
       ].join("\n"),
     buildMatchers(nonce, execution) {
@@ -648,7 +789,7 @@ const structuredQuestionResumeTask = {
       'In a legacy runner, after that POST returns 2xx, PATCH $API_ORIGIN/api/issues/$PAPERCLIP_TASK_ID with exactly {"status":"in_review"}. Do not include `reviewInteractionId`: it only designates confirmation interactions, not `ask_user_questions`. If the PATCH fails, retry only that PATCH and never POST the interaction again.',
       "In a legacy runner, after those two writes succeed, end the current response and heartbeat immediately. Do not wait, sleep, poll, or fetch the interaction; `wake_assignee` will start a new heartbeat after the user answers.",
       `After the answer arrives, if it is Cobalt, publish exactly PAPERCLIP_E2E_QUESTION_DONE_${nonce} once as the complete visible response and mark the task Done.`,
-      `In a native runner, after the answer arrives, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_QUESTION_DONE_${nonce}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly PAPERCLIP_E2E_QUESTION_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+      `In a native runner, after the answer arrives, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"PAPERCLIP_E2E_QUESTION_DONE_${nonce}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly PAPERCLIP_E2E_QUESTION_DONE_${nonce} as the complete final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
       `In a legacy runner, make exactly one completion write: PATCH $API_ORIGIN/api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"PAPERCLIP_E2E_QUESTION_DONE_${nonce}"}. Do not POST a separate comment or perform a second write containing the marker.`,
       "Do not create files, plans, child tasks, or unrelated work, and do not expose credentials.",
     ].join("\n"),
@@ -707,7 +848,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
       [
         "Complete this deterministic hello task in one turn.",
         "Your first response action must be the paperclip_finish tool call. Do not emit any assistant text, acknowledgement, or preamble before calling it.",
-        `Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("H", nonce)}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("H", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `Use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal). Call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("H", nonce)}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("H", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
         "Do not create files, plans, interactions, or additional work.",
       ].join("\n"),
     buildMatchers: (nonce, execution) =>
@@ -734,7 +875,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
         `Call request_human_input exactly once with idempotencyKey \`question-${nonce}\`, interactionKind \`questions\`, title \`Verification word\`, prompt \`Choose the verification word\`, continuationPolicy \`wake_assignee\`, and payload {version:1,questions:[{id:\`verification-word\`,prompt:\`Choose the verification word.\`,selectionMode:\`single\`,required:true,options:[{id:\`cobalt\`,label:\`Cobalt\`},{id:\`amber\`,label:\`Amber\`}]}]}.`,
         `Before the answer arrives, do not spell, quote, repeat, announce, or include ${breadthMarker("Q_C", nonce)} in any visible response, comment, or tool payload; refer to it only as “the terminal marker.”`,
         "Do not call paperclip_finish while the question is pending.",
-        `After the answer arrives, if it is Cobalt, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("Q_C", nonce)}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("Q_C", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `After the answer arrives, if it is Cobalt, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("Q_C", nonce)}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("Q_C", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
         "Do not create files, plans, or additional work.",
       ].join("\n"),
     buildMatchers: (nonce, execution) =>
@@ -762,7 +903,7 @@ export const openRouterBreadthTasks: readonly RunnerTaskFixture[] = [
         "Call write_document for key `plan`, then call request_human_input exactly once with interactionKind `confirmation`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy `wake_assignee`.",
         `Before that exact Plan revision is accepted, do not spell, quote, repeat, announce, or include ${breadthMarker("P_OK", nonce)} in any visible response, comment, or tool payload; refer to it only as “the terminal marker.”`,
         "Do not call paperclip_finish while confirmation is pending.",
-        `After that exact Plan revision is accepted, call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("P_OK", nonce)}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("P_OK", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
+        `After that exact Plan revision is accepted, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"done",summary:"${breadthMarker("P_OK", nonce)}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[]}. Wait for that tool call to succeed, then emit exactly ${breadthMarker("P_OK", nonce)} as the complete user-facing final response. Do not write a user-facing final response before paperclip_finish succeeds, and do not call another tool.`,
         "Do not create files, child tasks, or unrelated work.",
       ].join("\n"),
     buildMatchers: (nonce, execution) =>
@@ -793,6 +934,10 @@ function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
   );
   const marker = warmTurnMarker(turn, nonce);
   const finalTurn = turn === 3;
+  const reviewRequests = finalTurn ? [] : [{
+    kind: "review", ownerClass: "human",
+    summary: `Review the verified turn ${turn} workspace file and decide whether this task is ready to complete or needs another revision.`,
+  }];
   const legacyCompletion = finalTurn
     ? `In a legacy runner, make exactly one public-API completion write after verification: PATCH /api/issues/$PAPERCLIP_TASK_ID with {"status":"done","comment":"${marker}"}. Include Authorization and X-Paperclip-Run-Id. Do not POST a separate comment.`
     : `In a legacy runner, after verification POST exactly one request_confirmation to /api/issues/$PAPERCLIP_TASK_ID/interactions with {"kind":"request_confirmation","idempotencyKey":"daytona-warm-review-T${turn}-${nonce}","resolverPolicy":"human_only","title":"Warm continuity turn ${turn}","summary":"Review completed warm continuity turn ${turn}.","continuationPolicy":"wake_assignee","payload":{"version":1,"prompt":"Is this warm continuity task ready to complete after turn ${turn}?","acceptLabel":"Approve completion","rejectLabel":"Continue work","rejectRequiresReason":true,"allowDeclineReason":true,"supersedeOnUserComment":false,"target":{"type":"custom","key":"daytona_warm_turn_${turn}","revisionId":"${nonce}-T${turn}","label":"Warm continuity turn ${turn}"}}}. Capture the returned interaction id. Then make exactly one issue PATCH with {"status":"in_review","comment":"${marker}","reviewInteractionId":"<returned interaction id>"}. Include Authorization and X-Paperclip-Run-Id on both writes. If the issue PATCH fails, retry only that PATCH and never create another interaction. Do not POST a separate comment. After both writes succeed, end the response and heartbeat immediately; do not wait or poll because the reviewer action will start the next turn.`;
@@ -802,10 +947,20 @@ function warmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
       ? `Create ${file} with exactly this one line followed by a newline: ${lines[0]}`
       : `Before changing anything, read ${file} and verify its content is exactly ${lines.slice(0, -1).join("\\n")} followed by a newline. Then append exactly ${lines.at(-1)} followed by a newline.`,
     `After the write, verify ${file} contains exactly these lines, once each and in order: ${lines.join(" | ")}.`,
-    `In a native runner, call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:"1",objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},evidence:[],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete user-facing final response.`,
+    `In a native runner, use the current turn completion revision and criterion IDs (CURRENT_TURN_REVISION below is a placeholder, not a literal), then call paperclip_finish exactly once with {reportedWorkDisposition:"${finalTurn ? "done" : "needs_review"}",summary:"${marker}",completionClaim:{contractRevision:CURRENT_TURN_REVISION,objectiveSatisfied:true,criteria:[{criterionId:"objective",status:"satisfied",evidenceRefs:[]}],remainingWork:[]},attentionRequests:${JSON.stringify(reviewRequests)},evidence:[],verification:[{commandOrCheck:"read ${file}",status:"passed"}]}. Wait for that tool call to succeed, then emit exactly ${marker} once as the complete user-facing final response.`,
     legacyCompletion,
     `In a legacy runner, the PATCH comment is the complete visible response. After its 2xx response, finish silently: do not print, echo, or emit ${marker} again as assistant text.`,
     `Do not include ${marker} in any other visible response or write. Do not recreate, truncate, reorder, or duplicate prior lines.`,
+  ].join("\n");
+}
+
+function managedWarmTurnInstructions(turn: 1 | 2 | 3, nonce: string) {
+  return [warmTurnInstructions(turn, nonce),
+    "Also update your personal AGENT_HOME with ordinary filesystem tools. Do not edit the loaded AGENTS.md instructions and do not use an API to save these files.",
+    turn === 1
+      ? `Create notes/warm-memory.txt containing exactly T1-${nonce} followed by a newline. Create notes/unchanged.bin with exactly 8388608 bytes, each byte equal to 93. Create notes/delete-me.txt containing temporary.`
+      : `Read notes/warm-memory.txt under AGENT_HOME and verify it contains exactly the prior turn lines ${Array.from({ length: turn - 1 }, (_, i) => `T${i + 1}-${nonce}`).join(" | ")}, each followed by a newline. Append exactly T${turn}-${nonce} and a newline. Verify notes/unchanged.bin still has 8388608 bytes, each equal to 93, and leave it unchanged. ${turn === 2 ? "Delete notes/delete-me.txt." : "Verify notes/delete-me.txt is absent."}`,
+    "Perform these personal-file edits and verification before calling paperclip_finish. Paperclip saves them at the turn boundary.",
   ].join("\n");
 }
 
@@ -821,22 +976,20 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
   expectedTerminalState: { issue: "done", run: "succeeded" },
   buildTitle: (nonce) => `Runner E2E warm Daytona continuity ${nonce}`,
   buildVisibleMarker: (nonce) => warmTurnMarker(3, nonce),
-  buildPrompt: (nonce) => warmTurnInstructions(1, nonce),
+  buildPrompt: (nonce) => managedWarmTurnInstructions(1, nonce),
   buildFollowupMessages: (nonce) => [
-    warmTurnInstructions(2, nonce),
-    warmTurnInstructions(3, nonce),
+    managedWarmTurnInstructions(2, nonce),
+    managedWarmTurnInstructions(3, nonce),
   ],
   buildMatchers(nonce, execution) {
-    const markers = ([1, 2, 3] as const).map((turn) =>
-      warmTurnMarker(turn, nonce),
-    );
+    // Workspace persistence is the oracle for this story. Exact response text
+    // formatting must not mask a valid workspace, but every warm turn still
+    // needs one visible marker in chronological order. Surrounding provider
+    // prose is allowed; the occurrence and order matchers grade only markers.
+    const markers = ([1, 2, 3] as const).map((turn) => warmTurnMarker(turn, nonce));
     return [
-      { kind: "message_exact", expected: markers[2] },
-      ...markers.map(
-        (expected) =>
-          ({ kind: "message_occurrences", expected, count: 1 }) as const,
-      ),
-      { kind: "message_ordered", expected: markers },
+      ...markers.map((marker) => ({ kind: "message_occurrences" as const, expected: marker, count: 1 })),
+      { kind: "message_ordered" as const, expected: markers },
       {
         kind: "file_exact",
         path: `daytona-warm-${nonce}.txt`,
@@ -847,13 +1000,46 @@ export const daytonaWarmContinuityTask: RunnerTaskFixture = {
       { kind: "issue_status", expected: "done" },
       { kind: "run_status", expected: "succeeded" },
       { kind: "runtime_mode", expected: execution.profile.expectedRuntimeMode },
-      { kind: "environment", expected: "daytona" },
+      { kind: "environment", expected: execution.environment.id },
     ];
   },
 };
 
+export const daytonaLargeJournalTask: RunnerTaskFixture = {
+  ...daytonaWarmContinuityTask,
+  id: "large-journal-three-turn",
+  label: "Large journal three-turn workspace continuity",
+  buildFollowupMessages: nonce => [warmTurnInstructions(2, nonce), warmTurnInstructions(3, nonce)],
+  buildTitle: (nonce) => `Runner E2E large journal continuity ${nonce}`,
+  buildPrompt: (nonce) => [
+    "First exercise ordinary execution history with 240 separate execution-tool calls. In each call, run the Python command below exactly once. Issue the calls one by one. Do not combine them into a shell loop, script, parallel wrapper, or a single tool call: each command must be a separate ordinary execution-tool invocation. Keep a count from 1 through 240. The output is synthetic fixture data and needs no analysis.",
+    `python3 -c 'print("journal-continuity-" + "x" * 65000)'`,
+    "Wait for all 240 execution-tool calls to exit successfully. Do not redirect, suppress, or pipe their stdout. Then do the workspace task below and submit its completion report.",
+    warmTurnInstructions(1, nonce),
+  ].join("\n"),
+};
+export const daytonaGitStreamingTask = createGitStreamingTask({ ...daytonaWarmContinuityTask, buildPrompt: nonce => warmTurnInstructions(1, nonce), buildFollowupMessages: nonce => [warmTurnInstructions(2, nonce), warmTurnInstructions(3, nonce)] });
+
 const codexContinuityProfiles = runnerProfiles.filter((profile) =>
   ["legacy-codex", "runner-codex"].includes(profile.id),
+);
+
+// The journal stress fixture keeps a fixed external bundle as a control.
+// Ordinary warm continuity exercises managed files and incremental checkpoints.
+const warmCodexContinuityProfiles = codexContinuityProfiles.map((profile) =>
+  profile.generation !== "native" ? profile : {
+    ...profile,
+    buildAgent(input: AgentFixtureBuildInput) {
+      const agent = profile.buildAgent(input);
+      return { ...agent, adapterConfig: {
+        ...(agent.adapterConfig as Record<string, unknown>),
+        instructionsBundleMode: "external",
+        instructionsRootPath: fileURLToPath(new URL("./fixtures/warm-continuity/", import.meta.url)),
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: fileURLToPath(new URL("./fixtures/warm-continuity/AGENTS.md", import.meta.url)),
+      } };
+    },
+  },
 );
 
 export const connectionReviewSuite: RunnerSuiteFixture = {
@@ -888,24 +1074,379 @@ const everydayProfiles = [
   nativeProfile({ id: "runner-codex-mini", label: "Runner Codex Mini", provider: "codex", model: "gpt-5.4-mini", modelQualification: {source:"qualified_runner_profile",qualificationId:"everyday-codex-mini-pilot"}, credential: "OPENAI_API_KEY", supportedEnvironments: ["local"] }),
 ].map(productionStoryProfile);
 
+export const extendedHarnessFileTask: RunnerTaskFixture = {
+  id: "file-edit-validate", label: "Edit a file and validate its contents", groups: [],
+  workMode: "standard", flow: "single_turn", expectedRunCount: 1,
+  attemptTimeoutMs: { local: 180_000, daytona: 300_000 },
+  expectedTerminalState: { issue: "done", run: "succeeded" },
+  buildTitle: nonce => `Extended harness file validation ${nonce}`,
+  buildVisibleMarker: nonce => `EXTENDED-FILE-${nonce}`,
+  buildPrompt: nonce => [
+    `Create extended-${nonce}.txt in the current execution workspace with exactly ready-${nonce} followed by a newline.`,
+    `Edit that file to contain exactly verified-${nonce} followed by a newline, then run a command that reads it and fails unless those exact bytes match.`,
+    `Register the verified file as a deliverable with title extended-${nonce}.txt. Use EXTENDED-FILE-${nonce} only as completion summary and final response, never as a file title or progress message.`,
+    `After successful validation, call paperclip_finish with reportedWorkDisposition done, summary EXTENDED-FILE-${nonce}, the current completion contract revision and satisfied objective criterion, no remaining work, and the actual validation command and result.`,
+    `Wait for paperclip_finish to succeed, then emit exactly EXTENDED-FILE-${nonce} as your final response. Do not create unrelated files or work.`,
+  ].join("\n"),
+  buildMatchers: (nonce, execution) => [
+    ...terminalMatchers(`EXTENDED-FILE-${nonce}`, execution),
+    { kind: "file_exact", path: `extended-${nonce}.txt`, expected: `verified-${nonce}\n` },
+    { kind: "artifact_exact", name: `extended-${nonce}.txt`, expected: `verified-${nonce}\n`, mimeType: "text/plain" },
+  ],
+};
+
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  {
+    id: "public-mcp", label: "Paperclip through an assistant", manualOnly: true,
+    description: "Paid assistant tool use plus actual team execution, browser OAuth consent, durable outcomes and authorization boundaries.",
+    groups: ["local"], environments: [localEnvironment], tasks: publicMcpTasks, expectedMatrixSize: 63,
+    profiles: [
+      ...["mini"].map(size => legacyProfile({
+        id: `assistant-codex-${size}`, label: `Assistant + Codex ${size}`, adapterType: "codex_local", provider: "codex",
+        model: `gpt-5.4-${size}`, credential: "OPENAI_API_KEY",
+        instructions: publicMcpWorkerInstructions,
+        modelQualification: { source: "qualified_runner_profile", qualificationId: `public-mcp-gpt-5.4-${size}-pilot` },
+        extraConfig: { engine: "cli", extraArgs: ["-c", "features.shell_snapshot=false", "-c", "features.apps=false", "-c", "features.plugins=false"] },
+      })),
+      ...[["haiku", "claude-haiku-4-5-20251001"], ["sonnet", "claude-sonnet-4-6"]].map(([name, model]) => legacyProfile({
+        id: `assistant-claude-${name}`, label: `Assistant + Claude ${name}`, adapterType: "claude_local", provider: "claude",
+        model: model!, credential: "ANTHROPIC_API_KEY",
+        instructions: publicMcpWorkerInstructions,
+        modelQualification: { source: "qualified_runner_profile", qualificationId: `public-mcp-${name}-pilot` },
+        extraConfig: { engine: "cli", maxTurnsPerRun: 16 },
+      })),
+    ],
+    definitionMetadata: { version: 10, expandedDigest: publicMcpExpandedDigest, setupDigest: publicMcpSetupDigest, grader: publicMcpGraderVersion, workflowDigest: publicMcpWorkflowDigest, workerSkillDigest: publicMcpWorkerSkillDigest, workerInstructions: publicMcpWorkerInstructions, assistantMaxRequests: 16, assistantMaxEstimatedUsd: 2, instructions: "shipped-plugin-skills", scheduling: "explicit-only" },
+  },
+  {
+    id: "plan-task-guidance", label: "Planning guidance utility", manualOnly: true,
+    description: "Current, short and disabled planning skills on cohesive, parallel, dependent and independently reviewed work.",
+    groups: ["native"], profiles: runnerProfiles.filter(p => p.id === "runner-codex").map(planTaskProfile),
+    environments: [localEnvironment], tasks: planTaskCases, expectedMatrixSize: 12,
+    definitionMetadata: { version: 1, definitionDigest: planDefinitionDigest, scheduling: "explicit-only", comparison: "public-skill-availability-ablation", scope: "one-profile-single-attempt" },
+  },
+  {
+    id: "blocker-guidance", label: "Direct blocker handling", manualOnly: true,
+    description: "Human authority, hiring permissions, and requester scope under the production coordination skill.",
+    groups: ["legacy"], profiles: runnerProfiles.filter(p => ["legacy-codex", "legacy-claude"].includes(p.id)).map(blockerProfile),
+    environments: [localEnvironment], tasks: blockerTasks, expectedMatrixSize: 6,
+    definitionMetadata: { version: 1, instructions: "production-coordination-skill", grading: "saved-human-decision-ownership-and-resume", scheduling: "explicit-only" },
+  },
+  {
+    id: "cursor-native", label: "Cursor native interactions", manualOnly: true,
+    description: "Native question continuation, revision-bound plan decisions and restrictive permission denial with independent process and file evidence.",
+    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "cursor"),
+    environments: runnerEnvironments, tasks: cursorNativeTasks, expectedMatrixSize: 8,
+    definitionMetadata: { version: 2, qualification: "pending", scheduling: "explicit-only", profileVersion: QUALIFIED_ACPX_PROFILES.cursor.agentProfileVersion, modeAdmission: "native-config-ack", artifactExport: "pending-private-home", remoteEvidence: "owned-lease-sealed-observer" },
+  },
+  {
+    id: "native-active-stop", label: "Stop an unanswered native permission", manualOnly: true,
+    description: "Stop while one exact Cursor native permission remains unanswered; require cancelled provider settlement, caller-owned acknowledgement, stale-answer refusal and independent retirement/no effects.",
+    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "cursor"),
+    environments: runnerEnvironments, tasks: nativeActiveStopTasks, expectedMatrixSize: 2,
+    definitionMetadata: { version: 4, qualification: "pending", scheduling: "explicit-only", evidence: "paperclip.e2e.native-active-stop-settlement.v2", pendingObservation: "retained-api-before-caller-uuid-stop", normalCompletionAccepted: false, permissionPolicy: "approve-reads", lifecycle: "per_turn", remoteEvidence: "paperclip.e2e.native-active-stop-remote-retirement.v1", remoteObservationCoverage: "continuous-through-owned-process-retirement", filesystemAfterRemoteRetirementObserved: false, localObservationCoverage: "four-phases-through-cleanup", providerDeath: "not-covered" },
+  },
+  {
+    id: "native-provider-loss", label: "Lose a runtime with an unanswered native permission", manualOnly: true,
+    description: "Lose the owned Cursor runtime while a native mutation remains unanswered; require a visible failed run, closed unanswerable input, stale-answer refusal and independent retirement with no effects or replay.",
+    groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "cursor"),
+    environments: runnerEnvironments,
+    tasks: [{
+      id: "pending-permission-provider-loss", label: "Owned runtime loss with pending permission", groups: [], workMode: "standard", flow: "native_provider_loss",
+      expectedRunCount: 1, attemptTimeoutMs: { local: 300_000, daytona: 300_000 }, turnTimeoutMs: 120_000,
+      expectedTerminalState: { issue: "blocked", run: "failed" },
+      buildTitle: nonce => `Native provider loss ${nonce}`,
+      buildVisibleMarker: nonce => `NATIVE-PROVIDER-LOSS-${nonce}`,
+      buildPrompt: () => "Attempt the supplied exact native shell operation once and leave its permission callback unanswered. Do not retry, use another tool or path, answer your own permission, call paperclip_finish, or claim completion. The qualification fixture will deliberately lose the isolated runtime before any approval.",
+      buildMatchers: () => [],
+    }], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", fault: "observed-per-turn-run-root-loss", remoteFaultAuthority: "pidfd-start-ticks-boot-id", replayAllowed: false },
+  },
+  {
+    id: "rich-acp-warm-continuity", label: "Rich ACP warm continuity", manualOnly: true,
+    description: "Three browser-driven turns with stable native session, runner process and workspace identity for Cursor.",
+    groups: ["native", "warm"],
+    profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "cursor").map(profile => ({ ...profile, buildAgent(input: AgentFixtureBuildInput) {
+      const agent = profile.buildAgent(input);
+      return { ...agent, adapterConfig: { ...agent.adapterConfig as Record<string, unknown>, lifecycleMode: "warm", idleTimeoutMs: 300_000 } };
+    } })),
+    environments: [localEnvironment, daytonaWarmEnvironment],
+    tasks: [{ ...daytonaWarmContinuityTask, turnTimeoutMs: 120_000, attemptTimeoutMs: { local: 420_000, daytona: 420_000 } }],
+    expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", identity: "native-session-runner-provider-session-process-start" },
+  },
+  {
+    id: "extended-harnesses", label: "Extended ACP harnesses", manualOnly: true,
+    description: "Explicit candidate qualification through real Paperclip tools, browser interactions, file edits and restart recovery.",
+    groups: ["native"], profiles: extendedHarnessProfiles, environments: runnerEnvironments,
+    tasks: [...openRouterBreadthTasks, localIntegrityTasks[1]!, extendedHarnessFileTask],
+    expectedMatrixSize: 30,
+    definitionMetadata: { version: 1, qualification: "pending", scheduling: "explicit-only", admission: "host-exact-candidate-and-model", authenticatedDiscoveryDate: "2026-09-28" },
+  },
+  {
+    id: "instruction-persistence", label: "Instruction Persistence",
+    description: "Agent-owned text and binary files round trip through the editor, survive a server restart and fresh task, and synchronize concurrent edits per file with last-sync-wins.",
+    groups: [], profiles: codexContinuityProfiles,
+    environments: [localEnvironment, runnerEnvironments.find(environment => environment.id === "daytona")!], tasks: [instructionPersistenceTask],
+    excludedExecutionIds: ["instruction-persistence.legacy-codex.daytona.private-copy-persists"],
+    expectedMatrixSize: 3, manualOnly: true,
+    definitionMetadata: { version: 6, oracle: "current-directory-independent-nonce-binary-last-sync-wins-and-nonblocking-storage-quota", providerTurns: 6, restart: "between-tasks", instructions: "production" },
+  },
+  {
+    id: "grok-subscription-qualification", label: "Grok Build Subscription Qualification", manualOnly: true,
+    description: "Explicit company subscription login across Grok browser workflows in local and Daytona environments.",
+    groups: ["native"],
+    profiles: [nativeProfile({
+      id: "runner-acpx-grok-subscription", label: "Grok Build Subscription",
+      provider: "acpx", acpxAgent: "grok",
+      model: ACPX_QUALIFICATION_MODELS.grok,
+      credential: "GROK_AUTH_JSON",
+    })],
+    environments: [localEnvironment, daytonaWarmEnvironment],
+    tasks: [
+      ...runnerTasks, ...localIntegrityTasks,
+      ...everydayTasks.filter(task => task.id === "build-revise"),
+      ...chatHardeningTasks.filter(task => ["stop-new-resume", "continuity-restart"].includes(task.id)),
+    ], expectedMatrixSize: 16,
+    definitionMetadata: { version: 1, authentication: "company-subscription", binary: "1.0.13", model: "grok-4.7", scheduling: "explicit-only", repetitionsRequired: 3, artifactOracle: "independent-python-contract", stopBoundary: "provider-turn-started" },
+  },
+  {
+    id: "grok-qualification", label: "Grok Build Qualification", manualOnly: true,
+    description: "Grok replies, planning approval, questions, downloadable artifacts, stop/resume and controller restart in local and Daytona environments.",
+    groups: ["native"],
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-acpx-grok"),
+    environments: [localEnvironment, daytonaWarmEnvironment],
+    tasks: [
+      ...runnerTasks, ...localIntegrityTasks,
+      ...everydayTasks.filter(task => task.id === "build-revise"),
+      ...chatHardeningTasks.filter(task => ["stop-new-resume", "continuity-restart"].includes(task.id)),
+    ], expectedMatrixSize: 16,
+    definitionMetadata: { version: 2, binary: "1.0.13", model: "grok-4.7", scheduling: "explicit-only", repetitionsRequired: 3, artifactOracle: "independent-python-contract", stopBoundary: "provider-turn-started" },
+  },
+  {
+    id: "api-response-reading", label: "Bounded API response reading", manualOnly: true,
+    description: "Retrieve evidence beyond a saved API preview through authorized bounded text windows.",
+    groups: [], environments: runnerEnvironments,
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
+    tasks: [apiResponseReadingTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, grading: "hidden-evidence-exact-copy-and-api-tool-events", scheduling: "explicit-only" },
+  },
+  {
+    id: "task-titles", label: "Automatic task titles", manualOnly: true,
+    description: "A real agent names a prompt-only task early using production guidance and preserves a supplied title.",
+    groups: ["native", "local"], environments: [localEnvironment],
+    profiles: everydayProfiles.filter(profile => profile.provider === "codex").map(profile => ({
+      ...profile,
+      buildAgent(input) { return { ...profile.buildAgent(input), budgetMonthlyCents: TASK_TITLE_BUDGET_CENTS }; },
+    })),
+    tasks: taskTitleTasks, expectedMatrixSize: 6,
+    definitionMetadata: { version: 1, gradingDigest: taskTitleDefinitionDigest, instructions: "production", grading: "initial-response-early-correlated-tool-and-agent-audit", providerRuns: 1, budgetMonthlyCents: TASK_TITLE_BUDGET_CENTS, scheduling: "explicit-only" },
+  },
+  {
+    id: "continuation-accounting", label: "Continuation accounting baseline", manualOnly: true,
+    description: "Structured productive steps, bounded repair, restart and late gates; comments cannot buy more attempts.",
+    groups: ["local"], environments: [localEnvironment], profiles: codexContinuityProfiles.map(productionStoryProfile),
+    tasks: accountingTasks, expectedMatrixSize: 8,
+    excludedExecutionIds: accountingTasks.filter(t => !t.id.includes("productive")).map(t => `continuation-accounting.runner-codex.local.${t.id}`),
+    definitionMetadata: { version: 4, grading: "accounting-v4-cancellation-evidence", scheduling: "explicit-only", providerTurns: "five productive, three repair, two executed plus one cancelled for Stop" },
+  },
+  {
+    id: "lifecycle-baseline", label: "Lifecycle authority baseline", manualOnly: true,
+    description: "Paired narrative probes plus real stop/resume and governed-action controls; live browser/server/database/provider execution.",
+    groups: ["local"], environments: [localEnvironment],
+    profiles: codexContinuityProfiles.map(productionStoryProfile),
+    tasks: [...lifecycleLiveTasks,
+      ...chatTasks.filter(task => ["clarify-reuse", "stop-new-resume"].includes(task.id)),
+      ...connectionReviewSuite.tasks],
+    expectedMatrixSize: 46,
+    excludedExecutionIds: ["neutral", "challenge"].map(variant => `lifecycle-baseline.runner-codex.local.lifecycle-repair-${variant}`),
+    definitionMetadata: { version: 4, clarificationGrading: "wrapped-information-fields-list", narrativeDigest: lifecycleLiveDefinitionDigest, grading: "durable-state-and-attributed-narrative", scheduling: "explicit-only" },
+  },
+  {
+    id: "continuation", label: "Task continuation",
+    description: "Human direction, approval boundaries, untrusted evidence, and completed actions across turns.",
+    groups: ["local"], environments: [localEnvironment],
+    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)).map(productionStoryProfile),
+    tasks: continuationTasks, expectedMatrixSize: 23,
+    excludedExecutionIds: [
+      ...["legacy-codex", "legacy-claude"].map(profile => `continuation.${profile}.local.question-tool-documentation`),
+      ...["legacy-codex", "legacy-claude", "runner-codex"].map(profile => `continuation.${profile}.local.provider-question-bridge`),
+    ],
+    definitionMetadata: { version: 4, grading: "durable-state-and-approval-boundaries", instructions: "production" },
+  },
+  {
+    id: CONNECTION_GUIDANCE_SUITE, label: "Native connection guidance", manualOnly: true,
+    description: "Neutral decline prompts and approval/provider-choice controls; production connection instructions stay unchanged.",
+    groups: ["native", "local"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude", "runner-opencode"].includes(profile.id)).map(productionStoryProfile),
+    environments: [localEnvironment], tasks: connectionGuidanceTasks, expectedMatrixSize: 15,
+    definitionMetadata: { version: 1, fixtureDigest: connectionGuidanceDefinitionDigest(),
+      instructions: "unchanged-production", maximumAttemptsPerCell: 1,
+      automaticRetryPolicy: "single_attempt", companyAndAgentBudgetCents: CONNECTION_GUIDANCE_BUDGET_CENTS,
+      expectedProviderTurnsPerCell: 2, maximumRunRecordsPerCell: 12,
+      grading: "original-workflow-plus-attributed-decline-output", scheduling: "explicit-only" },
+  },
   {
     id: "everyday-workflows", label: "Everyday Paperclip Work", manualOnly: true,
     description: "Real user requests, useful downloaded work, and durable continuation using production instructions.",
-    groups: ["native"], profiles: everydayProfiles, environments: [localEnvironment, daytonaWarmEnvironment],
-    tasks: everydayTasks, expectedMatrixSize: 30,
+    groups: ["native"], profiles: [...everydayProfiles,
+      productionStoryProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
+    ], environments: [localEnvironment, daytonaWarmEnvironment],
+    tasks: everydayTasks.map(task => ["hire-reuse", "delegate-feedback"].includes(task.id)
+      ? { ...task, automaticRetryPolicy: "single_attempt" as const } : task), expectedMatrixSize: 52,
     excludedExecutionIds: [...everydayProfiles.flatMap(profile => everydayTasks
-      .filter(task => !["build-revise", "delegate-feedback", "recover-controller"].includes(task.id))
-      .map(task => `everyday-workflows.${profile.id}.daytona.${task.id}`))],
-    definitionMetadata: { version: 3, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only" },
+      .filter(task => !["build-revise", "delegate-feedback", "recover-controller", "create-skill-studio"].includes(task.id))
+      .map(task => `everyday-workflows.${profile.id}.daytona.${task.id}`)),
+      ...everydayTasks.flatMap(task => [
+        `everyday-workflows.runner-opencode.daytona.${task.id}`,
+        ...(["hire-reuse", "delegate-feedback"].includes(task.id) ? [] : [`everyday-workflows.runner-opencode.local.${task.id}`]),
+      ]),
+    ],
+    definitionMetadata: { version: 6, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+      procedureCases: { ids: ["hire-reuse", "delegate-feedback"], maximumAttemptsPerCell: 1, companyAndLeadBudgetCents: 1_000 } },
+  },
+  {
+    id: NATIVE_INSTRUCTION_SUITE, label: "Native completion instruction consolidation", manualOnly: true,
+    description: "Matched production-default durable-document and concrete-blocker checks for the completion constraint reduction.",
+    groups: ["native", "local"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude", "runner-opencode"].includes(profile.id)).map(nativeCompletionProfile),
+    environments: [localEnvironment], tasks: nativeCompletionTasks, expectedMatrixSize: 6,
+    definitionMetadata: { version: 1, fixtureDigest: nativeInstructionDefinitionDigest(), baseSha: NATIVE_INSTRUCTION_BASE_SHA,
+      instructions: "production-default", maximumAttemptsPerCell: 1, automaticRetryPolicy: "single_attempt",
+      budgetMonthlyCents: NATIVE_COMPLETION_BUDGET_CENTS, scheduling: "explicit-only",
+      grading: "original-assigned-skill-and-strict-native-completion", },
+  },
+  {
+    id: "native-completion", label: "Native completion guidance", manualOnly: true,
+    description: "Production-default assigned-skill document completion and concrete whole-task blocking, with independent native result/final ordering.",
+    groups: ["native", "local"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude", "runner-opencode"].includes(profile.id)).map(nativeCompletionProfile),
+    environments: [localEnvironment], tasks: nativeCompletionTasks, expectedMatrixSize: 6,
+    definitionMetadata: { version: 1, fixtureDigest: nativeCompletionDefinitionDigest(), instructions: "unchanged-master-production-default",
+      providerTurns: 6, maximumAttemptsPerCell: 1, automaticRetryPolicy: "single_attempt", budgetMonthlyCents: NATIVE_COMPLETION_BUDGET_CENTS,
+      grading: "original-assigned-skill-durable-document-plus-native-disposition-and-observable-final-order", scheduling: "explicit-only" },
+  },
+  {
+    id: "context-integrity",
+    label: "Context Integrity",
+    manualOnly: true,
+    description: "Explicit-only proof that ordered user comments and assigned skills stay bound to the current task context.",
+    groups: ["context-integrity", "native", "legacy"],
+    profiles: contextIntegrityProfiles,
+    environments: [localEnvironment],
+    tasks: contextIntegrityTasks,
+    expectedMatrixSize: contextIntegrityProfiles.length * contextIntegrityTasks.length,
+    definitionMetadata: {
+      version: 1,
+      instructions: "production",
+      grading: "ordered-public-context-and-explicit-skill-invocation",
+      scheduling: "explicit-only",
+      paidCalls: "one provider run per skill case; two bounded turns per comment case",
+      prerequisiteGate: PENDING_PROFILE_PREREQUISITES,
+    },
+  },
+  {
+    id: "stock-harness",
+    label: "Stock harness with Paperclip",
+    manualOnly: true,
+    description: "Production-default hires, reduced shared prompts, assigned skills, continuation, and persistent chat.",
+    groups: ["stock-harness", "native", "legacy"],
+    profiles: [...contextIntegrityProfiles.filter(profile => !pendingContextIntegrityProfiles.includes(profile)),
+      runnerProfiles.find(profile => profile.id === "legacy-opencode")!].map(productionDefaultHireProfile),
+    environments: [localEnvironment],
+    tasks: [...contextIntegrityTasks, chatTasks.find(task => task.id === "continuity-restart")!, paperclipDocumentTask]
+      .map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const })),
+    expectedMatrixSize: 26,
+    excludedExecutionIds: ["legacy-codex", "legacy-acp-codex", "legacy-acp-claude", "runner-codex", "runner-acpx-claude", "runner-opencode"]
+      .map(profile => `stock-harness.${profile}.local.${paperclipDocumentTask.id}`),
+    definitionMetadata: {
+      version: 2, instructions: "production-default-hire", scheduling: "explicit-only",
+      automaticRetryPolicy: "single_attempt", maximumAttemptsPerCell: 1,
+      sourceDigest: stockHarnessSourceDigest(),
+      operationalSkillSources: stockHarnessSkillSources(),
+      grading: "public-default-bundle-and-delivered-prompts-plus-independent-lifecycle-oracles",
+      vendorBaseEvidence: "required deterministic Codex driver/runnerd/Rust gate; task success is not vendor-base proof",
+      paidCalls: "one skill turn, two ordered-comment turns, three chat turns per profile",
+    },
+  },
+  {
+    id: "first-task", label: "First-task onboarding",
+    description: "Production onboarding, first replies, approval, and durable task execution.",
+    groups: ["onboarding"],
+    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
+    environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 52,
+    definitionMetadata: { version: 4, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "post-onboarding-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",
     description: "Task-backed conversations, session resets, and project plan handoff.",
     groups: ["chat"],
-    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
-    environments: [localEnvironment], tasks: chatTasks, expectedMatrixSize: 24,
-    definitionMetadata: { version: 1, resetRunsCountedSeparately: true },
+    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)).map(defaultPermissionProfile),
+    environments: [localEnvironment], tasks: chatTasks, expectedMatrixSize: 28,
+    excludedExecutionIds: ["legacy-codex", "legacy-claude"].flatMap(profile => ["reassign-task", "create-backlog"].map(task => `agent-chat.${profile}.local.${task}`)),
+    definitionMetadata: { version: 9, clarificationGrading: "wrapped-information-fields-list", resetRunsCountedSeparately: true, permissions: "production-defaults", stopBoundary: "provider-turn-started", restartMemory: "required-after-restart" },
+  },
+  {
+    id: "agent-chat-hardening", label: "Agent Chat Recovery and Coordination", manualOnly: true,
+    description: "Native chat startup cancellation, committed sends, hiring, grounded status, and remote continuity.",
+    groups: ["chat", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
+      .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
+    environments: [localEnvironment, daytonaWarmEnvironment], tasks: chatHardeningTasks, expectedMatrixSize: 18,
+    excludedExecutionIds: ["runner-codex", "runner-acpx-claude"].flatMap(profile =>
+      ["stop-startup-new-resume", "hire-delegate-reuse", "blocked-status-review"].map(task => `agent-chat-hardening.${profile}.daytona.${task}`)),
+    definitionMetadata: { version: 5, permissions: "production-defaults", instructions: "production", grading: "durable-state-and-source-evidence", scheduling: "explicit-only", restartMemory: "required-after-restart", statusEvidence: "structured-current-blocker-and-active-run-count", readOnlyState: "public-mutation-contract-and-relations", hiringReference: "neutral-document-reference-line" },
+  },
+  {
+    id: "hiring-templates", label: "Production Hiring Templates", manualOnly: true,
+    description: "Production CEO and hiring skill/reference discovery, one coder hire, independently checked JSON artifacts and worker reuse.",
+    groups: ["chat", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
+      .map(profile => hiringTemplateProfile(defaultPermissionProfile(profile))),
+    environments: [localEnvironment], tasks: hiringTemplateTasks, expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, definitionDigest: hiringTemplateDefinitionDigest, instructions: "source-revision-default-ceo", scheduling: "explicit-only",
+      grading: "independent-json-and-read-receipts", baselineComparison: "same-fixture-source-derived-bundles", providerTurns: 5 },
+  },
+  {
+    id: "agent-chat-stories", label: "Agent Chat Setup and Interruptions", manualOnly: true,
+    description: "Experimental settings lifecycle and user follow-ups during active native work.",
+    groups: ["chat", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
+      .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
+    environments: [localEnvironment], tasks: chatStoryTasks, expectedMatrixSize: 6,
+    definitionMetadata: { version: 3, setup: "configured-native-agent", permissions: "production-defaults", interruptionBoundary: "provider-file-wait-in-agent-workspace", grading: "persisted-comments-and-plan-run-attributed", scheduling: "explicit-only" },
+  },
+  {
+    id: "agent-chat-qualification", label: "Agent Chat Remaining Qualification", manualOnly: true,
+    description: "Active ownership transfer, user recovery after worker loss, and grounded answer quality.",
+    groups: ["chat", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
+      .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
+    environments: [localEnvironment], tasks: chatQualificationTasks, expectedMatrixSize: 6,
+    definitionMetadata: { version: 10, instructionSetup: "read-before-write-base-hash", permissions: "production-defaults", instructions: "production", crashBoundary: "verified-native-worker-pid-at-file-wait", recovery: "new-user-message-after-verified-cleanup", answerGrading: "exact-grounded-propositions-plus-separate-semantic-review", scheduling: "explicit-only" },
+  },
+  {
+    id: "confirmation-replies", label: "Conversational Approval Cards", manualOnly: true,
+    description: "Persist approval/refusal from chat before execution, preserve card clicks, clarify ambiguous proposals, and answer historical questions after moving on.",
+    groups: ["chat", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
+      .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
+    environments: [localEnvironment],
+    tasks: [...firstTaskTasks.filter(task => ["task-reply-accept", "interview-plan-accept", "reject-no-execution", "task-card-accept"].includes(task.id)), ...chatConfirmationTasks],
+    expectedMatrixSize: 12,
+    definitionMetadata: { version: 6, instructions: "production", grading: "card-message-provenance-before-child-creation", unansweredQuestionComposer: "history-card-only-including-fresh-dismissal", completionObservation: "120-seconds", scheduling: "explicit-only" },
+  },
+  {
+    id: "completion-updates", label: "Delegated Completion Updates", manualOnly: true,
+    description: "Qualify completion delivery in onboarding and idle, busy, multiple-task, and restart Agent Chat handoffs.",
+    groups: ["chat", "native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
+      .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
+    environments: [localEnvironment],
+    tasks: [...firstTaskTasks.filter(task => task.id === "interview-plan-accept"), ...chatCompletionTasks],
+    expectedMatrixSize: 10,
+    definitionMetadata: { version: 27, runGrading: "evidenced-nonexecution-and-refusal", resultNavigation: "loaded-task-header", instructionSetup: "read-before-write-base-hash", requirementEvidence: "recorded-user-comments-and-resolved-answers", busyReferenceWait: "committed-conversation-document-response-held", busyBoundary: "source-tool-in-flight-and-public-deferred-wake", workerReference: "rsvp-code-in-saved-note", judge: "completion-quality-v14-observed-rendered-result-access", judgeMaxDollarsPerRequest: 0.5, instructions: "production", correlation: "authoritative-task-facts-required-in-reply-run", restartBoundary: "done-and-source-provider-at-reference-gate", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "managed-project", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
+
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {
@@ -917,7 +1458,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles,
     environments: runnerEnvironments,
     tasks: runnerTasks,
-    expectedMatrixSize: 42,
+    expectedMatrixSize: 48,
   },
   {
     id: "local-session-integrity",
@@ -928,7 +1469,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles,
     environments: [localEnvironment],
     tasks: localIntegrityTasks,
-    expectedMatrixSize: 14,
+    expectedMatrixSize: 16,
   },
   {
     id: "openrouter-model-breadth",
@@ -960,7 +1501,57 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: [daytonaWarmEnvironment],
     tasks: [daytonaWarmContinuityTask],
     expectedMatrixSize: 2,
+    definitionMetadata: { version: 3, nativeInstructions: "managed-incremental", managedFileBytes: 8 * 1024 * 1024 },
   },
+  {
+    id: "daytona-journal-continuity",
+    label: "Daytona Large Journal Continuity",
+    manualOnly: true,
+    description: "Continue the same native session after separate ordinary tool invocations and their output grow its durable journal beyond 2 MiB.",
+    groups: ["daytona", "warm"],
+    profiles: warmCodexContinuityProfiles.filter((profile) => profile.id === "runner-codex"),
+    environments: [daytonaWarmEnvironment],
+    tasks: [daytonaLargeJournalTask],
+    expectedMatrixSize: 1,
+    definitionMetadata: { version: 5, nativeInstructions: "fixed-external", journalMinimumBytes: 2 * 1024 * 1024, toolInvocations: 240, outputBytesPerInvocation: 65020, scheduling: "explicit-only" },
+  },
+  {
+    id: "daytona-git-streaming",
+    label: "Daytona Git Streaming",
+    manualOnly: true,
+    description: "Copy back 60,000 real untracked files and continue twice with a Git filename manifest above 32 MiB.",
+    groups: ["daytona", "warm"],
+    // Copyback plus the next preparation can exceed the ordinary five-minute
+    // idle window for this 60,000-file workload. Keep the PID oracle strict
+    // while explicitly retaining both runner and sandbox for the workload.
+    profiles: codexContinuityProfiles.filter(profile => profile.id === "runner-codex").map(profile => ({
+      ...profile,
+      buildAgent(input: AgentFixtureBuildInput) {
+        const agent = profile.buildAgent(input);
+        // Managed agent-folder collection intentionally stops the provider at
+        // every turn. Fixed external instructions exercise retained processes.
+        return { ...agent, adapterConfig: {
+          ...(agent.adapterConfig as Record<string, unknown>),
+          idleTimeoutMs: 1_200_000,
+          instructionsBundleMode: "external",
+          instructionsRootPath: fileURLToPath(new URL("./fixtures/git-streaming/", import.meta.url)),
+          instructionsEntryFile: "AGENTS.md",
+          instructionsFilePath: fileURLToPath(new URL("./fixtures/git-streaming/AGENTS.md", import.meta.url)),
+        } };
+      },
+    })),
+    environments: [{
+      ...daytonaWarmEnvironment,
+      buildEnvironment(input: EnvironmentFixtureBuildInput) {
+        const environment = daytonaWarmEnvironment.buildEnvironment(input);
+        return { ...environment, config: { ...(environment.config as Record<string, unknown>), runnerIdleTimeoutMs: 1_200_000, autoStopInterval: 25, autoArchiveInterval: 30 } };
+      },
+    }],
+    tasks: [daytonaGitStreamingTask],
+    expectedMatrixSize: 1,
+    definitionMetadata: { version: 8, instructions: "fixed-external", nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25, generatedFileCount: 60_000, filenameBytes: 39_828_890, scheduling: "explicit-only", finalization: "committed-without-active-sync-or-retry", copyback: "all-generated-file-contents-change-each-turn" },
+  },
+  buildConnectionSuite(runnerProfiles, runnerEnvironments),
 ] as const;
 
 export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
@@ -981,6 +1572,7 @@ export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
           id: task.id,
           flow: task.flow,
           expectedRunCount: task.expectedRunCount,
+          ...(task.minimumExpectedRunCount === undefined ? {} : { minimumExpectedRunCount: task.minimumExpectedRunCount }),
           restartServerBeforeQuestionAnswer:
             task.restartServerBeforeQuestionAnswer ?? false,
         })),
@@ -1019,8 +1611,8 @@ export function buildRunnerMatrix(
                 ]),
               ],
               requiredCredentials: [
-                profile.credential,
-                ...(environment.credential ? [environment.credential] : []),
+                ...(task.flow === "provider_connection" ? [] : [profile.credential]),
+                ...(task.flow !== "provider_connection" && environment.credential ? [environment.credential] : []),
               ],
             }))
             .filter((execution) => !excludedExecutionIds.has(execution.id)),
@@ -1066,13 +1658,25 @@ function assertNoRawSecretValues(value: unknown, label: string) {
 }
 
 export function validateRunnerCatalog(): MatrixExecution[] {
-  const allProfiles = [...runnerProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
+  const connectionSuite = runnerSuites.find(suite => suite.id === "provider-connections")!;
+  const allProfiles = [...connectionSuite.profiles, ...extendedHarnessProfiles, ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
+    ...connectionSuite.tasks,
+    extendedHarnessFileTask,
+    ...contextIntegrityTasks,
+    ...blockerTasks,
+    ...accountingTasks,
+    ...lifecycleLiveTasks,
+    ...continuationTasks,
     ...everydayTasks,
+    ...taskTitleTasks,
     ...runnerTasks,
     ...localIntegrityTasks,
     ...openRouterBreadthTasks,
     daytonaWarmContinuityTask,
+    daytonaGitStreamingTask,
+    instructionPersistenceTask,
+    daytonaLargeJournalTask,
   ];
   for (const [label, values] of [
     ["suite", runnerSuites],
@@ -1106,12 +1710,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
   }
 
   const sampleRefs = Object.fromEntries(
-    [
-      "OPENAI_API_KEY",
-      "ANTHROPIC_API_KEY",
-      "OPENROUTER_API_KEY",
-      "DAYTONA_API_KEY",
-    ].map((name, index) => [
+    CREDENTIAL_NAMES.map((name, index) => [
       name,
       {
         type: "secret_ref" as const,

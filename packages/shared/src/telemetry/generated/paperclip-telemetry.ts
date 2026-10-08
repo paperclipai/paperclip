@@ -58,6 +58,7 @@ interaction_kind: ("suggest_tasks" | "ask_user_questions" | "request_confirmatio
 used_deprecated_resolver_policy_alias: boolean
 }
 
+/** Emit only after the complete resolution transaction commits, including response provenance. */
 export interface PaperclipInteractionResolvedDimensions {
 interaction_kind: ("suggest_tasks" | "ask_user_questions" | "request_confirmation" | "request_checkbox_confirmation" | "request_item_verdicts" | "other")
 status: ("accepted" | "rejected" | "answered" | "cancelled" | "expired" | "failed" | "other")
@@ -95,6 +96,8 @@ status: ("received" | "coalesced" | "skipped" | "issue_created" | "completed" | 
 }
 
 export interface PaperclipSkillImportedDimensions {
+/** skill_ref may identify a known public catalog source only. Omit it for
+ * GitHub-synced sources, which may be private; never emit repository paths or names. */
 source_type: ("local_path" | "github" | "url" | "catalog" | "skills_sh" | "unknown")
 skill_ref?: string
 }

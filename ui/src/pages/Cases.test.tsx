@@ -18,11 +18,9 @@ const mockProjectsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockIssuesApi = vi.hoisted(() => ({ listLabels: vi.fn() }));
 const mockCopyTextToClipboard = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 const mockNavigate = vi.hoisted(() => vi.fn());
-const generalSettingsState = vi.hoisted(() => ({ keyboardShortcutsEnabled: false }));
 
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => companyState }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }) }));
-vi.mock("@/context/GeneralSettingsContext", () => ({ useGeneralSettings: () => generalSettingsState }));
 vi.mock("@/api/cases", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/cases")>()),
   casesApi: mockCasesApi,
@@ -114,7 +112,6 @@ describe("Cases list", () => {
     mockIssuesApi.listLabels.mockReset().mockResolvedValue([]);
     mockCopyTextToClipboard.mockClear();
     mockNavigate.mockClear();
-    generalSettingsState.keyboardShortcutsEnabled = false;
     HTMLElement.prototype.scrollIntoView = vi.fn();
   });
   afterEach(() => {
@@ -413,7 +410,6 @@ describe("Cases list", () => {
   });
 
   it("supports inbox-style keyboard navigation, group folding, and opening on grouped case rows", async () => {
-    generalSettingsState.keyboardShortcutsEnabled = true;
     mockCasesApi.list.mockResolvedValue([
       createCase({
         id: "blog",
@@ -462,7 +458,6 @@ describe("Cases list", () => {
   });
 
   it("supports keyboard tree folding and opening parent case rows", async () => {
-    generalSettingsState.keyboardShortcutsEnabled = true;
     window.localStorage.setItem(
       "paperclip:cases:company-1:view",
       JSON.stringify({

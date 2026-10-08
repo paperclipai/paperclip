@@ -49,8 +49,9 @@ async function main(): Promise<void> {
     console.log(
       JSON.stringify({
         nativeRunnerRequired:
-          experimental.enableNativeRunner === true || persistedNativeRun,
+          experimental.enableNativeRunner === true || experimental.enableOpenAiDot === true || persistedNativeRun,
         rolloutEnabled: experimental.enableNativeRunner === true,
+        dotRolloutEnabled: experimental.enableOpenAiDot === true,
         persistedNativeRun,
         persistedActiveNativeRun,
         persistedRetryableFailedNativeRun,

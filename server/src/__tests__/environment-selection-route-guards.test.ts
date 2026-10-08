@@ -62,6 +62,12 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(),
+    decide: vi.fn(async (input: { action: string }) => ({
+      allowed: ["project:read", "issue:read"].includes(input.action),
+      action: input.action,
+      reason: ["project:read", "issue:read"].includes(input.action) ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: ["project:read", "issue:read"].includes(input.action) ? "Allowed by test default." : "Missing permission.",
+    })),
     hasPermission: vi.fn(),
   }),
   agentService: () => ({
@@ -164,7 +170,7 @@ async function closeServer(server: Server | null) {
   });
 }
 
-describe.sequential("execution environment route guards", () => {
+describe("execution environment route guards", () => {
   afterAll(async () => {
     await closeServer(projectServer);
     await closeServer(issueServer);

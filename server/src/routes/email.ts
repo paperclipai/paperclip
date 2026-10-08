@@ -1,16 +1,20 @@
-import { Router, type Request } from "express";
+import { Router, type ErrorRequestHandler, type Request } from "express";
 import { z } from "zod";
 import {
   emailConnectionSchema,
+  emailAddressCheckSchema,
   emailEndpointSetupSchema,
   emailSendSchema,
+  isUuidLike,
 } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 import { emailConnectionService } from "../services/email-connections.js";
 import { accessService } from "../services/access.js";
-import { forbidden, notFound } from "../errors.js";
+import { badRequest, forbidden, HttpError, notFound } from "../errors.js";
+import { agentmailApi, AgentmailApiError } from "../services/agentmail-api.js";
+import { logger } from "../middleware/logger.js";
 import type {
   EmailChannelService,
   EmailActor,
@@ -24,6 +28,62 @@ function actor(req: Request): EmailActor {
         localImplicit: req.actor.source === "local_implicit",
       };
 }
+
+// Provider rejections describe setup/account problems, not Paperclip crashes.
+// Only local messages and operation names reach the UI; never forward a body.
+const agentmailErrorHandler: ErrorRequestHandler = (error, _req, res, next) => {
+  if (!(error instanceof AgentmailApiError)) return next(error);
+  logger.warn({ operation: error.operation, providerStatus: error.status, providerCode: error.providerCode }, "AgentMail request rejected");
+  const actions: Partial<Record<AgentmailApiError["operation"], string>> = {
+    request: "complete this request",
+    inspect_key: "verify the API key",
+    create_inbox: "create the email address",
+    create_inbox_key: "create an inbox-scoped API key",
+    create_webhook: "register the email webhook",
+  };
+  const action = actions[error.operation] ?? "complete this request";
+  let status = 422;
+  let code = "agentmail_request_failed";
+  let message: string;
+  const addressTaken = error.operation === "create_inbox"
+    && [403, 409, 422].includes(error.status)
+    && (error.providerCode === "resource_taken" || error.providerCode === "already_exists");
+  if (addressTaken) {
+    status = 409;
+    code = "agentmail_address_taken";
+    message = "This email address is already in use. Choose a different address.";
+  } else if (error.providerCode === "limit_exceeded") {
+    message = "Your AgentMail account has reached its resource limit. Free up space or increase your plan’s limit, then try again.";
+  } else if (error.providerCode === "domain_not_verified") {
+    message = "Verify this domain in AgentMail before creating an email address, or choose another domain.";
+  } else if (error.status === 401) {
+    message = "AgentMail rejected the API key. Check that it is correct and has not been revoked, then reconnect.";
+  } else if (error.status === 403) {
+    message = `AgentMail did not allow Paperclip to ${action}. Check your API key permissions and AgentMail account limits, then try again.`;
+  } else if (error.status === 429) {
+    status = 429;
+    res.set("Retry-After", String(Math.ceil(error.retryAfterMs / 1000)));
+    message = "AgentMail is rate limiting requests. Wait a moment, then try again.";
+  } else if ([400, 409, 422].includes(error.status) && error.operation === "create_inbox") {
+    message = "AgentMail could not create this email address. Try a different address and check that its domain is available in your AgentMail account.";
+  } else if (error.status === 404) {
+    message = error.operation === "create_inbox_key"
+      ? "AgentMail could not create an access key for this inbox. The email address was saved; try finishing the connection again."
+      : "AgentMail could not find the requested inbox or resource. Check that it still exists and that your API key can access it.";
+  } else if (error.status >= 500) {
+    status = 502;
+    message = "AgentMail is temporarily unavailable. Try again in a moment.";
+  } else {
+    message = `AgentMail could not ${action}. Check your AgentMail settings, then try again.`;
+  }
+  next(new HttpError(status, message, {
+    code,
+    providerStatus: error.status,
+    operation: error.operation,
+    ...(addressTaken ? { field: "username" } : {}),
+  }));
+};
+
 export function emailRoutes(db: Db, service: EmailChannelService) {
   const router = Router();
   async function manager(req: Request, companyId: string) {
@@ -44,13 +104,19 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
     )
       throw forbidden("Missing permission: tools:manage_connections");
   }
+  router.get("/companies/:companyId/email/connections", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await manager(req, companyId);
+    res.set("Cache-Control", "no-store").json(
+      await emailConnectionService(db).listCredentials(companyId, actor(req)),
+    );
+  });
   router.post(
     "/companies/:companyId/email/connections",
     validate(emailConnectionSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await manager(req, companyId);
-      await service.requireEnabled();
       res
         .status(201)
         .json(
@@ -67,7 +133,6 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await manager(req, companyId);
-      await service.requireEnabled();
       const saved = await emailConnectionService(db).credential(
         companyId,
         req.params.connectionId as string,
@@ -76,6 +141,19 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
       res
         .set("Cache-Control", "no-store")
         .json(await service.inspect(saved.value));
+    },
+  );
+  router.post(
+    "/companies/:companyId/email/connections/:connectionId/check-address",
+    validate(emailAddressCheckSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await manager(req, companyId);
+      const saved = await emailConnectionService(db).credential(
+        companyId, req.params.connectionId as string, actor(req),
+      );
+      res.set("Cache-Control", "no-store").json(await agentmailApi(saved.value)
+        .checkAddress(`${req.body.username}@${req.body.domain}`));
     },
   );
   router.get("/companies/:companyId/email/inboxes", async (req, res) => {
@@ -188,14 +266,18 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
   router.get("/companies/:companyId/email/tasks/:issueId", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const issueId = req.params.issueId as string;
+    if (issueId !== issueId.trim() || !isUuidLike(issueId)) {
+      throw badRequest("Task ID must be a UUID");
+    }
     await service.authorizeRead(
       companyId,
-      req.params.issueId as string,
+      issueId,
       actor(req),
     );
     const thread = await service.thread(
       companyId,
-      req.params.issueId as string,
+      issueId,
     );
     if (
       thread &&
@@ -224,6 +306,7 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
       res.json(delivery);
     },
   );
+  router.use(agentmailErrorHandler);
   return router;
 }
 export function emailWebhookRoutes(service: EmailChannelService) {

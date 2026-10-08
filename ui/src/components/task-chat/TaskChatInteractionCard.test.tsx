@@ -302,6 +302,40 @@ describe("TaskChatInteractionCard", () => {
     );
   });
 
+  it.each([createRequestConfirmation(), pendingRequestCheckboxConfirmationInteraction])(
+    "enables $kind acceptance when preparation clears on the same mounted card",
+    async (fixture) => {
+      const onAcceptInteraction = vi.fn();
+      const onRejectInteraction = vi.fn();
+      const render = (preparing: boolean) => flushSync(() => root.render(
+        <TooltipProvider><ThemeProvider>
+          <TaskChatInteractionCard
+            item={interactionItem({ ...fixture, acceptanceBlocker: preparing ? "workspace_sync_pending" : undefined })}
+            presentation="takeover"
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+          />
+        </ThemeProvider></TooltipProvider>,
+      ));
+      const approve = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent === (fixture.payload.acceptLabel ?? "Approve"),
+      )!;
+      render(true);
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Preparing approval…");
+      expect(approve().disabled).toBe(true);
+      await act(async () => approve().click());
+      expect(onAcceptInteraction).not.toHaveBeenCalled();
+      expect([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent === (fixture.payload.rejectLabel ?? "Reject"),
+      )?.disabled).toBe(false);
+      render(false);
+      expect(container.textContent).not.toContain("Preparing approval…");
+      expect(approve().disabled).toBe(false);
+      await act(async () => approve().click());
+      expect(onAcceptInteraction).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("puts the primary CTA at the right edge of the compact action row", () => {
     flushSync(() => {
       root.render(
@@ -438,6 +472,13 @@ describe("TaskChatInteractionCard", () => {
     );
     await act(async () => firstAnswer?.click());
     expect(submit).not.toHaveBeenCalled();
+    // Answering stays on the question; Next is what moves on.
+    expect(container.textContent).toContain("1 of 2");
+    await act(async () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+        .find((button) => button.textContent?.trim() === "Next")
+        ?.click(),
+    );
 
     expect(container.textContent).toContain("2 of 2");
     expect(container.textContent).toContain(

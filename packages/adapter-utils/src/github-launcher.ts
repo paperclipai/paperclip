@@ -40,32 +40,50 @@ async function main() {
       GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
       GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
       GIT_TERMINAL_PROMPT: '0',
-      GIT_AUTHOR_NAME: '', GIT_AUTHOR_EMAIL: '', GIT_COMMITTER_NAME: '', GIT_COMMITTER_EMAIL: '',
-      GIT_CONFIG_COUNT: '4', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '',
+      // The inherited identity was deleted above. Empty identity env values
+      // override even explicit repository/command config and break local commits.
+      // Require configured identity instead of guessing the OS user's details.
+      GIT_CONFIG_COUNT: '5', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '',
       GIT_CONFIG_KEY_1: 'url.https://github.com/.insteadOf', GIT_CONFIG_VALUE_1: 'git@github.com:',
       GIT_CONFIG_KEY_2: 'url.https://github.com/.insteadOf', GIT_CONFIG_VALUE_2: 'ssh://git@github.com/',
       GIT_CONFIG_KEY_3: 'core.askPass', GIT_CONFIG_VALUE_3: '',
+      GIT_CONFIG_KEY_4: 'user.useConfigOnly', GIT_CONFIG_VALUE_4: 'true',
     });
     const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
     try {
     let response;
     if (base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
       const url = base.replace(/\/+$/, '').replace(/\/api$/, '') + '/runtime-tools/github/credentials';
-      for (let attempt = 0; attempt < 30; attempt++) {
-        response = await fetch(url, {
-          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
-          headers: { authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
-            'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN, 'content-type': 'application/json' },
-          body: '{}',
-        });
-        if (response.status !== 409) break;
-        await response.arrayBuffer();
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      // A slow or restarting control plane must not cost the operation its
+      // managed identity, so a failed request is retried before giving up.
+      // Busy (409) responses and transport failures keep separate budgets, and
+      // the body is read inside the retry so a failed read is retried too.
+      let transportFailures = 0, conflicts = 0, result;
+      for (;;) {
+        try {
+          response = await fetch(url, {
+            method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
+            headers: { authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
+              'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN, 'content-type': 'application/json' },
+            body: '{}',
+          });
+          if (response.status === 409 && conflicts < 29) {
+            conflicts += 1;
+            await response.arrayBuffer();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            continue;
+          }
+          result = response.ok ? await response.json() : null;
+          break;
+        } catch (error) {
+          transportFailures += 1;
+          if (transportFailures >= 3) throw error;
+          await new Promise(resolve => setTimeout(resolve, 500 * transportFailures));
+        }
       }
       if (!response.ok) {
         diagnostic(response.status === 401 || response.status === 403 ? 'capability_rejected' : 'broker_response_unavailable');
       } else {
-      const result = await response.json();
       if (result.status === 'unavailable') {
         const reason = typeof result.reason === 'string'
           ? result.reason.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 500)

@@ -1,10 +1,31 @@
 import { describe, expect, it } from "vitest";
+
+describe("explicit diagnostic credential forms", () => {
+  it("masks suffixed CLI options and encoded JSON headers with whitespace", () => {
+    const jwt = `${Buffer.from(' {"alg":"HS256","typ":"JWT"}').toString("base64url")}.abcdefghijk.abcdefghijkl`;
+    expect(redactCommandText("tool --api-key-prod sensitivevalue --token-policy readable"))
+      .not.toContain("sensitivevalue");
+    expect(redactCommandText(`provider ${jwt}`)).not.toContain(jwt);
+    expect(redactCommandText("plan.security.credentials.md")).toBe("plan.security.credentials.md");
+  });
+});
 import {
   REDACTED_COMMAND_TEXT_VALUE,
   redactDiagnosticText,
+  redactCommandText,
 } from "./command-redaction.js";
 
 describe("redactDiagnosticText", () => {
+  it("preserves credential metadata and dotted identifiers", () => {
+    for (const text of [
+      '"tokenBudget":4000 --token-budget 4000 SECRET_STORAGE=vault',
+      '{"credentialHandling":"harness","authorizationRequired":true}',
+      "executor.customTools.integrations.list deployment.credentials.example.md api.openai.com",
+      "Use a private key and secret manager with credential handling.",
+      "Use bearer tokens and bearer authentication.",
+    ]) expect(redactDiagnosticText(text)).toBe(text);
+  });
+
   it("redacts a JSON secret field value", () => {
     const input = '{"token":"opaque-value","status":"error"}';
     const output = redactDiagnosticText(input);

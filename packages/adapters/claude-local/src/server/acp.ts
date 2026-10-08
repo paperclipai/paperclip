@@ -31,6 +31,8 @@ import type {
   AcpxEngineExecutorOptions,
   AcpxRemoteManagedHomeContext,
   AcpxRemoteManagedHomeResult,
+  AcpxTerminalSessionFailure,
+  AcpxTerminalFailureClassification,
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asBoolean,
@@ -51,8 +53,8 @@ import {
 } from "./probe-diagnostics.js";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
-import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
-import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
+import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
@@ -314,10 +316,35 @@ async function prepareClaudeRemoteManagedHome(
   return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
 }
 
+export function classifyClaudeTerminalSessionFailure(
+  failure: AcpxTerminalSessionFailure,
+  now: Date,
+): AcpxTerminalFailureClassification | null {
+  // Claude's typed AIR access category is emitted for auth_required. This is
+  // a provider signal, including its generic fallback, not a tool permission
+  // error inferred from text. Keep it on the existing sign-in recovery path.
+  if (failure.category === "access") return { errorCode: "acpx_auth_required" };
+  // `limit` also includes context, turn, rate and configured budget limits.
+  // Only the provider's quota wording qualifies for a quota wait.
+  if (failure.category !== "limit") return null;
+  const surface = { errorMessage: [failure.title, failure.details].filter(Boolean).join("\n") };
+  // claude-agent-acp uses this exact quota_exhausted fallback when no provider
+  // title is available. It does not match the CLI's usage-limit wording.
+  const isQuotaFallback = failure.title === "The Claude account has no available quota.";
+  if (!isQuotaFallback && !isClaudeProviderQuotaError(surface)) return null;
+  const retryNotBefore = extractClaudeRetryNotBefore(surface, now)?.toISOString();
+  return {
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    ...(retryNotBefore ? { retryNotBefore } : {}),
+  };
+}
+
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveClaudeAcpBillingIdentity,
     prepareRemoteManagedHome: prepareClaudeRemoteManagedHome,
+    classifyTerminalSessionFailure: classifyClaudeTerminalSessionFailure,
     ...options,
     adapterType: "claude_local",
     moduleDir,
@@ -345,14 +372,20 @@ const CLAUDE_AUTH_REQUIRED_ERROR_CODE = "claude_auth_required";
  * `acpx_auth_required` code for every adapter. The user interface run gate reads
  * the Claude-specific `claude_auth_required` code, the same code the Claude CLI
  * lane emits. Without this translation the default ACP run never shows the login
- * prompt. The function changes only the error code and keeps every other field,
- * so the error message and the error metadata stay intact.
+ * prompt. Provider diagnostics stay intact; the generic terminal-access
+ * fallback instead explains that Claude needs sign-in.
  */
 export function mapClaudeAcpAuthErrorCode(
   result: AdapterExecutionResult,
 ): AdapterExecutionResult {
   if (result.errorCode !== ACPX_AUTH_REQUIRED_ERROR_CODE) return result;
-  return { ...result, errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE };
+  return {
+    ...result,
+    errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE,
+    ...(result.errorMessage === "ACP agent reported a terminal access failure."
+      ? { errorMessage: "Claude sign-in failed. Sign in again and try again." }
+      : {}),
+  };
 }
 
 export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}): ClaudeAcpExecutor {
@@ -627,6 +660,9 @@ export async function probeClaudeAcpSandboxLogin(input: {
     cwd = asString(config.cwd, process.cwd());
   }
 
+  Object.assign(env, claudeSandboxPermissionEnv({
+    dangerouslySkipPermissions: asBoolean(config.dangerouslySkipPermissions, true), targetIsSandbox,
+  }));
   const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
   if (config.managedAiConnection) args.push("--setting-sources", "user");
   args.push(

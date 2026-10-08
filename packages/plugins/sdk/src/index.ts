@@ -238,6 +238,7 @@ export type {
   PluginLocalFolderListing,
   PluginLocalFoldersClient,
   PluginEventsClient,
+  ResourceLifecycleEvent,
   PluginJobsClient,
   PluginLaunchersClient,
   PluginHttpClient,
@@ -448,3 +449,10 @@ export {
   MEMBERSHIP_STATUSES,
   PRINCIPAL_TYPES,
 } from "@paperclipai/shared";
+
+export { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError } from "./environment-creation-cleanup.js";
+export type { PluginEnvironmentCreationCleanup } from "./environment-creation-cleanup.js";
+export { readEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
+export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
+
+export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";

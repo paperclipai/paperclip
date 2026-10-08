@@ -8,10 +8,10 @@ import {
   asString,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
-  renderPaperclipWakePrompt,
+  selectPaperclipPromptSections,
   isPaperclipRecoveryWakePayload,
-  selectPaperclipTaskMarkdown,
   stringifyPaperclipWakePayload,
+  paperclipWakeCommentsArePromptOwned,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   ADAPTER_TYPE,
@@ -22,6 +22,7 @@ import {
 } from "../shared/constants.js";
 import {
   allowsInsecureRemoteHttp,
+  isLoopbackHostname,
   isRemotePlainHttp,
   remotePlainHttpDeniedMessage,
 } from "./transport-security.js";
@@ -38,6 +39,7 @@ type HermesHttpError = Error & {
   code?: string;
   retryNotBefore?: string | null;
   body?: unknown;
+  transportCause?: unknown;
 };
 
 type TerminalState = {
@@ -272,16 +274,17 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   const resumedSession =
     (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
     Boolean(nonEmpty(ctx.runtime?.sessionId));
-  const taskMarkdown = nonEmpty(selectPaperclipTaskMarkdown(ctx.context, { resumedSession }));
-  const wakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
-    conversationMode: ctx.context.conversationMode === true,
-    // The task-context markdown is the authoritative brief on this lane; keep
-    // the wake prompt's description copy out so the prompt carries it once.
-    suppressIssueDescription: Boolean(taskMarkdown),
+  const { taskContextNote: taskMarkdown, wakePrompt } = selectPaperclipPromptSections(ctx.context, {
+    resumedSession,
+    // Hermes gateway owns the execution contract below; retain the old
+    // gateway prompt shape and avoid adding a second contract on resume.
+    includeExecutionContract: false,
   });
-  const wakePayloadJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
-    omitIssueDescription: Boolean(taskMarkdown),
-  });
+  const wakePayloadJson = paperclipWakeCommentsArePromptOwned(ctx.context)
+    ? null
+    : stringifyPaperclipWakePayload(ctx.context.paperclipWake, {
+        omitIssueDescription: Boolean(taskMarkdown),
+      });
   const sessionHandoff = nonEmpty(ctx.context.paperclipSessionHandoffMarkdown);
   const issueWorkMode = readPaperclipIssueWorkModeFromContext(ctx.context);
   const lines = [
@@ -376,6 +379,7 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
   } catch (err) {
     const fetchErr = new Error(`Hermes gateway request failed: ${fetchFailureMessage(err)}`) as HermesHttpError;
     fetchErr.code = "hermes_gateway_connect_failed";
+    fetchErr.transportCause = err instanceof Error ? err.cause : undefined;
     throw fetchErr;
   }
   const body = await readResponseJson(response);
@@ -757,13 +761,33 @@ function redactErrorMessage(err: unknown, redactText: TextRedactor = sanitizeSen
   return redactText(String(err));
 }
 
-function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveText): AdapterExecutionResult {
+function isConfiguredLoopbackRefusal(error: HermesHttpError, baseUrl: URL): boolean {
+  if (error.code !== "hermes_gateway_connect_failed" || !isLoopbackHostname(baseUrl.hostname)) return false;
+  const cause = asRecord(error.transportCause);
+  if (cause?.code !== "ECONNREFUSED") return false;
+  const port = Number(baseUrl.port || (baseUrl.protocol === "https:" ? 443 : 80));
+  const hostname = baseUrl.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const refusals = Array.isArray(cause.errors) ? cause.errors : [cause];
+  if (refusals.length === 0 || refusals.length > 8) return false;
+  return refusals.every((value) => {
+    const refusal = asRecord(value);
+    return refusal?.code === "ECONNREFUSED" && refusal.syscall === "connect" &&
+      refusal.port === port && typeof refusal.address === "string" &&
+      isLoopbackHostname(refusal.address) &&
+      (hostname === "localhost" || refusal.address.toLowerCase() === hostname);
+  });
+}
+
+function errorResult(err: unknown, baseUrl: URL, redactText: TextRedactor = sanitizeSensitiveText): AdapterExecutionResult {
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
+  const loopbackRefused = isConfiguredLoopbackRefusal(hermesError, baseUrl);
   const errorMessage = code === "hermes_gateway_auth_failed"
     ? `${redactErrorMessage(err, redactText)}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
-    : redactErrorMessage(err, redactText);
+    : loopbackRefused
+      ? `${redactErrorMessage(err, redactText)}. The configured loopback gateway refers to the Paperclip server, not an agent sandbox or your browser's machine. Check that the Hermes API server is running there, or set adapterConfig.apiBaseUrl to its address reachable from the Paperclip server. Hermes Gateway connects to an already-running gateway; use hermes_local if Paperclip should launch the local Hermes CLI.`
+      : redactErrorMessage(err, redactText);
   return {
     exitCode: 1,
     signal: null,
@@ -773,6 +797,9 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
     retryNotBefore: hermesError.retryNotBefore ?? null,
     errorMessage,
     errorMeta: {
+      // Diagnosis only: a redirected request may have received a response
+      // before refusing a later connection. This never proves non-dispatch.
+      ...(loopbackRefused ? { category: "gateway_loopback_connection_refused", phase: "create_run" } : {}),
       ...(hermesError.status ? { status: hermesError.status } : {}),
       ...(hermesError.body ? { body: redactForLog(hermesError.body, [], 0, redactText) as Record<string, unknown> } : {}),
     },
@@ -897,7 +924,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
   } catch (err) {
-    return errorResult(err, redactText);
+    return errorResult(err, baseUrl, redactText);
   }
 
   await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);

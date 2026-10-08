@@ -780,6 +780,9 @@ impl SupervisedProcess {
                 command.env(key, value);
             }
         }
+        crate::configured_environment::apply_configured_environment(&mut command, |key| {
+            std::env::var(key).ok()
+        })?;
         if let Some(executable) = verified_runtime_executable {
             // Node reports a sealed memfd launch as `/memfd:... (deleted)` via
             // process.execPath. Give descriptor-loaded runtimes the inherited,

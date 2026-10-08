@@ -1,9 +1,14 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import {
+  costEvents,
   agents,
   agentRuntimeState,
   authUsers,
@@ -18,6 +23,8 @@ import {
   issueInboxArchives,
   issueRecoveryActions,
   issueRelations,
+  issueThreadInteractions,
+  workspaceOperations,
   issues,
 } from "@paperclipai/db";
 import {
@@ -28,6 +35,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload, heartbeatService } from "../services/heartbeat.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
+import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive } from "../services/workspace-operations.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
@@ -131,17 +139,24 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("issue recovery actions", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
+  let operationLogRoot: string;
+  const priorOperationLogRoot = process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
 
   beforeAll(async () => {
+    operationLogRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-recovery-operation-logs-"));
+    process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = operationLogRoot;
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-recovery-actions-");
     db = createDb(tempDb.connectionString);
   }, 30_000);
 
   afterEach(async () => {
+    await db.delete(workspaceOperations);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueRecoveryActions);
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
@@ -155,6 +170,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (priorOperationLogRoot === undefined) delete process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
+    else process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = priorOperationLogRoot;
+    await fs.rm(operationLogRoot, { recursive: true, force: true });
   });
 
   async function seedCompany() {
@@ -240,6 +258,141 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     app.use(errorHandler);
     return app;
   }
+
+  async function seedNativeFinalizationRecovery(status: string) {
+    const fixture = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: fixture.companyId,
+      agentId: fixture.coderId,
+      status,
+      runtimeMode: "native",
+      nativeIssueId: fixture.sourceIssueId,
+      nativePhase: "finalizing",
+      // Native coordinator retries resume this original run, without creating
+      // the legacy scheduled_retry_reason projection.
+      scheduledRetryReason: null,
+      contextSnapshot: { issueId: fixture.sourceIssueId },
+    });
+    const svc = issueRecoveryActionService(db);
+    await svc.upsertSourceScoped({
+      companyId: fixture.companyId,
+      sourceIssueId: fixture.sourceIssueId,
+      kind: "active_run_watchdog",
+      ownerType: "agent",
+      ownerAgentId: fixture.coderId,
+      cause: "native_finalization_invalid",
+      fingerprint: `native:${runId}`,
+      nextAction: "Finish the existing run.",
+      wakePolicy: { kind: "resume_native_run", runId, notBefore: "2020-01-01T00:00:00Z" },
+      maxAttempts: 3,
+    });
+    return { ...fixture, runId, svc };
+  }
+
+  it.each(["queued", "running"])("projects the exact %s native run without a legacy scheduled retry", async (status) => {
+    const { companyId, sourceIssueId, runId, svc } = await seedNativeFinalizationRecovery(status);
+    const expected = { runId, status, workspaceOperationId: null };
+    expect((await svc.getActiveForIssue(companyId, sourceIssueId))?.nativeRunActivity).toEqual(expected);
+    expect((await svc.listActiveForIssues(companyId, [sourceIssueId])).get(sourceIssueId)?.nativeRunActivity).toEqual(expected);
+    const response = await request(createApp()).get(`/api/issues/${sourceIssueId}`).expect(200);
+    expect(response.body.scheduledRetry).toBeNull();
+    expect(response.body.activeRecoveryAction.nativeRunActivity).toEqual(expected);
+  });
+
+  it("projects an actual long-running export while its original heartbeat remains failed, then clears it", async () => {
+    const { companyId, sourceIssueId, runId, svc } = await seedNativeFinalizationRecovery("failed");
+    let release!: () => void;
+    let started!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const work = workspaceOperationService(db).createRecorder({ companyId, issueId: sourceIssueId, heartbeatRunId: runId }).recordOperation({
+      phase: "workspace_finalize", metadata: { owningService: "native_workspace_finalizer" },
+      run: async () => { started(); await held; return { status: "succeeded" }; },
+    });
+    await entered;
+    let operationId: string;
+    try {
+      const [operation] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, runId));
+      operationId = operation!.id;
+      // A slow callback remains live independently of elapsed wall-clock time.
+      await db.update(workspaceOperations).set({ startedAt: new Date("2000-01-01T00:00:00Z") }).where(eq(workspaceOperations.id, operationId));
+      const scope = { companyId, issueId: sourceIssueId, runId, operationId };
+      expect(isNativeWorkspaceFinalizationOperationActive(scope)).toBe(true);
+      expect(isNativeWorkspaceFinalizationOperationActive({ ...scope, companyId: randomUUID() })).toBe(false);
+      expect((await svc.getActiveForIssue(companyId, sourceIssueId))?.nativeRunActivity).toEqual({
+        runId, status: "running", workspaceOperationId: operationId,
+      });
+    } finally { release(); await work; }
+    expect((await svc.getActiveForIssue(companyId, sourceIssueId))?.nativeRunActivity).toBeNull();
+    // Even a stranded DB row cannot turn a joined callback back into activity.
+    await db.update(workspaceOperations).set({ status: "running", finishedAt: null }).where(eq(workspaceOperations.id, operationId!));
+    expect((await svc.getActiveForIssue(companyId, sourceIssueId))?.nativeRunActivity).toBeNull();
+  });
+
+  it("keeps the activity claim until a timed-out export callback actually joins", async () => {
+    const { companyId, sourceIssueId, runId } = await seedNativeFinalizationRecovery("failed");
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const work = workspaceOperationService(db).createRecorder({ companyId, issueId: sourceIssueId, heartbeatRunId: runId }).recordOperation({
+      phase: "workspace_finalize", metadata: { owningService: "native_workspace_finalizer" }, timeoutMs: 10,
+      run: async () => { await held; return { status: "succeeded" }; },
+    });
+    try {
+      await expect(work).rejects.toThrow("exceeded");
+      const [operation] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, runId));
+      const scope = { companyId, issueId: sourceIssueId, runId, operationId: operation!.id };
+      expect(isNativeWorkspaceFinalizationOperationActive(scope)).toBe(true);
+      release();
+      await held;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(isNativeWorkspaceFinalizationOperationActive(scope)).toBe(false);
+    } finally { release(); }
+  });
+
+  it("does not treat an orphaned running export record as live after controller loss", async () => {
+    const { companyId, sourceIssueId, runId, svc } = await seedNativeFinalizationRecovery("failed");
+    await db.insert(workspaceOperations).values({
+      companyId, issueId: sourceIssueId, heartbeatRunId: runId,
+      phase: "workspace_finalize", status: "running",
+      metadata: { owningService: "native_workspace_finalizer" },
+    });
+    expect((await svc.getActiveForIssue(companyId, sourceIssueId))?.nativeRunActivity).toBeNull();
+  });
+
+  it.each(["company", "issue", "legacy", "finished"])("rejects an apparently live run with the wrong %s authority", async (mismatch) => {
+    const { companyId, sourceIssueId, runId, svc } = await seedNativeFinalizationRecovery("running");
+    const other = await seedCompany();
+    // Exercise service rejection of historical corruption behind the immutable binding trigger.
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.update(heartbeatRuns).set({
+      ...(mismatch === "company" ? { companyId: other.companyId, agentId: other.coderId } : {}),
+      ...(mismatch === "issue" ? { nativeIssueId: other.sourceIssueId } : {}),
+      ...(mismatch === "legacy" ? { runtimeMode: "legacy" } : {}),
+      ...(mismatch === "finished" ? { finishedAt: new Date() } : {}),
+    }).where(eq(heartbeatRuns.id, runId));
+    });
+    expect((await svc.getActiveForIssue(companyId, sourceIssueId))?.nativeRunActivity).toBeNull();
+  });
+
+  it.each(["company", "issue", "run", "phase", "owner", "finished"])(
+    "does not borrow native finalization activity with a different %s binding", async (mismatch) => {
+      const { companyId, sourceIssueId, runId, svc } = await seedNativeFinalizationRecovery("failed");
+      const other = await seedNativeFinalizationRecovery("running");
+      await db.insert(workspaceOperations).values({
+        companyId: mismatch === "company" ? other.companyId : companyId,
+        issueId: mismatch === "issue" ? other.sourceIssueId : sourceIssueId,
+        heartbeatRunId: mismatch === "run" ? other.runId : runId,
+        phase: mismatch === "phase" ? "workspace_prepare" : "workspace_finalize",
+        status: "running", finishedAt: mismatch === "finished" ? new Date() : null,
+        metadata: { owningService: mismatch === "owner" ? "different_service" : "native_workspace_finalizer" },
+      });
+      expect((await svc.getActiveForIssue(companyId, sourceIssueId))?.nativeRunActivity).toBeNull();
+      expect((await svc.listActiveForIssues(companyId, [sourceIssueId, other.sourceIssueId])).get(sourceIssueId)?.nativeRunActivity).toBeNull();
+    },
+  );
 
   it("upserts one active source-scoped action per issue and keeps company scoping explicit", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
@@ -1633,6 +1786,29 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it.each(["resolved", "cancelled"])("omits %s recovery instructions when the original worker resumes", async (status) => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "stranded_assigned_issue", ownerType: "board",
+      returnOwnerAgentId: coderId, cause: "stranded_assigned_issue", fingerprint: "finished-recovery",
+      evidence: { failureSummary: "Retry budget exhausted during cleanup." },
+      nextAction: "Repair the runtime, then retry the original owner.", wakePolicy: null,
+    });
+    await db.update(issueRecoveryActions).set({ status, outcome: "handed_back", resolvedAt: new Date() })
+      .where(eq(issueRecoveryActions.id, action.id));
+    const payload = await buildPaperclipWakePayload({ db, companyId, contextSnapshot: {
+      issueId: sourceIssueId, wakeReason: "issue_recovery_action_restored",
+      recoveryActionId: action.id, recoveryCause: action.cause,
+    } });
+    expect(payload?.issue?.id).toBe(sourceIssueId);
+    expect(payload?.recovery).toBeNull();
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("Implement backend recovery");
+    expect(prompt).not.toContain("Recovery contract:");
+    expect(prompt).not.toContain(action.nextAction);
+    expect(prompt).not.toContain("Do not produce the deliverable");
+  });
+
   it("accepts new verified evidence after an automatic no-replay disposition without reopening on duplicate requests", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const runId = randomUUID();
@@ -1994,6 +2170,62 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(activityRows.map((row) => row.action)).toEqual(
       expect.arrayContaining(["issue.updated", "issue.recovery_action_resolved"]),
     );
+  });
+
+  it.each(["ask_user_questions", "request_confirmation"] as const)("does not retry past a new pending %s", async (kind) => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ status: "blocked", assigneeAgentId: coderId }).where(eq(issues.id, sourceIssueId));
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "board",
+      returnOwnerAgentId: coderId, cause: "deliberate_wait_without_target", fingerprint: "disposition:pending-interaction",
+      nextAction: "Review the outcome.", wakePolicy: { type: "board_escalation" },
+    });
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId: sourceIssueId, kind, status: "pending", createdByAgentId: coderId,
+      payload: kind === "request_confirmation"
+        ? { version: 1, prompt: "Confirm the next step." }
+        : { version: 1, questions: [{ id: "next", prompt: "Which step?", selectionMode: "single", options: [{ id: "a", label: "A" }] }] },
+    }).returning();
+    const wake = vi.fn(async () => null);
+    const app = createApp(undefined, { recoveryActionEnqueueWakeup: wake });
+    const body = { actionId: action.id, outcome: "restored", sourceIssueStatus: "todo" };
+    const denied = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body).expect(409);
+    expect(denied.body.details?.code).toBe("disposition_recovery_interaction_pending");
+    expect(wake).not.toHaveBeenCalled();
+    expect(await db.select().from(issues).where(eq(issues.id, sourceIssueId))).toEqual([
+      expect.objectContaining({ status: "blocked", assigneeAgentId: coderId }),
+    ]);
+    expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, sourceIssueId)).toMatchObject({ id: action.id });
+    expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction!.id))).toEqual([
+      expect.objectContaining({ status: "pending" }),
+    ]);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId))).toHaveLength(0);
+    // A settled interaction must not leave a permanent retry veto.
+    await db.update(issueThreadInteractions).set({ status: "resolved", resolvedAt: new Date() }).where(eq(issueThreadInteractions.id, interaction!.id));
+    await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body).expect(200);
+    expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries an exhausted disposition action once, preserving the owner and audit trail", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ status: "blocked", assigneeAgentId: coderId }).where(eq(issues.id, sourceIssueId));
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId, sourceIssueId, kind: "deliberate_wait_without_target", ownerType: "board",
+      previousOwnerAgentId: coderId, returnOwnerAgentId: coderId, cause: "deliberate_wait_without_target",
+      fingerprint: "disposition:exhausted", evidence: { terminalReason: "unchanged_source_state_exhausted", sourceAttemptCount: 2, sourceMaxAttempts: 2 },
+      nextAction: "Review the outcome.", wakePolicy: { type: "board_escalation" },
+    });
+    const wake = vi.fn(async () => null);
+    const app = createApp(undefined, { recoveryActionEnqueueWakeup: wake });
+    const body = { actionId: action.id, outcome: "restored", sourceIssueStatus: "todo" };
+    const first = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body).expect(200);
+    expect(first.body.issue).toMatchObject({ status: "todo", assigneeAgentId: coderId, activeRecoveryAction: null });
+    expect(first.body.recoveryAction).toMatchObject({ id: action.id, status: "resolved", outcome: "handed_back" });
+    await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body).expect(200);
+    expect(wake).toHaveBeenCalledTimes(1);
+    const logs = await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId));
+    expect(logs.filter(entry => entry.action === "issue.recovery_action_resolved")).toHaveLength(1);
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]).toMatchObject({ status: "todo", assigneeAgentId: coderId });
   });
 
   it("hands restored work back to the recorded return owner and records the outcome", async () => {

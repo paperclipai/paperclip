@@ -76,7 +76,7 @@ function Journey({ screen = "catalog" }: { screen?: Screen }) {
     <Routes>
       <Route path="/:companyPrefix/apps" element={<div role="list" aria-label="Connectors"><ConnectorCard
         row={{ key: "imessage-photon", slug: "imessage-photon", name: "iMessage Photon", description: "Message an agent from Apple Messages. Send photos and keep one task conversation.", brandKey: "imessage-photon", entry: null, applications: [], connections: [], chatEndpoints: [] }}
-        allConnections={[]} userProfileById={new Map()} chatConnectorsEnabled
+        userProfileById={new Map()} chatConnectorsEnabled
         onNavigate={() => navigate(setupUrl)} onRequestRemove={() => {}}
       /></div>} />
       <Route path="/:companyPrefix/apps/chat/new" element={<ChatEndpointSetup />} />

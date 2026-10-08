@@ -1,3 +1,7 @@
+import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
+import { withAccountingTransaction } from "./accounting-transaction.js";
+import type { ActivityPublication } from "./activity-log.js";
+import { agentAppearanceSchema, randomAgentAppearance, resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -11,11 +15,13 @@ import {
   agentWakeupRequests,
   activityLog,
   costEvents,
+  budgetReservations,
   heartbeatRunEvents,
   heartbeatRuns,
   issueExecutionDecisions,
   issues,
   issueComments,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -37,7 +43,8 @@ import {
   syncAgentAdapterEnvBindings,
 } from "./agent-secret-bindings.js";
 import { logActivity } from "./activity-log.js";
-import { normalizeAgentPermissions } from "./agent-permissions.js";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope, normalizeAgentPermissions, permissionsImplyLowTrust } from "./agent-permissions.js";
+import { recordAgentStatusEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
   assertClaudeOAuthBindingInvariant,
@@ -55,6 +62,9 @@ import {
 } from "./built-in-agent-metadata.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 
+import { clearPrimaryAgent, initializePrimaryAgent } from "./primary-agent.js";
+import { agentIdentityService } from "./agent-identity.js";
+
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -68,6 +78,7 @@ const CONFIG_REVISION_FIELDS = [
   "role",
   "title",
   "icon",
+  "appearance",
   "reportsTo",
   "capabilities",
   "adapterType",
@@ -124,7 +135,8 @@ interface UpdateAgentOptions {
 }
 
 interface CreateAgentOptions {
-  aiConnectionInstall?: { connectionId: string; createdByUserId: string | null };
+  createdByUserId?: string | null;
+  aiConnectionInstall?: { connectionId: string; memberConnectionIds?: string[]; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
 }
@@ -167,6 +179,7 @@ function buildConfigSnapshot(
     role: row.role,
     title: row.title,
     icon: row.icon,
+    appearance: row.appearance,
     reportsTo: row.reportsTo,
     capabilities: row.capabilities,
     adapterType: row.adapterType,
@@ -202,6 +215,7 @@ function configPatchFromApprovalPayload(payload: Record<string, unknown>) {
   const patch: Partial<typeof agents.$inferInsert> = {};
   if (typeof payload.name === "string") patch.name = payload.name;
   if (typeof payload.role === "string") patch.role = payload.role;
+  if (payload.appearance != null) patch.appearance = agentAppearanceSchema.parse(payload.appearance);
   if (Object.prototype.hasOwnProperty.call(payload, "title")) {
     patch.title = typeof payload.title === "string" ? payload.title : null;
   }
@@ -334,7 +348,7 @@ export function deduplicateAgentName(
   return `${candidateName} ${Date.now()}`;
 }
 
-export function agentService(db: Db) {
+export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const secretsSvc = secretService(db);
 
   function currentUtcMonthWindow(now = new Date()) {
@@ -374,8 +388,11 @@ export function agentService(db: Db) {
     const eligibilityAgents = allCompanyRows.map(toEligibilityAgent);
     return rows.map((row) => {
       const base = normalizeAgentBaseRow(row);
+      const appearance = resolveAgentAppearance(row.appearance, row.id);
       return {
         ...base,
+        appearance,
+        avatarUrl: agentAvatarUrl(appearance),
         orgChainHealth: getAgentWorkEligibility({
           agent: toEligibilityAgent(row),
           agents: eligibilityAgents,
@@ -780,7 +797,17 @@ export function agentService(db: Db) {
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
     type AgentUpdateResult = Awaited<ReturnType<typeof getById>>;
-    const applyUpdate = async (txDb: Db): Promise<AgentUpdateResult> => {
+    const applyUpdate = async (txDb: Db, publications: ActivityPublication[] = []): Promise<AgentUpdateResult> => {
+      const current = data.status !== undefined
+        ? await txDb.select().from(agents).where(eq(agents.id, id)).for("update").then(rows => rows[0] ?? null)
+        : existing;
+      if (!current) return null;
+      if (current.status === "terminated" && data.status && data.status !== "terminated") {
+        throw conflict("Terminated agents cannot be resumed");
+      }
+      if (current.status === "pending_approval" && data.status && data.status !== "pending_approval" && data.status !== "terminated") {
+        throw conflict("Pending approval agents cannot be activated directly");
+      }
       const updated = await txDb
         .update(agents)
         .set({ ...normalizedPatch, updatedAt: new Date() })
@@ -788,6 +815,12 @@ export function agentService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
+      if (updated.status === "terminated") {
+        await clearPrimaryAgent(txDb, updated.companyId, id);
+      }
+      if (data.status !== undefined) {
+        await recordAgentStatusEvent(txDb, updated.companyId, id, current.status, updated.status);
+      }
 
       const priorAdapterConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
       const afterConfig = isPlainRecord(updated.adapterConfig) ? updated.adapterConfig : {};
@@ -819,6 +852,11 @@ export function agentService(db: Db) {
         );
       }
 
+      if (normalizedPatch.budgetMonthlyCents !== undefined) {
+        await budgetServiceInTransaction(txDb, publications).upsertPolicy(existing.companyId, {
+          scopeType: "agent", scopeId: id, amount: normalizedPatch.budgetMonthlyCents, isActive: normalizedPatch.budgetMonthlyCents > 0, windowKind: "calendar_month_utc",
+        }, options?.recordRevision?.createdByUserId ?? null);
+      }
       const normalizedUpdated = await agentService(txDb).getById(updated.id);
       if (!normalizedUpdated) {
         throw notFound("Agent not found");
@@ -844,6 +882,12 @@ export function agentService(db: Db) {
 
       return normalizedUpdated;
     };
+
+    if (normalizedPatch.budgetMonthlyCents !== undefined) {
+      const result = await withAccountingTransaction(db, existing.companyId, applyUpdate);
+      await deliverBudgetEnforcement(db, budgetHooks, existing.companyId);
+      return result;
+    }
 
     const transaction = (db as unknown as {
       transaction?: (callback: (tx: unknown) => Promise<AgentUpdateResult>) => Promise<AgentUpdateResult>;
@@ -913,6 +957,7 @@ export function agentService(db: Db) {
           .values({
             ...data,
             name: uniqueName,
+            appearance: data.appearance == null ? randomAgentAppearance() : agentAppearanceSchema.parse(data.appearance),
             companyId,
             role,
             adapterType,
@@ -922,14 +967,37 @@ export function agentService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0]);
+        await agentIdentityService(txDb).ensureAgentIdentity(companyId, created.id);
+        // New standard agents receive the standard direct grants at activation.
+        // Low-trust and bundled agents keep their explicit, narrower grants.
+        if (created.status !== "pending_approval" && !permissionsImplyLowTrust(normalizedPermissions) &&
+            !readBuiltInAgentMarker(created.metadata)) {
+          await tx.insert(principalPermissionGrants).values(
+            NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+              companyId,
+              principalType: "agent" as const,
+              principalId: created.id,
+              permissionKey,
+              scope: newStandardAgentGrantScope(permissionKey, created.id),
+            })),
+          ).onConflictDoNothing();
+        }
         if (options?.aiConnectionInstall) {
-          await tx.insert(toolConnectionInstalls).values({
-            companyId, connectionId: options.aiConnectionInstall.connectionId,
-            targetType: "agent", targetId: created.id,
-            createdByUserId: options.aiConnectionInstall.createdByUserId,
-          }).onConflictDoNothing();
+          const install = options.aiConnectionInstall;
+          const connectionIds = [...new Set([install.connectionId, ...(install.memberConnectionIds ?? [])])];
+          await tx.insert(toolConnectionInstalls).values(connectionIds.map(connectionId => ({
+            companyId, connectionId,
+            targetType: "agent" as const, targetId: created.id,
+            createdByUserId: install.createdByUserId,
+          }))).onConflictDoNothing();
         }
         await syncAgentSecretBindings(created, txDb);
+        if (options?.createdByUserId && !readBuiltInAgentMarker(created.metadata)) {
+          await initializePrimaryAgent(txDb, companyId, options.createdByUserId, created.id);
+        }
+        if (created.status !== "pending_approval" && created.status !== "terminated") {
+          await recordResourceCreationEvent(txDb, companyId, "agent", created.id);
+        }
         const normalizedCreated = await agentService(txDb).getById(created.id);
         if (!normalizedCreated) {
           throw notFound("Agent not found");
@@ -945,19 +1013,12 @@ export function agentService(db: Db) {
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot pause terminated agent");
 
-      const updated = await db
-        .update(agents)
-        .set({
-          status: "paused",
-          pauseReason: reason,
-          pausedAt: new Date(),
-          errorReason: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return updated ? getById(updated.id) : null;
+      return updateAgent(id, {
+        status: "paused",
+        pauseReason: reason,
+        pausedAt: new Date(),
+        errorReason: null,
+      });
     },
 
     resume: async (id: string) => {
@@ -968,19 +1029,12 @@ export function agentService(db: Db) {
         throw conflict("Pending approval agents cannot be resumed");
       }
 
-      const updated = await db
-        .update(agents)
-        .set({
-          status: "idle",
-          pauseReason: null,
-          pausedAt: null,
-          errorReason: null,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return updated ? getById(updated.id) : null;
+      return updateAgent(id, {
+        status: "idle",
+        pauseReason: null,
+        pausedAt: null,
+        errorReason: null,
+      });
     },
 
     clearError: async (id: string) => {
@@ -1017,23 +1071,19 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
 
-      await db
-        .update(agents)
-        .set({
+      return db.transaction(async tx => {
+        const txDb = tx as unknown as Db;
+        const updated = await agentService(txDb).update(id, {
           status: "terminated",
           pauseReason: null,
           pausedAt: null,
           errorReason: null,
           updatedAt: new Date(),
-        })
-        .where(eq(agents.id, id));
-
-      await db
-        .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.agentId, id));
-
-      return getById(id);
+        });
+        if (!updated) return null;
+        await tx.update(agentApiKeys).set({ revokedAt: new Date() }).where(eq(agentApiKeys.agentId, id));
+        return updated;
+      });
     },
 
     remove: async (id: string) => {
@@ -1048,7 +1098,14 @@ export function agentService(db: Db) {
         });
       }
 
-      return db.transaction(async (tx) => {
+      return withAccountingTransaction(db, existing.companyId, async (tx) => {
+        const [decisionHold] = await tx.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
+          eq(budgetReservations.companyId, existing.companyId), eq(budgetReservations.agentId, id),
+          eq(budgetReservations.state, "held"), sql`${budgetReservations.decisionInvocationId} is not null`,
+        )).limit(1);
+        if (decisionHold) throw conflict("Wait for active decisions or resolve their unknown charges in Costs before deleting this agent", {
+          code: "agent_decision_accounting_pending",
+        });
         await tx
           .select({ id: agents.id })
           .from(agents)
@@ -1075,6 +1132,11 @@ export function agentService(db: Db) {
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.agentId, id));
+        await tx.delete(principalPermissionGrants).where(and(
+          eq(principalPermissionGrants.companyId, existing.companyId),
+          eq(principalPermissionGrants.principalType, "agent"),
+          eq(principalPermissionGrants.principalId, id),
+        ));
         const deleted = await tx
           .delete(agents)
           .where(eq(agents.id, id))
@@ -1142,6 +1204,18 @@ export function agentService(db: Db) {
           });
         }
         await syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
+        if (!permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
+          await tx.insert(principalPermissionGrants).values(
+            NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+              companyId: updated.companyId,
+              principalType: "agent" as const,
+              principalId: updated.id,
+              permissionKey,
+              scope: newStandardAgentGrantScope(permissionKey, updated.id),
+            })),
+          ).onConflictDoNothing();
+        }
+        await recordResourceCreationEvent(txDb, existing.companyId, "agent", updated.id);
         const agent = await agentService(txDb).getById(updated.id);
         if (!agent) {
           throw notFound("Agent not found");

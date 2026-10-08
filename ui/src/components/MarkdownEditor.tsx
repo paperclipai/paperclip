@@ -1,3 +1,4 @@
+import { AgentAvatar } from "./AgentAvatar";
 import {
   Component,
   type ClipboardEvent,
@@ -45,7 +46,6 @@ import {
   buildUserMentionHref,
 } from "@paperclipai/shared";
 import { Boxes, CalendarClock, Flag, Hash, User, X } from "lucide-react";
-import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
@@ -68,6 +68,7 @@ export interface MentionOption {
   kind?: "agent" | "project" | "user" | "issue";
   agentId?: string;
   agentIcon?: string | null;
+  agentAppearance?: import("@paperclipai/shared").AgentAppearance | null;
   projectId?: string;
   projectColor?: string | null;
   userId?: string;
@@ -491,7 +492,10 @@ export function computeMentionMenuPosition(
   const desiredLeft = viewport.offsetLeft + anchor.viewportLeft + MENTION_MENU_CARET_GAP;
   const left = Math.max(minLeft, Math.min(desiredLeft, maxLeft));
 
-  return { top, left };
+  // The menu can grow beyond its estimated width for long task names.
+  // Constrain its actual layout to the space remaining beside the caret.
+  const maxWidth = Math.max(0, viewport.offsetLeft + viewport.width - MENTION_MENU_PADDING - left);
+  return { top, left, maxWidth };
 }
 
 function getMentionMenuSize(optionCount: number): MentionMenuSize {
@@ -1029,7 +1033,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       const option = mentionOptionByKey.get(`agent:${parsed.agentId}`);
       applyMentionChipDecoration(link, {
         ...parsed,
-        icon: parsed.icon ?? option?.agentIcon ?? null,
+        appearance: option?.agentAppearance,
       });
     }
   }, [mentionOptionByKey]);
@@ -1533,6 +1537,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             style={{
               top: mentionMenuPosition.top,
               left: mentionMenuPosition.left,
+              maxWidth: mentionMenuPosition.maxWidth,
               touchAction: "pan-y",
               WebkitOverflowScrolling: "touch",
             }}
@@ -1596,10 +1601,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 ) : option.kind === "user" ? (
                   <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : (
-                  <AgentIcon
-                    icon={option.agentIcon}
-                    className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                  />
+                  <AgentAvatar agent={{ id: option.agentId ?? option.id, name: option.name, appearance: option.agentAppearance }} size={16} />
                 )}
                 {option.kind === "issue" && option.issueIdentifier ? (
                   <span className="flex min-w-0 items-baseline gap-1.5">

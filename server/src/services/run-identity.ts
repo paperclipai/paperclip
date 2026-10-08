@@ -57,7 +57,13 @@ export async function explicitOperatorRunIdentity(
 export type RunIdentityContext = typeof runIdentityContexts.$inferSelect;
 type Executor = Pick<Db, "select" | "insert" | "update">;
 
-/** Match task mutation ordering: lock the task before the run, never the reverse. */
+/**
+ * Lock the task before the run, matching task mutation ordering. Identity
+ * operations do not change parent keys: NO KEY UPDATE still serializes writers
+ * and steering, while allowing audit inserts to check their foreign keys.
+ * FOR UPDATE can deadlock with an append that holds KEY SHARE on the run and
+ * then checks the task while identity capture holds the task and waits on the run.
+ */
 async function lockIdentityTask(
   executor: Pick<Db, "select">,
   companyId: string,
@@ -85,7 +91,7 @@ async function lockIdentityTask(
       .select({ id: issues.id })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
-      .for("update");
+      .for("no key update");
 }
 
 async function append(
@@ -181,7 +187,7 @@ export async function initializeRunIdentity(
           eq(heartbeatRuns.companyId, input.companyId),
         ),
       )
-      .for("update");
+      .for("no key update");
     if (!run) throw forbidden("Run identity does not belong to this company");
     if (run.activeIdentityContextId) {
       const [current] = await tx
@@ -280,6 +286,7 @@ export async function prepareSteeredIdentity(
     runId: string;
     messageId: string;
     issueId: string;
+    source?: "comment" | "interaction";
   },
 ) {
   const [run] = await executor
@@ -291,7 +298,7 @@ export async function prepareSteeredIdentity(
         eq(heartbeatRuns.companyId, input.companyId),
       ),
     );
-  const [comment] = await executor
+  const [comment] = input.source === "interaction" ? [] : await executor
     .select()
     .from(issueComments)
     .where(
@@ -301,7 +308,14 @@ export async function prepareSteeredIdentity(
         eq(issueComments.issueId, input.issueId),
       ),
     );
-  if (!run || !comment?.authorUserId)
+  const [interaction] = input.source === "interaction" ? await executor.select().from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.id, input.messageId),
+    eq(issueThreadInteractions.companyId, input.companyId),
+    eq(issueThreadInteractions.issueId, input.issueId),
+    inArray(issueThreadInteractions.status, ["accepted", "answered", "rejected"]),
+  )) : [];
+  const responsibleUserId = interaction?.resolvedByUserId ?? comment?.authorUserId;
+  if (!run || !responsibleUserId)
     throw forbidden("Steering requires an authenticated message author");
   if (
     run.status !== "running" ||
@@ -313,11 +327,11 @@ export async function prepareSteeredIdentity(
   return append(executor, {
     companyId: input.companyId,
     runId: input.runId,
-    responsibleUserId: comment.authorUserId,
-    messageId: comment.id,
+    responsibleUserId,
+    messageId: input.messageId,
     parentContextId: run.activeIdentityContextId,
     cause: "steering",
-    correlationId: `message:${comment.id}`,
+    correlationId: `${input.source === "interaction" ? "interaction" : "message"}:${input.messageId}`,
     status: "pending",
   });
 }
@@ -337,7 +351,7 @@ export async function reserveSteeredIdentity(
           eq(heartbeatRuns.companyId, input.companyId),
         ),
       )
-      .for("update");
+      .for("no key update");
     // Processes started before the broker rollout keep their original environment.
     if (!run?.activeIdentityContextId) return null;
     const [pending] = await tx
@@ -431,7 +445,7 @@ export async function captureRunIdentity(
           eq(heartbeatRuns.agentId, input.agentId),
         ),
       )
-      .for("update");
+      .for("no key update");
     if (!run || run.status !== "running")
       throw forbidden(
         "Credential acquisition requires this agent's active run",
@@ -504,7 +518,7 @@ export async function reconcileSteeredIdentity(
           eq(heartbeatRuns.companyId, context.companyId),
         ),
       )
-      .for("update");
+      .for("no key update");
     if (!run) return;
     await acceptSteeredIdentity(tx, context);
   });
@@ -513,7 +527,7 @@ export async function reconcileSteeredIdentity(
 /** Only events validated and persisted by the native control-plane transport count. */
 export async function storedSteeringAcknowledgement(
   executor: Pick<Db, "select">,
-  context: RunIdentityContext,
+  context: Pick<RunIdentityContext, "companyId" | "runId" | "messageId">,
 ) {
   if (!context.messageId) return null;
   const [receipt] = await executor

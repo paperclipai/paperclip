@@ -20,6 +20,18 @@ const packageRoot = resolve(
 );
 
 describe("semantic action catalog", () => {
+  it("advertises only icons accepted by the project API on both tool surfaces", async () => {
+    const { PROJECT_ICON_NAMES } = await import("../../../shared/src/constants.js");
+    const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
+    for (const schema of [createProjectAction.live.descriptor.inputSchema, paperclipSemanticAction("create_project")!.inputSchema]) {
+      const validate = ajv.compile(schema);
+      const input = { name: "Onboarding", idempotencyKey: "onboarding" };
+      expect(schema).toMatchObject({ properties: { icon: { enum: [...PROJECT_ICON_NAMES, null] } } });
+      for (const icon of [...PROJECT_ICON_NAMES, null]) expect(validate({ ...input, icon }), String(icon)).toBe(true);
+      expect(validate({ ...input, icon: "users" })).toBe(false);
+    }
+  });
+
   it("limits project repository URLs to HTTPS GitHub repository paths on both tool surfaces", () => {
     const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
     for (const schema of [createProjectAction.live.descriptor.inputSchema, paperclipSemanticAction("create_project")!.inputSchema]) {
@@ -34,6 +46,18 @@ describe("semantic action catalog", () => {
         "https://github.com/org/repo#fragment", "https://github.com/org/repo/tree/main",
         "https://github.com/../repo", "https://github.com/org/..",
       ]) expect(validate({ ...input, repositoryUrls: [url] }), url).toBe(false);
+    }
+  });
+
+  it("advertises human assignment in both task creation contracts", () => {
+    const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
+    for (const schema of [createTaskAction.live.descriptor.inputSchema, paperclipSemanticAction("create_task")!.inputSchema]) {
+      const validate = ajv.compile(schema);
+      const input = { title: "Hello", idempotencyKey: "hello", assigneeUserId: "company-owner" };
+      expect(validate(input), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...input, assigneeUserId: null })).toBe(true);
+      expect(validate({ ...input, assigneeUserId: 42 })).toBe(false);
+      expect(validate({ ...input, undeclaredField: true })).toBe(false);
     }
   });
 
@@ -57,13 +81,25 @@ describe("semantic action catalog", () => {
       (action) => action.operationId,
     );
 
-    expect(operationIds).toHaveLength(32);
+    expect(operationIds).toHaveLength(37);
+    expect(operationIds).toContain("set_task_monitor");
     expect(new Set(operationIds).size).toBe(operationIds.length);
     expect(operationIds).not.toContain("generic_api_request");
     expect(Object.isFrozen(PAPERCLIP_SEMANTIC_ACTION_CATALOG)).toBe(true);
     expect(
       Object.isFrozen(paperclipSemanticAction("write_document")?.inputSchema),
     ).toBe(true);
+  });
+
+  it("declares hire_agent as a native identity-only mutation", () => {
+    const hire = paperclipSemanticAction("hire_agent");
+    expect(hire).toMatchObject({
+      effect: "write",
+      requiredClaims: ["delegation:agents:create"],
+      allowedModes: ["standard", "skill_test"],
+    });
+    expect(hire?.inputSchema.properties).not.toHaveProperty("adapterConfig");
+    expect(hire?.inputSchema.properties).not.toHaveProperty("env");
   });
 
   it("compiles every operation input and output schema", () => {

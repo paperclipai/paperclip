@@ -25,6 +25,49 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
   building custom versions.
 - `ctx.assets` is not supported in the current runtime.
 
+## Durable resource lifecycle inbox
+
+Plugins with `events.subscribe` can read durable, company-scoped resource hooks
+through `ctx.events.listLifecycle(companyId, limit?, afterId?)` and acknowledge successful
+work with `ctx.events.acknowledgeLifecycle(companyId, eventId)`. Use an existing
+plugin job to poll each configured company; the host checks invocation scope and whether
+the plugin is ready and enabled for that company. These methods are separate
+from the fire-and-forget `ctx.events.on()` bus.
+Proactive jobs and timers may read only companies authorized by the plugin's
+company configuration. Calls inside a host-issued invocation must match its company.
+
+An event has `id`, `companyId`, `resourceType`, `resourceId`, `action`, and
+`createdAt`. Agent actions are `create`, `pause`, `resume`, and `terminate`;
+project actions are `create`, `update`, and `archive`. Pending hires produce creation
+after approval. Project updates include repository/workspace mutations and restoring
+an archived project. Provider cleanup and retention policy belong to the plugin.
+
+Reads return at most one pending event per resource (default 50, maximum 100).
+Creation is delivered before other events for that resource, even when its
+backfilled ID is newer. Remaining events follow ID order. After acknowledging
+an event, a later read exposes its successor. A failed
+resource remains pending without blocking other resources; process the rest of
+the batch independently. Progress is stored per plugin, survives worker restarts,
+and is not a global sequence cursor. The delivery migration seeds existing hired
+agents and all projects once, including archived projects. Pending hires require
+approval; paused and terminated agents retain their current status intents.
+This baseline represents current desired state, not reconstructed history.
+The baseline includes archive for existing archived projects and update for restored projects whose
+journal still ends at archive. Archiving does not authorize provider cleanup.
+After that migration, capture stays forward-only; no later journal backfill runs.
+
+Delivery is at least once: concurrent reads or a crash after a provider operation
+can repeat an event. Serialize polling and use stable company/event idempotency
+keys, then acknowledge only after successful completion. Load current authorized
+agent/project/workspace data before acting; the journal contains no configuration
+snapshots, repository credentials, or deletion authority. For offline plugin tests,
+seed `lifecycleEvents` with `createTestHarness().seed()`.
+
+Lifecycle polls can page past failed resources using the last returned event id as
+`afterId`. Reset `afterId` at the start of every polling sweep: it is a page
+cursor, never a persisted high-water mark. This retries failures and includes
+transactions that commit later with lower ids.
+
 ## External object reference providers
 
 Plugins can contribute provider-neutral object reference detection and status
@@ -368,6 +411,8 @@ Mount surfaces currently wired in the host include:
 - `taskDetailView`
 - `projectSidebarItem`
 - `globalToolbarButton`
+- `appShellOverlay` (persistent, signed-in application shell)
+- `organizationSwitcher` (one React contribution replacing the organization menu)
 - `toolbarButton`
 - `contextMenuItem`
 - `commentAnnotation`
@@ -613,3 +658,24 @@ pnpm -r typecheck
 pnpm test:run
 pnpm build
 ```
+
+For image-supplied plugins and the persistent shell lifecycle, see
+[Distribution plugins](DISTRIBUTION-PLUGINS.md).
+
+### Organization switcher
+
+Declare one `organizationSwitcher` slot with `ui.sidebar.register`. The host
+passes `PluginOrganizationSwitcherProps`: current company display data, collapsed
+and open state, navigation/logout callbacks, and an icon renderer. Use the host
+logout callback; authenticate remote account requests at their owning service.
+`currentCompany` describes the host-local company. A distribution plugin must
+resolve its external account/organization label itself; the host does not fetch
+that portfolio on the plugin's behalf.
+The slot props and `useHostContext()` are display context, not proof of identity.
+The host reserves the trigger with a neutral placeholder while account, company,
+and plugin discovery load. Plugins should reserve the same space while their
+external label loads and retain resolved labels during same-account refreshes.
+The host resets plugin state on account/company changes and keeps its built-in
+menu when no unique contribution exists, discovery fails, the module is missing,
+or rendering throws. The slot is a React-only contract; do not use a custom
+element export. This replaces only the menu, not company policy or authorization.

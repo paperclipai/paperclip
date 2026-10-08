@@ -1,28 +1,41 @@
+import { resolveQualifiedAcpxProfile } from "../../vendor/paperclip-runner/index.js";
 import {
   isPaperclipRunnerProvider,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  PAPERCLIP_RUNNER_ACPX_PROFILES,
   resolvePaperclipRunnerPermissionMode,
+  resolvePaperclipRunnerCursorMode,
   type PaperclipRunnerProvider,
 } from "@paperclipai/adapter-utils";
+import {
+  codexLocalReasoningEffortsForModel,
+  isCodexLocalKnownModel,
+} from "@paperclipai/adapter-codex-local";
 import {
   AGENTCORE_QUALIFIED_MODEL,
   CLAUDE_MANAGED_QUALIFIED_MODEL,
 } from "../provider-profile-qualification.js";
+import { resolveAcpxQualification, type AcpxQualificationCandidate } from "./acpx-qualification.js";
 
-export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.29" as const;
+export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.34" as const;
 export const DEFAULT_OPENCODE_RUNNER_MODEL =
   "openrouter/deepseek/deepseek-v4-flash-0731" as const;
 export const CLAUDE_MANAGED_BETA_VERSION = "managed-agents-2026-04-01" as const;
 
-export const QUALIFIED_ACPX_RUNNER_MODELS = {
+export const DEFAULT_ACPX_RUNNER_MODELS = {
+  grok: "grok-4.7",
   claude: "claude-sonnet-5",
-  codex: "gpt-5.6-sol",
+  // These profiles require explicit configuration. Admission belongs to the runner.
+  codex: null,
+  cursor: null,
 } as const;
 
 export type QualifiedPaperclipRunnerAcpxAgent =
-  keyof typeof QUALIFIED_ACPX_RUNNER_MODELS;
+  keyof typeof DEFAULT_ACPX_RUNNER_MODELS;
+type AdmittedPaperclipRunnerAcpxAgent = QualifiedPaperclipRunnerAcpxAgent | AcpxQualificationCandidate;
 
 export type PaperclipRunnerProviderProfile =
+  | { provider: "openai_dot"; backend: "openai_dot_mcp"; model: null; dotBindingId: string }
   | {
       provider: "codex";
       backend: "codex_app_server";
@@ -51,14 +64,16 @@ export type PaperclipRunnerProviderProfile =
       provider: "acpx";
       backend: "acpx_runtime";
       model: string;
-      acpxAgent: QualifiedPaperclipRunnerAcpxAgent;
+      acpxAgent: AdmittedPaperclipRunnerAcpxAgent;
     };
 
 export type PaperclipRunnerNativeProviderInput =
+  | { provider: "openai_dot"; model: null; dotBinding: import("../../vendor/paperclip-runner/index.js").DotBindingSnapshot }
   | {
       provider: "codex";
       model: string | null;
       codexApprovalPolicy: "never" | "on-request" | "untrusted";
+      codexReasoningEffort?: string;
     }
   | {
       provider: "opencode";
@@ -108,8 +123,9 @@ export type PaperclipRunnerNativeProviderInput =
   | {
       provider: "acpx";
       model: string;
-      acpxAgent: QualifiedPaperclipRunnerAcpxAgent;
-      acpxPermissionMode: "approve-all" | "approve-reads" | "deny-all";
+      acpxAgent: AdmittedPaperclipRunnerAcpxAgent;
+      acpxPermissionMode: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
+      acpxSessionMode?: "agent" | "plan" | "ask";
     };
 
 export class PaperclipRunnerProviderProfileError extends Error {
@@ -132,6 +148,43 @@ function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : null;
+}
+
+/** Configuration can be saved before pairing; task admission requires a binding. */
+export function validatePaperclipRunnerDotConfig(config: Record<string, unknown>, requireBinding = true): string | null {
+  const bindingId = optionalString(config.dotBindingId);
+  if ((requireBinding && !bindingId) || (bindingId && !/^[0-9a-f-]{36}$/i.test(bindingId))
+      || config.allowUnmeteredProvider !== true || (config.lifecycleMode && config.lifecycleMode !== "per_turn")
+      || optionalString(config.model)) {
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_dot_config_invalid", "Dot requires per-turn lifecycle and explicit externally billed, unmetered-provider acknowledgement. Pair a binding before assigning work.");
+  }
+  return bindingId;
+}
+
+/** A task may change a local Runner model (and Codex effort), but not provider identity. */
+export function projectPaperclipRunnerTaskConfig(
+  backend: "codex_app_server" | "opencode_server",
+  agentConfig: unknown,
+  taskOverrides: unknown,
+  managedModel?: string,
+): Record<string, unknown> {
+  const base = asRecord(agentConfig);
+  const task = asRecord(taskOverrides);
+  const config = { ...base };
+  // The server resolves a connection's model namespace after task overrides.
+  // Carry that model into durable input without allowing routing to change the harness.
+  const model = optionalString(managedModel) ?? optionalString(task.model);
+  const effortKey = backend === "codex_app_server"
+    ? ["modelReasoningEffort", "reasoningEffort", "effort"].find((key) => key in task)
+    : undefined;
+  if (backend === "codex_app_server" && ((model !== null && model !== optionalString(base.model)) || effortKey !== undefined)) {
+    delete config.modelReasoningEffort;
+    delete config.reasoningEffort;
+    delete config.effort;
+  }
+  if (model !== null) config.model = model;
+  if (effortKey !== undefined) config.modelReasoningEffort = task[effortKey];
+  return config;
 }
 
 function positiveNumberOrNull(
@@ -313,7 +366,19 @@ export function resolvePaperclipRunnerProviderProfile(
     );
   }
 
+  if (candidate === "openai_dot") {
+    const bindingId = validatePaperclipRunnerDotConfig(config)!;
+    return { provider: "openai_dot", backend: "openai_dot_mcp", model: null, dotBindingId: bindingId };
+  }
   assertPermissionMode(candidate, config);
+  try {
+    resolvePaperclipRunnerCursorMode(candidate, config.acpxAgent, config.acpxSessionMode);
+  } catch (error) {
+    throw new PaperclipRunnerProviderProfileError(
+      "paperclip_runner_cursor_mode_invalid",
+      error instanceof Error ? error.message : "Invalid Cursor session mode",
+    );
+  }
   const model = optionalString(config.model);
   if (candidate === "codex") {
     return {
@@ -404,23 +469,44 @@ export function resolvePaperclipRunnerProviderProfile(
   }
 
   const acpxAgent = config.acpxAgent ?? "claude";
-  if (acpxAgent !== "claude" && acpxAgent !== "codex") {
+  const pendingAcpxProfile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === acpxAgent && !profile.qualified);
+  if (pendingAcpxProfile) {
+    if (!model) throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", `${pendingAcpxProfile.label} requires an explicit model ID; there is no default model.`);
+    // Qualification authority belongs to the isolated server operator. Never
+    // read this allowlist from adapter config, credential refs, or run env.
+    let qualification: AcpxQualificationCandidate | undefined;
+    try {
+      qualification = resolveAcpxQualification({ kind: "acpx", agent: pendingAcpxProfile.value, model }, process.env);
+    } catch {
+      throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_qualification_invalid", "ACPX qualification requires an exact host-authorized candidate and model.");
+    }
+    if (qualification) {
+      return { provider: "acpx", backend: "acpx_runtime", model, acpxAgent: qualification };
+    }
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_agent_unavailable", `${pendingAcpxProfile.label} is awaiting local and Daytona qualification. Its profile is not enabled for production runs.`);
+  }
+  if (acpxAgent === "cursor" && !model) {
+    throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", "Cursor requires an explicit model ID; there is no default model.");
+  }
+  if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "grok" && acpxAgent !== "cursor") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
-      "Paperclip Runner ACPX requires the qualified Claude or Codex agent profile; Pi is not available.",
+      "Paperclip Runner ACPX requires a qualified agent profile.",
     );
   }
-  const qualifiedModel = QUALIFIED_ACPX_RUNNER_MODELS[acpxAgent];
-  if (acpxAgent === "codex" && model !== qualifiedModel) {
+  const selectedModel = model || DEFAULT_ACPX_RUNNER_MODELS[acpxAgent] || "";
+  try {
+    resolveQualifiedAcpxProfile(acpxAgent, selectedModel);
+  } catch (error) {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_model_unqualified",
-      `Paperclip Runner ACPX ${acpxAgent} requires exact model ${qualifiedModel}.`,
+      error instanceof Error ? error.message : "Paperclip Runner ACPX requires an admitted model.",
     );
   }
   return {
     provider: "acpx",
     backend: "acpx_runtime",
-    model: model || qualifiedModel,
+    model: selectedModel,
     acpxAgent,
   };
 }
@@ -434,6 +520,7 @@ export function resolvePaperclipRunnerProviderProfile(
 export function resolvePaperclipRunnerNativeProviderInput(input: {
   backend: PaperclipRunnerProviderProfile["backend"];
   adapterConfig: unknown;
+  dotBinding?: import("../../vendor/paperclip-runner/index.js").DotBindingSnapshot;
   managedProfile?: {
     id: string;
     profileKey: string;
@@ -458,6 +545,10 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       "Paperclip Runner provider changed after this run selected its native backend.",
     );
   }
+  if (profile.provider === "openai_dot") {
+    if (!input.dotBinding || input.dotBinding.bindingId !== profile.dotBindingId) throw new PaperclipRunnerProviderProfileError("paperclip_runner_dot_binding_unavailable", "Dot binding must be resolved by the server after normal admission.");
+    return { provider: "openai_dot", model: null, dotBinding: input.dotBinding };
+  }
   if (profile.provider === "opencode") {
     return {
       provider: "opencode",
@@ -473,10 +564,13 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       provider: "acpx",
       model: profile.model,
       acpxAgent: profile.acpxAgent,
+      ...(profile.acpxAgent === "cursor" ? {
+        acpxSessionMode: resolvePaperclipRunnerCursorMode("acpx", "cursor", config.acpxSessionMode),
+      } : {}),
       acpxPermissionMode: resolvePaperclipRunnerPermissionMode(
         "acpx",
         config.acpxPermissionMode,
-      ) as "approve-all" | "approve-reads" | "deny-all",
+      ) as "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all",
     };
   }
   if (profile.provider === "claude_managed") {
@@ -630,6 +724,18 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       },
     };
   }
+  const effort = config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort;
+  const allowedEfforts = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  if (effort !== undefined && effort !== null && effort !== "" && (
+    typeof effort !== "string" || !allowedEfforts.includes(effort)
+    || (profile.model && isCodexLocalKnownModel(profile.model)
+      && !codexLocalReasoningEffortsForModel(profile.model).includes(effort as "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"))
+  )) {
+    throw new PaperclipRunnerProviderProfileError(
+      "paperclip_runner_codex_effort_invalid",
+      "Paperclip Runner Codex reasoning effort is not supported for this model.",
+    );
+  }
   return {
     provider: "codex",
     model: profile.model,
@@ -637,5 +743,6 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       "codex",
       config.codexPermissionMode,
     ) as "never" | "on-request" | "untrusted",
+    ...(typeof effort === "string" && effort ? { codexReasoningEffort: effort } : {}),
   };
 }

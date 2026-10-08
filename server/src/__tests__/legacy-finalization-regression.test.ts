@@ -104,6 +104,11 @@ describe("P6-32 legacy finalization regression", () => {
   });
 
   it("executes a flag-off heartbeat through the legacy adapter with byte-stable reads and zero native rows", async () => {
+    const execute = adapterExecute.getMockImplementation()!;
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+      return execute();
+    });
     const heartbeat = heartbeatService(db);
     const queued = await heartbeat.wakeup(agentId, {
       source: "automation",

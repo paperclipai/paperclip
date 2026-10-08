@@ -1,3 +1,4 @@
+import type { AgentAppearance } from "@paperclipai/shared";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
 import type {
   HeartbeatRun,
@@ -31,6 +32,8 @@ export interface ActiveRunForIssue {
   createdAt: string | Date;
   agentId: string;
   agentName: string;
+  agentAppearance?: AgentAppearance | null;
+  avatarUrl?: string;
   adapterType: string;
   logBytes?: number | null;
   lastOutputBytes?: number | null;
@@ -62,6 +65,8 @@ export interface LiveRunForIssue {
   createdAt: string;
   agentId: string;
   agentName: string;
+  agentAppearance?: AgentAppearance | null;
+  avatarUrl?: string;
   adapterType: string;
   logBytes?: number | null;
   lastOutputBytes?: number | null;
@@ -227,7 +232,7 @@ export const heartbeatsApi = {
     api.get<ActiveRunForIssue | null>(`/issues/${issueId}/active-run`),
   liveRunsForCompany: (
     companyId: string,
-    options?: number | { minCount?: number; limit?: number },
+    options?: number | { minCount?: number; limit?: number; distinctTasks?: boolean },
   ) => {
     const searchParams = new URLSearchParams();
     if (typeof options === "number") {
@@ -236,6 +241,7 @@ export const heartbeatsApi = {
       if (options.minCount)
         searchParams.set("minCount", String(options.minCount));
       if (options.limit) searchParams.set("limit", String(options.limit));
+      if (options.distinctTasks) searchParams.set("distinctTasks", "true");
     }
     const qs = searchParams.toString();
     return api.get<LiveRunForIssue[]>(

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -6,6 +7,14 @@ import { PassThrough } from "node:stream";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// This unit suite isolates runtime lifecycle behavior; privacy is covered with a
+// real database by privacy-production-review.test.ts.
+vi.mock("../services/authorization.js", async () => ({
+  ...(await vi.importActual<typeof import("../services/authorization.js")>("../services/authorization.js")),
+  executionWorkspaceReadSqlCondition: async () => sql<boolean>`true`,
+  canActorReadExecutionWorkspace: async () => true,
+}));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -157,8 +166,8 @@ function createRegisteredRepairFixture(
   prefix: string,
   options: { targetInstanceId?: string; withCli?: boolean } = {},
 ) {
-  const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  const baseCwd = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}base-`));
+  const workspaceCwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  const baseCwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}base-`)));
   const configDir = path.join(workspaceCwd, ".paperclip");
   const sourceConfigPath = path.join(baseCwd, ".paperclip", "config.json");
   const targetInstanceId = options.targetInstanceId ?? "repair-target";
@@ -236,7 +245,7 @@ function mockVerifiedReseed(
  * stable 409 while a control is genuinely live, and a start that fails must leave the workspace
  * stopped and retryable instead of "desired running" with residue.
  */
-describe.sequential("execution workspace runtime control conflict and failure reconciliation", () => {
+describe("execution workspace runtime control conflict and failure reconciliation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSpawn.mockReset();
@@ -300,7 +309,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
       .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-services/stop`)
       .send({});
 
-    expect(res.status).toBe(409);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body.details ?? res.body).toMatchObject({
       code: "workspace_runtime_control_in_progress",
       activeAction: "start",
@@ -322,7 +331,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
       .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-services/start`)
       .send({});
 
-    expect(res.status).toBe(403);
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(mockWorkspaceOperationService.assertRuntimeControlAvailable).not.toHaveBeenCalled();
   });
 
@@ -367,7 +376,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
         .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
         .send({});
 
-      expect(res.status).toBe(422);
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
       expect(res.body).toMatchObject({
         code: "workspace_repair_precondition_failed",
         reason: "seed_manifest_malformed",
@@ -415,7 +424,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
           .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
           .send({});
 
-        expect(res.status).toBe(422);
+        expect(res.status, JSON.stringify(res.body)).toBe(422);
         expect(res.body).toMatchObject({
           code: "workspace_repair_precondition_failed",
           reason: "source_registration_invalid",
@@ -450,7 +459,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
         .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
         .send({});
 
-      expect(res.status).toBe(422);
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
       expect(res.body).toMatchObject({
         code: "workspace_repair_precondition_failed",
         reason: "source_registration_invalid",
@@ -471,7 +480,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
         .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
         .send({});
 
-      expect(res.status).toBe(422);
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
       expect(res.body).toMatchObject({
         code: "workspace_repair_precondition_failed",
         reason: "source_registration_invalid",
@@ -493,7 +502,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
         .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
         .send({});
 
-      expect(res.status).toBe(422);
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
       expect(res.body).toMatchObject({
         code: "workspace_repair_precondition_failed",
         reason: "seed_manifest_instance_mismatch",
@@ -573,7 +582,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
         .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
         .send({});
 
-      expect(res.status).toBe(200);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockStopRuntimeServicesForExecutionWorkspace).toHaveBeenCalledWith(
         expect.objectContaining({ executionWorkspaceId, workspaceCwd: fixture.workspaceCwd }),
       );
@@ -604,7 +613,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
         .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
         .send({});
 
-      expect(res.status).toBe(200);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockStopRuntimeServicesForExecutionWorkspace).toHaveBeenCalledTimes(1);
       expect(mockStartRuntimeServices).not.toHaveBeenCalled();
       expect(mockBuildWorkspaceRuntimeDesiredStatePatch).toHaveBeenCalledWith(
@@ -656,7 +665,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
         .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-commands/repair`)
         .send({});
 
-      expect(res.status).toBe(500);
+      expect(res.status, JSON.stringify(res.body)).toBe(500);
       expect(res.body).toEqual({ error: "Internal server error" });
       expect(progress).toEqual(expect.arrayContaining([
         expect.objectContaining({ metadata: { seedFailurePhase: "restore" } }),

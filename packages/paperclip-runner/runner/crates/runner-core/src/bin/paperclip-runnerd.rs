@@ -119,6 +119,7 @@ fn build_metadata() -> serde_json::Value {
         "packageName": "@paperclipai/paperclip-runner",
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
+        "durableSessionCapabilities": ["unlimited_runtime", "connection_lease_renewal"],
         "nativeExecutionVersion": 1,
         "harnessDriverVersion": 1,
         "prp": {
@@ -260,6 +261,42 @@ fn usize_value(args: &[String], name: &str, default: usize) -> Result<usize, Loc
     })
 }
 
+fn durable_connect_url(args: &[String], run_id: &str) -> Result<String, LocalRunnerError> {
+    let has_connect = args.iter().any(|argument| argument == "--connect-url");
+    let has_listener = ["--listen-address", "--listen-port", "--listen-path"]
+        .iter()
+        .any(|name| args.iter().any(|argument| argument == name));
+    match (has_connect, has_listener) {
+        (true, false) => value(args, "--connect-url"),
+        (false, true) => {
+            let address = value(args, "--listen-address")?;
+            let port = optional_u64(args, "--listen-port")?.unwrap_or(43127);
+            if !(1..=u16::MAX as u64).contains(&port) {
+                return Err(LocalRunnerError::invalid(
+                    "runner listener port must be in 1..=65535",
+                ));
+            }
+            let path = value(args, "--listen-path")?;
+            if address != "0.0.0.0" {
+                return Err(LocalRunnerError::invalid(
+                    "runner listener requires --listen-address 0.0.0.0",
+                ));
+            }
+            if path != format!("/api/runner/v1/connect/{run_id}") {
+                return Err(LocalRunnerError::invalid(
+                    "runner listener path must exactly match the configured run",
+                ));
+            }
+            Ok(format!("listen://{address}:{port}{path}"))
+        }
+        _ => {
+            return Err(LocalRunnerError::invalid(
+                "durable runner requires exactly one connect URL or complete listener group",
+            ))
+        }
+    }
+}
+
 fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
     let ticket = capture_bootstrap_ticket()
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
@@ -273,34 +310,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
     };
     let state_dir = PathBuf::from(value(args, "--state-dir")?);
     let run_id = value(args, "--run-id")?;
-    let has_connect = args.iter().any(|argument| argument == "--connect-url");
-    let has_listener = ["--listen-address", "--listen-port", "--listen-path"]
-        .iter()
-        .any(|name| args.iter().any(|argument| argument == name));
-    let connect_url = match (has_connect, has_listener) {
-        (true, false) => value(args, "--connect-url")?,
-        (false, true) => {
-            let address = value(args, "--listen-address")?;
-            let port = value(args, "--listen-port")?;
-            let path = value(args, "--listen-path")?;
-            if address != "0.0.0.0" || port != "43127" {
-                return Err(LocalRunnerError::invalid(
-                    "runner listener requires --listen-address 0.0.0.0 and --listen-port 43127",
-                ));
-            }
-            if path != format!("/api/runner/v1/connect/{run_id}") {
-                return Err(LocalRunnerError::invalid(
-                    "runner listener path must exactly match the configured run",
-                ));
-            }
-            format!("listen://{address}:{port}{path}")
-        }
-        _ => {
-            return Err(LocalRunnerError::invalid(
-                "durable runner requires exactly one connect URL or complete listener group",
-            ))
-        }
-    };
+    let connect_url = durable_connect_url(args, &run_id)?;
     let ca_bundle_path = args
         .iter()
         .any(|argument| argument == "--ca-bundle-path")
@@ -394,10 +404,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn listener_port_is_configurable_and_defaults_to_43127() {
+        let base: Vec<String> = [
+            "--listen-address",
+            "0.0.0.0",
+            "--listen-path",
+            "/api/runner/v1/connect/run_1",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(
+            durable_connect_url(&base, "run_1").unwrap(),
+            "listen://0.0.0.0:43127/api/runner/v1/connect/run_1"
+        );
+        for port in ["43000", "43999", "65535"] {
+            let mut args = base.clone();
+            args.extend(["--listen-port".to_owned(), port.to_owned()]);
+            assert_eq!(
+                durable_connect_url(&args, "run_1").unwrap(),
+                format!("listen://0.0.0.0:{port}/api/runner/v1/connect/run_1")
+            );
+        }
+        for port in ["0", "65536", "-1", "invalid", ""] {
+            let mut args = base.clone();
+            args.extend(["--listen-port".to_owned(), port.to_owned()]);
+            assert!(durable_connect_url(&args, "run_1").is_err());
+        }
+        assert!(durable_connect_url(&base, "another_run").is_err());
+        let mut mixed = base.clone();
+        mixed.extend([
+            "--connect-url".to_owned(),
+            "wss://example.test/connect".to_owned(),
+        ]);
+        assert!(durable_connect_url(&mixed, "run_1").is_err());
+    }
+
+    #[test]
     fn build_metadata_advertises_the_remote_transport_contract() {
         let metadata = build_metadata();
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
         assert_eq!(metadata["binaryContractVersion"], 2);
+        assert_eq!(
+            metadata["durableSessionCapabilities"],
+            json!(["unlimited_runtime", "connection_lease_renewal"])
+        );
         assert_eq!(
             metadata["prpTransportModes"],
             json!(["dial_ws_loopback", "dial_wss", "listen_ws"])

@@ -42,11 +42,13 @@ export function useWindowAutoFollow(
 ): void {
   const newestFirst = threadOrder === "newest_first";
   const pinnedRef = useRef(true);
+  const lastScrollYRef = useRef(window.scrollY);
   const navigation = useTaskChatScrollNavigation();
   const initialPositionApplied = useRef(false);
   const appliedNavigation = useRef({ key: navigation.key, hash: navigation.hash });
   const anchorRef = useRef<ThreadScrollAnchor | null>(null);
   const rememberAnchor = () => {
+    lastScrollYRef.current = window.scrollY;
     const root = document.querySelector('[data-testid="task-chat-thread"]');
     if (root) anchorRef.current = readThreadScrollAnchor(root, 0, window.innerHeight);
     if (initialPositionApplied.current) navigation.remember(window.scrollY, anchorRef.current);
@@ -66,16 +68,26 @@ export function useWindowAutoFollow(
   useEffect(() => {
     if (!enabled) return;
     const onScroll = () => {
-      pinnedRef.current = windowPinned(newestFirst);
+      // Content or viewport growth can leave a gap at the old live edge before
+      // ResizeObserver runs. Only a scroll away from the live edge gives up
+      // existing follow intent; a scroll event at the same position must not
+      // strand the output.
+      const towardLiveEdge = newestFirst
+        ? window.scrollY <= lastScrollYRef.current
+        : window.scrollY >= lastScrollYRef.current;
+      pinnedRef.current = windowPinned(newestFirst) || (pinnedRef.current && towardLiveEdge);
       rememberAnchor();
     };
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    window.addEventListener("resize", reconcile);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", reconcile);
+    };
   }, [enabled, newestFirst, navigation.key, navigation.hash, navigation.ready]);
 
   useLayoutEffect(() => {
     if (!enabled || typeof ResizeObserver === "undefined") return;
-    const observed = document.body;
     let previousScrollHeight = scrollingElement()?.scrollHeight ?? null;
     const observer = new ResizeObserver(() => {
       const nextScrollHeight = scrollingElement()?.scrollHeight ?? null;
@@ -88,7 +100,12 @@ export function useWindowAutoFollow(
       previousScrollHeight = nextScrollHeight;
       reconcile();
     });
-    observer.observe(observed);
+    // The mobile body is viewport-sized even when its contents overflow. Watch
+    // the thread box too, so streamed rows, images and expanding tools follow
+    // after their own layout changes without needing a new parent content key.
+    observer.observe(document.body);
+    const thread = document.querySelector('[data-testid="task-chat-thread"]');
+    if (thread) observer.observe(thread);
     return () => observer.disconnect();
   }, [enabled, navigation.key, navigation.hash, navigation.ready]);
 

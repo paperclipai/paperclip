@@ -417,7 +417,7 @@ jobs:
       # explicitly, exactly like the nightly and beta lanes: the run keys
       # its concurrency off the tag ref, so no master push can supersede
       # it, and docker.yml's `type=sha` mapping publishes the
-      # sha-<short> and sha-<short>-cloud images either way.
+      # standard sha-<short> images either way.
       - name: Build Docker images for the canary tag
         env:
           GH_TOKEN: ${{ github.token }}

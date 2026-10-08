@@ -1,6 +1,11 @@
 /** Provider-neutral semantic completion tools and their strict model-facing schemas. */
 export const PRP_COMPLETION_TOOL_NAME = "paperclip_finish" as const;
 export const PRP_BLOCK_TOOL_NAME = "paperclip_block" as const;
+/** Native Runner guidance; legacy adapters use their own skill/API completion paths. */
+export const PRP_COMPLETION_TOOL_DESCRIPTION =
+  "Report completed work (done), work requiring review (needs_review), or an explicit wait (yielded with response_wake for a response, or monitor after set_task_monitor confirms a schedule on this task). Use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome; do not claim completion while gated. Explain any required approval with its supplied link and action, then write the final response and end the turn without further tool calls.";
+export const PRP_BLOCK_TOOL_DESCRIPTION =
+  "Report work that cannot continue because of a concrete blocker. Identify the blocker, its owner, and the action needed to unblock it; use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome, explain the blocker and any required action in the final response, and end the turn without further tool calls.";
 export const PRP_SEMANTIC_TOOL_NAMES = [
   PRP_COMPLETION_TOOL_NAME,
   PRP_BLOCK_TOOL_NAME,
@@ -38,7 +43,7 @@ const completionClaimSchema = {
   additionalProperties: false,
   required: ["contractRevision", "objectiveSatisfied", "criteria", "remainingWork"],
   properties: {
-    contractRevision: { type: "string", minLength: 1 },
+    contractRevision: { type: "string", minLength: 1, description: "Use the current turn completion.revision (or completionContract.revision on the first turn), never a previous turn’s revision. On stale-revision feedback, reassess the current request and correct the report without repeating completed work." },
     objectiveSatisfied: { type: "boolean" },
     criteria: {
       type: "array",
@@ -139,14 +144,14 @@ const artifactsSchema = {
   },
 } as const;
 
-const responseWakeContinuationSchema = {
+const waitContinuationSchema = {
   type: "object",
   description:
-    "Required when reportedWorkDisposition is yielded. Wait for the next response without scheduling work; include kind, summary, and a stable idempotencyKey.",
+    "Required when reportedWorkDisposition is yielded. Use response_wake for a response wait, or monitor only after a real monitor is persisted on the current task. Include kind, summary, and a stable idempotencyKey.",
   additionalProperties: false,
   required: ["kind", "summary", "idempotencyKey"],
   properties: {
-    kind: { type: "string", const: "response_wake" },
+    kind: { type: "string", enum: ["response_wake", "monitor"] },
     summary: {
       type: "string",
       minLength: 1,
@@ -187,7 +192,7 @@ export const PRP_COMPLETION_RESULT_OUTPUT_SCHEMA = {
   properties: {
     ...commonResultProperties,
     reportedWorkDisposition: { enum: ["done", "needs_review", "yielded"] },
-    continuation: responseWakeContinuationSchema,
+    continuation: waitContinuationSchema,
   },
   allOf: [
     {
@@ -268,7 +273,10 @@ const providerVerificationCompatibilitySchema = {
       detail: { type: "string" },
       result: { type: "string" },
       cwd: { type: "string" },
-      artifactRef: { type: "string", minLength: 1 },
+      artifactRef: {
+        type: ["string", "null"],
+        description: "Reference to a real verification artifact. Omit or use null when no artifact exists; empty values are normalized away.",
+      },
     },
   },
 } as const;
@@ -355,15 +363,23 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
     reportedWorkDisposition: { enum: ["done", "needs_review", "yielded", "completed"] },
     verification: providerVerificationCompatibilitySchema,
     attentionRequests: providerAttentionCompatibilitySchema,
-    continuation: responseWakeContinuationSchema,
+    // Responses-compatible gateways can require every declared property in
+    // tool calls. Give non-yielding results an explicit absence value instead
+    // of forcing callers to invent a response-wake continuation.
+    continuation: {
+      ...waitContinuationSchema,
+      type: ["object", "null"],
+      description:
+        "Use null or omit this field for done, completed, or needs_review. Only yielded requires a wait object with kind (response_wake or monitor), summary, and idempotencyKey.",
+    },
   },
   // Keep the provider-facing root a concrete object. Codex code-mode renders a
   // root allOf containing only an if/then constraint as `args: unknown`, hiding
   // every required field from the model. This equivalent direct conditional
   // preserves validation without obscuring the object-shaped tool signature.
   if: { properties: { reportedWorkDisposition: { const: "yielded" } }, required: ["reportedWorkDisposition"] },
-  then: { required: ["continuation"] },
-  else: { not: { required: ["continuation"] } },
+  then: { required: ["continuation"], properties: { continuation: { type: "object" } } },
+  else: { properties: { continuation: { type: "null" } } },
 } as const;
 
 export const PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA = {

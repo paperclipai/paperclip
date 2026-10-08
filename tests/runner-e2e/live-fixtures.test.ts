@@ -4,18 +4,113 @@ import { runnerMatrix } from "./catalog.js";
 import { setupLiveFixtures } from "./live-fixtures.js";
 
 describe("live runner fixtures", () => {
-  it.each(["runner-codex", "runner-acpx-claude"])(
-    "gives %s hiring fixtures a personal managed account without env overrides",
-    async (profile) => {
+  it.each(["runner-codex", "runner-acpx-claude", "runner-opencode"].flatMap(profile =>
+    ["hire-reuse", "delegate-feedback"].map(task => [profile, task]))) (
+    "applies %s %s budget stops in actual setup with a nonce and only its selected credential", async (profile, task) => {
+      const execution = runnerMatrix.find(row => row.id === `everyday-workflows.${profile}.local.${task}`)!;
+      let agentBody: any;
+      let companyBody: any;
+      const api = {
+        async get() { return [{ id: "local", driver: "local" }]; },
+        async postSensitive(url: string) { return url.endsWith("/ai-connections") ? { connectionId: "account" } : { id: "secret" }; },
+        async post(url: string, data: any) {
+          if (url === "/api/companies") { companyBody = data; return { id: "company", name: "Test" }; }
+          if (url.endsWith("/agents")) { agentBody = data; return { id: "lead", ...data }; }
+          throw new Error(`Unexpected POST ${url}`);
+        },
+      } as unknown as RunnerApi;
+      const fixtures = await setupLiveFixtures({ api, execution, executionNonce: "random-nonce", workspacePath: "/tmp/test",
+        credentials: { [execution.profile.credential]: "test-value" } });
+      expect(companyBody.budgetMonthlyCents).toBe(1_000);
+      expect(agentBody.budgetMonthlyCents).toBe(1_000);
+      await fixtures.teardown();
+    },
+  );
+
+  it.each(["runner-codex", "runner-acpx-claude", "runner-opencode"])(
+    "sets both connection-guidance budget stops for %s before execution", async profile => {
+      const execution = runnerMatrix.find(row => row.suite.id === "native-connection-guidance" && row.profile.id === profile)!;
+      let companyBudget: unknown;
+      let agentBudget: unknown;
+      const api = {
+        async get() { return [{ id: "local", driver: "local" }]; },
+        async postSensitive() { return { id: "secret" }; },
+        async post(url: string, data: any) {
+          if (url === "/api/companies") { companyBudget = data.budgetMonthlyCents; return { id: "company", name: "Test" }; }
+          if (url.endsWith("/agents")) { agentBudget = data.budgetMonthlyCents; return { id: "lead", ...data }; }
+          throw new Error("Unexpected POST " + url);
+        },
+      } as unknown as RunnerApi;
+      const fixtures = await setupLiveFixtures({ api, execution, executionNonce: "nonce", workspacePath: "/tmp/test",
+        credentials: { [execution.profile.credential]: "test-value" } });
+      expect(companyBudget).toBe(1_000);
+      expect(agentBudget).toBe(1_000);
+      await fixtures.teardown();
+    },
+  );
+
+  it.each(["runner-codex", "legacy-codex", "runner-acpx-claude", "legacy-opencode"])(
+    "creates a production-default %s hire with company and agent budget stops", async (profile) => {
+      const execution = runnerMatrix.find(row => row.suite.id === "stock-harness" && row.profile.id === profile)!;
+      let agentBody: any;
+      const api = {
+        async get() { return [{ id: "local", driver: "local" }]; },
+        async postSensitive() { return { id: "secret" }; },
+        async post(url: string, data: any) {
+          if (url === "/api/companies") {
+            expect(data.budgetMonthlyCents).toBe(1_000);
+            return { id: "company", name: "Fixture" };
+          }
+          if (url.endsWith("/agents")) { agentBody = data; return { id: "agent", ...data }; }
+          throw new Error(`Unexpected POST ${url}`);
+        },
+      } as unknown as RunnerApi;
+      const fixtures = await setupLiveFixtures({ api, execution, executionNonce: "nonce", workspacePath: "/tmp/fixture",
+        credentials: { [execution.profile.credential]: "fixture-key" } });
+      expect(agentBody).not.toHaveProperty("instructionsBundle");
+      expect(agentBody.budgetMonthlyCents).toBe(1_000);
+      expect(agentBody.adapterConfig.env[execution.profile.credential]).toEqual({ type: "secret_ref", secretId: "secret", version: "latest" });
+      await fixtures.teardown();
+    },
+  );
+  it("anchors extended file validation to a public project workspace for local and remote copy-back", async () => {
+    const execution = runnerMatrix.find(e => e.id === "extended-harnesses.runner-acpx-pi.local.file-edit-validate")!;
+    let projectBody: any;
+    const api = {
+      async get() { return [{ id: "local", driver: "local" }]; },
+      async postSensitive() { return { id: "secret" }; },
+      async post(url: string, data: any) {
+        if (url === "/api/companies") return { id: "company", name: "Test" };
+        if (url.endsWith("/agents")) return { id: "agent", ...data };
+        if (url.endsWith("/projects")) { projectBody = data; return { id: "project", ...data }; }
+        throw new Error(`Unexpected POST ${url}`);
+      },
+    } as unknown as RunnerApi;
+    const fixtures = await setupLiveFixtures({ api, execution, executionNonce: "nonce", workspacePath: "/tmp/fixture-workspace", credentials: { OPENROUTER_API_KEY: "fixture-key" } });
+    expect(fixtures.project?.id).toBe("project");
+    expect(projectBody).toMatchObject({ executionWorkspacePolicy: { environmentId: "local", workspaceStrategy: { type: "project_primary" } }, workspace: { cwd: "/tmp/fixture-workspace", sourceType: "local_path" } });
+  });
+
+  it.each([
+    ["runner-codex", "hiring-templates", "hire-coder-template-reuse"],
+    ["runner-acpx-claude", "hiring-templates", "hire-coder-template-reuse"],
+    ["runner-codex", "everyday-workflows", "hire-reuse"],
+    ["runner-acpx-claude", "everyday-workflows", "hire-reuse"],
+    ["runner-opencode", "everyday-workflows", "hire-reuse"],
+    ["runner-codex", "agent-chat-hardening", "hire-delegate-reuse"],
+    ["runner-acpx-claude", "agent-chat-hardening", "hire-delegate-reuse"],
+  ])(
+    "gives %s %s/%s a personal managed account without env overrides",
+    async (profile, suite, task) => {
       const execution = runnerMatrix.find(
         (e) =>
-          e.suite.id === "everyday-workflows" &&
-          e.task.id === "hire-reuse" &&
+          e.suite.id === suite &&
+          e.task.id === task &&
           e.profile.id === profile &&
           e.environment.id === "local",
       )!;
       const provider =
-        profile === "runner-acpx-claude" ? "anthropic" : "openai";
+        profile === "runner-acpx-claude" ? "anthropic" : profile === "runner-opencode" ? "openrouter" : "openai";
       let connected = false;
       let agentBody: any;
       const api = {
@@ -52,8 +147,7 @@ describe("live runner fixtures", () => {
         executionNonce: "nonce",
         workspacePath: "/tmp/test",
         credentials: {
-          OPENAI_API_KEY: "test-value",
-          ANTHROPIC_API_KEY: "test-value",
+          [execution.profile.credential]: "test-value",
         },
       });
       expect(connected).toBe(true);

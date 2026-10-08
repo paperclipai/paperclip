@@ -3,14 +3,6 @@ import type { PaperclipJsonValue } from "../catalog/semantic-action-types.js";
 
 export const CAPABILITY_REDACTED = "[REDACTED]";
 
-export function containsProtectedSemanticData(value: unknown, key = ""): boolean {
-  const inspected = inspectPaperclipSemanticValue(
-    key.length === 0 ? value : { [key]: value },
-  );
-  // Fail closed when provider-controlled values exceed the shared safety bound.
-  return inspected.containsProtectedData || !inspected.withinBounds;
-}
-
 export function redactSemanticValue(value: unknown, key = ""): CapabilityJsonValue {
   if (key.length === 0) {
     return redactPaperclipSemanticValue(value) as CapabilityJsonValue;
@@ -24,9 +16,9 @@ export function redactSemanticValue(value: unknown, key = ""): CapabilityJsonVal
 }
 
 const PAPERCLIP_SENSITIVE_KEY =
-  /(?:authorization|cookie|credential|password|passwd|private.?key|secret|token|api.?key|connection.?string)/i;
+  /(?:authorization(?:[-_]?code)?|cookie|credentials?|passwords?|passwd|private.?key|secrets?|token|api.?key|connection.?string)(?:[-_]?(?:value|header|prod(?:uction)?|dev(?:elopment)?|test|staging|primary|secondary))*$/i;
 const PAPERCLIP_SECRET_VALUE =
-  /(?:\bBearer\s+[A-Za-z0-9._~+/=-]{8,}|\b(?:sk|pk|pcgw|ghp|github_pat)_[A-Za-z0-9_-]{8,}|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})/gi;
+  /(?:\bBearer\s+(?!(?:tokens?|authentication|authorization|credentials?|schemes?|flows?)[.,;:!?]?(?:\s|$))[A-Za-z0-9._~+/=-]{8,}|\b(?:sk|pk|pcgw|ghp|github_pat)_[A-Za-z0-9_-]{8,}|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})/gi;
 const PAPERCLIP_SECRET_QUERY =
   /([?&](?:code|key|secret|state|token|api[_-]?key|access[_-]?token)=)[^&#\s]+/gi;
 const PAPERCLIP_PAPERCLIP_SECRET_QUERY_DETECT =
@@ -49,7 +41,19 @@ export interface PaperclipSemanticValueSafety {
 export function inspectPaperclipSemanticValue(
   value: unknown,
 ): PaperclipSemanticValueSafety {
-  const state = { nodes: 0, protected: false, withinBounds: true };
+  return inspectValueSafety(value, true);
+}
+
+/** Validate transport bounds without inspecting credential content. */
+export function isPaperclipSemanticValueWithinBounds(value: unknown): boolean {
+  return inspectValueSafety(value, false).withinBounds;
+}
+
+function inspectValueSafety(
+  value: unknown,
+  detectCredentials: boolean,
+): PaperclipSemanticValueSafety {
+  const state = { nodes: 0, protected: false, withinBounds: true, detectCredentials };
   inspect(value, "", 0, state, new Set<object>());
   return Object.freeze({
     containsProtectedData: state.protected,
@@ -68,7 +72,12 @@ function inspect(
   value: unknown,
   key: string,
   depth: number,
-  state: { nodes: number; protected: boolean; withinBounds: boolean },
+  state: {
+    nodes: number;
+    protected: boolean;
+    withinBounds: boolean;
+    detectCredentials: boolean;
+  },
   ancestors: Set<object>,
 ): void {
   state.nodes += 1;
@@ -76,11 +85,16 @@ function inspect(
     state.withinBounds = false;
     return;
   }
-  if (PAPERCLIP_SENSITIVE_KEY.test(key)) state.protected = true;
+  if (state.detectCredentials && PAPERCLIP_SENSITIVE_KEY.test(key)) {
+    state.protected = true;
+  }
   if (typeof value === "string") {
     if (value.length > PAPERCLIP_MAX_STRING_LENGTH) state.withinBounds = false;
     PAPERCLIP_SECRET_VALUE.lastIndex = 0;
-    if (PAPERCLIP_SECRET_VALUE.test(value) || PAPERCLIP_PAPERCLIP_SECRET_QUERY_DETECT.test(value)) {
+    if (
+      state.detectCredentials &&
+      (PAPERCLIP_SECRET_VALUE.test(value) || PAPERCLIP_PAPERCLIP_SECRET_QUERY_DETECT.test(value))
+    ) {
       state.protected = true;
     }
     PAPERCLIP_SECRET_VALUE.lastIndex = 0;

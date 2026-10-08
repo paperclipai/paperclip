@@ -25,3 +25,8 @@ export const AllFinished: Story = { args: { fullPage: false, scenario: "complete
 export const Empty: Story = { args: { fullPage: false, scenario: "empty" } };
 export const NarrowPanel: Story = { args: { fullPage: false, narrow: true }, globals: { viewport: { value: "mobile" } } };
 export const FullTaskPageLight: Story = { globals: { theme: "light" } };
+
+export const WithAncestors: Story = { args: { withAncestors: true } };
+export const AncestorsOnly: Story = { args: { withAncestors: true, fullPage: false, scenario: "empty" } };
+export const AncestorsNarrow: Story = { args: { withAncestors: true, fullPage: false, narrow: true } };
+export const WithAncestorsLight: Story = { args: { withAncestors: true }, globals: { theme: "light" } };

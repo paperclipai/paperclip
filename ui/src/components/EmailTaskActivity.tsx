@@ -1,7 +1,8 @@
 import { EmailMessageCard } from "./EmailMessageCard";
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { emailApi } from "@/api/email";
+import { useEmailThread } from "@/hooks/useEmailThread";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { EmailPublicationSummary } from "@paperclipai/shared";
@@ -17,11 +18,9 @@ export function EmailTaskActivity({
 }) {
   const cache = useQueryClient();
   const threadKey = ["email-thread", companyId, issueId];
-  const thread = useQuery({
-    queryKey: threadKey,
-    queryFn: () => emailApi.thread(companyId, issueId),
-    refetchInterval: 3000,
-  });
+  const queryEnabled = Boolean(companyId && issueId) && !issueId.startsWith("chat:");
+  const thread = useEmailThread(companyId, issueId);
+  if (!queryEnabled) return null;
   const data = thread.data;
   const messages = data?.messages.filter((m) => !m.commentId) ?? [];
   const publications = data?.publications.filter(

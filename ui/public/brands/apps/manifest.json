@@ -21,10 +21,22 @@
       "darkAsset": "/brands/apps/anthropic-dark.svg"
     },
     {
+      "slug": "arcade",
+      "provider": "Arcade",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/arcade.png"
+    },
+    {
       "slug": "asana",
       "provider": "Asana",
       "catalogVisible": true,
       "localAsset": "/brands/apps/asana.svg"
+    },
+    {
+      "slug": "bedrock",
+      "provider": "Amazon Bedrock",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/bedrock.svg"
     },
     {
       "slug": "beehiiv",
@@ -86,7 +98,7 @@
     {
       "slug": "composio",
       "provider": "Composio",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/composio.svg",
       "darkAsset": "/brands/apps/composio-dark.svg"
     },
@@ -117,8 +129,27 @@
       "localAsset": "/brands/apps/embat.svg"
     },
     {
+      "slug": "enterpret",
+      "provider": "Enterpret",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/enterpret.png"
+    },
+    {
+      "slug": "executor",
+      "provider": "Executor",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/executor.png"
+    },
+    {
       "slug": "github",
       "provider": "GitHub",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/github.svg",
+      "darkAsset": "/brands/apps/github-dark.svg"
+    },
+    {
+      "slug": "github-code-review-bot",
+      "provider": "GitHub Code Review Bot",
       "catalogVisible": true,
       "localAsset": "/brands/apps/github.svg",
       "darkAsset": "/brands/apps/github-dark.svg"
@@ -134,6 +165,12 @@
       "provider": "Google Sheets",
       "catalogVisible": true,
       "localAsset": "/brands/apps/google-sheets.svg"
+    },
+    {
+      "slug": "google",
+      "provider": "Google",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google.svg"
     },
     {
       "slug": "google-drive",
@@ -270,6 +307,12 @@
       "darkAsset": "/brands/apps/netlify-dark.svg"
     },
     {
+      "slug": "neon",
+      "provider": "Neon",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/neon.png"
+    },
+    {
       "slug": "notion",
       "provider": "Notion",
       "catalogVisible": true,
@@ -367,6 +410,19 @@
       "localAsset": "/brands/apps/supabase.svg"
     },
     {
+      "slug": "superagent",
+      "provider": "Superagent",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/superagent.png"
+    },
+    {
+      "slug": "telem",
+      "provider": "Telem.AI",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/telem.svg",
+      "darkAsset": "/brands/apps/telem-dark.svg"
+    },
+    {
       "slug": "telegram",
       "provider": "Telegram",
       "catalogVisible": true,
@@ -418,6 +474,13 @@
       "localAsset": "/brands/apps/xero.svg"
     },
     {
+      "slug": "youcom",
+      "provider": "You.com",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/youcom.svg",
+      "darkAsset": "/brands/apps/youcom-dark.svg"
+    },
+    {
       "slug": "zapier",
       "provider": "Zapier",
       "catalogVisible": true,
@@ -459,6 +522,75 @@
       "aliases": [
         "jam"
       ]
+    },
+    {
+      "slug": "railway",
+      "provider": "Railway",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/railway.svg",
+      "darkAsset": "/brands/apps/railway-dark.svg"
+    },
+    {
+      "slug": "fireflies",
+      "provider": "Fireflies",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/fireflies.svg"
+    },
+    {
+      "slug": "cognee",
+      "provider": "Cognee",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/cognee.png"
+    },
+    {
+      "slug": "honcho",
+      "provider": "Honcho",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/honcho.svg"
+    },
+    {
+      "slug": "supermemory",
+      "provider": "Supermemory",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/supermemory.png"
+    },
+    {
+      "slug": "zep",
+      "provider": "Zep",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/zep.png"
+    },
+    {
+      "slug": "browser-use-cloud",
+      "provider": "Browser Use Cloud",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/browser-use.svg",
+      "sourceUrl": "https://browser-use.com/logo-primary.svg",
+      "retrievedAt": "2026-09-29"
+    },
+    {
+      "slug": "chat-completions-api",
+      "provider": "Chat Completions API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "local",
+      "provider": "Local endpoint",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "messages-api",
+      "provider": "Messages API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
+    },
+    {
+      "slug": "responses-api",
+      "provider": "Responses API",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/api-key-generic.svg"
     }
   ]
 }

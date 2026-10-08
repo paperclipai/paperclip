@@ -1,3 +1,7 @@
+import { runHiringTemplateFlow } from "./hiring-template-flow.js";
+import { gradeHiringTemplateTurns } from "./hiring-template-turn-accounting.js";
+import type { HiringTemplateEvidence } from "./hiring-template-scoring.js";
+import { runAmbiguousConfirmationReply, runUnansweredQuestionReturn } from "./confirmation-replies.js";
 import { expect, type Page } from "@playwright/test";
 import { pollUntil, type RunnerApi } from "./api.js";
 import type {
@@ -6,7 +10,29 @@ import type {
 } from "../../packages/shared/src/types/issue.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
+import { isBlockedUnstartedWake } from "./non-execution-wake.js";
+import { collectRunEvents } from "./run-observations.js";
 import { chatMarker } from "./chat-cases.js";
+import { assertChatRememberedAfterRestart, assertChatStartupStopped, isChatStopReady, runChatHardeningFlow } from "./chat-hardening.js";
+import { enableChatThroughSettings, runChatInterruption, runChatSettingsLifecycle } from "./chat-stories.js";
+import { runActiveReassignment, runWorkerCrash, runAnswerQuality } from "./chat-qualification.js";
+import { matchesRunCount, minimumRunCount } from "./run-count.js";
+import { runChatCompletionUpdate } from "./completion-update-flow.js";
+
+/** Hiring alone admits bounded, verified lifecycle notifications. Other suites keep their count contract. */
+export function assertChatFlowRunCount(input: {
+  suiteId: string; task: Parameters<typeof matchesRunCount>[0]; runs: ChatRun[];
+  hiringEvidence?: HiringTemplateEvidence; hiringApiState?: unknown;
+}) {
+  expect(matchesRunCount(input.task, input.runs.length), "Declared total provider-run bounds").toBe(true);
+  if (input.suiteId !== "hiring-templates") return;
+  const accounting = gradeHiringTemplateTurns({
+    evidence: input.hiringEvidence ? { ...input.hiringEvidence, runs: input.runs } : undefined,
+    apiState: input.hiringApiState,
+  });
+  expect(accounting.passed, `Hiring lifecycle: ${accounting.predicates.filter(p => !p.passed).map(p => p.id).join(", ")}`).toBe(true);
+  return accounting;
+}
 
 // Public API observations only: this driver never fabricates provider results or writes DB state.
 export interface ChatIssue {
@@ -32,11 +58,14 @@ export interface ChatRun {
   error?: string | null;
   errorCode?: string | null;
   runtimeMode?: string;
+  runtimeModeResolvedAt?: string | null;
+  logStore?: string | null;
+  logRef?: string | null;
   contextSnapshot?: Record<string, unknown>;
   resultJson?: Record<string, unknown>;
   sessionIdBefore?: string | null;
   sessionIdAfter?: string | null;
-  startedAt?: string;
+  startedAt?: string | null;
 }
 type Comment = {
   id: string;
@@ -48,9 +77,59 @@ type Comment = {
 type Plan = { body: string; latestRevisionId: string; updatedAt: string };
 type ChatOutputDocument = Plan & { id: string; issueId: string; key: string };
 
+export function assertChatBacklogCreation(input: {
+  tasks: ChatIssue[];
+  runs: ChatRun[];
+  ownerId: string;
+  plan: Plan;
+  marker: string;
+  activity: Array<{ action: string; details?: Record<string, unknown> }>;
+}) {
+  expect(input.tasks).toHaveLength(1);
+  expect(input.tasks[0]).toMatchObject({ status: "backlog", parentId: null, assigneeAgentId: input.ownerId });
+  expect(input.runs.filter(run => run.contextSnapshot?.issueId === input.tasks[0]!.id)).toHaveLength(0);
+  expect(input.plan.body).toContain(input.marker);
+  expect(input.plan.latestRevisionId).toBeTruthy();
+  const created = input.activity.filter(row => row.action === "issue.created");
+  expect(created).toHaveLength(1);
+  // Correcting todo after creation still permits an unauthorized start race.
+  expect(created[0]!.details).toMatchObject({ status: "backlog", source: "paperclip_runner_protocol" });
+}
+
 /** Clarification may request information imperatively rather than end in a question mark. */
 export function isChatClarificationReply(body: string): boolean {
   if (body.includes("?")) return true;
+  // A present-tense request can introduce the required information directly,
+  // without a noun such as "brief" or "details" before the list.
+  const listRequest = body.match(/\b(?:I|we)(?:'ll|\s+will)?\s+need\s*:\s*([\s\S]*)/i);
+  if (listRequest) {
+    const items: string[] = [];
+    let paragraphBoundary = false;
+    // Only the directly introduced list belongs to this request. A later
+    // paragraph can introduce a separate plan without invalidating it.
+    for (const line of listRequest[1].split(/\r?\n/)) {
+      if (!line.trim()) {
+        paragraphBoundary = true;
+        continue;
+      }
+      const item = line.match(/^\s*(?:[-*]|\d+[.)])\s+(.+)$/);
+      if (!item) {
+        // Markdown permits soft-wrapped item text without indentation. A
+        // separate paragraph or heading ends the introduced information list.
+        if (items.length && !paragraphBoundary && !/^\s*#|:\s*$/.test(line)) {
+          items[items.length - 1] += ` ${line.trim()}`;
+          continue;
+        }
+        break;
+      }
+      items.push(item[1].replace(/^\[[ xX]\]\s*/, "").replace(/^[*_`]+/, ""));
+      paragraphBoundary = false;
+    }
+    // Positively identify questions or brief fields. Unknown bullets are not
+    // evidence of clarification merely because their verbs are unlisted.
+    const information = /^(?:(?:who|what|where|when|whether|how)\b|(?:(?:any|the|your|preferred|intended|required|target|desired|existing|delivery|must-include)\s+){0,3}(?:(?:club|company|project|team|event|organization)\s+name|audience|readers|recipients|tone|voice|format|length|deadline|date|purpose|context|details|requirements|constraints|examples|links|name|budget|location|venue|schedule|timezone|language|accessibility|contact|scope|goals|background|references|assets|brand|style)\b)/i;
+    if (items.length >= 2 && items.every(item => information.test(item))) return true;
+  }
   const request = body.match(
     /\b(?:please\s+(?:share|provide|clarify|confirm)|tell me|let me know)\b([\s\S]*)/i,
   ) ?? body.match(
@@ -205,17 +284,25 @@ export async function readRunningChatLog(
   return ((await response.json()) as { content?: string }).content;
 }
 
-/** Synthetic reset runs have durable events but never start a provider log. */
+/** Reset/blocked runs and proven pre-provider failures may have no provider log.
+ * Preserve their durable events; missing logs for real provider work still fail. */
 export async function collectChatRunEvidence(
   api: Pick<RunnerApi, "get">,
   run: ChatRun,
 ) {
+  const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  const providerNeverStarted = run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
+    run.logStore === null && run.logRef === null && ["failed", "interrupted"].includes(run.status) &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   return {
     runId: run.id,
-    log: isResetRun(run)
+    ...(providerNeverStarted ? { logOmissionReason: "provider_not_started" } : {}),
+    log: isResetRun(run) || isBlockedUnstartedWake({ ...run }) || providerNeverStarted
       ? null
       : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
-    events: await api.get(`/api/heartbeat-runs/${run.id}/events?limit=1000`),
+    events: await collectRunEvents((afterSeq, limit) =>
+      api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`),
+    ),
   };
 }
 
@@ -235,6 +322,12 @@ export function assertChatHandoff(
 }
 export async function sendChatMessage(page: Page, message: string) {
   const composer = page.getByTestId("task-chat-composer-input").last();
+  const takeover = page.getByTestId("task-chat-composer-takeover").last();
+  await expect(composer.or(takeover).first()).toBeVisible();
+  if (await takeover.isVisible()) {
+    // Close the card's composer view without answering, skipping, or approving it.
+    await takeover.getByRole("button", { name: /^Dismiss / }).click();
+  }
   await composer
     .locator('[contenteditable="true"], textarea')
     .first()
@@ -242,23 +335,46 @@ export async function sendChatMessage(page: Page, message: string) {
   await page.getByTestId("task-chat-composer-send").last().click();
 }
 
-export async function runChatFlow(input: {
+
+/** Independent durable oracle: prose alone cannot make a reassignment pass. */
+export function assertChatReassignment(input: {
+  readyId: string; queuedId: string; teammateId: string; tasks: ChatIssue[]; runs: ChatRun[];
+  audit: Array<{ action: string; details?: Record<string, unknown> }>; outputBody: string; marker: string;
+}) {
+  expect(input.tasks.map(task => task.id).sort()).toEqual([input.readyId, input.queuedId].sort());
+  expect(input.tasks.find(task => task.id === input.readyId)).toMatchObject({ status: "done", assigneeAgentId: input.teammateId });
+  expect(input.tasks.find(task => task.id === input.queuedId)).toMatchObject({ status: "backlog", assigneeAgentId: input.teammateId });
+  const successor = input.runs.filter(run => run.contextSnapshot?.issueId === input.readyId);
+  expect(successor).toHaveLength(1);
+  expect(successor[0]).toMatchObject({ agentId: input.teammateId, status: "succeeded", runtimeMode: "native" });
+  expect(input.runs.filter(run => run.contextSnapshot?.issueId === input.queuedId)).toHaveLength(0);
+  expect(input.audit.filter(row => row.action === "issue.reassigned" && row.details?.source === "paperclip_runner_protocol")).toHaveLength(1);
+  expect(input.outputBody).toContain(input.marker);
+}
+
+export interface ChatFlowInput {
   page: Page;
   api: RunnerApi;
   fixtures: LiveFixtureValues;
   execution: MatrixExecution;
   nonce: string;
+  workspacePath: string;
   restart: () => Promise<void>;
   observe: (issue: ChatIssue, runs: ChatRun[]) => void;
   capture: (id: string, label: string, file: string) => Promise<void>;
   evidence: (name: string, data: unknown) => Promise<void>;
-}) {
+  check?: (id: string, passed: boolean, detail: string) => void;
+}
+export async function runChatFlow(input: ChatFlowInput) {
   const { page, api, fixtures: f, execution, nonce } = input;
   const chatPath = `/api/companies/${f.company.id}/chats/${f.agent.id}`;
   const route = `/${f.company.issuePrefix}/chats/${f.agent.id}`;
   const marker = execution.task.buildVisibleMarker(nonce);
   const draftMarker = chatMarker("DRAFT", nonce);
   const caseId = execution.task.id;
+  const stopCase = ["stop-new-resume", "stop-startup-new-resume"].includes(caseId);
+  const interruptionCase = ["followup-while-running", "revise-while-running"].includes(caseId);
+  const expectedStops = new Map<string, string>();
   let issue: ChatIssue;
   let runs: ChatRun[] = [];
   const settings = await api.get<Record<string, unknown>>(
@@ -302,7 +418,7 @@ export async function runChatFlow(input: {
           activeRuns: runs
             .filter((run) => ["queued", "running"].includes(run.status))
             .map((run) => run.id),
-          failure: chatRunFailure(runs, caseId === "stop-new-resume"),
+          failure: chatRunFailure(runs.filter(run => expectedStops.get(run.id) !== run.status), stopCase),
         };
       },
       reject: (state) => state.failure ?? inconsistentIdle(state),
@@ -320,8 +436,11 @@ export async function runChatFlow(input: {
     await idle(count);
   };
   const noTasks = async () => expect(await tasks()).toHaveLength(0);
+  let hiringEvidence: HiringTemplateEvidence | undefined;
+  let refreshHiringEvidence: (() => Promise<HiringTemplateEvidence>) | undefined;
   try {
-    await api.patch("/api/instance/settings/experimental", {
+    if (caseId === "enable-disable-resume") await enableChatThroughSettings(input);
+    else await api.patch("/api/instance/settings/experimental", {
       enableAgentChat: true,
       enableClassicTaskInterface: false,
     });
@@ -333,8 +452,30 @@ export async function runChatFlow(input: {
     expect(await api.get(chatPath)).toBeNull();
     expect(await allRuns()).toHaveLength(0);
 
-    if (
-      ["continuity-restart", "new-session", "stop-new-resume"].includes(caseId)
+    if (caseId === "confirmation-ambiguous") {
+      await runAmbiguousConfirmationReply({ input, issue: () => issue!, idle, comments });
+    } else if (caseId === "unanswered-question-return") {
+      await runUnansweredQuestionReturn({ input, issue: () => issue!, idle, comments });
+    } else if (caseId.startsWith("handoff-completion-")) {
+      await runChatCompletionUpdate({ input, marker, allRuns, issue: () => issue!,
+        refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); if (issue) input.observe(issue, await allRuns()); } });
+    } else if (execution.suite.id === "hiring-templates") {
+      const hiring = await runHiringTemplateFlow({ input, issue: () => issue!, turn, tasks, allRuns });
+      hiringEvidence = hiring.evidence;
+      refreshHiringEvidence = hiring.refresh;
+    } else if (execution.suite.id === "agent-chat-qualification") {
+      const context = { input, marker, issue: () => issue!, idle, allRuns, comments, expectedStops,
+        refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); input.observe(issue, await allRuns()); } };
+      if (caseId === "active-reassignment") await runActiveReassignment(context);
+      else if (caseId === "worker-crash-retry") await runWorkerCrash(context);
+      else await runAnswerQuality(context);
+    } else if (caseId === "enable-disable-resume") {
+      await runChatSettingsLifecycle({ input, marker, issue: () => issue!, idle, allRuns, comments });
+    } else if (interruptionCase) {
+      await runChatInterruption({ input, marker, issue: () => issue!, idle, allRuns, comments,
+        refreshIssue: async () => { issue = await api.get<ChatIssue>(chatPath); input.observe(issue, await allRuns()); } });
+    } else if (
+      ["continuity-restart", "new-session", "stop-new-resume", "stop-startup-new-resume"].includes(caseId)
     ) {
       const secret = chatMarker("OLDCONTEXT", nonce);
       await turn(
@@ -357,17 +498,24 @@ export async function runChatFlow(input: {
         await input.restart();
         // Re-enter the canonical route after the server replaces its browser
         // transport; reloading the stale document can target a detached page.
-        await page.goto(route, { waitUntil: "domcontentloaded", timeout: 60_000 });
-        await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+        // The restarted dev server can leave DOMContentLoaded pending after the
+        // app is interactive. Require the actual chat composer after navigation.
+        await page.goto(route, { waitUntil: "commit", timeout: 60_000 });
+        await expect(page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: 60_000 });
         await idle(2);
         expect(runs).toHaveLength(count);
         await turn(
-          `We are done discussing it. Reply with ${marker} only; no further work.`,
+          `What phrase did I ask you to remember earlier? Reply with that remembered phrase followed by ${marker}; no further work.`,
           3,
+        );
+        assertChatRememberedAfterRestart(
+          (await comments()).filter((comment) => comment.authorAgentId).at(-1)?.body ?? "",
+          secret,
+          marker,
         );
       } else {
         let cancelledId: string | undefined;
-        if (caseId === "stop-new-resume") {
+        if (stopCase) {
           await sendChatMessage(
             page,
             "Explain the history of gardening at length here, in 100 numbered paragraphs. This is discussion only; do not create work.",
@@ -383,9 +531,14 @@ export async function runChatFlow(input: {
                 const events = await api.get<Array<Record<string, unknown>>>(
                   `/api/heartbeat-runs/${active.id}/events?limit=1000`,
                 );
-                const log = await readRunningChatLog(api, active.id);
-                if (!(events.length || log?.length)) return false;
+                if (execution.profile.generation === "native") {
+                  if (!isChatStopReady(events, caseId === "stop-startup-new-resume" ? "startup" : "active")) return false;
+                } else if (!(events.length || (await readRunningChatLog(api, active.id))?.length)) return false;
                 cancelledId = active.id;
+                await input.evidence("chat-stop-boundary.json", {
+                  phase: caseId === "stop-startup-new-resume" ? "startup" : "active",
+                  runId: active.id, events,
+                });
                 return true;
               },
               { timeout: 120_000 },
@@ -397,6 +550,7 @@ export async function runChatFlow(input: {
               async () =>
                 (await api.get<ChatRun>(`/api/heartbeat-runs/${cancelledId}`))
                   .status,
+              { timeout: 30_000 },
             )
             .toBe("cancelled");
         }
@@ -451,6 +605,12 @@ export async function runChatFlow(input: {
           ).toEqual(
             oldComments.filter((c) => c.createdByRunId === cancelledId),
           );
+        if (caseId === "stop-startup-new-resume" && cancelledId) {
+          const stopped = await api.get<ChatRun>(`/api/heartbeat-runs/${cancelledId}`);
+          const events = await api.get<Array<{ eventType?: unknown; createdAt?: string }>>(`/api/heartbeat-runs/${cancelledId}/events?limit=1000`);
+          await input.evidence("chat-startup-stop-result.json", { stopped, events });
+          assertChatStartupStopped(stopped, events);
+        }
         await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
         await expect(
           page.getByText("New session", { exact: true }),
@@ -458,6 +618,65 @@ export async function runChatFlow(input: {
       }
       expect(issue!.id).toBe(initialId);
       await noTasks();
+    } else if (["hire-delegate-reuse", "blocked-status-review", "committed-send-retry"].includes(caseId)) {
+      await runChatHardeningFlow({ input, marker, issue: () => issue!, turn, idle, tasks, allRuns, comments });
+    } else if (caseId === "create-backlog") {
+      const project = await api.post<{ id: string }>(`/api/companies/${f.company.id}/projects`, {
+        name: `Later planning ${nonce}`, description: "Repository-free plans to save for later.",
+      });
+      await turn(`Create exactly one task titled Later checklist ${nonce} in the existing Later planning ${nonce} project. Assign it to yourself but keep it in backlog: do not start or execute it. Save a concise three-step initial plan that contains ${marker}. Reply with its identifier and status. Do not create a replacement task or change other tasks.`, 1);
+      const saved = (await tasks())[0]!;
+      expect(saved).toBeTruthy();
+      const plan = await api.get<Plan>(`/api/issues/${saved.id}/documents/plan`);
+      await turn(`What are the current owner and status of ${saved.identifier}? Just report its saved state. Do not execute it, change its status, or create another task.`, 2);
+      const observedTasks = await tasks();
+      // Issue activity also links the conversation run that created the task.
+      // Inspect actual run bindings to distinguish creation from execution.
+      const observedRuns = await allRuns();
+      const activity = await api.get<Array<{ action: string; details?: Record<string, unknown> }>>(`/api/issues/${saved.id}/activity`);
+      const persistedPlan = await api.get<Plan>(`/api/issues/${saved.id}/documents/plan`);
+      assertChatBacklogCreation({ tasks: observedTasks, runs: observedRuns, ownerId: f.agent.id, plan: persistedPlan, marker, activity });
+      expect(observedTasks[0]).toMatchObject({ id: saved.id, projectId: project.id });
+      expect(persistedPlan).toEqual(plan);
+      expect((await comments()).filter(c => c.authorAgentId).at(-1)?.body).toMatch(/backlog/i);
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+      await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+      await expect(page.getByRole("link", { name: saved.identifier! }).first()).toBeVisible();
+      await input.capture("chat-backlog", "Planned backlog task without execution", "chat-backlog.png");
+      await input.evidence("chat-backlog.json", { tasks: observedTasks, runs: observedRuns, activity, plan: persistedPlan });
+    } else if (caseId === "reassign-task") {
+      const config = execution.profile.buildAgent({
+        environmentId: f.environment.id, environmentFixtureId: execution.environment.id,
+        workspacePath: input.workspacePath, secretRefs: f.secretRefs, executionId: nonce,
+      });
+      const teammate = await api.post<{ id: string }>(`/api/companies/${f.company.id}/agents`, {
+        ...config, name: "Riley Reassignment", role: "engineer", reportsTo: f.agent.id,
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Complete the assigned work and save the requested Paperclip document." } },
+      });
+      const queued = await api.post<ChatIssue>(`/api/companies/${f.company.id}/issues`, {
+        title: `Later checklist ${nonce}`, description: `Preserve this deferred scope ${draftMarker}.`,
+        status: "backlog", assigneeAgentId: f.agent.id,
+      });
+      const ready = await api.post<ChatIssue>(`/api/companies/${f.company.id}/issues`, {
+        title: `Ready checklist ${nonce}`, status: "todo",
+        description: `Write a short launch checklist as a Paperclip document attached to this task, including ${marker}. Complete this task after saving it.`,
+      });
+      await turn(`Assign the existing Ready checklist ${nonce} task to Riley Reassignment so Riley completes it. Also move the existing Later checklist ${nonce} task from you to Riley, keeping it in backlog. Preserve both tasks and their descriptions. Explain the handoff briefly here. Do not create replacement tasks or start the backlog work.`, 2);
+      const observedTasks = await tasks();
+      const readyAfter = await api.get<ChatIssue>(`/api/issues/${ready.id}`);
+      const queuedAfter = await api.get<ChatIssue>(`/api/issues/${queued.id}`);
+      const output = await readChatOutputDocument(api, ready.id, marker);
+      const activity = await api.get<Array<{ action: string; details?: Record<string, unknown> }>>(`/api/issues/${ready.id}/activity`);
+      assertChatReassignment({ readyId: ready.id, queuedId: queued.id, teammateId: teammate.id, tasks: observedTasks, runs,
+        audit: activity, outputBody: output.body, marker });
+      expect(queuedAfter).toMatchObject({ assigneeAgentId: teammate.id, status: "backlog", description: `Preserve this deferred scope ${draftMarker}.` });
+      expect(readyAfter).toMatchObject({ assigneeAgentId: teammate.id, status: "done" });
+      expect(issue!).toMatchObject({ assigneeAgentId: f.agent.id, conversationState: "waiting" });
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+      await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
+      await expect(page.getByRole("link", { name: readyAfter.identifier! }).first()).toBeVisible();
+      await input.capture("chat-reassignment", "Reassignment completed in Agent Chat", "chat-reassignment.png");
+      await input.evidence("chat-reassignment.json", { tasks: observedTasks, runs, activity, output, teammateId: teammate.id });
     } else {
       let existingProject: { id: string; name: string } | undefined;
       let acceptedPlan: Plan | undefined;
@@ -544,11 +763,8 @@ export async function runChatFlow(input: {
           await idle(3);
         } else await turn(clarification, 3);
       } else if (caseId === "plan-handoff") {
-        await page.getByTestId("task-chat-composer-mode").click();
-        await page
-          .getByTestId("task-chat-composer-mode-menu")
-          .getByText("Plan mode", { exact: true })
-          .click();
+        await page.getByTestId("task-chat-composer-add").click();
+        await page.getByTestId("composer-add-plan").click();
         await turn(
           `Let's plan a two-sentence garden club welcome note. The finished welcome note itself must contain the exact phrase ${draftMarker}. Write a plan in the plan panel that includes this requirement, and present it for approval. When I approve the final revision, create a suitable repository-free project and an assigned task for yourself, copy the plan into that task, and have it save the note as a Paperclip document attached to that execution task and finish. Do not create the project or task before approval.`,
           1,
@@ -786,16 +1002,24 @@ export async function runChatFlow(input: {
         projects,
       });
     }
-    await idle(execution.task.expectedRunCount);
-    expect(runs.filter((run) => !isResetRun(run))).toHaveLength(
-      execution.task.expectedRunCount,
-    );
+    await idle(minimumRunCount(execution.task));
+    if (execution.suite.id === "hiring-templates") {
+      // Refresh the whole consistent evidence generation for the final guard.
+      hiringEvidence = await refreshHiringEvidence!();
+      runs = hiringEvidence.runs;
+    }
+    assertChatFlowRunCount({ suiteId: execution.suite.id, task: execution.task,
+      // Hiring must account for every actual company run, including unexpected resets.
+      runs: execution.suite.id === "hiring-templates" ? runs : runs.filter((run) => !isResetRun(run)),
+      hiringEvidence, hiringApiState: execution.suite.id === "hiring-templates"
+        ? hiringEvidence!.turnApiState : undefined,
+    });
     for (const run of runs.filter((run) => !isResetRun(run))) {
       expect(run.runtimeMode).toBe(execution.profile.expectedRuntimeMode);
       expect(run.status).toBe(
-        caseId === "stop-new-resume" && run.status === "cancelled"
+        expectedStops.get(run.id) ?? (stopCase && run.status === "cancelled"
           ? "cancelled"
-          : "succeeded",
+          : "succeeded"),
       );
     }
     await input.evidence("api-state.json", {

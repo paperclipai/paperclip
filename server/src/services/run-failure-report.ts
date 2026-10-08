@@ -1,9 +1,16 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { captureRunFailure, type RunFailureStatus } from "../sentry.js";
-import { redactCurrentUserText } from "../log-redaction.js";
-import { redactSensitiveText } from "../redaction.js";
+import {
+  collectRunFailureDiagnostics,
+  collectRunFailureSecretValues,
+  redactRunFailureSecretValues,
+  sanitizeRunFailureDiagnostics,
+  sanitizeRunFailureText,
+  type RunFailureReportOptions,
+} from "./run-failure-diagnostics.js";
 import { logger } from "../middleware/logger.js";
+import { isUnexpectedRunCancellation } from "./run-cancellation.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -23,17 +30,8 @@ const pendingRunFailureReports = new Set<Promise<void>>();
 /** Bounds the shutdown wait, so one stuck report cannot hang the process exit. */
 const PENDING_REPORT_DRAIN_TIMEOUT_MS = 5_000;
 
-/**
- * Remove a credential and the current user's home path from adapter-supplied
- * text, then cut the result to `maxLength`. Run the length cut after the
- * redaction, so a credential cannot survive at a cut boundary.
- */
-function sanitizeAdapterText(input: string, maxLength: number): string {
-  return redactSensitiveText(redactCurrentUserText(input)).slice(0, maxLength);
-}
-
 function isRunFailureStatus(status: string): status is RunFailureStatus {
-  return status === "failed" || status === "timed_out";
+  return status === "failed" || status === "timed_out" || status === "cancelled";
 }
 
 function readTaskId(run: HeartbeatRun): string | null {
@@ -42,9 +40,72 @@ function readTaskId(run: HeartbeatRun): string | null {
   return typeof contextIssueId === "string" && contextIssueId.length > 0 ? contextIssueId : null;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/** A known owner action before dispatch, not a secret-provider or runtime failure. */
+function isMissingSecretConfigurationBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" ||
+    run.errorCode !== "configuration_incomplete" ||
+    run.executionStage !== "preparing" ||
+    options.phase !== "setup" ||
+    run.exitCode != null ||
+    run.signal != null
+  ) return false;
+
+  const configuration = asRecord(run.resultJson?.configurationIncomplete);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  if (
+    configuration?.reason !== "secret_binding_missing" ||
+    recovery?.kind !== "bootstrap" ||
+    recovery.providerWorkStarted !== false ||
+    !Array.isArray(configuration.missingBindings) ||
+    configuration.missingBindings.length === 0
+  ) return false;
+
+  return configuration.missingBindings.every((value: unknown) => {
+    const binding = asRecord(value);
+    if (!binding) return false;
+    if (binding.bindingType === "secret_ref") {
+      return binding.errorCode == null || binding.errorCode === "binding_missing";
+    }
+    if (binding.bindingType !== "user_secret_ref") return false;
+    // Missing-definition resolution can also catch a database error. Keep that
+    // ambiguous case, unknown codes, and provider errors visible in Sentry.
+    return binding.errorCode === "binding_missing" ||
+      binding.errorCode === "responsible_user_missing" ||
+      binding.errorCode === "user_secret_missing" ||
+      binding.errorCode === "secret_inactive" ||
+      binding.errorCode === "user_secret_definition_inactive";
+  });
+}
+
+/** The workspace resolver proved an explicit local-path/worktree policy mismatch. */
+function isLocalPathWorkspaceConfigurationBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== "workspace_validation_failed" ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+
+  const validation = asRecord(run.resultJson?.workspaceValidation);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return validation?.reason === "git_worktree_base_not_git_checkout" &&
+    validation.configurationReason === "local_path_requires_git_checkout" &&
+    validation.resolvedWorkspaceSource === "project_primary" &&
+    validation.workspaceStrategyType === "git_worktree" &&
+    (validation.requestedExecutionWorkspaceMode === "isolated_workspace" ||
+      validation.requestedExecutionWorkspaceMode === "operator_branch") &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 /**
  * Report a terminal run failure to Sentry. Returns at once for any status
- * other than `failed` and `timed_out`. Never throws — a Sentry failure or a
+ * other than failures and unexpected started cancellations. Never throws — a Sentry failure or a
  * database read failure must not change the caller's control flow.
  *
  * Call this beside the caller's own terminal-status write, with
@@ -53,10 +114,13 @@ function readTaskId(run: HeartbeatRun): string | null {
  * its own in-flight promise, so a caller that does not await it still lets
  * shutdown find and wait for the report — see `waitForPendingRunFailureReports`.
  */
-export function reportRunFailure(db: Db, run: HeartbeatRun): Promise<void> {
+export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureReportOptions = {}): Promise<void> {
   if (!isRunFailureStatus(run.status)) return Promise.resolve();
+  if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
+  if (isMissingSecretConfigurationBlocker(run, options)) return Promise.resolve();
+  if (isLocalPathWorkspaceConfigurationBlocker(run, options)) return Promise.resolve();
   const runStatus = run.status;
-  const report = captureTerminalRunFailure(db, run, runStatus);
+  const report = captureTerminalRunFailure(db, run, runStatus, options);
   pendingRunFailureReports.add(report);
   void report.finally(() => pendingRunFailureReports.delete(report));
   return report;
@@ -66,12 +130,21 @@ async function captureTerminalRunFailure(
   db: Db,
   run: HeartbeatRun,
   runStatus: RunFailureStatus,
+  options: RunFailureReportOptions,
 ): Promise<void> {
   try {
+    const snapshot = redactRunFailureSecretValues({
+      errorMessage: run.error ?? "",
+      errorCode: run.errorCode ?? null,
+      diagnostics: collectRunFailureDiagnostics(run, options),
+    }, [...new Set([
+      ...collectRunFailureSecretValues(process.env, [], true),
+      ...(options.secretValues ?? []),
+    ])].sort((a, b) => b.length - a.length));
     const agent = await db
       .select({ adapterType: agents.adapterType })
       .from(agents)
-      .where(eq(agents.id, run.agentId))
+      .where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
 
     const taskId = readTaskId(run);
@@ -80,16 +153,26 @@ async function captureTerminalRunFailure(
       return;
     }
 
+    // Resolve registered values before truncation. A failed resolution must
+    // not send an incompletely redacted report.
+    let redacted = snapshot;
+    if (Array.isArray(run.contextSnapshot?.paperclipSecretRedactions)) {
+      const { createRunSecretRedactionRegistry } = await import("./run-secret-redaction.js");
+      redacted = await createRunSecretRedactionRegistry(db).redactForRun(run.companyId, run.id, snapshot);
+    }
     captureRunFailure({
       taskId,
       runId: run.id,
-      errorMessage: sanitizeAdapterText(run.error ?? "", MAX_ERROR_MESSAGE_LENGTH),
+      errorMessage: sanitizeRunFailureText(redacted.errorMessage, MAX_ERROR_MESSAGE_LENGTH),
       errorCode:
-        run.errorCode === null
+        redacted.errorCode === null
           ? null
-          : sanitizeAdapterText(run.errorCode, MAX_ERROR_CODE_LENGTH),
+          : sanitizeRunFailureText(redacted.errorCode, MAX_ERROR_CODE_LENGTH),
       agentAdapter: agent?.adapterType ?? UNKNOWN_ADAPTER,
       runStatus,
+      exitCode: run.exitCode,
+      signal: run.signal,
+      diagnostics: sanitizeRunFailureDiagnostics(redacted.diagnostics),
     });
   } catch (err) {
     logger.warn({ err, runId: run.id }, "failed to report run failure to Sentry");

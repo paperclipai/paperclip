@@ -1,15 +1,17 @@
 import {
+  chmod,
   cp,
   mkdir,
   lstat,
   mkdtemp,
+  open,
   readFile,
   readdir,
   readlink,
   rename,
   rm,
   stat,
-  symlink,
+  truncate,
   writeFile,
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -32,8 +34,12 @@ import type {
   PrpStructuredRunResult,
   PrpTerminalState,
 } from "../protocol/replay-contract.js";
-import { completeRetainedNativeSessionCleanup, executeNativeSession } from "../native-session-runtime.js";
+import { PRP_PROTOCOL_VERSION } from "../protocol/replay-contract.js";
+import { executeNativeSession } from "../native-session-runtime.js";
+import { redactCapabilityEvidenceData } from "./evidence-redaction.js";
 import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
+import { parsePaperclipQuestionSet } from "../contracts/question-set.js";
+import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
 import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import * as durableControlPlane from "../control-plane/durable-prp-control-plane.js";
 
@@ -50,6 +56,10 @@ import {
   createCodexTaskEnvelope,
 } from "../contracts/codex.js";
 import {
+  PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
+} from "../contracts/completion-result.js";
+import {
   CodexAppServerDriver,
   codexSemanticToolSpecs,
 } from "../drivers/codex/codex-app-server-driver.js";
@@ -57,13 +67,13 @@ import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-conte
 import { RUNNERD_CANONICAL_ITEM } from "../drivers/codex/codex-driver-values.js";
 
 import {
+  parseAcpxTurnControlCapabilities,
   authorizedToolSetForProvider,
   createCapabilityRunnerdCodexTransport,
   createCapabilityRunnerdProviderEnvironment,
   createRunnerdCodexAppServerArgs,
   defaultCapabilityRunnerdBinary as qualifiedCapabilityRunnerdBinary,
   readRunnerdArtifactBinding,
-  drainRetainedRunnerdMaintenanceOperations,
   expandRunnerdCanonicalNotifications,
   latestRunnerdSessionReadiness,
   rehydrateRunnerdGoalNotification,
@@ -81,13 +91,11 @@ import {
   resolveRunnerdAcpxPermissionMode,
   resolveRunnerdSessionIdentity,
   resolveSourceCodexHome,
-  settleRetainedRunnerdSession,
-  retainedRunnerdCleanupProofIsCurrent,
-  retainedRunnerdMaintenanceIsIdle,
   trustedRuntimeReadOnlyRoots,
   unseenRunnerdCommittedEvents,
   unwrapRunnerdProviderNotification,
   unwrapRunnerdProviderNotifications,
+  resolveRunnerdCodexSkillInputs,
   withCodexCollaborationRuntimeInstructions,
 } from "./runnerd-codex-transport.js";
 
@@ -95,6 +103,20 @@ import {
 const defaultCapabilityRunnerdBinary = () =>
   process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ??
   qualifiedCapabilityRunnerdBinary();
+
+it("attributes opened candidate sessions to the harness biller instead of the model vendor", () => {
+  const provider = runnerdLaunchProfileInternals.openedThreadModelProvider;
+  for (const model of ["gpt-5.6-luna[context=272k,reasoning=medium,fast=false]", "claude-sonnet-5"]) {
+    expect(provider("acpx", "cursor", model)).toBe("cursor");
+    expect(provider("acpx", "copilot", model)).toBe("github");
+  }
+  expect(provider("acpx", "pi", "openrouter/deepseek/deepseek-v4-flash-0731")).toBe("openrouter");
+  expect(provider("acpx", "claude", "claude-sonnet-5")).toBe("anthropic");
+  expect(provider("acpx", "codex", "gpt-5.6-sol")).toBe("openai");
+  expect(provider("opencode", "codex", "openrouter/openai/gpt-6-astra")).toBe("openrouter");
+  expect(provider("claude_managed", "codex", "claude-sonnet-5")).toBe("anthropic");
+  expect(provider("aws_agentcore", "codex", "global.anthropic.claude-sonnet-4-6")).toBe("aws");
+});
 
 async function expectTurnStarted(
   notifications: AsyncIterator<{ method: string }>,
@@ -211,7 +233,7 @@ it("replaces an owned v1 runner with fresh v2 authorization before warm attachme
       async () => {
         expect(handles).toHaveLength(2);
         const state = await runnerState();
-        expect(state.lastConnectionProtocolVersion).toBe(2);
+        expect(state.lastConnectionProtocolVersion).toBe(PRP_PROTOCOL_VERSION);
         expect(state.v2ReplayEvents).toEqual({});
         expect(state.outbox).toEqual([]);
         expect(core.activeRunnerConnectionCount()).toBe(1);
@@ -260,1704 +282,11 @@ it("replaces an owned v1 runner with fresh v2 authorization before warm attachme
   }
 }, 30_000);
 
-function maintenanceFixtureBackendName(fixtureId: string): string {
-  return `maintenance-test-${fixtureId}`;
-}
-
-function maintenanceReplaySnapshot(directory: string) {
-  const bytes = [
-    "control-plane/control-plane-state.json",
-    "runner/runner-state.json",
-    "runner/codex-provider-state.json",
-  ].map((file) => readFileSync(join(directory, file)));
-  return {
-    control: JSON.parse(bytes[0]!.toString("utf8")),
-    runner: JSON.parse(bytes[1]!.toString("utf8")),
-    provider: JSON.parse(bytes[2]!.toString("utf8")),
-    providerFingerprint: createHash("sha256").update(bytes[2]!).digest("hex"),
-    fingerprint: createHash("sha256")
-      .update(
-        JSON.stringify(
-          bytes.map((value) =>
-            createHash("sha256").update(value).digest("hex"),
-          ),
-        ),
-      )
-      .digest("hex"),
-  };
-}
-
-it.each([
-  { alreadyEnded: false, appendFailure: false },
-  { alreadyEnded: true, appendFailure: false },
-  { alreadyEnded: true, appendFailure: true },
-  { alreadyEnded: true, appendFailure: false, bareCodex: true },
-  { alreadyEnded: true, appendFailure: false, epochFailure: "launch_intent" },
-  { alreadyEnded: true, appendFailure: false, epochFailure: "spawned" },
-  { alreadyEnded: true, appendFailure: false, epochFailure: "retired" },
-  { alreadyEnded: true, appendFailure: false, holdSpawned: true },
-  { alreadyEnded: true, appendFailure: false, completedTerminalAck: "pending" },
-  { alreadyEnded: true, appendFailure: false, completedTerminalAck: "completed" },
-  { alreadyEnded: true, appendFailure: false, completedTerminalAck: "repeat" },
-  { alreadyEnded: true, appendFailure: false, finalRetirementRevocation: "abort" },
-  { alreadyEnded: true, appendFailure: false, finalRetirementRevocation: "revoked" },
-  { alreadyEnded: true, appendFailure: false, finalRetirementRevocation: "during_authorize" },
-  { alreadyEnded: true, appendFailure: false, homeScoped: true },
-  { alreadyEnded: true, appendFailure: false, homeScoped: true, missingHome: true },
-  { alreadyEnded: true, appendFailure: false, homeScoped: true, missingHome: true, unknownExit: true },
-  { alreadyEnded: true, appendFailure: false, homeScoped: true, missingHome: true, startupFailureProof: true },
-  {
-    alreadyEnded: true,
-    appendFailure: false,
-    bareCodex: true,
-    terminalReplay: true,
-  },
-])(
-  "settles only retained control authority without starting another provider turn ($alreadyEnded/$appendFailure/$bareCodex/$epochFailure/$terminalReplay/$holdSpawned/$homeScoped/$missingHome/$unknownExit) startup-failure-proof=$startupFailureProof completed-ack=$completedTerminalAck retired-revocation=$finalRetirementRevocation",
-  async ({
-    alreadyEnded,
-    appendFailure,
-    bareCodex,
-    epochFailure,
-    terminalReplay,
-    holdSpawned,
-    completedTerminalAck,
-    finalRetirementRevocation,
-    homeScoped,
-    missingHome,
-    unknownExit,
-    startupFailureProof,
-  }) => {
-    const replaySpyRestorers: Array<() => void> = [];
-    const replayRetirements: ReturnType<typeof maintenanceReplaySnapshot>[] = [];
-    const withheldTerminalFrames: Array<{
-      epoch: number;
-      direction: "inbound" | "outbound";
-      commandId: string;
-      controllerSeq: number;
-      count: number;
-    }> = [];
-    const fixtureId = randomUUID();
-    const fixtureRunner = defaultCapabilityRunnerdBinary();
-    const directory = await mkdtemp(join(tmpdir(), "runnerd-maintenance-"));
-    const original = join(directory, "original");
-    const copy = join(directory, "copy");
-    const activated = join(directory, "activated");
-    const home = join(directory, "source-home");
-    await mkdir(home);
-    const fakeCodex = resolve(
-      import.meta.dirname,
-      "../../runner/target/debug/fake-codex-app-server",
-    );
-    const bin = join(directory, "provider-bin");
-    if (bareCodex) {
-      await mkdir(bin);
-      await symlink(fakeCodex, join(bin, "codex"));
-      await writeFile(
-        join(home, "auth.json"),
-        JSON.stringify({ OPENAI_API_KEY: "fixture-only-not-a-secret" }),
-      );
-    }
-    const environment = bareCodex
-      ? { PATH: bin, HOME: home, CODEX_HOME: home }
-      : undefined;
-    const calls = join(directory, "calls.log");
-    const fakeState = homeScoped
-      ? join(original, "codex-home/fake-codex-state.json")
-      : join(directory, "fake.json");
-    const identity = {
-      runnerInstanceId: "runner-maintenance",
-      environmentLeaseId: "lease-maintenance",
-      runId: "run-maintenance",
-      normalizedSessionId: "session-maintenance",
-      turnId: "turn-maintenance",
-      itemId: "item-maintenance",
-    };
-    const bundle = createCapabilityRunnerdCodexTransport({
-      runnerBinary: fixtureRunner,
-      codexCommand: bareCodex ? "codex" : fakeCodex,
-      environment,
-      codexArgs: [
-        ...(homeScoped
-          ? ["--state-file-in-codex-home", "--require-existing-resume-state"]
-          : ["--state-file", fakeState]),
-        "--call-log",
-        calls,
-        ...(startupFailureProof ? ["--record-process-start"] : []),
-        "--hold-turn",
-      ],
-      sourceCodexHome: home,
-      stateDirectory: original,
-      prpIdentity: identity,
-    });
-    const dead = (pid: number) => {
-      try {
-        process.kill(pid, 0);
-        return false;
-      } catch (error) {
-        return (error as NodeJS.ErrnoException).code === "ESRCH";
-      }
-    };
-    let runnerPid = 0;
-    let providerPid = 0;
-    let retainFixtureForUnprovenExit = false;
-    const stopAndJoinReplayProcess = async (
-      handle: ReturnType<typeof durableControlPlane.spawnRunner>,
-    ) => {
-      // This helper may time out immediately after dispatching SIGKILL. Its
-      // return/rejection alone is not proof that this exact child has exited.
-      await durableControlPlane.waitForProcess(handle, 250).catch(() => undefined);
-      let deadline: NodeJS.Timeout | undefined;
-      try {
-        await Promise.race([
-          handle.completion,
-          new Promise<never>((_resolveJoin, rejectJoin) => {
-            deadline = setTimeout(() => rejectJoin(new Error(
-              "startup-proof fixture could not join its exact runner child",
-            )), 5_000);
-          }),
-        ]);
-        if (handle.processGroupId && !dead(-handle.processGroupId)) {
-          try { process.kill(-handle.processGroupId, "SIGKILL"); }
-          catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-          }
-        }
-        await vi.waitFor(() => {
-          expect(handle.child.pid && dead(handle.child.pid)).toBe(true);
-          expect(handle.processGroupId && dead(-handle.processGroupId)).toBe(true);
-        }, { timeout: 2_000 });
-      } catch (error) {
-        retainFixtureForUnprovenExit = true;
-        throw error;
-      } finally {
-        if (deadline !== undefined) clearTimeout(deadline);
-      }
-    };
-    try {
-      const thread = (await bundle.transport.request("thread/start", {
-        cwd: directory,
-        dynamicTools: [],
-      })) as { thread: { id: string } };
-      await bundle.transport.request("turn/start", {
-        threadId: thread.thread.id,
-        input: [{ type: "text", text: "Keep the original turn only" }],
-      });
-      runnerPid = bundle.evidence().runnerPid!;
-      providerPid = bundle.evidence().providerPid!;
-      expect(runnerPid).toBeGreaterThan(0);
-      expect(providerPid).toBeGreaterThan(0);
-      await bundle.detachControllerForRestart();
-      // The provider can exit when its runner dies. An already-gone process
-      // group satisfies teardown; still fail on other signal errors and join below.
-      for (const pid of [runnerPid, providerPid]) {
-        try { process.kill(-pid, "SIGKILL"); }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-        }
-      }
-      await vi.waitFor(() => {
-        expect(dead(runnerPid)).toBe(true);
-        expect(dead(providerPid)).toBe(true);
-      });
-      if (alreadyEnded) {
-        const providerState = JSON.parse(
-          await readFile(fakeState, "utf8"),
-        );
-        await writeFile(
-          fakeState,
-          JSON.stringify({ ...providerState, activeTurnId: null }),
-        );
-      }
-      const builder = new DurablePrpControlPlane({
-        stateDirectory: join(original, "control-plane"),
-        identity,
-        expectedRunnerVersion: "0.3.0",
-        expectedRunnerDigest: `sha256:${createHash("sha256")
-          .update(await readFile(fixtureRunner))
-          .digest("hex")}`,
-      });
-      builder.queueCommand("turn.stop", {
-        reason: "interrupted original close",
-      });
-      if (!missingHome) builder.queueCommand("runner.suspend", {});
-      // Match the retained production split: runner-owned unacknowledged
-      // output plus another full provider-owned prefix behind the old suspend.
-      const runnerFile = join(original, "runner/runner-state.json");
-      const runnerBefore = JSON.parse(await readFile(runnerFile, "utf8"));
-      const template = builder.store.state.committedEvents[0]!.envelope.payload;
-      for (let index = 0; index < 90; index++) {
-        const sourceSeq = runnerBefore.nextSourceSeq++;
-        const event = {
-          ...template,
-          sourceEventId: `maintenance-runner-${index}`,
-          sourceSeq,
-          eventType: "item.delta",
-          priority: 2,
-          payload: { provider: "codex", delta: `maintenance-runner-${index}` },
-        };
-        const envelope = {
-          protocol: "paperclip.runner",
-          version: 1,
-          kind: "event",
-          ...identity,
-          payload: event,
-        };
-        runnerBefore.outbox.push({
-          sourceSeq,
-          priority: 2,
-          eventType: "item.delta",
-          envelope,
-          byteSize: Buffer.byteLength(JSON.stringify(envelope)),
-        });
-      }
-      runnerBefore.peakOutboxBytes = Math.max(
-        runnerBefore.peakOutboxBytes,
-        runnerBefore.outbox.reduce(
-          (total: number, event: { byteSize: number }) =>
-            total + event.byteSize,
-          0,
-        ),
-      );
-      await writeFile(runnerFile, JSON.stringify(runnerBefore));
-      const providerFile = join(original, "runner/codex-provider-state.json");
-      const providerBefore = JSON.parse(await readFile(providerFile, "utf8"));
-      expect(providerBefore.pendingEvents).toEqual([]);
-      expect(providerBefore.queuedEvents).toEqual([]);
-      for (let index = 0; index < 128; index++) {
-        providerBefore.pendingEvents.push({
-          executorEventId: `codex_provider_${String(providerBefore.nextProviderEventSeq++).padStart(16, "0")}`,
-          eventType: "item.delta",
-          priority: "p2",
-          payload: {
-            provider: "codex",
-            delta: `maintenance-provider-${index}`,
-          },
-        });
-      }
-      await writeFile(providerFile, JSON.stringify(providerBefore));
-      await cp(original, copy, { recursive: true });
-      const originalProviderHome = homeScoped ? await readFile(fakeState) : null;
-      if (missingHome) await rm(join(copy, "codex-home/fake-codex-state.json"));
-      const files = [
-        "control-plane/control-plane-state.json",
-        "runner/runner-state.json",
-        "runner/codex-provider-state.json",
-      ];
-      const bytes = await Promise.all(
-        files.map((file) => readFile(join(original, file))),
-      );
-      const sourceFingerprint = createHash("sha256")
-        .update(
-          JSON.stringify(
-            bytes.map((value) =>
-              createHash("sha256").update(value).digest("hex"),
-            ),
-          ),
-        )
-        .digest("hex");
-      const appendEvent = vi.fn(async (_event: PrpEvent) => {});
-      const maintenanceAbort = new AbortController();
-      let finalAuthorityRevoked = false;
-      const authorize = vi.fn(async () => {
-        if (finalAuthorityRevoked) {
-          if (finalRetirementRevocation === "during_authorize") {
-            maintenanceAbort.abort(new Error("retirement_authority_revoked"));
-            return;
-          }
-          throw new Error("retirement_authority_revoked");
-        }
-      });
-      const recordEpoch = vi.fn(
-        async (_receipt: Record<string, unknown>) => {},
-      );
-      const input = {
-        requestId: "maintenance-fixture-request",
-        binding: {
-          companyId: "company-maintenance",
-          issueId: "issue-maintenance",
-          agentId: "agent-maintenance",
-          runId: identity.runId,
-          sessionId: identity.normalizedSessionId,
-        },
-        backend: {
-          kind: "codex",
-          name: maintenanceFixtureBackendName(fixtureId),
-        },
-        identity,
-        stateDirectory: copy,
-        activationDirectory: activated,
-        sourceFingerprint,
-        providerSessionId: thread.thread.id,
-        originalRunnerPid: runnerPid,
-        originalProviderPid: providerPid,
-        runnerBinary: fixtureRunner,
-        sourceCodexHome: bareCodex ? undefined : home,
-        environment,
-        authorize,
-        appendEvent,
-        recordEpoch,
-        signal: maintenanceAbort.signal,
-      };
-      const close = vi.fn(async () => {
-        throw new NativeSessionCloseUnrecoverableError();
-      });
-      const start = vi.fn(async () => {
-        throw new Error("fixture admission reached");
-      });
-      const capabilities = {
-        resume: true,
-        typedEvents: true,
-        steering: false,
-        interruption: true,
-        structuredResult: true,
-      };
-      const session: NativeSession = {
-        identity: () => input.binding,
-        capabilities: async () => capabilities,
-        events: async function* () {},
-        startTurn: start,
-        close,
-        snapshot: async () => ({
-          backendKind: "codex",
-          sessionId: input.binding.sessionId,
-          identity: input.binding,
-          providerSessionId: thread.thread.id,
-          cursor: null,
-          activeTurnId: null,
-          pendingRuntimeRequests: [],
-          lineage: [],
-        }),
-      };
-      const backend: NativeSessionBackend = {
-        descriptor: async () => ({
-          ...input.backend,
-          version: "1",
-          capabilities,
-        }),
-        openSession: async () => session,
-      };
-      const nativeInput: NativeExecutionInputV1 = {
-        schema: "paperclip.native-execution-input.v1",
-        binding: {
-          companyId: input.binding.companyId,
-          issueId: input.binding.issueId,
-          agentId: input.binding.agentId,
-          runId: input.binding.runId,
-          executionWorkspaceId: "workspace-maintenance",
-        },
-        task: {
-          identifier: "MAINT-1",
-          title: "Fixture",
-          description: null,
-          prompt: "Fixture",
-          workMode: "standard",
-        },
-        workspace: {
-          cwd: directory,
-          repoUrl: null,
-          repoRef: null,
-          branchName: null,
-        },
-        provider: { kind: "codex", model: null },
-        session: {
-          normalizedSessionId: input.binding.sessionId,
-          driverKind: "codex_app_server",
-          protocolVersion: 1,
-        },
-        completionContract: {
-          id: "contract-maintenance",
-          sha256: "contract-maintenance-sha",
-          schemaVersion: "paperclip.completion-contract.v1",
-          contract: {
-            revision: "1",
-            objective: "Fixture",
-            criteria: [{ id: "objective", requirement: "Fixture" }],
-          },
-        },
-        interactionResponses: [],
-        credentialBindings: [],
-      };
-      const port: ControlPlanePort = {
-        openRun: async () => {},
-        checkpointSession: async () => {},
-        completeRun: async () => {},
-        replayEvents: async () => ({
-          events: [],
-          highestContiguousSourceSeq: 0,
-        }),
-        appendEvent: async () => ({
-          cursor: 1,
-          highestContiguousSourceSeq: 1,
-          disposition: "committed",
-        }),
-      };
-      const execute = () =>
-        executeNativeSession({
-          input: nativeInput,
-          backend,
-          controlPlane: port,
-          runnerInstanceId: identity.runnerInstanceId,
-          controlPlaneInstanceId: "control-maintenance",
-          requireSessionCloseBeforeReturn: true,
-        });
-      await expect(execute()).rejects.toThrow();
-      await expect(execute()).rejects.toMatchObject({
-        code: "native_session_cleanup_quarantined",
-      });
-      expect(start).toHaveBeenCalledOnce();
-      if (holdSpawned) {
-        // A preceding row can fail before its authenticated cleanup proof.
-        // That sticky quarantine must remain, but must not contaminate the
-        // next independent fixture's backend domain in the same worker.
-        const independentStart = vi.fn(async () => {
-          throw new Error("independent fixture admission reached");
-        });
-        const independentBackend: NativeSessionBackend = {
-          descriptor: async () => ({
-            ...(await backend.descriptor()),
-            name: maintenanceFixtureBackendName(`${fixtureId}-following`),
-          }),
-          openSession: async () => ({
-            ...session,
-            startTurn: independentStart,
-            close: async () => {},
-          }),
-        };
-        await expect(executeNativeSession({
-          input: nativeInput,
-          backend: independentBackend,
-          controlPlane: port,
-          runnerInstanceId: identity.runnerInstanceId,
-          controlPlaneInstanceId: "independent-control-maintenance",
-          requireSessionCloseBeforeReturn: true,
-        })).rejects.toThrow("independent fixture admission reached");
-        expect(independentStart).toHaveBeenCalledOnce();
-        await expect(execute()).rejects.toMatchObject({
-          code: "native_session_cleanup_quarantined",
-        });
-        expect(start).toHaveBeenCalledOnce();
-      }
-      await expect(
-        settleRetainedRunnerdSession({
-          ...input,
-          originalProviderPid: process.pid,
-        }),
-      ).rejects.toThrow("native_cleanup_maintenance_unproven");
-      expect(authorize).not.toHaveBeenCalled();
-      const copyProvider = join(copy, "runner/codex-provider-state.json");
-      const retainedProviderBytes = await readFile(copyProvider);
-      for (const eventType of [
-        "semantic_tool.input",
-        "runtime_request.created",
-        "session.resumed",
-      ]) {
-        const mutated = JSON.parse(retainedProviderBytes.toString("utf8"));
-        mutated.pendingEvents[0] = {
-          ...mutated.pendingEvents[0],
-          eventType,
-          payload: {
-            providerSessionId: thread.thread.id,
-            processId: process.pid,
-          },
-        };
-        await writeFile(copyProvider, JSON.stringify(mutated));
-        const candidateBytes = await Promise.all(
-          files.map((file) => readFile(join(copy, file))),
-        );
-        const candidateFingerprint = createHash("sha256")
-          .update(
-            JSON.stringify(
-              candidateBytes.map((value) =>
-                createHash("sha256").update(value).digest("hex"),
-              ),
-            ),
-          )
-          .digest("hex");
-        await expect(
-          settleRetainedRunnerdSession({
-            ...input,
-            sourceFingerprint: candidateFingerprint,
-          }),
-        ).rejects.toThrow("native_cleanup_maintenance_unproven");
-        expect(authorize).not.toHaveBeenCalled();
-      }
-      await writeFile(copyProvider, retainedProviderBytes);
-      for (const interruption of ["abort", "timeout"] as const) {
-        const abort = new AbortController();
-        let releaseAuthorization!: () => void;
-        const stuckAuthorization = new Promise<void>((release) => {
-          releaseAuthorization = release;
-        });
-        let drain: Promise<void> | undefined;
-        if (interruption === "timeout")
-          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-        try {
-          const blocked = settleRetainedRunnerdSession({
-            ...input,
-            signal: abort.signal,
-            authorize: () => stuckAuthorization,
-          });
-          const observed = blocked.catch((error: unknown) => error);
-          if (interruption === "abort") abort.abort();
-          else await vi.advanceTimersByTimeAsync(30_000);
-          expect(await observed).toMatchObject({
-            message: "native_cleanup_maintenance_unproven",
-          });
-          expect(retainedRunnerdMaintenanceIsIdle(copy)).toBe(false);
-          await expect(settleRetainedRunnerdSession(input)).rejects.toThrow(
-            "native_cleanup_maintenance_unproven",
-          );
-          let drained = false;
-          drain = drainRetainedRunnerdMaintenanceOperations().then(() => {
-            drained = true;
-          });
-          await Promise.resolve();
-          await Promise.resolve();
-          // The bounded wrapper has already failed, but its original callback
-          // remains owned until it actually settles. No retry/proof is granted.
-          expect(drained).toBe(false);
-          releaseAuthorization();
-          await drain;
-          expect(drained).toBe(true);
-          expect(retainedRunnerdMaintenanceIsIdle(copy)).toBe(true);
-        } finally {
-          releaseAuthorization();
-          await drain;
-          if (interruption === "timeout") vi.useRealTimers();
-        }
-      }
-      if (missingHome) {
-        const startupEvents = () => appendEvent.mock.calls
-          .map(([event]) => event)
-          .filter((event) => event.eventType === "harness.diagnostic" &&
-            event.payload.code === "provider_startup_ownership");
-        let startupPhasesBeforeFailure: unknown[] | null = null;
-        const launch = durableControlPlane.spawnRunner;
-        const completions: Promise<unknown>[] = [];
-        let releaseExit!: () => void;
-        const exitGate = new Promise<void>((resolveExit) => {
-          releaseExit = resolveExit;
-        });
-        const launchSpy = vi
-          .spyOn(durableControlPlane, "spawnRunner")
-          .mockImplementation((options) => {
-            const handle = launch(options);
-            const completion = handle.completion.then(async (result) => {
-              // Model delayed delivery of the exact child's exit notification;
-              // dispatching a kill is not itself a durable retirement receipt.
-              if (unknownExit) await exitGate;
-              else
-                await new Promise((resolveExit) => setTimeout(resolveExit, 750));
-              return result;
-            });
-            completions.push(completion);
-            return { ...handle, completion };
-          });
-        authorize.mockImplementation(async () => {
-          const current = JSON.parse(
-            await readFile(join(copy, files[0]!), "utf8"),
-          );
-          if (
-            current.commands.some(
-              (command: { status: string }) => command.status === "failed",
-            )
-          ) {
-            if (startupFailureProof && startupPhasesBeforeFailure === null)
-              startupPhasesBeforeFailure = startupEvents().map((event) =>
-                (event.payload.startup as Record<string, unknown>).phase);
-            throw new Error("native_cleanup_maintenance_unproven");
-          }
-        });
-        try {
-          await expect(settleRetainedRunnerdSession(input)).rejects.toThrow(
-            "native_cleanup_maintenance_unproven",
-          );
-          if (unknownExit) {
-            expect(
-              recordEpoch.mock.calls.some(
-                ([receipt]) => receipt.phase === "retired",
-              ),
-            ).toBe(false);
-            expect(retainedRunnerdMaintenanceIsIdle(copy)).toBe(false);
-          }
-        } finally {
-          launchSpy.mockRestore();
-          releaseExit();
-          await Promise.allSettled(completions);
-          await drainRetainedRunnerdMaintenanceOperations();
-        }
-        const receipts = recordEpoch.mock.calls.map(([receipt]) => receipt);
-        const launched = receipts.filter(
-          (receipt) => receipt.phase === "spawned",
-        );
-        expect(launched.length).toBeGreaterThan(0);
-        for (const spawned of launched) {
-          const retired = receipts.find(
-            (receipt) =>
-              receipt.phase === "retired" &&
-              receipt.launchId === spawned.launchId,
-          );
-          if (unknownExit) expect(retired).toBeUndefined();
-          else
-            expect(retired).toMatchObject({
-              pid: spawned.pid,
-              processGroupAbsent: true,
-            });
-          expect(dead(Number(spawned.pid))).toBe(true);
-          expect(dead(-Number(spawned.pid))).toBe(true);
-        }
-        const failed = JSON.parse(await readFile(join(copy, files[0]!), "utf8"));
-        expect(
-          failed.commands.some(
-            (command: {
-              type: string;
-              result?: { result?: { message?: string } };
-            }) =>
-              command.type === "turn.stop" &&
-              command.result?.result?.message?.includes("no rollout found"),
-          ),
-        ).toBe(true);
-        expect(await readFile(fakeState)).toEqual(originalProviderHome);
-        expect(
-          await Promise.all(files.map((file) => readFile(join(original, file)))),
-        ).toEqual(bytes);
-        await expect(execute()).rejects.toMatchObject({
-          code: "native_session_cleanup_quarantined",
-        });
-        expect(start).toHaveBeenCalledOnce();
-        const methods = (await readFile(calls, "utf8")).trim().split("\n");
-        expect(methods.filter((method) => method === "turn/start")).toHaveLength(
-          1,
-        );
-        if (startupFailureProof) {
-          expect(startupPhasesBeforeFailure).toEqual([
-            "intent", "spawned", "initialization_failed",
-          ]);
-          const events = startupEvents();
-          expect(events).toHaveLength(3);
-          expect(events.map((event) => event.sourceSeq)).toEqual(
-            events.map((event) => event.sourceSeq).sort((left, right) => left - right),
-          );
-          expect(new Set(events.map((event) => event.sourceEventId)).size).toBe(3);
-          const facts = events.map((event) => event.payload.startup as Record<string, unknown>);
-          const [intent, spawned, initializationFailed] = facts;
-          expect(intent!.launchId).toMatch(/^[0-9a-f-]{36}$/);
-          expect(intent!.configurationFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
-          const failedStop = failed.commands.find((command: { type: string; status: string }) =>
-            command.type === "turn.stop" && command.status === "failed");
-          for (const fact of facts) {
-            expect(Object.keys(fact).sort()).toEqual([
-              "schema", "launchId", "phase", "trigger", "attemptedProcessGeneration",
-              "origin", "command", "configurationFingerprint", "requestedThreadId",
-              "authenticatedThreadId", "processId", "processGroupId", "failedStage",
-              "directChildExitObserved", "exitCode", "signal", "processTreeRetired",
-            ].sort());
-            expect(fact).toMatchObject({
-              schema: "paperclip.provider_startup.v1",
-              launchId: intent!.launchId,
-              trigger: "restore",
-              attemptedProcessGeneration: providerBefore.providerProcessGeneration + 1,
-              origin: {
-                runnerInstanceId: identity.runnerInstanceId,
-                runId: identity.runId,
-                normalizedSessionId: identity.normalizedSessionId,
-                turnId: identity.turnId,
-                itemId: identity.itemId,
-              },
-              command: {
-                commandId: failedStop.commandId,
-                controllerSeq: failedStop.controllerSeq,
-                commandType: "turn.stop",
-              },
-              configurationFingerprint: intent!.configurationFingerprint,
-              requestedThreadId: thread.thread.id,
-              authenticatedThreadId: null,
-              processTreeRetired: false,
-            });
-          }
-          expect(intent).toMatchObject({
-            phase: "intent", processId: null, processGroupId: null,
-            directChildExitObserved: false, failedStage: null, exitCode: null, signal: null,
-          });
-          expect(spawned!.processId).toBeGreaterThan(0);
-          expect(spawned).toMatchObject({
-            phase: "spawned", processGroupId: spawned!.processId,
-            directChildExitObserved: false, failedStage: null, exitCode: null, signal: null,
-          });
-          expect(initializationFailed).toMatchObject({
-            phase: "initialization_failed", failedStage: "thread_open",
-            processId: spawned!.processId, processGroupId: spawned!.processId,
-            directChildExitObserved: true,
-          });
-          expect(dead(Number(spawned!.processId))).toBe(true);
-          expect(appendEvent.mock.calls.filter(([event]) =>
-            ["session.started", "session.resumed"].includes(event.eventType) &&
-            event.payload.processId !== providerPid)).toHaveLength(0);
-          expect(failed.commands.some((command: {
-            type: string; result?: { result?: { providerExitConfirmed?: boolean } };
-          }) => command.type === "turn.stop" &&
-            command.result?.result?.providerExitConfirmed === true)).toBe(false);
-          const deltas = appendEvent.mock.calls.map(([event]) => event.payload.delta)
-            .filter((delta) => typeof delta === "string" && delta.startsWith("maintenance-"));
-          expect(deltas).toHaveLength(218);
-          expect(new Set(deltas).size).toBe(218);
-          const failedProviderState = JSON.parse(await readFile(copyProvider, "utf8"));
-          expect(failedProviderState.startupAttempt).toMatchObject({
-            launchId: intent!.launchId,
-          });
-          const observedMethods = await readFile(calls, "utf8");
-          expect(observedMethods.trim().split("\n").filter((method) =>
-            method === "process-start")).toHaveLength(2);
-          const originalFailure = structuredClone(failedStop.result);
-          // Exercise the producer fence directly in this isolated fixture.
-          // This does not admit the failed copy through maintenance or alter
-          // its source/receipt bytes to manufacture recovery eligibility.
-          for (let restart = 0; restart < 2; restart++) {
-            const replayCore = new DurablePrpControlPlane({
-              stateDirectory: join(copy, "control-plane"),
-              identity,
-              expectedRunnerVersion: "0.3.0",
-              expectedRunnerDigest: `sha256:${createHash("sha256")
-                .update(await readFile(fixtureRunner)).digest("hex")}`,
-              onCommittedEvent: appendEvent,
-            });
-            const snapshot = replayCore.queueCommand("session.snapshot", {});
-            const stop = replayCore.queueCommand("turn.stop", {
-              reason: "startup-fence regression only",
-            });
-            let replayHandle: ReturnType<typeof durableControlPlane.spawnRunner> | null = null;
-            let replayAssertionFailed = false;
-            try {
-              await replayCore.start();
-              const runnerState = JSON.parse(await readFile(join(copy, files[1]!), "utf8"));
-              replayHandle = durableControlPlane.spawnRunner({
-                connectUrl: replayCore.connectUrl,
-                stateDirectory: join(copy, "runner"),
-                identity,
-                ticket: replayCore.issueBootstrapTicket(),
-                maxOutboxBytes: runnerState.maxOutboxBytes,
-                p0ReserveBytes: runnerState.p0ReserveBytes,
-                maxRuntimeMs: 2_000,
-                reconnectGraceMs: 1_000,
-                runnerBinaryPath: fixtureRunner,
-                runnerVersion: "0.3.0",
-                runnerDigest: `sha256:${createHash("sha256")
-                  .update(await readFile(fixtureRunner)).digest("hex")}`,
-                environment: createCapabilityRunnerdProviderEnvironment({
-                  provider: "codex",
-                  options: {},
-                  identity,
-                  codexHome: join(copy, "codex-home"),
-                  runtimeContextPath: join(copy, "runtime-context.json"),
-                  hasRuntimeContext: false,
-                }),
-              });
-              await vi.waitFor(() => {
-                for (const queued of [snapshot, stop]) {
-                  const command = replayCore.getCommand(queued.commandId);
-                  expect(command?.status).toBe("failed");
-                  expect(command?.result).toMatchObject({
-                    result: {
-                      message: expect.stringContaining(
-                        "provider startup ownership remains unadmitted",
-                      ),
-                    },
-                  });
-                }
-              }, { timeout: 5_000 });
-              await durableControlPlane.waitForProcess(replayHandle, 5_000);
-              expect(await readFile(calls, "utf8")).toBe(observedMethods);
-              expect((await readFile(calls, "utf8")).trim().split("\n")
-                .filter((method) => method === "process-start")).toHaveLength(2);
-              expect(replayCore.store.state.commands.find((command) =>
-                command.commandId === failedStop.commandId)?.result).toEqual(originalFailure);
-              expect(JSON.parse(await readFile(copyProvider, "utf8")).startupAttempt)
-                .toEqual(failedProviderState.startupAttempt);
-              expect(startupEvents()).toHaveLength(3);
-            } catch (error) {
-              replayAssertionFailed = true;
-              throw error;
-            } finally {
-              try {
-                if (replayHandle) await stopAndJoinReplayProcess(replayHandle);
-              } catch (error) {
-                // Keep the original assertion as the primary failure. Do not
-                // delete evidence underneath an unjoined owned process.
-                if (!replayAssertionFailed) throw error;
-                console.error("startup-proof fixture cleanup unproven; directory retained");
-              } finally {
-                await replayCore.stop();
-              }
-            }
-          }
-          expect(await readFile(fakeState)).toEqual(originalProviderHome);
-          expect(await Promise.all(files.map((file) => readFile(join(original, file)))))
-            .toEqual(bytes);
-        }
-        return;
-      }
-      if (appendFailure) {
-        const failure = new Error(
-          "injected maintenance event persistence failure",
-        );
-        let renewedProviderPid: number | null = null;
-        appendEvent.mockImplementation(async (event) => {
-          if (event.eventType !== "session.resumed") return;
-          const resumed = resolveRunnerdSessionIdentity(event.payload);
-          if (resumed.processId === providerPid) return;
-          renewedProviderPid = resumed.processId;
-          throw failure;
-        });
-        await expect(settleRetainedRunnerdSession(input)).rejects.toBe(failure);
-        expect(renewedProviderPid).not.toBeNull();
-        expect(dead(renewedProviderPid!)).toBe(true);
-        expect(dead(-renewedProviderPid!)).toBe(true);
-        expect(
-          await Promise.all(
-            files.map((file) => readFile(join(original, file))),
-          ),
-        ).toEqual(bytes);
-        await expect(
-          readFile(join(activated, "runner/runner-state.json")),
-        ).rejects.toMatchObject({ code: "ENOENT" });
-        await expect(execute()).rejects.toMatchObject({
-          code: "native_session_cleanup_quarantined",
-        });
-        expect(start).toHaveBeenCalledOnce();
-        const methods = (await readFile(calls, "utf8")).trim().split("\n");
-        expect(
-          methods.filter((method) => method === "turn/start"),
-        ).toHaveLength(1);
-        expect(
-          methods.filter((method) => method === "thread/resume"),
-        ).toHaveLength(1);
-        return;
-      }
-      const assertNoProviderBeforeSpawnedReceipt = async () => {
-        const callsBefore = await readFile(calls, "utf8");
-        const providerBefore = await readFile(copyProvider);
-        const controlBefore = JSON.parse(
-          await readFile(
-            join(copy, "control-plane/control-plane-state.json"), "utf8",
-          ),
-        );
-        // Give the actual runner time to authenticate while its durable spawn
-        // receipt is held. Authentication must not release even the old stop.
-        await new Promise((resolveWait) => setTimeout(resolveWait, 500));
-        expect(await readFile(calls, "utf8")).toBe(callsBefore);
-        expect(await readFile(copyProvider)).toEqual(providerBefore);
-        const controlAfter = JSON.parse(
-          await readFile(
-            join(copy, "control-plane/control-plane-state.json"), "utf8",
-          ),
-        );
-        expect(controlAfter.connectionCount).toBe(
-          controlBefore.connectionCount,
-        );
-        expect(controlAfter.commandDeliveryCounts).toEqual(
-          controlBefore.commandDeliveryCounts,
-        );
-        expect(controlAfter.commands).toEqual(controlBefore.commands);
-      };
-      if (holdSpawned) {
-        recordEpoch.mockImplementation(async (receipt) => {
-          if (receipt.phase === "spawned")
-            await assertNoProviderBeforeSpawnedReceipt();
-        });
-      }
-      if (completedTerminalAck) {
-        const originalAttach =
-          DurablePrpControlPlane.prototype.attachWireConnection;
-        const attachSpy = vi
-          .spyOn(DurablePrpControlPlane.prototype, "attachWireConnection")
-          .mockImplementation(function (this: DurablePrpControlPlane, wire) {
-            const epoch = replayRetirements.length;
-            const direction =
-              completedTerminalAck === "completed" ? "outbound" : "inbound";
-            const inject =
-              this.store.path === join(copy, files[0]!) &&
-              (epoch === 0 ||
-                (completedTerminalAck === "repeat" && epoch === 1));
-            let attachment: ReturnType<typeof originalAttach> | undefined;
-            let withheld: (typeof withheldTerminalFrames)[number] | undefined;
-            const shouldWithhold = (candidate: typeof direction): boolean => {
-              if (
-                !inject ||
-                candidate !== direction ||
-                !attachment?.isAuthenticated()
-              )
-                return false;
-              if (withheld) {
-                withheld.count += 1;
-                return true;
-              }
-              const runner = JSON.parse(
-                readFileSync(join(copy, files[1]!), "utf8"),
-              );
-              const terminal = runner.pendingTerminalDelivery;
-              if (
-                terminal?.commandType !== "runner.suspend" ||
-                terminal.lifecycle !== "suspended"
-              )
-                return false;
-              const result = runner.processedCommands[terminal.commandId];
-              if (
-                result?.status !== "completed" ||
-                result.result?.status !== "completed" ||
-                result.commandType !== terminal.commandType ||
-                result.controllerSeq !== terminal.controllerSeq
-              )
-                return false;
-              const control = JSON.parse(readFileSync(this.store.path, "utf8"));
-              const command = control.commands.find(
-                (entry: { commandId: string }) =>
-                  entry.commandId === terminal.commandId,
-              );
-              if (
-                command?.type !== terminal.commandType ||
-                command.controllerSeq !== terminal.controllerSeq ||
-                command.status !==
-                  (direction === "inbound" ? "pending" : "completed")
-              )
-                return false;
-              if (direction === "outbound")
-                expect(command.result).toEqual(result);
-              else expect(command.result ?? null).toBeNull();
-              // Rust durably records this exact result before sending it.
-              // Withhold transport delivery only after that handshake, not
-              // after a guessed number of saves or an elapsed sleep. Pending
-              // mode loses the result; completed mode loses its outbound ACK.
-              // No retained journal/outbox bytes are removed or rewritten.
-              withheld = {
-                epoch,
-                direction,
-                commandId: terminal.commandId,
-                controllerSeq: terminal.controllerSeq,
-                count: 1,
-              };
-              withheldTerminalFrames.push(withheld);
-              return true;
-            };
-            attachment = originalAttach.call(this, {
-              sendJson(value) {
-                if (!shouldWithhold("outbound")) wire.sendJson(value);
-              },
-              close: (code) => wire.close(code),
-              onJson: (listener) =>
-                wire.onJson((value) => {
-                  if (!shouldWithhold("inbound")) listener(value);
-                }),
-              onClose: (listener) => wire.onClose(listener),
-            });
-            return attachment;
-          });
-        replaySpyRestorers.push(() => attachSpy.mockRestore());
-        recordEpoch.mockImplementation(async (receipt) => {
-          if (receipt.phase !== "retired") return;
-          const snapshot = maintenanceReplaySnapshot(copy);
-          expect(snapshot.fingerprint).toBe(receipt.finalFingerprint);
-          replayRetirements.push(snapshot);
-        });
-      }
-      if (epochFailure) {
-        const failure = new Error("injected epoch receipt persistence failure");
-        const callsBefore = await readFile(calls, "utf8");
-        recordEpoch.mockImplementation(async (receipt) => {
-          if (receipt.phase === "spawned" && epochFailure === "spawned")
-            await assertNoProviderBeforeSpawnedReceipt();
-          if (receipt.phase === epochFailure) throw failure;
-        });
-        await expect(settleRetainedRunnerdSession(input)).rejects.toBe(failure);
-        for (const [receipt] of recordEpoch.mock.calls) {
-          if (receipt.phase !== "spawned") continue;
-          expect(dead(Number(receipt.pid))).toBe(true);
-          expect(dead(-Number(receipt.pid))).toBe(true);
-        }
-        if (epochFailure === "spawned") {
-          expect(await readFile(calls, "utf8")).toBe(callsBefore);
-        }
-        if (epochFailure === "launch_intent") {
-          expect(await readFile(calls, "utf8")).toBe(callsBefore);
-          expect(
-            recordEpoch.mock.calls.map(([receipt]) => receipt.phase),
-          ).toEqual(["launch_intent"]);
-        }
-        expect(
-          await Promise.all(
-            files.map((file) => readFile(join(original, file))),
-          ),
-        ).toEqual(bytes);
-        await expect(
-          readFile(join(activated, "runner/runner-state.json")),
-        ).rejects.toMatchObject({ code: "ENOENT" });
-        await expect(execute()).rejects.toMatchObject({
-          code: "native_session_cleanup_quarantined",
-        });
-        expect(start).toHaveBeenCalledOnce();
-        return;
-      }
-      if (finalRetirementRevocation) {
-        recordEpoch.mockImplementation(async (receipt) => {
-          if (receipt.phase !== "retired") return;
-          const state = maintenanceReplaySnapshot(copy);
-          if (
-            state.runner.pendingTerminalDelivery != null ||
-            state.runner.pendingProviderCleanup != null ||
-            state.runner.outbox.length !== 0 ||
-            state.provider.pendingEvents.length !== 0 ||
-            state.provider.queuedEvents.length !== 0 ||
-            state.control.commands.some(
-              (command: { status: string }) => command.status === "pending",
-            )
-          )
-            return;
-          expect(state.provider.lifecycle).toBe("prepared");
-          expect(state.fingerprint).toBe(receipt.finalFingerprint);
-          finalAuthorityRevoked = true;
-          if (finalRetirementRevocation === "abort")
-            maintenanceAbort.abort(new Error("retirement_authority_revoked"));
-        });
-      }
-      let failedAttempt: { directory: string; bytes: Buffer[] } | null = null;
-      let failedStartupAttempt: {
-        directory: string;
-        bytes: Buffer[];
-      } | null = null;
-      if (terminalReplay) {
-        // Forward failures now preserve a startup fence. Keep this genuinely
-        // produced failed copy intact; it is NOT a legacy replay candidate.
-        await expect(
-          settleRetainedRunnerdSession({
-            ...input,
-            environment: undefined,
-            sourceCodexHome: null,
-          }),
-        ).rejects.toThrow("native_cleanup_maintenance_unproven");
-        const failedBytes = await Promise.all(
-          files.map((file) => readFile(join(copy, file))),
-        );
-        expect(
-          JSON.parse(failedBytes[2]!.toString("utf8")).startupAttempt,
-        ).toMatchObject({
-          schema: "paperclip.provider_startup.v1",
-          phase: "initialization_failed",
-          failedStage: "spawn",
-          requestedThreadId: thread.thread.id,
-          authenticatedThreadId: null,
-          processId: null,
-          directChildExitObserved: false,
-          processTreeRetired: false,
-        });
-        expect(
-          appendEvent.mock.calls
-            .filter(
-              ([event]) => event.payload.code === "provider_startup_ownership",
-            )
-            .map(
-              ([event]) => (event.payload.startup as { phase: string }).phase,
-            ),
-        ).toEqual(["intent", "initialization_failed"]);
-        expect(
-          await Promise.all(
-            files.map((file) => readFile(join(original, file))),
-          ),
-        ).toEqual(bytes);
-        await expect(
-          readFile(join(activated, files[1]!)),
-        ).rejects.toMatchObject({ code: "ENOENT" });
-        const failedStartupDirectory = join(
-          original,
-          "..",
-          "failed-startup-attempt",
-        );
-        await rename(copy, failedStartupDirectory);
-        failedStartupAttempt = {
-          directory: failedStartupDirectory,
-          bytes: failedBytes,
-        };
-
-        // Backward-compatibility fixture, synthesized ONLY from the pristine
-        // original snapshots: old producers recorded terminal failure without
-        // a startup-attempt field. Never delete a real generated fence above.
-        const directory = join(original, "..", "legacy-failed-terminal");
-        await cp(original, directory, { recursive: true });
-        const legacyControl = JSON.parse(bytes[0]!.toString("utf8"));
-        const legacyRunner = JSON.parse(bytes[1]!.toString("utf8"));
-        expect(
-          JSON.parse(bytes[2]!.toString("utf8")).startupAttempt ?? null,
-        ).toBeNull();
-        const legacyCommands = legacyControl.commands.slice(-2);
-        expect(
-          legacyCommands.map((command: { type: string }) => command.type),
-        ).toEqual(["turn.stop", "runner.suspend"]);
-        for (const command of legacyCommands) {
-          const wire = {
-            schema: command.schema,
-            commandId: command.commandId,
-            controllerSeq: command.controllerSeq,
-            type: command.type,
-            issuedAt: command.issuedAt,
-            deadlineAt: null,
-            precondition: null,
-            payload: command.payload,
-          };
-          const result = {
-            commandId: command.commandId,
-            commandType: command.type,
-            controllerSeq: command.controllerSeq,
-            status: "failed",
-            result: {
-              code: "command_execution_failed",
-              message: "legacy pre-start failure fixture",
-            },
-          };
-          command.status = "failed";
-          command.result = result;
-          legacyRunner.processedCommands[command.commandId] = result;
-          legacyRunner.processedCommandFingerprints[command.commandId] =
-            createHash("sha256")
-              .update(
-                durableControlPlane.durableRecoveryInternals.canonicalJson(wire),
-              )
-              .digest("hex");
-          legacyRunner.lastControllerCommandSeq = command.controllerSeq;
-        }
-        const terminal = legacyCommands[1]!;
-        legacyRunner.lifecycle = "suspended";
-        legacyRunner.pendingTerminalDelivery = {
-          commandId: terminal.commandId,
-          controllerSeq: terminal.controllerSeq,
-          commandType: terminal.type,
-          lifecycle: "suspended",
-        };
-        await writeFile(
-          join(directory, files[0]!),
-          JSON.stringify(legacyControl),
-        );
-        await writeFile(
-          join(directory, files[1]!),
-          JSON.stringify(legacyRunner),
-        );
-        const legacyBytes = await Promise.all(
-          files.map((file) => readFile(join(directory, file))),
-        );
-        expect(legacyBytes[2]).toEqual(bytes[2]);
-        expect(
-          legacyControl.commands
-            .slice(-2)
-            .map((command: { status: string }) => command.status),
-        ).toEqual(["failed", "failed"]);
-        await cp(directory, copy, { recursive: true });
-        failedAttempt = { directory, bytes: legacyBytes };
-        input.sourceFingerprint = createHash("sha256")
-          .update(
-            JSON.stringify(
-              legacyBytes.map((value) =>
-                createHash("sha256").update(value).digest("hex"),
-              ),
-            ),
-          )
-          .digest("hex");
-        input.requestId = "maintenance-fixture-continuation";
-        recordEpoch.mockClear();
-        appendEvent.mockClear();
-      }
-      const pendingProof = settleRetainedRunnerdSession(input);
-      if (finalRetirementRevocation) {
-        await expect(pendingProof).rejects.toThrow(
-          finalRetirementRevocation === "abort"
-            ? "native_cleanup_maintenance_unproven"
-            : "retirement_authority_revoked",
-        );
-        expect(finalAuthorityRevoked).toBe(true);
-        await expect(
-          readFile(join(activated, "runner/runner-state.json")),
-        ).rejects.toMatchObject({ code: "ENOENT" });
-        await expect(execute()).rejects.toMatchObject({
-          code: "native_session_cleanup_quarantined",
-        });
-        expect(
-          await Promise.all(files.map((file) => readFile(join(original, file)))),
-        ).toEqual(bytes);
-        const methods = (await readFile(calls, "utf8")).trim().split("\n");
-        expect(methods.filter((method) => method === "turn/start")).toHaveLength(1);
-        return;
-      }
-      if (completedTerminalAck === "repeat") {
-        await expect(pendingProof).rejects.toThrow(
-          "native_cleanup_maintenance_unproven",
-        );
-        expect(replayRetirements).toHaveLength(2);
-        expect(
-          withheldTerminalFrames.map(({ epoch, direction }) => ({
-            epoch,
-            direction,
-          })),
-        ).toEqual([
-          { epoch: 0, direction: "inbound" },
-          { epoch: 1, direction: "inbound" },
-        ]);
-        for (const [epoch, state] of replayRetirements.entries()) {
-          expect(JSON.stringify(state.runner.diagnostics)).toContain(
-            "terminal command result acknowledgement timed out",
-          );
-          expect(state.runner.pendingTerminalDelivery).toMatchObject({
-            commandType: "runner.suspend",
-            lifecycle: "suspended",
-          });
-          const withheld = withheldTerminalFrames[epoch]!;
-          expect(withheld.count).toBeGreaterThan(0);
-          expect(state.runner.pendingTerminalDelivery).toMatchObject({
-            commandId: withheld.commandId,
-            controllerSeq: withheld.controllerSeq,
-          });
-          expect(
-            state.runner.processedCommands[withheld.commandId],
-          ).toMatchObject({
-            status: "completed",
-            result: { status: "completed" },
-          });
-          expect(
-            state.control.commands.find(
-              (command: { commandId: string }) =>
-                command.commandId === withheld.commandId,
-            ),
-          ).toMatchObject({ status: "pending" });
-        }
-        expect(replayRetirements[1]!.provider).toEqual(
-          replayRetirements[0]!.provider,
-        );
-        expect(recordEpoch.mock.calls).toHaveLength(6);
-        await expect(
-          readFile(join(activated, "runner/runner-state.json")),
-        ).rejects.toMatchObject({ code: "ENOENT" });
-        await expect(execute()).rejects.toMatchObject({
-          code: "native_session_cleanup_quarantined",
-        });
-        expect(
-          await Promise.all(
-            files.map((file) => readFile(join(original, file))),
-          ),
-        ).toEqual(bytes);
-        const methods = (await readFile(calls, "utf8")).trim().split("\n");
-        expect(
-          methods.filter((method) => method === "turn/start"),
-        ).toHaveLength(1);
-        // The first cleanup epoch restored the old provider solely to stop
-        // it; the failed delivery-only replay did not restore it again.
-        expect(
-          methods.filter((method) => method === "thread/resume"),
-        ).toHaveLength(1);
-        return;
-      }
-      const proof = await pendingProof.catch(
-        async (error: unknown) => {
-          const runner = JSON.parse(
-            await readFile(join(copy, "runner/runner-state.json"), "utf8"),
-          );
-          const provider = JSON.parse(
-            await readFile(
-              join(copy, "runner/codex-provider-state.json"),
-              "utf8",
-            ),
-          );
-          const control = JSON.parse(
-            await readFile(
-              join(copy, "control-plane/control-plane-state.json"),
-              "utf8",
-            ),
-          );
-          throw new Error(
-            JSON.stringify({
-              runner: {
-                lifecycle: runner.lifecycle,
-                outbox: runner.outbox.length,
-                acked: runner.ackedSourceSeq,
-                next: runner.nextSourceSeq,
-                terminalAckTimedOut: JSON.stringify(
-                  runner.diagnostics,
-                ).includes("terminal command result acknowledgement timed out"),
-                pendingTerminalDelivery:
-                  runner.pendingTerminalDelivery ?? null,
-                retainedIdentityTypes: runner.outbox
-                  .filter((row: { eventType: string }) =>
-                    [
-                      "session.started",
-                      "session.resumed",
-                      "harness.ready",
-                    ].includes(row.eventType),
-                  )
-                  .map((row: { sourceSeq: number; eventType: string }) => ({
-                    sourceSeq: row.sourceSeq,
-                    eventType: row.eventType,
-                  })),
-              },
-              provider: {
-                lifecycle: provider.lifecycle,
-                pending: provider.pendingEvents.length,
-                queued: provider.queuedEvents.length,
-                generation: provider.providerProcessGeneration,
-              },
-              commands: control.commands.map(
-                (command: { type: string; status: string }) => ({
-                  type: command.type,
-                  status: command.status,
-                }),
-              ),
-              committedCount: appendEvent.mock.calls.length,
-              epochExits: recordEpoch.mock.calls
-                .map(([receipt]) => receipt)
-                .filter((receipt) => receipt.phase === "retired")
-                .map((receipt) => ({
-                  epoch: receipt.epoch,
-                  exitCode: receipt.exitCode,
-                  exitSignal: receipt.exitSignal,
-                })),
-            }),
-            { cause: error },
-          );
-        },
-      );
-      if (failedAttempt) {
-        expect(
-          await Promise.all(
-            files.map((file) =>
-              readFile(join(failedStartupAttempt!.directory, file)),
-            ),
-          ),
-        ).toEqual(failedStartupAttempt!.bytes);
-        expect(
-          await Promise.all(
-            files.map((file) => readFile(join(failedAttempt!.directory, file))),
-          ),
-        ).toEqual(failedAttempt.bytes);
-        const finalControl = JSON.parse(
-          await readFile(join(copy, files[0]!), "utf8"),
-        );
-        const failedControl = JSON.parse(
-          failedAttempt.bytes[0]!.toString("utf8"),
-        );
-        expect(
-          finalControl.commands.slice(0, failedControl.commands.length),
-        ).toEqual(failedControl.commands);
-        expect(
-          finalControl.commands
-            .slice(failedControl.commands.length)
-            .some(
-              (command: {
-                type: string;
-                status: string;
-                result: { result?: { providerExitConfirmed?: boolean } };
-              }) =>
-                command.type === "turn.stop" &&
-                command.status === "completed" &&
-                command.result.result?.providerExitConfirmed === true,
-            ),
-        ).toBe(true);
-      }
-      const epochReceipts = recordEpoch.mock.calls.map(([receipt]) => receipt);
-      if (completedTerminalAck) {
-        const before = replayRetirements[0]!;
-        const after = replayRetirements[1]!;
-        expect(withheldTerminalFrames).toHaveLength(1);
-        expect(withheldTerminalFrames[0]).toMatchObject({
-          epoch: 0,
-          direction:
-            completedTerminalAck === "completed" ? "outbound" : "inbound",
-        });
-        expect(withheldTerminalFrames[0]!.count).toBeGreaterThan(0);
-        expect(JSON.stringify(before.runner.diagnostics)).toContain(
-          "terminal command result acknowledgement timed out",
-        );
-        const pending = before.runner.pendingTerminalDelivery;
-        expect(pending).toMatchObject({
-          commandType: "runner.suspend",
-          lifecycle: "suspended",
-          commandId: withheldTerminalFrames[0]!.commandId,
-          controllerSeq: withheldTerminalFrames[0]!.controllerSeq,
-        });
-        expect(before.runner.processedCommands[pending.commandId].status).toBe(
-          "completed",
-        );
-        expect(
-          before.control.commands.find(
-            (command: { commandId: string }) =>
-              command.commandId === pending.commandId,
-          ).status,
-        ).toBe(completedTerminalAck);
-        expect(
-          runnerdRecoveryInternals.completedMaintenanceTerminalReceipt(before),
-        ).not.toBeNull();
-        expect(
-          runnerdRecoveryInternals.completedMaintenanceTerminalReplayMatches(
-            before,
-            after,
-          ),
-        ).toBe(true);
-        expect(after.provider).toEqual(before.provider);
-        expect(after.runner.pendingProviderCleanup ?? null).toBeNull();
-        // An actual completed receipt copied into an INITIAL invocation is
-        // not this invocation's joined retirement and cannot enable replay.
-        const initialTerminal = join(directory, "unproved-initial-terminal");
-        await mkdir(join(initialTerminal, "runner"), { recursive: true });
-        await mkdir(join(initialTerminal, "control-plane"));
-        for (const [index, value] of [
-          before.control,
-          before.runner,
-          before.provider,
-        ].entries())
-          await writeFile(
-            join(initialTerminal, files[index]!),
-            JSON.stringify(value),
-          );
-        const unproved = maintenanceReplaySnapshot(initialTerminal);
-        const initialEpoch = vi.fn(async () => {});
-        await expect(
-          settleRetainedRunnerdSession({
-            ...input,
-            stateDirectory: initialTerminal,
-            sourceFingerprint: unproved.fingerprint,
-            recordEpoch: initialEpoch,
-          }),
-        ).rejects.toThrow("native_cleanup_maintenance_unproven");
-        expect(initialEpoch).not.toHaveBeenCalled();
-        const receiptCases: Array<[string, (state: typeof before) => void]> = [
-          [
-            "missing result",
-            (state) => {
-              delete state.runner.processedCommands[pending.commandId];
-            },
-          ],
-          ...["pending", "failed", "rejected", "indeterminate"].map(
-            (status): [string, (state: typeof before) => void] => [
-              `outer ${status}`,
-              (state) => {
-                state.runner.processedCommands[pending.commandId].status = status;
-              },
-            ],
-          ),
-          ...["failed", "rejected", "indeterminate"].map(
-            (status): [string, (state: typeof before) => void] => [
-              `nested ${status}`,
-              (state) => {
-                state.runner.processedCommands[pending.commandId].result.status =
-                  status;
-              },
-            ],
-          ),
-          [
-            "terminal sequence",
-            (state) => {
-              state.runner.pendingTerminalDelivery.controllerSeq++;
-            },
-          ],
-          [
-            "terminal type",
-            (state) => {
-              state.runner.pendingTerminalDelivery.commandType = "runner.shutdown";
-            },
-          ],
-          [
-            "wire fingerprint",
-            (state) => {
-              state.control.commands.find(
-                (command: { commandId: string }) =>
-                  command.commandId === pending.commandId,
-              ).payload = { changed: true };
-            },
-          ],
-          [
-            "completed controller result",
-            (state) => {
-              const command = state.control.commands.find(
-                (entry: { commandId: string }) =>
-                  entry.commandId === pending.commandId,
-              );
-              command.status = "completed";
-              command.result = { changed: true };
-            },
-          ],
-          [
-            "earlier pending command",
-            (state) => {
-              const command = state.control.commands.find(
-                (entry: { commandId: string }) =>
-                  entry.commandId === pending.commandId,
-              );
-              command.status = "pending";
-              delete command.result;
-              state.control.commands[0].status = "pending";
-            },
-          ],
-          [
-            "active provider",
-            (state) => {
-              state.provider.activeProviderTurnId = "another-turn";
-            },
-          ],
-          [
-            "provider cleanup",
-            (state) => {
-              state.runner.pendingProviderCleanup = pending;
-            },
-          ],
-        ];
-        for (const [name, mutate] of receiptCases) {
-          const changed = structuredClone(before);
-          mutate(changed);
-          expect(
-            runnerdRecoveryInternals.completedMaintenanceTerminalReceipt(changed),
-            name,
-          ).toBeNull();
-        }
-        for (const [name, mutate] of [
-          [
-            "other command",
-            (state: typeof after) => {
-              state.control.commands[0].result = { changed: true };
-            },
-          ],
-          [
-            "provider bytes",
-            (state: typeof after) => {
-              state.providerFingerprint = "changed";
-            },
-          ],
-          [
-            "pending delivery",
-            (state: typeof after) => {
-              state.runner.pendingTerminalDelivery = pending;
-            },
-          ],
-          [
-            "processed receipt",
-            (state: typeof after) => {
-              state.runner.processedCommands[pending.commandId].result = {
-                changed: true,
-              };
-            },
-          ],
-        ] as const) {
-          const changed = structuredClone(after);
-          mutate(changed);
-          expect(
-            runnerdRecoveryInternals.completedMaintenanceTerminalReplayMatches(
-              before,
-              changed,
-            ),
-            name,
-          ).toBe(false);
-        }
-      }
-      expect(epochReceipts.length).toBeGreaterThanOrEqual(3);
-      for (let index = 0; index < epochReceipts.length; index += 3) {
-        const [intent, spawned, retired] = epochReceipts.slice(
-          index,
-          index + 3,
-        );
-        expect(intent).toMatchObject({
-          phase: "launch_intent",
-          requestId: input.requestId,
-          stateDirectory: copy,
-        });
-        expect(spawned).toMatchObject({
-          phase: "spawned",
-          launchId: intent!.launchId,
-        });
-        expect(retired).toMatchObject({
-          phase: "retired",
-          launchId: intent!.launchId,
-          pid: spawned!.pid,
-          processGroupAbsent: true,
-        });
-        expect(dead(Number(retired!.pid))).toBe(true);
-        expect(dead(-Number(retired!.pid))).toBe(true);
-      }
-      if (bareCodex) {
-        expect(await readFile(join(copy, "codex-home/auth.json"), "utf8")).toBe(
-          await readFile(join(home, "auth.json"), "utf8"),
-        );
-      }
-      expect(retainedRunnerdCleanupProofIsCurrent(proof)).toBe(false);
-      await rename(copy, activated);
-      expect(retainedRunnerdCleanupProofIsCurrent(proof)).toBe(true);
-      expect(retainedRunnerdCleanupProofIsCurrent({ ...proof })).toBe(false);
-      expect(() =>
-        completeRetainedNativeSessionCleanup({ ...proof }),
-      ).toThrow();
-      expect(completeRetainedNativeSessionCleanup(proof)).toBe(1);
-      expect(completeRetainedNativeSessionCleanup(proof)).toBe(0);
-      close.mockImplementation(async () => {});
-      await expect(execute()).rejects.toThrow("fixture admission reached");
-      expect(start).toHaveBeenCalledTimes(2);
-      expect(
-        await Promise.all(files.map((file) => readFile(join(original, file)))),
-      ).toEqual(bytes);
-      const methods = (await readFile(calls, "utf8")).trim().split("\n");
-      expect(methods.filter((method) => method === "turn/start")).toHaveLength(
-        1,
-      );
-      expect(
-        methods.filter((method) => method === "thread/start"),
-      ).toHaveLength(1);
-      expect(
-        methods.filter((method) => method === "thread/resume"),
-      ).toHaveLength(1);
-      const finalState = JSON.parse(
-        await readFile(join(activated, "runner/runner-state.json"), "utf8"),
-      );
-      expect(finalState).toMatchObject({
-        ...identity,
-        lifecycle: "suspended",
-        outbox: [],
-      });
-      const provider = JSON.parse(
-        await readFile(
-          join(activated, "runner/codex-provider-state.json"),
-          "utf8",
-        ),
-      );
-      expect(provider).toMatchObject({
-        threadId: thread.thread.id,
-        activeProviderTurnId: null,
-        pendingEvents: [],
-        queuedEvents: [],
-      });
-      expect(
-        appendEvent.mock.calls.every(
-          ([event]) => event.runId === identity.runId,
-        ),
-      ).toBe(true);
-      const deltas = appendEvent.mock.calls
-        .map(([event]) => event.payload.delta)
-        .filter(
-          (delta) =>
-            typeof delta === "string" && delta.startsWith("maintenance-"),
-        );
-      expect(deltas).toHaveLength(218);
-      expect(new Set(deltas).size).toBe(218);
-      await writeFile(
-        join(activated, "runner/runner-state.json"),
-        JSON.stringify({ ...finalState, lifecycle: "ready" }),
-      );
-      expect(retainedRunnerdCleanupProofIsCurrent(proof)).toBe(false);
-    } finally {
-      for (const restore of replaySpyRestorers.reverse()) restore();
-      await bundle.transport.close().catch(() => undefined);
-      for (const pid of [runnerPid, providerPid]) {
-        if (pid > 0 && !dead(pid)) {
-          try {
-            process.kill(-pid, "SIGKILL");
-          } catch {}
-        }
-      }
-      if (!retainFixtureForUnprovenExit)
-        await rm(directory, { recursive: true, force: true });
-    }
-  },
-  40_000,
-);
+// The retained-settlement maintenance family ("settles only retained control
+// authority without starting another provider turn") lives in
+// runnerd-codex-transport-settlement.test.ts so vitest can run its ~160s of
+// sequential cases on a separate worker instead of serializing them behind
+// this file's tests.
 
 it.each(["alive", "pending_liveness", "pending_registration"] as const)(
   "bounds adopted runner authentication at its exact deadline with %s evidence",
@@ -2097,6 +426,38 @@ it("requires an explicit retained state directory before adopting a runner", () 
   ).toThrow("native_adopted_runner_state_directory_required");
   expect(launch).not.toHaveBeenCalled();
   expect(signal).not.toHaveBeenCalled();
+});
+
+it("reads valid control-plane history above 64 MiB and rejects it above 256 MiB", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-large-control-state-"));
+  const stateDirectory = join(root, "control-plane");
+  const statePath = join(stateDirectory, "control-plane-state.json");
+  try {
+    await mkdir(stateDirectory, { recursive: true });
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        committedEvents: [
+          {
+            eventType: "history",
+            payload: { text: "x".repeat(64 * 1024 * 1024 + 1) },
+          },
+        ],
+      }),
+    );
+    expect(
+      runnerdRecoveryInternals.readControlPlaneState(stateDirectory),
+    ).toMatchObject({
+      committedEvents: [{ eventType: "history" }],
+    });
+
+    await truncate(statePath, 256 * 1024 * 1024 + 1);
+    expect(() =>
+      runnerdRecoveryInternals.readControlPlaneState(stateDirectory),
+    ).toThrow("native_runner_control_plane_state_unsafe");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 it("carries the provider attachment seed across consecutive authority rotations", () => {
@@ -2381,9 +742,10 @@ it("refuses a reusable close checkpoint when the local provider snapshot is unre
   }
 }, 15_000);
 
-it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
+it.each(["after_budget", "within_budget", "interrupted_within_budget", "persistence_failure"] as const)(
   "fences reusable suspension against late semantic completion (%s)",
   async (mode) => {
+    const settles = mode === "within_budget" || mode === "interrupted_within_budget";
     const stateDirectory = await mkdtemp(
       join(tmpdir(), "runnerd-late-semantic-close-"),
     );
@@ -2400,20 +762,30 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
     const bundle = createCapabilityRunnerdCodexTransport({
       runnerBinary: defaultCapabilityRunnerdBinary(),
       codexCommand: fakeCodex,
-      codexArgs: fakeCodexArgs(stateDirectory, "--split-event-burst"),
+      // Exercise a real output suffix around the held semantic callback.
+      // The default 96/48-frame stress burst spends seconds on unrelated
+      // durable text fsyncs before handler entry, consuming this barrier test's
+      // wall-clock budget under the full suite. Stress cases retain defaults.
+      codexArgs: mode === "interrupted_within_budget"
+        ? fakeCodexArgs(stateDirectory, "--emit-tool-call")
+        : fakeCodexArgs(
+        stateDirectory, "--split-event-burst",
+        "--split-event-prefix-count", "2", "--split-event-suffix-count", "2",
+      ),
       stateDirectory,
-      closeGraceMs: 2_000,
+      closeGraceMs: 5_000,
       controlPlaneRegistration: async (authority) => {
         core = authority;
         await authority.start();
         return { checkpoint, release: () => undefined };
       },
     });
-    bundle.transport.setServerRequestHandler(async () => {
+    const handler = vi.fn(async () => {
       entered();
       await handlerRelease;
       return { success: true, contentItems: [] };
     });
+    bundle.transport.setServerRequestHandler(handler);
     try {
       await bundle.transport.request("thread/start", {
         cwd: tmpdir(),
@@ -2452,6 +824,10 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
           return queue(type, ...args);
         });
       }
+      if (mode === "interrupted_within_budget") {
+        await bundle.transport.request("turn/interrupt", { reason: "test-stop-during-server-write" });
+        expect(core.semanticToolResultsSettled()).toBe(false);
+      }
       const closing = bundle.transport.close().then(
         () => null,
         (error: unknown) => error,
@@ -2462,7 +838,8 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
         release();
       }
       const closeFailure = await closing;
-      if (mode !== "within_budget") {
+      expect(handler).toHaveBeenCalledTimes(1);
+      if (!settles) {
         const artifact = readRunnerdArtifactBinding(
           defaultCapabilityRunnerdBinary(),
         );
@@ -2500,9 +877,9 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
             control.identity.runId,
           );
           expect(late[0].status).toBe(
-            mode === "within_budget" ? "completed" : "pending",
+            settles ? "completed" : "pending",
           );
-          if (mode === "within_budget") {
+          if (settles) {
             const results = control.committedEvents.filter(
               (event: { eventType: string }) =>
                 event.eventType === "semantic_tool.result",
@@ -2512,7 +889,7 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
           }
         });
       }
-      if (mode === "within_budget") {
+      if (settles) {
         expect(closeFailure).toBeNull();
         expect(core.semanticToolResultsSettled()).toBe(true);
         expect(checkpoint).toHaveBeenCalledWith("settled");
@@ -2520,6 +897,10 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
         expect(closeFailure).toBeInstanceOf(
           NativeSessionCloseUnrecoverableError,
         );
+        expect(closeFailure).toHaveProperty("settlement.semanticTools.pending", expect.arrayContaining([
+          expect.objectContaining({ callId: expect.any(String), operationId: expect.any(String),
+            sourceEventId: expect.any(String), inputDigest: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+        ]));
         expect(checkpoint).toHaveBeenCalledWith("unsettled");
         expect(checkpoint).not.toHaveBeenCalledWith("settled");
       }
@@ -2529,7 +910,7 @@ it.each(["after_budget", "within_budget", "persistence_failure"] as const)(
       await rm(stateDirectory, { recursive: true, force: true });
     }
   },
-  15_000,
+  25_000,
 );
 
 it("infers a remote provider turn until its own terminal event is durable", () => {
@@ -2786,6 +1167,30 @@ it("quiesces the control route before checkpoint and containment regardless of p
   expect(failedCheckpointSteps).toEqual(["release", "checkpoint", "kill"]);
 });
 
+it("does not release a session before asynchronous process containment settles", async () => {
+  let finishKill!: () => void;
+  const killed = new Promise<void>((resolve) => { finishKill = resolve; });
+  const steps: string[] = [];
+  const released = runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: false,
+    release: () => { steps.push("route-closed"); },
+    checkpoint: () => { steps.push("checkpoint"); },
+    forceKill: async () => { steps.push("kill-dispatched"); await killed; steps.push("process-exited"); },
+  }).then(() => { steps.push("session-reusable"); });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(steps).toEqual(["route-closed", "checkpoint", "kill-dispatched"]);
+  finishKill();
+  await released;
+  expect(steps).toEqual(["route-closed", "checkpoint", "kill-dispatched", "process-exited", "session-reusable"]);
+});
+
+it("refuses session reuse when asynchronous process containment fails", async () => {
+  await expect(runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: true, release: null, checkpoint: null,
+    forceKill: async () => { throw new Error("remote process still alive"); },
+  })).rejects.toThrow("remote process still alive");
+});
+
 it("waits for the exact durable suspension command behind prior close work", async () => {
   const commands = [
     {
@@ -2910,7 +1315,7 @@ it("queues a fresh suspension when a completed old command belongs to a resumed 
   expect(commands[1]!.commandId).not.toBe("old-suspend");
 });
 
-it("keeps ACPX terminal tools under the reserved runner-owned catalog", () => {
+it("includes ACPX terminal tools in the authenticated bridge catalog", () => {
   const tools = [
     {
       name: "get_task_context",
@@ -2921,7 +1326,11 @@ it("keeps ACPX terminal tools under the reserved runner-owned catalog", () => {
   ];
 
   expect(authorizedToolSetForProvider("acpx", tools)).toMatchObject({
-    operations: [{ operationId: "get_task_context" }],
+    operations: [
+      { operationId: "get_task_context" },
+      { operationId: "paperclip_block" },
+      { operationId: "paperclip_finish" },
+    ],
   });
   expect(authorizedToolSetForProvider("codex", tools)).toMatchObject({
     operations: [
@@ -2932,14 +1341,19 @@ it("keeps ACPX terminal tools under the reserved runner-owned catalog", () => {
   });
 });
 
-it("preserves answer and internal wait descriptions in the serialized native tool catalog", () => {
+it.each(["codex", "opencode", "claude_managed", "aws_agentcore", "acpx"] as const)("preserves answer and internal wait descriptions in the serialized native %s tool catalog", (provider) => {
   const catalog = JSON.parse(
-    JSON.stringify(authorizedToolSetForProvider("codex", codexSemanticToolSpecs())),
+    JSON.stringify(authorizedToolSetForProvider(provider, codexSemanticToolSpecs())),
   );
   const finish = catalog.operations.find(
     (operation: { operationId: string }) =>
       operation.operationId === "paperclip_finish",
   );
+  const block = catalog.operations.find(
+    (operation: { operationId: string }) => operation.operationId === "paperclip_block",
+  );
+  expect(finish.description).toBe(PRP_COMPLETION_TOOL_DESCRIPTION);
+  expect(block.description).toBe(PRP_BLOCK_TOOL_DESCRIPTION);
   expect(finish.inputSchema.properties.summary.description).toContain(
     "complete user-facing answer",
   );
@@ -2951,8 +1365,8 @@ it("preserves answer and internal wait descriptions in the serialized native too
   ).toContain("not in the top-level user-facing summary");
 });
 
-it("defaults runnerd ACPX permissions to approve reads", () => {
-  expect(resolveRunnerdAcpxPermissionMode(undefined)).toBe("approve-reads");
+it("defaults runnerd ACPX permissions to authorized Paperclip actions", () => {
+  expect(resolveRunnerdAcpxPermissionMode(undefined)).toBe("approve-all");
   expect(resolveRunnerdAcpxPermissionMode("deny-all")).toBe("deny-all");
 });
 
@@ -3037,6 +1451,15 @@ it("derives the ACPX package authority only from the verified dist/cli layout", 
       "/unverified/acpx-runtime-sidecar.cjs",
     ),
   ).toThrow("ACPX sidecar must use the provider package dist/cli layout");
+});
+
+it("uses the public server npm package as the authority for vendored sidecars", () => {
+  expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+    "/clean/node_modules/@paperclipai/server/dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs",
+  )).toEqual({
+    root: "/clean/node_modules/@paperclipai/server",
+    manifest: "/clean/node_modules/@paperclipai/server/package.json",
+  });
 });
 
 it("keeps a self-rooted pnpm deployment inside its dependency authority", async () => {
@@ -3209,7 +1632,7 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
       hasRuntimeContext: false,
     });
   expect(defaultPermissionEnvironment.PAPERCLIP_OPENCODE_PERMISSION_MODE).toBe(
-    "ask",
+    "allow",
   );
 });
 
@@ -3340,6 +1763,10 @@ it("uses file-backed AWS workload identity without forwarding access keys or Pap
 });
 
 it.each([
+  { agent: "cursor" as const, allowed: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
+    denied: ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] },
+  { agent: "copilot" as const, allowed: ["COPILOT_GITHUB_TOKEN"],
+    denied: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] },
   {
     agent: "pi" as const,
     allowed: ["OPENROUTER_API_KEY"],
@@ -3375,6 +1802,8 @@ it.each([
   "passes only $agent ACPX credentials and the durable runtime binding",
   ({ agent, allowed, denied }) => {
     const credentialEnvironment: Record<string, string> = {
+      CURSOR_API_KEY: "cursor-key-canary", CURSOR_AUTH_TOKEN: "cursor-token-canary",
+      COPILOT_GITHUB_TOKEN: "copilot-canary", GH_TOKEN: "ambient-gh-canary", GITHUB_TOKEN: "ambient-github-canary",
       OPENROUTER_API_KEY: "openrouter-canary",
       ANTHROPIC_API_KEY: "anthropic-canary",
       CLAUDE_CODE_OAUTH_TOKEN: "claude-oauth-canary",
@@ -3391,6 +1820,8 @@ it.each([
         environment: {
           PATH: "/bin",
           ...credentialEnvironment,
+          [ACPX_CREDENTIAL_BINDING_ENV]: "untrusted-caller-marker",
+          PAPERCLIP_ACPX_BUILTIN_ROOT: "/attacker/builtin",
           PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: "/attacker/package-root",
           PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
             "/attacker/package-root/package.json",
@@ -3419,6 +1850,7 @@ it.each([
       PAPERCLIP_RUN_ID: "run-1",
       PAPERCLIP_NORMALIZED_SESSION_ID: "session-1",
       PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH: "/isolated/runtime-context.json",
+      PAPERCLIP_ACPX_BUILTIN_ROOT: "/verified/provider-pack/dist/providers",
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT: "/verified/provider-pack",
       PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST:
         "/verified/provider-pack/package.json",
@@ -3426,10 +1858,35 @@ it.each([
     for (const key of allowed)
       expect(environment[key]).toBe(credentialEnvironment[key]);
     for (const key of denied) expect(environment[key]).toBeUndefined();
+    if (["cursor", "copilot", "pi"].includes(agent)) {
+      expect(JSON.parse(environment[ACPX_CREDENTIAL_BINDING_ENV]!)).toEqual({
+        schema: "paperclip.acpx_credential_binding.v1", agent, sessionId: "session-1", names: allowed,
+      });
+      const sidecar = createAcpxSidecarHostEnvironment(environment, agent, "session-1");
+      for (const key of allowed) expect(sidecar[key]).toBe(credentialEnvironment[key]);
+    } else expect(environment[ACPX_CREDENTIAL_BINDING_ENV]).toBeUndefined();
     expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
     expect(environment.DATABASE_URL).toBeUndefined();
   },
 );
+
+it("does not bind ambient candidate credentials from an inherited or caller-supplied marker", () => {
+  const forged = createAcpxCredentialBinding({ CURSOR_API_KEY: "ambient-secret" }, "cursor", "session-1")!;
+  vi.stubEnv("CURSOR_API_KEY", "ambient-secret");
+  vi.stubEnv(ACPX_CREDENTIAL_BINDING_ENV, forged);
+  try {
+    for (const explicitEnvironment of [undefined, { [ACPX_CREDENTIAL_BINDING_ENV]: forged }]) {
+      const environment = createCapabilityRunnerdProviderEnvironment({
+        provider: "acpx", options: { provider: "acpx", acpxAgent: "cursor", environment: explicitEnvironment },
+        identity: { runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1", normalizedSessionId: "session-1", turnId: "turn-1", itemId: "item-1" },
+        codexHome: "/isolated/home", runtimeContextPath: "/isolated/context.json", hasRuntimeContext: false,
+      });
+      expect(environment.CURSOR_API_KEY).toBeUndefined();
+      expect(JSON.parse(environment[ACPX_CREDENTIAL_BINDING_ENV]!)).toMatchObject({ names: [] });
+      expect(createAcpxSidecarHostEnvironment(environment, "cursor", "session-1").CURSOR_API_KEY).toBeUndefined();
+    }
+  } finally { vi.unstubAllEnvs(); }
+});
 
 it.each(["opencode", "acpx"] as const)(
   "advertises runner-managed planning through the %s provider boundary",
@@ -3557,6 +2014,35 @@ it("binds a durable semantic result to the active provider turn", () => {
       reportedWorkDisposition: "done",
     },
   });
+});
+
+it.each(["summary", "detail"])("preserves canonical reasoning %s deltas without publishing assistant text", (channel) => {
+  // Exact shape emitted by the Rust ACPX projector, with synthetic private text.
+  const payload = { provider: "acpx", itemId: "reason-1", kind: "reasoning", channel,
+    providerMethod: "runtime.event", text: "PRIVATE_REASONING_SENTINEL" };
+  const method = runnerdCanonicalNotificationMethod("item.delta", payload);
+  expect(method).toBe(channel === "detail" ? "item/reasoning/textDelta" : "item/reasoning/summaryTextDelta");
+  const params = rehydrateRunnerdDeltaNotification(payload, "provider-thread", "provider-turn");
+  expect(params).toMatchObject({ threadId: "provider-thread", turnId: "provider-turn", itemId: "reason-1" });
+  const evidence = redactCapabilityEvidenceData("provider_event", { method, params });
+  expect(evidence).toEqual({ event: "reasoning_delta" });
+  expect(JSON.stringify(evidence)).not.toContain("PRIVATE_REASONING_SENTINEL");
+});
+
+it("classifies each coalesced canonical delta without mixing reasoning into assistant output", () => {
+  const notifications = expandRunnerdCanonicalNotifications("item/agentMessage/delta", {
+    coalescedCount: 3,
+    events: [
+      { kind: "reasoning", channel: "summary", text: "PRIVATE_REASONING_SENTINEL" },
+      { kind: "agentMessage", channel: "progress", text: "Visible progress" },
+      { kind: "reasoning", channel: "detail", text: "PRIVATE_DETAIL_SENTINEL" },
+    ],
+  }, "item.delta");
+  expect(notifications.map((entry) => entry.method)).toEqual([
+    "item/reasoning/summaryTextDelta", "item/agentMessage/delta", "item/reasoning/textDelta",
+  ]);
+  expect(notifications.filter((entry) => entry.method === "item/agentMessage/delta").map((entry) => entry.params.text))
+    .toEqual(["Visible progress"]);
 });
 
 it("restores provider identity and streamed text from a canonical delta", () => {
@@ -3811,6 +2297,33 @@ it("routes canonical session goals back through the Codex notification facade", 
   expect(runnerdCanonicalNotificationMethod("session.goal.cleared", {})).toBe(
     "thread/goal/cleared",
   );
+});
+
+it("keeps canonical ACPX reasoning out of assistant deltas", () => {
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "reasoning", channel: "summary", text: "Private reasoning",
+  })).toBe("item/reasoning/summaryTextDelta");
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "reasoning", channel: "detail", text: "Private reasoning",
+  })).toBe("item/reasoning/textDelta");
+  expect(runnerdCanonicalNotificationMethod("item.delta", {
+    kind: "agentMessage", text: "Visible answer",
+  })).toBe("item/agentMessage/delta");
+});
+
+it("preserves reasoning kinds and order inside coalesced canonical deltas", () => {
+  const events = [
+    { kind: "reasoning", channel: "summary", text: "Private reasoning", itemId: "thought-1" },
+    { kind: "agentMessage", text: "Visible answer", itemId: "answer-1" },
+    { kind: "reasoning", channel: "detail", text: "Private detail", itemId: "thought-2" },
+  ];
+  expect(expandRunnerdCanonicalNotifications("item/agentMessage/delta", {
+    coalescedCount: events.length, events,
+  }, "item.delta")).toEqual([
+    { method: "item/reasoning/summaryTextDelta", params: events[0] },
+    { method: "item/agentMessage/delta", params: events[1] },
+    { method: "item/reasoning/textDelta", params: events[2] },
+  ]);
 });
 
 it("continues consuming after the durable committed-event window rolls", () => {
@@ -5566,6 +4079,26 @@ it("bridges a runnerd-native question into the server request handler and resolv
       },
     });
     expect(methods).toContain("turn/completed");
+    // A terminal notification alone does not prove that the question reached
+    // durable storage or that its answer and provider suffix settled.
+    await bundle.transport.close();
+    const runnerState = JSON.parse(await readFile(
+      join(stateDirectory, "runner", "runner-state.json"), "utf8",
+    ));
+    expect(runnerState.lifecycle).toBe("suspended");
+    const controlState = JSON.parse(await readFile(
+      join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8",
+    )) as {
+      committedEvents: Array<{ eventType: string; envelope: { payload: { payload: { request?: { input: unknown } } } } }>;
+      commands: Array<{ type: string; status: string }>;
+    };
+    const created = controlState.committedEvents.filter(event => event.eventType === "runtime_request.created");
+    expect(created).toHaveLength(1);
+    const input = parsePaperclipQuestionSet(created[0]!.envelope.payload.payload.request!.input);
+    expect(input.questions[0]!.options![0]!.description).toBe("Deploy safely.");
+    expect(input.questions[1]!.options![0]).not.toHaveProperty("description");
+    expect(controlState.commands.filter(command => command.type === "request.resolve"))
+      .toEqual([expect.objectContaining({ status: "completed" })]);
   } finally {
     await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });
@@ -5631,7 +4164,9 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
   );
   const tracePath = join(traceDirectory, "trace.ndjson");
   const bundle = createCapabilityRunnerdCodexTransport({
-    runnerBinary: defaultCapabilityRunnerdBinary(),
+    // Qualification builds a debug daemon for this exact source. Its selected
+    // binary must win over any separately staged product/runtime artifact.
+    runnerBinary: process.env.PAPERCLIP_STOCK_PREFLIGHT_RUNNERD ?? defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(traceDirectory, "--structured-activity"),
     stateDirectory: join(traceDirectory, "state"),
@@ -5724,11 +4259,14 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
     decodedFrames.find((frame) => frame.method === "thread/start"),
   ).toMatchObject({
     params: {
-      baseInstructions: withCodexCollaborationRuntimeInstructions(
+      developerInstructions: withCodexCollaborationRuntimeInstructions(
         CODEX_SKILLLESS_BASE_INSTRUCTIONS,
       ),
     },
   });
+  expect(
+    (decodedFrames.find((frame) => frame.method === "thread/start")?.params as Record<string, unknown>),
+  ).not.toHaveProperty("baseInstructions");
   const stages = new Set(
     [...nativeEntries, ...rehydratedEntries]
       .filter((entry) => entry.kind === "interpretation")
@@ -7882,123 +6420,148 @@ it.each([
   },
 );
 
-it("probes an exact-authority resume and confirms its live provider identity", async () => {
-  const stateDirectory = await mkdtemp(
-    join(tmpdir(), "runnerd-exact-authority-resume-"),
-  );
-  const identity = {
-    runnerInstanceId: "runner-exact-resume",
-    environmentLeaseId: "lease-exact-resume",
-    runId: "run-exact-resume",
-    normalizedSessionId: "session-exact-resume",
-    turnId: "turn-exact-resume",
-    itemId: "item-exact-resume",
-  };
-  const options = {
-    runnerBinary: defaultCapabilityRunnerdBinary(),
-    codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory, "--durable-turn-ids"),
-    stateDirectory,
-    lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
-    prpIdentity: identity,
-  };
-  const first = createCapabilityRunnerdCodexTransport(options);
-  first.transport.setServerRequestHandler(async () => ({
-    success: true,
-    contentItems: [],
-  }));
-  let providerThread: { id: string; sessionId: string } | null = null;
-  try {
-    const opened = await first.transport.request("thread/start", {
-      cwd: tmpdir(),
-      dynamicTools: [],
-    });
-    const thread = opened.thread as Record<string, unknown>;
-    providerThread = {
-      id: String(thread.id),
-      sessionId: String(thread.sessionId),
+it.each([0, 193 * 1024 * 1024])(
+  "probes an exact-authority resume with %i extra journal bytes and confirms its live provider identity",
+  async (extraJournalBytes) => {
+    const stateDirectory = await mkdtemp(
+      join(tmpdir(), "runnerd-exact-authority-resume-"),
+    );
+    const identity = {
+      runnerInstanceId: "runner-exact-resume",
+      environmentLeaseId: "lease-exact-resume",
+      runId: "run-exact-resume",
+      normalizedSessionId: "session-exact-resume",
+      turnId: "turn-exact-resume",
+      itemId: "item-exact-resume",
     };
-  } finally {
-    await first.transport.close();
-  }
-  if (providerThread === null) {
-    throw new Error("exact-authority fixture did not return a provider thread");
-  }
+    const options = {
+      runnerBinary: defaultCapabilityRunnerdBinary(),
+      codexCommand: fakeCodex,
+      codexArgs: fakeCodexArgs(stateDirectory, "--durable-turn-ids"),
+      stateDirectory,
+      lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
+      prpIdentity: identity,
+    };
+    const first = createCapabilityRunnerdCodexTransport(options);
+    first.transport.setServerRequestHandler(async () => ({
+      success: true,
+      contentItems: [],
+    }));
+    let providerThread: { id: string; sessionId: string } | null = null;
+    try {
+      const opened = await first.transport.request("thread/start", {
+        cwd: tmpdir(),
+        dynamicTools: [],
+      });
+      const thread = opened.thread as Record<string, unknown>;
+      providerThread = {
+        id: String(thread.id),
+        sessionId: String(thread.sessionId),
+      };
+    } finally {
+      await first.transport.close();
+    }
+    if (providerThread === null) {
+      throw new Error(
+        "exact-authority fixture did not return a provider thread",
+      );
+    }
 
-  const statePath = join(
-    stateDirectory,
-    "control-plane",
-    "control-plane-state.json",
-  );
-  const beforeResume = JSON.parse(await readFile(statePath, "utf8")) as {
-    commands: Array<{ type: string }>;
-    committedEvents: Array<{ eventType: string }>;
-  };
-  expect(
-    beforeResume.commands.some((command) => command.type === "run.attach"),
-  ).toBe(false);
-  const priorResumeEvents = beforeResume.committedEvents.filter(
-    (event) => event.eventType === "session.resumed",
-  ).length;
-  const priorSnapshots = beforeResume.commands.filter(
-    (command) => command.type === "session.snapshot",
-  ).length;
-
-  const resumed = createCapabilityRunnerdCodexTransport({
-    ...options,
-    resumeProviderSession: {
-      driverSessionId: providerThread.id,
-      providerSessionId: providerThread.sessionId,
-    },
-  });
-  resumed.transport.setServerRequestHandler(async () => ({
-    success: true,
-    contentItems: [],
-  }));
-  try {
-    const read = await resumed.transport.request("thread/read", {});
-    expect(read.thread).toMatchObject(providerThread);
-    const afterResume = JSON.parse(await readFile(statePath, "utf8")) as {
-      commands: Array<{ commandId: string; type: string; status: string }>;
+    const statePath = join(
+      stateDirectory,
+      "control-plane",
+      "control-plane-state.json",
+    );
+    if (extraJournalBytes > 0) {
+      const padding = Buffer.alloc(1024 * 1024, 0x20);
+      const stateHandle = await open(statePath, "a");
+      try {
+        for (let remaining = extraJournalBytes; remaining > 0;) {
+          const bytesToWrite = Math.min(remaining, padding.length);
+          await stateHandle.write(padding, 0, bytesToWrite);
+          remaining -= bytesToWrite;
+        }
+      } finally {
+        await stateHandle.close();
+      }
+      expect((await stat(statePath)).size).toBeGreaterThan(
+        64 * 1024 * 1024,
+      );
+    }
+    const beforeResume = JSON.parse(await readFile(statePath, "utf8")) as {
+      commands: Array<{ type: string }>;
       committedEvents: Array<{ eventType: string }>;
     };
-    expect(afterResume.commands).toContainEqual(
-      expect.objectContaining({
-        commandId: expect.stringMatching(/^command_resume_probe_/),
-        type: "runner.drain",
-        status: "completed",
-      }),
-    );
-    expect(afterResume.commands).toContainEqual(
-      expect.objectContaining({
-        type: "session.snapshot",
-        status: "completed",
-      }),
-    );
     expect(
-      afterResume.commands.filter(
-        (command) => command.type === "session.snapshot",
-      ),
-    ).toHaveLength(priorSnapshots + 2);
-    // The authenticated snapshot above proves the live provider identity.
-    // Control-first dispatch may deliver that command before the independent
-    // session event is ingested. Still require exactly one durable event;
-    // don't mistake an immediate file read for an event-delivery barrier.
-    await vi.waitFor(async () => {
-      const delivered = JSON.parse(await readFile(statePath, "utf8")) as {
+      beforeResume.commands.some((command) => command.type === "run.attach"),
+    ).toBe(false);
+    const priorResumeEvents = beforeResume.committedEvents.filter(
+      (event) => event.eventType === "session.resumed",
+    ).length;
+    const priorSnapshots = beforeResume.commands.filter(
+      (command) => command.type === "session.snapshot",
+    ).length;
+
+    const resumed = createCapabilityRunnerdCodexTransport({
+      ...options,
+      resumeProviderSession: {
+        driverSessionId: providerThread.id,
+        providerSessionId: providerThread.sessionId,
+      },
+    });
+    resumed.transport.setServerRequestHandler(async () => ({
+      success: true,
+      contentItems: [],
+    }));
+    try {
+      const read = await resumed.transport.request("thread/read", {});
+      expect(read.thread).toMatchObject(providerThread);
+      const afterResume = JSON.parse(await readFile(statePath, "utf8")) as {
+        commands: Array<{ commandId: string; type: string; status: string }>;
         committedEvents: Array<{ eventType: string }>;
       };
+      expect(afterResume.commands).toContainEqual(
+        expect.objectContaining({
+          commandId: expect.stringMatching(/^command_resume_probe_/),
+          type: "runner.drain",
+          status: "completed",
+        }),
+      );
+      expect(afterResume.commands).toContainEqual(
+        expect.objectContaining({
+          type: "session.snapshot",
+          status: "completed",
+        }),
+      );
       expect(
-        delivered.committedEvents.filter(
-          (event) => event.eventType === "session.resumed",
+        afterResume.commands.filter(
+          (command) => command.type === "session.snapshot",
         ),
-      ).toHaveLength(priorResumeEvents + 1);
-    }, { timeout: 3_000, interval: 25 });
-  } finally {
-    await resumed.transport.close();
-    await rm(stateDirectory, { recursive: true, force: true });
-  }
-}, 30_000);
+      ).toHaveLength(priorSnapshots + 2);
+      // The authenticated snapshot above proves the live provider identity.
+      // Control-first dispatch may deliver that command before the independent
+      // session event is ingested. Still require exactly one durable event;
+      // don't mistake an immediate file read for an event-delivery barrier.
+      await vi.waitFor(
+        async () => {
+          const delivered = JSON.parse(await readFile(statePath, "utf8")) as {
+            committedEvents: Array<{ eventType: string }>;
+          };
+          expect(
+            delivered.committedEvents.filter(
+              (event) => event.eventType === "session.resumed",
+            ),
+          ).toHaveLength(priorResumeEvents + 1);
+        },
+        { timeout: 3_000, interval: 25 },
+      );
+    } finally {
+      await resumed.transport.close();
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
 
 it("still fails closed when a real close grace period cannot fit a durable suspension round trip", async () => {
   const stateDirectory = await mkdtemp(
@@ -8122,7 +6685,7 @@ it("cold-restores a suspended provider session under its durable run binding", a
       ).mode & 0o222,
     ).toBe(0);
     await first.transport.request("turn/start", {
-      input: [{ type: "text", text: "first process" }],
+      input: [{ type: "text", text: "$assigned first process" }, { type: "skill", name: "assigned", path: join(skillRoot, "SKILL.md") }],
     });
     for await (const event of first.transport.notifications()) {
       if (event.method === "turn/completed") break;
@@ -8166,7 +6729,7 @@ it("cold-restores a suspended provider session under its durable run binding", a
       cwd: tmpdir(),
     });
     await rotated.transport.request("turn/start", {
-      input: [{ type: "text", text: "second authority epoch" }],
+      input: [{ type: "text", text: "$assigned second authority epoch" }, { type: "skill", name: "assigned", path: join(skillRoot, "SKILL.md") }],
     });
     for await (const event of rotated.transport.notifications()) {
       if (event.method === "paperclip/runResult") break;
@@ -8178,7 +6741,7 @@ it("cold-restores a suspended provider session under its durable run binding", a
   } finally {
     await rotated.transport.close();
   }
-  const resumeFrames = (await readFile(tracePath, "utf8"))
+  const requestFrames = (await readFile(tracePath, "utf8"))
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line) as Record<string, unknown>)
@@ -8192,7 +6755,16 @@ it("cold-restores a suspended provider session under its durable run binding", a
           Buffer.from(String(entry.rawBase64), "base64").toString("utf8"),
         ) as Record<string, unknown>,
     )
-    .filter((frame) => frame.method === "thread/resume");
+    ;
+  const resumeFrames = requestFrames.filter((frame) => frame.method === "thread/resume");
+  for (const frame of requestFrames.filter((f) => ["thread/start", "thread/resume"].includes(String(f.method)))) {
+    expect(frame.params).toMatchObject({ config: { "skills.include_instructions": true } });
+  }
+  const turnFrames = requestFrames.filter((f) => f.method === "turn/start");
+  expect(turnFrames).toHaveLength(2);
+  for (const frame of turnFrames) {
+    expect(frame.params).toMatchObject({ input: expect.arrayContaining([{ type: "skill", name: "assigned", path: join(stateDirectory, "codex-home", "skills", "assigned", "SKILL.md") }]) });
+  }
   expect(resumeFrames.length).toBeGreaterThanOrEqual(1);
   for (const frame of resumeFrames) {
     expect(frame).toEqual(
@@ -8870,3 +7442,198 @@ it.each(["claude", "codex"] as const)("keeps the explicitly assigned gateway in 
   expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
   expect(environment.DATABASE_URL).toBeUndefined();
 });
+
+it("resolves explicit skills to the remote provider home and rejects unassigned paths", () => {
+  const context = assignedRuntimeContext("/controller/bundle", "/controller/instructions");
+  const skill = { type: "skill", name: "assigned", path: "/controller/bundle/SKILL.md" };
+  expect(resolveRunnerdCodexSkillInputs([skill], context, "/runner/codex-home")).toEqual([
+    { type: "skill", name: "assigned", path: "/runner/codex-home/skills/assigned/SKILL.md" },
+  ]);
+  expect(resolveRunnerdCodexSkillInputs([], context, "/runner/codex-home")).toEqual([]);
+  for (const inputs of [[{ ...skill, path: "/arbitrary/SKILL.md" }], [{ ...skill, name: "other" }], [skill, skill]]) {
+    expect(() => resolveRunnerdCodexSkillInputs(inputs, context, "/runner/codex-home")).toThrow("unique assigned runtime skill");
+  }
+  expect(() => resolveRunnerdCodexSkillInputs([skill], null, "/runner/codex-home")).toThrow("assigned runtime skill");
+});
+
+
+it("admits only exact live Pi turn controls", () => {
+  expect(parseAcpxTurnControlCapabilities(undefined, "pi")).toEqual({ steering: false, queuedFollowUp: false });
+  expect(parseAcpxTurnControlCapabilities({ steering: true, queuedFollowUp: true }, "pi")).toEqual({ steering: true, queuedFollowUp: true });
+  for (const value of [null, [], {}, { steering: 1, queuedFollowUp: false }, { steering: true, queuedFollowUp: "true" }, { steering: true, queuedFollowUp: true, arbitrary: true }]) {
+    expect(() => parseAcpxTurnControlCapabilities(value, "pi")).toThrow("malformed");
+  }
+  for (const agent of ["cursor", "copilot", "codex", "claude", undefined]) {
+    expect(() => parseAcpxTurnControlCapabilities({ steering: true, queuedFollowUp: false }, agent)).toThrow("cannot advertise");
+  }
+});
+
+async function withPreparedOpenCodeCleanup(input: {
+  run: () => Promise<void>;
+  closeSession: () => Promise<void>;
+  closeTransport: () => Promise<void>;
+  removeRoot: () => Promise<void>;
+  evidence: () => Pick<
+    ReturnType<ReturnType<typeof createCapabilityRunnerdCodexTransport>["evidence"]>,
+    "runnerPid" | "runnerExited" | "runnerExitCode" | "runnerSignal" | "diagnostics"
+  >;
+}): Promise<void> {
+  const failures: { stage: string; error: unknown }[] = [];
+  for (const [stage, operation] of [
+    ["run", input.run],
+    ["session.close", input.closeSession],
+    ["transport.close", input.closeTransport],
+    ["removeRoot", input.removeRoot],
+  ] as const) {
+    try {
+      await operation();
+    } catch (error) {
+      failures.push({ stage, error });
+    }
+  }
+  if (failures.length === 0) return;
+  const evidence = input.evidence();
+  // Never dump stderr, environment values, prompts, paths, or arbitrary
+  // diagnostic text. Keep only bounded process/settlement facts alongside
+  // the original errors, so a finally failure cannot hide the primary one.
+  const summary = {
+    failedStages: failures.map(({ stage }) => stage),
+    runnerStarted: evidence.runnerPid !== null,
+    runnerExited: evidence.runnerExited,
+    runnerExitCode: evidence.runnerExitCode,
+    runnerSignalled: evidence.runnerSignal !== null,
+    diagnosticCount: evidence.diagnostics.length,
+    suspensionRejected: evidence.diagnostics.includes(
+      "runner did not prove durable suspension before checkpoint",
+    ),
+  };
+  throw new AggregateError(
+    failures.map(({ error }) => error),
+    `Prepared OpenCode fixture failed: ${JSON.stringify(summary)}`,
+    { cause: failures[0]!.error },
+  );
+}
+
+it.each([true, false])("preserves prepared OpenCode cleanup errors (primary failure: %s)", async (failRun) => {
+  const primary = new Error("prepared input assertion failed");
+  const cleanup = new NativeSessionCloseUnrecoverableError();
+  const calls: string[] = [];
+  const evidence = {
+    runnerPid: 123,
+    runnerExited: true,
+    runnerExitCode: 1,
+    runnerSignal: null,
+    diagnostics: ["Bearer fixture-secret", "runner did not prove durable suspension before checkpoint"],
+  };
+  const failure = await withPreparedOpenCodeCleanup({
+    run: async () => { calls.push("run"); if (failRun) throw primary; },
+    closeSession: async () => { calls.push("session.close"); throw cleanup; },
+    closeTransport: async () => { calls.push("transport.close"); },
+    removeRoot: async () => { calls.push("removeRoot"); },
+    evidence: () => evidence,
+  }).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect((failure as AggregateError).errors).toEqual(failRun ? [primary, cleanup] : [cleanup]);
+  expect((failure as AggregateError).cause).toBe(failRun ? primary : cleanup);
+  expect(calls).toEqual(["run", "session.close", "transport.close", "removeRoot"]);
+  expect((failure as Error).message).toContain('"suspensionRejected":true');
+  expect((failure as Error).message).not.toContain("fixture-secret");
+});
+
+it("preserves prepared input and completion feedback through runnerd and the real OpenCode proxy boundary", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-prepared-opencode-"));
+  // GitHub-hosted Linux toolcache Node can be group-writable, unlike the AWS
+  // fleet. Qualify an owned copy with strict permissions, never chmod the host
+  // runtime or weaken the launch boundary. Keep macOS's native runtime path
+  // because its signing and dylib lookup can depend on that location.
+  const providerNode = process.platform === "linux" ? join(root, "node") : process.execPath;
+  if (process.platform === "linux") {
+    await cp(process.execPath, providerNode);
+    await chmod(providerNode, 0o500);
+  }
+  // The qualified launch boundary unlinks its executable after exec. Use a
+  // native wrapper, like the real OpenCode binary; a shebang script would need
+  // to reopen the now-unlinked path in its interpreter.
+  const executable = join(root, "fake-opencode");
+  const fixture = resolve("test/fixtures/fake-opencode-server.mjs");
+  execFileSync("cc", ["-x", "c", "-o", executable, "-"], {
+    input: `#include <unistd.h>\n#include <stdlib.h>\nint main(int argc, char **argv) { char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(providerNode)}; args[1] = ${JSON.stringify(fixture)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }`,
+  });
+  // CI may use umask 0002; qualified executables cannot be group-writable.
+  await chmod(executable, 0o755);
+  // Use the production bundler without depending on (or mutating) shared dist
+  // artifacts. The Vitest CI lane builds Rust but does not build TypeScript.
+  const proxy = join(root, "opencode-app-server-proxy.cjs");
+  const proxyBytes = execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import { bundleVerifiedProviderEntrypoints } from "./scripts/build-verified-provider-entrypoints.mjs";
+    const entries = await bundleVerifiedProviderEntrypoints({ write: false });
+    const proxy = entries.find(({ entrypoint }) => entrypoint.name === "opencode-app-server-proxy");
+    process.stdout.write(proxy.verifiedResult.outputFiles[0].contents);
+  `], { maxBuffer: 16 * 1024 * 1024 });
+  await writeFile(proxy, proxyBytes, { mode: 0o755 });
+  const digest = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
+  const runtime = join(root, "opencode");
+  const bundle = createCapabilityRunnerdCodexTransport({
+    provider: "opencode",
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    stateDirectory: join(root, "runner-state"),
+    opencodeRuntimeDirectory: runtime,
+    opencodeCommand: executable,
+    opencodeCommandSha256: digest(executable),
+    opencodeProxyPath: proxy,
+    opencodeProxySha256: digest(proxy),
+    providerNodeCommand: providerNode,
+    providerNodeCommandSha256: digest(providerNode),
+    environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+  });
+  const task = createCodexTaskEnvelope({
+    objective: "Preserve the prepared task.", contractRevision: "prepared-v1",
+    criteria: [{ id: "objective", requirement: "Keep this request unchanged." }],
+  });
+  let completionCalls = 0;
+  const feedback = "Include [Saved document](/PAP/issues/PAP-1#document-plan) in your final response.";
+  const driver = new CodexAppServerDriver({
+    taskEnvelope: task,
+    conversationMode: "prepared",
+    model: "openrouter/deepseek/deepseek-v4-flash-0731",
+    transportFactory: () => bundle.transport,
+    workingDirectoryAuthority: "remote_runner",
+    environment: { PAPERCLIP_WORKSPACE_CWD: root },
+    completionFeedback: async () => {
+      completionCalls += 1;
+      if (completionCalls === 1) throw new Error("Keep the task's required document link in the final response.");
+      return feedback;
+    },
+  });
+  let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
+  const prepared = JSON.stringify({
+    schema: "paperclip.native-model-envelope.v3",
+    task: { prompt: "Keep this completion-feedback request unchanged." },
+    completionContract: { revision: "prepared-v1", criteria: task.completionContract.criteria },
+  });
+  await withPreparedOpenCodeCleanup({
+    run: async () => {
+      session = await driver.openSession({ runId: "prepared-opencode", normalizedSessionId: "prepared-opencode", workingDirectory: root });
+      await session.startTurn({ message: { role: "user", text: prepared } });
+      const events: PrpEvent[] = [];
+      for await (const event of session.events()) {
+        events.push(event);
+        if (event.eventType === "turn.completed") break;
+      }
+      expect(completionCalls).toBe(2);
+      expect(events.filter(event => event.eventType === "run.result.proposed")).toHaveLength(1);
+      const sessionRoots = (await readdir(runtime, { withFileTypes: true })).filter((entry) => entry.isDirectory());
+      expect(sessionRoots).toHaveLength(1);
+      const requests = (await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-prompt-requests.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      expect(requests.map((request) => request.parts)).toEqual([[{ type: "text", text: prepared }]]);
+      const outcomes = JSON.parse(await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-completion-feedback.json"), "utf8"));
+      expect(outcomes).toHaveLength(2);
+      expect(outcomes[0].result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("required document link") }] });
+      expect(outcomes[1].result).toMatchObject({ content: [{ text: expect.stringContaining(feedback) }] });
+    },
+    closeSession: async () => { await session?.close(); },
+    closeTransport: () => bundle.transport.close(),
+    removeRoot: () => rm(root, { recursive: true, force: true }),
+    evidence: () => bundle.evidence(),
+  });
+}, 30_000);
