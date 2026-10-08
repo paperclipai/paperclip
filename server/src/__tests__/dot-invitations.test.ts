@@ -38,7 +38,8 @@ it("atomically resumes one pending invite across retries and never persists a pa
   const service = dotInvitationService(db);
   const [a, b] = await Promise.all([service.create(f.companyId, f.userId), service.create(f.companyId, f.userId)]);
   expect(a.agent.id).toBe(b.agent.id);
-  expect(a.agent.status).toBe("idle");
+  expect(a.agent.status).toBe("paused");
+  expect((await db.select().from(agents).where(eq(agents.id, a.agent.id)))[0]!.lifecycleState).toBe("preparing");
   expect(await service.resume(f.companyId, f.userId)).toMatchObject({ agent: { id: a.agent.id } });
   expect(await service.resume(f.companyId, randomUUID())).toBeNull();
   expect(await db.select().from(agents).where(eq(agents.companyId, f.companyId))).toHaveLength(1);
@@ -91,7 +92,7 @@ it("keeps invite routes company-scoped and denies viewers and agent actors", asy
   expect(result.status, JSON.stringify(result.body)).toBe(200);
   expect(result.body.agent.id).toBeTruthy();
   expect((await request(app).get(path)).body.agent.id).toBe(result.body.agent.id);
-  expect(await db.select().from(agents).where(and(eq(agents.companyId, f.companyId), eq(agents.status, "idle")))).toHaveLength(1);
+  expect(await db.select().from(agents).where(and(eq(agents.companyId, f.companyId), eq(agents.lifecycleState, "preparing")))).toHaveLength(1);
 });
 
 it("does not trust editable agent metadata as an invitation ownership receipt", async () => {

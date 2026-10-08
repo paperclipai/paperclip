@@ -5334,7 +5334,7 @@ export function agentRoutes(
     }
 
     const actor = getActorInfo(req);
-    let agent = await svc.update(id, patchData, {
+    const updateOptions = {
       recordRevision: {
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -5347,10 +5347,11 @@ export function agentRoutes(
         applyExistingWithoutClaim:
           req.actor.type !== "agent" && applyStoredClaudeLogin,
       },
-    });
-    if (requestedStatus === "paused") agent = await svcLifecycle.pauseAgent(id);
-    if (requestedStatus === "idle") agent = await svcLifecycle.resumeAgent(id);
-    if (requestedStatus === "terminated") agent = await svcLifecycle.terminateAgent(id);
+    };
+    const command = requestedStatus === "paused" ? "pause" : requestedStatus === "idle" ? "resume" : requestedStatus === "terminated" ? "terminate" : null;
+    const agent = command
+      ? await svcLifecycle.updateAndTransition(id, command, patchData, updateOptions)
+      : await svc.update(id, patchData, updateOptions);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5380,6 +5381,10 @@ export function agentRoutes(
     await assertCanUpdateAgent(req, existing);
     const agent = await svcLifecycle.retry(id);
     if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
+    const actor = getActorInfo(req);
+    await logActivity(db, { companyId: agent.companyId, actorType: actor.actorType, actorId: actor.actorId,
+      agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
+      action: "agent.lifecycle_retried", entityType: "agent", entityId: agent.id });
     res.json(redactAgentRowForResponse(agent));
   });
 

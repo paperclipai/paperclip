@@ -14,7 +14,6 @@ export function assertRootDatabase(db: Db) {
 }
 
 export function createLifecycleStore(db: Db): LifecycleStore {
-  assertRootDatabase(db);
   const get = (id: string) => db.select().from(agents).where(eq(agents.id, id)).then(rows => rows[0] ?? null);
   return {
     get,

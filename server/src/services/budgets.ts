@@ -971,9 +971,9 @@ export async function withCurrentBudgetEnforcement<T>(db: Db, scope: BudgetEnfor
 
 /** Cancellation is an at-least-once external effect. A failed delivery never
  * rolls back committed spend, and its version remains pending for recovery. */
-export async function deliverBudgetEnforcement(db: Db, hooks: BudgetServiceHooks, companyId?: string) {
+export async function deliverBudgetEnforcement(db: Db, hooks: BudgetServiceHooks, companyId?: string, agentId?: string | null) {
   const { reconcileAgentPolicyHolds } = await import("../modules/agent-lifecycle/index.js");
-  await reconcileAgentPolicyHolds(db, companyId);
+  await reconcileAgentPolicyHolds(db, companyId, agentId);
   if (!hooks.cancelWorkForScope) return;
   const pending = await db.select().from(budgetPolicies).where(and(
     sql`${budgetPolicies.enforcementVersion} > ${budgetPolicies.enforcementDeliveredVersion}`,
@@ -997,9 +997,9 @@ export async function deliverBudgetEnforcement(db: Db, hooks: BudgetServiceHooks
 
 export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
   const reads = budgetServiceInTransaction(db);
-  async function mutate<T>(companyId: string, work: (service: ReturnType<typeof budgetServiceInTransaction>) => Promise<T>) {
+  async function mutate<T>(companyId: string, work: (service: ReturnType<typeof budgetServiceInTransaction>) => Promise<T>, agentId?: string | null) {
     const result = await withAccountingTransaction(db, companyId, (tx, publications) => work(budgetServiceInTransaction(tx, publications)));
-    await deliverBudgetEnforcement(db, hooks, companyId);
+    await deliverBudgetEnforcement(db, hooks, companyId, agentId);
     return result;
   }
   return {
@@ -1024,7 +1024,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
     evaluateCostEvent: (event: typeof costEvents.$inferSelect) =>
       mutate(event.companyId, (service) => service.evaluateCostEvent(event)),
     getInvocationBlock: (companyId: string, agentId: string | null, context?: { issueId?: string | null; projectId?: string | null }) =>
-      mutate(companyId, (service) => service.getInvocationBlock(companyId, agentId, context)),
+      mutate(companyId, (service) => service.getInvocationBlock(companyId, agentId, context), agentId),
     resolveIncident: (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: string) =>
       mutate(companyId, (service) => service.resolveIncident(companyId, incidentId, input, actorUserId)),
   };

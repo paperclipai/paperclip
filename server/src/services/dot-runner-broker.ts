@@ -14,6 +14,7 @@ import { boardAuthService } from "./board-auth.js";
 import { logActivity } from "./activity-log.js";
 import { authorizationService } from "./authorization.js";
 import { agentService } from "./agents.js";
+import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
 import { issueService } from "./issues.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
@@ -43,7 +44,9 @@ function createBroker(db: Db) {
     const [agent] = await db.select().from(agents).where(and(eq(agents.id, binding.agentId), eq(agents.companyId, binding.companyId)));
     const access = grant ? await boardAuthService(db).resolveBoardAccess(grant.userId) : null;
     const membership = access?.memberships.find(m => m.companyId === binding.companyId && m.status === "active");
-    if (!access?.user || !membership || membership.membershipRole === "viewer" || !grant || grant.agentId !== binding.agentId || !agent || ["terminated", "pending_approval", ...(allowPaused ? [] : ["paused"])].includes(agent.status)) throw fail("Agent connection authority is unavailable.");
+    if (!access?.user || !membership || membership.membershipRole === "viewer" || !grant || grant.agentId !== binding.agentId || !agent
+      || ["terminated", "pending_approval"].includes(agent.status)
+      || (!allowPaused && (requireReady ? agent.status === "paused" : !canConfigureAgentConnection(agent)))) throw fail("Agent connection authority is unavailable.");
     return binding;
   }
 
@@ -115,7 +118,7 @@ function createBroker(db: Db) {
       const code = randomBytes(24).toString("base64url");
       const binding = await db.transaction(async tx => {
         const [agent] = await tx.select().from(agents).where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId))).for("update");
-        if (!agent || agent.adapterType !== "paperclip_runner" || agent.adapterConfig.provider !== "openai_dot" || ["pending_approval", "terminated", "paused"].includes(agent.status)) throw fail("Choose an approved Paperclip Runner agent.");
+        if (!agent || agent.adapterType !== "paperclip_runner" || agent.adapterConfig.provider !== "openai_dot" || !canConfigureAgentConnection(agent)) throw fail("Choose an approved Paperclip Runner agent.");
         const [existing] = await tx.select().from(bindings).where(and(eq(bindings.companyId, input.companyId), eq(bindings.agentId, input.agentId), isNull(bindings.revokedAt)));
         if (existing) {
           if (existing.id !== input.replaceBindingId || existing.status !== "pairing" || existing.operatorId !== input.operatorId) {
@@ -143,7 +146,7 @@ function createBroker(db: Db) {
         if (!b || b.status !== "pairing" || !b.pairingExpiresAt || b.pairingExpiresAt <= new Date()) throw fail("Pairing code expired or was consumed.");
         const [agent] = await tx.select().from(agents).where(and(eq(agents.id, b.agentId), eq(agents.companyId, b.companyId))).for("update");
         const [grant] = await tx.select().from(mcpOauthGrants).where(and(eq(mcpOauthGrants.id, principal.grant.id), isNull(mcpOauthGrants.revokedAt))).for("update");
-        if (!grant || grant.agentId || !agent || ["paused", "terminated", "pending_approval"].includes(agent.status)) throw fail("Pairing authority is unavailable.");
+        if (!grant || grant.agentId || !agent || !canConfigureAgentConnection(agent)) throw fail("Pairing authority is unavailable.");
         await tx.update(bindings).set({ grantId: grant.id, status: "connected", pairingCodeHash: null, pairingExpiresAt: null, updatedAt: new Date() }).where(eq(bindings.id, b.id));
         await tx.update(mcpOauthGrants).set({ agentId: b.agentId }).where(eq(mcpOauthGrants.id, grant.id));
         await agentService(tx as unknown as Db).update(agent.id, { adapterConfig: { ...agent.adapterConfig, dotBindingId: b.id } },
@@ -197,9 +200,10 @@ function createBroker(db: Db) {
         const [agent] = await tx.select().from(agents).where(eq(agents.id, b.agentId));
         if (!agent || ["terminated", "pending_approval"].includes(agent.status)) throw fail("Agent connection authority is unavailable.");
         const paused = agent.status === "paused";
+        const visibleKinds: Array<typeof mailbox.$inferSelect.kind> = canConfigureAgentConnection(agent) ? ["authority_revoked", "readiness_challenge"] : ["authority_revoked"];
         const items = await tx.select().from(mailbox).where(and(eq(mailbox.companyId, b.companyId), eq(mailbox.bindingId, b.id),
-          eq(mailbox.bindingGeneration, b.generation), gt(mailbox.id, after), paused ? eq(mailbox.kind, "authority_revoked") : undefined)).orderBy(asc(mailbox.id)).limit(50);
-        // Paused reads expose fences only and never consume hidden task items.
+          eq(mailbox.bindingGeneration, b.generation), gt(mailbox.id, after), paused ? inArray(mailbox.kind, visibleKinds) : undefined)).orderBy(asc(mailbox.id)).limit(50);
+        // Setup reads expose challenges and fences without consuming hidden work.
         return { bindingId: b.id, generation: b.generation, items, nextCursor: paused ? after : items.at(-1)?.id ?? after };
       });
     },
@@ -256,7 +260,7 @@ function createBroker(db: Db) {
       const access = await boardAuthService(db).resolveBoardAccess(b.operatorId);
       return { companyId: b.companyId, agentId: b.agentId, agentName: agent!.name,
         responsibleUser: access.user ? { id: access.user.id, name: access.user.name } : null,
-        permissions: agent!.permissions, ready: state?.status === "ready" && state.subscriptionVerified,
+        permissions: agent!.permissions, ready: agent!.lifecycleState === "ready" && state?.status === "ready" && state.subscriptionVerified,
         assignment: state?.assignment ?? null,
         idle: { read: ["paperclip_dot_capabilities", "paperclip_dot_tasks", "paperclip_dot_inbox"],
           profile: "paperclip_dot_set_avatar",

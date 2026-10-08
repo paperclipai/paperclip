@@ -1,4 +1,5 @@
 import { AgentLifecycleConflict } from "../domain/policy.js";
+import { createLifecycleStore } from "./postgres.js";
 import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "../../../services/budgets.js";
 import { withAccountingTransaction } from "../../../services/accounting-transaction.js";
 import type { ActivityPublication } from "../../../services/activity-log.js";
@@ -714,6 +715,7 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     id: string,
     data: Partial<Omit<typeof agents.$inferInsert, "status" | "pauseReason" | "pausedAt" | "lifecycleState" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation" | "lifecycleParticipants" | "lifecycleHolds">>,
     options?: UpdateAgentOptions,
+    lifecycleCommand?: "pause" | "resume" | "terminate",
   ) {
     for (const field of ["status", "pauseReason", "pausedAt", "lifecycleState", "lifecycleParticipants", "lifecycleHolds", "lifecycleVersion", "lifecycleError", "lifecycleOperation"]) {
       if (Object.prototype.hasOwnProperty.call(data, field)) throw conflict("Use an agent lifecycle command to change lifecycle state");
@@ -881,12 +883,16 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         }
       }
 
+      if (lifecycleCommand) {
+        await createLifecycleStore(txDb).change(id, lifecycleCommand, { reason: lifecycleCommand === "resume" ? "user" : "manual" });
+        return agentRecords(txDb).getById(id);
+      }
       return normalizedUpdated;
     };
 
-    if (normalizedPatch.budgetMonthlyCents !== undefined) {
+    if (normalizedPatch.budgetMonthlyCents !== undefined || lifecycleCommand) {
       const result = await withAccountingTransaction(db, existing.companyId, applyUpdate);
-      await deliverBudgetEnforcement(db, budgetHooks, existing.companyId);
+      if (normalizedPatch.budgetMonthlyCents !== undefined) await deliverBudgetEnforcement(db, budgetHooks, existing.companyId);
       return result;
     }
 
@@ -913,7 +919,8 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
     getById,
 
-    create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId">, options?: CreateAgentOptions) => {
+    create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId" | "lifecycleState" | "lifecycleParticipants" | "lifecycleHolds" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation">, options?: CreateAgentOptions) => {
+      if (Object.keys(data).some(key => key.startsWith("lifecycle"))) throw conflict("Lifecycle fields belong to the lifecycle module");
       if (data.appearance?.customAvatarAssetId) throw unprocessable("Create the agent before uploading its avatar");
       assertBuiltInAgentMetadataMutationAllowed(null, data.metadata, options);
       if (data.reportsTo) {
@@ -1015,7 +1022,9 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       });
     },
 
-    update: updateAgent,
+    update: (id: string, data: Parameters<typeof updateAgent>[1], options?: UpdateAgentOptions) => updateAgent(id, data, options),
+    updateAndTransition: (id: string, command: "pause" | "resume" | "terminate", data: Parameters<typeof updateAgent>[1], options?: UpdateAgentOptions) =>
+      updateAgent(id, data, options, command),
 
     clearError: async (id: string) => {
       const existing = await getById(id);
@@ -1051,7 +1060,11 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       const rows = await db.update(agents).set({ status: "terminated", lifecycleState: "rejected",
         lifecycleVersion: sql`${agents.lifecycleVersion} + 1`, lifecycleOperation: null,
         updatedAt: new Date() }).where(and(eq(agents.id, id), eq(agents.lifecycleState, "pending_approval"))).returning();
-      for (const row of rows) await recordAgentStatusEvent(db, row.companyId, id, "pending_approval", "terminated");
+      for (const row of rows) {
+        await clearPrimaryAgent(db, row.companyId, id);
+        await db.update(agentApiKeys).set({ revokedAt: new Date() }).where(eq(agentApiKeys.agentId, id));
+        await recordAgentStatusEvent(db, row.companyId, id, "pending_approval", "terminated");
+      }
       return rows;
     },
 

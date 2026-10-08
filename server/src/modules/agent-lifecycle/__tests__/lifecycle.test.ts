@@ -6,13 +6,14 @@ import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../adapters/driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, agentApiKeys, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
+import { agents, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createAgentLifecycle, configureAgentLifecycle, agentConfiguration, reconcileAgentPolicyHolds, approvalService } from "../index.js";
 import { createLifecycleStore } from "../adapters/postgres.js";
 import { transition } from "../domain/policy.js";
 import type { LifecycleAgent } from "../application/ports.js";
+import { budgetService } from "../../../services/budgets.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("agent lifecycle commands", () => {
@@ -89,6 +90,37 @@ const support = await getEmbeddedPostgresTestSupport();
     const agent = await hire("pending_approval");
     await expect(db.transaction(async tx => createAgentLifecycle(tx as unknown as Db))).rejects.toThrow("root database");
     await expect(agentConfiguration(db).update(agent.id, { status: "idle" } as never)).rejects.toThrow("lifecycle command");
+    await expect(createAgentLifecycle(db).requestHire(companyId, { name: "Bypass", lifecycleParticipants: [] } as never)).rejects.toThrow("Lifecycle fields");
+  });
+
+  it("clears a rejected hire from the user's primary selection", async () => {
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Proposed", status: "pending_approval" }, { createdByUserId: "board" });
+    const preference = () => db.select().from(userCompanyPreferences).where(eq(userCompanyPreferences.companyId, companyId));
+    expect((await preference())[0]!.primaryAgentId).toBe(agent.id);
+    const approval = await approvalService(db).create(companyId, { type: "hire_agent", payload: { agentId: agent.id }, status: "pending" });
+    await approvalService(db).reject(approval.id, "board");
+    expect((await preference())[0]!.primaryAgentId).toBeNull();
+    expect((await current(agent.id)).lifecycleState).toBe("rejected");
+  });
+
+  it("rolls back configuration and its revision when the requested transition fails", async () => {
+    const lifecycle = createAgentLifecycle(db);
+    const agent = await hire("terminated");
+    await expect(lifecycle.updateAndTransition(agent.id, "resume", { name: "Must not persist" },
+      { recordRevision: { createdByUserId: "board", source: "patch" } })).rejects.toThrow("Cannot resume");
+    expect((await current(agent.id)).name).toBe("Agent");
+    expect(await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agent.id))).toEqual([]);
+    const active = await hire();
+    expect(await lifecycle.updateAndTransition(active.id, "pause", { name: "Paused agent" })).toMatchObject({ name: "Paused agent", lifecycleState: "pausing" });
+  });
+
+  it("limits invocation policy checks to the requested agent", async () => {
+    const one = await hire();
+    const two = await createAgentLifecycle(db).requestHire(companyId, { name: "Another agent" });
+    await db.update(companies).set({ status: "paused" }).where(eq(companies.id, companyId));
+    await budgetService(db).getInvocationBlock(companyId, one.id);
+    expect((await current(one.id)).lifecycleHolds).toContain("company_paused");
+    expect((await current(two.id)).lifecycleHolds).toEqual([]);
   });
 
   it("keeps a manual hold when company policy changes", async () => {
@@ -201,6 +233,8 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body.lifecycleState).toBe("preparing");
     expect(response.body).not.toHaveProperty("lifecycleOperation");
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, agent.id), eq(activityLog.action, "agent.lifecycle_retried"))))
+      .toEqual([expect.objectContaining({ actorType: "user", actorId: "board" })]);
     await request(app({ type: "agent", source: "agent_key", companyId, agentId: agent.id })).post(url).send({}).expect(403);
     const denied = await request(app({ ...board, companyIds: [], memberships: [] })).post(url).send({});
     expect([403, 404]).toContain(denied.status);

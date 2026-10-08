@@ -1,5 +1,6 @@
 import { instanceSettingsService } from "../instance-settings.js";
 import { createHash, randomBytes } from "node:crypto";
+import { canConfigureAgentConnection } from "../../modules/agent-lifecycle/index.js";
 import { and, eq, gt, inArray, isNull, lt, lte, notExists, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Request } from "express";
@@ -274,7 +275,7 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
     if (!binding || binding.status !== "pairing" || binding.grantId || !binding.pairingExpiresAt || binding.pairingExpiresAt <= new Date()) throw invalidGrant();
     if (request.requestedCompanyId && request.requestedCompanyId !== binding.companyId) throw invalidGrant();
     const [agent] = await queryDb.select().from(agents).where(and(eq(agents.id, binding.agentId), eq(agents.companyId, binding.companyId))).for("update");
-    if (!agent || agent.adapterType !== "paperclip_runner" || ["paused", "terminated", "pending_approval"].includes(agent.status)) throw invalidGrant();
+    if (!agent || agent.adapterType !== "paperclip_runner" || !canConfigureAgentConnection(agent)) throw invalidGrant();
     return { request, binding, agent };
   }
 

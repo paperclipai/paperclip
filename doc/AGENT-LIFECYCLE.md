@@ -38,6 +38,8 @@ The existing company approval rules still apply.
 They do not wait for external resource operations.
 `retry` makes a failed step available for another attempt.
 `purgeAgent` removes a record after termination.
+`updateAndTransition` applies a configuration change and a lifecycle command
+in one transaction. A failed command does not save the configuration change.
 
 Approval, invitation, onboarding, and company deletion use named module entry
 points. Their adapters own the related database work.
@@ -96,6 +98,8 @@ Do not treat a host timeout as cancellation of the external effect.
 
 The host uses the existing environment-test code for verification.
 It tests the saved agent configuration and the selected environment.
+The current UI can also run a test before the hire.
+Some adapters can charge for these tests.
 It uses the saved responsible user for managed credentials.
 The host does not grant new credential access for this test.
 A connection pool selects an account for a separate lifecycle test operation.

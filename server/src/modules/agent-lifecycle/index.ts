@@ -6,7 +6,7 @@ import { deleteCompany } from "./adapters/delete-company.js";
 import { createLifecycleDriver } from "./adapters/driver.js";
 import type { PluginWorkerManager } from "../../services/plugin-worker-manager.js";
 import { agents } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BudgetServiceHooks } from "../../services/budgets.js";
 import { agentRecords } from "./adapters/records.js";
@@ -14,7 +14,7 @@ import { assertRootDatabase, createLifecycleStore } from "./adapters/postgres.js
 import { createLifecycleWorker } from "./application/worker.js";
 import type { LifecycleDriver } from "./application/ports.js";
 
-export { AgentLifecycleConflict } from "./domain/policy.js";
+export { AgentLifecycleConflict, canConfigureAgentConnection } from "./domain/policy.js";
 export { hasAgentShortnameCollision, deduplicateAgentName } from "./adapters/records.js";
 export type { LifecycleDriver, LifecycleAgent } from "./application/ports.js";
 
@@ -34,7 +34,7 @@ function kick(db: Db, id: string) {
 }
 
 export function agentConfiguration(db: Db, hooks: BudgetServiceHooks = {}) {
-  const { create, rejectPendingHire, remove, activatePendingApproval, ...configuration } = agentRecords(db, hooks);
+  const { create, rejectPendingHire, remove, activatePendingApproval, updateAndTransition, ...configuration } = agentRecords(db, hooks);
   return configuration;
 }
 
@@ -66,6 +66,11 @@ export function createAgentLifecycle(db: Db, hooks: BudgetServiceHooks = {}) {
       return result;
     },
     rejectHire: (id: string) => change(id, "reject"),
+    async updateAndTransition(...args: Parameters<typeof records.updateAndTransition>) {
+      const agent = await records.updateAndTransition(...args);
+      if (agent) kick(db, agent.id);
+      return agent;
+    },
     pauseAgent: (id: string, reason = "manual") => change(id, "pause", reason),
     resumeAgent: (id: string, reason = "user") => change(id, "resume", reason),
     terminateAgent: (id: string) => change(id, "terminate"),
@@ -105,9 +110,13 @@ export function onboardingSeedService(db: Db) {
   } };
 }
 
-export async function reconcileAgentPolicyHolds(db: Db, companyId?: string) {
+export async function reconcileAgentPolicyHolds(db: Db, companyId?: string, agentId?: string | null) {
+  assertRootDatabase(db);
+  if (agentId === null) return;
   const store = createLifecycleStore(db);
-  const rows = await db.select({ id: agents.id }).from(agents).where(companyId ? eq(agents.companyId, companyId) : undefined);
+  const rows = await db.select({ id: agents.id }).from(agents).where(and(
+    companyId ? eq(agents.companyId, companyId) : undefined, agentId ? eq(agents.id, agentId) : undefined,
+  ));
   for (const row of rows) {
     await store.change(row.id, "reconcile");
     kick(db, row.id);

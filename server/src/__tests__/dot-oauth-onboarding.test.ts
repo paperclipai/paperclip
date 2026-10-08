@@ -4,7 +4,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDb, authUsers, companies, companyMemberships, agents, dotAgentBindings, mcpOauthGrants, mcpOauthRequests, mcpOauthTokens } from "@paperclipai/db";
+import { createDb, authUsers, companies, companyMemberships, agents, dotAgentBindings, dotMailboxItems, mcpEventSubscriptions, mcpOauthGrants, mcpOauthRequests, mcpOauthTokens } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createPublicMcpOAuth, publicMcpConfig, hashMcpSecret, DEVICE_GRANT } from "../services/public-mcp/oauth.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -22,12 +22,12 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
   }, 120000);
   beforeEach(async () => { await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableOpenAiDot: true, enableNativeRunner: false }); });
   afterAll(async () => { await temp?.cleanup(); });
-  async function fixture(authorizationOrigin?: string) {
+  async function fixture(authorizationOrigin?: string, lifecycleState = "ready") {
     const userId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Operator", email: userId + "@example.test", createdAt: new Date(), updatedAt: new Date() });
     const [company] = await db.insert(companies).values({ name: "Dot onboarding", issuePrefix: "DO" + randomBytes(3).toString("hex") }).returning();
     await db.insert(companyMemberships).values({ companyId: company!.id, principalType: "user", principalId: userId, membershipRole: "owner", status: "active" });
-    const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Dot", adapterType: "paperclip_runner", adapterConfig: { provider: "openai_dot" }, status: "active" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Dot", adapterType: "paperclip_runner", adapterConfig: { provider: "openai_dot" }, lifecycleState, status: lifecycleState === "ready" ? "active" : "paused" }).returning();
     const oauth = createPublicMcpOAuth(db, { ...config, ...(authorizationOrigin ? { authorizationOrigin } : {}) });
     const client = await oauth.register({ client_name: "Dot", redirect_uris: [callback], grant_types: ["authorization_code", "refresh_token", DEVICE_GRANT] }, randomUUID());
     const verifier = randomBytes(32).toString("base64url");
@@ -43,6 +43,28 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     return f.oauth.token({ grant_type: "authorization_code", client_id: f.client.client_id,
       redirect_uri: callback, resource: config.resource, code: new URL(consent.redirectUrl).searchParams.get("code"), code_verifier: f.verifier });
   }
+  it.each(["preparing", "verifying"])("allows Dot setup during %s without allowing task access", async (state) => {
+    const f = await fixture(undefined, state);
+    const tokens = await connect(f);
+    const principal = await f.oauth.authenticate(tokens.access_token);
+    const broker = dotRunnerBroker(db);
+    await db.insert(mcpEventSubscriptions).values({ id: randomUUID(), companyId: f.company.id,
+      grantId: principal.grant.id, name: "paperclip.dot.mailbox_updated", bindingId: f.pairing.bindingId,
+      arguments: {}, deliveryMaterial: {}, verifiedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) });
+    await db.insert(dotMailboxItems).values({ companyId: f.company.id, bindingId: f.pairing.bindingId,
+      bindingGeneration: 1, kind: "assignment", sourceEventId: randomUUID(), references: { task: "hidden" } });
+    await broker.challenge(f.company.id, f.agent.id);
+    const inbox = await broker.mailbox(principal);
+    expect(inbox.items.map(item => item.kind)).toEqual(["readiness_challenge"]);
+    expect(inbox.nextCursor).toBe(0);
+    await expect(broker.confirmChallenge(principal, String(inbox.items[0]!.references.challenge))).resolves.toEqual({ status: "ready" });
+    expect(await broker.capabilities(principal)).toMatchObject({ ready: false });
+    await expect(broker.tasks(principal)).rejects.toThrow("authority");
+    await expect(broker.snapshot(f.company.id, f.agent.id, f.pairing.bindingId)).rejects.toThrow("authority");
+    await db.update(agents).set({ lifecycleState: "paused" }).where(eq(agents.id, f.agent.id));
+    expect((await broker.mailbox(principal)).items).toEqual([]);
+    await expect(broker.confirmChallenge(principal, "already-used")).rejects.toThrow("authority");
+  });
   it("refreshes a Dot connection after years of inactivity, still rotates and revokes on replay", async () => {
     const f = await fixture();
     const tokens = await connect(f);
