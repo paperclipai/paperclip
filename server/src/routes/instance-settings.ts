@@ -15,6 +15,7 @@ import {
 } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
+import { readIdleLocalWork } from "../services/idle-local-work.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
@@ -120,7 +121,7 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManager) {
+export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManager, prepareIdleDatabaseBackup?: () => Promise<boolean>) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -305,8 +306,9 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       // members may read process counters, but not instance-wide work state.
       assertCanManageInstanceSettings(req);
       const idleSleepSafety = await readIdleSleepSafety(db, () => heartbeat.getTaskDrainStatus(), Date.now,
-        typeof req.query.ownerId === "string" ? req.query.ownerId : undefined, undefined,
-        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers));
+        typeof req.query.ownerId === "string" ? req.query.ownerId : undefined,
+        () => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup) }),
+        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup);
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
       return;
     }

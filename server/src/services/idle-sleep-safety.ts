@@ -97,12 +97,17 @@ export async function readIdleSleepSafety(
   ownerId?: string,
   inspectLocalWork: () => Promise<IdleLocalWork> = readIdleLocalWork,
   inspectPlugins?: InspectIdlePlugins,
+  prepareBackup?: () => Promise<boolean>,
 ): Promise<IdleSleepSafety> {
   const unknown: IdleSleepSafety = { version: 1, backgroundWork: "unknown" };
   const before = getDrainStatus();
   const localBefore = idleWorkSnapshot();
   if (!sameQuietHold(before, before, now())) return unknown;
   try {
+    // Reject known local blockers before querying (and potentially waking)
+    // the tenant database. Keep the final inspection below as a second fence.
+    const localFirst = await inspectLocalWork();
+    if (localFirst !== "none") return { version: 1, backgroundWork: localFirst };
     let quietPlugins: string[] = [];
     if (inspectPlugins) {
       if (!ownerId || ownerId !== before.ownerId || before.expiresAt === null || localBefore.active !== 0) return unknown;
@@ -124,11 +129,21 @@ export async function readIdleSleepSafety(
     if (blocked === undefined || !sameQuietHold(before, getDrainStatus(), now())) return unknown;
     if (blocked) return { version: 1, backgroundWork: "present" };
     if (!ownerId || ownerId !== before.ownerId || before.expiresAt === null || localBefore.active !== 0) return unknown;
+    let expectedGeneration = localBefore.generation;
+    if (prepareBackup) {
+      if (!sameQuietHold(before, getDrainStatus(), now()) ||
+          idleWorkSnapshot().generation !== expectedGeneration || idleWorkSnapshot().active !== 0) return unknown;
+      // The runner owns exactly one tracked-work receipt through dump,
+      // archive verification and fsync. Its start/finish are the only work
+      // allowed during this scan. Any concurrent work invalidates the dump.
+      if (!(await prepareBackup())) return unknown;
+      expectedGeneration += 2;
+    }
     const local = await inspectLocalWork();
     const after = getDrainStatus();
     const localAfter = idleWorkSnapshot();
     if (!sameQuietHold(before, after, now()) || localAfter.active !== 0 ||
-        localBefore.generation !== localAfter.generation) return unknown;
+        expectedGeneration !== localAfter.generation) return unknown;
     return { version: 1, backgroundWork: local };
 
   } catch {
