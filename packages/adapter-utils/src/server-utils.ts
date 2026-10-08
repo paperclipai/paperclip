@@ -5,7 +5,10 @@ import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
-import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import {
+  REMOTE_EXECUTION_CONTROL_PLANE_SECRET_KEYS,
+  sanitizeRemoteExecutionEnv,
+} from "./remote-execution-env.js";
 import {
   buildLocalProcessSandboxSpawnTarget,
   type LocalProcessSandboxOptions,
@@ -3509,6 +3512,11 @@ export function sanitizeInheritedPaperclipEnv(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   delete env.PAPERCLIPAI_CMD;
+  for (const key of REMOTE_EXECUTION_CONTROL_PLANE_SECRET_KEYS) {
+    for (const candidate of Object.keys(env)) {
+      if (candidate.toUpperCase() === key) delete env[candidate];
+    }
+  }
   for (const key of Object.keys(env)) {
     if (AGENT_IDENTITY_ENV_KEYS.includes(key.toUpperCase())) {
       delete env[key];

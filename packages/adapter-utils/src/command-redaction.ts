@@ -31,6 +31,22 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
   /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
 const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
+const CONNECTION_CREDENTIAL_ENV_KEY =
+  String.raw`(?:DATABASE(?:_MIGRATION)?_URL|CONNECTION_STRING|DSN)(?:_[A-Za-z0-9_]+)?`;
+const CONNECTION_ENV_ASSIGNMENT_RE = new RegExp(
+  String.raw`(\b${CONNECTION_CREDENTIAL_ENV_KEY}\s*=\s*)(?:(\\["'])([\s\S]*?)\2|(["'])([^"'` +
+    "`" +
+    String.raw`\r\n]*)\4|([^\s"'` +
+    "`" +
+    String.raw`]+))`,
+  "gi",
+);
+const URL_WITH_USERINFO_RE =
+  /([a-z][a-z0-9+.-]*:\/\/)(?:[^/\s?#:@]+)(?::[^/\s?#@]*)?@/gi;
+const ESCAPED_NEWLINE_CONNECTION_ENV_RE = new RegExp(
+  String.raw`\\n(${CONNECTION_CREDENTIAL_ENV_KEY}\s*=\s*)([^\s\\]*)`,
+  "gi",
+);
 const COMMAND_JWT_RE =
   /\b[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,}){2}(?:\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})?\b/g;
 /** Recognize encoded JSON headers, without treating dotted identifiers as tokens. */
@@ -71,8 +87,37 @@ function maybeContainsSecretText(command: string) {
   const lower = command.toLowerCase();
   return (
     COMMAND_SECRET_HINTS.some((hint) => lower.includes(hint)) ||
-    command.includes(".")
+    command.includes(".") ||
+    (command.includes("://") && command.includes("@")) ||
+    lower.includes("database_url")
   );
+}
+
+function redactUrlUserinfoAndConnectionAssignments(
+  command: string,
+  redactedValue: string,
+) {
+  return command
+    .replace(
+      CONNECTION_ENV_ASSIGNMENT_RE,
+      (
+        _match,
+        prefix: string,
+        escapedQuote: string | undefined,
+        _escapedValue: string | undefined,
+        rawQuote: string | undefined,
+      ) => {
+        const quote = escapedQuote ?? rawQuote;
+        return quote
+          ? `${prefix}${quote}${redactedValue}${quote}`
+          : `${prefix}${redactedValue}`;
+      },
+    )
+    .replace(URL_WITH_USERINFO_RE, `$1${redactedValue}@`)
+    .replace(
+      ESCAPED_NEWLINE_CONNECTION_ENV_RE,
+      (_match, prefix: string) => `\\n${prefix}${redactedValue}`,
+    );
 }
 
 export function redactCommandText(
@@ -80,7 +125,11 @@ export function redactCommandText(
   redactedValue = REDACTED_COMMAND_TEXT_VALUE,
 ): string {
   if (!maybeContainsSecretText(command)) return command;
-  return command
+  const withConnectionAssignments = redactUrlUserinfoAndConnectionAssignments(
+    command,
+    redactedValue,
+  );
+  return withConnectionAssignments
     .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`)
     .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${redactedValue}$3`)
     .replace(

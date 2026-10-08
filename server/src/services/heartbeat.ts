@@ -606,7 +606,11 @@ import {
   type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
-import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
+import {
+  createRunSecretRedactionRegistry,
+  registerRunSecretValues,
+} from "./run-secret-redaction.js";
+import { redactPersistedRunWritePatch } from "./run-persisted-output-redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolvePaperclipRunnerIdleTimeoutMs,
@@ -9680,6 +9684,7 @@ export function heartbeatService(
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
   const runtimeEnv = options.runtimeEnv ?? process.env;
+  const runSecretRedactions = createRunSecretRedactionRegistry(db);
   const inWorktreeRuntime = isTruthyRuntimeEnvValue(
     runtimeEnv.PAPERCLIP_IN_WORKTREE,
   );
@@ -13194,6 +13199,12 @@ export function heartbeatService(
         },
       };
     }
+    if (patch) {
+      patch = redactPersistedRunWritePatch(
+        patch,
+        collectRunFailureSecretValues(runtimeEnv, [], true),
+      );
+    }
     const updated =
       previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? await terminalizeLegacyExecution({
@@ -13288,6 +13299,13 @@ export function heartbeatService(
           executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
         },
       };
+    }
+    if (patch) {
+      const persistedSecretValues = [
+        ...collectRunFailureSecretValues(runtimeEnv, [], true),
+        ...(failureReport?.secretValues ?? []),
+      ];
+      patch = redactPersistedRunWritePatch(patch, persistedSecretValues);
     }
     const updated =
       previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
@@ -22031,6 +22049,16 @@ export function heartbeatService(
           trustPreset,
         });
       readFailureReportSecrets = () => collectRunFailureSecretValues(resolvedConfig.env, secretKeys);
+      await registerRunSecretValues(
+        runSecretRedactions,
+        agent.companyId,
+        run.id,
+      ).catch((err) => {
+        logger.warn(
+          { err, runId: run.id, agentId: agent.id },
+          "failed to register control-plane run secret redactions",
+        );
+      });
       if (aiBinding) {
         try {
           managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
@@ -25398,6 +25426,22 @@ export function heartbeatService(
             if (managedMcpConfig) {
               adapterContext.paperclipManagedMcp = managedMcpConfig;
             }
+            await registerRunSecretValues(
+              runSecretRedactions,
+              agent.companyId,
+              run.id,
+              [
+                authToken,
+                runtimeTools?.bearerToken,
+                runtimeEnv.PAPERCLIP_GITHUB_BROKER_TOKEN,
+                runtimeEnv.PAPERCLIP_RUNTIME_TOOLS_TOKEN,
+              ],
+            ).catch((err) => {
+              logger.warn(
+                { err, runId: run.id, agentId: agent.id },
+                "failed to register injected run secret redactions",
+              );
+            });
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {

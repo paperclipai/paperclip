@@ -1,3 +1,26 @@
+/** Host control-plane credentials that must never be inherited into agent runs. */
+export const REMOTE_EXECUTION_CONTROL_PLANE_SECRET_KEYS = [
+  "DATABASE_URL",
+  "DATABASE_MIGRATION_URL",
+  "BETTER_AUTH_SECRET",
+  "PAPERCLIP_AGENT_JWT_SECRET",
+  "PAPERCLIP_DECISION_SIGNING_SECRET",
+  "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET",
+  "PAPERCLIP_SECRETS_MASTER_KEY",
+  "OMNIROUTE_API_KEY",
+] as const;
+
+export function readControlPlaneSecretEnvValues(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const values: string[] = [];
+  for (const key of REMOTE_EXECUTION_CONTROL_PLANE_SECRET_KEYS) {
+    const value = readEnvValueCaseInsensitive(env, key);
+    if (typeof value === "string" && value.length > 0) values.push(value);
+  }
+  return values;
+}
+
 const REMOTE_EXECUTION_ENV_IDENTITY_KEYS = new Set([
   "PATH",
   "HOME",

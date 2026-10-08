@@ -12,4 +12,15 @@ describe("sanitizeInheritedPaperclipEnv", () => {
       PATH: "/usr/bin",
     });
   });
+
+  it("strips control-plane database and signing secrets from inherited env", () => {
+    expect(
+      sanitizeInheritedPaperclipEnv({
+        DATABASE_URL: "postgres://synthetic-user:synthetic-pass@example.test/db",
+        BETTER_AUTH_SECRET: "synthetic-auth-secret",
+        PAPERCLIP_AGENT_JWT_SECRET: "synthetic-jwt-secret",
+        PATH: "/usr/bin",
+      }),
+    ).toEqual({ PATH: "/usr/bin" });
+  });
 });

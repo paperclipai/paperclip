@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns } from "@paperclipai/db";
+import {
+  readControlPlaneSecretEnvValues,
+} from "@paperclipai/adapter-utils/remote-execution-env";
 import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
@@ -54,6 +57,29 @@ export function redactRegisteredSecretValues<T>(input: T, values: string[]): T {
       .filter(([key]) => key !== REGISTRY_KEY)
       .map(([key, value]) => [key, redactRegisteredSecretValues(value, values)]),
   ) as T;
+}
+
+export function collectInjectedRunSecretValues(
+  injected: readonly (string | null | undefined)[] = [],
+): string[] {
+  const values = [
+    ...readControlPlaneSecretEnvValues(),
+    ...injected.filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    ),
+  ];
+  return [...new Set(values)].sort((left, right) => right.length - left.length);
+}
+
+export async function registerRunSecretValues(
+  registry: ReturnType<typeof createRunSecretRedactionRegistry>,
+  companyId: string,
+  runId: string,
+  injected: readonly (string | null | undefined)[] = [],
+) {
+  for (const value of collectInjectedRunSecretValues(injected)) {
+    await registry.register(companyId, runId, value);
+  }
 }
 
 export function createRunSecretRedactionRegistry(db: Db) {

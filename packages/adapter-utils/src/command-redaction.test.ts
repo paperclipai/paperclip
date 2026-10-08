@@ -113,4 +113,20 @@ second-line\" status=401`;
     expect(output).not.toContain("MARKERBACKSLASH_B");
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
   });
+
+  it("redacts DATABASE_URL assignments and URL userinfo", () => {
+    const canary = "postgres://synthetic-user:synthetic-pass@example.test/db";
+    const assignment = `DATABASE_URL=${canary}`;
+    expect(redactCommandText(assignment)).not.toContain("synthetic-pass");
+    expect(redactCommandText(canary)).not.toContain("synthetic-pass");
+    expect(redactCommandText(canary)).toContain(`${REDACTED_COMMAND_TEXT_VALUE}@example.test`);
+  });
+
+  it("redacts connection env assignments after a literal \\n prefix", () => {
+    const canary = "postgres://synthetic-user:synthetic-pass@example.test/db";
+    const input = String.raw`\nDATABASE_URL=${canary}`;
+    const output = redactDiagnosticText(input);
+    expect(output).not.toContain("synthetic-pass");
+    expect(output).toContain(String.raw`\nDATABASE_URL=${REDACTED_COMMAND_TEXT_VALUE}`);
+  });
 });
