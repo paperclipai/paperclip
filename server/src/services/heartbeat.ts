@@ -737,6 +737,8 @@ const PENDING_CLEANUP_RETRY_ERROR_KIND = "destroy_failed";
 const PENDING_CLEANUP_SWEEP_ERROR_KIND = "sweep_failed";
 const ORPHANED_ACTIVE_LEASE_SWEEP_ERROR_KIND = "orphaned_active_lease_sweep_failed";
 
+const HEARTBEAT_INTERVAL_SEC_DEFAULT =300;
+
 // Read the stored retry attempt count as a safe value, directly in SQL. A
 // provider can write a malformed value under the attempts key. The type guard
 // makes any non-number value read as zero. The reader computes as numeric and
@@ -4658,6 +4660,15 @@ function sanitizeAgentSessionMessageText(value: unknown): string | null {
     MAX_AGENT_SESSION_MESSAGE_CHARS,
   );
   return redacted.trim().length > 0 ? redacted : null;
+}
+
+function parseNumberLike(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (normalized === "") return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 type ManagedMcpGatewayRunConfig = {
@@ -17099,10 +17110,17 @@ export function heartbeatService(
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
-
+    const enabled =
+      typeof heartbeat.enabled === "string"
+        ? heartbeat.enabled.trim().toLowerCase() === "true"
+        : asBoolean(heartbeat.enabled, false);
     return {
-      enabled: asBoolean(heartbeat.enabled, false),
-      intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+      enabled,
+      intervalSec: Math.max(
+        0,
+        parseNumberLike(heartbeat.intervalSec) ??
+          (enabled ? HEARTBEAT_INTERVAL_SEC_DEFAULT : 0),
+      ),
       wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
       // A Dot binding has one external turn. Competing assignments must retain
       // their queue position instead of claiming a second run that cannot bind.
