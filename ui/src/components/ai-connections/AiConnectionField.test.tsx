@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 import type { AiManagedConnectionSummary } from "@paperclipai/shared";
-import { AiConnectionField } from "./AiConnectionField";
+import { AiConnectionField, aiProviderForAdapter } from "./AiConnectionField";
 import type { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), setDefault: vi.fn() }));
@@ -146,4 +146,8 @@ it("uses the server's connection-manager permission for company-wide access", as
   await mount([], true);
   await click("Connect another account");
   expect(credentialProps).toMatchObject({ allAgents: true });
+});
+
+it("maps agy_local to antigravity provider", () => {
+  expect(aiProviderForAdapter("agy_local")).toBe("antigravity");
 });

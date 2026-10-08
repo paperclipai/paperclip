@@ -46,7 +46,7 @@ export function isAiAuthenticationRepairable(run: AuthenticationFailure): boolea
 /** Provider authentication signals only. Tool authorization and quotas need different repairs. */
 export function isAiAuthenticationFailure(code: string | null | undefined): boolean {
   return Boolean(code && (
-    /^(acpx|claude|codex|grok|opencode|gemini|kimi|pi|cursor)_auth_required$/.test(code)
+    /^(acpx|claude|codex|grok|opencode|gemini|kimi|pi|cursor|agy)_auth_required$/.test(code)
     || ["adapter_auth_missing", "authentication_required", "auth_required", "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated"].includes(code)
   ));
 }

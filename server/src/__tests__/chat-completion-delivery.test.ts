@@ -11,7 +11,7 @@ import { issueService } from "../services/issues.js";
 import { buildLowTrustSourceTrust } from "../services/source-trust.js";
 import { documentService } from "../services/documents.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { chatCompletionDeliveryService, isCompletedOnboardingHandoffWake, prepareChatCompletionTurn, recordChatCompletion, recordChatHandoff } from "../services/chat-completion-delivery.js";
+import { chatCompletionDeliveryService, chatCompletionInstruction, isCompletedOnboardingHandoffWake, prepareChatCompletionTurn, recordChatCompletion, recordChatHandoff } from "../services/chat-completion-delivery.js";
 import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -247,6 +247,83 @@ const support = await getEmbeddedPostgresTestSupport();
     await f.service.deliver(delivery.id); expect(f.wakeup).not.toHaveBeenCalled();
     await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agentId));
     await f.due(); await f.service.deliver(delivery.id); expect(f.wakeup).toHaveBeenCalledOnce();
+  });
+  it("records handoff for native runs via originRunId and nativeIssueId", async () => {
+    const f = await seed();
+    const nativeRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: nativeRunId,
+      companyId: f.companyId,
+      agentId: f.agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: f.sourceId,
+      contextSnapshot: { conversationSessionGeneration: 0 },
+    });
+    const delegatedTask = await issueService(db).create(f.companyId, {
+      title: "Delegated child",
+      status: "todo",
+      createdByAgentId: f.agentId,
+      originRunId: nativeRunId,
+    });
+    expect(await db.select().from(handoffs).where(eq(handoffs.taskId, delegatedTask.id))).toMatchObject([
+      { conversationId: f.sourceId, sessionGeneration: 0 },
+    ]);
+  });
+  it("does not attribute native run tasks to a new session after reset", async () => {
+    const f = await seed();
+    const nativeRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: nativeRunId,
+      companyId: f.companyId,
+      agentId: f.agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: f.sourceId,
+      contextSnapshot: { conversationSessionGeneration: 0 },
+    });
+    await db.update(issues).set({ conversationSessionGeneration: 1 }).where(eq(issues.id, f.sourceId));
+    const delegatedTask = await issueService(db).create(f.companyId, {
+      title: "Delegated child after reset",
+      status: "todo",
+      createdByAgentId: f.agentId,
+      originRunId: nativeRunId,
+    });
+    expect(await db.select().from(handoffs).where(eq(handoffs.taskId, delegatedTask.id))).toHaveLength(0);
+  });
+  it("caps completed onboarding children at 20 and records bounded overflow metadata", async () => {
+    const f = await seed();
+    await db.update(issues).set({
+      conversationAgentId: null,
+      conversationUserId: null,
+      conversationState: null,
+      originKind: "onboarding_first_task",
+      status: "done",
+    }).where(eq(issues.id, f.sourceId));
+
+    for (let i = 0; i < 25; i++) {
+      await db.insert(issues).values({
+        companyId: f.companyId,
+        parentId: f.sourceId,
+        title: `Child ${i}`,
+        status: "done",
+      });
+    }
+
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: f.companyId,
+      agentId: f.agentId,
+      status: "queued",
+      contextSnapshot: { issueId: f.sourceId, wakeReason: "issue_children_completed" },
+    }).returning();
+
+    const prepared = await prepareChatCompletionTurn(db, run);
+    expect(prepared.contextSnapshot?.onboardingCompletion).toBe(true);
+    expect(prepared.contextSnapshot?.chatCompletionUpdates).toHaveLength(20);
+    expect(prepared.contextSnapshot?.onboardingCompletionTruncated).toBe(true);
+    expect(chatCompletionInstruction(prepared.contextSnapshot as Record<string, unknown>)).toContain(
+      "Showing the first 20 completed tasks; additional completed tasks omitted to preserve context window."
+    );
   });
   it("queues onboarding completion behind a busy turn without changing generic handoffs", () => {
     expect(shouldQueueFollowupForRunningIssueWake({ contextSnapshot: { wakeReason: "issue_children_completed", onboardingCompletion: true }, wakeCommentId: null })).toBe(true);

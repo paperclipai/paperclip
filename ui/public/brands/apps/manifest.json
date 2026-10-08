@@ -21,6 +21,12 @@
       "darkAsset": "/brands/apps/anthropic-dark.svg"
     },
     {
+      "slug": "antigravity",
+      "provider": "Antigravity",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/antigravity.svg"
+    },
+    {
       "slug": "arcade",
       "provider": "Arcade",
       "catalogVisible": true,

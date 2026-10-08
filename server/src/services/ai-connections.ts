@@ -746,10 +746,14 @@ export function aiConnectionService(db: Db) {
       if (input.method === "subscription" && input.provider !== "anthropic") {
         try {
           const credential = JSON.parse(verifiedCredential);
-          const claims = credential.tokens?.id_token
+          const rawIdToken =
+            credential.tokens?.id_token ??
+            credential.token?.id_token ??
+            credential.id_token;
+          const claims = rawIdToken
             ? JSON.parse(
                 Buffer.from(
-                  credential.tokens.id_token.split(".")[1],
+                  rawIdToken.split(".")[1],
                   "base64url",
                 ).toString(),
               )

@@ -749,13 +749,17 @@ export function IssueProperties({
   );
   const assigneeOverrideChrome = assigneeAdapterType === "claude_local"
     && assigneeOverrideAdapterConfig.chrome === true;
-  const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(assigneePrimaryAdapterConfig).provider ?? "codex") : undefined;
+  const normalizedRunnerConfig = assigneeAdapterType === "paperclip_runner" ? normalizeLegacyRunnerProvider(assigneePrimaryAdapterConfig) : undefined;
+  const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizedRunnerConfig?.provider ?? "codex") : undefined;
+  const catalogAcpxAgent = assigneeAdapterType === "paperclip_runner" && catalogProvider === "acpx"
+    ? (typeof normalizedRunnerConfig?.acpxAgent === "string" ? normalizedRunnerConfig.acpxAgent : "claude")
+    : undefined;
   const { data: assigneeAdapterModels } = useQuery({
     queryKey:
       companyId && assigneeAdapterType
-        ? queryKeys.agents.adapterModels(companyId, assigneeAdapterType, null, catalogProvider)
+        ? queryKeys.agents.adapterModels(companyId, assigneeAdapterType, null, catalogProvider, catalogAcpxAgent)
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, { provider: catalogProvider }),
+    queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, { provider: catalogProvider, acpxAgent: catalogAcpxAgent }),
     enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides,
   });
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {

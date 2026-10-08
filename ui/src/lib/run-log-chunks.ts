@@ -139,7 +139,10 @@ export function readChunkSeq(value: unknown): number | undefined {
 }
 
 export function isStructuredStreamingTextDelta(chunk: string): boolean {
-  return /"type"\s*:\s*"(?:acpx\.text_delta|text)"/.test(chunk);
+  return (
+    /"type"\s*:\s*"(?:acpx\.text_delta|text)"/.test(chunk) ||
+    (/"event"\s*:\s*"step_update"/.test(chunk) && /"text_delta"/.test(chunk))
+  );
 }
 
 /**

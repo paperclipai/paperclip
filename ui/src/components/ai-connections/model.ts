@@ -24,6 +24,11 @@ export const AI_PROVIDERS: Record<
     subscriptionName: "Grok subscription",
     logo: "/brands/adapters/grok.svg",
   },
+  antigravity: {
+    name: "Antigravity",
+    subscriptionName: "Antigravity subscription",
+    logo: "/brands/apps/antigravity.svg",
+  },
 };
 
 export type AiConnectionSummary = Omit<AiManagedConnectionSummary, "isDefault"> & { isDefault?: boolean };

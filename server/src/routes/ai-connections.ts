@@ -145,6 +145,7 @@ export async function validateAiApiKey(
     openrouter: "https://openrouter.ai/api/v1/key",
     xai: "https://api.x.ai/v1/models",
     google: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+    antigravity: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
   };
   let response: Response;
   try {
@@ -154,19 +155,26 @@ export async function validateAiApiKey(
       headers:
         provider === "google" ? { "x-goog-api-key": key } : provider === "anthropic"
           ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
-          : { Authorization: `Bearer ${key}` },
+          : provider === "antigravity"
+            ? { "x-goog-api-key": key }
+            : { Authorization: `Bearer ${key}` },
     });
   } catch {
     throw unprocessable("Could not verify the account. Try again.", { code: "ai_connection_verification_failed" });
   }
   await response.body?.cancel();
-  if (!response.ok)
+  if (!response.ok) {
+    const rejected =
+      response.status === 401 ||
+      response.status === 403 ||
+      (provider === "antigravity" && response.status === 400);
     throw unprocessable(
-      response.status === 401 || response.status === 403
+      rejected
         ? "The provider rejected this API key."
         : "The provider could not verify this account. Try again.",
-      { code: response.status === 401 || response.status === 403 ? "ai_connection_api_key_rejected" : "ai_connection_verification_failed" },
+      { code: rejected ? "ai_connection_api_key_rejected" : "ai_connection_verification_failed" },
     );
+  }
 }
 
 export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLocalAiLogin>[0] = {}) {
@@ -358,7 +366,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
       const { localSessionId, ...input } = localAiConnectionSchema.parse(req.body);
       assertLocalLoginAvailable();
       const userId = await assertAiConnectionCreateAccess(db, req, companyId, input);
-      if (!localSessionId) throw unprocessable(input.provider === "xai"
+      if (!localSessionId) throw unprocessable(input.provider === "xai" || input.provider === "antigravity"
         ? "Start local sign-in for this connection before connecting."
         : "Start browser sign-in for this connection before connecting.");
       res.status(201).json(await localLogin.complete(companyId, userId, localSessionId, input));

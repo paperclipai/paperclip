@@ -22,6 +22,7 @@ import {
   builtInAgentsApi,
   type BuiltInAgentState,
 } from "@/api/builtInAgents";
+import { DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL } from "@paperclipai/adapter-agy-local";
 import { adapterCuratesModelOrder } from "../lib/model-utils";
 
 /** Adapters whose config completeness is keyed on a non-empty `model`. */
@@ -73,6 +74,9 @@ export function ConfigureBuiltInAgentModal({
       ? (config as Record<string, unknown>).model
       : null;
     if (typeof configuredModel === "string") return configuredModel;
+    if ((state.agent?.adapterType ?? defaultAdapterType(state)) === "agy_local" && definition.key === "summarizer") {
+      return DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL;
+    }
     const defaultModel = state.definition.defaultAdapterConfig?.model;
     return typeof defaultModel === "string" ? defaultModel : "";
   });
@@ -168,7 +172,11 @@ export function ConfigureBuiltInAgentModal({
               value={adapterType}
               onChange={(next) => {
                 setAdapterType(next);
-                setModel("");
+                if (next === "agy_local" && definition.key === "summarizer") {
+                  setModel(DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL);
+                } else {
+                  setModel("");
+                }
               }}
               disabledTypes={disabledTypes}
             />

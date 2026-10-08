@@ -20,4 +20,13 @@ describe("model-specific setup efforts", () => {
     expect(setupEfforts("codex_local", "gpt-6-luna")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(setupEfforts("codex_local", "gpt-6-sol")).toContain("ultra");
   });
+
+  it("omits separate efforts for effort-suffixed Antigravity models and offers standard tiers otherwise", () => {
+    expect(setupEfforts("agy_local", "gemini-3.8-flash-high")).toEqual([]);
+    expect(setupEfforts("agy_local", "gemini-3.6-flash-low")).toEqual([]);
+    expect(setupEfforts("agy_local", "claude-sonnet-4-6")).toEqual(["low", "medium", "high"]);
+    expect(setupEfforts("agy_local", "auto")).toEqual(["low", "medium", "high"]);
+    expect(setupEfforts("agy_local", "")).toEqual([]);
+    expect(setupEfforts("agy_local")).toEqual([]);
+  });
 });

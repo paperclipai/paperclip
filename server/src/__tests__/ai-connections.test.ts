@@ -793,18 +793,27 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       apiKey: "fixture", allAgents: true, agentIds: [],
     }, "google-migration-key");
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0306_familiar_titania.sql", import.meta.url), "utf8");
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await db.transaction(async (tx) => {
+          for (const statement of migration.split("--> statement-breakpoint")) {
+            if (statement.trim()) await tx.execute(sql.raw(statement));
+          }
+        });
+      }
+      const selected = await service.select({
+        companyId, agentId, userId: "bob", adapterType: "gemini_local",
+        binding: { provider: "google", method: "api_key", mode: "responsible_user" },
+      });
+      expect(selected.grant.id).toBe(saved.grantId);
+    } finally {
+      const restoreMigration = await readFile(new URL("../../../packages/db/src/migrations/0318_robust_mister_sinister.sql", import.meta.url), "utf8");
       await db.transaction(async (tx) => {
-        for (const statement of migration.split("--> statement-breakpoint")) {
+        for (const statement of restoreMigration.split("--> statement-breakpoint")) {
           if (statement.trim()) await tx.execute(sql.raw(statement));
         }
       });
     }
-    const selected = await service.select({
-      companyId, agentId, userId: "bob", adapterType: "gemini_local",
-      binding: { provider: "google", method: "api_key", mode: "responsible_user" },
-    });
-    expect(selected.grant.id).toBe(saved.grantId);
   });
 
   it.each([false, true])("reports the authoritative connection-manager capability for custom grants (manager: %s)", async (manager) => {
@@ -1656,6 +1665,13 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const request = vi.fn().mockResolvedValue(new Response("secret-provider-body", { status: 401 }));
     await expect(validateAiApiKey("anthropic", "fixture", request)).rejects.toThrow("rejected");
     expect(request.mock.calls[0][1].redirect).toBe("error");
+
+    const agyBad = vi.fn().mockResolvedValue(new Response("API key not valid", { status: 400 }));
+    await expect(validateAiApiKey("antigravity", "bad-key", agyBad)).rejects.toThrow("rejected");
+    expect(agyBad.mock.calls[0][1].headers).toEqual({ "x-goog-api-key": "bad-key" });
+
+    const agyGood = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    await expect(validateAiApiKey("antigravity", "good-key", agyGood)).resolves.toBeUndefined();
   });
   it("uses the authenticated responsible user for agent-originated configuration and tests", async () => {
     const req = { actor: { type: "agent", agentId, onBehalfOfUserId: "alice" } } as express.Request;
@@ -1908,6 +1924,68 @@ describe("AI connection recovery delivery", () => {
       }
     }, 30000,
   );
+
+  it("provisions settings.json and env for Antigravity API key runtime", async () => {
+    const agyAgentId = randomUUID();
+    await db.insert(agents).values({ id: agyAgentId, companyId, name: "Agy Agent", adapterType: "agy_local" });
+    const account = await service.save(
+      companyId,
+      "alice",
+      { provider: "antigravity", method: "api_key", ownership: "personal", name: "Alice Antigravity API", apiKey: "test-gemini-key", agentIds: [agyAgentId], allAgents: false },
+      "test-gemini-key",
+    );
+    const agyBinding = { provider: "antigravity", method: "api_key", mode: "responsible_user" } as const;
+    const run = await prepareManagedAiRuntime(db, {
+      companyId,
+      agentId: agyAgentId,
+      responsibleUserId: "alice",
+      adapterType: "agy_local",
+      binding: agyBinding,
+      config: { cwd: home },
+    });
+    try {
+      expect(run.config.env?.GEMINI_API_KEY).toBe("test-gemini-key");
+      const settingsPath = path.join(run.home, ".gemini", "antigravity-cli", "settings.json");
+      const settingsContent = JSON.parse(await readFile(settingsPath, "utf8"));
+      expect(settingsContent).toEqual({ modelProvider: "gemini" });
+    } finally {
+      await run.cleanup();
+    }
+  });
+
+  it("provisions antigravity-oauth-token for Antigravity subscription runtime", async () => {
+    const agyAgentId = randomUUID();
+    await db.insert(agents).values({ id: agyAgentId, companyId, name: "Agy Sub Agent", adapterType: "agy_local" });
+    const tokenPayload = JSON.stringify({
+      token: {
+        access_token: "test-oauth-access",
+        refresh_token: "test-oauth-refresh",
+        expiry: new Date(Date.now() + 3600000).toISOString(),
+      },
+    });
+    const account = await service.save(
+      companyId,
+      "bob",
+      { provider: "antigravity", method: "subscription", ownership: "personal", name: "Bob Antigravity Sub", agentIds: [agyAgentId], allAgents: false },
+      tokenPayload,
+    );
+    const agyBinding = { provider: "antigravity", method: "subscription", mode: "responsible_user" } as const;
+    const run = await prepareManagedAiRuntime(db, {
+      companyId,
+      agentId: agyAgentId,
+      responsibleUserId: "bob",
+      adapterType: "agy_local",
+      binding: agyBinding,
+      config: { cwd: home },
+    });
+    try {
+      const tokenPath = path.join(run.home, ".gemini", "antigravity-cli", "antigravity-oauth-token");
+      const tokenOnDisk = await readFile(tokenPath, "utf8");
+      expect(tokenOnDisk).toBe(tokenPayload);
+    } finally {
+      await run.cleanup();
+    }
+  });
 });
 
 function deferredSignal() {

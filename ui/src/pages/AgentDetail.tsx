@@ -1988,12 +1988,15 @@ export function ConfigurationTab({
   const lastAgentRef = useRef(agent);
 
   const catalogProvider = agent.adapterType === "paperclip_runner" ? String(agent.adapterConfig.provider ?? "codex") : undefined;
+  const catalogAcpxAgent = agent.adapterType === "paperclip_runner" && catalogProvider === "acpx"
+    ? (typeof agent.adapterConfig.acpxAgent === "string" ? agent.adapterConfig.acpxAgent : "claude")
+    : undefined;
   const { data: adapterModels } = useQuery({
     queryKey:
       companyId
-        ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider)
+        ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider, catalogAcpxAgent)
         : ["agents", "none", "adapter-models", agent.adapterType],
-    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, { provider: catalogProvider }),
+    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, { provider: catalogProvider, acpxAgent: catalogAcpxAgent }),
     enabled: Boolean(companyId) && content === "runtime",
   });
 

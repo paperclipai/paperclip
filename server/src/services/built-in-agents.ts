@@ -7,7 +7,7 @@ import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } f
 import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, builtInManagedResources, companies, issueThreadInteractions, issues, routines, routineTriggers } from "@paperclipai/db";
-import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
+import { adapterSupportsAiConnections, aiConnectionBindingSchema, isAiConnectionCompatible, syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
@@ -26,6 +26,7 @@ import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
 import { listAdapterModels } from "../adapters/registry.js";
+import { DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL } from "@paperclipai/adapter-agy-local";
 import {
   resourceStatus,
   stableJson,
@@ -314,7 +315,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     defaultInstructions:
       "You are Paperclip's built-in Briefs agent. Produce concise, sourced operational briefs that help the board understand current company work, risks, and next actions.",
     defaultRole: "general",
-    allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "process"],
+    allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "agy_local", "process"],
     defaultBudgetMonthlyCents: 0,
   },
   {
@@ -325,7 +326,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     defaultInstructions:
       "You are Paperclip's built-in Learning agent. Extract durable lessons from completed work, preserve useful patterns, and keep learning artifacts grounded in source context.",
     defaultRole: "general",
-    allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "process"],
+    allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "agy_local", "process"],
     defaultBudgetMonthlyCents: 0,
   },
   {
@@ -349,7 +350,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     },
     defaultStatus: "paused",
     defaultManager: "single_root_agent",
-    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
+    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "agy_local", "process"],
     defaultBudgetMonthlyCents: 0,
     bundle: {
       stockVersion: "2026-07-08",
@@ -417,7 +418,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     },
     defaultStatus: "paused",
     defaultManager: "single_root_agent",
-    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
+    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "agy_local", "process"],
     defaultAdapterType: "claude_local",
     defaultAdapterConfig: {
       model: "claude-haiku-4-5",
@@ -727,9 +728,28 @@ function builtInMetadata(definition: BuiltInAgentDefinition, existing?: Record<s
   });
 }
 
+function defaultAdapterConfigFor(definition: BuiltInAgentDefinition, adapterType: string): Record<string, unknown> {
+  if (adapterType === "agy_local") {
+    const base = definition.defaultAdapterConfig ?? {};
+    if (definition.key === "summarizer") {
+      return {
+        ...base,
+        model: DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL,
+        dangerouslySkipPermissions: false,
+      };
+    }
+    return {
+      ...base,
+      dangerouslySkipPermissions: false,
+    };
+  }
+  return definition.defaultAdapterConfig ?? {};
+}
+
 function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput = {}) {
   const adapterType = input.adapterType ?? defaultAdapterType(definition);
   assertAdapterAllowed(definition, adapterType);
+  const defaults = defaultAdapterConfigFor(definition, adapterType);
   return {
     name: definition.displayName,
     role: definition.defaultRole,
@@ -737,7 +757,9 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
     icon: definition.defaultIcon ?? null,
     capabilities: definition.shortPurpose,
     adapterType,
-    adapterConfig: input.adapterConfig ?? definition.defaultAdapterConfig ?? {},
+    adapterConfig: input.adapterConfig
+      ? { ...defaults, ...input.adapterConfig }
+      : defaults,
     permissions: definition.defaultPermissions ?? {},
     budgetMonthlyCents: input.budgetMonthlyCents ?? definition.defaultBudgetMonthlyCents ?? 0,
   };
@@ -748,7 +770,10 @@ async function assertKnownBuiltInAgentModel(
   input: BuiltInAgentProvisionInput,
 ) {
   const adapterType = input.adapterType ?? defaultAdapterType(definition);
-  const adapterConfig = input.adapterConfig ?? definition.defaultAdapterConfig ?? {};
+  const defaults = defaultAdapterConfigFor(definition, adapterType);
+  const adapterConfig = input.adapterConfig
+    ? { ...defaults, ...input.adapterConfig }
+    : defaults;
   const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
   if (!model || !hasCompleteAdapterConfig(adapterType, adapterConfig)) return;
 
@@ -1754,7 +1779,30 @@ export function builtInAgentService(db: Db) {
         const adapterType = resolvedInput.adapterType ?? existing.adapterType;
         assertAdapterAllowed(definition, adapterType);
         patch.adapterType = adapterType;
-        patch.adapterConfig = resolvedInput.adapterConfig ?? existing.adapterConfig;
+        const defaults = defaultAdapterConfigFor(definition, adapterType);
+        patch.adapterConfig = resolvedInput.adapterConfig
+          ? { ...defaults, ...resolvedInput.adapterConfig }
+          : (adapterType !== existing.adapterType ? defaults : existing.adapterConfig);
+        if (existing.runtimeConfig?.aiConnection) {
+          const supportsAi = adapterSupportsAiConnections(adapterType);
+          const aiBinding = aiConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
+          const isCompatible = Boolean(
+            supportsAi &&
+            aiBinding &&
+            isAiConnectionCompatible(
+              aiBinding,
+              adapterType,
+              (patch.adapterConfig as Record<string, unknown> | undefined)?.model,
+              (patch.adapterConfig as Record<string, unknown> | undefined)?.provider,
+              (patch.adapterConfig as Record<string, unknown> | undefined)?.acpxAgent,
+            ),
+          );
+          if (!supportsAi || !isCompatible) {
+            const nextRc = { ...existing.runtimeConfig };
+            delete nextRc.aiConnection;
+            patch.runtimeConfig = nextRc;
+          }
+        }
       }
       if (!existingPendingApproval && resolvedInput.budgetMonthlyCents !== undefined) {
         patch.budgetMonthlyCents = resolvedInput.budgetMonthlyCents;

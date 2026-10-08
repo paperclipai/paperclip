@@ -4,13 +4,14 @@ import path from "node:path";
 import { readIsolatedClaudeKeychainToken } from "@paperclipai/adapter-claude-local/server";
 import { readCodexAuthInfo, fetchCodexQuota } from "@paperclipai/adapter-codex-local/server";
 import { parseGrokAuthPayload, hasUsableGrokAuthValue } from "@paperclipai/adapter-grok-local/server";
+import { resolveAgyOAuthTokenPath, parseAgyOAuthToken } from "@paperclipai/adapter-agy-local/server";
 import type { AiProvider } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
 /** Read and verify a connection-specific login home. */
 export async function readVerifiedLocalAiCredential(provider: AiProvider, loginHome?: string): Promise<string> {
   if (provider === "openrouter") throw unprocessable("OpenRouter requires an API key.");
-  if (!loginHome) throw unprocessable(provider === "xai"
+  if (!loginHome) throw unprocessable(provider === "xai" || provider === "antigravity"
     ? "Start local sign-in for this connection before connecting."
     : "Start browser sign-in for this connection before connecting.");
   try {
@@ -43,6 +44,32 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
       await fetchCodexQuota(auth.accessToken, auth.accountId);
       return JSON.stringify({ tokens: { access_token: auth.accessToken, refresh_token: auth.refreshToken, id_token: auth.idToken, account_id: auth.accountId }, last_refresh: auth.lastRefresh });
     }
+    if (provider === "antigravity") {
+      let raw: string | null = null;
+      if (loginHome) {
+        for (const candidate of [
+          path.join(loginHome, ".gemini", "antigravity-cli", "antigravity-oauth-token"),
+          path.join(loginHome, "antigravity-oauth-token"),
+          path.join(loginHome, ".gemini", "antigravity", "antigravity-oauth-token"),
+        ]) {
+          try {
+            raw = await fs.readFile(candidate, "utf8");
+            if (raw) break;
+          } catch {
+            continue;
+          }
+        }
+      } else {
+        const ambientPath = resolveAgyOAuthTokenPath();
+        if (ambientPath) {
+          raw = await fs.readFile(ambientPath, "utf8").catch(() => null);
+        }
+      }
+      if (!raw) throw new Error("Missing login");
+      const parsed = parseAgyOAuthToken(raw);
+      if (!parsed.valid) throw new Error("Invalid or expired login");
+      return raw;
+    }
     const raw = await fs.readFile(path.join(loginHome!, "auth.json"), "utf8");
     const payload = parseGrokAuthPayload(JSON.parse(raw));
     if (!payload || !hasUsableGrokAuthValue(payload.value)) throw new Error("Missing login");
@@ -55,7 +82,7 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
     return raw;
   } catch {
     // Provider/CLI errors may contain credential material; never return them.
-    throw unprocessable(provider === "xai"
+    throw unprocessable(provider === "xai" || provider === "antigravity"
       ? "Could not verify the local subscription. Run the sign-in command shown for this connection, finish signing in, then try Connect again."
       : "Could not verify the local subscription. Finish browser sign-in for this connection, then try Connect again.");
   }

@@ -104,14 +104,17 @@ export function ComposerRunSettingsPicker({
   const agent = agents.get(agentId);
   const modelSupported = supportsComposerModel(agent);
   const provider = composerCatalogProvider(agent);
+  const acpxAgent = agent?.adapterType === "paperclip_runner" && provider === "acpx"
+    ? (typeof agent.adapterConfig.acpxAgent === "string" ? agent.adapterConfig.acpxAgent : "claude")
+    : undefined;
   const binding = aiRuntimeConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
   const poolId = binding?.mode === "router" ? binding.connectionId : undefined;
   const { data: fetchedModels = [], isPending: modelsPending } = useQuery({
     queryKey: agent && modelSupported
-      ? [...queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider), poolId ?? null]
+      ? [...queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider, acpxAgent), poolId ?? null]
       : ["agents", "composer-models", "none"],
     queryFn: () => agentsApi.adapterModels(companyId, agent!.adapterType, {
-      environmentId: agent!.defaultEnvironmentId ?? null, provider, poolId,
+      environmentId: agent!.defaultEnvironmentId ?? null, provider, ...(acpxAgent ? { acpxAgent } : {}), poolId,
     }),
     enabled: Boolean(agent && modelSupported && !modelOptionsOverride),
   });

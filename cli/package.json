@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
+    "@paperclipai/adapter-agy-local": "workspace:*",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-cloud": "workspace:*",

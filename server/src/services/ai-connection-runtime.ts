@@ -18,6 +18,7 @@ import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
+import { decideAgyAuthMerge } from "@paperclipai/adapter-agy-local/server";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -39,9 +40,14 @@ export const AI_AUTH_ENV_KEYS = [
   "OPENROUTER_API_KEY",
   "XAI_API_KEY",
   "GROK_API_KEY",
+  "GEMINI_API_KEY",
+  "AGY_API_KEY",
+  "ANTIGRAVITY_API_KEY",
   "CODEX_HOME",
   "GROK_HOME",
   "CLAUDE_CONFIG_DIR",
+  "ANTIGRAVITY_CLI_HOME",
+  "GEMINI_CLI_HOME",
   "OPENCODE_AUTH_JSON",
   "OPENCODE_CONFIG_CONTENT",
   "OPENCODE_CONFIG",
@@ -176,6 +182,7 @@ done`,
 
 function managedAiHomeEnvironment(home: string): Record<string, string> {
   const providerHome = path.join(home, "provider");
+  const agyCliHome = path.join(home, ".gemini", "antigravity-cli");
   return {
     HOME: home,
     XDG_CONFIG_HOME: path.join(home, "config"),
@@ -183,6 +190,8 @@ function managedAiHomeEnvironment(home: string): Record<string, string> {
     CODEX_HOME: providerHome,
     GROK_HOME: providerHome,
     CLAUDE_CONFIG_DIR: providerHome,
+    ANTIGRAVITY_CLI_HOME: agyCliHome,
+    GEMINI_CLI_HOME: agyCliHome,
     HERMES_HOME: providerHome,
   };
 }
@@ -310,11 +319,18 @@ export async function prepareManagedAiRuntime(
       ...Object.fromEntries(AI_AUTH_ENV_KEYS.map((key) => [key, ""])),
       ...managedAiHomeEnvironment(home),
     };
+    const agyCliHome = path.join(home, ".gemini", "antigravity-cli");
+    if (input.binding.provider === "antigravity") {
+      await mkdir(agyCliHome, { recursive: true, mode: 0o700 });
+    }
     const capability =
       AI_CONNECTION_CAPABILITIES[input.binding.provider].methods[
         selection.attribution.method
       ]!;
-    const authFile = path.join(providerHome, "auth.json");
+    const authFile =
+      input.binding.provider === "antigravity"
+        ? path.join(agyCliHome, "antigravity-oauth-token")
+        : path.join(providerHome, "auth.json");
     if (harness === "codex_local")
       await writeFile(
         path.join(providerHome, "config.toml"),
@@ -323,6 +339,16 @@ export async function prepareManagedAiRuntime(
       );
     if (!routing && subscriptionFile) await writeFile(authFile, value, { mode: 0o600 });
     else if (!routing) env[capability.envKey] = value;
+    if (
+      input.binding.provider === "antigravity" &&
+      selection.attribution.method === "api_key"
+    ) {
+      await writeFile(
+        path.join(agyCliHome, "settings.json"),
+        JSON.stringify({ modelProvider: "gemini" }, null, 2),
+        { mode: 0o600 },
+      );
+    }
     if (
       !routing && input.binding.provider === "openai" &&
       selection.attribution.method === "api_key"
@@ -428,9 +454,11 @@ export async function prepareManagedAiRuntime(
                   ? await decideCodexAuthMerge(authFile, destination, {
                       errorLabel: "AI account refresh",
                     })
-                  : await decideGrokAuthMerge(authFile, destination, {
-                      errorLabel: "AI account refresh",
-                    });
+                  : input.binding.provider === "xai"
+                    ? await decideGrokAuthMerge(authFile, destination, {
+                        errorLabel: "AI account refresh",
+                      })
+                    : await decideAgyAuthMerge(authFile, destination);
               if (decision !== 10) return;
               await secretService(tx).rotate(
                 ref.secretId,

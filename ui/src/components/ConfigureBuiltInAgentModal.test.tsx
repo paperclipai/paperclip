@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ConfigureBuiltInAgentModal } from "./ConfigureBuiltInAgentModal";
 import type { BuiltInAgentState } from "@/api/builtInAgents";
+import { DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL } from "@paperclipai/adapter-agy-local";
 
 const provisionMock = vi.hoisted(() => vi.fn());
 const updateMock = vi.hoisted(() => vi.fn());
@@ -187,6 +188,23 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
       adapterType: "claude_local",
       adapterConfig: { model: "claude-haiku-4-5" },
     });
+  });
+
+  it("prefills DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL for summarizer with agy_local", async () => {
+    provisionMock.mockResolvedValue({ ...makeState(), status: "ready", agentId: "a1" });
+    await renderModal(makeState({
+      definition: {
+        ...makeState().definition,
+        key: "summarizer",
+        displayName: "Summarizer",
+        defaultAdapterType: "agy_local",
+      },
+    }));
+
+    expect(document.body.querySelector('[data-testid="adapter-dropdown"]')?.getAttribute("data-value"))
+      .toBe("agy_local");
+    expect(document.body.querySelector<HTMLInputElement>('[data-testid="model-input"]')?.value)
+      .toBe(DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL);
   });
 
   it("shows a visible error and blocks provisioning for an unknown model", async () => {

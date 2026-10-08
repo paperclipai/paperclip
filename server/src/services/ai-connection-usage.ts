@@ -1,5 +1,6 @@
 import {
   supportsAiConnectionUsage,
+  type AiProvider,
   type AiConnectionMetadata,
   type AiConnectionUsage,
   type AiConnectionUsageLimit,
@@ -315,7 +316,12 @@ async function openrouter(credential: string, request: typeof fetch): Promise<Ob
   return { source: "openrouter_key", planType: null, limits, overage: null };
 }
 
-const probes = { openai: codex, anthropic: claude, xai: grok, openrouter };
+const probes: Partial<Record<AiProvider, (credential: string, request: typeof fetch) => Promise<Observation>>> = {
+  openai: codex,
+  anthropic: claude,
+  xai: grok,
+  openrouter,
+};
 const messages: Record<NonNullable<AiConnectionUsage["errorCode"]>, string> = {
   unsupported: "This provider does not expose usage limits through this sign-in method.",
   connection_unavailable: "Reconnect or enable this AI connection before checking usage.",
@@ -332,11 +338,12 @@ export async function probeAiConnectionUsage(
   options: { request?: typeof fetch } = {},
 ): Promise<Omit<AiConnectionUsage, "connectionId" | "grantId">> {
   const base = { ...metadata, checkedAt: new Date().toISOString(), source: null, planType: null, limits: [], overage: null };
-  if (metadata.provider === "google" || !supportsAiConnectionUsage(metadata.provider, metadata.method)) {
+  const probe = probes[metadata.provider];
+  if (metadata.provider === "google" || !supportsAiConnectionUsage(metadata.provider, metadata.method) || !probe) {
     return { ...base, status: "unsupported", errorCode: "unsupported", message: messages.unsupported };
   }
   try {
-    const observation = await probes[metadata.provider](credential, options.request ?? fetch);
+    const observation = await probe(credential, options.request ?? fetch);
     if (!observation.limits.some((entry) => entry.usedPercent != null || entry.used != null || entry.limit != null || entry.limitReached != null || entry.allowed != null)
       && !Object.values(observation.overage ?? {}).some((value) => typeof value === "number" || typeof value === "boolean")) throw new ProbeFailure("invalid_response");
     return { ...base, ...observation, status: "ok", checkedAt: new Date().toISOString() };

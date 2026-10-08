@@ -88,7 +88,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
     {loading ? <p role="status" className="text-sm text-muted-foreground">Preparing sign-in…</p> : <AgentProviderConnection
       key={environmentId ?? "local"}
       companyId={companyId}
-      adapterType={provider === "anthropic" ? "claude_local" : provider === "xai" ? "grok_local" : "codex_local"}
+      adapterType={provider === "anthropic" ? "claude_local" : provider === "xai" ? "grok_local" : provider === "antigravity" ? "agy_local" : "codex_local"}
       environmentId={environmentId}
       canLogin={canLogin}
       localEnvironment={environment?.driver === "local"}

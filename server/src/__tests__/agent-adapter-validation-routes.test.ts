@@ -345,11 +345,16 @@ describe("agent routes adapter validation", () => {
     const refresh = vi.spyOn(adapters, "refreshAdapterModels").mockImplementation(async (type) => [{ id: `${type}-fresh`, label: type }]);
     try {
       const app = await createApp();
-      for (const [provider, adapter] of [["acpx", "claude_local"], ["codex", "codex_local"], ["opencode", "opencode_local"]]) {
-        const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=${provider}`));
+      for (const [provider, adapter, extraQuery] of [
+        ["acpx", "claude_local", ""],
+        ["acpx", "grok_local", "&acpxAgent=grok"],
+        ["codex", "codex_local", ""],
+        ["opencode", "opencode_local", ""],
+      ]) {
+        const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=${provider}${extraQuery}`));
         expect(res.status).toBe(200);
         expect(res.body).toEqual([{ id: adapter, label: adapter }]);
-        const refreshed = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=${provider}&refresh=true`));
+        const refreshed = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=${provider}${extraQuery}&refresh=true`));
         expect(refreshed.status).toBe(200);
         expect(refreshed.body).toEqual([{ id: `${adapter}-fresh`, label: adapter }]);
       }
@@ -464,6 +469,64 @@ describe("agent routes adapter validation", () => {
     // the service invariant sees the removal.
     const env = ((patch.adapterConfig as Record<string, unknown>).env as Record<string, unknown> | undefined) ?? {};
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  it("drops stale AI connection without 422 when updating agent to an adapter that does not support AI connections", async () => {
+    // agy_local supports AI connections since the Antigravity AI-connection
+    // support landed, so the unsupported-harness example here is `process`.
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId,
+      companyId: "company-1",
+      name: "Claude",
+      urlKey: "claude",
+      role: "engineer",
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-haiku-4-5" },
+      runtimeConfig: {
+        aiConnection: {
+          provider: "anthropic",
+          method: "api_key",
+          mode: "responsible_user",
+        },
+      },
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    mockAgentService.update.mockResolvedValue({
+      id: agentId,
+      companyId: "company-1",
+      adapterType: "process",
+      adapterConfig: { env: {} },
+      runtimeConfig: {},
+    });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({
+          adapterType: "process",
+          adapterConfig: { env: {} },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(patch.adapterType).toBe("process");
+    const runtimeConfig = patch.runtimeConfig as Record<string, unknown> | undefined;
+    expect(runtimeConfig?.aiConnection).toBeUndefined();
   });
 
   it("isolates CODEX_HOME when updating a codex_local agent to set its own OPENAI_API_KEY", async () => {

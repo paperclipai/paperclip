@@ -17,7 +17,7 @@ import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
-import { isAiConnectionCompatible } from "@paperclipai/shared";
+import { isAiConnectionCompatible, adapterSupportsAiConnections } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { canRetryStoppedRun } from "../services/cancelled-native-startup.js";
@@ -123,6 +123,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import { evaluateAgyCredentialReadiness } from "@paperclipai/adapter-agy-local/server";
 import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@paperclipai/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
@@ -3385,6 +3386,7 @@ export function agentRoutes(
       return;
     }
     const provider = asNonEmptyString(req.query.provider);
+    const acpxAgent = asNonEmptyString(req.query.acpxAgent);
     if (type === "opencode_local" && provider === "openrouter") {
       res.json(await listOpenRouterModels(refresh));
       return;
@@ -3393,9 +3395,11 @@ export function agentRoutes(
       throw unprocessable("Unknown Paperclip Runner provider");
     }
     const modelAdapterType = type === "paperclip_runner"
-      ? provider === "acpx" || provider === "claude_managed" ? "claude_local"
+      ? provider === "acpx"
+        ? acpxAgent === "grok" ? "grok_local" : "claude_local"
+        : provider === "claude_managed" ? "claude_local"
         : provider === "opencode" ? "opencode_local"
-          : provider === "aws_agentcore" ? type : "codex_local"
+        : provider === "aws_agentcore" ? type : "codex_local"
       : type;
     if (modelAdapterType === "opencode_local" && environment && environment.driver !== "local") {
       res.json(requireServerAdapter(modelAdapterType).models ?? []);
@@ -3501,7 +3505,7 @@ export function agentRoutes(
       return result;
     }
     if (!result.checks.some(check => check.code.includes("hello_probe"))) {
-      const providerAdapter = context.config.managedAiRouting ? aiRoutingHarness(adapterType, context.config.provider, context.config.acpxAgent) : { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local", google: "gemini_local" }[binding.provider];
+      const providerAdapter = context.config.managedAiRouting ? aiRoutingHarness(adapterType, context.config.provider, context.config.acpxAgent) : { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local", google: "gemini_local", antigravity: "agy_local" }[binding.provider];
       const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });
       result.checks.push(...probe.checks);
       result.status = probe.status === "fail" ? "fail" : result.status === "warn" || probe.status === "warn" ? "warn" : "pass";
@@ -3886,9 +3890,55 @@ export function agentRoutes(
     return readiness.ready ? "present" : "absent";
   }
 
+  // The agy_local branch of the auth-signal read. Checks GEMINI_API_KEY, AGY_API_KEY,
+  // or ANTIGRAVITY_API_KEY in the environment bindings for non-local environments,
+  // or evaluateAgyCredentialReadiness against host-local OAuth tokens / env keys for local environments.
+  async function evaluateAgyAuthSignal(
+    req: Request,
+    companyId: string,
+    environmentId: string | null,
+  ): Promise<AdapterAuthSignal> {
+    if (environmentId) {
+      const environment = await environmentsSvc.getById(environmentId);
+      if (environment && environment.driver !== "local") {
+        const environmentEnv = Object.fromEntries(
+          Object.entries(parseObject(environment.envVars)).filter(
+            ([key]) => !isForbiddenConfigEnvKey(key),
+          ),
+        );
+        const bindingsToResolve: Record<string, unknown> = {};
+        for (const key of ["GEMINI_API_KEY", "AGY_API_KEY", "ANTIGRAVITY_API_KEY"]) {
+          if (environmentEnv[key] !== undefined) {
+            bindingsToResolve[key] = environmentEnv[key];
+          }
+        }
+        if (Object.keys(bindingsToResolve).length > 0) {
+          const resolution = await secretsSvc.resolveEnvBindings(
+            companyId,
+            bindingsToResolve,
+            buildActorSecretContext(req, { consumerType: "environment", consumerId: environmentId }),
+          );
+          if (
+            asNonEmptyString(resolution.env.GEMINI_API_KEY) ||
+            asNonEmptyString(resolution.env.AGY_API_KEY) ||
+            asNonEmptyString(resolution.env.ANTIGRAVITY_API_KEY)
+          ) {
+            return "present";
+          }
+        }
+        return "unknown";
+      }
+    }
+
+    const readiness = evaluateAgyCredentialReadiness({
+      env: process.env,
+    });
+    return readiness.ready ? "present" : "absent";
+  }
+
   // The cheap host-local authentication signal for one adapter type. The route
   // reads host-local state only: a stored Claude login, a resolved environment
-  // env var, or the local Codex credential readiness check. It leases no
+  // env var, or the local Codex/Antigravity credential readiness check. It leases no
   // sandbox, starts no shell command, and starts no model request. The two
   // access gates below run before any read, so a caller who cannot create
   // agents for the company and a foreign environment both fail closed before
@@ -3911,6 +3961,8 @@ export function agentRoutes(
           status = await evaluateClaudeAuthSignal(req, companyId, environmentId);
         } else if (type === "codex_local") {
           status = await evaluateCodexAuthSignal(req, companyId, environmentId);
+        } else if (type === "agy_local") {
+          status = await evaluateAgyAuthSignal(req, companyId, environmentId);
         }
       } catch {
         // A failed read is never a claim that the credential is absent. Report
@@ -5792,14 +5844,31 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
-    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
-    if (nextAiBinding) {
-      await assertCanUpdateAgent(req, existing);
-      const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
-      const aiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-      if (nextAiBinding.mode !== "router" && !isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
-      if (changed || (nextAiBinding.mode === "router" && requestedAdapterType !== existing.adapterType)) await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding, (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null, true);
+    const aiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
+    const targetSupportsAi = adapterSupportsAiConnections(
+      requestedAdapterType,
+      aiConfig.provider,
+      aiConfig.acpxAgent,
+    );
+    if (!targetSupportsAi) {
+      // Switching to a harness with no AI-connection support drops the stale
+      // binding instead of failing the update (it can never be used there).
+      if (existing.runtimeConfig.aiConnection || requestedRuntimeConfig?.aiConnection) {
+        requestedRuntimeConfig = {
+          ...(requestedRuntimeConfig ?? existing.runtimeConfig),
+        };
+        delete requestedRuntimeConfig.aiConnection;
+        patchData.runtimeConfig = requestedRuntimeConfig;
+      }
+    } else {
+      if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
+      const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
+      if (nextAiBinding) {
+        await assertCanUpdateAgent(req, existing);
+        const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
+        if (nextAiBinding.mode !== "router" && !isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
+        if (changed || (nextAiBinding.mode === "router" && requestedAdapterType !== existing.adapterType)) await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding, (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null, true);
+      }
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
