@@ -126,6 +126,11 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { completeAutonomousAction, markAutonomousActionDispatched } from "@paperclipai/db";
+import {
+  admitHeartbeatAutonomousAction,
+  assertHeartbeatAutonomousDispatchOwnership,
+} from "./heartbeat-autonomous-admission.js";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   CHAT_PROVIDERS,
@@ -25452,9 +25457,38 @@ export function heartbeatService(
             }
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
-                (markDispatchStarted) => {
+                async (markDispatchStarted) => {
+                  // Consume the autonomous ledger only after the atomic
+                  // resolved-interaction gate has accepted this handoff. A
+                  // lost-race/denied gate must leave the action retryable.
+                  const autonomousAdmission = await admitHeartbeatAutonomousAction({
+                    db,
+                    adapterType: agent.adapterType,
+                    companyId: agent.companyId,
+                    workerId: agent.id,
+                    executionId: run.id,
+                    runId: run.id,
+                    context: adapterContext,
+                  });
+                  // Ledger admission awaits I/O. Revalidate cancellation and
+                  // durable ownership after that await, immediately before the
+                  // adapter can issue an external request.
+                  const currentRun = await getRun(run.id);
+                  try {
+                    assertHeartbeatAutonomousDispatchOwnership({
+                      aborted: executionControl.controller.signal.aborted,
+                      currentRun,
+                      companyId: agent.companyId,
+                      agentId: agent.id,
+                    });
+                  } catch {
+                    if (!executionControl.controller.signal.aborted) {
+                      executionControl.controller.abort(new Error("Run stopped before adapter execution"));
+                    }
+                    throw conflict("Run ownership or cancellation changed before adapter execution");
+                  }
                   legacyAdapterEntered = true;
-                  return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
+                  const result = await withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
                     getFreshSessionHandoff,
                     agentIdentity,
                     runId: run.id,
@@ -25490,7 +25524,12 @@ export function heartbeatService(
                       );
                     },
                     onProviderStopped: collectStoppedInstructions,
-                    onDispatch: markDispatchStarted,
+                    onDispatch: () => {
+                      markDispatchStarted();
+                      if (autonomousAdmission.outcome === "CONSUMED") {
+                        void markAutonomousActionDispatched(db, agent.companyId, autonomousAdmission.actionId);
+                      }
+                    },
                     signal: executionControl.controller.signal,
                     ...(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? {
                       stopRemoteStartup: async () => {
@@ -25533,6 +25572,10 @@ export function heartbeatService(
                     },
                     authToken: authToken ?? undefined,
                   }));
+                  if (autonomousAdmission.outcome === "CONSUMED") {
+                    await completeAutonomousAction(db, agent.companyId, autonomousAdmission.actionId);
+                  }
+                  return result;
                 },
               );
             if (!guardedDispatch.dispatched) return;

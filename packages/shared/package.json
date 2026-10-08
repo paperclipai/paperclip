@@ -15,6 +15,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./telemetry": "./src/telemetry/index.ts",
+    "./testing/autonomous-disposable-fixture.js": "./src/testing/autonomous-disposable-fixture.ts",
     "./*": "./src/*.ts"
   },
   "publishConfig": {
@@ -27,6 +28,10 @@
       "./telemetry": {
         "types": "./dist/telemetry/index.d.ts",
         "import": "./dist/telemetry/index.js"
+      },
+      "./testing/autonomous-disposable-fixture.js": {
+        "types": "./dist/testing/autonomous-disposable-fixture.d.ts",
+        "import": "./dist/testing/autonomous-disposable-fixture.js"
       },
       "./*": {
         "types": "./dist/*.d.ts",

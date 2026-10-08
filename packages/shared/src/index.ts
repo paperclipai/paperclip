@@ -2853,3 +2853,8 @@ export * from "./connection-instructions.js";
 export * from "./customer-success.js";
 export * from "./decision-models.js";
 export { updatePrimaryAgentSchema, type UpdatePrimaryAgent, type PrimaryAgentPreference } from "./primary-agent.js";
+export * from "./autonomous-state-contract.js";
+export * from "./autonomous-retry-policy.js";
+export * from "./autonomous-merge-gate.js";
+export * from "./autonomous-idempotency-contract.js";
+export * from "./autonomous-risk-policy.js";

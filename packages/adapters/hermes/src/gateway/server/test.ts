@@ -3,6 +3,10 @@ import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import {
+  mapHermesGatewayHealthFailure,
+  parseHermesGatewayConfig,
+} from "./autonomous-contract.js";
 import { asString } from "@paperclipai/adapter-utils/server-utils";
 import {
   allowsInsecureRemoteHttp,
@@ -121,6 +125,15 @@ export async function testEnvironment(
     });
   }
 
+  const configValidation = parseHermesGatewayConfig(ctx.config);
+  if (!configValidation.ok && !checks.some((check) => check.level === "error")) {
+    checks.push({
+      code: configValidation.errorCode,
+      level: "error",
+      message: configValidation.errorMessage,
+    });
+  }
+
   if (checks.some((check) => check.level === "error") || !parsed || !apiKey) {
     return {
       adapterType: ctx.adapterType,
@@ -141,7 +154,7 @@ export async function testEnvironment(
       signal: AbortSignal.timeout(2_000),
     });
     checks.push({
-      code: response.ok ? "hermes_gateway_health_ok" : "hermes_gateway_health_failed",
+      code: response.ok ? "hermes_gateway_health_ok" : mapHermesGatewayHealthFailure({ status: response.status }).errorCode,
       level: response.ok ? "info" : "error",
       message: response.ok
         ? "Hermes Gateway health endpoint is reachable."
@@ -152,7 +165,7 @@ export async function testEnvironment(
     });
   } catch (err) {
     checks.push({
-      code: "hermes_gateway_health_unreachable",
+      code: mapHermesGatewayHealthFailure({ unreachable: true }).errorCode,
       level: "error",
       message: "Could not reach Hermes Gateway health endpoint.",
       detail: errorDetail(err),

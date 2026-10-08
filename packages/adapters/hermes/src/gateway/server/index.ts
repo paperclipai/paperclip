@@ -1,6 +1,16 @@
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 export { execute, resolveSessionKey, parseSseFramesForTest, mapFinalResultForTest } from "./execute.js";
+export {
+  buildHermesGatewaySessionIdentity,
+  mapHermesGatewayHealthFailure,
+  mapPaperclipExecutionToHermesRequest,
+  parseHermesGatewayConfig,
+  projectHermesResponseEvidence,
+  redactHermesGatewayEvidenceText,
+  safeGatewayMetadata,
+  HermesGatewayBoundaryError,
+} from "./autonomous-contract.js";
 export { testEnvironment } from "./test.js";
 export { getConfigSchema } from "./config-schema.js";
 

@@ -41,6 +41,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Controls X-Hermes-Session-Key. Issue scoped prevents cross-task memory bleed by default.",
       },
       {
+        key: "persistSession",
+        label: "Persist session",
+        type: "toggle",
+        default: true,
+        hint: "Keep issue/agent-scoped Hermes sessions across Paperclip heartbeats; disabled mode is run-scoped.",
+      },
+      {
         key: "timeoutSec",
         label: "Timeout seconds",
         type: "number",

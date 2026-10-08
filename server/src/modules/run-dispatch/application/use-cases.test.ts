@@ -167,4 +167,29 @@ describe("createDispatchResolvedInteractionIfCurrent", () => {
     expect(result.dispatched).toBe(true);
     expect(writer.dispatchCalls).toHaveLength(1);
   });
+
+  it("does not consume an admission ledger entry when the atomic dispatch gate declines", async () => {
+    const admissionConsume = vi.fn();
+    const writer = fakeWriter({
+      dispatchResolvedInteractionIfCurrent: async () => ({
+        dispatched: false as const,
+        cancellation: { outcome: "lost_race" as const },
+      }),
+    });
+    const dispatch = vi.fn(async () => {
+      admissionConsume();
+      return "started";
+    });
+
+    const result = await createDispatchResolvedInteractionIfCurrent({ writer })({
+      runId: "run-1",
+      companyId: "company-1",
+      expectedStatus: "running",
+      dispatch,
+    });
+
+    expect(result).toMatchObject({ dispatched: false });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(admissionConsume).not.toHaveBeenCalled();
+  });
 });

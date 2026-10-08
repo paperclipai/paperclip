@@ -14,10 +14,13 @@ import {
   paperclipWakeCommentsArePromptOwned,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  mapPaperclipExecutionToHermesRequest,
+  parseHermesGatewayConfig,
+  projectHermesResponseEvidence,
+  HermesGatewayBoundaryError,
+} from "./autonomous-contract.js";
+import {
   ADAPTER_TYPE,
-  DEFAULT_EVENT_RECONNECT_MS,
-  DEFAULT_POLL_INTERVAL_MS,
-  DEFAULT_TIMEOUT_SEC,
   STOP_GRACE_MS,
 } from "../shared/constants.js";
 import {
@@ -61,16 +64,8 @@ type ExecutionState = {
 
 type TextRedactor = (value: string) => string;
 
-const CRITICAL_HEADERS = new Set([
-  "authorization",
-  "content-type",
-  "accept",
-  "idempotency-key",
-  "x-hermes-session-key",
-]);
-
 const SENSITIVE_KEY_PATTERN =
-  /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)/i;
+  /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key|chain[_ -]?of[_ -]?thought|reasoning|raw[_ -]?output|prompt)([_-]|$)/i;
 const BEARER_TOKEN_PATTERN = /Bearer\s+\S+/gi;
 const HERMES_SESSION_KEY_HEADER_PATTERN = /(X-Hermes-Session-Key\s*[:=]\s*)([^\s,;]+)/gi;
 const PAPERCLIP_SESSION_KEY_PATTERN =
@@ -98,20 +93,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function parseNonNegativeNumber(value: unknown, fallback: number): number {
-  const parsed = typeof value === "number"
-    ? value
-    : typeof value === "string"
-      ? Number.parseFloat(value)
-      : Number.NaN;
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.max(0, parsed);
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
@@ -146,10 +127,6 @@ function apiUrl(baseUrl: URL, path: string): string {
   return `${base}${path}`;
 }
 
-function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
-  return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
-}
-
 export function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   companyId: string;
@@ -177,7 +154,8 @@ function sanitizeSensitiveText(value: string): string {
   return value
     .replace(BEARER_TOKEN_PATTERN, "Bearer [redacted]")
     .replace(HERMES_SESSION_KEY_HEADER_PATTERN, "$1[redacted]")
-    .replace(PAPERCLIP_SESSION_KEY_PATTERN, "[redacted-session-key]");
+    .replace(PAPERCLIP_SESSION_KEY_PATTERN, "[redacted-session-key]")
+    .replace(/(?:chain[_ -]?of[_ -]?thought|reasoning|raw[_ -]?output)\s*[:=][^\n]*/gi, "[REDACTED]");
 }
 
 function escapeRegExp(value: string): string {
@@ -226,27 +204,6 @@ function redactForLog(value: unknown, keyPath: string[] = [], depth = 0, redactT
   return redactText(String(value));
 }
 
-function parseHeaders(value: unknown): Record<string, string> {
-  const source =
-    typeof value === "string" && value.trim().length > 0
-      ? (() => {
-          try {
-            return JSON.parse(value);
-          } catch {
-            return {};
-          }
-        })()
-      : value;
-  const parsed = parseObject(source);
-  const headers: Record<string, string> = {};
-  for (const [key, entry] of Object.entries(parsed)) {
-    const normalized = key.trim();
-    if (!normalized || CRITICAL_HEADERS.has(normalized.toLowerCase())) continue;
-    if (typeof entry === "string") headers[normalized] = entry;
-  }
-  return headers;
-}
-
 function buildHeaders(input: {
   apiKey: string;
   sessionKey: string | null;
@@ -266,12 +223,12 @@ function buildHeaders(input: {
 }
 
 function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null): string {
-  // Stable session keys (issue/agent strategy) resume the same remote Hermes
-  // conversation across runs; a stored session id from a prior run means that
-  // conversation already received the task brief, so pick the compact
-  // task-context variant under the shared resume rules.
+  // A non-persistent session is always fresh, even if stale runtime metadata
+  // happens to carry an older session id.
+  const persistSession = ctx.config.persistSession !== false;
   const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
   const resumedSession =
+    persistSession &&
     (sessionKeyStrategy === "issue" || sessionKeyStrategy === "agent") &&
     Boolean(nonEmpty(ctx.runtime?.sessionId));
   const { taskContextNote: taskMarkdown, wakePrompt } = selectPaperclipPromptSections(ctx.context, {
@@ -668,6 +625,7 @@ export function mapFinalResultForTest(input: {
   sessionKey: string | null;
   strategy: SessionKeyStrategy;
   redactText?: TextRedactor;
+  autonomousEnvelope?: Parameters<typeof projectHermesResponseEvidence>[0]["envelope"];
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
@@ -681,6 +639,16 @@ export function mapFinalResultForTest(input: {
   const costUsd = parseCostUsd(payload);
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
+    : null;
+  const evidence = input.autonomousEnvelope
+    ? projectHermesResponseEvidence({
+        envelope: input.autonomousEnvelope,
+        runId: input.terminal.runId,
+        status: input.terminal.status,
+        exitCode: mapped.exitCode,
+        summary: output,
+        errorCode: mapped.errorCode,
+      })
     : null;
   return {
     exitCode: mapped.exitCode,
@@ -708,6 +676,7 @@ export function mapFinalResultForTest(input: {
       output: output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
+      ...(evidence ? { autonomous: evidence } : {}),
     },
   };
 }
@@ -807,14 +776,33 @@ function errorResult(err: unknown, baseUrl: URL, redactText: TextRedactor = sani
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const apiBaseUrlValue = asString(ctx.config.apiBaseUrl ?? ctx.config.url, "").trim();
-  if (!apiBaseUrlValue) {
+  const configResult = parseHermesGatewayConfig(ctx.config);
+  if (!configResult.ok) {
     return {
       exitCode: 1,
       signal: null,
       timedOut: false,
-      errorCode: "hermes_gateway_api_base_url_missing",
-      errorMessage: "Hermes gateway adapter requires apiBaseUrl.",
+      errorCode: configResult.errorCode,
+      errorMessage: configResult.errorMessage,
+    };
+  }
+  const gatewayConfig = configResult.value;
+  const apiBaseUrlValue = gatewayConfig.apiBaseUrl;
+  const mappedRequest = (() => {
+    try {
+      return mapPaperclipExecutionToHermesRequest(ctx);
+    } catch (err) {
+      if (err instanceof HermesGatewayBoundaryError) return err;
+      throw err;
+    }
+  })();
+  if (mappedRequest instanceof HermesGatewayBoundaryError) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: mappedRequest.code,
+      errorMessage: mappedRequest.message,
     };
   }
 
@@ -838,30 +826,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const apiKey = nonEmpty(ctx.config.apiKey) ?? nonEmpty(ctx.config.token);
-  if (!apiKey) {
-    return {
-      exitCode: 1,
-      signal: null,
-      timedOut: false,
-      errorCode: "hermes_gateway_api_key_missing",
-      errorMessage: "Hermes gateway adapter requires apiKey.",
-    };
-  }
-
-  const timeoutSec = parseNonNegativeNumber(ctx.config.timeoutSec, DEFAULT_TIMEOUT_SEC);
+  const apiKey = gatewayConfig.apiKey;
+  const timeoutSec = gatewayConfig.timeoutSec;
   const timeoutMs = timeoutSec > 0 ? Math.ceil(timeoutSec * 1000) : 0;
-  const reconnectMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.eventReconnectMs, DEFAULT_EVENT_RECONNECT_MS), 250, 30_000));
-  const pollIntervalMs = Math.floor(clamp(parseNonNegativeNumber(ctx.config.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS), 250, 10_000));
-  const strategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
-  const sessionKey = resolveSessionKey({
-    strategy,
-    companyId: ctx.agent.companyId,
-    agentId: ctx.agent.id,
-    runId: ctx.runId,
-    issueId: issueIdFromContext(ctx),
-  });
-  const extraHeaders = parseHeaders(ctx.config.headers);
+  const reconnectMs = gatewayConfig.eventReconnectMs;
+  const pollIntervalMs = gatewayConfig.pollIntervalMs;
+  const strategy = gatewayConfig.sessionKeyStrategy;
+  const sessionKey = mappedRequest.session.sessionKey;
+  const extraHeaders = gatewayConfig.headers;
   const runHeaders = buildHeaders({
     apiKey,
     sessionKey,
@@ -883,7 +855,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runHeaders.Authorization,
     runHeaders["X-Hermes-Session-Key"],
   ]);
-  const body = buildRunBody(ctx, sessionKey);
+  const body = {
+    ...buildRunBody(ctx, sessionKey),
+    autonomous: mappedRequest.body.autonomous,
+    session_context: mappedRequest.body.session,
+    run_context: mappedRequest.body.runContext,
+  };
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
@@ -896,6 +873,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       eventReconnectMs: reconnectMs,
       sessionKeyStrategy: strategy,
       hasSessionKey: Boolean(sessionKey),
+      autonomous: {
+        executionId: mappedRequest.envelope.executionId,
+        taskId: mappedRequest.envelope.taskId,
+        parentExecutionId: mappedRequest.envelope.parentExecutionId,
+        attempt: mappedRequest.envelope.attempt,
+        actionId: mappedRequest.envelope.actionId,
+        idempotencyKey: mappedRequest.envelope.idempotencyKey,
+        effectKey: mappedRequest.envelope.effectKey,
+        effectFingerprint: mappedRequest.envelope.effectFingerprint,
+        correlationId: mappedRequest.envelope.correlationId,
+        workerId: mappedRequest.envelope.workerId,
+        scope: mappedRequest.envelope.scope,
+        risk: mappedRequest.envelope.risk,
+        approval: mappedRequest.envelope.approval,
+        gateCount: mappedRequest.envelope.gates.length,
+        state: mappedRequest.envelope.stateEnvelope.state,
+      },
     },
   });
   await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy})\n`);
@@ -963,6 +957,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (outcome === "timeout") {
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
     const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    const timeoutEvidence = projectHermesResponseEvidence({
+      envelope: mappedRequest.envelope,
+      runId,
+      status: extractStatus(finalStatus) ?? "timeout",
+      exitCode: 1,
+      summary: `Hermes gateway run timed out after ${timeoutSec}s.`,
+      errorCode: "hermes_gateway_timeout",
+      timedOut: true,
+    });
+    await ctx.onEvent?.({
+      eventType: "autonomous.hermes_gateway.activity",
+      stream: "system",
+      level: "error",
+      payload: timeoutEvidence.activity,
+    });
     return {
       exitCode: 1,
       signal: null,
@@ -975,6 +984,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         status: extractStatus(finalStatus) ?? "timeout",
         last_event: state.lastEventName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
+        autonomous: timeoutEvidence,
       },
       sessionParams: {
         hermesRunId: runId,
@@ -984,11 +994,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  return mapFinalResultForTest({
+  const finalResult = mapFinalResultForTest({
     terminal: outcome,
     outputChunks: state.outputChunks,
     sessionKey,
     strategy,
     redactText,
+    autonomousEnvelope: mappedRequest.envelope,
   });
+  const finalEvidence = finalResult.resultJson?.autonomous;
+  if (finalEvidence && typeof finalEvidence === "object") {
+    await ctx.onEvent?.({
+      eventType: "autonomous.hermes_gateway.activity",
+      stream: "system",
+      level: finalResult.exitCode === 0 ? "info" : "error",
+      payload: (finalEvidence as { activity?: Record<string, unknown> }).activity,
+    });
+  }
+  return finalResult;
 }

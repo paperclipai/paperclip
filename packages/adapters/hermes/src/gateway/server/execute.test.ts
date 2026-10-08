@@ -209,6 +209,28 @@ describe("execute", () => {
     expect(prompt).not.toContain("Create child issues");
   });
 
+  it("sends the full task brief when persistence is disabled even with stale runtime session state", async () => {
+    const description = "Fresh sessions must receive the complete task brief.";
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-fresh", status: "started" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "test-api-key", timeoutSec: 5, persistSession: false });
+    ctx.runtime = { sessionId: "stale-session", sessionParams: null, sessionDisplayId: "stale-session", taskKey: "PAP-1" };
+    ctx.context = {
+      issueId: "issue-1",
+      paperclipTaskMarkdown: ["Paperclip task context:", "Issue description:", "```text", description, "```"].join("\\n"),
+      paperclipTaskMarkdownCompact: "Paperclip task context:",
+      paperclipWake: { reason: "issue_commented", issue: { id: "issue-1", description } },
+    };
+    await execute(ctx);
+    const call = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>).find(([input]) => String(input).endsWith("/v1/runs"));
+    expect(JSON.parse(String(call?.[1]?.body)).input).toContain(description);
+  });
+
   it("sends the task brief once on fresh runs and compacts it on stable-session resumes", async () => {
     const description = "Update launch-card.svg and change the CTA to Try Team free.";
     const fullTaskMarkdown = [

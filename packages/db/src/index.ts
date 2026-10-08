@@ -15,6 +15,14 @@ export {
   type Db,
 } from "./client.js";
 export {
+  consumeAutonomousActionOnce,
+  completeAutonomousAction,
+  markAutonomousActionDispatched,
+  registerAutonomousAction,
+  releaseAutonomousActionReservation,
+  type AutonomousConsumeResult,
+} from "./autonomous-action-ledger.js";
+export {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
