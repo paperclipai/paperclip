@@ -17,6 +17,7 @@ import {
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
+  isGoogleWorkspaceScopeGrant,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
@@ -357,7 +358,7 @@ export function createPaperclipCloudConnector(input: {
     if (credentials.profile !== profile) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector profile binding did not match", "CONNECTOR_BINDING_MISMATCH");
     }
-    if (!sameStringSet(credentials.scopes, definition.scopes)) {
+    if (!(profile === "workspace.all" ? isGoogleWorkspaceScopeGrant(credentials.scopes) : sameStringSet(credentials.scopes, definition.scopes))) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud scope grant did not match", "REAUTHORIZATION_REQUIRED");
     }
     return credentials;
@@ -724,7 +725,10 @@ function decryptEnvelope(
     "sha256",
     diffieHellman({ privateKey: recipientPrivateKey, publicKey: ephemeralKey }),
     Buffer.concat([ephemeralRaw, recipientRaw]),
-    aad,
+    // The combined profile's scope binding exceeds Node's 1024-byte HKDF-info
+    // limit. Its new wire contract hashes that binding; legacy profiles retain
+    // their original derivation. GCM still authenticates the complete AAD.
+    provider === "google" && profile === "workspace.all" ? createHash("sha256").update(aad).digest() : aad,
     32,
   ));
   const iv = Buffer.from(envelope.iv, "base64url");

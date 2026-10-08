@@ -2464,6 +2464,43 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(reconnected.connection.agentInstructions).toEqual(settings);
   });
 
+  it.each(["https://www.googleapis.com/auth/documents.readonly", undefined, "", "https://www.googleapis.com/auth/gmail.send"])(
+    "requires explicit reviewed partial consent for customer Workspace OAuth (%s)", async (scope) => {
+      const company = await createCompany(db);
+      const userId = `workspace-customer-${randomUUID()}`;
+      await grantBoardUser(db, company.id, userId, [], "owner");
+      const actor = { actorType: "user" as const, actorId: userId };
+      const service = createTestToolAccessService(db);
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "google-workspace", connectionMethodKey: "customer-workspace-oauth", grantKind: "user",
+        oauthClient: { clientId: "test-workspace-client", clientSecret: "test-workspace-secret" },
+      }, actor);
+      const redirectUri = "https://paperclip.example.test/api/tools/oauth/callback";
+      const started = await service.startOAuth(company.id, connected.connectionId, { redirectUri, actor });
+      const authorization = new URL(started.authorizationUrl);
+      expect(authorization.searchParams.get("scope")?.split(" ")).toEqual([...GOOGLE_WORKSPACE_CONNECTOR_PROFILES["workspace.all"].scopes]);
+      expect(authorization.searchParams.get("enable_granular_consent")).toBe("true");
+      const provider = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+        if (String(url) === "https://oauth2.googleapis.com/token") return Response.json({
+          access_token: "fixture-workspace-access", refresh_token: "fixture-workspace-refresh", expires_in: 3600, token_type: "Bearer", scope,
+        });
+        expect(String(url)).toBe("https://docsmcp.googleapis.com/mcp/v1");
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [
+          { name: "read_doc", annotations: { readOnlyHint: true } }, { name: "update_doc" },
+        ] } });
+      });
+      const completing = service.completeOAuthCallback({ state: authorization.searchParams.get("state")!, code: "fixture-code", redirectUri, actor });
+      if (scope?.endsWith("documents.readonly")) {
+        const completed = await completing;
+        expect(completed.connection.status).toBe("active");
+        expect(completed.catalog.map((entry) => entry.toolName)).toEqual(["docs__read_doc"]);
+      } else {
+        await expect(completing).rejects.toMatchObject({ details: { code: "oauth_scope_grant_invalid" } });
+        expect(provider).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
   it.each(["read", "write"])("requests only reduced Chat scopes for customer-owned %s OAuth, including reconnect", async (capability) => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
@@ -5184,7 +5221,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "telem",
       ]),
     );
-    expect(res.body.apps).toHaveLength(68);
+    expect(res.body.apps).toHaveLength(69);
     for (const slug of ["openrouter", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
       expect(res.body.apps.find((app: { slug: string }) => app.slug === slug).tags).toContain("model-provider");
     }
@@ -8025,6 +8062,243 @@ describeEmbeddedPostgres("tool access service", () => {
     } finally {
       githubDefinition.ownershipAvailability = previousOwnershipAvailability;
     }
+  });
+
+  it.each(["user", "organization"] as const)("builds one Workspace catalog from actual partial consent for a %s grant", async (grantKind) => {
+    const company = await createCompany(db);
+    const userId = `workspace-member-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, "workspace.all");
+    const fullClaim = connector.claim;
+    connector.claim = vi.fn(async (input) => ({ ...await fullClaim(input), scopes: ["https://www.googleapis.com/auth/documents"] }));
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    const provider = mockToolsList([
+      { name: "read_doc", annotations: { readOnlyHint: true } },
+      { name: "update_doc", annotations: { readOnlyHint: true } },
+      { name: "delete_doc" },
+    ]);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "google-workspace", connectionMethodKey: "paperclip-workspace", grantKind,
+    }, actor);
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,
+    });
+    const completed = await service.completePaperclipCloudConnectorCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: "workspace-claim", actor,
+    });
+    expect(completed.connection.status).toBe("active");
+    expect(completed.catalog.map((tool) => tool.toolName).sort()).toEqual(["docs__read_doc", "docs__update_doc"]);
+    expect(completed.catalog.find((tool) => tool.toolName === "docs__update_doc")?.riskLevel).toBe("write");
+    expect(provider.mock.calls.length).toBeGreaterThan(0);
+    expect(new Set(provider.mock.calls.map(([url]) => String(url)))).toEqual(new Set(["https://docsmcp.googleapis.com/mcp/v1"]));
+    const saved = await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id));
+    expect(saved).toHaveLength(1);
+    const grants = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
+    expect(grants.find((grant) => grant.status === "active")?.providerTenant?.oauth?.scopes).toEqual(["https://www.googleapis.com/auth/documents"]);
+    const profiles = await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${connected.connectionId}`));
+    expect(profiles).toHaveLength(1);
+    expect(JSON.stringify(completed)).not.toContain("workspace-access-token");
+  });
+
+  describe("combined Workspace service isolation and refresh consent", () => {
+    async function connectWorkspace(mode: "managed" | "customer", permissions = ["documents.readonly", "gmail.readonly"]) {
+      const company = await createCompany(db);
+      const userId = `workspace-refresh-${randomUUID()}`;
+      await grantBoardUser(db, company.id, userId, [], "owner");
+      const actor = { actorType: "user" as const, actorId: userId };
+      const initialScopes = permissions.map((scope) => `https://www.googleapis.com/auth/${scope}`);
+      let authorizationScopes = initialScopes;
+      let refreshScopes: string[] | undefined = initialScopes;
+      const connector = fakeGoogleWorkspaceConnector(company.id, userId, "workspace.all");
+      const originalClaim = connector.claim;
+      connector.claim = vi.fn(async (input) => ({ ...await originalClaim(input), scopes: initialScopes,
+        accessTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString() }));
+      connector.refresh = vi.fn(async () => ({ ...await connector.claim({ subject: userId, companyId: company.id,
+        profile: "workspace.all", claimId: "fixture", redemptionId: "fixture" }), scopes: refreshScopes ?? [] }));
+      const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+      const calls: string[] = [];
+      const unavailable = new Set<string>();
+      const omitted = new Set<string>();
+      let unauthorizedNextCall = false;
+      const tokenRefreshes: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const href = String(url);
+        if (href === "https://oauth2.googleapis.com/token") {
+          const refreshing = new URLSearchParams(String(init?.body)).get("grant_type") === "refresh_token";
+          if (refreshing) tokenRefreshes.push(href);
+          return Response.json({ access_token: "workspace-refresh-access", refresh_token: "workspace-refresh-token",
+            token_type: "Bearer", expires_in: 86_400, scope: (refreshing ? refreshScopes : authorizationScopes)?.join(" ") });
+        }
+        const host = new URL(href).hostname;
+        if (unavailable.has(host)) return new Response("unavailable", { status: 503 });
+        const body = JSON.parse(String(init?.body));
+        if (body.method === "tools/call") {
+          calls.push(body.params.name);
+          if (unauthorizedNextCall) { unauthorizedNextCall = false; return new Response("expired", { status: 401 }); }
+          return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "ok" }] } });
+        }
+        const names = host === "docsmcp.googleapis.com" ? ["read_doc", "update_doc"] : ["get_message"];
+        return mcpHttpResponse({ jsonrpc: "2.0", id: body.id, result: { tools: omitted.has(host) ? [] : names.map((name) => ({
+          name, annotations: { readOnlyHint: name !== "update_doc" },
+          inputSchema: { type: "object", properties: {} },
+        })) } });
+      });
+      const connected = await service.connectGalleryApp(company.id, {
+        galleryKey: "google-workspace", grantKind: "organization",
+        connectionMethodKey: mode === "managed" ? "paperclip-workspace" : "customer-workspace-oauth",
+        ...(mode === "customer" ? { oauthClient: { clientId: "workspace-client", clientSecret: "workspace-client-secret" } } : {}),
+      }, actor);
+      const redirectUri = mode === "managed" ? "https://paperclip.example/api/tools/oauth/cloud-connector/callback" : "https://paperclip.example/api/tools/oauth/callback";
+      const started = await service.startOAuth(company.id, connected.connectionId, { redirectUri, actor });
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      const completed = mode === "managed"
+        ? await service.completePaperclipCloudConnectorCallback({ state, claimId: "fixture", actor })
+        : await service.completeOAuthCallback({ state, code: "fixture", redirectUri, actor });
+      const agent = await createAgent(db, company.id);
+      await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+        enabledCatalogEntryIds: completed.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: { agentIds: [agent.id] },
+      }, actor);
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+        invocationSource: "on_demand", status: "running", contextSnapshot: {} }).returning();
+      const gateway = createToolGatewayService(db, { toolActionSigningSecret: "test-secret",
+        oauthGrantRefresher: service.refreshOAuthGrantCredentials });
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      return { company, actor, agent, service, connected, gateway, session, calls, unavailable, omitted, connector, tokenRefreshes,
+        setAuthorizationScopes: (scopes: string[]) => { authorizationScopes = scopes; },
+        expireNextCall: (scopes: string[] | undefined) => { refreshScopes = scopes; unauthorizedNextCall = true; } };
+    }
+
+    it("preserves organization actions when a personal OAuth callback grants fewer permissions", async () => {
+      const fixture = await connectWorkspace("customer", ["documents", "gmail.readonly"]);
+      // This supported policy selects personal consent when present and the
+      // organization identity for callers without a personal grant.
+      await db.update(toolConnections).set({ credentialPolicy: "per_user_with_fallback" })
+        .where(eq(toolConnections.id, fixture.connected.connectionId));
+      const userId = `workspace-personal-${randomUUID()}`;
+      await grantBoardUser(db, fixture.company.id, userId, [], "owner");
+      const actor = { actorType: "user" as const, actorId: userId };
+      const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
+      fixture.setAuthorizationScopes(["https://www.googleapis.com/auth/documents.readonly"]);
+      const started = await fixture.service.startOAuth(fixture.company.id, fixture.connected.connectionId, {
+        redirectUri, actor, subjectUserId: userId,
+      });
+      await fixture.service.completeOAuthCallback({ state: new URL(started.authorizationUrl).searchParams.get("state")!,
+        code: "personal-docs-only", redirectUri, actor });
+      const [gmailEntry] = await db.select().from(toolCatalogEntries).where(and(
+        eq(toolCatalogEntries.connectionId, fixture.connected.connectionId), eq(toolCatalogEntries.toolName, "gmail__get_message"),
+      ));
+      expect(gmailEntry.status).toBe("active");
+      const [docsWrite] = await db.select().from(toolCatalogEntries).where(and(
+        eq(toolCatalogEntries.connectionId, fixture.connected.connectionId), eq(toolCatalogEntries.toolName, "docs__update_doc"),
+      ));
+      // Docs was probed, but its write action was filtered by personal consent,
+      // not removed by Google. The organization still retains that action.
+      expect(docsWrite.status).toBe("active");
+      const gmail = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((tool) => tool.upstreamToolName === "gmail__get_message")!;
+      expect(gmail).toBeTruthy();
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: gmail.name, parameters: {} })).resolves.toMatchObject({ status: "completed" });
+      await expect(fixture.gateway.executeTestCall({ companyId: fixture.company.id, connectionId: fixture.connected.connectionId,
+        agentId: fixture.agent.id, userId, toolName: "gmail__get_message", parameters: {} })).resolves.toMatchObject({ error: { reasonCode: "oauth_insufficient_scope" } });
+      expect(fixture.calls).toEqual(["get_message"]);
+      // Once the other authority is revoked, a personal refresh can remove the
+      // unsupported shared entry; revoked grants never preserve capabilities.
+      await db.update(connectionGrants).set({ status: "revoked" }).where(and(
+        eq(connectionGrants.connectionId, fixture.connected.connectionId), eq(connectionGrants.kind, "organization"),
+      ));
+      await fixture.service.refreshCatalog(fixture.connected.connectionId, actor);
+      const [removed] = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.id, gmailEntry.id));
+      expect(removed.status).toBe("disabled");
+    });
+
+    it.each(["outage", "removed"] as const)("does not preserve a probed Gmail service's missing tools across grants (%s)", async (failure) => {
+      const fixture = await connectWorkspace("customer");
+      const userId = `workspace-both-${randomUUID()}`;
+      await grantBoardUser(db, fixture.company.id, userId, [], "owner");
+      const actor = { actorType: "user" as const, actorId: userId };
+      const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
+      const started = await fixture.service.startOAuth(fixture.company.id, fixture.connected.connectionId, { redirectUri, actor, subjectUserId: userId });
+      await fixture.service.completeOAuthCallback({ state: new URL(started.authorizationUrl).searchParams.get("state")!, code: "personal-both", redirectUri, actor });
+      (failure === "outage" ? fixture.unavailable : fixture.omitted).add("gmailmcp.googleapis.com");
+      const refreshed = await fixture.service.refreshCatalog(fixture.connected.connectionId, actor);
+      expect(refreshed.connection.healthStatus).toBe("ok");
+      const tools = await fixture.gateway.listToolsForSession(fixture.session.token);
+      expect(tools.some((tool) => tool.upstreamToolName === "gmail__get_message")).toBe(false);
+      const doc = tools.find((tool) => tool.upstreamToolName === "docs__read_doc")!;
+      expect(doc).toBeTruthy();
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: doc.name, parameters: {} })).resolves.toMatchObject({ status: "completed" });
+      expect(fixture.calls).toEqual(["read_doc"]);
+      const [gmail] = await db.select().from(toolCatalogEntries).where(and(eq(toolCatalogEntries.connectionId, fixture.connected.connectionId), eq(toolCatalogEntries.toolName, "gmail__get_message")));
+      expect(gmail.status).toBe("disabled");
+    });
+
+    it("keeps healthy service tools visible during a partial outage and restores recovered services", async () => {
+      const fixture = await connectWorkspace("managed");
+      fixture.unavailable.add("gmailmcp.googleapis.com");
+      const refreshed = await fixture.service.refreshCatalog(fixture.connected.connectionId, fixture.actor);
+      expect(refreshed.connection).toMatchObject({ healthStatus: "ok", healthMessage: expect.stringContaining("gmail") });
+      expect(refreshed.catalog.map((entry) => entry.toolName)).toEqual(["docs__read_doc"]);
+      const tools = await fixture.gateway.listToolsForSession(fixture.session.token);
+      const doc = tools.find((tool) => tool.upstreamToolName === "docs__read_doc")!;
+      expect(doc).toBeTruthy();
+      expect(tools.some((tool) => tool.upstreamToolName === "gmail__get_message")).toBe(false);
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: doc.name, parameters: {} })).resolves.toMatchObject({ status: "completed" });
+      const health = await fixture.service.checkHealth(fixture.connected.connectionId, fixture.actor);
+      expect(health.connection).toMatchObject({ healthStatus: "ok", healthMessage: expect.stringContaining("gmail") });
+      const events = await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.connectionId, fixture.connected.connectionId));
+      expect(events).toContainEqual(expect.objectContaining({ reasonCode: "google_workspace_service_unavailable", details: { service: "gmail" } }));
+      fixture.unavailable.clear();
+      const recovered = await fixture.service.refreshCatalog(fixture.connected.connectionId, fixture.actor);
+      expect(recovered.catalog.map((entry) => entry.toolName).sort()).toEqual(["docs__read_doc", "gmail__get_message"]);
+      expect(recovered.connection.healthMessage).not.toContain("unavailable");
+      fixture.unavailable.add("gmailmcp.googleapis.com");
+      fixture.unavailable.add("docsmcp.googleapis.com");
+      await expect(fixture.service.refreshCatalog(fixture.connected.connectionId, fixture.actor)).rejects.toMatchObject({ details: { code: "google_workspace_services_unavailable" } });
+    });
+
+    it("does not let a cached Gmail call failure hide healthy Docs actions", async () => {
+      const fixture = await connectWorkspace("customer");
+      const gmail = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((tool) => tool.upstreamToolName === "gmail__get_message")!;
+      fixture.unavailable.add("gmailmcp.googleapis.com");
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: gmail.name, parameters: {} })).rejects.toMatchObject({ reasonCode: "mcp_remote_status" });
+      expect((await fixture.service.getConnection(fixture.connected.connectionId)).healthStatus).toBe("ok");
+      const doc = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((tool) => tool.upstreamToolName === "docs__read_doc")!;
+      expect(doc).toBeTruthy();
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: doc.name, parameters: {} })).resolves.toMatchObject({ status: "completed" });
+      expect(fixture.calls).toEqual(["read_doc"]);
+    });
+
+    it.each(["managed", "customer"] as const)("blocks the auth retry and updates listing after %s refresh narrows consent", async (mode) => {
+      const fixture = await connectWorkspace(mode);
+      const tool = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((item) => item.upstreamToolName === "docs__read_doc")!;
+      expect(tool).toBeTruthy();
+      const scopes = ["https://www.googleapis.com/auth/gmail.readonly"];
+      fixture.expireNextCall(scopes);
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: tool.name, parameters: {} })).rejects.toMatchObject({ reasonCode: "oauth_insufficient_scope" });
+      expect(fixture.calls).toEqual(["read_doc"]); // No second tools/call after the 401 refresh removed Docs permission.
+      const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.connectionId, fixture.connected.connectionId), eq(connectionGrants.status, "active")));
+      expect(grant.providerTenant?.oauth?.scopes).toEqual(scopes);
+      if (mode === "managed") expect(fixture.connector.refresh).toHaveBeenCalled();
+      else expect(fixture.tokenRefreshes).toHaveLength(1);
+      const tools = await fixture.gateway.listToolsForSession(fixture.session.token);
+      expect(tools.some((item) => item.upstreamToolName === "docs__read_doc")).toBe(false);
+      const gmail = tools.find((item) => item.upstreamToolName === "gmail__get_message")!;
+      expect(gmail).toBeTruthy();
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: gmail.name, parameters: {} })).resolves.toMatchObject({ status: "completed" });
+    });
+
+    it.each((["managed", "customer"] as const).flatMap((mode) => [undefined, [], ["https://www.googleapis.com/auth/gmail.send"]].map((scopes) => ({ mode, scopes }))))(
+      "fails closed on invalid refreshed permissions ($mode, $scopes)", async ({ mode, scopes }) => {
+        const fixture = await connectWorkspace(mode);
+        const tool = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((item) => item.upstreamToolName === "docs__read_doc")!;
+        fixture.expireNextCall(scopes);
+        await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: tool.name, parameters: {} })).rejects.toMatchObject({ reasonCode: "oauth_reauthorization_required" });
+        expect(fixture.calls).toEqual(["read_doc"]);
+        const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, fixture.connected.connectionId));
+        expect(grant.status).toBe("needs_reauthorization");
+        expect((await fixture.gateway.listToolsForSession(fixture.session.token)).some((item) => item.connectionId === fixture.connected.connectionId)).toBe(false);
+      },
+    );
   });
 
   it("routes a managed Drive callback into the personal vault, filtered catalog, and provider-specific activity", async () => {

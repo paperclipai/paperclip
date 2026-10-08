@@ -21,6 +21,16 @@ describe("Gmail tool governance", () => {
 });
 
 describe("Google Workspace tool governance", () => {
+  it("keeps combined-profile writes and destructive annotations behind their existing risk gates", () => {
+    expect(classifyRisk({ name: "docs__update_doc", annotations: { readOnlyHint: true } }, "google-workspace")).toBe("write");
+    expect(classifyRisk({ name: "docs__update_doc", annotations: { destructiveHint: true } }, "google-workspace")).toBe("destructive");
+    expect(classifyRisk({ name: "docs__read_doc" }, "google-workspace")).toBe("read");
+    expect(classifyRisk({ name: "calendar__delete_event" }, "google-workspace")).toBe("destructive");
+    expect(classifyRisk({ name: "chat__send_message" }, "google-workspace")).toBe("destructive");
+    expect(isGoogleWorkspaceToolAllowed("workspace.all", { name: "gmail__send_message" })).toBe(false);
+    expect(isGoogleWorkspaceToolAllowed("workspace.all", { name: "chat__list_memberships" })).toBe(false);
+  });
+
   it("limits each capability profile to its reviewed reads and writes", () => {
     expect(isGoogleWorkspaceToolAllowed("drive.read", { name: "search_files" })).toBe(true);
     expect(isGoogleWorkspaceToolAllowed("drive.read", { name: "create_file" })).toBe(false);

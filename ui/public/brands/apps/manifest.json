@@ -224,6 +224,13 @@
       ]
     },
     {
+      "slug": "google-workspace",
+      "provider": "Google Workspace",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-people.svg",
+      "aliases": ["google suite", "g suite"]
+    },
+    {
       "slug": "hugging-face",
       "provider": "Hugging Face",
       "catalogVisible": true,

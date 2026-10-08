@@ -808,6 +808,7 @@ describe("Connectors landing page", () => {
   });
 
   const googleSlugs = [
+    "google-workspace",
     "gmail", "google-drive", "google-docs", "google-sheets", "google-slides",
     "google-calendar", "google-chat", "google-people", "google-workspace-search",
   ];

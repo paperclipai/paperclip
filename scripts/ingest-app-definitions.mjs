@@ -1774,10 +1774,10 @@ for (const entry of researchManifest.entries) {
   });
 }
 // Google Workspace definitions are reviewed, first-class app entries rather
-// than rows synthesized from the generic connection corpus. Keep each product
-// independent in the generated manifest while sharing only backend OAuth
-// infrastructure.
+// than rows synthesized from the generic connection corpus. Keep legacy product
+// definitions for saved connections alongside the combined Workspace entry.
 const reviewedGoogleSlugs = [
+  "google-workspace",
   "gmail",
   "google-drive",
   "google-docs",

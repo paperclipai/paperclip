@@ -1807,7 +1807,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     "preserves personal Workspace access for $slug when changing method (enrollment return: $enrollmentReturn)",
     async ({ slug, enrollmentReturn }) => {
       const definition = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === slug)!;
-      const readMethod = definition.methods.find((method) => method.key === "paperclip-read")!;
+      const readMethod = definition.methods.find((method) => method.key === "paperclip-read" || method.key === "paperclip-workspace")!;
       mockSearch.value = enrollmentReturn
         ? `source=${slug}&stage=setup&cloud_connector=enrolled`
         : `source=${slug}`;
@@ -1828,7 +1828,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         await flushReact();
       }
 
-      if (definition.methods.some((method) => method.capabilityProfile?.key !== "read")) {
+      if (definition.methods.some((method) => method.capabilityProfile?.key !== readMethod.capabilityProfile?.key)) {
         const readChoice = radioContaining(readMethod.capabilityProfile!.label);
         expect(readChoice).not.toBeNull();
         await act(async () => {
@@ -1866,7 +1866,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       });
       await flushReact();
       expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
-        galleryKey: slug, connectionMethodKey: "paperclip-read", grantKind: "user",
+        galleryKey: slug, connectionMethodKey: readMethod.key, grantKind: "user",
       }));
   });
 
@@ -1907,6 +1907,29 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Before connecting, enroll the signed-in Workspace account");
     expect(container.textContent).toContain("Review requirements");
     expect(container.textContent).toContain("needs its own OAuth app");
+  });
+
+  it("connects Google Workspace using one profile without separate service choices", async () => {
+    mockSearch.value = "source=google-workspace&stage=setup";
+    const workspace = getAppStoreDefinition("google-workspace")!;
+    listGalleryMock.mockResolvedValue({ apps: [{
+      ...workspace, ownershipAvailability: { ...workspace.ownershipAvailability, platform_shared: true },
+    }] });
+    await render();
+
+    expect(container.textContent).toContain("Google Workspace");
+    expect(container.textContent).not.toContain("What should Paperclip be able to do?");
+    await openAccessAdvanced();
+    expect(buttonByText("Use your own Google OAuth app")).toBeDefined();
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+    await act(async () => {
+      buttonByText("Continue to sign in")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "google-workspace", connectionMethodKey: "paperclip-workspace",
+    }));
   });
 
   it("renders Google Calendar as one minimal, unboxed setup screen", async () => {

@@ -1,7 +1,7 @@
 # Google Workspace connections
 
-Paperclip presents Google Workspace as nine independent Apps entries, not as
-one combined Google connection:
+New Google Workspace setup uses one `google-workspace` connection and the
+`workspace.all` OAuth profile for these nine services:
 
 1. Gmail
 2. Google Drive
@@ -13,19 +13,77 @@ one combined Google connection:
 8. Google People
 9. Google Workspace Search
 
-Each entry creates its own connection, consent grant, capability catalog,
-policy, audit trail, and reconnect/revoke lifecycle. Connecting Drive does not
-create a Docs or Sheets connection, and connecting Gmail does not enable
-Workspace Search.
+The combined connection has one credential grant, capability catalog, policy
+profile, audit trail and reconnect lifecycle. It requests the existing 21-scope
+union, not additional permissions. Google's consent screen lets users decline
+permissions; discovery skips services without grants and excludes unsupported
+actions. The gateway checks actual grant scopes again before each call, including
+after refresh. Requested scopes alone never authorize an action.
+
+Discovery isolates service outages. Healthy services remain usable while the
+connection's health message identifies unavailable services and recommends a
+catalog refresh. Failed services' cached actions are disabled until rediscovered;
+an outage affecting every requested service still fails the refresh. Loss of the
+shared OAuth grant never degrades into a successful partial discovery. Because
+the catalog is shared, actions skipped because of narrower consent are preserved
+when another active grant supports them. Failed services and tools removed from a
+successful discovery are still disabled. Each caller's listing and dispatch use only their
+selected grant, without combining permissions from different identities.
+Individual call failures are reported and audited without marking unrelated
+Google services unhealthy; they do not trigger automatic write retries.
+
+Existing individual product connections and their direct setup routes remain
+supported. They are not automatically merged, upgraded or reauthorized. The Sheets
+robot-account method remains separate because it uses explicitly shared files,
+not the user's Google OAuth identity.
 
 Google's hosted Workspace MCP servers are Developer Preview services. The app
-cards remain independent even when several services use the same customer-owned
-Google OAuth client or the same Paperclip Cloud broker deployment.
+endpoints remain separate. Paperclip namespaces actions by service and routes them
+to a closed endpoint registry using the combined grant. It does not create child
+connections or send provider tokens through Paperclip ID.
+
+The catalog reuses the existing reviewed Google mark (`google-people.svg`),
+registered under its own `google-workspace` brand identity. No new artwork is
+downloaded or substituted for a product logo.
+
+## Combined profile deployment and verification
+
+Deploy the companion Cloud broker registry before enabling `workspace.all` in
+`CLOUD_HARNESS_CONNECTOR_GOOGLE_ENABLED_PROFILES`. It uses the existing WORKSPACE
+client pair; that client's Cloud project must have every applicable MCP API and
+preview enrollment. Do not remove legacy enabled profiles while their grants are
+in use. This code change does not enable the broker profile or deploy any stack.
+
+The signed request and envelope authentication bind the exact 21-scope requested
+profile; the encrypted credential payload preserves Google's actual nonempty
+subset. Missing scope evidence and scopes outside that reviewed union fail closed
+on authorization and refresh. Individual legacy profiles retain exact matching.
+For the new `google/workspace.all` profile only, HKDF info is SHA-256(AAD) to
+remain below Node's 1024-byte limit. AES-GCM still authenticates the complete AAD;
+legacy envelope key derivation is unchanged.
+
+Managed OAuth: browser → Cloud `/v1/connector/sessions` → Google
+`https://accounts.google.com/o/oauth2/v2/auth` → Cloud
+`/v1/connector/oauth/google/callback` → instance
+`/api/tools/oauth/cloud-connector/callback`. Cloud exchanges codes and refreshes at
+`https://oauth2.googleapis.com/token`; provider tool calls go directly from the
+instance to the fixed endpoints below. Customer OAuth uses the instance's existing
+`/api/tools/oauth/callback` instead. Register that exact HTTPS or loopback callback
+on the customer-owned client.
+
+Removal is local for managed grants: Google's project-wide revocation can break
+other connections. Before rollout, verify full and partial consent with an enrolled
+test account, allowed reads/writes, reconnect, refresh and removal. Deterministic
+tests are not real-provider proof. Combining profiles simplifies onboarding, not
+Google's per-scope demonstration, justification or security-assessment obligations.
+
+Sources: [granular consent](https://developers.google.com/identity/protocols/oauth2/resources/granular-permissions),
+[Workspace MCP setup](https://developers.google.com/workspace/guides/configure-mcp-servers).
 
 ## Temporary Connections page visibility hold
 
 While Google OAuth verification is pending, the Connections landing page
-(`ui/src/pages/apps/Browse.tsx`) hides all nine Google Workspace entries,
+(`ui/src/pages/apps/Browse.tsx`) hides Google Workspace and the nine legacy entries,
 including their saved accounts. This is a display-only filter. App definitions,
 direct setup and management routes, OAuth profiles, saved credentials, and
 runtime tools remain unchanged. This is not an access-control restriction.
@@ -60,7 +118,7 @@ registered internal testers during preview. Other companies must enroll their
 own Workspace testers and Cloud project and use a customer-owned OAuth app until
 Google makes Workspace MCP generally available.
 
-## App matrix
+## Service endpoints and legacy capability choices
 
 | App card | MCP endpoint | Capability choices |
 | --- | --- | --- |
@@ -74,7 +132,9 @@ Google makes Workspace MCP generally available.
 | Google People | `https://people.googleapis.com/mcp/v1` | Read contacts |
 | Google Workspace Search | `https://workspacemcp.googleapis.com/mcp/v1` | Search Workspace |
 
-The setup flow asks for the capability first. When the managed method is
+Legacy product setup exposes capability choices under Change. The combined
+Workspace setup has one capability and defers permission selection to Google.
+When the managed method is
 available, it uses Paperclip by default. A small **Use your own Google OAuth app**
 link reveals the custom client fields; **Use Paperclip instead** returns to the
 managed method. The available authentication methods are:
@@ -89,8 +149,8 @@ managed method. The available authentication methods are:
 - **Use the Paperclip robot account** remains an additional Google Sheets-only
   option for explicitly shared spreadsheets.
 
-Before Google consent, the setup flow asks whether the credential is for just
-the connecting user or for any human in the company. A personal choice stores
+Before Google consent, the setup flow shows the credential's human and agent
+access and lets the user change it. A personal choice stores
 the tokens only on that user's grant. A company choice stores them on the
 default organization grant, while still recording which signed-in Google
 principal completed consent so refresh and reconnect stay bound to that
@@ -104,7 +164,7 @@ callback, refresh, and revoke, while the broker enforces current profile access.
 Switching capability or authentication methods preserves the selected credential
 owner when the new method supports that owner.
 
-## Broker profiles
+## Legacy product-specific broker profiles
 
 The Paperclip-managed method signs every broker request with one explicit
 profile. The broker binds that profile into sessions, one-time claims, sealed

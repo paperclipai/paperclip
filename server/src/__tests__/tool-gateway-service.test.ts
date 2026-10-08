@@ -197,6 +197,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(issues);
     await db.delete(projects);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -1339,6 +1340,48 @@ describeEmbeddedPostgres("tool gateway service", () => {
       { method: "notifications/initialized", sessionId: "session-123", protocolVersion: "2025-06-18" },
       { method: "tools/call", sessionId: "session-123", protocolVersion: "2025-06-18" },
     ]);
+  });
+
+  it.each([
+    ["docs__read_doc", "documents", "docsmcp"],
+    ["gmail__get_message", "gmail.readonly", "gmailmcp"],
+    ["drive__search_files", "drive.readonly", "drivemcp"],
+    ["sheets__get_values", "spreadsheets", "sheetsmcp"],
+    ["slides__read_presentation", "presentations", "slidesmcp"],
+    ["calendar__list_events", "calendar.events", "calendarmcp"],
+    ["chat__list_messages", "chat.messages.readonly", "chatmcp"],
+    ["people__get_user_profile", "userinfo.profile", "people"],
+    ["search__search_corpus", null, "workspacemcp"],
+  ] as const)("routes %s and denies cached actions after consent changes", async (toolName, permission, host) => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: "board", status: "active", membershipRole: "owner" });
+    const { connection, catalogEntry } = await createRemoteMcpToolFixture(db, company.id);
+    await db.update(toolConnections).set({ config: { sourceTemplateKey: "google-workspace", url: "https://workspacemcp.googleapis.com/mcp/v1" } })
+      .where(eq(toolConnections.id, connection.id));
+    const scopes = permission ? [`https://www.googleapis.com/auth/${permission}`] : ["gmail.readonly", "drive.readonly", "calendar.readonly", "chat.messages.readonly"].map((value) => `https://www.googleapis.com/auth/${value}`);
+    await db.update(connectionGrants).set({ providerTenant: { oauth: { scopes, scopeSource: "provider" } } })
+      .where(eq(connectionGrants.connectionId, connection.id));
+    await db.update(toolCatalogEntries).set({ name: toolName, toolName }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow reads", policyType: "allow", selectors: { riskLevel: "read" } });
+    const provider = vi.fn(async (_url, init) => {
+      const payload = JSON.parse(String(init.body));
+      return Response.json({ jsonrpc: "2.0", id: payload.id, result: { content: [{ type: "text", text: "Test document." }] } });
+    });
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token)).find((item) => item.upstreamToolName === toolName)!;
+    expect(tool).toBeTruthy();
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} })).resolves.toMatchObject({ status: "completed" });
+    expect(provider.mock.calls[0][0]).toBe(`https://${host}.googleapis.com/mcp/v1`);
+    expect(JSON.parse(String(provider.mock.calls[0][1].body)).params.name).toBe(toolName.split("__")[1]);
+    await db.update(connectionGrants).set({ providerTenant: { oauth: { scopes: [], scopeSource: "provider" } } })
+      .where(eq(connectionGrants.connectionId, connection.id));
+    expect((await gateway.listToolsForSession(session.token)).some((item) => item.upstreamToolName === toolName)).toBe(false);
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters: {} }))
+      .rejects.toMatchObject({ reasonCode: "oauth_insufficient_scope" });
+    await expect(gateway.executeTestCall({ companyId: company.id, connectionId: connection.id, agentId: agent.id,
+      userId: "board", toolName, parameters: {} })).resolves.toMatchObject({ error: { reasonCode: "oauth_insufficient_scope" } });
+    expect(provider).toHaveBeenCalledTimes(1);
   });
 
   it("hides cached Chat unread filters and blocks agent and board requests before provider dispatch", async () => {

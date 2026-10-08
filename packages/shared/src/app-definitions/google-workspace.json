@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "slug": "google-workspace",
+  "name": "Google Workspace",
+  "description": "Connect Gmail, Drive, Docs, Sheets, Slides, Calendar, Chat, contacts, and Workspace Search with one Google account.",
+  "categories": [
+    "productivity",
+    "communication",
+    "content"
+  ],
+  "featured": true,
+  "branding": {
+    "logoUrl": "/brands/apps/google-people.svg"
+  },
+  "urlPatterns": ["https://workspace.google.com/*"],
+  "docsUrl": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+  "setupPrerequisite": {
+    "title": "Google Developer Preview access required",
+    "description": "Google must register the Workspace email and the Cloud project that owns the OAuth client before these services can be used.",
+    "actionLabel": "Check preview enrollment",
+    "actionUrl": "https://developers.google.com/workspace/preview"
+  },
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "paperclip-workspace",
+      "label": "Connect with Paperclip",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "oauthStrategy": "paperclip_cloud_connector",
+      "connectorProfile": "workspace.all",
+      "capabilityProfile": {
+        "key": "workspace",
+        "label": "Google Workspace",
+        "description": "Choose which permissions to grant on Google's consent screen."
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "platform_shared"
+      ],
+      "whenToUse": "Use one Paperclip-managed sign-in for all Google services.",
+      "defaults": {
+        "serverUrl": "https://workspacemcp.googleapis.com/mcp/v1",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.compose",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/documents.readonly",
+          "https://www.googleapis.com/auth/documents",
+          "https://www.googleapis.com/auth/spreadsheets.readonly",
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/presentations.readonly",
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+          "https://www.googleapis.com/auth/calendar.events.freebusy",
+          "https://www.googleapis.com/auth/calendar.events.readonly",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/chat.spaces.readonly",
+          "https://www.googleapis.com/auth/chat.messages.readonly",
+          "https://www.googleapis.com/auth/chat.messages.create",
+          "https://www.googleapis.com/auth/directory.readonly",
+          "https://www.googleapis.com/auth/userinfo.profile",
+          "https://www.googleapis.com/auth/contacts.readonly",
+          "https://www.googleapis.com/auth/calendar.readonly"
+        ]
+      },
+      "guidanceMd": "Choose the permissions you want on Google's consent screen. Only actions covered by those permissions will be available. Gmail supports reading and creating drafts, not sending.",
+      "riskTier": "S4"
+    },
+    {
+      "key": "customer-workspace-oauth",
+      "label": "Use your own Google OAuth app",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "capabilityProfile": {
+        "key": "workspace",
+        "label": "Google Workspace",
+        "description": "Choose which permissions to grant on Google's consent screen."
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use one customer-owned Google OAuth client for all Google services.",
+      "defaults": {
+        "serverUrl": "https://workspacemcp.googleapis.com/mcp/v1",
+        "authorizationEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenEndpoint": "https://oauth2.googleapis.com/token",
+        "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.compose",
+          "https://www.googleapis.com/auth/drive.readonly",
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/documents.readonly",
+          "https://www.googleapis.com/auth/documents",
+          "https://www.googleapis.com/auth/spreadsheets.readonly",
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/presentations.readonly",
+          "https://www.googleapis.com/auth/presentations",
+          "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+          "https://www.googleapis.com/auth/calendar.events.freebusy",
+          "https://www.googleapis.com/auth/calendar.events.readonly",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/chat.spaces.readonly",
+          "https://www.googleapis.com/auth/chat.messages.readonly",
+          "https://www.googleapis.com/auth/chat.messages.create",
+          "https://www.googleapis.com/auth/directory.readonly",
+          "https://www.googleapis.com/auth/userinfo.profile",
+          "https://www.googleapis.com/auth/contacts.readonly",
+          "https://www.googleapis.com/auth/calendar.readonly"
+        ],
+        "oauthAuthorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        }
+      },
+      "guidanceMd": "Enable the Google Workspace MCP APIs and register Paperclip's callback URI. Choose which permissions to grant on Google's consent screen; declined permissions disable only the corresponding actions.",
+      "consoleLinks": {
+        "register": "https://console.cloud.google.com/auth/clients",
+        "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers"
+      },
+      "riskTier": "S4"
+    }
+  ]
+}
