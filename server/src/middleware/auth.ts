@@ -27,6 +27,7 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { captureRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { isUserDisabled } from "../services/instance-users.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 
 export {
@@ -287,14 +288,23 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         }
         if (session?.user?.id && session.session?.id) {
           const userId = session.user.id;
-          const [roleRow, memberships] = await Promise.all([
+          const [roleRow, memberships, disabled] = await Promise.all([
             db
               .select({ id: instanceUserRoles.id })
               .from(instanceUserRoles)
               .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
               .then((rows) => rows[0] ?? null),
             loadActiveUserCompanyMemberships(db, userId),
+            isUserDisabled(db, userId),
           ]);
+          if (disabled) {
+            // Disabling deletes the user's sessions, so this only catches a
+            // session minted concurrently with the block. Treat it as signed
+            // out rather than erroring so public routes keep working.
+            if (runIdHeader) req.actor.runId = runIdHeader;
+            next();
+            return;
+          }
           req.actor = {
             type: "board",
             userId,
@@ -325,6 +335,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const boardKey = await boardAuth.findBoardApiKeyByToken(token);
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
+      if (access.disabled) {
+        next(unauthorized("User account is disabled"));
+        return;
+      }
       if (access.user) {
         await boardAuth.touchBoardApiKey(boardKey.id);
         req.actor = {

@@ -9,6 +9,7 @@ import type { DeploymentMode, LiveEvent } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { isUserDisabled } from "../services/instance-users.js";
 
 interface WsSocket {
   readyState: number;
@@ -180,7 +181,7 @@ async function authorizeUpgrade(
     const userId = session?.user?.id;
     if (!userId) return null;
 
-    const [roleRow, memberships] = await Promise.all([
+    const [roleRow, memberships, disabled] = await Promise.all([
       db
         .select({ id: instanceUserRoles.id })
         .from(instanceUserRoles)
@@ -196,7 +197,9 @@ async function authorizeUpgrade(
             eq(companyMemberships.status, "active"),
           ),
         ),
+      isUserDisabled(db, userId),
     ]);
+    if (disabled) return null;
 
     const hasCompanyMembership = memberships.some((row) => row.companyId === companyId);
     if (!roleRow && !hasCompanyMembership) return null;
@@ -278,6 +281,12 @@ export function setupLiveEventsWebSocketServer(
           .where(and(eq(agentApiKeys.id, context!.apiKeyId), isNull(agentApiKeys.revokedAt))).limit(1);
         if (!active.length) return null;
       } else {
+        // An open socket outlives the session that opened it; stop streaming
+        // the moment an instance admin disables the account.
+        if (await isUserDisabled(db, context!.actorId)) {
+          socket.close(1008, "account disabled");
+          return null;
+        }
         const membership = await db.select({ id: companyMemberships.id }).from(companyMemberships)
           .where(and(eq(companyMemberships.companyId, context!.companyId), eq(companyMemberships.principalType, "user"),
             eq(companyMemberships.principalId, context!.actorId), eq(companyMemberships.status, "active"))).limit(1);

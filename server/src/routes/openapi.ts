@@ -215,6 +215,7 @@ import {
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
+  disableInstanceUserSchema,
   // Instance settings
   patchInstanceGeneralSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
@@ -1609,6 +1610,9 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/instance/database-backups",
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/admin/users/{userId}/demote-instance-admin",
+  "POST /api/admin/users/{userId}/disable",
+  "POST /api/admin/users/{userId}/enable",
+  "DELETE /api/admin/users/{userId}",
   "PUT /api/admin/users/{userId}/company-access",
 ]);
 
@@ -9728,6 +9732,55 @@ registry.registerPath({
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/admin/users/{userId}/disable",
+  tags: ["admin"],
+  summary: "Disable a user account, revoking its sessions (admin)",
+  request: {
+    params: z.object({ userId: z.string() }),
+    body: jsonBody(disableInstanceUserSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/admin/users/{userId}/enable",
+  tags: ["admin"],
+  summary: "Re-enable a disabled user account (admin)",
+  request: { params: z.object({ userId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/admin/users/{userId}",
+  tags: ["admin"],
+  summary: "Delete a user account without organization history (admin)",
+  request: { params: z.object({ userId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
   },
 });
 

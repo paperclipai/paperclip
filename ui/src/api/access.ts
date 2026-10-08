@@ -199,6 +199,8 @@ export type CompanyJoinRequest = JoinRequest & {
   } | null;
 };
 
+export type AdminUserStatus = "active" | "disabled";
+
 export type AdminUserDirectoryEntry = {
   id: string;
   email: string | null;
@@ -206,6 +208,31 @@ export type AdminUserDirectoryEntry = {
   image: string | null;
   isInstanceAdmin: boolean;
   activeCompanyMembershipCount: number;
+  status: AdminUserStatus;
+  disabledAt: string | null;
+  disabledByUserId: string | null;
+  disabledReason: string | null;
+};
+
+export type DisableAdminUserResult = {
+  userId: string;
+  status: "disabled";
+  disabledAt: string;
+  disabledByUserId: string | null;
+  reason: string | null;
+  revokedSessionCount: number;
+};
+
+export type EnableAdminUserResult = {
+  userId: string;
+  status: "active";
+  wasDisabled: boolean;
+};
+
+export type DeleteAdminUserResult = {
+  userId: string;
+  deleted: true;
+  rejectedJoinRequestCount: number;
 };
 
 export type UserCompanyAccessEntry = {
@@ -406,6 +433,15 @@ export const accessApi = {
 
   demoteInstanceAdmin: (userId: string) =>
     api.post(`/admin/users/${userId}/demote-instance-admin`, {}),
+
+  disableUser: (userId: string, reason: string | null) =>
+    api.post<DisableAdminUserResult>(`/admin/users/${encodeURIComponent(userId)}/disable`, { reason }),
+
+  enableUser: (userId: string) =>
+    api.post<EnableAdminUserResult>(`/admin/users/${encodeURIComponent(userId)}/enable`, {}),
+
+  deleteUser: (userId: string) =>
+    api.delete<DeleteAdminUserResult>(`/admin/users/${encodeURIComponent(userId)}`),
 
   getUserCompanyAccess: (userId: string) =>
     api.get<UserCompanyAccessResponse>(`/admin/users/${userId}/company-access`),

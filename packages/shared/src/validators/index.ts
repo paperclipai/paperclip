@@ -773,6 +773,8 @@ export {
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
   searchAdminUsersQuerySchema,
+  disableInstanceUserSchema,
+  INSTANCE_USER_DISABLE_REASON_MAX_LENGTH,
   updateUserCompanyAccessSchema,
   type CreateCompanyInvite,
   type CreateOpenClawInvitePrompt,
@@ -792,6 +794,7 @@ export {
   type ArchiveCompanyMember,
   type UpdateMemberPermissions,
   type SearchAdminUsersQuery,
+  type DisableInstanceUser,
   type UpdateUserCompanyAccess,
 } from "./access.js";
 

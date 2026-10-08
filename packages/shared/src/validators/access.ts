@@ -157,6 +157,14 @@ export const searchAdminUsersQuerySchema = z.object({
 
 export type SearchAdminUsersQuery = z.infer<typeof searchAdminUsersQuerySchema>;
 
+export const INSTANCE_USER_DISABLE_REASON_MAX_LENGTH = 500;
+
+export const disableInstanceUserSchema = z.object({
+  reason: z.string().trim().max(INSTANCE_USER_DISABLE_REASON_MAX_LENGTH).optional().nullable(),
+});
+
+export type DisableInstanceUser = z.infer<typeof disableInstanceUserSchema>;
+
 const profileImageAssetPathPattern = /^\/api\/assets\/[^/?#]+\/content(?:\?[^#]*)?(?:#.*)?$/;
 
 function isValidProfileImage(value: string): boolean {

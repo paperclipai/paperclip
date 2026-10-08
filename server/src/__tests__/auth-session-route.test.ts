@@ -27,6 +27,8 @@ function createDb() {
     select: vi
       .fn()
       .mockImplementationOnce(() => createSelectChain([]))
+      .mockImplementationOnce(() => createSelectChain([]))
+      // No active user disablement.
       .mockImplementationOnce(() => createSelectChain([])),
   } as any;
 }

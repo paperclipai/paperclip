@@ -916,6 +916,9 @@ npx paperclipai member archive <member-id> --company-id <company-id> [--payload-
 npx paperclipai admin user list [--query <text>]
 npx paperclipai admin user promote <user-id>
 npx paperclipai admin user demote <user-id>
+npx paperclipai admin user disable <user-id> [--reason <text>]
+npx paperclipai admin user enable <user-id>
+npx paperclipai admin user delete <user-id> --yes
 npx paperclipai admin user company-access <user-id>
 npx paperclipai admin user company-access:update <user-id> --payload-json '{...}'
 ```

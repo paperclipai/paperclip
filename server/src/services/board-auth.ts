@@ -10,6 +10,7 @@ import {
   instanceUserRoles,
 } from "@paperclipai/db";
 import { conflict, forbidden, notFound } from "../errors.js";
+import { isUserDisabled } from "./instance-users.js";
 
 export const BOARD_API_KEY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const CLI_AUTH_CHALLENGE_TTL_MS = 10 * 60 * 1000;
@@ -67,7 +68,7 @@ export function boardAuthService(db: Db) {
     }
   }
   async function resolveBoardAccess(userId: string) {
-    const [user, memberships, adminRole] = await Promise.all([
+    const [user, memberships, adminRole, disabled] = await Promise.all([
       db
         .select({
           id: authUsers.id,
@@ -97,13 +98,20 @@ export function boardAuthService(db: Db) {
         .from(instanceUserRoles)
         .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
         .then((rows) => rows[0] ?? null),
+      isUserDisabled(db, userId),
     ]);
 
+    // A disabled account resolves exactly like a missing one, so every caller
+    // that turns a stored credential into a user (board API keys, MCP OAuth
+    // grants, Dot pairings, CLI approval) fails closed while the block lasts
+    // and works again once an instance admin re-enables the user.
+    const activeMemberships = disabled ? [] as typeof memberships : memberships;
     return {
-      user,
-      companyIds: memberships.map((row) => row.companyId),
-      memberships,
-      isInstanceAdmin: Boolean(adminRole),
+      user: disabled ? null : user,
+      companyIds: activeMemberships.map((row) => row.companyId),
+      memberships: activeMemberships,
+      isInstanceAdmin: !disabled && Boolean(adminRole),
+      disabled,
     };
   }
 

@@ -1,10 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Shield, ShieldCheck } from "lucide-react";
+import { INSTANCE_USER_DISABLE_REASON_MAX_LENGTH } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Card } from "@/components/ui/card";
 import { companyDirectoryQueryOptions, useAccountIdentity } from "@/api/companies-query";
@@ -19,6 +32,8 @@ export function InstanceAccess() {
   const [search, setSearch] = useState("");
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [selectedCompanyIds, setSelectedCompanyIds] = useState<Set<string>>(new Set());
+  const [pendingAccountAction, setPendingAccountAction] = useState<"disable" | "delete" | null>(null);
+  const [disableReason, setDisableReason] = useState("");
 
   useEffect(() => {
     setBreadcrumbs([
@@ -77,6 +92,8 @@ export function InstanceAccess() {
     },
   });
 
+  const errorMessage = (error: unknown) => (error instanceof Error ? error.message : undefined);
+
   const setAdminMutation = useMutation({
     mutationFn: async (makeAdmin: boolean) => {
       if (!selectedUserId) throw new Error("No user selected");
@@ -89,6 +106,47 @@ export function InstanceAccess() {
         await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId) });
       }
       pushToast({ title: "Instance role updated", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({ title: "Could not update instance role", body: errorMessage(error), tone: "error" });
+    },
+  });
+
+  const disableUserMutation = useMutation({
+    mutationFn: () => accessApi.disableUser(selectedUserId!, disableReason.trim() || null),
+    onSuccess: async () => {
+      setPendingAccountAction(null);
+      setDisableReason("");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.access.adminUsers(search) });
+      pushToast({ title: "User disabled", body: "Their sessions were signed out.", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({ title: "Could not disable user", body: errorMessage(error), tone: "error" });
+    },
+  });
+
+  const enableUserMutation = useMutation({
+    mutationFn: () => accessApi.enableUser(selectedUserId!),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.access.adminUsers(search) });
+      pushToast({ title: "User enabled", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({ title: "Could not enable user", body: errorMessage(error), tone: "error" });
+    },
+  });
+
+  const deleteUserMutation = useMutation({
+    mutationFn: () => accessApi.deleteUser(selectedUserId!),
+    onSuccess: async () => {
+      setPendingAccountAction(null);
+      setSelectedUserId(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.access.adminUsers(search) });
+      pushToast({ title: "User deleted", tone: "success" });
+    },
+    onError: (error) => {
+      setPendingAccountAction(null);
+      pushToast({ title: "Could not delete user", body: errorMessage(error), tone: "error" });
     },
   });
 
@@ -155,9 +213,12 @@ export function InstanceAccess() {
                     <div className="truncate font-medium">{user.name || user.email || user.id}</div>
                     <div className="truncate text-sm text-muted-foreground">{user.email || user.id}</div>
                   </div>
-                  {user.isInstanceAdmin ? (
-                    <ShieldCheck className="h-4 w-4 text-emerald-600" />
-                  ) : null}
+                  <div className="flex shrink-0 items-center gap-2">
+                    {user.status === "disabled" ? <Badge variant="outline">Disabled</Badge> : null}
+                    {user.isInstanceAdmin ? (
+                      <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                    ) : null}
+                  </div>
                 </div>
                 <div className="mt-2 text-xs text-muted-foreground">
                   {user.activeCompanyMembershipCount} active organization memberships
@@ -186,14 +247,54 @@ export function InstanceAccess() {
                   <div className="text-sm text-muted-foreground">
                     {selectedUser?.email || selectedUserId}
                   </div>
+                  {selectedUser?.status === "disabled" ? (
+                    <div className="mt-2 space-y-1 text-sm">
+                      <Badge variant="outline">Disabled</Badge>
+                      <div className="text-muted-foreground">
+                        {selectedUser.disabledAt
+                          ? `Disabled on ${new Date(selectedUser.disabledAt).toLocaleDateString()}.`
+                          : "Disabled."}{" "}
+                        Cannot sign in or use API keys until enabled.
+                      </div>
+                      {selectedUser.disabledReason ? (
+                        <div className="text-muted-foreground">Reason: {selectedUser.disabledReason}</div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
-                <Button
-                  variant={selectedUser?.isInstanceAdmin ? "outline" : "default"}
-                  onClick={() => setAdminMutation.mutate(!(selectedUser?.isInstanceAdmin ?? false))}
-                  disabled={setAdminMutation.isPending}
-                >
-                  {selectedUser?.isInstanceAdmin ? "Remove instance admin" : "Promote to instance admin"}
-                </Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant={selectedUser?.isInstanceAdmin ? "outline" : "default"}
+                    onClick={() => setAdminMutation.mutate(!(selectedUser?.isInstanceAdmin ?? false))}
+                    disabled={setAdminMutation.isPending}
+                  >
+                    {selectedUser?.isInstanceAdmin ? "Remove instance admin" : "Promote to instance admin"}
+                  </Button>
+                  {selectedUser && selectedUser.id !== accountUserId ? (
+                    <>
+                      {selectedUser.status === "disabled" ? (
+                        <Button
+                          variant="outline"
+                          onClick={() => enableUserMutation.mutate()}
+                          disabled={enableUserMutation.isPending}
+                        >
+                          {enableUserMutation.isPending ? "Enabling…" : "Enable user"}
+                        </Button>
+                      ) : (
+                        <Button variant="outline" onClick={() => setPendingAccountAction("disable")}>
+                          Disable user
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        className="text-destructive"
+                        onClick={() => setPendingAccountAction("delete")}
+                      >
+                        Delete user
+                      </Button>
+                    </>
+                  ) : null}
+                </div>
               </div>
 
               <div className="space-y-3">
@@ -262,6 +363,76 @@ export function InstanceAccess() {
           )}
         </Card>
       </div>
+
+      <AlertDialog
+        open={pendingAccountAction === "disable"}
+        onOpenChange={(open) => {
+          if (!open && !disableUserMutation.isPending) setPendingAccountAction(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disable {selectedUser?.name || selectedUser?.email || "user"}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              They are signed out everywhere and cannot sign in, use board API keys, or use connected
+              assistants until you enable the account again. Their organization memberships and history stay
+              in place.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <label className="block space-y-2 text-sm">
+            <span className="font-medium">Reason (optional)</span>
+            <Textarea
+              value={disableReason}
+              maxLength={INSTANCE_USER_DISABLE_REASON_MAX_LENGTH}
+              onChange={(event) => setDisableReason(event.target.value)}
+              placeholder="Visible to instance admins"
+            />
+          </label>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={disableUserMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={disableUserMutation.isPending || !selectedUserId}
+              onClick={(event) => {
+                event.preventDefault();
+                disableUserMutation.mutate();
+              }}
+            >
+              {disableUserMutation.isPending ? "Disabling…" : "Disable user"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={pendingAccountAction === "delete"}
+        onOpenChange={(open) => {
+          if (!open && !deleteUserMutation.isPending) setPendingAccountAction(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selectedUser?.name || selectedUser?.email || "user"}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes the account, its sign-in methods, and its API keys. Accounts with
+              organization history cannot be deleted; disable them instead.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteUserMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteUserMutation.isPending || !selectedUserId}
+              onClick={(event) => {
+                event.preventDefault();
+                deleteUserMutation.mutate();
+              }}
+            >
+              {deleteUserMutation.isPending ? "Deleting…" : "Delete user"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

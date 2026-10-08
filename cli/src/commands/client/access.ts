@@ -16,6 +16,14 @@ interface JsonPayloadOptions extends CompanyOptions {
   payloadJson?: string;
 }
 
+interface AdminUserDisableOptions extends BaseClientOptions {
+  reason?: string;
+}
+
+interface AdminUserDeleteOptions extends BaseClientOptions {
+  yes?: boolean;
+}
+
 interface QueryOptions extends CompanyOptions {
   query?: string;
   status?: string;
@@ -232,6 +240,54 @@ export function registerAccessCommands(program: Command): void {
   );
   addAdminUserPost(user, "promote", "promote-instance-admin");
   addAdminUserPost(user, "demote", "demote-instance-admin");
+  addCommonClientOptions(
+    user
+      .command("disable")
+      .description("Disable a user: revoke sessions and block sign-in and API keys")
+      .argument("<userId>", "User ID")
+      .option("--reason <text>", "Reason recorded with the block")
+      .action(async (userId: string, opts: AdminUserDisableOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(
+            await ctx.api.post(apiPath`/api/admin/users/${userId}/disable`, { reason: opts.reason ?? null }),
+            { json: ctx.json },
+          );
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+  addCommonClientOptions(
+    user
+      .command("enable")
+      .description("Re-enable a disabled user")
+      .argument("<userId>", "User ID")
+      .action(async (userId: string, opts: BaseClientOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.post(apiPath`/api/admin/users/${userId}/enable`, {}), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
+  addCommonClientOptions(
+    user
+      .command("delete")
+      .description("Delete a user account without organization history")
+      .argument("<userId>", "User ID")
+      .option("--yes", "Confirm deletion")
+      .action(async (userId: string, opts: AdminUserDeleteOptions) => {
+        try {
+          if (!opts.yes) throw new Error("Refusing to delete without --yes");
+          const ctx = resolveCommandContext(opts);
+          printOutput(await ctx.api.delete(apiPath`/api/admin/users/${userId}`), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
   addCommonClientOptions(
     user
       .command("company-access")

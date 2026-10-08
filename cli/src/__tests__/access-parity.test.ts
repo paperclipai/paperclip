@@ -57,6 +57,9 @@ describe("access parity commands", () => {
     await run(["member", "archive", MEMBER_ID, "--company-id", COMPANY_ID]);
     await run(["admin", "user", "list"]);
     await run(["admin", "user", "promote", USER_ID]);
+    await run(["admin", "user", "disable", USER_ID, "--reason", "spam"]);
+    await run(["admin", "user", "enable", USER_ID]);
+    await run(["admin", "user", "delete", USER_ID, "--yes"]);
     await run(["admin", "user", "company-access:update", USER_ID, "--payload-json", "{}"]);
 
     expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
@@ -81,8 +84,25 @@ describe("access parity commands", () => {
       ["POST", `http://localhost:3100/api/companies/${COMPANY_ID}/members/${MEMBER_ID}/archive`],
       ["GET", "http://localhost:3100/api/admin/users"],
       ["POST", `http://localhost:3100/api/admin/users/${USER_ID}/promote-instance-admin`],
+      ["POST", `http://localhost:3100/api/admin/users/${USER_ID}/disable`],
+      ["POST", `http://localhost:3100/api/admin/users/${USER_ID}/enable`],
+      ["DELETE", `http://localhost:3100/api/admin/users/${USER_ID}`],
       ["PUT", `http://localhost:3100/api/admin/users/${USER_ID}/company-access`],
     ]);
+  });
+
+  it("sends the disable reason and refuses to delete a user without --yes", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await run(["admin", "user", "disable", USER_ID, "--reason", "spam"]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ reason: "spam" });
+
+    await run(["admin", "user", "delete", USER_ID]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalled();
   });
 
   it("wraps instance, sidebar, llm, and openapi endpoints", async () => {
