@@ -9038,9 +9038,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await heartbeatService(db).cancelActiveForAgent(agentId);
 
+    // Agent-wide cancellation now routes through the same cancelRunInternal
+    // path as a single-run cancel, so it picks up that path's codex_local
+    // workaround too: Codex handles Ctrl-C by cancelling its tool sessions,
+    // while SIGTERM can leave commands in their own process groups alive.
+    // seedRunFixture's default adapterType is "codex_local".
     expect(mockTerminateLocalService).toHaveBeenCalledWith(
       expect.objectContaining({ pid: 81_501, processGroupId: 81_502 }),
-      { forceAfterMs: 3000 },
+      { forceAfterMs: 3000, signal: "SIGINT" },
     );
     expect(runningProcesses.has(runId)).toBe(false);
   });
