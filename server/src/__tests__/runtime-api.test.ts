@@ -173,6 +173,41 @@ describe("chooseRuntimeDialOrigin", () => {
     ).toBe("http://localhost:4100");
   });
 
+  it("keeps an explicit IPv6 loopback origin on its own port", () => {
+    // `new URL("http://[::1]:4100").hostname` is "[::1]", brackets included.
+    expect(
+      chooseRuntimeDialOrigin({
+        configuredApiUrl: "http://[::1]:4100",
+        listenPort: "3100",
+        localExecution: true,
+      }),
+    ).toBe("http://[::1]:4100");
+  });
+
+  it("does not substitute loopback when the listener is bound to one specific address", () => {
+    expect(
+      chooseRuntimeDialOrigin({
+        configuredApiUrl: "https://paperclip.example.test",
+        listenPort: "3100",
+        localExecution: true,
+        bindHost: "100.64.0.5",
+      }),
+    ).toBe("https://paperclip.example.test");
+  });
+
+  it("still substitutes loopback for wildcard and loopback binds", () => {
+    for (const bindHost of ["0.0.0.0", "::", "127.0.0.1", "::1", "[::1]", ""]) {
+      expect(
+        chooseRuntimeDialOrigin({
+          configuredApiUrl: "https://paperclip.example.test",
+          listenPort: "3100",
+          localExecution: true,
+          bindHost,
+        }),
+      ).toBe("http://127.0.0.1:3100");
+    }
+  });
+
   it("falls back to the configured origin when the listen port is not numeric", () => {
     expect(
       chooseRuntimeDialOrigin({

@@ -860,6 +860,7 @@ export function runtimeDialBaseUrl(localExecution: boolean): string | null {
       readNonEmptyString(process.env.PAPERCLIP_LISTEN_PORT) ??
       readNonEmptyString(process.env.PORT),
     localExecution,
+    bindHost: readNonEmptyString(process.env.PAPERCLIP_LISTEN_HOST),
   });
 }
 
