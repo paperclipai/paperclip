@@ -17,6 +17,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "slack",
   "notion",
   "railway",
+  "unifi",
   "posthog",
   "linear",
   "google-sheets",
@@ -265,7 +266,10 @@ export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string
   // and has not been established as read-only. Classify it as write (server
   // classifyRisk) and require Ask first so new token connections do not ship
   // that action as Allowed.
-  if (app.slug === "enterpret") {
+  // UniFi's community MCP server can block clients, restart devices, and change
+  // firewall rules; only reviewed Network reads start Allowed (server
+  // classifyRisk).
+  if (app.slug === "enterpret" || app.slug === "unifi") {
     return {
       access: "all_agents",
       askFirstRiskLevels: ["write", "destructive"],

@@ -2367,10 +2367,77 @@ const AGGREGATOR_READ_TOOLS = new Map<string, ReadonlySet<string>>([
   ["zapier", new Set()],
 ]);
 
+// UniFi has no Ubiquiti MCP server; the curated entry targets the community
+// pete-builds/mcp-unifi server. These are its Network-module tools that are
+// both annotated readOnlyHint and registered with mutates=False (reviewed at
+// v0.25.0). Protect camera imagery and Access physical-security reads are out
+// of scope for network discovery, so they and every unreviewed or later tool
+// are writes. Names match exactly so a renamed or added tool cannot pose as a
+// read; trigger_speedtest, locate_device, and confirm_destructive_action are
+// writes even though they do not look like config edits.
+const UNIFI_READ_TOOLS = new Set([
+  "audit_network_drift",
+  "audit_open_ports",
+  "backup_config",
+  "get_anomalies",
+  "get_client_sessions",
+  "get_client_stats",
+  "get_console_firmware",
+  "get_console_health",
+  "get_console_info",
+  "get_content_filter_details",
+  "get_device_radios",
+  "get_device_stats",
+  "get_dynamic_dns_details",
+  "get_firewall_group_details",
+  "get_gateway_stats",
+  "get_guest_portal",
+  "get_network_details",
+  "get_route_details",
+  "get_site_health",
+  "get_speedtest_results",
+  "get_system_info",
+  "get_teleport_config",
+  "get_threat_management",
+  "get_traffic_route_details",
+  "get_traffic_rule_details",
+  "get_wan_ipv6",
+  "get_wan_status",
+  "list_alarms",
+  "list_ap_groups",
+  "list_clients",
+  "list_content_filters",
+  "list_devices",
+  "list_dhcp_leases",
+  "list_dynamic_dns",
+  "list_events",
+  "list_firewall_groups",
+  "list_firewall_policies",
+  "list_firewall_rules",
+  "list_firewall_zones",
+  "list_honeypots",
+  "list_networks",
+  "list_port_forwards",
+  "list_port_profiles",
+  "list_routes",
+  "list_top_talkers",
+  "list_traffic_routes",
+  "list_traffic_rules",
+  "list_wlans",
+]);
+
+function unifiRisk(tool: McpToolDescriptor): ToolRiskLevel {
+  const annotations = tool.annotations ?? {};
+  if (annotations.destructiveHint === true || annotations.destructive === true) return "destructive";
+  if (!UNIFI_READ_TOOLS.has(tool.name)) return "write";
+  return annotations.readOnlyHint === false || annotations.writeHint === true ? "write" : "read";
+}
+
 export function classifyRisk(
   tool: McpToolDescriptor,
   sourceTemplateKey?: string | null,
 ): ToolRiskLevel {
+  if (sourceTemplateKey === "unifi") return unifiRisk(tool);
   const annotations = tool.annotations ?? {};
   if (annotations.destructiveHint === true || annotations.destructive === true)
     return "destructive";
@@ -7808,7 +7875,7 @@ export function toolAccessService(
         ? googleProfileValue
         : null;
     const preserveReviewedCatalog =
-      (isRailwayEndpoint(connection.config.url) || sourceTemplateKey === "enterpret") &&
+      (isRailwayEndpoint(connection.config.url) || sourceTemplateKey === "enterpret" || sourceTemplateKey === "unifi") &&
       existingRows.length > 0;
     const quarantineOnRefresh =
       (!refreshOptions.enableAllByDefault || preserveReviewedCatalog) &&
@@ -7911,7 +7978,7 @@ export function toolAccessService(
     }
 
     const preserveQuarantine =
-      isRailwayEndpoint(connection.config.url) || sourceTemplateKey === "enterpret";
+      isRailwayEndpoint(connection.config.url) || sourceTemplateKey === "enterpret" || sourceTemplateKey === "unifi";
     const normalizedConfig = preserveQuarantine
       ? { ...connection.config, quarantineNewEntries: true }
       : refreshOptions.enableAllByDefault
@@ -12774,7 +12841,7 @@ export function toolAccessService(
           // Grant-backed setup keeps the full discovered catalog selectable;
           // the wizard projects the app's action defaults into policies at
           // finish time instead of using catalog quarantine as access state.
-          quarantineNewEntries: galleryEntry.slug === "railway" || galleryEntry.slug === "enterpret",
+          quarantineNewEntries: galleryEntry.slug === "railway" || galleryEntry.slug === "enterpret" || galleryEntry.slug === "unifi",
           ...(remoteMcpConnector ? {
             mcpSessionRequired: true,
             mcpAuthMode: input.authMode ?? "auto",

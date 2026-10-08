@@ -807,6 +807,110 @@ const apps = [
       { requiredResourceFilters: ["team", "project", "environment"] },
     ),
   ],
+  // Ubiquiti publishes no MCP server. This entry promotes the reviewed
+  // community server pete-builds/mcp-unifi (MIT, v0.25.0), which the operator
+  // self-hosts next to the console and fronts with TLS. It speaks Streamable
+  // HTTP at /mcp and requires its own bearer token, separate from the UniFi
+  // API key. The UniFi key stays in that server's environment and never
+  // reaches Paperclip, so no caller identity is forwarded to the console.
+  // Read-only is layered: MCP_UNIFI_READONLY=true on the server and Paperclip
+  // governance. UniFi OS does not let View Only admins create API keys, so the
+  // console itself cannot be relied on to reject writes (classifyRisk treats only the
+  // reviewed read tools as reads, writes start Ask first, and tools that appear
+  // later are quarantined).
+  [
+    "unifi",
+    "UniFi",
+    "Let agents inspect your UniFi network's devices, clients, VLANs, Wi-Fi, and firewall through a self-hosted read-only MCP server.",
+    "developer",
+    "ui.com",
+    // Self-hosted servers have no fixed domain; recognize only the documented
+    // unifi-mcp.* host convention rather than claiming every /mcp URL.
+    ["https://unifi-mcp.*/mcp"],
+    [
+      method(
+        "mcp-bearer-token",
+        "mcp_remote",
+        "api_key",
+        { serverUrlTemplate: "https://{unifiMcpHost}:{unifiMcpPort}/mcp" },
+        "S3",
+        "Connect to your own mcp-unifi server (pete-builds/mcp-unifi 0.25 or newer) over HTTPS. Run it with a dedicated UniFi API key and MCP_UNIFI_READONLY=true, then paste one of its MCP_UNIFI_AUTH_TOKENS values below. Your UniFi API key stays on that server.",
+        {
+          label: "Use an MCP server token",
+          grantKinds: ["organization"],
+          whenToUse:
+            "Recommended. Use a bearer token from your self-hosted mcp-unifi server, reached over HTTPS through your own TLS reverse proxy.",
+          tenantFields: [
+            {
+              key: "unifiMcpHost",
+              label: "mcp-unifi host",
+              type: "text",
+              required: true,
+              placeholder: "unifi-mcp.home.example.com",
+              helperMd:
+                "Enter the HTTPS host name of your mcp-unifi server without https:// or a path. This is the server's TLS host, not your UniFi console's address.",
+              validation: {
+                pattern:
+                  "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$",
+                maxLength: 253,
+              },
+            },
+            {
+              key: "unifiMcpPort",
+              label: "HTTPS port",
+              type: "text",
+              required: true,
+              advanced: true,
+              placeholder: "443",
+              defaultValue: "443",
+              helperMd:
+                "Use the port of the TLS reverse proxy in front of mcp-unifi, usually 443. The container's own port 3714 serves plain HTTP and is not supported here.",
+              validation: { pattern: "^[1-9][0-9]{0,4}$", maxLength: 5 },
+            },
+          ],
+          credentialFields: [
+            field(
+              "authorization",
+              "mcp-unifi bearer token",
+              "Paste a token from the server's MCP_UNIFI_AUTH_TOKENS",
+            ),
+          ],
+          keyPlacement: {
+            location: "header",
+            name: "Authorization",
+            prefix: "Bearer ",
+          },
+          consoleLinks: {
+            docs: "https://pete-builds.github.io/mcp-unifi/",
+            keys: "https://help.ui.com/hc/en-us/articles/30076656117655",
+          },
+          warnings: [
+            "This connects to a community MCP server, not a Ubiquiti service. Review and pin the mcp-unifi release you run.",
+            "UniFi OS does not let View Only administrators create API keys, so the key mcp-unifi uses can make changes. Create it from a dedicated local administrator, never the owner account, and rely on MCP_UNIFI_READONLY=true plus Ask first to keep the connection read-only. Paperclip cannot see or narrow that key.",
+            "Start mcp-unifi with MCP_UNIFI_READONLY=true so it hides and refuses every change tool.",
+            "Any tool that is not a reviewed read starts as Ask first, and tools that appear later stay quarantined until reviewed.",
+            "Plain HTTP is not supported. Put mcp-unifi behind a TLS reverse proxy and restrict it to Paperclip's address.",
+          ],
+        },
+      ),
+    ],
+    {
+      docsUrl: "https://pete-builds.github.io/mcp-unifi/",
+      setupPrerequisite: {
+        title: "Run a read-only mcp-unifi server before connecting",
+        description:
+          "Ubiquiti does not publish an MCP server. Paperclip connects to pete-builds/mcp-unifi, which you run on your own network next to a UniFi OS console with UniFi Network 9 or newer.",
+        steps: [
+          "In UniFi OS, add a dedicated local administrator for mcp-unifi (not the owner account), sign in as that administrator, and create an API key under Settings, Control Plane, Integrations. View Only administrators cannot create API keys.",
+          "Run mcp-unifi 0.25 or newer with that key, STUB_MODE=false (the server returns mock data by default), MCP_UNIFI_READONLY=true, and a fresh random token in MCP_UNIFI_AUTH_TOKENS.",
+          "Put a TLS reverse proxy in front of the server's /mcp endpoint and allow only Paperclip's address to reach it.",
+          "Paste the proxy's host name and the bearer token into Paperclip.",
+        ],
+        actionLabel: "Open mcp-unifi docs",
+        actionUrl: "https://pete-builds.github.io/mcp-unifi/",
+      },
+    },
+  ],
   // Enterpret advertises RFC 9728 -> RFC 8414 discovery from its own 401
   // challenge (issuer https://oauth.enterpret.com, PKCE S256, registration
   // endpoint present, token_endpoint_auth_method "none"), so `defaults` ships

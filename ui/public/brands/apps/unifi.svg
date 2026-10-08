@@ -1,0 +1,10 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M0 80c0-28.003 0-42.004 5.45-52.7A50 50 0 0 1 27.3 5.45C37.996 0 51.998 0 80 0h96c28.003 0 42.004 0 52.7 5.45a49.995 49.995 0 0 1 21.85 21.85C256 37.996 256 51.998 256 80v96c0 28.003 0 42.004-5.45 52.7a49.99 49.99 0 0 1-21.85 21.85C218.004 256 204.003 256 176 256H80c-28.003 0-42.004 0-52.7-5.45A49.995 49.995 0 0 1 5.45 228.7C0 218.004 0 204.003 0 176V80Z" fill="url(#unifi-bg)"/>
+<path d="M212 128c0 46.392-37.608 84-84 84s-84-37.608-84-84 37.608-84 84-84 84 37.608 84 84Z" fill="url(#unifi-disc)"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M165 128c0-20.435-16.565-37-37-37s-37 16.565-37 37 16.565 37 37 37 37-16.565 37-37Zm-67 0c0-16.569 13.431-30 30-30 16.569 0 30 13.431 30 30 0 16.569-13.431 30-30 30-16.569 0-30-13.431-30-30Z" fill="url(#unifi-ring)"/>
+<defs>
+<radialGradient id="unifi-bg" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="matrix(0 256 -256 0 128 0)"><stop stop-color="#006FFF"/><stop offset="1" stop-color="#003C9E"/></radialGradient>
+<radialGradient id="unifi-ring" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="matrix(0 74 -74 0 128 91)"><stop stop-color="#005ED9"/><stop offset="1" stop-color="#003386"/></radialGradient>
+<linearGradient id="unifi-disc" x1="217.623" y1="213.45" x2="220.523" y2="28.403" gradientUnits="userSpaceOnUse"><stop stop-color="#C2C4CE"/><stop offset="0.397" stop-color="#D6D9E2"/><stop offset="1" stop-color="#fff"/></linearGradient>
+</defs>
+</svg>

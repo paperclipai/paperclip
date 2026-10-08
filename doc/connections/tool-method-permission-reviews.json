@@ -2108,6 +2108,24 @@
       "liveProof": "not-run"
     },
     {
+      "app": "unifi",
+      "method": "mcp-bearer-token",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Read UniFi Network devices, clients, WLANs, firewall, routing, and health through the community mcp-unifi server; when the server is not in read-only mode its tools can also block clients, restart devices, change firewall/WLAN/network settings, and restore configuration.",
+      "evidence": [
+        "https://github.com/pete-builds/mcp-unifi",
+        "https://pete-builds.github.io/mcp-unifi/guides/security/",
+        "https://help.ui.com/hc/en-us/articles/30076656117655"
+      ],
+      "reviewedAt": "2026-10-07",
+      "liveProof": "server-tls-auth-tool-list-safe-read-verified",
+      "keyPermissions": "This is an mcp-unifi bearer token from MCP_UNIFI_AUTH_TOKENS, not a UniFi API key. Run the server with MCP_UNIFI_READONLY=true and a UniFi API key from a dedicated local admin. UniFi OS does not let View Only admins create API keys, so the server's UniFi key can make changes and Paperclip cannot narrow it.",
+      "evidenceLimit": "Tool names and read/mutate classification were reviewed from mcp-unifi v0.25.0 source (74 read tools, 62 mutating). Ubiquiti does not publish an MCP server or an API-key scope model; Live console check (UniFi Express 7, Network 10.6.106, 2026-10-07): a View Only local admin gets 'unauthorized edit:api_key' when creating a key, and an admin cannot create keys for another user. That View Only admin's session is refused on writes (api.err.NoPermission). Live server proof (2026-10-07): mcp-unifi 0.25.0 with STUB_MODE=false, MCP_UNIFI_READONLY=true, and modules=network, behind a Caddy TLS proxy limited to the Paperclip host, returned 401 without the bearer token and 403 to other hosts. tools/list returned 48 readOnlyHint tools that exactly match UNIFI_READ_TOOLS, and list_devices, get_site_health, and list_networks returned real console data. Connecting through a running Paperclip build of this connector, refresh quarantine after an upgrade, and revocation remain untested."
+    },
+    {
       "app": "vercel",
       "method": "mcp-oauth",
       "auth": "oauth",
