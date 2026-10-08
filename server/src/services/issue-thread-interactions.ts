@@ -3452,6 +3452,7 @@ export function issueThreadInteractionService(
             name: agents.name,
             reportsTo: agents.reportsTo,
             status: agents.status,
+            adapterType: agents.adapterType,
           })
           .from(agents)
           .where(eq(agents.id, normalizedData.addresseeAgentId))

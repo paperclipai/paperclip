@@ -10366,7 +10366,7 @@ export function heartbeatService(
   function toAgentOrgRow(
     agent: Pick<
       typeof agents.$inferSelect,
-      "id" | "companyId" | "name" | "reportsTo" | "status"
+      "id" | "companyId" | "name" | "reportsTo" | "status" | "adapterType"
     >,
   ): AgentOrgRow {
     return {
@@ -10375,6 +10375,7 @@ export function heartbeatService(
       name: agent.name,
       reportsTo: agent.reportsTo,
       status: agent.status,
+      adapterType: agent.adapterType,
     };
   }
 
@@ -10388,6 +10389,7 @@ export function heartbeatService(
         name: agents.name,
         reportsTo: agents.reportsTo,
         status: agents.status,
+        adapterType: agents.adapterType,
       })
       .from(agents)
       .where(eq(agents.companyId, companyId));
