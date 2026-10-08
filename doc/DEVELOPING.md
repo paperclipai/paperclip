@@ -1263,6 +1263,15 @@ run events, issue-lock release, plan-resume reporting, and worktree cutoffs. It
 re-exports the existing retry helpers and workspace-busy error class. Keep retry
 policy changes separate from this extraction.
 
+Restart recovery and lease cleanup are in `server/src/services/heartbeat/recovery.ts`.
+It owns hot-restart snapshots and adoption, native restart recovery, shutdown
+draining, orphaned-run reaping, and active/pending-cleanup lease sweeps.
+`createHeartbeatRecovery` binds the service database and explicit lifecycle
+callbacks without starting work. The service supplies its shutdown flag callback
+and shared execution sets so separate service instances keep the same ownership
+and shutdown barriers. Cleanup single-flight state stays at module scope.
+Keep recovery policy changes separate from retry scheduling and execution changes.
+
 ## Wake Context Delivery
 
 Built-in adapters deliver wake context through the run prompt, including structured
