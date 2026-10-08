@@ -641,8 +641,10 @@ function clearExecutionStatePatch(input: {
   returnAssignee: IssueExecutionStagePrincipal | null;
 }) {
   input.patch.executionState = null;
-  if (input.requestedStatus === undefined && input.issueStatus === "in_review" && input.returnAssignee) {
-    input.patch.status = "in_progress";
+  if (input.issueStatus === "in_review" && input.returnAssignee) {
+    if (input.requestedStatus === undefined) {
+      input.patch.status = "in_progress";
+    }
     Object.assign(input.patch, patchForPrincipal(input.returnAssignee));
   }
 }
@@ -676,10 +678,26 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
   if (!input.policy) {
     if (existingState) {
-      patch.executionState = null;
-      if (input.issue.status === "in_review" && existingState.returnAssignee) {
-        patch.status = "in_progress";
-        Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
+      // When the pending-stage participant sends a plain PATCH (comment only,
+      // no policy, no requested status, and no policy removal), they are not
+      // making a decision — preserve the execution state so the approval stage
+      // is not silently cleared. When the policy was actively removed
+      // (previousPolicy non-null), collapse as before regardless of actor.
+      const actorIsPendingParticipantFreeComment =
+        existingState.status === PENDING_STATUS &&
+        existingState.currentParticipant !== null &&
+        existingState.currentParticipant.type === "user" &&
+        principalsEqual(actor, existingState.currentParticipant) &&
+        requestedStatus === undefined &&
+        !input.previousPolicy;
+
+      if (!actorIsPendingParticipantFreeComment) {
+        clearExecutionStatePatch({
+          patch,
+          issueStatus: input.issue.status,
+          requestedStatus,
+          returnAssignee: existingState.returnAssignee,
+        });
       }
     }
     return { patch };
@@ -696,12 +714,23 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   }
 
   if (existingState?.currentStageId && !currentStage) {
-    clearExecutionStatePatch({
-      patch,
-      issueStatus: input.issue.status,
-      requestedStatus,
-      returnAssignee: existingState.returnAssignee,
-    });
+    // Note: this guard intentionally omits `!input.previousPolicy` (unlike its twin at the !input.policy
+    // branch above). This branch is only reachable when input.policy is non-null, so `previousPolicy`
+    // is irrelevant — we are already operating under a live policy.
+    const actorIsPendingParticipantFreeComment =
+      existingState.status === PENDING_STATUS &&
+      existingState.currentParticipant !== null &&
+      existingState.currentParticipant.type === "user" &&
+      principalsEqual(actor, existingState.currentParticipant) &&
+      requestedStatus === undefined;
+    if (!actorIsPendingParticipantFreeComment) {
+      clearExecutionStatePatch({
+        patch,
+        issueStatus: input.issue.status,
+        requestedStatus,
+        returnAssignee: existingState.returnAssignee,
+      });
+    }
     return { patch };
   }
 

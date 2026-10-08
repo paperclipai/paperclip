@@ -1,4 +1,4 @@
-import type { IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@paperclipai/shared";
+import type { Issue, IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@paperclipai/shared";
 import { parseAssigneeValue } from "./assignees";
 import { createUuid as newId } from "./uuid";
 
@@ -21,6 +21,25 @@ export function principalFromSelectionValue(value: string): IssueExecutionStageP
 
 export function selectionValueFromPrincipal(principal: IssueExecutionStagePrincipal | IssueExecutionStageParticipant): string {
   return principal.type === "agent" ? `agent:${principal.agentId}` : `user:${principal.userId}`;
+}
+
+/**
+ * LOC-124: true when `userId` is the signed-in board user the current execution
+ * stage is waiting on, so the UI can offer verdict controls instead of leaving
+ * them to guess the magic approval comment.
+ */
+export function isPendingExecutionParticipant(
+  issue: Pick<Issue, "status" | "executionState">,
+  userId: string | null | undefined,
+): boolean {
+  const participant = issue.executionState?.currentParticipant;
+  return Boolean(
+    userId &&
+    issue.status === "in_review" &&
+    issue.executionState?.status === "pending" &&
+    participant?.type === "user" &&
+    participant.userId === userId,
+  );
 }
 
 export function stageParticipantValues(policy: IssueExecutionPolicy | null | undefined, stageType: StageType): string[] {

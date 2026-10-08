@@ -46,7 +46,7 @@ import {
 import { getRecentProjectIds } from "../../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
-import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
+import { buildExecutionPolicy, isPendingExecutionParticipant, stageParticipantValues } from "../../lib/issue-execution-policy";
 import {
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
@@ -398,6 +398,8 @@ export function IssueProperties({
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [unarchiveErrorMessage, setUnarchiveErrorMessage] = useState<string | null>(null);
+  const [requestChangesOpen, setRequestChangesOpen] = useState(false);
+  const [requestChangesText, setRequestChangesText] = useState("");
   const [watchdogOpen, setWatchdogOpen] = useState(false);
   const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
   const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
@@ -1072,6 +1074,7 @@ export function IssueProperties({
     }
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
+  const viewerIsPendingParticipant = isPendingExecutionParticipant(issue, currentUserId);
   useEffect(() => {
     setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
     setMonitorNotesInput(issue.executionPolicy?.monitor?.notes ?? "");
@@ -2662,6 +2665,65 @@ export function IssueProperties({
         {currentExecutionLabel && (
           <PropertyRow label="Execution">
             <span className="text-sm truncate min-w-0" title={currentExecutionLabel}>{currentExecutionLabel}</span>
+          </PropertyRow>
+        )}
+
+        {viewerIsPendingParticipant && (
+          <PropertyRow label="">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                className="inline-flex items-center rounded-full border border-emerald-600/40 px-2 py-0.5 text-xs text-emerald-600 transition-colors hover:bg-emerald-600/10"
+                onClick={() => onUpdate({ status: "done", comment: "## Review: APPROVED" })}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                onClick={() => setRequestChangesOpen((open) => !open)}
+              >
+                Request changes
+              </button>
+            </div>
+          </PropertyRow>
+        )}
+
+        {viewerIsPendingParticipant && requestChangesOpen && (
+          <PropertyRow label="">
+            <div className="flex w-full flex-col gap-1.5">
+              <textarea
+                autoFocus
+                rows={3}
+                value={requestChangesText}
+                onChange={(event) => setRequestChangesText(event.target.value)}
+                placeholder="Describe what needs to change..."
+                className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs"
+              />
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={requestChangesText.trim().length === 0}
+                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50 disabled:hover:bg-transparent"
+                  onClick={() => {
+                    const comment = requestChangesText.trim();
+                    if (!comment) return;
+                    onUpdate({ status: "in_progress", comment });
+                    setRequestChangesText("");
+                    setRequestChangesOpen(false);
+                  }}
+                >
+                  Submit
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                  onClick={() => { setRequestChangesOpen(false); setRequestChangesText(""); }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
           </PropertyRow>
         )}
 
