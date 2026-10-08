@@ -1,10 +1,16 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  createBufferedTextFileWriter,
+  runDatabaseBackup,
+  runDatabaseRestore,
+  writeOwnerOnlyGzipFile,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -14,6 +20,10 @@ import {
 const cleanups: Array<() => Promise<void> | void> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+function permissions(pathname: string): number {
+  return fs.statSync(pathname).mode & 0o777;
+}
 
 function createTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -71,6 +81,19 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+    expect(permissions(outputPath)).toBe(0o600);
+  });
+});
+
+describe("writeOwnerOnlyGzipFile", () => {
+  it("writes an owner-only, gzip-valid archive", async () => {
+    const tempDir = createTempDir("paperclip-owner-only-gzip-");
+    const outputPath = path.join(tempDir, "backup.sql.gz");
+
+    await writeOwnerOnlyGzipFile(Readable.from(["SELECT 1;\n"]), outputPath);
+
+    expect(permissions(outputPath)).toBe(0o600);
+    expect(gunzipSync(fs.readFileSync(outputPath)).toString("utf8")).toBe("SELECT 1;\n");
   });
 });
 
@@ -216,6 +239,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(result.backupFile).toMatch(/paperclip-test-.*\.sql\.gz$/);
         expect(result.sizeBytes).toBeGreaterThan(0);
         expect(fs.existsSync(result.backupFile)).toBe(true);
+        expect(permissions(result.backupFile)).toBe(0o600);
 
         await runDatabaseRestore({
           connectionString: restoreConnectionString,
