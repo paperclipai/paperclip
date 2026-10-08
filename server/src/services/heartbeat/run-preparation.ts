@@ -1,5 +1,6 @@
 import { CONFIGURED_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { ASSIGNED_MCP_SERVER_NAME } from "../mcp-tool-names.js";
+import { chooseRuntimeDialOrigin } from "../../runtime-api.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { githubBotConnectionIdsForRun } from "../chat-github-tools.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
@@ -852,6 +853,32 @@ export function paperclipApiBaseUrl(): string {
   return configured;
 }
 
+export function runtimeDialBaseUrl(localExecution: boolean): string | null {
+  return chooseRuntimeDialOrigin({
+    configuredApiUrl: configuredPaperclipApiBaseUrl(),
+    listenPort:
+      readNonEmptyString(process.env.PAPERCLIP_LISTEN_PORT) ??
+      readNonEmptyString(process.env.PORT),
+    localExecution,
+  });
+}
+
+export function requiredRuntimeDialBaseUrl(localExecution: boolean): string {
+  const base = runtimeDialBaseUrl(localExecution);
+  if (!base) {
+    throw new Error(
+      "PAPERCLIP_API_URL is required to deliver managed runtime MCP servers",
+    );
+  }
+  return base;
+}
+
+export function isLocalExecutionTarget(
+  target: { kind?: unknown } | null | undefined,
+): boolean {
+  return (target?.kind ?? "local") === "local";
+}
+
 export async function revokeHeartbeatRunGatewayTokens(input: {
   db: Db;
   companyId: string;
@@ -876,6 +903,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
   expectedAssignmentDigest?: string | null;
+  localExecution?: boolean;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
   const effective = await access.getEffectiveProfilesForAgent(
@@ -1176,7 +1204,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   return [
     {
       name: ASSIGNED_MCP_SERVER_NAME,
-      url: `${paperclipApiBaseUrl()}/mcp/gateways/${gateway!.gatewayPublicId}`,
+      url: `${requiredRuntimeDialBaseUrl(input.localExecution === true)}/mcp/gateways/${gateway!.gatewayPublicId}`,
       token: token.token,
       connectionId: `assignment:${assignmentDigest}`,
     },
@@ -1198,6 +1226,7 @@ export function createAdapterRuntimeToolAccess(input: {
   companyId: string;
   runId: string;
   responsibleUserId: string | null;
+  localExecution?: boolean;
 }): AdapterRuntimeToolAccess | undefined {
   if (!input.responsibleUserId) return undefined;
   const minted = createRuntimeToolsToken({
@@ -1211,7 +1240,7 @@ export function createAdapterRuntimeToolAccess(input: {
   // tests invoke heartbeat execution without booting an HTTP server, however;
   // in that context there is no reachable endpoint to advertise and runtime
   // tools should simply remain unavailable instead of failing the run.
-  const baseUrl = configuredPaperclipApiBaseUrl();
+  const baseUrl = runtimeDialBaseUrl(input.localExecution === true);
   if (!baseUrl) return undefined;
   return Object.freeze({
     version: 1,
