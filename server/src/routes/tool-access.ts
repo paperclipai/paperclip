@@ -1,3 +1,4 @@
+import { oauthCallbackPage } from "../oauth-callback-page.js";
 import { aiConnectionRouterPluginKey } from "@paperclipai/shared";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { composioAppSetupSchema, composioAppsRefreshSchema, composioAppsSyncSchema, composioAppAccountSchema } from "@paperclipai/shared";
@@ -192,7 +193,13 @@ export function connectionIntentOAuthOutcomeHtml(input: {
     }
   })();
   const targetOrigin = JSON.stringify(openerOrigin ?? "");
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Connection authorization</title></head><body><p>Returning to Paperclip…</p><script>const message=${message};const targetOrigin=${targetOrigin}||window.location.origin;if(window.opener&&window.opener!==window){window.opener.postMessage(message,targetOrigin);window.close();}else{window.location.replace(${fallback});}</script></body></html>`;
+  return oauthCallbackPage({
+    title: input.outcome === "connected" ? "App connected" : input.outcome === "declined" ? "Connection cancelled" : "Connection could not be completed",
+    description: input.outcome === "connected" ? "Your connection is ready. Return to your task to continue." : "Return to your task to try connecting again.",
+    state: input.outcome === "connected" ? "success" : "error",
+    actionHref: issuePath, actionLabel: "Return to task",
+    script: `const message=${message};const targetOrigin=${targetOrigin}||window.location.origin;if(window.opener&&window.opener!==window){window.opener.postMessage(message,targetOrigin);window.close();}else{window.location.replace(${fallback});}`,
+  });
 }
 
 // Some providers' consent pages navigate to this callback and, if their own
@@ -215,7 +222,12 @@ export function oauthCallbackInterstitialHtml(continuePath: string): string {
     .replaceAll("<", "&lt;");
   // A meta refresh alone, not a script as well: the OAuth code is single-use, so
   // two racing follow-ups would let the loser render an expired-state error.
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url=${attribute}"><title>Finishing connection</title></head><body><p>Finishing your connection…</p></body></html>`;
+  return oauthCallbackPage({
+    title: "Finishing connection", description: "Please wait while Paperclip finishes connecting your app.",
+    // No link: a second navigation can race the single-use automatic refresh.
+    state: "pending",
+    head: `<meta http-equiv="refresh" content="0;url=${attribute}">`,
+  });
 }
 
 function normalizeCloudConnectorEnrollmentReturnTo(returnTo?: string | null): string | null {
@@ -238,10 +250,13 @@ export function cloudConnectorEnrollmentOutcomeHtml(issuePrefix: string, returnT
   const fallbackPath = issueId
     ? `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issueId)}`
     : cloudConnectorEnrollmentReturnPath(issuePrefix, returnTo);
-  const fallback = JSON.stringify(fallbackPath).replaceAll("<", "\\u003c");
   // This document is served only after server-verified enrollment. The parent
   // independently re-reads enrollment status; browser messages grant no access.
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Paperclip connected</title></head><body><p>Paperclip is connected. Return to your task to finish connecting the app.</p><script>if(window.opener&&window.opener!==window){window.close();}else{const link=document.createElement("a");link.href=${fallback};link.textContent=${JSON.stringify(issueId ? "Return to task" : "Continue setup")};document.body.append(link);}</script></body></html>`;
+  return oauthCallbackPage({
+    title: "Paperclip connected", description: "Paperclip is connected. Return to your task to finish connecting the app.",
+    state: "success", actionHref: fallbackPath, actionLabel: issueId ? "Return to task" : "Continue setup",
+    script: `if(window.opener&&window.opener!==window){window.close();}`,
+  });
 }
 
 export function cloudConnectorEnrollmentReturnPath(issuePrefix: string, returnTo?: string | null): string {
@@ -327,7 +342,7 @@ export function toolAccessRoutes(
       openerOrigin?: string | null;
     },
   ) {
-    res.type("html").send(connectionIntentOAuthOutcomeHtml(input));
+    res.set("Cache-Control", "no-store").set("Referrer-Policy", "no-referrer").type("html").send(connectionIntentOAuthOutcomeHtml(input));
   }
 
   function configuredPublicBaseUrl() {

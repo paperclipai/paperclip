@@ -3,6 +3,7 @@ import {
   cloudConnectorEnrollmentReturnPath,
   cloudConnectorEnrollmentOutcomeHtml,
   connectionIntentOAuthOutcomeHtml,
+  oauthCallbackInterstitialHtml,
 } from "./tool-access.js";
 
 describe("Cloud connector enrollment return path", () => {
@@ -101,7 +102,7 @@ describe("inline enrollment completion", () => {
     const html = cloudConnectorEnrollmentOutcomeHtml("GMA", "/apps/connect?source=gmail&intent=request-1&enrollment_host=dialog");
     expect(html).toContain("window.close()");
     expect(html).not.toContain("window.location");
-    expect(html).toContain("/GMA/apps/connect?source=gmail&intent=request-1");
+    expect(html).toContain("/GMA/apps/connect?source=gmail&amp;intent=request-1");
     expect(html).toContain("cloud_connector=enrolled");
   });
 
@@ -117,3 +118,10 @@ describe("inline enrollment completion", () => {
     expect(html).not.toContain("/apps/connect");
   });
 });
+
+ it("offers only one navigation for the single-use callback handoff", () => {
+   const html = oauthCallbackInterstitialHtml("/api/tools/oauth/callback?state=one&code=two");
+   expect(html.match(/http-equiv="refresh"/g)).toHaveLength(1);
+   expect(html).not.toContain("<a ");
+   expect(html).not.toContain("<script>");
+ });

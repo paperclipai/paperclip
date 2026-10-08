@@ -1,3 +1,4 @@
+import { sendOAuthCallbackError } from "../oauth-callback-page.js";
 import type { Request, Response, NextFunction } from "express";
 import type { Db } from "@paperclipai/db";
 import { ZodError } from "zod";
@@ -181,6 +182,7 @@ export function errorHandler(
     const secretSensitiveServerError =
       err.status >= 500 &&
       isSecretSensitiveHttpRequest(req.method, req.originalUrl);
+    if (sendOAuthCallbackError(req, res, err.status)) return;
     res.status(err.status).json(
       secretSensitiveServerError
         ? { error: "Internal server error" }
@@ -282,6 +284,7 @@ export function errorHandler(
 
   reportCrash(reportableError);
 
+  if (sendOAuthCallbackError(req, res, 500)) return;
   res.status(500).json({
     error: "Internal server error",
     ...(shouldExposeTrustedCloudTenantImportError(req)

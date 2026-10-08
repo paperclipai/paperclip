@@ -1915,3 +1915,14 @@ Chromium. The test starts its own loopback Vite server and mocks API responses;
 it needs no running Paperclip instance or provider credentials. The same spec lives
 in the default `test:e2e` discovery tree, so the existing Chrome CI shards run it
 on pull requests.
+
+### OAuth callback browser pages
+
+Connection callback documents use `server/src/oauth-callback-page.ts` so they
+remain readable without the UI bundle. Tool OAuth, Cloud Connector enrollment,
+Vercel Connect, Slack search, and GitHub app registration failures render a
+recovery page for HTML browser requests. API callers keep JSON error responses
+and the same HTTP status. Successful redirects and popup messages remain intact.
+Callback pages use fixed error copy and do not display provider error prose,
+authorization codes, or state values. Run the callback-page tests and the
+connection-intent route tests when changing this surface.
