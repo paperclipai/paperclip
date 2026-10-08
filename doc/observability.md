@@ -448,9 +448,45 @@ explicit `local_path` or `non_git_path` project workspace has no repository URL,
 Git confirms the selected directory is not a repository, and the task requests
 a Git worktree. The run must fail during setup before provider work starts.
 Its existing validation error, blocked task and board recovery action remain.
-Git command failures, permissions, corrupt repositories, failed materialization,
-fallback paths, and generic missing or unrestorable workspaces remain reportable;
-the error text or `workspace_validation_failed` code alone never suppresses them.
+Local Git command failures, permissions, corrupt repositories, fallback paths,
+and generic missing or unrestorable workspaces remain reportable. The error text
+or `workspace_validation_failed` code alone never suppresses them.
+
+Recognized external connection failures also stay in the local run result instead
+of producing application-error events in Sentry. Their producer records a closed
+`connectionFailure` descriptor: schema version, provider, operation, and reason.
+It contains no URL, host, path, credential, or remote response. This classification
+does not change the run's failed state, task recovery action, retry policy, or
+whether remote work may have been accepted.
+
+- Managed remote Git clones classify known authentication, repository access,
+  invalid URL, DNS (including machine-specific SSH aliases), connection, TLS,
+  rate-limit, and upstream failures from the actual clone subprocess. Setup must
+  fail before provider work starts. Every failed workspace candidate must have
+  proven connection evidence; a mixed or unknown failure remains reportable.
+  Local/file clones, credential-provider exceptions, local checkout or copy
+  failures, process signals, and repository corruption remain reportable. Remote
+  fetch failures already return workspace warnings; their classification is not
+  transferred to a later failure resolving a local base ref.
+- Hermes gateway configuration validation and the initial create-run request use
+  exact config, HTTP, or structured transport evidence. Missing configuration,
+  rejected credentials, unavailable endpoints, rate limits, and upstream outages
+  remain visible to the run owner. Unknown protocol/parser errors, missing run
+  identifiers, untyped terminal failures, and timeouts after accepted work remain
+  reportable. Stream/poll errors retain their existing retry and logging behavior.
+
+Expected pre-provider waits for a shared project workspace, a credential rotation
+lock, or an exhausted AI connection pool carry a server-owned expected
+cancellation receipt. They retain existing retry and lock behavior without a
+Sentry cancellation event. A later failed retry still reports its actual error;
+the wait code alone is not sufficient to suppress an event.
+
+MCP tool discovery records recognized outbound HTTP/transport failures through
+server-only provenance. These failures preserve the response status, stored
+connection health, audit record, local context, and first-party telemetry while
+skipping only Sentry. A proven missing OAuth scope returns an actionable 422
+response with its reconnect guidance. Unknown responses, parsing errors, local
+callbacks, database errors, and unproven network-looking messages still report.
 
 The `run_failure` context also includes the recorded process `exitCode` and
 `signal`, so a generic adapter error can still distinguish a nonzero exit from

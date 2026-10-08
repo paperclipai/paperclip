@@ -4,6 +4,7 @@ import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { guardedRemoteHttpFetch, type RemoteHttpSocketFactory } from "../services/remote-http-fetch.js";
+import { readRemoteConnectionFailure } from "../services/remote-connection-failure.js";
 
 /**
  * PAP-17098 — DNS-rebinding regression coverage for outbound MCP/OAuth calls.
@@ -147,14 +148,16 @@ describe("guarded remote HTTP fetch (PAP-17098 DNS rebinding)", () => {
       throw Object.assign(new TypeError("fetch failed"), { cause });
     }) as typeof fetch;
 
-    await expect(guardedRemoteHttpFetch("https://8.8.8.8/mcp", {}, {
+    const failure = await guardedRemoteHttpFetch("https://8.8.8.8/mcp", {}, {
       allowPrivateNetwork: true,
       unpinnedFetch,
       error: guardError,
-    })).rejects.toMatchObject({
+    }).catch((error) => error);
+    expect(failure).toMatchObject({
       code: "remote_http_dns_failed",
       message: "Remote MCP connection hostname could not be resolved",
     });
+    expect(readRemoteConnectionFailure(failure)).toBe("dns_failure");
   });
 
   it("pins the connection to the approved address so a rebind never reaches loopback", async () => {
@@ -352,13 +355,15 @@ describe("guarded remote HTTP fetch (PAP-17098 DNS rebinding)", () => {
     });
     const network = routingSocketFactory({ [PUBLIC_ADDRESS]: upstream.port });
 
-    await expect(guardedRemoteHttpFetch(`http://${REBIND_HOST}/mcp`, {}, {
+    const failure = await guardedRemoteHttpFetch(`http://${REBIND_HOST}/mcp`, {}, {
       allowPrivateNetwork: false,
       lookup: async () => [{ address: PUBLIC_ADDRESS, family: 4 }],
       socketFactory: network.factory,
       responseTimeoutMs: 150,
       error: guardError,
-    })).rejects.toMatchObject({ code: "remote_http_response_timeout" });
+    }).catch((error) => error);
+    expect(failure).toMatchObject({ code: "remote_http_response_timeout" });
+    expect(readRemoteConnectionFailure(failure)).toBe("connection_timeout");
 
     // The deadline has to hand back the socket, not just the request handler:
     // a bounded call that still leaks a descriptor per silent peer is the same
@@ -416,7 +421,9 @@ describe("guarded remote HTTP fetch (PAP-17098 DNS rebinding)", () => {
     });
 
     expect(response.status).toBe(200);
-    await expect(response.text()).rejects.toMatchObject({ code: "remote_http_response_timeout" });
+    const failure = await response.text().catch((error) => error);
+    expect(failure).toMatchObject({ code: "remote_http_response_timeout" });
+    expect(readRemoteConnectionFailure(failure)).toBe("connection_timeout");
     await flush();
     expect(network.sockets.map((socket) => socket.destroyed)).toEqual([true]);
   });

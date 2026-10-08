@@ -633,7 +633,9 @@ describe("execute", () => {
     expect(result).toMatchObject({ exitCode: 1, signal: null, timedOut: false,
       errorCode: "hermes_gateway_connect_failed", errorFamily: "transient_upstream", retryNotBefore: null });
     expect(result.executionRecovery).toBeUndefined();
-    expect(result.resultJson).toBeUndefined();
+    expect(result.resultJson).toEqual({ connectionFailure: {
+      schemaVersion: 1, provider: "hermes_gateway", operation: "create_run", reason: "connection_refused",
+    } });
     expect(ctx.onDispatch).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls[0]?.[1]?.redirect).toBeUndefined();
@@ -735,6 +737,189 @@ describe("execute", () => {
     expect(result.timedOut).toBe(true);
     expect(result.errorCode).toBe("hermes_gateway_timeout");
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/stop"))).toBe(true);
+  });
+});
+
+describe("gateway connection failure reporting", () => {
+  const config = { apiBaseUrl: "https://gateway.example.test", apiKey: "gateway-private-key" };
+  const marker = (operation: string, reason: string) => ({
+    schemaVersion: 1, provider: "hermes_gateway", operation, reason,
+  });
+
+  it.each([
+    [{}, "api_base_url_missing", "endpoint_missing"],
+    [{ apiBaseUrl: "not a URL" }, "api_base_url_invalid", "endpoint_invalid"],
+    [{ apiBaseUrl: "ftp://gateway.example.test" }, "api_base_url_invalid", "endpoint_invalid"],
+    [{ apiBaseUrl: "http://gateway.example.test" }, "plain_http_remote_denied", "insecure_transport"],
+    [{ apiBaseUrl: config.apiBaseUrl }, "api_key_missing", "credentials_missing"],
+  ])("classifies configuration failure %s without dispatch", async (settings, code, reason) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx(settings);
+    ctx.onDispatch = vi.fn();
+    const result = await execute(ctx);
+    expect(result).toMatchObject({ exitCode: 1, signal: null, timedOut: false,
+      errorCode: `hermes_gateway_${code}`, resultJson: { connectionFailure: marker("configuration", reason) } });
+    expect(result.errorMessage).toBeTruthy();
+    expect(ctx.onDispatch).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [401, "auth_failed", "authentication_failed", null],
+    [403, "auth_failed", "authentication_failed", null],
+    [404, "runs_unsupported", "endpoint_not_found", null],
+    [429, "rate_limited", "rate_limited", "transient_upstream"],
+    [500, "upstream_error", "remote_unavailable", "transient_upstream"],
+    [503, "upstream_error", "remote_unavailable", "transient_upstream"],
+    [599, "upstream_error", "remote_unavailable", "transient_upstream"],
+  ])("classifies HTTP %i without changing retry or dispatch behavior", async (status, code, reason, errorFamily) => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ detail: "remote failure" }), {
+      status, headers: { "retry-after": "7" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx(config);
+    ctx.onDispatch = vi.fn();
+    const result = await execute(ctx);
+    expect(result).toMatchObject({ exitCode: 1, signal: null, timedOut: false,
+      errorCode: `hermes_gateway_${code}`, errorFamily, retryNotBefore: "7",
+      errorMeta: { status, body: { detail: "remote failure" } },
+      resultJson: { connectionFailure: marker("create_run", reason) } });
+    expect(result.errorMessage).toContain(`Hermes gateway HTTP ${status}`);
+    expect(result.executionRecovery).toBeUndefined();
+    expect(ctx.onDispatch).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(Object.keys(result.resultJson ?? {})).toEqual(["connectionFailure"]);
+  });
+
+  it.each([
+    ["ECONNREFUSED", "connection_refused"], ["ENOTFOUND", "dns_failure"], ["EAI_AGAIN", "dns_failure"],
+    ["EHOSTUNREACH", "network_unreachable"], ["ENETUNREACH", "network_unreachable"],
+    ["ECONNRESET", "connection_reset"], ["EPIPE", "connection_reset"], ["UND_ERR_SOCKET", "connection_reset"],
+    ["ETIMEDOUT", "connection_timeout"], ["UND_ERR_CONNECT_TIMEOUT", "connection_timeout"],
+    ["UND_ERR_HEADERS_TIMEOUT", "connection_timeout"], ["UND_ERR_BODY_TIMEOUT", "connection_timeout"],
+    ["CERT_HAS_EXPIRED", "tls_failure"], ["CERT_NOT_YET_VALID", "tls_failure"],
+    ["DEPTH_ZERO_SELF_SIGNED_CERT", "tls_failure"], ["SELF_SIGNED_CERT_IN_CHAIN", "tls_failure"],
+    ["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "tls_failure"], ["UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "tls_failure"],
+    ["ERR_TLS_CERT_ALTNAME_INVALID", "tls_failure"],
+  ])("classifies structured fetch cause %s", async (code, reason) => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new TypeError("fetch failed", { cause: Object.assign(new Error("external transport failed"), { code }) });
+    }));
+    const result = await execute(makeCtx(config));
+    expect(result).toMatchObject({ exitCode: 1, signal: null, timedOut: false,
+      errorCode: "hermes_gateway_connect_failed", errorFamily: "transient_upstream", retryNotBefore: null,
+      resultJson: { connectionFailure: marker("create_run", reason) } });
+    expect(result.errorMessage).toContain(code);
+    expect(result.executionRecovery).toBeUndefined();
+  });
+
+  it("classifies a network failure reading the create response without rewriting its error", async () => {
+    const response = new Response("unread");
+    vi.spyOn(response, "text").mockRejectedValue(new TypeError("terminated", { cause: { code: "UND_ERR_SOCKET" } }));
+    vi.stubGlobal("fetch", vi.fn(async () => response));
+    const result = await execute(makeCtx(config));
+    expect(result).toMatchObject({ exitCode: 1, signal: null, timedOut: false,
+      errorCode: "hermes_gateway_protocol_error", errorFamily: null, errorMessage: "terminated",
+      resultJson: { connectionFailure: marker("create_run", "connection_reset") } });
+    expect(result.executionRecovery).toBeUndefined();
+  });
+
+  it("requires every aggregate member to prove the same external failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("fetch failed", { cause: {
+      code: "ECONNREFUSED", errors: [{ code: "ECONNREFUSED" }, { code: "ECONNREFUSED" }],
+    } }); }));
+    const result = await execute(makeCtx(config));
+    expect(result.resultJson).toEqual({ connectionFailure: marker("create_run", "connection_refused") });
+  });
+
+  it.each([
+    undefined, { message: "ECONNREFUSED" }, { code: "ERR_INTERNAL_ASSERTION" }, { code: "toString" },
+    { code: "ECONNREFUSED", errors: [] }, { code: "ECONNREFUSED", errors: "invalid" },
+    { code: "ECONNREFUSED", errors: Array.from({ length: 9 }, () => ({ code: "ECONNREFUSED" })) },
+    { code: "ECONNREFUSED", errors: [{ code: "ECONNREFUSED" }, { code: "ETIMEDOUT" }] },
+    { code: "ECONNREFUSED", errors: [{ code: "ECONNREFUSED" }, new TypeError("internal bug")] },
+    { code: "ERR_INTERNAL_ASSERTION", errors: [{ code: "ECONNREFUSED" }] },
+    { code: "ECONNRESET", name: "AbortError" },
+  ])("keeps unknown, mixed, or internal transport causes reportable: %j", async (cause) => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("ECONNREFUSED", { cause }); }));
+    const result = await execute(makeCtx(config));
+    expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+    expect(result.resultJson).toBeUndefined();
+  });
+
+  it("keeps abort failures reportable even if their cause looks like a transport error", async () => {
+    const aborted = Object.assign(new Error("cancelled", { cause: { code: "ECONNRESET" } }), { name: "AbortError" });
+    vi.stubGlobal("fetch", vi.fn(async () => { throw aborted; }));
+    const result = await execute(makeCtx(config));
+    expect(result.resultJson).toBeUndefined();
+    expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+  });
+
+  it.each([400, 409, 422])("does not trust HTTP %i body claims about connection failures", async (status) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      error: "ECONNREFUSED", connectionFailure: marker("create_run", "connection_refused"),
+    }), { status })));
+    const result = await execute(makeCtx(config));
+    expect(result.errorCode).toBe("hermes_gateway_protocol_error");
+    expect(result.resultJson).toBeUndefined();
+  });
+
+  it.each(["not json", JSON.stringify({ status: "running", connectionFailure: marker("create_run", "connection_refused") })])(
+    "keeps malformed successful create responses reportable", async (body) => {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(body)));
+      const result = await execute(makeCtx(config));
+      expect(result.errorCode).toBe("hermes_gateway_protocol_error");
+      expect(result.resultJson).toBeUndefined();
+    },
+  );
+
+  it("does not classify a local response reader TypeError", async () => {
+    const response = new Response("unread");
+    vi.spyOn(response, "text").mockRejectedValue(new TypeError("cannot read property of undefined"));
+    vi.stubGlobal("fetch", vi.fn(async () => response));
+    const result = await execute(makeCtx(config));
+    expect(result.errorCode).toBe("hermes_gateway_protocol_error");
+    expect(result.resultJson).toBeUndefined();
+  });
+
+  it("does not trust a callback error with forged gateway codes or markers", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx(config);
+    ctx.onDispatch = () => { throw Object.assign(new Error("callback bug"), {
+      code: "hermes_gateway_auth_failed", status: 401, cause: { code: "ECONNREFUSED" },
+      connectionFailure: marker("create_run", "authentication_failed"),
+    }); };
+    const result = await execute(ctx);
+    expect(result.resultJson).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["completed", "failed", "cancelled"])("does not classify remote terminal %s from text or a forged marker", (status) => {
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-remote", status, payload: {
+        error: "ECONNREFUSED", code: "ECONNREFUSED",
+        connectionFailure: marker("create_run", "connection_refused"),
+      } }, outputChunks: [], sessionKey: null, strategy: "none",
+    });
+    expect(result.resultJson?.connectionFailure).toBeUndefined();
+    expect(result.errorCode).toBe(status === "completed" ? undefined : status === "failed" ? "hermes_gateway_run_failed" : "hermes_gateway_cancelled");
+  });
+
+  it("retains an ambiguous accepted-run timeout after stream, poll, and stop connection failures", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-accepted" }));
+      throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx({ ...config, timeoutSec: 0.3, pollIntervalMs: 250, eventReconnectMs: 250 });
+    const result = await execute(ctx);
+    expect(result).toMatchObject({ timedOut: true, errorCode: "hermes_gateway_timeout" });
+    expect(result.resultJson?.connectionFailure).toBeUndefined();
+    expect(result.resultJson?.run_id).toBe("run-accepted");
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/stop"))).toBe(true);
+    expect(ctx.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("status poll failed"));
   });
 });
 

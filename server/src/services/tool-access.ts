@@ -10,6 +10,7 @@ import { composioAppAccounts, composioAppSetupResult } from "./composio-app-setu
 import { honchoManagedArguments } from "./honcho-connection.js";
 import { defaultConnectionAgentInstructions } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
+import { mcpDiscoveryHttpFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "./mcp-connection-failure.js";
 import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
 import { browserUseClient, isBrowserUseConnection } from "./browser-use-client.js";
@@ -2885,6 +2886,7 @@ function healthFailureHttpStatus(failure: {
   if (failure.code === "oauth_challenge") return 422;
   if (failure.code === "oauth_refresh_missing") return 422;
   if (failure.code === "oauth_reauthorization_required") return 422;
+  if (failure.code === "oauth_insufficient_scope") return 422;
   if (failure.code === "slack_mcp_access_disabled") return 422;
   if (failure.code === "user_authorization_required") return 422;
   if (failure.code === "composio_broker_retired") return 422;
@@ -7141,7 +7143,7 @@ export function toolAccessService(
     // PAP-17098 closed for the OAuth endpoints.
     let listRequestId = "paperclip-catalog-refresh";
     let sessionHeaders = headers;
-    const sendRemote = (init: RequestInit) => requestRemoteHttpEndpoint(new URL(endpoint), init);
+    const sendRemote = (init: RequestInit) => withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), init));
     const sendToolsList = (requestHeaders: Record<string, string>, cursor?: string) => {
       sessionHeaders = requestHeaders;
       return sendRemote({ method: "POST", headers: mcpHttpRequestHeaders(requestHeaders),
@@ -7329,14 +7331,12 @@ export function toolAccessService(
           oauthSupported: Boolean(endpoints),
         });
       }
-      throw new HttpError(502, `Remote app returned HTTP ${response.status}`, {
-        status: response.status,
-      });
+      throw mcpDiscoveryHttpFailure(response, `Remote app returned HTTP ${response.status}`);
     }
     const descriptors: McpToolDescriptor[] = [];
     const seenCursors = new Set<string>();
     for (let page = 0; ; page += 1) {
-      const payload = await readMcpHttpResponse(response, listRequestId);
+      const payload = await withMcpConnectionFailure(() => readMcpHttpResponse(response, listRequestId));
       const record = asRecord(payload);
       if (record.error) throw new HttpError(502, "Remote MCP tool discovery failed", { code: "mcp_catalog_error" });
       const result = asRecord(record.result);
@@ -7348,7 +7348,7 @@ export function toolAccessService(
       seenCursors.add(cursor);
       listRequestId = `paperclip-catalog-refresh-${page + 1}`;
       response = await sendToolsList(sessionHeaders, cursor);
-      if (!response.ok) throw new HttpError(502, "Remote MCP catalog page could not be read", { status: response.status });
+      if (!response.ok) throw mcpDiscoveryHttpFailure(response, "Remote MCP catalog page could not be read");
     }
     if (!isRailwayConnection(connection)) return descriptors;
     if (descriptors.some((tool) => normalizeRailwayToolName(tool.name).startsWith(RAILWAY_TOOL_PREFIX))) {
@@ -7699,13 +7699,13 @@ export function toolAccessService(
         actor,
         details: { status: failure.status, transport: connection.transport },
       });
-      throw new HttpError(healthFailureHttpStatus(failure), failure.message, {
+      throw retainMcpConnectionFailure(error, new HttpError(healthFailureHttpStatus(failure), failure.message, {
         code: failure.code,
         connection: toConnection(updated),
         runtimeSlot,
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
-      });
+      }));
     }
   }
 
@@ -7752,11 +7752,11 @@ export function toolAccessService(
         details: { status: failure.status },
         actor,
       });
-      throw new HttpError(healthFailureHttpStatus(failure), failure.message, {
+      throw retainMcpConnectionFailure(error, new HttpError(healthFailureHttpStatus(failure), failure.message, {
         code: failure.code,
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
-      });
+      }));
     }
 
     const existingRows = await db

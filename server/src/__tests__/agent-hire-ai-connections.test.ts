@@ -8,7 +8,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { activityLog, agents, companies, companyMemberships, createDb, closeRegisteredClients, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
 import { type AiConnectionBinding, type AiConnectionPoolMember, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRoutes } from "../routes/agents.js";
@@ -21,8 +21,16 @@ import { secretService } from "../services/secrets.js";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessService } from "../services/tool-access.js";
+import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
+
+const captureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../sentry.js")>(),
+  captureRunFailure,
+}));
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
 let db: ReturnType<typeof createDb>;
 let home: string;
 
@@ -31,11 +39,17 @@ beforeAll(async () => {
   vi.stubEnv("PAPERCLIP_HOME", home);
   vi.stubEnv("PAPERCLIP_INSTANCE_ID", "hire-ai");
   vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
-  database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");
-  db = createDb(database.connectionString);
+  if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
+  else {
+    database = await startEmbeddedPostgresTestDatabase("paperclip-hire-ai-db-");
+    db = createDb(database.connectionString);
+  }
 }, 90_000);
 
 afterAll(async () => {
+  await waitForPendingRunFailureReports();
+  if (externalTestDatabaseUrl) await closeRegisteredClients(externalTestDatabaseUrl);
+  await db?.$client.end();
   await database?.cleanup();
   vi.unstubAllEnvs();
   if (home) await rm(home, { recursive: true, force: true });
@@ -488,10 +502,21 @@ describe("hired agents sharing a subscription", () => {
       expect(run).not.toBeNull();
       await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("cancelled");
       await heartbeat.drainActiveRunExecutions();
-      expect(await heartbeat.getRun(run!.id)).toMatchObject({ errorCode: "ai_connection_busy", resultJson: { executionRecovery: { providerWorkStarted: false } } });
+      const cancelled = await heartbeat.getRun(run!.id);
+      expect(cancelled).toMatchObject({ errorCode: "ai_connection_busy", resultJson: {
+        executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false },
+        cancellation: {
+          source: "control_plane", expected: true, initiator: { type: "system" },
+          reason: "Waiting for shared AI credentials",
+          recordedAt: cancelled!.finishedAt!.toISOString(),
+        },
+      } });
+      await waitForPendingRunFailureReports();
+      expect(captureRunFailure.mock.calls.filter(([report]) => report.runId === run!.id)).toHaveLength(0);
       const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
       expect(retries).toHaveLength(1);
       expect(retries[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "ai_connection_busy" });
+      expect(retries[0].resultJson?.cancellation).toBeUndefined();
       const [savedIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
       expect(savedIssue.status).not.toBe("blocked");
       expect(savedIssue.executionRunId).toBe(retries[0].id);

@@ -4,6 +4,7 @@ import { connect as netConnect, isIP, type Socket } from "node:net";
 import { Readable } from "node:stream";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
+import { classifyRemoteConnectionError, markRemoteConnectionFailure } from "./remote-connection-failure.js";
 
 import {
   isAlwaysDeniedLinkLocalIp,
@@ -104,10 +105,12 @@ export async function guardedRemoteHttpFetch(
       return await platformFetch(endpoint.toString(), { ...init, redirect: "manual" });
     } catch (error) {
       if (isDnsResolutionError(error)) {
-        throw options.error(
+        const failure = options.error(
           "Remote MCP connection hostname could not be resolved",
           "remote_http_dns_failed",
         );
+        if (classifyRemoteConnectionError(error) === "dns_failure") markRemoteConnectionFailure(failure, "dns_failure");
+        throw failure;
       }
       throw error;
     }
@@ -318,7 +321,7 @@ async function sendRequest(input: {
     const headersTimer = setTimeout(() => {
       // Destroying the request tears the socket down too, so a silent peer costs
       // neither a pending handler nor a leaked descriptor.
-      req.destroy(error("Remote MCP endpoint did not respond in time", "remote_http_response_timeout"));
+      req.destroy(markRemoteConnectionFailure(error("Remote MCP endpoint did not respond in time", "remote_http_response_timeout"), "connection_timeout"));
     }, responseTimeoutMs);
     headersTimer.unref?.();
     req.on("response", () => clearTimeout(headersTimer));
@@ -330,7 +333,7 @@ async function sendRequest(input: {
   // Body idle deadline, mirroring undici's `bodyTimeout`: a stalled stream is
   // destroyed so `response.text()` rejects instead of hanging the caller.
   message.setTimeout(responseTimeoutMs, () => {
-    message.destroy(error("Remote MCP endpoint stalled mid-response", "remote_http_response_timeout"));
+    message.destroy(markRemoteConnectionFailure(error("Remote MCP endpoint stalled mid-response", "remote_http_response_timeout"), "connection_timeout"));
   });
   // A finished response must not leave an armed socket timer behind, or a later
   // reader of the same socket inherits a deadline it never asked for.
@@ -395,7 +398,7 @@ function once(
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
-      settle(new Error(`Timed out trying to ${input.what} the remote MCP endpoint`));
+      settle(markRemoteConnectionFailure(new Error(`Timed out trying to ${input.what} the remote MCP endpoint`), "connection_timeout"));
     }, input.timeoutMs);
     timer.unref?.();
 
