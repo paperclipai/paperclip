@@ -64,28 +64,41 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
       expect(await dotRunnerBroker(db).bindingForAgent(f.company.id, f.agent.id)).toBeNull();
     } finally { vi.useRealTimers(); }
   });
-  it("upgrades existing Dot refresh tokens without changing personal or revoked grants", async () => {
+  it("upgrades valid Dot refresh tokens without reviving expired, used or revoked credentials", async () => {
     const f = await fixture();
     const tokens = await connect(f);
     const grant = (await f.oauth.authenticate(tokens.access_token)).grant;
+    const validExpiry = new Date(Date.now() + 30 * 24 * 60 * 60_000);
+    await db.update(mcpOauthTokens).set({ expiresAt: validExpiry }).where(eq(mcpOauthTokens.tokenHash, hashMcpSecret(tokens.refresh_token!)));
+    const stale = await fixture();
+    const staleTokens = await connect(stale);
     const expired = new Date(0);
-    await db.update(mcpOauthTokens).set({ expiresAt: expired }).where(eq(mcpOauthTokens.tokenHash, hashMcpSecret(tokens.refresh_token!)));
+    await db.update(mcpOauthTokens).set({ expiresAt: expired }).where(eq(mcpOauthTokens.tokenHash, hashMcpSecret(staleTokens.refresh_token!)));
     const personalId = randomUUID();
     const revokedId = randomUUID();
+    const usedHash = randomUUID();
     await db.insert(mcpOauthGrants).values([
       { ...grant, id: personalId, purpose: "personal", agentId: null, resource: config.origin + "/mcp/paperclip" },
       { ...grant, id: revokedId, revokedAt: new Date() },
     ]);
     await db.insert(mcpOauthTokens).values([
-      { grantId: personalId, tokenHash: randomUUID(), kind: "refresh", expiresAt: expired },
-      { grantId: revokedId, tokenHash: randomUUID(), kind: "refresh", expiresAt: expired },
+      { grantId: personalId, tokenHash: randomUUID(), kind: "refresh", expiresAt: validExpiry },
+      { grantId: revokedId, tokenHash: randomUUID(), kind: "refresh", expiresAt: validExpiry },
+      { grantId: grant.id, tokenHash: usedHash, kind: "refresh", expiresAt: validExpiry, usedAt: new Date() },
     ]);
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0319_heavy_captain_midlands.sql", import.meta.url), "utf8");
-    for (const statement of migration.split("--> statement-breakpoint")) await db.execute(sql.raw(statement));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      for (const statement of migration.split("--> statement-breakpoint")) await db.execute(sql.raw(statement));
+    }
     const [personal] = await db.select().from(mcpOauthTokens).where(eq(mcpOauthTokens.grantId, personalId));
     const [revoked] = await db.select().from(mcpOauthTokens).where(eq(mcpOauthTokens.grantId, revokedId));
-    expect(personal!.expiresAt).toEqual(expired);
-    expect(revoked!.expiresAt).toEqual(expired);
+    const [used] = await db.select().from(mcpOauthTokens).where(eq(mcpOauthTokens.tokenHash, usedHash));
+    const [staleToken] = await db.select().from(mcpOauthTokens).where(eq(mcpOauthTokens.tokenHash, hashMcpSecret(staleTokens.refresh_token!)));
+    expect(personal!.expiresAt).toEqual(validExpiry);
+    expect(revoked!.expiresAt).toEqual(validExpiry);
+    expect(used!.expiresAt).toEqual(validExpiry);
+    expect(staleToken!.expiresAt).toEqual(expired);
+    await expect(stale.oauth.token({ grant_type: "refresh_token", client_id: stale.client.client_id, resource: config.resource, refresh_token: staleTokens.refresh_token })).rejects.toThrow();
     const next = await f.oauth.token({ grant_type: "refresh_token", client_id: f.client.client_id, resource: config.resource, refresh_token: tokens.refresh_token });
     expect((await f.oauth.authenticate(next.access_token)).actor).toMatchObject({ type: "agent", agentId: f.agent.id });
     await f.oauth.revokeToken(next.access_token, f.client.client_id);

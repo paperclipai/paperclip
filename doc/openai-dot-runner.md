@@ -49,7 +49,7 @@ Only the operator's one-use pairing code is displayed. OAuth tokens and callback
 signing secrets stay on the server and never enter the Runner descriptor,
 task prompt or saved adapter config. Pairing codes expire after 15 minutes.
 Once paired, the connection has no Paperclip inactivity expiry, including existing
-connections upgraded by migration `0319_heavy_captain_midlands.sql`. Access tokens
+valid connections upgraded by migration `0319_heavy_captain_midlands.sql`. Access tokens
 still last 15 minutes and are renewed with rotating, non-expiring refresh tokens;
 revocation, replay detection, and current company/agent permissions still apply.
 This does not control any independent OpenAI-side connection policy.
