@@ -25,6 +25,8 @@ export {
   runDatabaseBackup,
   runDatabaseRestore,
   formatDatabaseBackupResult,
+  validateDatabaseBackupArtifact,
+  MIN_DATABASE_BACKUP_GZIP_BYTES,
   type BackupRetentionPolicy,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
