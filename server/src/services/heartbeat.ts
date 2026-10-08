@@ -1,5 +1,5 @@
-import { buildPaperclipTaskMarkdown } from "./heartbeat-task-markdown.js";
-export { buildPaperclipTaskMarkdown } from "./heartbeat-task-markdown.js";
+import { buildPaperclipTaskMarkdown } from "./heartbeat/task-markdown.js";
+export { buildPaperclipTaskMarkdown } from "./heartbeat/task-markdown.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "./legacy-workspace-restore-recovery.js";
 import { preserveWorkspaceRestoreRecoveryMetadata } from "./workspace-restore-recovery-state.js";
 import { recordLegacyWorkspaceRestoreFailure } from "./legacy-execution-recovery.js";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPaperclipTaskMarkdown } from "./heartbeat-task-markdown.js";
+import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
 
 const issue = {
   id: "task-1",

@@ -1,8 +1,8 @@
-import { AGENT_CHAT_DIRECTIVE } from "./agent-conversations.js";
-import { publicChatTaskUrl } from "./chat-task-url.js";
-import { slackChatAgentGuidance } from "./connectors/slack/agent-guidance.js";
-import type { ConversationConfirmationContext } from "./conversation-confirmation-context.js";
-import { TASK_QUESTION_GUIDANCE } from "./issue-question-context.js";
+import { AGENT_CHAT_DIRECTIVE } from "../agent-conversations.js";
+import { publicChatTaskUrl } from "../chat-task-url.js";
+import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
+import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
+import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
 
 export function buildPaperclipTaskMarkdown(input: {
   issue: {
