@@ -1,0 +1,25 @@
+[Unit]
+Description=Paperclip quota re-wake under isolated service UID
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pc-cron-quota
+Group=pc-cron-quota
+Environment=HOME=/var/lib/pc-cron-quota
+Environment=PYTHONNOUSERSITE=1
+Environment=PGSERVICEFILE=/var/lib/pc-cron-quota/.secrets/pg_service.conf
+Environment=PGPASSFILE=/var/lib/pc-cron-quota/.secrets/pgpass
+EnvironmentFile=/etc/paperclip-cron/quota.env
+WorkingDirectory=/opt/paperclip-cron
+ExecStart=/usr/bin/flock -n /var/lib/pc-cron-quota/.run.lock /usr/bin/python3 /opt/paperclip-cron/quota_rewake.py --apply --nudge
+StateDirectory=pc-cron-quota
+StateDirectoryMode=0700
+UMask=0077
+UnsetEnvironment=PYTHONPATH NODE_OPTIONS BASH_ENV
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pc-cron-quota
+PrivateTmp=true

@@ -23,11 +23,18 @@ async function swipeToLastOption(page: Page, picker: Locator, list = picker.getB
   const session = await page.context().newCDPSession(page);
   try {
     expect(await list.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+    let touchScrolled = false;
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const bounds = (await list.boundingBox())!;
       const target = (await last.boundingBox())!;
-      if (target.y >= bounds.y && target.y + target.height <= bounds.y + bounds.height) break;
-      const before = await list.evaluate((element) => element.scrollTop);
+      if (target.y >= bounds.y && target.y + target.height <= bounds.y + bounds.height + 1) break;
+      const { scrollTop: before, maxScrollTop } = await list.evaluate((element) => ({
+        scrollTop: element.scrollTop,
+        maxScrollTop: element.scrollHeight - element.clientHeight,
+      }));
+      // At the native scroll limit, another gesture cannot increase scrollTop.
+      // Let the visibility assertion below report any genuinely clipped row.
+      if (before >= maxScrollTop) break;
       const x = bounds.x + bounds.width / 2;
       const y = bounds.y + bounds.height - 20;
       const distance = Math.min(180, bounds.height - 40);
@@ -41,9 +48,11 @@ async function swipeToLastOption(page: Page, picker: Locator, list = picker.getB
       }
       await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
       await expect.poll(() => list.evaluate((element) => element.scrollTop)).toBeGreaterThan(before);
+      touchScrolled = true;
       // A drag must not choose a row or dismiss the picker.
       await expect(picker).toBeVisible();
     }
+    expect(touchScrolled).toBe(true);
     const bounds = (await list.boundingBox())!;
     const target = (await last.boundingBox())!;
     expect(target.y).toBeGreaterThanOrEqual(bounds.y);

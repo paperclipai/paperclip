@@ -3209,7 +3209,7 @@ describe("issue thread interaction routes", () => {
       runId: RUN_2,
     };
 
-    mockResolveTaskWatchdogMutationScope.mockResolvedValueOnce({
+    mockResolveTaskWatchdogMutationScope.mockResolvedValue({
       kind: "watchdog",
       watchdogId: "watchdog-1",
       companyId: "company-1",
@@ -3221,7 +3221,7 @@ describe("issue thread interaction routes", () => {
     const watchdog = await request(watchdogApp)
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
       .send({ answers: [] });
-    expect(watchdog.status).toBe(200);
+    expect(watchdog.status, JSON.stringify(watchdog.body)).toBe(200);
     expect(mockInteractionService.answerQuestions).toHaveBeenCalledTimes(1);
 
     mockResolveCoreTrustPreset.mockReturnValueOnce({ kind: "low_trust_review" });

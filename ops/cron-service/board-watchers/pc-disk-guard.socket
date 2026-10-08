@@ -1,0 +1,13 @@
+[Unit]
+Description=Agent-to-scoped-disk-reporter socket
+
+[Socket]
+ListenStream=/run/paperclip-cron/disk-report.sock
+SocketUser=root
+SocketGroup=paperclip-user
+SocketMode=0660
+DirectoryMode=0755
+Service=pc-disk-guard.service
+
+[Install]
+WantedBy=sockets.target

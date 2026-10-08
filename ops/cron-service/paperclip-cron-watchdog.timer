@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Paperclip agent watchdog every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=10s
+Unit=paperclip-cron-watchdog.service
+
+[Install]
+WantedBy=timers.target

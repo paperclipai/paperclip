@@ -2220,6 +2220,13 @@
       "when": 1791456875836,
       "tag": "0318_strong_blacklash",
       "breakpoints": true
+    },
+    {
+      "idx": 319,
+      "version": "7",
+      "when": 1791478140982,
+      "tag": "0319_complete_gunslinger",
+      "breakpoints": true
     }
   ]
 }

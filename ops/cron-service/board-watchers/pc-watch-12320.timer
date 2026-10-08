@@ -1,0 +1,8 @@
+[Unit]
+Description=Schedule scoped Paperclip watcher pc-watch-12320
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=pc-watch-12320.service

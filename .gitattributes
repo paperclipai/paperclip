@@ -1,1 +1,3 @@
 patches/*.patch whitespace=-space-before-tab
+# Unified diff context lines are a literal single space for blank source lines.
+ops/cron-service/*.patch whitespace=-blank-at-eol

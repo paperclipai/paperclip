@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Paperclip quota re-wake every ten minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+AccuracySec=30s
+Unit=paperclip-cron-quota.service
+
+[Install]
+WantedBy=timers.target

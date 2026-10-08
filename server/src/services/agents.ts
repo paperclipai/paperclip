@@ -3,7 +3,7 @@ import { withAccountingTransaction } from "./accounting-transaction.js";
 import type { ActivityPublication } from "./activity-log.js";
 import { agentAppearanceSchema, randomAgentAppearance, resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -132,6 +132,7 @@ interface UpdateAgentOptions {
   allowBuiltInAgentMetadata?: boolean;
   allowPendingApprovalConfigUpdate?: boolean;
   claudeLogin?: ClaudeLoginContext;
+  watchdogRecovery?: boolean;
 }
 
 interface CreateAgentOptions {
@@ -802,6 +803,13 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         ? await txDb.select().from(agents).where(eq(agents.id, id)).for("update").then(rows => rows[0] ?? null)
         : existing;
       if (!current) return null;
+      // The scope guard reads status before this transaction; repeat its check under the write lock.
+      if (options?.watchdogRecovery && (
+        data.status !== "idle"
+        || (current.status !== "error" && current.status !== "offline" && current.status !== "crashed")
+      )) {
+        throw conflict("Watchdog can recover only error, offline, or crashed agents");
+      }
       if (current.status === "terminated" && data.status && data.status !== "terminated") {
         throw conflict("Terminated agents cannot be resumed");
       }
@@ -1301,29 +1309,32 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       scope: AgentApiKeyScope = { kind: "standard" },
       options?: { responsibleUserId?: string | null },
     ) => {
-      const existing = await getById(id);
-      if (!existing) throw notFound("Agent not found");
-      if (existing.status === "pending_approval") {
-        throw conflict("Cannot create keys for pending approval agents");
-      }
-      if (existing.status === "terminated") {
-        throw conflict("Cannot create keys for terminated agents");
-      }
-
       const token = createToken();
       const keyHash = hashToken(token);
-      const created = await db
-        .insert(agentApiKeys)
-        .values({
+      const created = await db.transaction(async (tx) => {
+        // Serialize issuance for an identity. A host service must have exactly
+        // one active credential and cannot retain a broad agent key alongside it.
+        const existing = await tx.select({ id: agents.id, companyId: agents.companyId, status: agents.status })
+          .from(agents).where(eq(agents.id, id)).for("update").then((rows) => rows[0] ?? null);
+        if (!existing) throw notFound("Agent not found");
+        if (existing.status === "pending_approval") throw conflict("Cannot create keys for pending approval agents");
+        if (existing.status === "terminated") throw conflict("Cannot create keys for terminated agents");
+        const activeKeys = await tx.select({ scopeConfig: agentApiKeys.scopeConfig })
+          .from(agentApiKeys).where(and(eq(agentApiKeys.agentId, id), isNull(agentApiKeys.revokedAt)));
+        const isHostScope = (kind: string | undefined) => kind === "host_watcher" || kind === "cron_service";
+        const hasHostKey = activeKeys.some((row) => isHostScope(row.scopeConfig?.kind));
+        if ((isHostScope(scope.kind) && activeKeys.length > 0) || hasHostKey) {
+          throw conflict("Host service identities require exactly one active API key");
+        }
+        return tx.insert(agentApiKeys).values({
           agentId: id,
           companyId: existing.companyId,
           name,
           keyHash,
           responsibleUserId: options?.responsibleUserId?.trim() || null,
           scopeConfig: scope.kind === "standard" ? null : scope,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+        }).returning().then((rows) => rows[0]);
+      });
 
       return {
         id: created.id,

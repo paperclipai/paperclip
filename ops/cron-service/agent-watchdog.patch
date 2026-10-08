@@ -1,0 +1,93 @@
+--- agent-watchdog.py
++++ agent-watchdog.py
+@@ -37,7 +37,6 @@
+ 
+ BRIDGE_ENV = os.path.expanduser('~/.secrets/paperclip-bridge.env')   # PAPERCLIP_API_URL only
+-CRON_TOKEN = os.path.expanduser('~/.secrets/paperclip-cron-agent-watchdog.token')  # API key of Alpha
++CRON_TOKEN = os.path.expanduser('~/.secrets/paperclip-cron-agent-watchdog.token')  # scoped watchdog service key
+-BOARD_KEY = os.path.expanduser('~/.paperclip-alpha-board-key.json')
+ COMPANY = 'ac917a45-e6ea-4696-a85c-991147084939'
+ STUCK = {'error', 'offline', 'crashed'}
+ REAP_AFTER_MIN = 240
+@@ -118,11 +117,10 @@
+     return slot
+ 
+ 
+-def rearm_alarms(url):
++def rearm_alarms(url, token):
+     """Re-arm alarm cards whose one-shot monitor fired and was never re-armed.
+ 
+-    Uses the board key: the pusher card sits on whichever agent currently owns it, and an
+-    agent token is 403 on another agent's card. Merges into the existing executionPolicy
++    Uses a scoped host-service key authorized for the listed alarm issue IDs. Merges into the existing executionPolicy
+     rather than replacing it — a bare {monitor:...} PATCH wipes any review stages.
+ 
+     An alarm whose attempt count has reached the API ceiling is skipped outright: from then
+@@ -142,11 +140,7 @@
+     alarm going quiet is intended here anyway — 9240's pulse is off on the founder's standing
+     silence order — and unblocking a card is never this script's call.
+     """
+-    try:
+-        board = json.load(open(BOARD_KEY))
+-    except Exception as e:
+-        return ['board-key unreadable: %s' % type(e).__name__]
+-    h = {'Authorization': 'Bearer ' + board['boardKey'], 'Content-Type': 'application/json'}
++    h = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}
+     now = datetime.datetime.now(datetime.UTC)
+     rows = psql(
+         "SELECT identifier, id, coalesce(execution_policy::text,'null') FROM issues "
+@@ -193,7 +187,7 @@
+     return done
+ 
+ 
+-def poke_stalled_alarms(url):
++def poke_stalled_alarms(url, token):
+     """Wake an alarm's owner by comment when its monitor has stopped firing altogether.
+ 
+     Re-arming above cures a monitor that was cleared by its own firing. It cannot cure the
+@@ -214,11 +208,7 @@
+     pokeable = {k: v for k, v in ALARMS.items() if v[2]}
+     if not pokeable:
+         return []
+-    try:
+-        board = json.load(open(BOARD_KEY))
+-    except Exception as e:
+-        return ['board-key unreadable: %s' % type(e).__name__]
+-    h = {'Authorization': 'Bearer ' + board['boardKey'], 'Content-Type': 'application/json'}
++    h = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}
+     try:
+         state = json.load(open(POKE_STATE))
+     except Exception:
+@@ -247,17 +237,17 @@
+         last = state.get(ident)
+         if last and (now - datetime.datetime.fromisoformat(last)).total_seconds() < POKE_GAP_MIN * 60:
+             continue
+-        body = {'assigneeAgentId': assignee, 'comment': (
++        body = {'body': (
+             '⏰ **Тик хост-сторожа `agent-watchdog.py` (хост-крон, вне квоты LLM).**\n\n'
+             'Монитор этой карты не срабатывал %s мин при часовом такте, счётчик попыток '
+             '**%s/100** — это потолок API, и он не обнуляется ни заменой объекта монитора, '
+             'ни его пересозданием (оба пути проверены 17–18.09). Значит будильник больше не '
+             'звонит сам, и этот коммент — замена его выстрелу.\n\n'
+             'Проход делать по рунбуку в теле карты и закончить перевзводом монитора как '
+-            'обычно. 🔴 Текст поставлен машиной board-ключом — это **не** founder и не Alpha.'
++            'обычно. 🔴 Текст поставлен машиной сервисным ключом — это **не** founder и не Alpha.'
+             % (since, attempts))}
+-        req = urllib.request.Request(f'{url}/api/issues/{issue_id}',
+-                                     data=json.dumps(body).encode(), headers=h, method='PATCH')
++        req = urllib.request.Request(f'{url}/api/issues/{issue_id}/comments',
++                                     data=json.dumps(body).encode(), headers=h, method='POST')
+         try:
+             urllib.request.urlopen(req, timeout=20)
+             state[ident] = now.isoformat()
+@@ -299,8 +289,8 @@
+          "AND COALESCE(started_at, created_at) < now()-interval '%d minutes';"
+          % (REAP_AFTER_MIN, COMPANY, REAP_AFTER_MIN))
+ 
+-    rearmed = rearm_alarms(url)
+-    poked = poke_stalled_alarms(url)
++    rearmed = rearm_alarms(url, token)
++    poked = poke_stalled_alarms(url, token)
+ 
+     stamp = datetime.datetime.now(datetime.UTC).isoformat(timespec='seconds')[:19]
+     if cleared:

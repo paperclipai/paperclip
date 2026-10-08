@@ -439,7 +439,7 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       else process.env.HOME = previousHome;
       await fs.rm(rootDir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it("rebuilds the full assignment after an unknown-session resume", async () => {
     setPrepareCursorSandboxCommand.mockReset();

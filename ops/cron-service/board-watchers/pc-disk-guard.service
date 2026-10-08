@@ -1,0 +1,29 @@
+[Unit]
+Description=Scoped HELA-12595 reporter for agent-side disk GC
+Requires=pc-disk-guard.socket
+After=pc-disk-guard.socket network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Sockets=pc-disk-guard.socket
+Restart=on-failure
+RestartSec=5s
+User=pc-disk-guard
+Group=pc-disk-guard
+Environment=PAPERCLIP_TOKEN_FILE=/var/lib/pc-disk-guard/.secrets/paperclip.token
+EnvironmentFile=/etc/paperclip-cron/pc-disk-guard.env
+WorkingDirectory=/opt/paperclip-cron
+ExecStart=/usr/bin/python3 /opt/paperclip-cron/disk_reporter.py
+StateDirectory=pc-disk-guard
+StateDirectoryMode=0700
+UMask=0077
+UnsetEnvironment=PYTHONPATH NODE_OPTIONS BASH_ENV
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pc-disk-guard
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

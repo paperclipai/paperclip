@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule scoped Paperclip watcher pc-fleet-watch
+
+[Timer]
+OnBootSec=1h
+OnUnitActiveSec=1h
+AccuracySec=30s
+Unit=pc-fleet-watch.service
+
+[Install]
+WantedBy=timers.target

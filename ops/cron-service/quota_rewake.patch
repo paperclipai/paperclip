@@ -1,0 +1,13 @@
+--- quota_rewake.py
++++ quota_rewake.py
+@@ -623,8 +623,8 @@
+ 
+ 
+ def board_token():
+-    """Board (user) API key — the only actor allowed to restore ANOTHER agent's card."""
+-    return os.environ.get('PAPERCLIP_OPS_TOKEN') or read_env_file(OPS_ENV, 'PAPERCLIP_OPS_TOKEN')
++    """This isolated service only creates nudge orders; cross-assignee restores stay with the board."""
++    return None
+ 
+ 
+ def api(method, path, token, body=None, timeout=30):

@@ -1,0 +1,25 @@
+[Unit]
+Description=Scoped Paperclip host watcher pc-watch-12320
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pc-watch-12320
+Group=pc-watch-12320
+Environment=PYTHONNOUSERSITE=1
+Environment=HOME=/var/lib/pc-watch-12320
+Environment=PAPERCLIP_TOKEN_FILE=/var/lib/pc-watch-12320/.secrets/paperclip.token
+Environment=GITHUB_TOKEN_FILE=/var/lib/pc-watch-12320/.secrets/github.token
+EnvironmentFile=/etc/paperclip-cron/pc-watch-12320.env
+WorkingDirectory=/opt/paperclip-cron
+ExecStart=/usr/bin/python3 /opt/paperclip-cron/pr923.py
+StateDirectory=pc-watch-12320
+StateDirectoryMode=0700
+UMask=0077
+UnsetEnvironment=PYTHONPATH NODE_OPTIONS BASH_ENV
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pc-watch-12320
+PrivateTmp=true
