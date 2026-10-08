@@ -365,6 +365,18 @@ export interface AgentWakeupRequest {
   updatedAt: Date;
 }
 
+export interface HeartbeatActiveHours {
+  start: string;
+  end: string;
+  timezone: string;
+}
+
+export interface HeartbeatTimerPolicy {
+  enabled: boolean;
+  intervalSec: number;
+  activeHours?: HeartbeatActiveHours | null;
+}
+
 export interface InstanceSchedulerHeartbeatAgent {
   id: string;
   companyId: string;

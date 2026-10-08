@@ -3953,3 +3953,81 @@ describe("subtractPersistedOverlay", () => {
     });
   });
 });
+
+describe("AgentConfigForm timer active hours", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noActiveSession);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("hides the active-hours control when interval heartbeats are off", async () => {
+    const created = await renderCreateForm([]);
+    roots.push(created.root);
+    expect(created.container.textContent).not.toContain("Limit timer heartbeats to active hours");
+    expect(created.container.querySelector('[aria-label="Timezone"]')).toBeNull();
+
+    const edited = await renderForm([], {
+      runtimeConfig: { heartbeat: { enabled: false, intervalSec: 300 } },
+    });
+    roots.push(edited.root);
+    expect(edited.container.textContent).not.toContain("Limit timer heartbeats to active hours");
+    expect(edited.container.querySelector('[aria-label="Timezone"]')).toBeNull();
+  });
+
+  it("shows the active-hours control when interval heartbeats are on", async () => {
+    const created = await renderCreateForm([], { heartbeatEnabled: true });
+    roots.push(created.root);
+    expect(created.container.textContent).toContain("Limit timer heartbeats to active hours");
+    expect(created.container.querySelector('[aria-label="Timezone"]')).toBeNull();
+
+    const edited = await renderForm([], {
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300 } },
+    });
+    roots.push(edited.root);
+    expect(edited.container.textContent).toContain("Limit timer heartbeats to active hours");
+    expect(edited.container.querySelector('[aria-label="Timezone"]')).toBeNull();
+  });
+
+  it("labels the timezone field when a window is set", async () => {
+    const window = { start: "09:00", end: "18:00", timezone: "America/New_York" };
+    const created = await renderCreateForm([], {
+      heartbeatEnabled: true,
+      activeHours: window,
+    });
+    roots.push(created.root);
+    const createTimezone = created.container.querySelector('[aria-label="Timezone"]');
+    expect(createTimezone).not.toBeNull();
+    expect(created.container.textContent).toContain("Timezone");
+
+    const edited = await renderForm([], {
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 300, activeHours: window } },
+    });
+    roots.push(edited.root);
+    const editTimezone = edited.container.querySelector('[aria-label="Timezone"]');
+    expect(editTimezone).not.toBeNull();
+    expect(edited.container.textContent).toContain("Timezone");
+    expect((editTimezone as HTMLInputElement).value).toBe("America/New_York");
+  });
+});

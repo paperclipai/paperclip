@@ -147,6 +147,9 @@ import {
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   isToolConnectionAttentionHealth,
+  isWithinActiveHours,
+  activeHoursWindowSchema,
+  type ActiveHoursWindow,
   type BillingType,
   type ChatProvider,
   type CostStatus,
@@ -16624,6 +16627,11 @@ export function heartbeatService(
     };
   }
 
+  function parseHeartbeatActiveHours(heartbeat: Record<string, unknown>): ActiveHoursWindow | null {
+    const parsed = activeHoursWindowSchema.safeParse(heartbeat.activeHours);
+    return parsed.success ? parsed.data : null;
+  }
+
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
@@ -16631,6 +16639,7 @@ export function heartbeatService(
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+      activeHours: parseHeartbeatActiveHours(heartbeat),
       wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
       // A Dot binding has one external turn. Competing assignments must retain
       // their queue position instead of claiming a second run that cannot bind.
@@ -30498,6 +30507,10 @@ export function heartbeatService(
         ).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+        if (!isWithinActiveHours(policy.activeHours, now)) {
+          skipped += 1;
+          continue;
+        }
         const timerClaim = await claimDueTimerHeartbeat(
           agent,
           now,

@@ -260,6 +260,74 @@ export function subtractPersistedOverlay(
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
+const DEFAULT_HEARTBEAT_ACTIVE_HOURS = {
+  start: "09:00",
+  end: "18:00",
+  timezone: "UTC",
+};
+
+function asHeartbeatActiveHours(value: unknown): {
+  start: string;
+  end: string;
+  timezone: string;
+} | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.start !== "string"
+    || typeof record.end !== "string"
+    || typeof record.timezone !== "string"
+  ) {
+    return null;
+  }
+  return { start: record.start, end: record.end, timezone: record.timezone };
+}
+
+function normalizeTimeInput(value: string) {
+  return value.length >= 5 ? value.slice(0, 5) : value;
+}
+
+function HeartbeatActiveHoursFields({
+  value,
+  onChange,
+}: {
+  value: { start: string; end: string; timezone: string };
+  onChange: (next: { start: string; end: string; timezone: string }) => void;
+}) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-3">
+      <Field label="Start">
+        <input
+          type="time"
+          value={value.start}
+          onChange={(event) => onChange({ ...value, start: normalizeTimeInput(event.target.value) })}
+          className={inputClass}
+          aria-label="Active hours start"
+        />
+      </Field>
+      <Field label="End">
+        <input
+          type="time"
+          value={value.end}
+          onChange={(event) => onChange({ ...value, end: normalizeTimeInput(event.target.value) })}
+          className={inputClass}
+          aria-label="Active hours end"
+        />
+      </Field>
+      <Field label="Timezone">
+        <input
+          type="text"
+          value={value.timezone}
+          onChange={(event) => onChange({ ...value, timezone: event.target.value })}
+          className={inputClass}
+          placeholder="America/New_York"
+          aria-label="Timezone"
+        />
+      </Field>
+    </div>
+  );
+}
+
 function parseCommaArgs(value: string): string[] {
   return value
     .split(",")
@@ -627,6 +695,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const set = isCreate
     ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
     : null;
+  const persistedHeartbeatActiveHours = asHeartbeatActiveHours(heartbeat.activeHours);
+  const overlayHeartbeatActiveHours = Object.prototype.hasOwnProperty.call(overlay.heartbeat, "activeHours")
+    ? overlay.heartbeat.activeHours
+    : undefined;
+  const editHeartbeatActiveHours = overlayHeartbeatActiveHours !== undefined
+    ? asHeartbeatActiveHours(overlayHeartbeatActiveHours)
+    : persistedHeartbeatActiveHours;
+  const heartbeatIntervalEnabled = isCreate
+    ? Boolean(val?.heartbeatEnabled)
+    : eff("heartbeat", "enabled", heartbeat.enabled === true);
 
   // Create mode holds the non-secret stored-session claim after a Claude
   // subscription login reaches the server `stored` state. The claim marks the
@@ -1334,6 +1412,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         heartbeat: {
           enabled: val!.heartbeatEnabled,
           intervalSec: val!.intervalSec,
+          ...(val!.activeHours ? { activeHours: val!.activeHours } : {}),
         },
       };
     }
@@ -1983,6 +2062,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
             />
+            {val!.heartbeatEnabled ? (
+              <>
+                <ToggleField
+                  label="Limit timer heartbeats to active hours"
+                  hint={help.heartbeatActiveHours}
+                  checked={Boolean(val!.activeHours)}
+                  onChange={(enabled) =>
+                    set!({
+                      activeHours: enabled
+                        ? (val!.activeHours ?? { ...DEFAULT_HEARTBEAT_ACTIVE_HOURS })
+                        : null,
+                    })}
+                  toggleTestId="heartbeat-active-hours"
+                />
+                {val!.activeHours ? (
+                  <HeartbeatActiveHoursFields
+                    value={val!.activeHours}
+                    onChange={(next) => set!({ activeHours: next })}
+                  />
+                ) : null}
+              </>
+            ) : null}
             <CollapsibleSection title="Advanced Run Policy" open={runPolicyAdvancedOpen} onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}>
               <div className="space-y-3">{renderAdapterFields("runPolicy")}</div>
             </CollapsibleSection>
@@ -2008,6 +2109,30 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 numberHint={help.intervalSec}
                 showNumber={eff("heartbeat", "enabled", heartbeat.enabled === true)}
               />
+              {heartbeatIntervalEnabled ? (
+                <>
+                  <ToggleField
+                    label="Limit timer heartbeats to active hours"
+                    hint={help.heartbeatActiveHours}
+                    checked={Boolean(editHeartbeatActiveHours)}
+                    onChange={(enabled) =>
+                      mark(
+                        "heartbeat",
+                        "activeHours",
+                        enabled
+                          ? (editHeartbeatActiveHours ?? persistedHeartbeatActiveHours ?? { ...DEFAULT_HEARTBEAT_ACTIVE_HOURS })
+                          : null,
+                      )}
+                    toggleTestId="heartbeat-active-hours"
+                  />
+                  {editHeartbeatActiveHours ? (
+                    <HeartbeatActiveHoursFields
+                      value={editHeartbeatActiveHours}
+                      onChange={(next) => mark("heartbeat", "activeHours", next)}
+                    />
+                  ) : null}
+                </>
+              ) : null}
             </div>
             <CollapsibleSection
               title="Advanced Run Policy"
