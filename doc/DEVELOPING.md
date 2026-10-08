@@ -1204,12 +1204,20 @@ In Vite middleware mode, Paperclip gives HMR a dedicated HTTP server bound to th
 
 When a workspace service runs Paperclip for browser OAuth QA, configure its `expose.urlTemplate` with the canonical URL the browser can reach. Paperclip preserves explicit `PAPERCLIP_PUBLIC_URL` or `BETTER_AUTH_URL` settings; otherwise it uses a valid exposed HTTPS origin (or loopback HTTP) as the managed runtime fallback for Better Auth and `/api/tools/oauth/callback`. Internal service names such as `http://paperclip-dev:<port>` are rejected unless that hostname is genuinely the browser route. Use a unique origin per isolated worktree. See [Execution Workspaces And Runtime Services](../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#browser-reachable-origins-for-oauth-qa) for configuration and verification.
 
-## Wake Context Delivery
+## Heartbeat Service Extractions
+
+Keep relevant heartbeat extractions and their focused tests in `server/src/services/heartbeat/`.
 
 Task assignment Markdown is rendered by `server/src/services/heartbeat/task-markdown.ts`.
 `heartbeat.ts` calls the renderer and re-exports it for existing callers. Keep prompt
 formatting changes in the renderer and its tests, separate from run orchestration.
-Keep relevant heartbeat extractions and their focused tests in `server/src/services/heartbeat/`.
+
+Run-log formatting is in `server/src/services/heartbeat/run-log.ts`. It bounds
+stored event payloads, redacts and shortens log chunks, and caps stdout/stderr
+excerpts. `heartbeat.ts` keeps event writes, current-user redaction, and live
+event delivery. Existing public helpers remain available from `heartbeat.ts`.
+
+## Wake Context Delivery
 
 Built-in adapters deliver wake context through the run prompt, including structured
 execution-continuation data. They do not export `PAPERCLIP_WAKE_PAYLOAD_JSON`. A
