@@ -61,6 +61,13 @@ const historicalPrompt = {
   digest: "bec3e633d8d828103ce50b3a8b8dc9991c8ef65e07538bdab1a7663957c2ef9b",
 } as const;
 
+// A saved prompt unknown to this release must recover without adding source data.
+const unregisteredPrompt = {
+  revision: "saved-prompt-before-upgrade",
+  text: "Complete the assigned task using the saved instructions.",
+  digest: "b0cab3306694028624bbccbf40984a7aca7c809f77b29bfd959325a2af3f7a66",
+} as const;
+
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
@@ -578,12 +585,13 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   realProcessIt.each([
     ["hard", "current"],
     ["hot", "historical"],
+    ["hot", "unregistered"],
   ] as const)("%s-restarts a dead runner with a %s prompt on the same run and provider session", async (restartKind, promptKind) => {
     const fixture = await seedRun(`DEAD-${promptKind}`);
     const context = nativeRuntimeContextFixture();
-    const runtimeContext = promptKind === "historical"
-      ? { ...context, prompt: historicalPrompt }
-      : context;
+    const runtimeContext = { ...context, prompt: promptKind === "current"
+      ? context.prompt
+      : promptKind === "historical" ? historicalPrompt : unregisteredPrompt };
     runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(runtimeContext);
     const execution = { ...buildNativeExecutionInput({
       companyId,

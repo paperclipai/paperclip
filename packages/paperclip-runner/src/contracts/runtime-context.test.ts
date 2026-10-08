@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { HISTORICAL_PAPERCLIP_EXECUTION_PROMPTS } from "./execution-prompt-history.js";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,
@@ -11,13 +10,6 @@ import {
 } from "./runtime-context.js";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-const historicalDigests = {
-  "paperclip-execution.v1": "a5c04f5348b87b263107ba2086aebe27bc0ffba6f39eeba3a2498655e41896ae",
-  "paperclip-execution.v2": "155cc542689877833af26658e617224cb06f95676dfc408e737c94ca3ecbd413",
-  "paperclip-execution.v3": "9d1564ec6c745a5bc96bb3239bccba44aa0cf89dfdc87c384ec20fd5b85e89fa",
-  "paperclip-execution.v4": "2584948928abc6fdf662ffb46d893a76d63dd536e06ec13226c566e89dd4de2b",
-  "paperclip-execution.v5": "bec3e633d8d828103ce50b3a8b8dc9991c8ef65e07538bdab1a7663957c2ef9b",
-} as const;
 
 function savedContext(revision: string, text: string) {
   const digest = "0".repeat(64);
@@ -45,14 +37,14 @@ function savedContext(revision: string, text: string) {
 }
 
 describe("persisted native execution prompts", () => {
-  it("retains every released historical revision", () => {
-    expect(Object.keys(HISTORICAL_PAPERCLIP_EXECUTION_PROMPTS)).toEqual(Object.keys(historicalDigests));
-  });
-
-  it.each(Object.entries(HISTORICAL_PAPERCLIP_EXECUTION_PROMPTS))(
-    "recovers %s without rewriting its pinned context or system instructions",
+  it.each([
+    ["snapshot-before-upgrade", "Saved instructions from before the upgrade."],
+    ["future-prompt-fixture", "  Saved instructions absent from this release.\n"],
+    [PAPERCLIP_EXECUTION_PROMPT_REVISION, "Saved text under a revision reused by a later release."],
+    ["__proto__", "The revision is opaque metadata."],
+  ])(
+    "recovers %s without a prompt catalog or rewriting its saved instructions",
     (revision, text) => {
-      expect(hash(text)).toBe(historicalDigests[revision as keyof typeof historicalDigests]);
       const persisted = JSON.parse(JSON.stringify(savedContext(revision, text)));
       const parsed = parseNativeRuntimeContext(persisted);
       expect(parsed).toEqual(persisted);
@@ -69,21 +61,47 @@ describe("persisted native execution prompts", () => {
     expect(parseNativeRuntimeContext(current)).toEqual(current);
   });
 
-  it.each(["paperclip-execution.v0", "paperclip-execution.v999", "__proto__", "constructor"])(
-    "rejects unknown revision %s even with a matching text hash",
-    (revision) => {
-      expect(() => parseNativeRuntimeContext(savedContext(revision, PAPERCLIP_EXECUTION_PROMPT))).toThrow("fixed Paperclip prompt revision");
-    },
-  );
+  it.each(["revision", "text"])("requires a non-empty prompt %s", (field) => {
+    const persisted = savedContext("saved-prompt", "Saved instructions.");
+    for (const value of [undefined, null, 42, {}, "", " \n"]) {
+      expect(() => parseNativeRuntimeContext({
+        ...persisted,
+        prompt: { ...persisted.prompt, [field]: value },
+      })).toThrow(`input.runtimeContext.prompt.${field} must be a non-empty string`);
+    }
+  });
 
-  it.each(Object.entries(HISTORICAL_PAPERCLIP_EXECUTION_PROMPTS))(
-    "rejects tampered text and hashes for %s",
-    (revision, text) => {
-      expect(() => parseNativeRuntimeContext(savedContext(revision, `${text} Extra instructions`))).toThrow("fixed Paperclip prompt revision");
-      expect(() => parseNativeRuntimeContext(savedContext(revision, PAPERCLIP_EXECUTION_PROMPT))).toThrow("fixed Paperclip prompt revision");
-      const persisted = savedContext(revision, text);
-      expect(() => parseNativeRuntimeContext({ ...persisted, prompt: { ...persisted.prompt, digest: hash(PAPERCLIP_EXECUTION_PROMPT) } })).toThrow("prompt.digest does not match prompt text");
-      expect(() => parseNativeRuntimeContext({ ...persisted, aggregateDigest: "f".repeat(64) })).toThrow("aggregateDigest");
-    },
-  );
+  it("rejects altered text and malformed or mismatched prompt hashes", () => {
+    const persisted = savedContext("saved-prompt", "Saved instructions.");
+    expect(() => parseNativeRuntimeContext({
+      ...persisted, prompt: { ...persisted.prompt, text: "Changed instructions." },
+    })).toThrow("prompt.digest does not match prompt text");
+    for (const digest of [undefined, null, "", "not-a-hash", "f".repeat(64)]) {
+      expect(() => parseNativeRuntimeContext({
+        ...persisted, prompt: { ...persisted.prompt, digest },
+      })).toThrow("input.runtimeContext.prompt.digest");
+    }
+  });
+
+  it("rejects a prompt change with a matching text hash but a stale aggregate digest", () => {
+    const persisted = savedContext("saved-prompt", "Saved instructions.");
+    const changed = savedContext("changed-prompt", "Changed instructions.");
+    expect(() => parseNativeRuntimeContext({
+      ...persisted, prompt: changed.prompt,
+    })).toThrow("aggregateDigest does not match the canonical context");
+  });
+
+  it("includes the saved revision in the aggregate digest", () => {
+    const persisted = savedContext("saved-prompt", "Saved instructions.");
+    expect(() => parseNativeRuntimeContext({
+      ...persisted, prompt: { ...persisted.prompt, revision: "changed-revision" },
+    })).toThrow("aggregateDigest does not match the canonical context");
+  });
+
+  it("rejects aggregate context drift", () => {
+    const persisted = savedContext("saved-prompt", "Saved instructions.");
+    expect(() => parseNativeRuntimeContext({
+      ...persisted, aggregateDigest: "f".repeat(64),
+    })).toThrow("aggregateDigest does not match the canonical context");
+  });
 });
