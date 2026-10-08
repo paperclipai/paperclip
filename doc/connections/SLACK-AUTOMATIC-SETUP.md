@@ -120,11 +120,11 @@ the browser cannot supply a manifest, scopes, or callback destination.
 - Webhook URLs use `PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL` when configured, otherwise
   the canonical board origin. They end in `/api/chat-webhooks/<publicId>/slack`.
   A separate webhook ingress must route signed webhook requests to the instance.
-- Avatar upload uses a server-derived public preset PNG URL on the canonical
-  board origin (`/api/agent-avatars/cap-v1/<palette>/rest.png?size=512&scale=1&background=paperclip-dark`).
-  Slack must be able to fetch this route without login. It serves preset artwork
-  without company or agent lookup. A failed fetch leaves installation usable and
-  offers manual upload; callers cannot choose an arbitrary image URL.
+- Avatar upload renders the assigned agent's preset PNG on the server and sends
+  its bytes through `apps.icon.set` as multipart form data. Slack does not need to
+  fetch an image from the tenant's authenticated board origin. The image is
+  512 × 512 with the Paperclip dark background. The temporary configuration
+  token stays in the Authorization header and is discarded after setup.
 - Cloud resolves its current canonical origin from its claimed runtime identity.
   Self-hosted deployments use the configured authentication public base URL
   (`PAPERCLIP_AUTH_PUBLIC_BASE_URL` or `PAPERCLIP_PUBLIC_URL`).

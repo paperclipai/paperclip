@@ -1,8 +1,10 @@
+import { createAgentAvatarPool } from "./agent-avatar-pool.js";
+import type { AgentAvatarRequest } from "./agent-avatars.js";
 import { removeSlackRegistration } from "./chat-slack-registration-cleanup.js";
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt, inArray, like, sql } from "drizzle-orm";
 import { agents, chatEndpoints, chatSlackRegistrations, companies, toolConnections, toolOauthStates, type Db } from "@paperclipai/db";
-import { agentAvatarUrl, resolveAgentAppearance, buildSlackAppManifest, slackAppConfigurationSchema, slackRegistrationErrorMessage, type SlackRegistrationInput, type SlackRegistrationState, type SlackAvatarState, type SlackAccountState } from "@paperclipai/shared";
+import { resolveAgentAppearance, buildSlackAppManifest, slackAppConfigurationSchema, slackRegistrationErrorMessage, type SlackRegistrationInput, type SlackRegistrationState, type SlackAvatarState, type SlackAccountState } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService } from "./access.js";
 import { logActivity } from "./activity-log.js";
@@ -39,6 +41,7 @@ export function slackChatRegistrationService(db: Db, options: {
   publicOrigin: () => string | null;
   webhookOrigin: () => string | null;
   fetch?: typeof fetch;
+  renderAvatar?: (request: AgentAvatarRequest) => Promise<Buffer>;
   withLock: <T>(endpointId: string, work: (lease: CredentialMutationLeaseGuard) => Promise<T>) => Promise<T>;
   runtimeSigningSecret: (endpointId: string) => Promise<string>;
   runtimeBotToken: (endpointId: string) => Promise<string>;
@@ -48,6 +51,7 @@ export function slackChatRegistrationService(db: Db, options: {
 }) {
   const fetchImpl = options.fetch ?? fetch;
   const vault = secretService(db);
+  let avatarPool: ReturnType<typeof createAgentAvatarPool> | undefined;
   function origin(value: string | null) {
     if (!value) throw badRequest("Configure a public HTTPS URL before creating a Slack app");
     const url = new URL(value);
@@ -81,11 +85,11 @@ export function slackChatRegistrationService(db: Db, options: {
       action: `chat_slack.${action}`, entityType: "chat_endpoint", entityId: row.endpointId,
       details: { endpointId: row.endpointId, appId: row.appId, ...(code ? { code } : {}) } });
   }
-  async function api(method: string, fields: Record<string, string>, bearer?: string) {
+  async function api(method: string, fields: Record<string, string> | FormData, bearer?: string) {
     const response = await fetchImpl(`https://slack.com/api/${method}`, {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(timeoutMs),
-      headers: { "content-type": "application/x-www-form-urlencoded", ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
-      body: new URLSearchParams(fields),
+      headers: { ...(fields instanceof FormData ? {} : { "content-type": "application/x-www-form-urlencoded" }), ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
+      body: fields instanceof FormData ? fields : new URLSearchParams(fields),
     });
     const result = object(await response.json());
     if (!response.ok || result.ok !== true) {
@@ -211,9 +215,17 @@ export function slackChatRegistrationService(db: Db, options: {
       try {
         await endpoint(endpointId, actor);
         await lease.assertOwned();
-        // Public preset artwork from our configured origin; never accept a caller's URL.
-        const imageUrl = new URL(agentAvatarUrl(resolveAgentAppearance(current.agentAppearance, current.endpoint.assignedAgentId), 512, 1, "rest", false, "paperclip-dark"), origin(options.publicOrigin())).href;
-        await api("apps.icon.set", { app_id: createdAppId, url: imageUrl }, input.credentials.configurationToken);
+        // Cloud ingress requires a tenant session. Send the preset PNG bytes so
+        // Slack does not need to fetch an authenticated Paperclip URL.
+        const render = options.renderAvatar ?? (avatarPool ??= createAgentAvatarPool()).render;
+        const png = await render({ appearance: resolveAgentAppearance(current.agentAppearance, current.endpoint.assignedAgentId),
+          size: 512, scale: 1, pose: "rest", muted: false, background: "paperclip-dark" });
+        await endpoint(endpointId, actor);
+        await lease.assertOwned();
+        const upload = new FormData();
+        upload.set("app_id", createdAppId);
+        upload.set("file", new Blob([new Uint8Array(png)], { type: "image/png" }), "agent-avatar.png");
+        await api("apps.icon.set", upload, input.credentials.configurationToken);
         avatar = { status: "uploaded", uploadedAt: new Date().toISOString() };
       } catch {
         // Provider echoes (including tokens) never become saved state or activity.
@@ -492,5 +504,6 @@ export function slackChatRegistrationService(db: Db, options: {
     return `/${encodeURIComponent(row.prefix)}/apps/chat/connect?provider=slack&resume=${encodeURIComponent(endpointId)}`;
   }
   return { create, install, pending, expiredReturn, complete, cleanup, returnPath, registration, notifyVerified, processPendingVerificationMessages,
+    close: async () => { await avatarPool?.close(); },
     resume: (endpointId: string, actor: SlackSetupActor) => options.withLock(endpointId, lease => resumeLocked(endpointId, actor, lease)) };
 }

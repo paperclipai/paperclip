@@ -4059,14 +4059,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         return fallback(input, init);
       });
       const sdk = new FakeChatSdkRuntime();
-      const { service } = createService(sdk, provider, overrides);
+      const avatarBytes = Buffer.from("synthetic-png-bytes");
+      const renderAvatar = vi.fn(async () => avatarBytes);
+      const { service } = createService(sdk, provider, { renderSlackAvatar: renderAvatar, ...overrides });
       const endpoint = await service.create(company.companyId, { provider: "slack", assignedAgentId: company.assignedAgentId }, actor.userId);
       await service.update(endpoint.id, { slackApp: appDetails }, actor.userId);
       const app = routesApp(db, company.companyId, service);
       const createInput = { requestId: randomUUID(), credentials: { configurationToken: configToken } };
       const create = (input = createInput) => service.slackRegistration.create(endpoint.id, actor, input);
       const install = async () => new URL((await service.slackRegistration.install(endpoint.id, actor)).authorizationUrl).searchParams.get("state")!;
-      return { ...company, endpoint, service, sdk, app, state, provider, create, install, createInput, token, appId, botId, installerId };
+      return { ...company, endpoint, service, sdk, app, state, provider, create, install, createInput, token, appId, botId, installerId, avatarBytes, renderAvatar };
     }
     function setupEvent(f: Awaited<ReturnType<typeof fixture>>, patch: Record<string, unknown> = {}, url = f.endpoint.setup.webhookUrl!, secret = signingSecret, timestamp?: string) {
       return signedSlackWebhookRequest({ url, contentType: "application/json", signingSecret: secret, ...(timestamp ? { timestamp } : {}),
@@ -4136,7 +4138,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       for (const canary of [configToken, signingSecret, clientSecret, f.token]) expect(publicState).not.toContain(canary);
       await request(f.app).patch(`/api/chat-endpoints/${f.endpoint.id}`).send({ slackApp: appDetails }).expect(409);
     });
-    it("uploads the assigned agent's public avatar only after the app credentials are durable", async () => {
+    it("uploads avatar bytes without fetching a tenant-session-protected URL, after app credentials are durable", async () => {
       const f = await fixture();
       await db.update(agents).set({ appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "cherry-pop" } }).where(eq(agents.id, f.assignedAgentId));
       f.state.beforeIcon = async () => {
@@ -4148,9 +4150,39 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await f.create();
       const [, init] = f.provider.mock.calls.find(([url]) => String(url).endsWith("apps.icon.set"))!;
       expect(init).toMatchObject({ method: "POST", redirect: "error", headers: { authorization: `Bearer ${configToken}` } });
-      const fields = new URLSearchParams(String(init!.body));
-      expect(Object.fromEntries(fields)).toEqual({ app_id: f.appId, url: "https://paperclip.example/api/agent-avatars/cap-v1/cherry-pop/rest.png?size=512&scale=1&background=paperclip-dark" });
+      expect(f.renderAvatar).toHaveBeenCalledWith({ appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "cherry-pop" },
+        size: 512, scale: 1, pose: "rest", muted: false, background: "paperclip-dark" });
+      expect(init!.body).toBeInstanceOf(FormData);
+      const fields = init!.body as FormData;
+      expect(fields.get("app_id")).toBe(f.appId);
+      expect(fields.has("url")).toBe(false);
+      expect(fields.has("token")).toBe(false);
+      expect(init!.headers).not.toHaveProperty("content-type"); // fetch sets the multipart boundary.
+      const file = fields.get("file") as File;
+      expect(file.type).toBe("image/png");
+      expect(file.name).toBe("agent-avatar.png");
+      expect(Buffer.from(await file.arrayBuffer())).toEqual(f.avatarBytes);
+      expect(f.provider.mock.calls.every(([url]) => !String(url).includes("/agent-avatars/"))).toBe(true);
       expect((await request(f.app).get(`/api/chat-endpoints/${f.endpoint.id}`).expect(200)).body.setup.slackAvatar.status).toBe("uploaded");
+    });
+    it("uploads a real 512-pixel PNG from the production renderer", async () => {
+      const f = await fixture({ renderSlackAvatar: undefined });
+      await f.create();
+      const [, init] = f.provider.mock.calls.find(([url]) => String(url).endsWith("apps.icon.set"))!;
+      const file = (init!.body as FormData).get("file") as File;
+      const png = Buffer.from(await file.arrayBuffer());
+      expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      expect(png.readUInt32BE(16)).toBe(512);
+      expect(png.readUInt32BE(20)).toBe(512);
+      expect((await f.service.get(f.endpoint.id)).setup.slackAvatar?.status).toBe("uploaded");
+    });
+    it("keeps the saved app installable after local avatar rendering fails", async () => {
+      const f = await fixture({ renderSlackAvatar: async () => { throw new Error("render failed"); } });
+      await f.create();
+      expect((await f.service.get(f.endpoint.id)).setup.slackAvatar).toEqual({ status: "failed", errorCode: "slack_avatar_upload_failed" });
+      expect(f.provider.mock.calls.some(([url]) => String(url).endsWith("apps.icon.set"))).toBe(false);
+      await expect(f.install()).resolves.toMatch(/^slack-install\./);
+      expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(1);
     });
     it.each(["failIcon", "timeoutIcon"] as const)("keeps installation usable after %s without leaking provider echoes or creating another app", async failure => {
       const f = await fixture();

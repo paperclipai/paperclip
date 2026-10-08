@@ -1,4 +1,5 @@
 import { chatCredentialMutationLease, CREDENTIAL_MUTATION_LEASE_TTL_MS, type CredentialMutationLeaseGuard } from "./chat-credential-mutation-lease.js";
+import type { AgentAvatarRequest } from "./agent-avatars.js";
 import { slackChatRegistrationService, slackRegistrationProjection } from "./chat-slack-registration.js";
 import { chatSlackRegistrations } from "@paperclipai/db";
 import { SLACK_CHAT_BOT_SCOPES } from "@paperclipai/shared";
@@ -1525,6 +1526,7 @@ export interface ChatChannelServiceOptions {
     actionId: string;
     claimId: string;
   }) => Promise<void>;
+  renderSlackAvatar?: (request: AgentAvatarRequest) => Promise<Buffer>;
   storage?: StorageService;
 }
 
@@ -38130,7 +38132,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   const slackRegistration = slackChatRegistrationService(db, {
-    publicOrigin: getPublicBaseUrl, webhookOrigin: getWebhookPublicBaseUrl, fetch: fetchImpl,
+    publicOrigin: getPublicBaseUrl, webhookOrigin: getWebhookPublicBaseUrl, fetch: fetchImpl, renderAvatar: options.renderSlackAvatar,
     withLock: async (endpointId, work) => {
       const record = await endpointRecord(endpointId);
       if (!record) throw notFound("Chat endpoint not found");
@@ -38400,6 +38402,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       // Stop every provider runtime before releasing leader rows. This gives a
       // standby an immediate takeover path without overlapping Gateway sockets.
       await runtime.shutdown();
+      await slackRegistration.close();
       await Promise.all(
         ownedDiscordGateways.map((ownership) =>
           releaseDiscordGatewayLeaseRow(ownership),
