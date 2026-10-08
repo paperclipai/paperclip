@@ -12,6 +12,7 @@ import {
   decideRunLivenessContinuation,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
+  sanitizeRetryOfRunId,
 } from "../services/recovery/index.ts";
 
 const companyId = "company-1";
@@ -236,7 +237,7 @@ describe("recovery classifier boundary", () => {
       sourceRunId: runId,
       livenessState: "plan_only",
       nextAttempt: 1,
-    })).toBe("run_liveness_continuation:issue-1:run-1:plan_only:1");
+    })).toBe("run_liveness_continuation:issue-1:plan_only:1");
   });
 
   it("classifies stranded recovery origins as recovery-owned work", () => {
@@ -244,5 +245,11 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+
+  it("repairs invalid retry self-reference without discarding valid lineage", () => {
+    expect(sanitizeRetryOfRunId({ runId, retryOfRunId: runId })).toBeNull();
+    expect(sanitizeRetryOfRunId({ runId, retryOfRunId: "parent-run" })).toBe("parent-run");
+    expect(sanitizeRetryOfRunId({ runId, retryOfRunId: null })).toBeNull();
   });
 });

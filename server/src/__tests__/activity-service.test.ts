@@ -394,7 +394,9 @@ describeEmbeddedPostgres("activity service", () => {
       livenessState: "completed",
       livenessReason: "Issue is done",
       continuationAttempt: 0,
-      lastUsefulActionAt: completedAt,
+      // A completed disposition is authoritative, but commentary alone is not
+      // useful artifact evidence and must not replenish a continuation budget.
+      lastUsefulActionAt: null,
     });
 
     const [persisted] = await db.select().from(heartbeatRuns);
@@ -403,7 +405,9 @@ describeEmbeddedPostgres("activity service", () => {
       livenessState: "completed",
       livenessReason: "Issue is done",
       continuationAttempt: 0,
-      lastUsefulActionAt: completedAt,
+      // A completed disposition is authoritative, but commentary alone is not
+      // useful artifact evidence and must not replenish a continuation budget.
+      lastUsefulActionAt: null,
     });
   });
 

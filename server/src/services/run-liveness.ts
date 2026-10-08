@@ -192,17 +192,10 @@ function normalizeEvidence(evidence: Partial<RunLivenessEvidenceInput> | null | 
 
 export function hasConcreteActionEvidence(evidence: Partial<RunLivenessEvidenceInput> | null | undefined) {
   const normalized = normalizeEvidence(evidence);
-  // Workspace creation is setup evidence, not task progress by itself. It can
-  // appear in reasons alongside durable activity, but it must not prevent a
-  // planning-only or empty run from receiving a bounded continuation.
-  return (
-    normalized.issueCommentsCreated +
-      normalized.documentRevisionsCreated +
-      normalized.workProductsCreated +
-      normalized.activityEventsCreated +
-      normalized.toolOrActionEventsCreated >
-    0
-  );
+  // Only durable implementation artifacts reset the continuation budget.
+  // Comments, generic activity, tool events, and workspace setup can all be
+  // produced by a run that only describes future work.
+  return normalized.documentRevisionsCreated + normalized.workProductsCreated > 0;
 }
 
 function evidenceReason(evidence: RunLivenessEvidenceInput) {

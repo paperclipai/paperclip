@@ -43,6 +43,9 @@ export type {
   RunContinuationDecision,
 } from "./run-liveness-continuations.js";
 export {
+  sanitizeRetryOfRunId,
+} from "./retry-lineage.js";
+export {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES,

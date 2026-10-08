@@ -38,7 +38,7 @@ describe("run liveness classifier", () => {
     expect(classification.actionability).toBe("unknown");
   });
 
-  it("treats issue comments, documents, products, and actions as progress", () => {
+  it("treats durable implementation artifacts as progress", () => {
     const latestEvidenceAt = new Date("2026-04-18T12:00:00Z");
     const classification = classifyRunLiveness({
       ...baseInput,
@@ -46,10 +46,8 @@ describe("run liveness classifier", () => {
         summary: "Updated implementation.",
       },
       evidence: {
-        issueCommentsCreated: 1,
         documentRevisionsCreated: 1,
         workProductsCreated: 1,
-        toolOrActionEventsCreated: 1,
         latestEvidenceAt,
       },
     });
@@ -66,6 +64,27 @@ describe("run liveness classifier", () => {
       },
       evidence: {
         workspaceOperationsCreated: 1,
+        latestEvidenceAt: new Date("2026-04-18T12:00:00Z"),
+      },
+    });
+
+    expect(classification.livenessState).toBe("plan_only");
+    expect(classification.lastUsefulActionAt).toBeNull();
+  });
+
+  it.each([
+    "issueCommentsCreated",
+    "workspaceOperationsCreated",
+    "activityEventsCreated",
+    "toolOrActionEventsCreated",
+  ] as const)("does not treat %s alone as useful implementation progress", (field) => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "I will inspect the repo next.",
+      },
+      evidence: {
+        [field]: 1,
         latestEvidenceAt: new Date("2026-04-18T12:00:00Z"),
       },
     });

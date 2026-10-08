@@ -186,5 +186,9 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    retryOfRunNotSelfCheck: check(
+      "heartbeat_runs_retry_of_run_id_not_self_check",
+      sql`${table.retryOfRunId} is null or ${table.retryOfRunId} <> ${table.id}`,
+    ),
   }),
 );

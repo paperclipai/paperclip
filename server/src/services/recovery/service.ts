@@ -142,6 +142,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { sanitizeRetryOfRunId } from "./retry-lineage.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -2019,11 +2020,17 @@ export function recoveryService(
       ),
     });
 
-    if (queued && input.retryOfRunId) {
+    const retryOfRunId = queued
+      ? sanitizeRetryOfRunId({
+          runId: queued.id,
+          retryOfRunId: input.retryOfRunId,
+        })
+      : null;
+    if (queued && retryOfRunId) {
       return db
         .update(heartbeatRuns)
         .set({
-          retryOfRunId: input.retryOfRunId,
+          retryOfRunId,
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, queued.id))

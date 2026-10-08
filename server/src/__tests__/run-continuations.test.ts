@@ -31,6 +31,7 @@ function issue(overrides: Record<string, unknown> = {}) {
     assigneeAgentId: agentId,
     executionState: null,
     projectId: null,
+    unblockDescriptor: null,
     ...overrides,
   } as never;
 }
@@ -142,6 +143,108 @@ describe("run liveness continuations", () => {
     if (decision.kind !== "exhausted") return;
     expect(decision.comment).toContain("Bounded liveness continuation exhausted");
     expect(decision.comment).toContain("Attempts used: 2/2");
+  });
+
+  it("uses the durable issue-and-cause attempt when a replacement run lost its local counter", () => {
+    const decision = decideRunLivenessContinuation({
+      run: run({ continuationAttempt: 0 }),
+      issue: issue(),
+      agent: agent(),
+      livenessState: "plan_only",
+      livenessReason: "Replacement run planned without acting",
+      nextAction: null,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+      durableAttempt: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
+    });
+
+    expect(decision.kind).toBe("exhausted");
+    if (decision.kind !== "exhausted") return;
+    expect(decision.attempt).toBe(DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS);
+  });
+
+  it("finalizes an incomplete blocked issue only after the durable budget is exhausted", () => {
+    const exhausted = decideRunLivenessContinuation({
+      run: run(),
+      issue: issue({ status: "blocked", unblockDescriptor: null }),
+      agent: agent(),
+      livenessState: "plan_only",
+      livenessReason: "Replacement run planned without acting",
+      nextAction: null,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+      durableAttempt: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
+    });
+    const notExhausted = decideRunLivenessContinuation({
+      run: run(),
+      issue: issue({ status: "blocked", unblockDescriptor: null }),
+      agent: agent(),
+      livenessState: "plan_only",
+      livenessReason: "Replacement run planned without acting",
+      nextAction: null,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+      durableAttempt: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS - 1,
+    });
+
+    expect(exhausted.kind).toBe("exhausted");
+    expect(notExhausted).toEqual({
+      kind: "skip",
+      reason: "blocked issue may be finalized on exhaustion but not continued",
+    });
+  });
+
+  it("keeps idempotency stable across replacement source runs for the same issue and cause", () => {
+    const first = buildRunLivenessContinuationIdempotencyKey({
+      issueId,
+      sourceRunId: "replacement-run-1",
+      livenessState: "plan_only",
+      nextAttempt: 2,
+    });
+    const second = buildRunLivenessContinuationIdempotencyKey({
+      issueId,
+      sourceRunId: "replacement-run-2",
+      livenessState: "plan_only",
+      nextAttempt: 2,
+    });
+
+    expect(first).toBe(second);
+  });
+
+  it("bounds a high-run replacement storm with one issue-and-cause budget", () => {
+    const decisions = Array.from({ length: 100 }, (_, index) =>
+      decideRunLivenessContinuation({
+        run: run({ id: `replacement-${index}`, continuationAttempt: 0 }),
+        issue: issue(),
+        agent: agent(),
+        livenessState: "plan_only",
+        livenessReason: "Replacement run planned without acting",
+        nextAction: null,
+        budgetBlocked: false,
+        idempotentWakeExists: false,
+        durableAttempt: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
+      }),
+    );
+
+    expect(decisions.every((decision) => decision.kind === "exhausted")).toBe(true);
+  });
+
+  it("starts a new idempotency epoch after durable implementation progress", () => {
+    const beforeProgress = buildRunLivenessContinuationIdempotencyKey({
+      issueId,
+      sourceRunId: "run-before-progress",
+      livenessState: "plan_only",
+      nextAttempt: 1,
+    });
+    const afterProgress = buildRunLivenessContinuationIdempotencyKey({
+      issueId,
+      sourceRunId: "run-after-progress",
+      livenessState: "plan_only",
+      nextAttempt: 1,
+      budgetEpoch: "2026-04-18T12:00:00.000Z",
+    });
+
+    expect(afterProgress).not.toBe(beforeProgress);
   });
 
   it("skips non-actionable and guarded issues", () => {

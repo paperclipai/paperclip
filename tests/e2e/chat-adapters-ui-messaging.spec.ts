@@ -1476,6 +1476,14 @@ test.describe("Exact failed chat run retry", () => {
                 )
               : new RegExp(`${startPath}$`),
           );
+          if (surface === "agent run") {
+            // The denial belongs to the selected run, not its URL alias. It
+            // must survive completion of the UUID-to-slug navigation too.
+            await expect(page).toHaveURL(
+              new RegExp(`/${seed.prefix}/agents/maya/runs/${failedRunId}$`),
+            );
+            await expect(page.getByText(denial, { exact: true })).toBeVisible();
+          }
           await expect(retry).toBeEnabled();
           await testInfo.attach(`${surface}-retry-denied`, {
             body: await page.screenshot(),

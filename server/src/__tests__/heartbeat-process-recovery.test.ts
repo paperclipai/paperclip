@@ -11548,6 +11548,92 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it.each(["checkoutRunId", "executionRunId"] as const)("preserves a newer %s when an old plan-only run exhausts its budget", async (ownerField) => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress", runStatus: "failed",
+    });
+    await db.update(heartbeatRuns).set({ lastUsefulActionAt: null }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId, status: "succeeded", livenessState: "plan_only",
+      continuationAttempt: 2, contextSnapshot: { issueId, taskId: issueId },
+      createdAt: new Date("2026-02-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-02-01T00:01:00.000Z"),
+    });
+    const newerRunId = randomUUID();
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      // Another accepted owner wins before the old run's finish path. Neither
+      // release nor exhaustion may revoke that owner, even for the same agent.
+      await db.insert(heartbeatRuns).values({
+        id: newerRunId, companyId, agentId, status: "running",
+        contextSnapshot: { issueId, taskId: issueId }, startedAt: new Date(),
+      });
+      await db.update(issues).set({ [ownerField]: newerRunId }).where(eq(issues.id, issueId));
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "I will inspect the repo next and then implement the fix.", provider: "test", model: "test-model" };
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reconcileStrandedAssignedIssues();
+    await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 31_000));
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const issue = (await db.select().from(issues).where(eq(issues.id, issueId)))[0]!;
+    // The competing run is synthetic; finish it before fixture cleanup.
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, newerRunId));
+    expect(issue[ownerField]).toBe(newerRunId);
+    expect(issue.status).toBe("in_progress");
+    expect(issue.unblockDescriptor).toBeNull();
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity.some((row) => row.action === "issue.liveness_continuation_exhausted")).toBe(false);
+  });
+
+  it("keeps legacy disposition authority instead of stacking a prose-derived liveness budget", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "I will inspect the repo next and then implement the fix.",
+      provider: "test",
+      model: "test-model",
+    });
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ lastUsefulActionAt: null })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "succeeded",
+      livenessState: "plan_only",
+      livenessReason: "Prior replacement run planned without acting",
+      continuationAttempt: 2,
+      contextSnapshot: { issueId, taskId: issueId },
+      createdAt: new Date("2026-02-01T00:00:00.000Z"),
+      finishedAt: new Date("2026-02-01T00:01:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+    await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 31_000));
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    // Master routes legacy success through structured disposition episodes,
+    // not diagnostic liveness labels from unrelated historical runs.
+    const current = (await db.select().from(issues).where(eq(issues.id, issueId)))[0]!;
+    expect(current.status).toBe("in_progress");
+    expect(current.unblockDescriptor).toBeNull();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.some((row) => row.contextSnapshot?.legacyDispositionEpisode)).toBe(true);
+
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes.filter((row) => row.reason === "run_liveness_continuation")).toHaveLength(0);
+  });
+
   it("treats a plan document update as progress and does not enqueue liveness continuation", async () => {
     const { agentId, companyId, issueId, runId } =
       await seedStrandedIssueFixture({
@@ -12769,57 +12855,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
-  it("defers unresolved automatic ancestry at claim and records a distinct nonretrying failure after claim", async () => {
+  it("rejects self-referential retry ancestry before claim or dispatch", async () => {
     const source = await seedCommittedChatControlStop();
-    await db
-      .update(chatPublications)
-      .set({ state: "pending" })
-      .where(eq(chatPublications.id, source.publicationId));
     const child = await seedChatAutomaticChild(source);
-    await db
-      .update(heartbeatRuns)
-      .set({ retryOfRunId: child.runId })
-      .where(eq(heartbeatRuns.id, child.runId));
-    const heartbeat = heartbeatService(db);
-    await heartbeat.resumeQueuedRuns();
-    expect(
-      (
-        await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, child.runId))
-      )[0],
-    ).toMatchObject({ status: "queued", startedAt: null });
-    await db
-      .update(heartbeatRuns)
-      .set({ retryOfRunId: source.runId })
-      .where(eq(heartbeatRuns.id, child.runId));
-    const finalHeartbeat = heartbeatService(db, {
-      beforeChatControlRecoveryCheck: async ({ stage, runId }) => {
-        if (stage === "dispatch")
-          await db
-            .update(heartbeatRuns)
-            .set({ retryOfRunId: runId })
-            .where(eq(heartbeatRuns.id, runId));
+
+    await expect(
+      db
+        .update(heartbeatRuns)
+        .set({ retryOfRunId: child.runId })
+        .where(eq(heartbeatRuns.id, child.runId)),
+    ).rejects.toMatchObject({
+      cause: {
+        constraint_name: "heartbeat_runs_retry_of_run_id_not_self_check",
       },
     });
-    await finalHeartbeat.resumeQueuedRuns();
-    await finalHeartbeat.drainActiveRunExecutions();
+
     expect(
       (
         await db
-          .select()
+          .select({ retryOfRunId: heartbeatRuns.retryOfRunId })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, child.runId))
-      )[0],
-    ).toMatchObject({
-      status: "failed",
-      errorCode: CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
-    });
-    expect(
-      (await finalHeartbeat.reconcileStrandedAssignedIssues())
-        .continuationRequeued,
-    ).toBe(0);
+      )[0]?.retryOfRunId,
+    ).toBe(source.runId);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
 

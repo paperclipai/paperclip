@@ -18,7 +18,15 @@ const IDEMPOTENT_WAKE_STATUSES = ["queued", "deferred_issue_execution", "complet
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "executionState" | "projectId"
+  | "id"
+  | "companyId"
+  | "identifier"
+  | "title"
+  | "status"
+  | "assigneeAgentId"
+  | "executionState"
+  | "projectId"
+  | "unblockDescriptor"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 
@@ -51,13 +59,14 @@ export function buildRunLivenessContinuationIdempotencyKey(input: {
   sourceRunId: string;
   livenessState: RunLivenessState;
   nextAttempt: number;
+  budgetEpoch?: string | null;
 }) {
   return [
     RUN_LIVENESS_CONTINUATION_REASON,
     input.issueId,
-    input.sourceRunId,
     input.livenessState,
     String(input.nextAttempt),
+    ...(input.budgetEpoch ? [input.budgetEpoch] : []),
   ].join(":");
 }
 
@@ -91,6 +100,8 @@ export function decideRunLivenessContinuation(input: {
   nextAction: string | null;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
+  durableAttempt?: number;
+  budgetEpoch?: string | null;
   maxAttempts?: number;
 }): RunContinuationDecision {
   const {
@@ -116,7 +127,12 @@ export function decideRunLivenessContinuation(input: {
   if (issue.assigneeAgentId !== run.agentId) {
     return { kind: "skip", reason: "issue is no longer assigned to the source run agent" };
   }
-  if (!CONTINUATION_ACTIVE_ISSUE_STATUSES.has(issue.status)) {
+  const incompleteBlockedDisposition =
+    issue.status === "blocked" && !issue.unblockDescriptor;
+  if (
+    !CONTINUATION_ACTIVE_ISSUE_STATUSES.has(issue.status) &&
+    !incompleteBlockedDisposition
+  ) {
     return { kind: "skip", reason: `issue status ${issue.status} is not continuable` };
   }
   if (issue.executionState) {
@@ -128,7 +144,10 @@ export function decideRunLivenessContinuation(input: {
   if (budgetBlocked) {
     return { kind: "skip", reason: "budget hard stop blocks continuation" };
   }
-  const currentAttempt = readContinuationAttempt(run.continuationAttempt);
+  const currentAttempt = Math.max(
+    readContinuationAttempt(run.continuationAttempt),
+    readContinuationAttempt(input.durableAttempt),
+  );
   if (currentAttempt >= maxAttempts) {
     return {
       kind: "exhausted",
@@ -144,6 +163,12 @@ export function decideRunLivenessContinuation(input: {
       ].join("\n"),
     };
   }
+  if (incompleteBlockedDisposition) {
+    return {
+      kind: "skip",
+      reason: "blocked issue may be finalized on exhaustion but not continued",
+    };
+  }
 
   const nextAttempt = currentAttempt + 1;
   const idempotencyKey = buildRunLivenessContinuationIdempotencyKey({
@@ -151,9 +176,10 @@ export function decideRunLivenessContinuation(input: {
     sourceRunId: run.id,
     livenessState,
     nextAttempt,
+    budgetEpoch: input.budgetEpoch,
   });
   if (idempotentWakeExists) {
-    return { kind: "skip", reason: "continuation wake already exists for this source run and attempt" };
+    return { kind: "skip", reason: "continuation wake already exists for this issue, cause, and attempt" };
   }
 
   const payload = withRecoveryContext({

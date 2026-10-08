@@ -57608,9 +57608,22 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           payload: { ...ancestor.payload, failedRunId: failedRetryRunId },
         })
         .where(eq(chatActions.id, ancestor.id));
+      await expect(
+        db
+          .update(heartbeatRuns)
+          .set({ retryOfRunId: failedRetryRunId, contextSnapshot: cyclicContext })
+          .where(eq(heartbeatRuns.id, failedRetryRunId)),
+      ).rejects.toMatchObject({
+        cause: {
+          code: "23514",
+          constraint_name: "heartbeat_runs_retry_of_run_id_not_self_check",
+        },
+      });
+      // The database rejects self-lineage; the service must also reject
+      // malformed retry authority stored only in the context payload.
       await db
         .update(heartbeatRuns)
-        .set({ retryOfRunId: failedRetryRunId, contextSnapshot: cyclicContext })
+        .set({ contextSnapshot: cyclicContext })
         .where(eq(heartbeatRuns.id, failedRetryRunId));
       await expect(
         db.transaction((tx) =>
