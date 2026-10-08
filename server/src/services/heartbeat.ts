@@ -18541,12 +18541,13 @@ export function heartbeatService(
                 adapterResult.nativeFinalization.workspaceFinalizeStatus =
                   workspaceFinalizeStatus;
                 try {
-                  const finalized = await finalizeNativeRun({
-                    db,
-                    runId: run.id,
-                    workspaceFinalizeStatus,
-                    preserveProviderAttempt: Boolean(nativeWorkspaceSync),
-                  });
+const finalized = await finalizeNativeRun({
+                       db,
+                       runId: run.id,
+                       workspaceFinalizeStatus,
+                       preserveProviderAttempt: Boolean(nativeWorkspaceSync),
+                       observedExitCode: adapterResult.exitCode,
+                     });
                   await dispatchPendingNativeStatusWakeups({
                     companyId: run.companyId,
                   });
@@ -18715,11 +18716,12 @@ export function heartbeatService(
               );
             }
             try {
-              await finalizeNativeRun({
-                db,
-                runId: run.id,
-                workspaceFinalizeStatus: "failed",
-              });
+await finalizeNativeRun({
+                   db,
+                   runId: run.id,
+                   workspaceFinalizeStatus: "failed",
+                   observedExitCode: adapterResult.exitCode,
+                 });
               await dispatchPendingNativeStatusWakeups({
                 companyId: run.companyId,
               });

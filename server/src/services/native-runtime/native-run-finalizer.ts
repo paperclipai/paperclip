@@ -1089,6 +1089,12 @@ export async function finalizeNativeRun(input: {
   projectRunStatus?: boolean;
   /** Workspace-only replay must not consume the provider recovery budget. */
   preserveProviderAttempt?: boolean;
+  /**
+   * Exit code already observed by the caller. `run.exit_code` is still null on
+   * the live path, because the heartbeat persists `adapterResult.exitCode` only
+   * after finalization returns, so reading the stored row cannot recover it.
+   */
+  observedExitCode?: number | null;
   failpoint?: NativeStatusCommitFailpoint;
 }) {
   const run = await input.db
@@ -1579,7 +1585,7 @@ export async function finalizeNativeRun(input: {
         // names the statement but not the SQLSTATE, so the cause has to be
         // walked here or the reason is lost with the write.
         causeDetail: describeNativeFailureCause(error),
-        exitCode: run.exitCode,
+        exitCode: input.observedExitCode ?? run.exitCode,
         nextAction:
           error instanceof NativeStatusRaceError
             ? "Reassess against the latest authoritative issue status version."

@@ -92,21 +92,28 @@ function nextHop(value: unknown): unknown {
  */
 export function describeNativeFailureCause(error: unknown): NativeFailureCauseDetail {
   const hops: NativeFailureCauseHop[] = [];
+  // Identity, not value: two distinct wrappers can legitimately carry the same
+  // message and no code, and the deeper SQLSTATE behind them is still new
+  // information. Comparing rendered values treated those as a cycle and hid
+  // the code we came for.
+  const visited = new Set<object>();
   let cursor: unknown = error;
   let guard = 0;
   while (cursor !== null && cursor !== undefined && guard < MAX_NATIVE_FAILURE_CAUSE_HOPS) {
     guard += 1;
-    const message = clipMessage(readMessage(cursor));
-    const code = readCode(cursor);
-    const previous = hops[hops.length - 1];
-    // A repeated hop is a cycle, not new information.
-    if (previous && previous.message === message && previous.code === code) break;
+    if (typeof cursor === "object" || typeof cursor === "function") {
+      if (visited.has(cursor as object)) break;
+      visited.add(cursor as object);
+    }
     hops.push({
       depth: hops.length,
       name: readName(cursor),
-      message,
-      code,
-      sqlstate: code !== null && SQLSTATE_PATTERN.test(code),
+      message: clipMessage(readMessage(cursor)),
+      code: readCode(cursor),
+      sqlstate: (() => {
+        const code = readCode(cursor);
+        return code !== null && SQLSTATE_PATTERN.test(code);
+      })(),
     });
     cursor = nextHop(cursor);
   }
@@ -126,13 +133,20 @@ export function describeNativeFailureCause(error: unknown): NativeFailureCauseDe
  * reconciler copies `failureDetail` into `heartbeat_runs`, so a query can reach
  * the SQLSTATE with `result_json->>'finalizationCauseCode'` instead of parsing
  * the rendered statement out of the `error` text.
+ *
+ * Every key is emitted unconditionally. `recordRetryableFailure` merges this
+ * payload into the previous attempt's json with `||`, so a retry that lands a
+ * different kind of failure would otherwise inherit the old classification: an
+ * `ECONNRESET` after a `40P01` overwrote the code but kept
+ * `finalizationSqlstate: true`, and a failure with no code at all kept the
+ * previous code. Writing the falsy values makes each attempt replace the last.
  */
 export function buildNativeFailureCauseResultJson(
   detail: NativeFailureCauseDetail,
 ): Record<string, unknown> {
   return {
-    ...(detail.causeCode ? { finalizationCauseCode: detail.causeCode } : {}),
-    ...(detail.sqlstate ? { finalizationSqlstate: true } : {}),
-    ...(detail.causeChain.length > 0 ? { finalizationCauseChain: detail.causeChain } : {}),
+    finalizationCauseCode: detail.causeCode,
+    finalizationSqlstate: detail.sqlstate,
+    finalizationCauseChain: detail.causeChain,
   };
 }

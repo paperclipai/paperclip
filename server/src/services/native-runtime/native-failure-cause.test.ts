@@ -91,6 +91,21 @@ describe("describeNativeFailureCause", () => {
     expect(describeNativeFailureCause(root).causeChain).toHaveLength(MAX_NATIVE_FAILURE_CAUSE_HOPS);
   });
 
+  it("does not mistake two identical wrappers for a cycle", () => {
+    // Value-equality stopping hid the SQLSTATE behind the second wrapper. Two
+    // distinct objects carrying the same message are two real hops.
+    const outer = new Error("Failed query: update heartbeat_runs");
+    const inner = new Error("Failed query: update heartbeat_runs");
+    Object.assign(inner, { code: "40P01" });
+    outer.cause = inner;
+
+    const detail = describeNativeFailureCause(outer);
+
+    expect(detail.causeChain).toHaveLength(2);
+    expect(detail.causeCode).toBe("40P01");
+    expect(detail.sqlstate).toBe(true);
+  });
+
   it("tolerates non-Error throws", () => {
     expect(describeNativeFailureCause("native_finalization_invalid").causeCode).toBeNull();
     expect(describeNativeFailureCause(null).causeChain).toEqual([]);
@@ -109,10 +124,30 @@ describe("buildNativeFailureCauseResultJson", () => {
     expect(payload.finalizationCauseChain).toHaveLength(2);
   });
 
-  it("omits the code keys when no cause carried a code", () => {
+  it("clears the previous classification so a retry cannot inherit it", () => {
+    // `recordRetryableFailure` merges this payload into the last attempt's json
+    // with `||`. Omitting a key therefore keeps the old value, which is how an
+    // ECONNRESET retry ended up labelled as a SQLSTATE.
     const payload = buildNativeFailureCauseResultJson(describeNativeFailureCause(new Error("plain")));
 
-    expect(payload).not.toHaveProperty("finalizationCauseCode");
-    expect(payload).not.toHaveProperty("finalizationSqlstate");
+    expect(payload.finalizationCauseCode).toBeNull();
+    expect(payload.finalizationSqlstate).toBe(false);
+    // The hop is still recorded; only the classification keys are cleared.
+    expect(payload.finalizationCauseChain).toHaveLength(1);
+  });
+
+  it("overwrites a stale SQLSTATE flag when the retry is a driver code", () => {
+    const previous = buildNativeFailureCauseResultJson(
+      describeNativeFailureCause(drizzleQueryError("40P01", ["failed"])),
+    );
+    const retry = buildNativeFailureCauseResultJson(
+      describeNativeFailureCause(Object.assign(new Error("connection terminated"), { code: "ECONNRESET" })),
+    );
+
+    // Shape of the merge `recordRetryableFailure` performs.
+    const merged = { ...previous, ...retry };
+
+    expect(merged.finalizationCauseCode).toBe("ECONNRESET");
+    expect(merged.finalizationSqlstate).toBe(false);
   });
 });
