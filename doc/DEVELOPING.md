@@ -1713,6 +1713,15 @@ HTTP adapters can call public HTTP(S) endpoints by default. Requests use the
 same DNS-pinning guard as remote connections, do not follow redirects, and
 reject loopback, RFC1918/private, and link-local or cloud-metadata destinations.
 
+The shared guard also supports IPv6-only deployments with DNS64/NAT64. For
+the well-known `64:ff9b::/96` prefix, it checks the embedded IPv4 destination
+and allows public addresses. It still pins the connection to the approved IPv6
+address. This also applies to AgentMail attachment downloads. Private and reserved
+IPv4 destinations remain blocked by default. IPv4 link-local destinations,
+including metadata addresses encoded as NAT64, remain denied even when private
+networking is allowed. Network-specific NAT64 prefixes do not receive this
+exception.
+
 Server owners can opt a trusted private service in with a comma-separated list
 of exact origins:
 
