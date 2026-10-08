@@ -12,6 +12,10 @@ const meta = {
 } satisfies Meta<typeof SlackSetupFixture>;
 export default meta;
 type Story = StoryObj<typeof meta>;
+export const ChooseConnection: Story = {
+  name: "00 · Choose connection", args: { scenario: "choose" },
+  parameters: { initialEntries: ["/PAP/apps/chat/connect?provider=slack"] },
+};
 export const ChooseAgent: Story = {
   name: "01 · Choose agent", args: { scenario: "choose" }, parameters: { initialEntries: [start] },
 };
@@ -49,3 +53,8 @@ export const WelcomeFailed: Story = { name: "Recovery · Welcome DM failed", arg
 export const Mobile: Story = { name: "Mobile · App configuration access token", args: { scenario: "create" }, globals: { viewport: { value: "mobile1", isRotated: false } } };
 
 export const SuccessMobile: Story = { name: "Mobile · Success", args: { scenario: "success" }, globals: { viewport: { value: "mobile1", isRotated: false } } };
+
+export const ChooseConnectionMobile: Story = {
+  ...ChooseConnection, name: "Mobile · Choose connection",
+  globals: { viewport: { value: "mobile1", isRotated: false } },
+};

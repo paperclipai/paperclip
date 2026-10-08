@@ -19,7 +19,8 @@ import {
   type SetStateAction,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, Copy, CircleHelp, ExternalLink, Eye, EyeOff, Loader2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, CircleHelp, ExternalLink, Eye, EyeOff, Hammer, Loader2 } from "lucide-react";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { AgentCharacter } from "@/components/AgentCharacter";
 import { AgentSelect } from "@/components/AgentMultiSelect";
 import { Button } from "@/components/ui/button";
@@ -125,28 +126,36 @@ function ChatConnectionPurpose({ provider, onChat, onTools }: {
         <div className="grid gap-3">
           <button
             type="button"
-            className="rounded-xl border border-border p-4 text-left hover:bg-accent/40"
+            className="flex items-center gap-4 rounded-xl border border-border p-4 text-left hover:bg-accent/40"
             onClick={onChat}
           >
-            <span className="block text-sm font-semibold">
-              Chat with an agent
-            </span>
-            <span className="mt-1 block text-sm text-muted-foreground">
-              People in {providerNames[provider]} can start and continue
-              Paperclip tasks.
+            <AgentAvatar size={48} />
+            <span>
+              <span className="block text-sm font-semibold">
+                Chat with an agent
+              </span>
+              <span className="mt-1 block text-sm text-muted-foreground">
+                People in {providerNames[provider]} can start and continue
+                Paperclip tasks.
+              </span>
             </span>
           </button>
           <button
             type="button"
-            className="rounded-xl border border-border p-4 text-left hover:bg-accent/40"
+            className="flex items-center gap-4 rounded-xl border border-border p-4 text-left hover:bg-accent/40"
             onClick={onTools}
           >
-            <span className="block text-sm font-semibold">
-              Use this connection as an agent tool
+            <span className="flex size-12 shrink-0 items-center justify-center text-muted-foreground" aria-hidden="true">
+              <Hammer className="size-8" />
             </span>
-            <span className="mt-1 block text-sm text-muted-foreground">
-              Let agents use {providerNames[provider]} actions and data while
-              they work.
+            <span>
+              <span className="block text-sm font-semibold">
+                Use this connection as an agent tool
+              </span>
+              <span className="mt-1 block text-sm text-muted-foreground">
+                Let agents use {providerNames[provider]} actions and data while
+                they work.
+              </span>
             </span>
           </button>
         </div>
