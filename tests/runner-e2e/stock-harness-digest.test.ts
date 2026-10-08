@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { sourceFingerprint } from "./stock-harness-checks.mjs";
 import { stockHarnessSourceDigest, stockHarnessSkillSources } from "./stock-harness.js";
 
@@ -29,7 +30,7 @@ describe("stock harness instruction revision", () => {
       vi.mocked(readFileSync).mockImplementation(() => Buffer.from("unchanged"));
       const original = sourceFingerprint();
       vi.mocked(readFileSync).mockImplementation(file => Buffer.from(
-        String(file).endsWith(`/paperclip/${source}`) ? "changed helper" : "unchanged"));
+        String(file) === resolve(import.meta.dirname, "../..", source) ? "changed helper" : "unchanged"));
       expect(sourceFingerprint().fingerprint).not.toBe(original.fingerprint);
     });
   it("records a missing historical bundled helper without accepting unreadable helper files", () => {
