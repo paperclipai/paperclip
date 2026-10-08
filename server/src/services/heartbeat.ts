@@ -706,6 +706,8 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "cost.reported",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+/** Open statuses admission accepts for a handoff re-admitted after lease cleanup. */
+const LEASE_HANDOFF_READMIT_STATUSES = ["todo", "in_progress", "in_review", "blocked"] as const;
 const EXTERNAL_ATTACHMENT_OMISSIONS_KEY = "externalAttachmentOmissions";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const ACCEPTED_PLAN_CONVERSION_SKILL_KEY =
@@ -10792,6 +10794,110 @@ export function heartbeatService(
       await resumeRemoteStopComments(run, wake.id).catch(err => {
         logger.warn({ err, runId: run.id }, "failed to resume saved execution-wait message");
       });
+    }
+  }
+
+  /**
+   * Re-admit the handoff wake that this run's own teardown blocked.
+   *
+   * A reassignment cancels the outgoing run and wakes the new assignee at once.
+   * Cancellation returns when the adapter has stopped, but the run's environment
+   * lease is released later, in this executor's cleanup. A wake admitted in that
+   * window meets `execution_owner_active` and, having no comment or durable
+   * request, is stored as a terminal `skipped` execution wait. Nothing retries
+   * it, so the new assignee never starts. This runs after the lease release,
+   * finds the receipt that names this run as its `interruptedRunId`, and sends
+   * it through ordinary admission once. Every admission gate still applies.
+   */
+  async function readmitLeaseBlockedHandoffs(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId">,
+    issueId: string,
+  ) {
+    if (!isUuidLike(issueId) || (await getSchedulingSuppression()).suppressed) return;
+    const claims = await db.transaction(async (tx) => {
+      // Admission holds this lock while it reads the gate and writes its
+      // receipt, so a receipt from a wake that raced the release is visible here,
+      // and any later wake reads the released lease and is admitted normally.
+      const [issue] = await tx.select({
+        status: issues.status, statusVersion: issues.statusVersion,
+        assigneeAgentId: issues.assigneeAgentId, executionRunId: issues.executionRunId,
+        executionState: issues.executionState,
+      }).from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId))).for("update");
+      if (!issue?.assigneeAgentId || issue.executionRunId ||
+          !(LEASE_HANDOFF_READMIT_STATUSES as readonly string[]).includes(issue.status)) return [];
+      // A Stop never promotes the stopped agent's own work; only the current owner.
+      const ownerId = issue.assigneeAgentId;
+      if (ownerId === run.agentId) return [];
+      const receipts = await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.agentId, ownerId),
+        eq(agentWakeupRequests.status, "skipped"),
+        eq(agentWakeupRequests.reason, "execution_reconciliation_required"),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+        sql`${agentWakeupRequests.payload}->>'interruptedRunId' = ${run.id}`,
+        // A recovery-action hold is a genuine block with its own resolution path.
+        sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'recoveryActionId' is null`,
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'readmittedAt' is null`,
+      )).orderBy(desc(agentWakeupRequests.requestedAt)).limit(1);
+      const receipt = receipts[0];
+      if (!receipt) return [];
+      const context = parseObject(parseObject(receipt.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
+      if (!readNonEmptyString(context.wakeReason)) return [];
+      // A stage handoff must still wait on the same stage and participant.
+      const stage = parseObject(parseObject(receipt.payload).executionStage);
+      if (readNonEmptyString(stage.stageId)) {
+        const state = parseObject(issue.executionState);
+        if (state.status !== "pending" || state.currentStageId !== stage.stageId ||
+            parseObject(state.currentParticipant).agentId !== ownerId) return [];
+      }
+      // Anything the owner has received since supersedes this receipt.
+      const [later] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, ownerId),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        gte(heartbeatRuns.createdAt, receipt.requestedAt),
+      )).limit(1);
+      if (later) return [];
+      const [pendingWake] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, ownerId),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+        ne(agentWakeupRequests.id, receipt.id),
+        or(inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
+          and(isNotNull(agentWakeupRequests.runId), gte(agentWakeupRequests.requestedAt, receipt.requestedAt))),
+      )).limit(1);
+      if (pendingWake) return [];
+      if (await getExecutionBlocker(tx as unknown as Db, run.companyId, issueId)) return [];
+      // Claim before admission so a concurrent cleanup cannot admit it twice.
+      const [claimed] = await tx.update(agentWakeupRequests).set({
+        updatedAt: new Date(),
+        payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{executionWait,readmittedAt}', to_jsonb(${new Date().toISOString()}::text))`,
+      }).where(and(
+        eq(agentWakeupRequests.id, receipt.id), eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.status, "skipped"),
+        sql`${agentWakeupRequests.payload}->'executionWait'->>'readmittedAt' is null`,
+      )).returning({ id: agentWakeupRequests.id });
+      return claimed ? [{ receipt, context, ownerId, statusVersion: issue.statusVersion }] : [];
+    });
+    for (const { receipt, context, ownerId, statusVersion } of claims) {
+      const { executionWait: _receipt, [DEFERRED_WAKE_CONTEXT_KEY]: _context, ...payload } =
+        parseObject(receipt.payload);
+      try {
+        await enqueueWakeup(ownerId, {
+          source: receipt.source as WakeupOptions["source"],
+          triggerDetail: (receipt.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
+          reason: readNonEmptyString(context.wakeReason) ?? undefined,
+          payload,
+          contextSnapshot: context,
+          requestedByActorType: (receipt.requestedByActorType ?? undefined) as WakeupOptions["requestedByActorType"],
+          requestedByActorId: receipt.requestedByActorId,
+          // The task was read under the lock above. Admission refuses it if the
+          // owner, status or status version changed before the wake is queued.
+          issueStateGuard: { assigneeAgentId: ownerId, statuses: [...LEASE_HANDOFF_READMIT_STATUSES], statusVersion },
+          idempotencyKey: `lease-handoff-readmit:${receipt.id}`,
+        });
+      } catch (err) {
+        logger.warn({ err, wakeId: receipt.id, runId: run.id }, "failed to re-admit a handoff blocked by lease cleanup");
+      }
     }
   }
 
@@ -27298,6 +27404,13 @@ export function heartbeatService(
           : releaseIssueExecutionAndPromote(latestRun, { suppressImmediateRecovery: true })).catch(err => {
           logger.error({ err, runId: run.id }, "failed to promote legacy comment queue after cleanup");
         });
+        // The lease is released now. A handoff wake that met it is re-admitted.
+        const handoffIssueId = readNonEmptyString(parseObject(latestRun.contextSnapshot).issueId);
+        if (handoffIssueId && !shutdownInProgress) {
+          await readmitLeaseBlockedHandoffs(latestRun, handoffIssueId).catch(err => {
+            logger.error({ err, runId: run.id }, "failed to re-admit a handoff blocked by lease cleanup");
+          });
+        }
       }
       if (
         !nativeSessionResumeScheduled &&
@@ -30880,6 +30993,7 @@ export function heartbeatService(
     resumeRemoteStopComments,
     resumeQueuedCommentInterrupt,
     resumeExecutionWaitComments,
+    readmitLeaseBlockedHandoffs,
 
     sweepStaleIssueLocks,
 
