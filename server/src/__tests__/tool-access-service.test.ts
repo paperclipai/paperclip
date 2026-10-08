@@ -5475,7 +5475,7 @@ describeEmbeddedPostgres("tool access service", () => {
           method,
           hasAuthorization: new Headers(init.headers).has("authorization"),
         });
-        if (url === "https://mcp.atlassian.com/v2/mcp?tools=all") {
+        if (url === "https://mcp.atlassian.com/v1/mcp/authv2") {
           return new Response(null, {
             status: 401,
             headers: { "content-type": "application/json" },
@@ -5484,7 +5484,7 @@ describeEmbeddedPostgres("tool access service", () => {
         if (url.includes("oauth-protected-resource")) {
           return new Response(
             JSON.stringify({
-              resource: "https://mcp.atlassian.com/v2/mcp?tools=all",
+              resource: "https://mcp.atlassian.com/v1/mcp/authv2",
               authorization_servers: ["https://auth.atlassian.example"],
             }),
             { status: 200, headers: { "content-type": "application/json" } },
@@ -5514,7 +5514,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(result).toMatchObject({
       galleryKey: "jira",
       methodKey: "mcp-oauth",
-      serverUrl: "https://mcp.atlassian.com/v2/mcp?tools=all",
+      serverUrl: "https://mcp.atlassian.com/v1/mcp/authv2",
       endpointReachable: true,
       oauth: {
         metadataFound: true,

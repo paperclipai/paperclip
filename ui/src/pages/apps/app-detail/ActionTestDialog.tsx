@@ -408,10 +408,10 @@ function splitRequiredOptional(schema: JsonSchemaNode): JsonSchemaNode {
 }
 
 /**
- * Remove optional object branches that contain only blank form values or
- * schema defaults. Nested object editors can surface those values while the
- * parent option is expanded, but an untouched option must remain omitted so
- * its required descendants do not block an otherwise valid action test.
+ * Remove optional object branches that contain only blank form values.
+ * Expanding an object editor does not add values, so an untouched optional
+ * branch remains absent; once it contains any nonblank value, preserve that
+ * value (including values equal to schema defaults) and validate descendants.
  */
 export function prepareActionTestParameters(
   schema: JsonSchemaNode,
@@ -432,27 +432,16 @@ export function prepareActionTestParameters(
         continue;
       }
 
-      if (
-        propertySchema.default !== undefined &&
-        JSON.stringify(value) === JSON.stringify(propertySchema.default)
-      ) {
-        cleaned[key] = value;
-        continue;
-      }
-
       if (resolveType(propertySchema) === "object" && value && typeof value === "object" && !Array.isArray(value)) {
         const nested = cleanObject(propertySchema, value as Record<string, unknown>);
-        const hasUserValue = Object.entries(nested).some(([nestedKey, nestedValue]) => {
-          const nestedSchema = propertySchema.properties?.[nestedKey];
-          return nestedValue !== undefined && nestedValue !== null && nestedValue !== "" &&
-            !(nestedSchema?.default !== undefined && nestedValue === nestedSchema.default);
-        });
-        if (required.has(key) || hasUserValue) cleaned[key] = nested;
+        const hasValue = Object.values(nested).some(
+          (nestedValue) => nestedValue !== undefined && nestedValue !== null && nestedValue !== "",
+        );
+        if (required.has(key) || hasValue) cleaned[key] = nested;
         continue;
       }
 
       if (value === undefined || value === null || value === "") continue;
-      if (propertySchema.default !== undefined && value === propertySchema.default) continue;
       cleaned[key] = value;
     }
 

@@ -192,7 +192,7 @@ describe("Permissions action Test dialog", () => {
     const prepared = prepareActionTestParameters(schema, {
       url: "https://paperclip.ing",
       profile: { name: "" },
-      queryOptions: { mode: "freeform", prompt: "" },
+      queryOptions: { prompt: "" },
       screenshotOptions: { viewport: { width: undefined, height: undefined } },
     });
 
@@ -236,6 +236,74 @@ describe("Permissions action Test dialog", () => {
         screenshotOptions: { viewport: { width: 1280 } },
       },
       errors: { "/screenshotOptions/viewport/height": "This field is required" },
+    });
+  });
+
+  it("preserves explicit false, zero, and string values equal to schema defaults", () => {
+    const schema: JsonSchemaNode = {
+      type: "object",
+      properties: {
+        options: {
+          type: "object",
+          required: ["enabled", "count", "label"],
+          properties: {
+            enabled: { type: "boolean", default: false },
+            count: { type: "integer", default: 0 },
+            label: { type: "string", default: "default label" },
+          },
+        },
+      },
+    };
+
+    expect(prepareActionTestParameters(schema, {
+      options: { enabled: false, count: 0, label: "default label" },
+    })).toEqual({
+      parameters: { options: { enabled: false, count: 0, label: "default label" } },
+      errors: {},
+    });
+  });
+
+  it("validates required descendants when a nonblank default populates an optional object", () => {
+    const schema: JsonSchemaNode = {
+      type: "object",
+      properties: {
+        options: {
+          type: "object",
+          required: ["enabled", "prompt"],
+          properties: {
+            enabled: { type: "boolean", default: false },
+            prompt: { type: "string" },
+          },
+        },
+      },
+    };
+
+    expect(prepareActionTestParameters(schema, {
+      options: { enabled: false, prompt: "" },
+    })).toEqual({
+      parameters: { options: { enabled: false } },
+      errors: { "/options/prompt": "This field is required" },
+    });
+  });
+
+  it("retains and validates an explicit object default", () => {
+    const schema: JsonSchemaNode = {
+      type: "object",
+      properties: {
+        options: {
+          type: "object",
+          default: { enabled: false },
+          required: ["enabled"],
+          properties: { enabled: { type: "boolean", default: false } },
+        },
+      },
+    };
+
+    expect(prepareActionTestParameters(schema, {
+      options: { enabled: false },
+    })).toEqual({
+      parameters: { options: { enabled: false } },
+      errors: {},
     });
   });
 

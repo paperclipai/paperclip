@@ -369,5 +369,5 @@
     "GSC Wizard underlying Google data scopes and identity-flow completion provenance were not independently verified; no purchase was performed.",
     "Tests ran against isolated qualification state; credentials, codes, provider response data, and private account identifiers are omitted."
   ],
-  "repository_checks": "Pending final scoped branch checks; see PR verification."
+  "repository_checks": "Full repository typecheck and build passed locally. Focused catalog, generator, OAuth/session/callback, and UI checks were run; latest CI results and any local-suite limitations are recorded in https://github.com/paperclipai/paperclip/pull/15621."
 }
