@@ -1,6 +1,7 @@
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
 import { environmentSyncErrorData } from "./environment-sync-error.js";
+import { createPluginIdleDrain } from "./idle-drain.js";
 /**
  * Worker-side RPC host — runs inside the child process spawned by the host.
  *
@@ -335,6 +336,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   let running = true;
   let initialized = false;
+  const idleDrain = createPluginIdleDrain();
+  const unsettledHostCalls = new Map<string | number, () => void>();
   let manifest: PaperclipPluginManifestV1 | null = null;
   let currentConfig: Record<string, unknown> = {};
   // The company whose config was last applied via configChanged. Used to fail
@@ -397,6 +400,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         nextOutboundId = 1;
       }
       const id = nextOutboundId++;
+      // Keep the token after an RPC timeout. Only an actual host response
+      // proves that a host-side write has finished.
+      unsettledHostCalls.set(id, idleDrain.begin());
       const timeout = timeoutMs ?? rpcTimeoutMs;
       let settled = false;
 
@@ -439,6 +445,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         };
         sendMessage(request);
       } catch (err) {
+        unsettledHostCalls.get(id)?.();
+        unsettledHostCalls.delete(id);
         settle(reject, err instanceof Error ? err : new Error(String(err)));
       }
     });
@@ -1563,8 +1571,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
    */
   async function handleHostRequest(request: JsonRpcRequest): Promise<void> {
     const { id, method, params } = request;
-
+    let done: (() => void) | undefined;
     try {
+      if (method !== "prepareIdleSleep" && method !== "releaseIdleSleep" && method !== "shutdown") {
+        done = idleDrain.begin();
+      }
       const invoke = () => dispatchMethod(method, params);
       const result = request.paperclipInvocation
         ? await invocationContextStorage.run(request.paperclipInvocation, invoke)
@@ -1584,6 +1595,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         method === "environmentAcquireLease" || method === "environmentDestroyLease"
           ? environmentCreationCleanupErrorData(err)
           : method === "environmentSyncOut" ? environmentSyncErrorData(err) : undefined));
+    } finally {
+      done?.();
     }
   }
 
@@ -1592,6 +1605,16 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
    */
   async function dispatchMethod(method: string, params: unknown): Promise<unknown> {
     switch (method) {
+      case "prepareIdleSleep": {
+        const hold = params as { ownerId: string; expiresAt: number };
+        const backgroundWork = !initialized || sessionEventCallbacks.size > 0
+          ? "present"
+          : await idleDrain.prepare(hold, plugin.definition.onIdleDrain?.bind(plugin.definition));
+        return { ...hold, backgroundWork };
+      }
+      case "releaseIdleSleep":
+        idleDrain.release((params as { ownerId: string }).ownerId);
+        return;
       case "initialize":
         return handleInitialize(params as InitializeParams);
 
@@ -1746,6 +1769,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onConfigChanged) supportedMethods.push("configChanged");
     if (plugin.definition.onHealth) supportedMethods.push("health");
     if (plugin.definition.onShutdown) supportedMethods.push("shutdown");
+    if (plugin.definition.onIdleDrain) supportedMethods.push("prepareIdleSleep", "releaseIdleSleep");
     if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
     if (plugin.definition.onDetectExternalObjects) supportedMethods.push("detectExternalObjects");
     if (plugin.definition.onRouteAiConnection) supportedMethods.push("routeAiConnection");
@@ -2228,6 +2252,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     const id = response.id;
     if (id === null || id === undefined) return;
 
+    unsettledHostCalls.get(id)?.();
+    unsettledHostCalls.delete(id);
+
     const pending = pendingRequests.get(id);
     if (!pending) return;
 
@@ -2284,16 +2311,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     } else if (isJsonRpcNotification(message)) {
       // Dispatch host→worker push notifications
       const notif = message as JsonRpcNotification & { method: string; params?: unknown };
-      const runNotification = (fn: () => void | Promise<void>) => {
-        if (notif.paperclipInvocation) {
-          return invocationContextStorage.run(notif.paperclipInvocation, fn);
-        }
-        return fn();
+      const runNotification = async (fn: () => void | Promise<void>) => {
+        const done = idleDrain.begin();
+        try {
+          await (notif.paperclipInvocation ? invocationContextStorage.run(notif.paperclipInvocation, fn) : fn());
+        } finally { done(); }
       };
-      if (notif.method === "agents.sessions.event" && notif.params) {
+      if (notif.method === "releaseIdleSleep" && notif.params) {
+        idleDrain.release((notif.params as { ownerId: string }).ownerId);
+      } else if (notif.method === "agents.sessions.event" && notif.params) {
         const event = notif.params as AgentSessionEvent;
         const cb = sessionEventCallbacks.get(event.sessionId);
-        if (cb) cb(event);
+        if (cb) void runNotification(() => cb(event)).catch(() => undefined);
       } else if (notif.method === "onEvent" && notif.params) {
         // Plugin event bus notifications — dispatch to registered event handlers
         Promise.resolve(runNotification(() => handleOnEvent(notif.params as OnEventParams))).catch((err) => {
@@ -2312,6 +2341,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   function cleanup(): void {
     running = false;
+    idleDrain.close();
 
     // Close readline
     if (readline) {

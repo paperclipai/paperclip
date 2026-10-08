@@ -15,6 +15,7 @@ import {
 } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -119,7 +120,7 @@ function withTaskDrainTransition<T>(run: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-export function instanceSettingsRoutes(db: Db) {
+export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManager) {
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
@@ -304,7 +305,8 @@ export function instanceSettingsRoutes(db: Db) {
       // members may read process counters, but not instance-wide work state.
       assertCanManageInstanceSettings(req);
       const idleSleepSafety = await readIdleSleepSafety(db, () => heartbeat.getTaskDrainStatus(), Date.now,
-        typeof req.query.ownerId === "string" ? req.query.ownerId : undefined);
+        typeof req.query.ownerId === "string" ? req.query.ownerId : undefined, undefined,
+        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers));
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
       return;
     }
@@ -418,6 +420,7 @@ export function instanceSettingsRoutes(db: Db) {
         ),
       );
       heartbeat.stopTaskDrain();
+      pluginWorkers?.releaseIdleSleep?.();
       // See the POST handler above for why a publish failure here is
       // swallowed instead of failing the route: the audit record already
       // committed, so a publish failure here must not undo a drain-stop

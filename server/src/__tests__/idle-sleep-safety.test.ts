@@ -245,6 +245,22 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     expect(await read()).toEqual(none);
   });
 
+  it("accepts only exact worker drain receipts and still checks durable work", async () => {
+    const [{ id }] = await db.execute<{ id: string }>(sql`INSERT INTO plugins (plugin_key, package_name, version, manifest_json)
+      VALUES ('demo.idle', 'demo-idle', '1.0.0', '{}'::jsonb) RETURNING id`);
+    const inspect = vi.fn(async () => ({ backgroundWork: "none" as const, pluginIds: [id!] }));
+    const scan = () => readIdleSleepSafety(db, owned, () => now, ownerId, emptyLocal, inspect);
+    expect(await scan()).toEqual(none);
+    expect(inspect).toHaveBeenCalledWith({ ownerId, expiresAt: owned().expiresAt!.getTime() });
+    await db.execute(sql`INSERT INTO plugins (plugin_key, package_name, version, manifest_json)
+      VALUES ('demo.unknown', 'demo-unknown', '1.0.0', '{}'::jsonb)`);
+    expect(await scan()).toEqual(present);
+    await db.execute(sql`UPDATE plugins SET status = 'disabled' WHERE plugin_key = 'demo.unknown'`);
+    const { companyId } = await seed();
+    await db.insert(issues).values({ companyId, title: "Still pending", status: "todo" });
+    expect(await scan()).toEqual(present);
+  });
+
   it("fails closed when the installed schema is older than the report", async () => {
     await db.execute(sql`ALTER TABLE heartbeat_runs RENAME COLUMN cost_accounting_pending TO hidden_pending`);
     try { expect(await read()).toEqual(unknown); }

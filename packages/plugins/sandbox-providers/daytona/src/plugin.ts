@@ -107,6 +107,10 @@ let timingNow: () => number = () => Date.now();
 // read the tracer through `getPluginTracer()`. Before `setup` runs (or in a
 // test) the tracer is a no-op, so a span never throws.
 let pluginContext: PluginContext | null = null;
+// Provider deadlines and terminal close failures do not prove remote work
+// stopped. Until those paths provide complete cleanup receipts, only a worker
+// which has never contacted the provider can opt into automatic idle sleep.
+let providerUsed = false;
 
 /**
  * Return the plugin tracer. It is the injected `ctx.tracer` after `setup`, or a
@@ -313,6 +317,7 @@ function resolveApiKey(config: DaytonaDriverConfig): string {
 }
 
 function createDaytonaClient(config: DaytonaDriverConfig): Daytona {
+  providerUsed = true;
   const clientConfig: DaytonaConfig = {
     apiKey: resolveApiKey(config),
   };
@@ -1570,6 +1575,7 @@ const sandboxHandleSessionStore = (() => {
  * Not used in production.
  */
 export function __resetDaytonaSandboxHandleCacheForTest(): void {
+  providerUsed = false;
   sandboxHandleCache.reset();
   sandboxHandleTeardownGates.reset();
   sandboxHandleActivityGates.reset();
@@ -2279,6 +2285,11 @@ const plugin = definePlugin({
 
   async onHealth() {
     return { status: "ok", message: "Daytona sandbox provider plugin healthy" };
+  },
+
+  async onIdleDrain() {
+    return providerUsed || daytonaLoginPtyByRoute.size > 0 || daytonaDuplexChannelByRoute.size > 0
+      ? "present" : "none";
   },
 
   async onEnvironmentValidateConfig(

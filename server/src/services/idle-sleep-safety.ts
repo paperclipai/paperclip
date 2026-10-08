@@ -17,6 +17,11 @@ export interface IdleSleepSafety {
   backgroundWork: "none" | "present" | "unknown";
 }
 
+export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) => Promise<{
+  backgroundWork: "none" | "present" | "unknown";
+  pluginIds: string[];
+}>;
+
 // These are deliberately conservative. Completed agent runs and workspace
 // operations are history, not reasons to keep an otherwise idle instance up.
 // Other background features remain awake until their work and inbound events
@@ -91,18 +96,28 @@ export async function readIdleSleepSafety(
   now: () => number = Date.now,
   ownerId?: string,
   inspectLocalWork: () => Promise<IdleLocalWork> = readIdleLocalWork,
+  inspectPlugins?: InspectIdlePlugins,
 ): Promise<IdleSleepSafety> {
   const unknown: IdleSleepSafety = { version: 1, backgroundWork: "unknown" };
   const before = getDrainStatus();
   const localBefore = idleWorkSnapshot();
   if (!sameQuietHold(before, before, now())) return unknown;
   try {
+    let quietPlugins: string[] = [];
+    if (inspectPlugins) {
+      if (!ownerId || ownerId !== before.ownerId || before.expiresAt === null || localBefore.active !== 0) return unknown;
+      const pluginWork = await inspectPlugins({ ownerId, expiresAt: before.expiresAt.getTime() });
+      if (pluginWork.backgroundWork !== "none") return { version: 1, backgroundWork: pluginWork.backgroundWork };
+      quietPlugins = pluginWork.pluginIds;
+    }
     const blocked = await db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
       const checks = WORK_CHECKS.map((query) => sql`EXISTS (${sql.raw(query)})`);
-      // Version labels and manifest declarations do not prove arbitrary worker
-      // code has no background activity. No plugin approvals are supported.
-      checks.push(sql`EXISTS (SELECT 1 FROM plugins WHERE status <> 'disabled')`);
+      // Only the current worker's owned runtime drain can exempt a plugin.
+      // Missing workers, old SDKs, and newly installed plugins still block.
+      checks.push(quietPlugins.length === 0
+        ? sql`EXISTS (SELECT 1 FROM plugins WHERE status <> 'disabled')`
+        : sql`EXISTS (SELECT 1 FROM plugins WHERE status <> 'disabled' AND id NOT IN (${sql.join(quietPlugins.map((id) => sql`${id}::uuid`), sql`, `)}))`);
       const rows = await tx.execute<{ blocked: boolean }>(sql`SELECT ${sql.join(checks, sql` OR `)} AS blocked`);
       return rows.length === 1 && typeof rows[0]?.blocked === "boolean" ? rows[0].blocked : undefined;
     }, { isolationLevel: "repeatable read", accessMode: "read only" });
