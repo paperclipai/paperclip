@@ -5,7 +5,7 @@ import { captureFirstTaskAttachments } from "./first-task-attachments.js";
 import { answerableRuntimeRunIds, isSingleClaudeQuestion } from "./runtime-question-readiness.js";
 import { expect, type Page } from "@playwright/test";
 import path from "node:path";
-import { continuationAnswerCommitted, continuationInitialReady } from "./continuation-readiness.js";
+import { continuationAnswerCommitted, continuationInitialReady, continuationCheckpointReady } from "./continuation-readiness.js";
 import { captureLoadedContinuation } from "./continuation-screenshot.js";
 import { seedContinuationContext } from "./continuation-workspace.js";
 import { pollUntil, type RunnerApi } from "./api.js";
@@ -85,6 +85,7 @@ export async function runContinuationFlow(input: {
         const paused = answerableRuntimeRunIds(state.interactions);
         const idle =
           continuationAnswerCommitted(state.interactions, answeredInteractionId) &&
+          continuationCheckpointReady(state) &&
           state.runs.some((r) => !prior.has(r.id) || previousPaused.has(r.id)) &&
           state.runs.every((r) => ["succeeded", "failed", "timed_out", "cancelled"].includes(r.status) ||
             (r.status === "running" && paused.has(r.id))) &&
@@ -92,7 +93,8 @@ export async function runContinuationFlow(input: {
           !state.issue.activeRecoveryAction &&
           (!requireQuestion || continuationInitialReady(state.interactions));
         const key = idle
-          ? state.runs.map((r) => `${r.id}:${r.status}`).join()
+          ? JSON.stringify([state.issue.status, state.issue.executionRunId,
+              state.runs.map(r => [r.id, r.status]), state.interactions.map(i => [i.id, i.status])])
           : "";
         const ready = !!key && key === stable;
         stable = key;
