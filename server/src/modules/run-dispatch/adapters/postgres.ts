@@ -38,6 +38,7 @@ import {
 } from "../../../services/issue-continuation-summary.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
+import { QUOTA_RECOVERY_RETRY_REASON } from "../domain/quota-recovery-release.js";
 import type {
   QueuedRunFacts,
   ReviewParticipantFacts,
@@ -53,6 +54,8 @@ import {
 } from "../domain/wake-context.js";
 import type {
   CancelStaleQueuedRunInput,
+  DeferScheduledRetryInput,
+  DeferScheduledRetryOutcome,
   DispatchResolvedInteractionInput,
   DispatchResolvedInteractionOutcome,
   DueRetryRun,
@@ -485,7 +488,13 @@ export function createPostgresRunDispatchAdapter(
 
   async function listDueRetries(input: ListDueRetriesInput): Promise<DueRetryRun[]> {
     const rows = await db
-      .select()
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      })
       .from(heartbeatRuns)
       .where(
         and(
@@ -504,7 +513,44 @@ export function createPostgresRunDispatchAdapter(
     return rows.map((row) => ({
       runId: row.id,
       companyId: row.companyId,
+      agentId: row.agentId,
+      scheduledRetryAt: row.scheduledRetryAt ? new Date(row.scheduledRetryAt) : new Date(0),
+      scheduledRetryReason: row.scheduledRetryReason ?? null,
     }));
+  }
+
+  async function countInflightQuotaRecoveryRetries(): Promise<Map<string, number> | null> {
+    const rows = await db
+      .select({ agentId: heartbeatRuns.agentId, count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+          eq(heartbeatRuns.scheduledRetryReason, QUOTA_RECOVERY_RETRY_REASON),
+        ),
+      )
+      .groupBy(heartbeatRuns.agentId);
+
+    const counts = new Map<string, number>();
+    for (const row of rows) counts.set(row.agentId, Number(row.count) || 0);
+    return counts;
+  }
+
+  async function deferScheduledRetry(
+    input: DeferScheduledRetryInput,
+  ): Promise<DeferScheduledRetryOutcome> {
+    const [row] = await db
+      .update(heartbeatRuns)
+      .set({ scheduledRetryAt: input.scheduledRetryAt, updatedAt: input.now })
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+        ),
+      )
+      .returning({ id: heartbeatRuns.id });
+    return row ? { deferred: true } : { deferred: false };
   }
 
   async function loadStalenessFacts(
@@ -1159,6 +1205,8 @@ export function createPostgresRunDispatchAdapter(
   return {
     evaluateScheduledRetryGate,
     listDueRetries,
+    countInflightQuotaRecoveryRetries,
+    deferScheduledRetry,
     cancelStaleQueuedRun,
     dispatchResolvedInteractionIfCurrent,
     promoteOrCancelDueRetry,
