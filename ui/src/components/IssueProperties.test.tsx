@@ -2924,10 +2924,10 @@ describe("IssueProperties", () => {
     dateNowSpy.mockRestore();
   });
 
-  it("renders a monitor-only policy with omitted stages and preserves authorization when clearing it", async () => {
+  it.each([true, false])("clears a monitor with omitted stages while preserving independent limits (authorization: %s)", async (withAuthorization) => {
     const onUpdate = vi.fn();
     const executionPolicy = {
-      authorizationPolicy: { trustPreset: "standard" },
+      ...(withAuthorization ? { authorizationPolicy: { trustPreset: "standard" } } : {}),
       maxReviewRounds: 4,
       monitor: { nextCheckAt: "2099-01-01T12:00:00.000Z", notes: "Check service", scheduledBy: "board" },
     } as IssueExecutionPolicy;
@@ -2948,7 +2948,7 @@ describe("IssueProperties", () => {
 
     expect(onUpdate).toHaveBeenCalledWith({ executionPolicy: {
       mode: "normal", commentRequired: true, stages: [],
-      authorizationPolicy: before.authorizationPolicy, maxReviewRounds: 4,
+      ...(withAuthorization ? { authorizationPolicy: before.authorizationPolicy } : {}), maxReviewRounds: 4,
     } });
     expect(executionPolicy).toEqual(before);
     act(() => root.unmount());
