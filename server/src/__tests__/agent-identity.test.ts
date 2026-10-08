@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
 import { randomBytes, randomUUID, verify, generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -74,7 +75,7 @@ describe("agent cryptographic identity", () => {
   });
 
   it("creates identities in the agent creation transaction and rolls both writes back on failure", async () => {
-    const created = await agentService(db).create(companyId, { name: "New identity", role: "engineer", status: "pending_approval" });
+    const created = await createAgentLifecycle(db).requestHire(companyId, { name: "New identity", role: "engineer", status: "pending_approval" });
     expect(await agentIdentityService(db).getPublicIdentity(companyId, created.id)).toMatchObject({ algorithm: "Ed25519" });
     const id = randomUUID();
     await expect(db.transaction(async tx => {
@@ -85,7 +86,7 @@ describe("agent cryptographic identity", () => {
     expect(await db.select().from(agents).where(eq(agents.id, id))).toHaveLength(0);
     expect(await agentIdentityService(db).getPublicIdentity(companyId, id)).toBeNull();
     const fail = vi.spyOn(localEncryptedProvider, "createSecret").mockRejectedValueOnce(new Error("encryption unavailable"));
-    await expect(agentService(db).create(companyId, { name: "Must roll back", role: "engineer", status: "pending_approval" })).rejects.toThrow("encryption unavailable");
+    await expect(createAgentLifecycle(db).requestHire(companyId, { name: "Must roll back", role: "engineer", status: "pending_approval" })).rejects.toThrow("encryption unavailable");
     fail.mockRestore();
     expect(await db.select().from(agents).where(eq(agents.name, "Must roll back"))).toHaveLength(0);
   });

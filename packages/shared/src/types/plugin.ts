@@ -688,6 +688,8 @@ export interface PaperclipPluginManifestV1 {
   /** Capabilities this plugin requires from the host. Enforced at runtime. */
   capabilities: PluginCapability[];
   /** Opt into the native pooled-connection catalog, setup, and management UI. */
+  /** Required participant in agent preparation, stop, resume, and cleanup. */
+  agentLifecycle?: true;
   aiConnectionRouter?: { name: string; description: string };
   /** Entrypoint paths relative to the package root. */
   entrypoints: {

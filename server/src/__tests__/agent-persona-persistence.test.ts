@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -20,15 +21,17 @@ describe("persisted agent personas", () => {
   afterAll(async () => { await database?.cleanup(); });
   it("randomizes once, accepts a saved draft and preserves identity across edits and revision rollback", async () => {
     const service = agentService(db);
-    const random = await service.create(companyId, { name: "Random", role: "engineer", adapterType: "process" });
+    const serviceLifecycle = createAgentLifecycle(db);
+    const random = await serviceLifecycle.requestHire(companyId, { name: "Random", role: "engineer", adapterType: "process" });
     expect(agentAppearanceSchema.safeParse(random.appearance).success).toBe(true);
     const appearance = appearanceForPalette("arctic-blue");
-    const original = await service.create(companyId, { name: "Draft", role: "engineer", adapterType: "process", appearance });
+    const original = await serviceLifecycle.requestHire(companyId, { name: "Draft", role: "engineer", adapterType: "process", appearance });
     expect(original.appearance).toEqual(appearance);
     const updated = await service.update(original.id, { name: "Renamed" }, { recordRevision: { source: "test" } });
     expect(updated?.appearance).toEqual(appearance);
     const [revision] = await service.listConfigRevisions(original.id);
-    await service.update(original.id, { name: "Changed again", status: "paused" });
+    await service.update(original.id, { name: "Changed again" });
+    await serviceLifecycle.pauseAgent(original.id);
     const restored = await service.rollbackConfigRevision(original.id, revision.id, {});
     expect(restored?.appearance).toEqual(appearance);
     expect((await agentService(db).getById(original.id))?.avatarUrl).toContain("/arctic-blue/rest.png?size=512");

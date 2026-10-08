@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import express from "express";
@@ -42,7 +43,7 @@ if (!support.supported) console.warn(`Primary agent database tests unavailable: 
     await db.insert(companyMemberships).values(["user-a", "user-b", "explicit"].map(principalId => ({ companyId: id, principalType: "user", principalId, status: "active", membershipRole: "admin" })));
     return id;
   }
-  const create = (companyId: string, name: string, userId?: string) => agentService(db).create(companyId, {
+  const create = (companyId: string, name: string, userId?: string) => createAgentLifecycle(db).requestHire(companyId, {
     name, adapterType: "process", status: "idle",
   }, { createdByUserId: userId });
   const get = (companyId: string, userId = "user-a") => primaryAgentService(db).get(companyId, userId);
@@ -123,9 +124,9 @@ if (!support.supported) console.warn(`Primary agent database tests unavailable: 
 
   it("retains paused/error primaries, clears on leave, rejoins when chosen, and preserves stars", async () => {
     const c = await company(); const a = await create(c, "Maia", "user-a");
-    await agentService(db).pause(a.id);
+    await createAgentLifecycle(db).pauseAgent(a.id);
     expect((await get(c)).primaryAgentId).toBe(a.id);
-    await agentService(db).update(a.id, { status: "error" });
+    await db.update(agents).set({ status: "error", lifecycleState: "ready", lifecycleHolds: [] }).where(eq(agents.id, a.id));
     expect((await get(c)).primaryAgentId).toBe(a.id);
     const memberships = resourceMembershipService(db);
     await memberships.updateAgent({ companyId: c, userId: "user-a", agentId: a.id, state: "left", actor: actor(c) });
@@ -153,23 +154,24 @@ if (!support.supported) console.warn(`Primary agent database tests unavailable: 
 
   it("clears terminated/deleted primaries and rejects terminated targets and explicit removal", async () => {
     const c = await company(); const a = await create(c, "Maia", "user-a");
-    await agentService(db).terminate(a.id);
+    await createAgentLifecycle(db).terminateAgent(a.id);
     expect(await get(c)).toMatchObject({ primaryAgentId: null, initialized: true });
     await request(app(actor(c))).put(url(c)).send({ primaryAgentId: a.id }).expect(422);
     await request(app(actor(c))).put(url(c)).send({ primaryAgentId: null }).expect(400);
     const b = await create(c, "Alex", "user-a");
     expect((await get(c)).primaryAgentId).toBeNull();
     await request(app(actor(c))).put(url(c)).send({ primaryAgentId: b.id }).expect(200);
-    await agentService(db).remove(b.id);
+    await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, b.id));
+    await createAgentLifecycle(db).purgeAgent(b.id);
     expect(await get(c)).toMatchObject({ primaryAgentId: null, initialized: true });
   });
 
-  it("rolls creation and initialization back together", async () => {
+  it("rejects creation inside a caller transaction", async () => {
     const c = await company();
     await expect(db.transaction(async tx => {
-      await agentService(tx as unknown as typeof db).create(c, { name: "Rolled back", adapterType: "process" }, { createdByUserId: "user-a" });
+      await createAgentLifecycle(tx as unknown as typeof db).requestHire(c, { name: "Rolled back", adapterType: "process" }, { createdByUserId: "user-a" });
       throw new Error("rollback");
-    })).rejects.toThrow("rollback");
+    })).rejects.toThrow("root database");
     expect(await get(c)).toMatchObject({ primaryAgentId: null, initialized: false });
     expect(await db.select().from(agents).where(eq(agents.companyId, c))).toHaveLength(0);
   });
@@ -177,7 +179,7 @@ if (!support.supported) console.warn(`Primary agent database tests unavailable: 
   it("backfills the earliest human event, leaves gone/terminated originals empty, and preserves explicit preferences", async () => {
     const c = await company(); const first = await create(c, "First"), later = await create(c, "Later");
     const terminated = await create(c, "Terminated");
-    await agentService(db).terminate(terminated.id);
+    await createAgentLifecycle(db).terminateAgent(terminated.id);
     const events = [
       ["human", first.id, "user", 1], ["human", later.id, "user", 2],
       ["gone", randomUUID(), "user", 1], ["gone", later.id, "user", 2],

@@ -29,3 +29,6 @@ only that entry point, never a file inside `domain/`, `application/`, or
 
 `pnpm check:module-boundaries` enforces these rules for production source
 files. It also rejects imports that bypass another module's `index.ts`.
+
+The [agent lifecycle module](../../../doc/AGENT-LIFECYCLE.md) owns agent creation,
+pause, resume, and termination. Use its commands for these changes.

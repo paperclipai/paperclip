@@ -1199,3 +1199,10 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.update).toHaveBeenCalledOnce();
   });
 });
+
+vi.mock("../modules/agent-lifecycle/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../modules/agent-lifecycle/index.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+    requestHire: (...args: unknown[]) => mockAgentService.create(...args),
+  }) };
+});

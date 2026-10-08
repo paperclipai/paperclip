@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
@@ -795,8 +796,8 @@ describeEmbeddedPostgres("attention service", () => {
       },
     ]);
 
-    await agentService(db).pause(pausedReviewerId);
-    await agentService(db).terminate(terminatedReviewerId);
+    await createAgentLifecycle(db).pauseAgent(pausedReviewerId);
+    await createAgentLifecycle(db).terminateAgent(terminatedReviewerId);
 
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
     const interactionTitles = feed.items
@@ -886,7 +887,7 @@ describeEmbeddedPostgres("attention service", () => {
       effectiveResolverPolicy: "human_only",
       payload: { version: 1, questions: [] },
     });
-    await agentService(db).pause(reviewerId);
+    await createAgentLifecycle(db).pauseAgent(reviewerId);
 
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
     const otherUserFeed = await attentionService(db).list(companyId, { userId: "other-user" });

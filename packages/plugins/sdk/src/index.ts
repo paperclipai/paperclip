@@ -456,3 +456,5 @@ export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readE
 export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
 
 export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";
+
+export type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";

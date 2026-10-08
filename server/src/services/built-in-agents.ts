@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
 import fs from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -805,6 +806,7 @@ function isBuiltInAgentMarkerConflict(error: unknown): boolean {
 
 export function builtInAgentService(db: Db) {
   const agentSvc = agentService(db);
+  const agentSvcLifecycle = createAgentLifecycle(db);
   const accessSvc = accessService(db);
   const approvalSvc = approvalService(db);
   const instructionsSvc = agentInstructionsService(db);
@@ -1404,7 +1406,7 @@ export function builtInAgentService(db: Db) {
 
   async function ensureBuiltInAgentAssignable(agent: Agent) {
     if (agent.status !== "paused") return agent;
-    const resumed = await agentSvc.resume(agent.id);
+    const resumed = await agentSvcLifecycle.resumeAgent(agent.id);
     if (!resumed) throw notFound("Built-in agent not found");
     return resumed as Agent;
   }
@@ -1664,7 +1666,7 @@ export function builtInAgentService(db: Db) {
     const [keep, ...duplicates] = markedRows;
     for (const duplicate of duplicates) {
       const openApproval = await approvalSvc.findOpenHireApprovalForAgent(companyId, duplicate.id);
-      await agentSvc.terminate(duplicate.id);
+      await agentSvcLifecycle.terminateAgent(duplicate.id);
       if (openApproval) {
         await approvalSvc.cancel(
           openApproval.id,
@@ -1785,7 +1787,7 @@ export function builtInAgentService(db: Db) {
       : null;
     let created: Agent;
     try {
-      created = await agentSvc.create(companyId, {
+      created = await agentSvcLifecycle.requestHire(companyId, {
         ...definitionPatch(definition, resolvedInput),
         status: definition.defaultStatus ?? "idle",
         pauseReason: definition.defaultStatus === "paused"
@@ -1890,7 +1892,7 @@ export function builtInAgentService(db: Db) {
       : null;
     let pending: Agent;
     try {
-      pending = await agentSvc.create(companyId, {
+      pending = await agentSvcLifecycle.requestHire(companyId, {
         ...definitionPatch(definition, input),
         status: "pending_approval",
         reportsTo,

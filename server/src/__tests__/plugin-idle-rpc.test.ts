@@ -21,6 +21,18 @@ function fixture(definition: PluginDefinition, rpcTimeoutMs = 30_000) {
 }
 
 describe("plugin idle RPC", () => {
+  it("advertises and dispatches the agent lifecycle method", async () => {
+    const request = { companyId: "company", agentId: "agent", operationId: "operation", version: 7, phase: "preparing" };
+    const f = fixture({ async setup() {}, async onAgentLifecycle(input) {
+      expect(input).toEqual(request);
+      return { operationId: input.operationId, version: input.version, status: "pending" };
+    } });
+    try {
+      expect((await f.initialize()).result.supportedMethods).toContain("agentLifecycle");
+      expect((await f.call("agentLifecycle", request)).result).toEqual({ operationId: "operation", version: 7, status: "pending" });
+    } finally { f.close(); }
+  });
+
   const hold = () => ({ ownerId: "idle-owner", expiresAt: Date.now() + 30_000 });
 
   it("seals an idle worker, fences stale releases, and restores normal calls", async () => {

@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -212,7 +213,10 @@ describe("internal agent commentary through both transports", () => {
     await server.db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId, status: "running", invocationSource: "on_demand" });
     await submitAgentCommentary(server.db, { companyId: f.companyId, agentId, runId }, { ...input, kind: "complaint" });
     expect((await rows({ ...f, runId }))[0].issueId).toBeNull();
-    if (owner === "agent") await agentService(server.db).remove(agentId);
+    if (owner === "agent") {
+      await server.db.update(agents).set({ lifecycleState: "terminated", status: "terminated" }).where(eq(agents.id, agentId));
+      await createAgentLifecycle(server.db).purgeAgent(agentId);
+    }
     else await companyService(server.db).remove(f.companyId);
     expect(await rows({ ...f, runId })).toHaveLength(0);
   });

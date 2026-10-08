@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { scanAgentLifecycleBoundaries } from "./check-agent-lifecycle-boundaries.mjs";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -158,13 +159,15 @@ export function formatViolation(violation) {
 
 function main() {
   const violations = scanModuleBoundaries();
+  const lifecycleViolations = scanAgentLifecycleBoundaries();
+  if (lifecycleViolations.length) { console.error(lifecycleViolations.join("\n")); process.exitCode = 1; }
   if (violations.length > 0) {
     console.error("Feature module boundary check failed:");
     for (const violation of violations) console.error(`- ${formatViolation(violation)}`);
     process.exitCode = 1;
     return;
   }
-  console.log("Feature module boundary check passed.");
+  if (!lifecycleViolations.length) console.log("Feature module boundary check passed.");
 }
 
 if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) main();

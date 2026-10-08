@@ -1251,7 +1251,7 @@ describe("agent permission routes", () => {
       expect.objectContaining({
         status: "idle",
       }),
-      { createdByUserId: "agent-admin-user", claudeLogin: { storedSessionId: null, ownerUserId: "agent-admin-user", applyExistingWithoutClaim: false } },
+      { createdByUserId: "agent-admin-user", responsibleUserId: "agent-admin-user", claudeLogin: { storedSessionId: null, ownerUserId: "agent-admin-user", applyExistingWithoutClaim: false } },
     );
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
       companyId,
@@ -1381,7 +1381,7 @@ describe("agent permission routes", () => {
           },
         },
       }),
-      { createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1417,7 +1417,7 @@ describe("agent permission routes", () => {
           model: DEFAULT_OPENCODE_LOCAL_MODEL,
         }),
       }),
-      { createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1455,7 +1455,7 @@ describe("agent permission routes", () => {
           model: "anthropic/claude-sonnet-4-5",
         }),
       }),
-      { createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1495,7 +1495,7 @@ describe("agent permission routes", () => {
         },
       }),
       {
-        createdByUserId: "board-user",
+        createdByUserId: "board-user", responsibleUserId: "board-user",
         claudeLogin: {
           storedSessionId: null,
           ownerUserId: "board-user",
@@ -1726,7 +1726,7 @@ describe("agent permission routes", () => {
       expect.objectContaining({
         defaultEnvironmentId: environmentId,
       }),
-      { createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+      { createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
     );
   });
 
@@ -1812,7 +1812,7 @@ describe("agent permission routes", () => {
           adapterType: adapterCase.adapterType,
           defaultEnvironmentId: environmentId,
         }),
-        { createdByUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+        { createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
       );
     });
   }
@@ -2290,4 +2290,13 @@ describe("agent permission routes", () => {
     expect(res.body.error).toBe("Heartbeat run not found");
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
+});
+
+vi.mock("../modules/agent-lifecycle/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../modules/agent-lifecycle/index.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+    requestHire: (...args: unknown[]) => mockAgentService.create(...args),
+    approveHire: (...args: unknown[]) => mockAgentService.activatePendingApproval(...args),
+    terminateAgent: (...args: unknown[]) => mockAgentService.terminate(...args),
+  }) };
 });

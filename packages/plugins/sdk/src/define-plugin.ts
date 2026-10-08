@@ -1,3 +1,4 @@
+import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
  * `definePlugin` — the top-level helper for authoring a Paperclip plugin.
@@ -358,6 +359,8 @@ export interface PluginDefinition {
    * Requires `external.objects.read`.
    */
   /** Propose a member from host-authorized candidates. Requires ai.connections.route. */
+  onAgentLifecycle?(params: AgentLifecycleRequest): Promise<AgentLifecycleResult>;
+
   onRouteAiConnection?(params: AiConnectionRouterRequest): Promise<AiConnectionRouterResult>;
 
   onResolveExternalObject?(

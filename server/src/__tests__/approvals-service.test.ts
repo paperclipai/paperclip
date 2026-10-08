@@ -15,8 +15,8 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/agents.js", () => ({
-  agentService: vi.fn(() => mockAgentService),
+vi.mock("../modules/agent-lifecycle/adapters/records.js", () => ({
+  agentRecords: vi.fn(() => ({ ...mockAgentService, rejectPendingHire: mockAgentService.terminate })),
 }));
 
 vi.mock("../services/hire-hook.js", () => ({

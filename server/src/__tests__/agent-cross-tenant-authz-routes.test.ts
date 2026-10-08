@@ -755,3 +755,14 @@ describe("agent cross-tenant route authorization", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });
+
+vi.mock("../modules/agent-lifecycle/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../modules/agent-lifecycle/index.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+    requestHire: (...args: unknown[]) => mockAgentService.create(...args),
+    pauseAgent: (...args: unknown[]) => mockAgentService.pause(...args),
+    resumeAgent: (...args: unknown[]) => mockAgentService.resume(...args),
+    terminateAgent: (...args: unknown[]) => mockAgentService.terminate(...args),
+    purgeAgent: (...args: unknown[]) => mockAgentService.remove(...args),
+  }) };
+});

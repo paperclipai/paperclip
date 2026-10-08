@@ -1005,7 +1005,7 @@ describe("agent skill routes", () => {
           }),
         }),
       }),
-      { createdByUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
+      { createdByUserId: "local-board", responsibleUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
     );
     expect(mockTrackAgentCreated).toHaveBeenCalledWith(
       expect.anything(),
@@ -1055,7 +1055,7 @@ describe("agent skill routes", () => {
       expect.objectContaining({
         role: "security",
       }),
-      { createdByUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
+      { createdByUserId: "local-board", responsibleUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
     );
     expect(mockTrackAgentCreated).toHaveBeenCalledWith(
       expect.anything(),
@@ -1491,7 +1491,7 @@ describe("agent skill routes", () => {
         }),
       }),
       {
-        createdByUserId: "local-board",
+        createdByUserId: "local-board", responsibleUserId: "local-board",
         claudeLogin: {
           storedSessionId: null,
           ownerUserId: "local-board",
@@ -1574,4 +1574,11 @@ describe("agent skill routes", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
     expect(mockAgentInstructionsService.materializeManagedBundle).not.toHaveBeenCalled();
   });
+});
+
+vi.mock("../modules/agent-lifecycle/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../modules/agent-lifecycle/index.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+    requestHire: (...args: unknown[]) => mockAgentService.create(...args),
+  }) };
 });

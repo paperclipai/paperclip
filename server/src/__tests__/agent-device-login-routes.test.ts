@@ -1709,3 +1709,10 @@ describe("adapter device-login routes", () => {
     expect(loggedText).not.toContain("provider-lease-");
   });
 });
+
+vi.mock("../modules/agent-lifecycle/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../modules/agent-lifecycle/index.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+    requestHire: (...args: unknown[]) => mockAgentService.create(...args),
+  }) };
+});

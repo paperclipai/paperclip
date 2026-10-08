@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -188,7 +189,7 @@ describe("company decision service", () => {
     await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId, windowKind: "calendar_month_utc", amount: 1, reservationCents: "1", notifyEnabled: false });
     const context: DecisionContext = { companyId: f.companyId, feature: settingsDecisionTest,
       actor: { type: "agent", agentId: f.agentId, runId, companyId: f.companyId, source: "agent_jwt" } };
-    const remove = () => agentService(db).remove(f.agentId);
+    const remove = () => createAgentLifecycle(db).purgeAgent(f.agentId);
     f.provider.mockImplementationOnce(async () => {
       await expect(remove()).rejects.toMatchObject({ status: 409, details: { code: "agent_decision_accounting_pending" } });
       expect(await f.service.decide(f.context, DECISION_TEST_REQUEST)).toMatchObject({ status: "unavailable", reason: "budget_blocked" });

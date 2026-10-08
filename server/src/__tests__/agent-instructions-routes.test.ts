@@ -844,3 +844,10 @@ describe("agent instructions bundle routes", () => {
     expect(res.body.adapterConfig.instructionsFilePath).toBeUndefined();
   });
 });
+
+vi.mock("../modules/agent-lifecycle/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../modules/agent-lifecycle/index.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+    requestHire: (...args: unknown[]) => mockAgentService.create(...args),
+  }) };
+});
