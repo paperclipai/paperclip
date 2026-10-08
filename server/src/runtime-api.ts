@@ -22,6 +22,12 @@ function isLinkLocalHost(host: string): boolean {
   return false;
 }
 
+// The in-process listener is plaintext `node:http`; TLS terminates upstream.
+// Candidates synthesized as `<host>:<listenPort>` must not inherit the public
+// `https:` scheme, or they fail the TLS handshake instantly and leave the
+// fallback list with no usable entry. (REL-223)
+const LISTENER_PROTOCOL = "http:";
+
 function formatOrigin(protocol: string, host: string, port: number): string {
   const normalizedHost = host.includes(":") && !host.startsWith("[") && !host.endsWith("]")
     ? `[${host}]`
@@ -127,32 +133,34 @@ export function buildRuntimeApiCandidateUrls(input: {
       return null;
     }
   })();
-  const protocol = explicitOrigin ? new URL(explicitOrigin).protocol : "http:";
-
   pushCandidate(candidates, seen, input.preferredApiUrl);
   pushCandidate(candidates, seen, explicitOrigin);
 
   for (const rawHost of input.allowedHostnames) {
     const host = normalizeHost(rawHost);
     if (!host) continue;
-    pushCandidate(candidates, seen, formatOrigin(protocol, host, input.port));
+    pushCandidate(candidates, seen, formatOrigin(LISTENER_PROTOCOL, host, input.port));
   }
 
   const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost)) {
-    pushCandidate(candidates, seen, formatOrigin(protocol, bindHost, input.port));
+    pushCandidate(candidates, seen, formatOrigin(LISTENER_PROTOCOL, bindHost, input.port));
   }
 
   if (explicitOrigin) {
     const hostname = new URL(explicitOrigin).hostname;
     if (isLoopbackHost(hostname)) {
-      pushCandidate(candidates, seen, formatOrigin(protocol, "host.docker.internal", input.port));
+      pushCandidate(candidates, seen, formatOrigin(LISTENER_PROTOCOL, "host.docker.internal", input.port));
     }
   }
 
   for (const host of collectReachableInterfaceHosts({ networkInterfacesMap: input.networkInterfacesMap })) {
-    pushCandidate(candidates, seen, formatOrigin(protocol, host, input.port));
+    pushCandidate(candidates, seen, formatOrigin(LISTENER_PROTOCOL, host, input.port));
   }
+
+  // Loopback goes last so it never reorders an existing preference; it is the
+  // always-reachable fallback for runs executing on the listener's own machine. (REL-223)
+  pushCandidate(candidates, seen, formatOrigin(LISTENER_PROTOCOL, "127.0.0.1", input.port));
 
   if (candidates.length === 0) {
     pushCandidate(
@@ -168,4 +176,23 @@ export function buildRuntimeApiCandidateUrls(input: {
   }
 
   return candidates;
+}
+
+/** Origin for endpoints the *agent run itself* dials (MCP servers, in-run broker). (REL-223) */
+export function chooseRuntimeDialOrigin(input: {
+  configuredApiUrl: string | null | undefined;
+  listenPort: string | number | null | undefined;
+  localExecution: boolean;
+}): string | null {
+  const configured = normalizeHost(input.configuredApiUrl ?? "");
+  if (!configured) return null; // never conjure an origin
+  if (!input.localExecution) return configured; // remote: 127.0.0.1 is the wrong machine
+  try {
+    if (isLoopbackHost(new URL(configured).hostname)) return configured; // worktree on its own port
+  } catch {
+    // Unparseable: fall through to substitution.
+  }
+  const port = normalizeHost(String(input.listenPort ?? ""));
+  if (!/^\d+$/.test(port)) return configured;
+  return formatOrigin(LISTENER_PROTOCOL, "127.0.0.1", Number(port));
 }
