@@ -71,7 +71,10 @@ const outputs = [
 if (process.argv.includes("--check")) {
   const stale = [];
   for (const [path, content] of outputs)
-    if ((await readFile(path, "utf8").catch(() => "")) !== content)
+    if (
+      (await readFile(path, "utf8").catch(() => "")).replace(/\r\n/g, "\n") !==
+      content.replace(/\r\n/g, "\n")
+    )
       stale.push(path);
   if (stale.length > 0) {
     process.stderr.write(

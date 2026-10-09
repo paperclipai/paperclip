@@ -82,7 +82,8 @@ export function encodeInventory(value) {
 }
 
 export function decodeInventory(source) {
-  const json = source.startsWith(sourceHeader) ? source.slice(sourceHeader.length) : source;
+  const header = /^# GENERATED FILE — DO NOT EDIT\. Run pnpm generate:capability-inventory\.\r?\n/;
+  const json = source.replace(header, "");
   return JSON.parse(json);
 }
 

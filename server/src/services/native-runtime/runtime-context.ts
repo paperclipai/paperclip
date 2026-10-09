@@ -32,6 +32,21 @@ const MAX_ASSET_BYTES = 64 * 1024 * 1024;
 type RuntimeAgent = { id: string; companyId: string; name: string; adapterType?: string | null; adapterConfig: unknown };
 type AssetFile = { path: string; content: Buffer; mode: number };
 
+export function supportsNativeRuntimeMcpConnection(
+  connection: {
+    id: string;
+    transport: string;
+    config?: Record<string, unknown>;
+    transportConfig?: Record<string, unknown>;
+  },
+  githubBotConnectionIds: ReadonlySet<string>,
+): boolean {
+  return connection.transport === "mcp_remote"
+    || connection.transport === "local_stdio"
+    || isBrowserUseConnection(connection)
+    || githubBotConnectionIds.has(connection.id);
+}
+
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const safeRelativePath = (value: string, label: string) => {
   const normalized = value.replaceAll("\\", "/");
@@ -226,7 +241,7 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
     && (Boolean(runIdentity?.activeIdentityContextId) && (connection.config?.sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github")
       || connection.credentialPolicy === "per_user"
       || !isToolConnectionAttentionHealth(connection.healthStatus))
-    && (["mcp_remote", "local_stdio"].includes(connection.transport) || isBrowserUseConnection(connection) || githubBotConnectionIds.has(connection.id))
+    && supportsNativeRuntimeMcpConnection(connection, githubBotConnectionIds)
   ).map((connection) => connection.id));
   const assignment = {
     version: 1,

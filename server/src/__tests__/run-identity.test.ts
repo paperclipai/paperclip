@@ -58,6 +58,24 @@ const support = await getEmbeddedPostgresTestSupport();
     return { ...input, queueId, wakeupRequestId, contextSnapshot };
   }
 
+  async function seedCardAnswerInterrupt() {
+    const input = await seedInterrupt();
+    const interactionId = randomUUID();
+    const contextSnapshot = { issueId: input.issueId };
+    await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: input.companyId,
+      issueId: input.issueId, kind: "request_confirmation", status: "accepted",
+      resolvedByUserId: "operator", result: { accepted: true }, payload: { prompt: "Continue?" },
+    });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, input.queueId));
+    await db.update(agentWakeupRequests).set({ payload: {
+      issueId: input.issueId, queuedCommentInterrupt: receipt.payload.queuedCommentInterrupt,
+      mutation: "interaction", interactionId, interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+    } }).where(eq(agentWakeupRequests.id, input.queueId));
+    await db.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, input.runId));
+    return { ...input, messageIds: [] as string[], interactionId, contextSnapshot };
+  }
+
   it("uses the clicking operator through startup and restart without changing message authors", async () => {
     const input = await seedInterrupt();
     // A stale originating context cannot replace the explicit click's identity.
@@ -78,6 +96,41 @@ const support = await getEmbeddedPostgresTestSupport();
       issueId: input.issueId, parentRunId: input.runId, responsibleUserId: "A", cause: "retry" });
     expect(retried.responsibleUserId).toBe("operator");
   });
+
+  it("starts a queued card-answer interrupt without delegating the operator identity", async () => {
+    const input = await seedCardAnswerInterrupt();
+    // Exercise the same resume precondition: the saved interaction is still
+    // resolved and bound to this company and issue when identity is initialized.
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, input.interactionId));
+    expect(interaction).toMatchObject({ status: "accepted", resolvedByUserId: "operator" });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, input.queueId));
+    expect(receipt.payload).not.toHaveProperty("_paperclipWakeContext");
+    const identity = await initializeRunIdentity(db, { ...input, responsibleUserId: "A", cause: "dispatch" });
+    expect(identity).toMatchObject({ responsibleUserId: "A", cause: "dispatch" });
+    expect(await listRunIdentityContexts(db, input.companyId, input.runId)).toHaveLength(1);
+  });
+
+  it.each(["other-actor", "other-task", "missing-interaction", "wrong-status", "not-an-interaction"])(
+    "rejects a card-answer interrupt with %s", async (fault) => {
+      const input = await seedCardAnswerInterrupt();
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, input.queueId));
+      const payload = receipt.payload as Record<string, unknown>;
+      if (fault === "other-actor") {
+        await db.update(agentWakeupRequests).set({ requestedByActorId: "someone-else" }).where(eq(agentWakeupRequests.id, input.wakeupRequestId));
+      } else if (fault === "other-task") {
+        await db.update(agentWakeupRequests).set({ payload: { ...payload, issueId: randomUUID() } }).where(eq(agentWakeupRequests.id, input.queueId));
+      } else if (fault === "missing-interaction") {
+        await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.id, input.interactionId));
+      } else if (fault === "wrong-status") {
+        await db.update(issueThreadInteractions).set({ status: "pending", resolvedByUserId: null }).where(eq(issueThreadInteractions.id, input.interactionId));
+      } else {
+        const { mutation: _mutation, interactionId: _interactionId, interactionStatus: _status, ...rest } = payload;
+        await db.update(agentWakeupRequests).set({ payload: rest }).where(eq(agentWakeupRequests.id, input.queueId));
+      }
+      await expect(initializeRunIdentity(db, { ...input, responsibleUserId: "A", cause: "dispatch" })).rejects.toThrow("interrupt authority");
+      expect(await listRunIdentityContexts(db, input.companyId, input.runId)).toHaveLength(0);
+    },
+  );
 
   it.each(["malformed", "missing", "unconsumed", "other-run", "other-task", "other-agent", "other-actor", "other-message"])(
     "rejects %s interrupt authority before creating any execution identity", async (fault) => {

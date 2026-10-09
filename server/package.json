@@ -35,7 +35,7 @@
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
-    "build": "pnpm run prepare:runner-vendor && node scripts/verify-runner-vendor-dependencies.mjs && tsc && mkdir -p dist/onboarding-assets dist/built-ins dist/services/scripts dist/vendor/paperclip-runner && cp -R src/onboarding-assets/. dist/onboarding-assets/ && cp -R src/built-ins/. dist/built-ins/ && cp -R src/services/scripts/. dist/services/scripts/ && cp -Rf ../packages/paperclip-runner/dist/. dist/vendor/paperclip-runner/ && node scripts/write-build-stamp.mjs",
+    "build": "pnpm run prepare:runner-vendor && node scripts/verify-runner-vendor-dependencies.mjs && tsc && node scripts/copy-build-assets.mjs && node scripts/write-build-stamp.mjs",
     "prepack": "pnpm run prepare:ui-dist && pnpm run build",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
@@ -44,9 +44,7 @@
     "typecheck": "pnpm run prepare:runner-vendor && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
-    "ai": "7.0.130",
     "@ai-sdk/openai": "4.0.86",
-    "@openrouter/ai-sdk-provider": "3.1.0",
     "@aws-sdk/client-s3": "^3.1141.0",
     "@chat-adapter/discord": "4.39.0",
     "@chat-adapter/github": "4.39.0",
@@ -57,6 +55,8 @@
     "@grpc/grpc-js": "1.14.5",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@opentelemetry/api": "^1.9.0",
+    "@openrouter/ai-sdk-provider": "3.1.0",
+    "@paperclipai/adapter-agy-local": "workspace:*",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-cloud": "workspace:*",
@@ -79,6 +79,7 @@
     "acpx": "0.13.1",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
+    "ai": "7.0.130",
     "better-auth": "1.7.2",
     "chat": "4.39.0",
     "chokidar": "^5.0.0",
@@ -117,9 +118,9 @@
   ],
   "devDependencies": {
     "@paperclipai/paperclip-runner": "workspace:*",
-    "@types/compression": "^1.8.1",
     "@types/express": "^5.0.0",
     "@types/express-serve-static-core": "^5.1.3",
+    "@types/compression": "^1.8.1",
     "@types/jsdom": "^30.0.0",
     "@types/multer": "^2.2.0",
     "@types/node": "^24.0.0",
@@ -131,7 +132,7 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
-    "vitest": "^5.0.3"
+    "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "@opentelemetry/auto-instrumentations-node": "0.79.0",
@@ -171,10 +172,5 @@
   },
   "engines": {
     "node": ">=24.11.0"
-  },
-  "optionalDependencies": {
-    "@github/copilot-darwin-arm64": "1.0.88",
-    "@github/copilot-darwin-x64": "1.0.88",
-    "@github/copilot-linux-x64": "1.0.88"
   }
 }

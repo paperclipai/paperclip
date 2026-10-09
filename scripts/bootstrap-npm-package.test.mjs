@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -6,9 +9,25 @@ import {
   buildPlaceholderFiles,
   parseArgs,
   promptOtp,
+  spawnNpm,
   validatePackageName,
   waitForPackageVisible,
 } from "./bootstrap-npm-package.mjs";
+
+test("spawnNpm launches the npm.cmd shim on Windows", { skip: process.platform !== "win32" }, () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "paperclip-npm-shim-test-"));
+  try {
+    writeFileSync(path.join(dir, "npm.cmd"), "@echo off\r\necho npm-shim-called %*\r\n");
+    const result = spawnNpm(["view", "@paperclipai/adapter-agy-local", "version"], {
+      env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH ?? ""}` },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /npm-shim-called "?view"? "?@paperclipai\/adapter-agy-local"? "?version"?/i);
+    assert.throws(() => spawnNpm(["view", "@paperclipai/a&del"]), /unsafe for Windows command invocation/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("parseArgs recognizes the publish flag", () => {
   assert.deepEqual(parseArgs(["@paperclipai/adapter-kimi-local", "--publish"]), {

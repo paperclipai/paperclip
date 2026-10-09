@@ -157,12 +157,32 @@ export function buildPlaceholderFiles(packageName) {
   };
 }
 
-function runNpm(args, options = {}) {
-  const result = spawnSync("npm", args, {
+function quoteCmdArgument(value) {
+  if (/[&|<>^%\"\r\n]/.test(value)) {
+    throw new Error("npm arguments contain characters that are unsafe for Windows command invocation.");
+  }
+  return `"${value}"`;
+}
+
+export function spawnNpm(args, options = {}) {
+  const isWindows = process.platform === "win32";
+  const command = isWindows ? (process.env.ComSpec || "cmd.exe") : "npm";
+  const commandArgs = isWindows
+    ? ["/d", "/s", "/c", ["npm.cmd", ...args.map(quoteCmdArgument)].join(" ")]
+    : args;
+  return spawnSync(command, commandArgs, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    // Windows exposes npm through npm.cmd, which CreateProcess cannot launch
+    // directly. Invoke it through cmd.exe with each argument quoted; reject
+    // shell metacharacters rather than passing them through for expansion.
+    windowsVerbatimArguments: isWindows,
     ...options,
   });
+}
+
+function runNpm(args, options = {}) {
+  const result = spawnNpm(args, options);
 
   if (result.error) {
     throw result.error;
@@ -202,10 +222,7 @@ export function inspectNpmPackage(packageName) {
   // Deliberately quiet: for a fresh bootstrap the expected outcome is E404
   // ("the name is free"), and npm's error dump for that reads like a failure.
   // Output is only surfaced when the query fails for an unexpected reason.
-  const result = spawnSync("npm", ["view", packageName, "version", "--json"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const result = spawnNpm(["view", packageName, "version", "--json"]);
 
   if (result.error) {
     throw result.error;

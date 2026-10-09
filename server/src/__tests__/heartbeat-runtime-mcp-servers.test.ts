@@ -645,6 +645,101 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     expect(runtimeEntries.map((entry) => entry.connectionId)).toEqual([dedicated!.id]);
   });
 
+  it("delivers an installed GitHub REST connection to the native runtime gateway", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    const [company] = await db.insert(companies).values({
+      name: `Runtime GitHub REST ${randomUUID()}`,
+      issuePrefix: `GR${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    const [agent] = await db.insert(agents).values({
+      companyId: company!.id,
+      name: "AGY Runtime Agent",
+      role: "engineer",
+      adapterType: "agy_local",
+      adapterConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `github-rest-${randomUUID().slice(0, 8)}`,
+      name: "GitHub REST",
+      type: "rest_api",
+      status: "active",
+      metadata: { sourceTemplateKey: "github" },
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company!.id,
+      applicationId: application!.id,
+      name: "Responsible user's GitHub",
+      uid: `github-rest/${randomUUID()}`,
+      transport: "rest_api",
+      credentialPolicy: "per_user",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: { sourceTemplateKey: "github", provider: "github" },
+      transportConfig: { sourceTemplateKey: "github" },
+    }).returning();
+    const [getMe] = await db.insert(toolCatalogEntries).values({
+      companyId: company!.id,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      name: "get_me",
+      toolName: "get_me",
+      versionHash: "fixture",
+      status: "active",
+      isReadOnly: true,
+      isWrite: false,
+      riskLevel: "read",
+    }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company!.id,
+      profileKey: `github-rest-${agent!.id}`,
+      name: "GitHub REST read access",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      selectorType: "catalog_entry",
+      effect: "include",
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      catalogEntryId: getMe!.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company!.id,
+      connectionId: connection!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: company!.id,
+      agentId: agent!.id,
+      status: "running",
+      responsibleUserId: "responsible-user",
+      activeIdentityContextId: randomUUID(),
+      contextSnapshot: {},
+    }).returning();
+
+    const servers = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id });
+
+    expect(servers).toHaveLength(1);
+    expect(servers[0]).toMatchObject({
+      name: "paperclip-assigned",
+      url: expect.stringMatching(/\/mcp\/gateways\/gw_[a-f0-9]{32}$/),
+    });
+    const [runtimeGateway] = await db.select().from(toolMcpGateways);
+    const runtimeEntries = await db.select().from(toolProfileEntries)
+      .where(eq(toolProfileEntries.profileId, runtimeGateway!.profileId!));
+    expect(runtimeEntries.map((entry) => entry.catalogEntryId)).toContain(getMe!.id);
+  });
+
   it("audits permitted remote MCP connections that were not installed when delivery is empty", async () => {
     const [company] = await db.insert(companies).values({
       name: `Runtime MCP diagnostic ${randomUUID()}`,

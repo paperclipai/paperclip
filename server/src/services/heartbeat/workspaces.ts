@@ -114,6 +114,7 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "codex_local",
   "cursor",
   "gemini_local",
+  "agy_local",
   "grok_local",
   "hermes_local",
   "kimi_local",

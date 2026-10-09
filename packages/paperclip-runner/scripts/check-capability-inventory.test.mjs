@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "node:test";
 
-import { capabilityGroups, validateInventorySchema, validateInventories } from "./lib/capability-inventory.mjs";
+import { capabilityGroups, decodeInventory, validateInventorySchema, validateInventories } from "./lib/capability-inventory.mjs";
 
 const inventorySchema = JSON.parse(await readFile(
   resolve(import.meta.dirname, "../spec/capability/inventory.schema.json"),
@@ -59,6 +59,11 @@ function validInventories() {
     },
   };
 }
+
+test("capability inventory decoder accepts generated headers with Windows line endings", () => {
+  const source = `# GENERATED FILE — DO NOT EDIT. Run pnpm generate:capability-inventory.\r\n${JSON.stringify({ schemaVersion: 2 })}\r\n`;
+  assert.deepEqual(decodeInventory(source), { schemaVersion: 2 });
+});
 
 test("capability inventory validator accepts exact baseline counts", () => {
   const inventories = validInventories();

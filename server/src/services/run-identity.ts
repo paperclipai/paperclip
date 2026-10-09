@@ -12,6 +12,7 @@ import {
 import { conflict, forbidden } from "../errors.js";
 import { isUuidLike } from "@paperclipai/shared";
 import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { queuedInteractionId, readQueuedInteractionResponse } from "./queued-interaction-response.js";
 
 /** Resolve an explicit click from persisted receipts, never caller context or message authors. */
 export async function explicitOperatorRunIdentity(
@@ -45,10 +46,25 @@ export async function explicitOperatorRunIdentity(
   const actorId = marker && typeof marker === "object" && "actorId" in marker ? marker.actorId : null;
   const ids = queuedCommentIdsFromWakePayload(receipt?.payload);
   const deliveredIds = queuedCommentIdsFromRunContext(run.contextSnapshot);
-  if (typeof actorId !== "string" || !actorId || !ids.length ||
+  if (typeof actorId !== "string" || !actorId ||
       receipt?.payload?.issueId !== run.contextSnapshot?.issueId ||
-      !ids.every(id => deliveredIds.includes(id)) ||
       request.requestedByActorType !== "user" || request.requestedByActorId !== actorId) {
+    throw forbidden("Queued-message interrupt authority is unavailable");
+  }
+  if (!ids.length) {
+    // Resolved card answers interrupt an active run without delivering comments.
+    // They carry no delegated message authority, but may proceed as an ordinary
+    // wake after the persisted receipt and actor binding above are verified.
+    const interactionId = queuedInteractionId(receipt?.payload);
+    if (interactionId) {
+      const interaction = await readQueuedInteractionResponse(
+        executor, run.companyId, String(receipt?.payload?.issueId), receipt?.payload,
+      );
+      if (interaction?.comment.id === interactionId && interaction.comment.authorUserId === actorId) return null;
+    }
+    throw forbidden("Queued-message interrupt authority is unavailable");
+  }
+  if (!ids.every(id => deliveredIds.includes(id))) {
     throw forbidden("Queued-message interrupt authority is unavailable");
   }
   return { actorId, cause: "queued_comment_interrupt" };

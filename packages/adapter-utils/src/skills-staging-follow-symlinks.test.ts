@@ -82,6 +82,7 @@ async function findSkillsStagingSites(): Promise<Map<string, boolean[]>> {
 // symlinks. A change to any of these values, or a new unlisted site, must
 // fail this test and force a deliberate review.
 const EXPECTED_SKILLS_STAGING_SITES: Record<string, boolean> = {
+  "agy-local/src/server/execute.ts": true,
   "claude-local/src/server/acp.ts": false,
   "claude-local/src/server/execute.ts": true,
   "cursor-local/src/server/execute.ts": true,

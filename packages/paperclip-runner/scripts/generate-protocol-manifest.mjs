@@ -14,6 +14,7 @@ import {
   compileProtocolValidators,
   listJsonFiles,
   loadSchemaCatalog,
+  normalizeLineEndings,
   portableRelative,
   readJson,
   sha256,
@@ -118,7 +119,7 @@ async function main() {
   const encoded = `${JSON.stringify(await buildProtocolManifest(), null, 2)}\n`;
   if (process.argv.includes("--check")) {
     const current = await readFile(outputPath, "utf8").catch(() => "");
-    if (current !== encoded) {
+    if (normalizeLineEndings(current) !== encoded) {
       process.stderr.write(
         "The generated PRP contract manifest is stale. Run pnpm generate:protocol-manifest.\n",
       );

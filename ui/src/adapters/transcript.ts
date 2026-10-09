@@ -16,6 +16,12 @@ function resolveStdoutParser(source: StdoutLineParser | TranscriptParserSource) 
   return { parseLine: source.parseStdoutLine, reset: null as (() => void) | null };
 }
 
+function sameItemIdentity(lastItemId?: string, entryItemId?: string): boolean {
+  const normLast = typeof lastItemId === "string" && lastItemId.trim().length > 0 ? lastItemId.trim() : undefined;
+  const normEntry = typeof entryItemId === "string" && entryItemId.trim().length > 0 ? entryItemId.trim() : undefined;
+  return normLast === normEntry;
+}
+
 export function appendTranscriptEntry(entries: TranscriptEntry[], entry: TranscriptEntry) {
   if ((entry.kind === "thinking" || entry.kind === "assistant") && entry.delta) {
     const last = entries[entries.length - 1];
@@ -23,10 +29,14 @@ export function appendTranscriptEntry(entries: TranscriptEntry[], entry: Transcr
       last &&
       last.kind === entry.kind &&
       last.delta &&
-      last.channel === entry.channel
+      last.channel === entry.channel &&
+      sameItemIdentity(last.itemId, entry.itemId)
     ) {
       last.text += entry.text;
       last.ts = entry.ts;
+      if (entry.kind === "thinking" && entry.lifecycle && last.kind === "thinking") {
+        last.lifecycle = entry.lifecycle;
+      }
       return;
     }
   }

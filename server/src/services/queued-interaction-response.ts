@@ -16,7 +16,7 @@ export function queuedInteractionId(payload: unknown): string | null {
     ? p.interactionId : null;
 }
 
-export async function readQueuedInteractionResponse(db: Db, companyId: string, issueId: string, payload: unknown) {
+export async function readQueuedInteractionResponse(db: Pick<Db, "select">, companyId: string, issueId: string, payload: unknown) {
   const id = queuedInteractionId(payload);
   if (!id) return null;
   const [interaction] = await db.select().from(issueThreadInteractions).where(and(

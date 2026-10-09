@@ -391,6 +391,30 @@ it("pins both permitted GitHub tool catalogs even when another user’s health p
   expect(limit).toHaveBeenCalledOnce();
 });
 
+it("does not assign GitHub REST connections to the native MCP gateway", async () => {
+  const connection = {
+    id: "github-rest", status: "active", enabled: true, healthStatus: "healthy",
+    transport: "rest_api", config: { sourceTemplateKey: "github" }, transportConfig: {},
+  };
+  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+    entries: [{ effect: "include", connectionId: connection.id }],
+    installedConnections: [connection],
+    allowedTools: [{ id: "github-rest-get_me", connectionId: connection.id }],
+  });
+  const limit = vi.fn(async () => [{ responsibleUserId: "user-1", activeIdentityContextId: "context-1" }]);
+  const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) } as unknown as Db;
+
+  const snapshot = await resolveNativeRuntimeMcpSnapshot({
+    db,
+    agent: { id: "agent-1", companyId: "company-1" },
+    runId: "run-1",
+  });
+
+  expect(snapshot.bindingId).toBeNull();
+  expect(snapshot.assignmentSetId).toMatch(/^sha256:[a-f0-9]{64}$/);
+  expect(limit).toHaveBeenCalledOnce();
+});
+
 it("pins channel tools only when the current task run is bound to that bot", async () => {
   serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
     entries: [{ effect: "include", connectionId: "bot-connection" }],

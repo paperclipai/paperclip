@@ -15,7 +15,9 @@ import {
   assertSchemaInstance,
   compileProtocolValidators,
   loadSchemaCatalog,
+  normalizeLineEndings,
   readJson,
+  sha256,
 } from "../scripts/protocol-contract.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -34,7 +36,12 @@ test("all schema IDs are unique and all external references resolve", async () =
 test("the generated manifest matches all checked-in schemas and fixtures", async () => {
   const expected = `${JSON.stringify(await buildProtocolManifest(), null, 2)}\n`;
   const actual = await readFile(resolve(protocolRoot, "manifest.json"), "utf8");
-  assert.equal(actual, expected);
+  assert.equal(normalizeLineEndings(actual), expected);
+});
+
+test("protocol hashes and generated manifest checks are stable across CRLF conversion", () => {
+  assert.equal(sha256("{\n  \"ok\": true\n}"), sha256("{\r\n  \"ok\": true\r\n}"));
+  assert.equal(normalizeLineEndings("{\r\n  \"ok\": true\r\n}"), "{\n  \"ok\": true\n}");
 });
 
 test("canonical replay fixtures use supported required versions", async () => {
