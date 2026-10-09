@@ -1881,6 +1881,83 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(missingCommentWakeups).toHaveLength(0);
   });
 
+  it("saves the captured stderr tail when the adapter exits non-zero with no message", async () => {
+    mockAdapterExecute.mockImplementationOnce(async (input?: unknown) => {
+      const { onLog } = input as {
+        onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      };
+      await onLog("stdout", "starting the turn\n");
+      await onLog("stderr", "connect ECONNREFUSED 10.0.0.1:443\n");
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    const run = await heartbeat.getRun(runId);
+    const runtime = await db
+      .select({ lastError: agentRuntimeState.lastError })
+      .from(agentRuntimeState)
+      .where(eq(agentRuntimeState.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run).toMatchObject({
+      status: "failed",
+      error: "connect ECONNREFUSED 10.0.0.1:443",
+      stderrExcerpt: "connect ECONNREFUSED 10.0.0.1:443\n",
+    });
+    // Text-matching classifiers read this marker to know `error` holds a
+    // stderr tail rather than adapter-owned text.
+    expect(run?.resultJson).toMatchObject({
+      errorMessageSource: "stderr_excerpt",
+    });
+    expect(runtime?.lastError).toBe("connect ECONNREFUSED 10.0.0.1:443");
+  });
+
+  it("keeps an explicit adapter message ahead of the captured stderr tail", async () => {
+    mockAdapterExecute.mockImplementationOnce(async (input?: unknown) => {
+      const { onLog } = input as {
+        onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      };
+      await onLog("stderr", "deprecation warning: ignore me\n");
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "model provider returned 402",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const { runId } = await seedQueuedIssueRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({
+      status: "failed",
+      error: "model provider returned 402",
+      stderrExcerpt: "deprecation warning: ignore me\n",
+    });
+    // An adapter-owned message stays classifiable, so no marker is written.
+    expect(run?.resultJson).not.toHaveProperty("errorMessageSource");
+  });
+
   it.each([
     "continuation_task_ownership_changed",
   ] as const)("cancels obsolete continuation setup: %s", async (code) => {
