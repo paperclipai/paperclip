@@ -1,3 +1,4 @@
+import { gradeQuestionResume } from "./question-resume-scoring.js";
 import { createHash } from "node:crypto";
 import { gradeQuestionDocumentation } from "./question-documentation-scoring.js";
 import type { ContinuationCase } from "./continuation-cases.js";
@@ -49,7 +50,7 @@ export function gradeContinuation(input: {
   const before = input.checkpoints.filter((c) => c.phase !== "final");
   check(
     "recorded-continuation",
-    before.length > 0 && !!final && final.runs.length >= (input.id === "provider-question-bridge" ? 1 : 2),
+    before.length > 0 && !!final && final.runs.length >= (["provider-question-bridge", "question-answer-resume"].includes(input.id) ? 1 : 2),
     "Initial and final turns must both be recorded.",
   );
   for (const c of before) {
@@ -135,5 +136,6 @@ export function gradeContinuation(input: {
       "A real provider-native card must be answered and resume the same run to completion.");
   }
   if (input.id === "question-tool-documentation") checks.push(...gradeQuestionDocumentation(input.checkpoints, input.marker));
+  if (input.id === "question-answer-resume") checks.push(...gradeQuestionResume(input.checkpoints, input.marker));
   return checks;
 }

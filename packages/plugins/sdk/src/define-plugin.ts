@@ -1,3 +1,4 @@
+import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 /**
  * `definePlugin` — the top-level helper for authoring a Paperclip plugin.
@@ -293,6 +294,17 @@ export interface PluginDefinition {
    */
   onShutdown?(): Promise<void>;
 
+  /** Prove plugin-owned background work is quiescent for idle sleep.
+   * The SDK first closes admission and checks accepted RPCs and notifications.
+   * Return `none` only when timers, sockets, detached operations and cleanup
+   * are settled and cannot start work until signal aborts. Do not cancel useful
+   * work to satisfy this check. Missing hooks, failures and uncertainty block
+   * sleep. The signal aborts on exact-owner release or bounded hold expiry.
+   * Plugins with autonomous work must keep returning `present` unless they
+   * can safely suspend and resume that work under this contract.
+   */
+  onIdleDrain?(signal: AbortSignal): Promise<"none" | "present" | "unknown">;
+
   /**
    * Called to validate the current plugin configuration.
    *
@@ -347,6 +359,8 @@ export interface PluginDefinition {
    * Requires `external.objects.read`.
    */
   /** Propose a member from host-authorized candidates. Requires ai.connections.route. */
+  onAgentLifecycle?(params: AgentLifecycleRequest): Promise<AgentLifecycleResult>;
+
   onRouteAiConnection?(params: AiConnectionRouterRequest): Promise<AiConnectionRouterResult>;
 
   onResolveExternalObject?(

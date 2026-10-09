@@ -25,6 +25,8 @@ readline.createInterface({input:process.stdin}).on('line',(line)=>{
   send({method:'fixture/ignored',params:{sessionId:'session-1'}});
   send({method:'fixture/activity',params:{sessionId:'wrong-session'}});
   send({id:0,method:mode==='unknown'?'fixture/not-enabled':'fixture/question',params:{sessionId:mode==='wrong-session'?'wrong-session':'session-1',value:'private-question'}});
+ } else if(message.method==='pi/steer' || message.method==='pi/follow_up') {
+  send({id:message.id,result:{accepted:true,sessionId:message.params.sessionId,disposition:'queued',message:message.params.message}});
  } else if(message.method==='session/cancel') { send({id:promptId,result:{stopReason:'cancelled'}}); promptId=undefined; }
  else if(message.id===0 && !message.method) {
   send({method:'session/update',params:{sessionId:'session-1',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify(message)}}}});
@@ -74,6 +76,29 @@ test("initialize retains mandatory capabilities while merging provider metadata"
     assert.deepEqual(actual.elicitation, { form: {} });
     assert.deepEqual(actual._meta["github.com/copilot"], { events: ["session.idle"] });
     assert.deepEqual(actual._meta.jetbrains.air.capabilities, ["sessionFailure"]);
+  });
+});
+
+test("real patched client sends Pi steering and follow-up while its original prompt awaits input", { timeout: 10000 }, async () => {
+  let observe; const started = new Promise(resolve => { observe = resolve; });
+  await withClient({ onExtensionRequest: async () => { observe(); return await new Promise(() => {}); } }, async client => {
+    const pending = client.prompt("session-1", "question");
+    await started;
+    try {
+      for (const method of ["pi/steer", "pi/follow_up"]) {
+        assert.deepEqual(await client.requestExtension(method, { sessionId: "session-1", message: "Keep the original turn" }), {
+          accepted: true, sessionId: "session-1", disposition: "queued", message: "Keep the original turn",
+        });
+      }
+      for (const method of ["session/prompt", "fs/read_text_file", "initialize", "bad method/name"]) {
+        await assert.rejects(client.requestExtension(method, {}), /extension method/);
+      }
+      await assert.rejects(client.requestExtension("pi/steer", []), /payload must be an object/);
+      await assert.rejects(client.requestExtension("pi/steer", { message: "x".repeat(256 * 1024) }), /bounded size/);
+    } finally {
+      await client.cancel("session-1");
+      assert.equal((await pending).stopReason, "cancelled");
+    }
   });
 });
 

@@ -319,9 +319,8 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
 });
 
-// Mirrors release-verify.yml (10 shards, called by the Release and Cloud
-// readiness workflows) and local runs: no Rust-cached vitest lane exists
-// there, so the native-runner suite must stay in the server shards.
+// The legacy group and local default must remain complete when a caller has
+// not selected a separate native lane.
 for (const [caller, envOverrides] of [["Release", { GITHUB_WORKFLOW: "Release" }], ["no ambient workflow", {}]]) {
   test(`10 without-chat shards under ${caller} keep the native-runner suite and cover the server group with chat alone`, () => {
     const full = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"], envOverrides);
@@ -336,6 +335,23 @@ for (const [caller, envOverrides] of [["Release", { GITHUB_WORKFLOW: "Release" }
     assert.ok(files.includes(restartRecoverySuitePath));
     assert.deepEqual([...files, chatSuitePath].sort(), full.selectedGeneralServerSuites.sort());
     assert.equal(new Set(files).size, files.length);
+  });
+}
+
+// Release verification selects its dedicated lane explicitly. Do not infer it
+// from the caller name: previews and future workflow callers need the same cover.
+for (const caller of ["Release", "Cloud readiness", "another caller"]) {
+  test(`release server, chat, and native lanes cover every server suite once under ${caller}`, () => {
+    const env = { GITHUB_WORKFLOW: caller };
+    const full = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"], env);
+    const files = Array.from({ length: 10 }, (_, index) => dryRunJson([
+      "--mode", "general", "--group", "general-server-without-chat-or-native-runner",
+      "--shard-index", String(index), "--shard-count", "10",
+    ], env)).flatMap((shard) => shard.selectedGeneralServerSuites);
+    const native = dryRunJson(["--mode", "general", "--group", "general-server-native-runner"], env);
+    const combined = [...files, chatSuitePath, ...native.selectedGeneralServerSuites];
+    assert.equal(new Set(combined).size, combined.length, "lanes must not overlap");
+    assert.deepEqual(combined.sort(), full.selectedGeneralServerSuites.sort());
   });
 }
 

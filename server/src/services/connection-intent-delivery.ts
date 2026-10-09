@@ -167,7 +167,11 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(eq(connectionIntentDeliveries.interactionId, interactionId));
     }
   }
-  return { deliver, tryDeliver: async (id: string) => { try { await deliver(id); } catch { /* Persisted delivery remains due after its lease. */ } }, sweepPending: async () => {
+  async function hasPending() {
+    return (await db.select({ id: connectionIntentDeliveries.interactionId }).from(connectionIntentDeliveries)
+      .where(isNull(connectionIntentDeliveries.deliveredAt)).limit(1)).length > 0;
+  }
+  return { deliver, hasPending, tryDeliver: async (id: string) => { try { await deliver(id); } catch { /* Persisted delivery remains due after its lease. */ } }, sweepPending: async () => {
     const rows = await db.select().from(connectionIntentDeliveries).where(and(isNull(connectionIntentDeliveries.deliveredAt), lte(connectionIntentDeliveries.nextAttemptAt, new Date())))
       .orderBy(asc(connectionIntentDeliveries.nextAttemptAt)).limit(50);
     let failed = 0;

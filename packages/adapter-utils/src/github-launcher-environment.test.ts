@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { watch } from "node:fs";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -67,6 +68,38 @@ async function sandbox(layout: string) {
 }
 
 describe("managed GitHub launcher environment", () => {
+  // The Daytona native directory oracle uses Linux inotify. Run its real
+  // filesystem regression on that platform; shell/launcher tests cover both.
+  it.runIf(process.platform === "linux")("keeps launcher restaging and command scratch inside the runner runtime", async () => {
+    const fixture = await sandbox("usr/bin");
+    const privateRoot = path.join(fixture.root, ".paperclip-runtime");
+    await mkdir(path.join(privateRoot, "paperclip-runner"), { recursive: true });
+    await writeFile(path.join(fixture.root, "user.txt"), "Existing work\n");
+    const mutations: string[] = [];
+    const watchers = [fixture.root, privateRoot].map((directory) => watch(directory, (_kind, name) => {
+      const changed = path.relative(fixture.root, path.join(directory, String(name)));
+      if (changed !== ".paperclip-runtime/paperclip-runner") mutations.push(changed);
+    }));
+    try {
+      const input = { runId: "restart-same-launchers", target: fixture.target, cwd: fixture.root,
+        env: githubBrokerEnvironment({}, { url: "", token: "" }) };
+      const first = await prepareGitHubOperationLaunchers(input);
+      const original = await readFile(path.join(first.PAPERCLIP_GITHUB_LAUNCHER_DIR, "git"), "utf8");
+      const restored = await prepareGitHubOperationLaunchers(input);
+      const command = await fixture.runner.execute({
+        command: path.join(restored.PAPERCLIP_GITHUB_LAUNCHER_DIR, "git"), args: ["--version"], env: restored,
+      });
+      expect(command.exitCode, command.stderr).toBe(0);
+      expect(await readFile(path.join(restored.PAPERCLIP_GITHUB_LAUNCHER_DIR, "git"), "utf8")).toBe(original);
+      expect(await readFile(path.join(fixture.root, "user.txt"), "utf8")).toBe("Existing work\n");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(mutations).toEqual([]);
+      // The watcher must still notice housekeeping outside that exact runtime.
+      await mkdir(path.join(privateRoot, "outside-runtime-control"));
+      await vi.waitFor(() => expect(mutations).toContain(".paperclip-runtime/outside-runtime-control"));
+    } finally { for (const watcher of watchers) watcher.close(); }
+  });
+
   it.each(["module", "commonjs"])("runs managed GitHub launchers inside a %s project", async (type) => {
     const fixture = await sandbox("usr/bin");
     const packageJson = JSON.stringify({ type });

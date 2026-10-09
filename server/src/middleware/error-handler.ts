@@ -1,3 +1,4 @@
+import { AgentLifecycleConflict } from "../modules/agent-lifecycle/index.js";
 import type { Request, Response, NextFunction } from "express";
 import type { Db } from "@paperclipai/db";
 import { ZodError } from "zod";
@@ -129,6 +130,7 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ) {
+  if (err instanceof AgentLifecycleConflict) { res.status(409).json({ error: err.message }); return; }
   if (err instanceof HttpError) {
     const details =
       err.details &&

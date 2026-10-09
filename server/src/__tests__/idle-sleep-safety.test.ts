@@ -1,4 +1,4 @@
-import { beginIdleTrackedWork } from "../services/task-admission.js";
+import { beginIdleTrackedWork, idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,73 @@ const ownerId = "d0b833f4-4098-42de-8420-1907f3aa4895";
 const owned = () => ({ ...held(), ownerId });
 const emptyLocal = async () => "none" as const;
 
+describe("idle backup checkpoint", () => {
+  const database = (blocked = false) => {
+    const transaction = vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run({ execute: async () => [{ blocked }] }));
+    return { db: { transaction } as unknown as Db, transaction };
+  };
+  const backup = (work: () => Promise<boolean> = async () => true) => vi.fn(async () => {
+    const finish = beginIdleTrackedWork();
+    try { return await work(); } finally { finish(); }
+  });
+  it("backs up after durable inspection and rechecks local work before authorizing sleep", async () => {
+    const { db, transaction } = database();
+    const local = vi.fn(emptyLocal);
+    const checkpoint = backup(async () => {
+      expect(transaction).toHaveBeenCalledOnce();
+      expect(idleWorkSnapshot().active).toBe(1);
+      return true;
+    });
+    expect(await readIdleSleepSafety(db, owned, () => now, ownerId, local, undefined, checkpoint)).toEqual(none);
+    expect(checkpoint).toHaveBeenCalledOnce();
+    expect(local).toHaveBeenCalledTimes(2);
+  });
+  it.each(["present", "unknown"] as const)("avoids DB probes and backups for known local %s work", async state => {
+    const { db, transaction } = database();
+    const checkpoint = backup();
+    const plugins = vi.fn();
+    expect(await readIdleSleepSafety(db, owned, () => now, ownerId, async () => state, plugins, checkpoint))
+      .toEqual({ version: 1, backgroundWork: state });
+    expect(transaction).not.toHaveBeenCalled();
+    expect(plugins).not.toHaveBeenCalled();
+    expect(checkpoint).not.toHaveBeenCalled();
+  });
+  it("does not start a backup for durable work or an unowned hold", async () => {
+    const checkpoint = backup();
+    expect(await readIdleSleepSafety(database(true).db, owned, () => now, ownerId, emptyLocal, undefined, checkpoint)).toEqual(present);
+    expect(await readIdleSleepSafety(database().db, owned, () => now, "stale", emptyLocal, undefined, checkpoint)).toEqual(unknown);
+    expect(checkpoint).not.toHaveBeenCalled();
+  });
+  it.each(["failed", "threw", "untracked", "concurrent", "expired", "replaced"])("keeps the instance awake when the backup is %s", async kind => {
+    let clock = now;
+    let status = owned();
+    const work = async () => {
+      if (kind === "threw") throw new Error("private archive path");
+      if (kind === "concurrent") { const finish = beginIdleTrackedWork(); finish(); }
+      if (kind === "expired") clock += 60_000;
+      if (kind === "replaced") status = { ...status, ownerId: "replacement" };
+      return kind !== "failed";
+    };
+    const checkpoint = kind === "untracked" ? work : backup(work);
+    expect(await readIdleSleepSafety(database().db, () => status, () => clock, ownerId, emptyLocal, undefined, checkpoint)).toEqual(unknown);
+    expect(idleWorkSnapshot().active).toBe(0);
+  });
+  it("retains actual backup work after the owning hold expires", async () => {
+    let finishBackup!: () => void;
+    const pending = new Promise<void>(resolve => { finishBackup = resolve; });
+    const checkpoint = backup(async () => { await pending; return true; });
+    let clock = now;
+    const scan = readIdleSleepSafety(database().db, owned, () => clock, ownerId, emptyLocal, undefined, checkpoint);
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledOnce());
+    clock += 60_000;
+    expect(idleWorkSnapshot().active).toBe(1);
+    expect(await readIdleSleepSafety(database().db, owned, () => clock, ownerId, emptyLocal)).toEqual(unknown);
+    finishBackup();
+    expect(await scan).toEqual(unknown);
+    expect(idleWorkSnapshot().active).toBe(0);
+  });
+});
+
 
 describe("idle sleep safety failure boundaries", () => {
   it.each([
@@ -36,7 +103,7 @@ describe("idle sleep safety failure boundaries", () => {
 
   it("fails closed when the database is unavailable", async () => {
     const db = { transaction: vi.fn().mockRejectedValue(new Error("private connection detail")) } as unknown as Db;
-    expect(await readIdleSleepSafety(db, held, () => now)).toEqual(unknown);
+    expect(await readIdleSleepSafety(db, held, () => now, undefined, emptyLocal)).toEqual(unknown);
   });
 
   it.each([
@@ -46,14 +113,14 @@ describe("idle sleep safety failure boundaries", () => {
     const getStatus = vi.fn().mockReturnValueOnce(held()).mockReturnValue({ ...held(), ...change });
     const execute = vi.fn().mockResolvedValue([{ blocked: true }]);
     const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute }));
-    expect(await readIdleSleepSafety({ transaction } as unknown as Db, getStatus, () => now)).toEqual(unknown);
+    expect(await readIdleSleepSafety({ transaction } as unknown as Db, getStatus, () => now, undefined, emptyLocal)).toEqual(unknown);
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: "repeatable read", accessMode: "read only" });
   });
 
   it("reports persisted work when the admission hold remains unchanged", async () => {
     const execute = vi.fn().mockResolvedValue([{ blocked: true }]);
     const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute }));
-    expect(await readIdleSleepSafety({ transaction } as unknown as Db, held, () => now)).toEqual(present);
+    expect(await readIdleSleepSafety({ transaction } as unknown as Db, held, () => now, undefined, emptyLocal)).toEqual(present);
   });
 });
 
@@ -243,6 +310,22 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     expect(await read()).toEqual(present);
     await db.execute(sql`UPDATE plugins SET status = 'disabled'`);
     expect(await read()).toEqual(none);
+  });
+
+  it("accepts only exact worker drain receipts and still checks durable work", async () => {
+    const [{ id }] = await db.execute<{ id: string }>(sql`INSERT INTO plugins (plugin_key, package_name, version, manifest_json)
+      VALUES ('demo.idle', 'demo-idle', '1.0.0', '{}'::jsonb) RETURNING id`);
+    const inspect = vi.fn(async () => ({ backgroundWork: "none" as const, pluginIds: [id!] }));
+    const scan = () => readIdleSleepSafety(db, owned, () => now, ownerId, emptyLocal, inspect);
+    expect(await scan()).toEqual(none);
+    expect(inspect).toHaveBeenCalledWith({ ownerId, expiresAt: owned().expiresAt!.getTime() });
+    await db.execute(sql`INSERT INTO plugins (plugin_key, package_name, version, manifest_json)
+      VALUES ('demo.unknown', 'demo-unknown', '1.0.0', '{}'::jsonb)`);
+    expect(await scan()).toEqual(present);
+    await db.execute(sql`UPDATE plugins SET status = 'disabled' WHERE plugin_key = 'demo.unknown'`);
+    const { companyId } = await seed();
+    await db.insert(issues).values({ companyId, title: "Still pending", status: "todo" });
+    expect(await scan()).toEqual(present);
   });
 
   it("fails closed when the installed schema is older than the report", async () => {

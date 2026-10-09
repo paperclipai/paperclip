@@ -1,3 +1,7 @@
+import { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
+import { createLifecycleDriver } from "./services/agent-lifecycle-driver.js";
+import { startAgentLifecycle } from "./services/agent-lifecycle.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./middleware/idle-admission.js";
 import { isIdleTaskDrainActive, trackIdleWork } from "./services/task-admission.js";
 import { customerSuccessRoutes } from "./routes/customer-success.js";
@@ -8,6 +12,7 @@ import { browserUseService } from "./services/browser-use.js";
 import { slackToolRoutes } from "./routes/slack-tools.js";
 import { createPublicMcpOAuth, publicMcpConfig } from "./services/public-mcp/oauth.js";
 import { createDotRunnerMcpTools } from "./services/dot-runner-broker.js";
+import { agentProfileAvatarRoutes } from "./routes/agent-profile-avatar.js";
 import { dotRunnerRoutes } from "./routes/dot-runner.js";
 import { createPublicMcpTransfers } from "./services/public-mcp/file-transfers.js";
 import { createMcpApiDispatch, createPublicMcpExecutor } from "./services/public-mcp/capabilities.js";
@@ -482,14 +487,17 @@ export async function createApp(
     serverPort: number;
     storageService: StorageService;
     feedbackExportService?: {
+      hasPendingFeedbackTraces(): Promise<boolean>;
       flushPendingFeedbackTraces(input?: {
         companyId?: string;
         traceId?: string;
         limit?: number;
         now?: Date;
+        signal?: AbortSignal;
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
+    prepareIdleDatabaseBackup?: () => Promise<boolean>;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
@@ -616,6 +624,8 @@ export async function createApp(
 
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  let lifecyclePluginsReady = false;
+  const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && !isWarmStandby() && !isIdleTaskDrainActive());
   const connectionIntentHeartbeat = heartbeatService(db, {
     pluginWorkerManager: workerManager,
   });
@@ -781,6 +791,7 @@ export async function createApp(
     }),
   );
   api.use(assetRoutes(db, opts.storageService));
+  api.use(agentProfileAvatarRoutes(db, opts.storageService));
   api.use(projectToolRoutes(db));
   api.use(projectRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
@@ -834,7 +845,7 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(primaryAgentRoutes(db));
   api.use(inboxDismissalRoutes(db));
-  api.use(instanceSettingsRoutes(db));
+  api.use(instanceSettingsRoutes(db, workerManager, opts.prepareIdleDatabaseBackup));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
@@ -874,7 +885,6 @@ export async function createApp(
   // route prefixes, so this dependency does not change issue-route precedence.
   api.use(issueRoutes(db, opts.storageService, {
     chatRunRetries: chatChannels,
-    feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
     approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
     declineToolActionRequest: (input) => toolGateway.declineActionRequest(input),
@@ -1187,40 +1197,19 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
-  let feedbackExportShuttingDown = false;
-  let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
-  const disableFeedbackExportFlushes = () => {
-    feedbackExportShuttingDown = true;
-    if (feedbackExportTimer) {
-      clearInterval(feedbackExportTimer);
-      feedbackExportTimer = null;
-    }
-  };
-  const flushPendingFeedbackExports = async () => {
-    if (feedbackExportShuttingDown || isWarmStandby() || isIdleTaskDrainActive()) return;
-    try {
-      await opts.feedbackExportService?.flushPendingFeedbackTraces();
-    } catch (err) {
-      if (isDatabaseConnectionUnavailableError(err)) {
-        disableFeedbackExportFlushes();
-        logger.warn(
-          { err },
-          "Disabling pending feedback export flushes because the database is unavailable",
-        );
-        return;
-      }
-      logger.error({ err }, "Failed to flush pending feedback exports");
-    }
-  };
-
-  feedbackExportTimer = opts.feedbackExportService
-    ? setInterval(() => {
-        void flushPendingFeedbackExports();
-      }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
-    : null;
-  feedbackExportTimer?.unref?.();
+  const deliveryWork = createDeliveryWorkCoordinator({
+    owner: db,
+    canRun: () => !isWarmStandby() && !isIdleTaskDrainActive(),
+    canReconcile: () => !isWarmStandby(),
+    onError: (err, queue) => logger.error({ err, queue }, "Delivery reconciliation failed"),
+  });
+  app.locals.deliveryWork = deliveryWork;
   if (opts.feedbackExportService) {
-    void flushPendingFeedbackExports();
+    deliveryWork.register(DELIVERY_QUEUES.feedback, {
+      retryMs: FEEDBACK_EXPORT_FLUSH_INTERVAL_MS,
+      run: (signal) => opts.feedbackExportService!.flushPendingFeedbackTraces({ signal }),
+      hasPending: () => opts.feedbackExportService!.hasPendingFeedbackTraces(),
+    });
   }
   emailChannels.start();
   const flushChatPublications = async () => {
@@ -1373,6 +1362,7 @@ export async function createApp(
       logger.error({ err }, "Failed to load ready plugins on startup");
     });
   app.locals.bundledPluginsStartup = trackIdleWork(bundledPluginsStartup);
+  void bundledPluginsStartup.then(() => { lifecyclePluginsReady = true; return agentLifecycle.sweep(); }).catch(() => logger.warn("Agent lifecycle recovery failed; retrying."));
   // The shutdown hook runs at most once. It caches the in-flight promise, so a
   // second caller (for example the `exit` handler) awaits the same completion
   // instead of starting a second teardown.
@@ -1383,10 +1373,11 @@ export async function createApp(
       // The scheduler tick queries the database. Stop it here, inside the
       // awaited teardown, so no tick runs after the caller ends the pool.
       scheduler.stop();
+      await agentLifecycle.stop();
       await publicMcpEvents?.stop();
       await dotMcpEvents?.stop();
       jobCoordinator.stop();
-      disableFeedbackExportFlushes();
+      await deliveryWork.stop();
       unsubscribeChatPublicationSignals();
       chatReconciliation.stop();
       if (chatPublicationTimer) {

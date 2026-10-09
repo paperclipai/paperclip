@@ -116,16 +116,14 @@ describe("resolveNativeRuntimeMode", () => {
     })).toThrow(expect.objectContaining({
       code: "paperclip_runner_opencode_model_invalid",
     }));
-    expect(() => resolveNativeRuntimeMode({
-      ...eligible,
-      adapterConfig: {
-        provider: "acpx",
-        acpxAgent: "pi",
-        model: "openrouter/deepseek/deepseek-v4-flash-0731",
-      },
-    })).toThrow(expect.objectContaining({
-      code: "paperclip_runner_acpx_agent_unavailable",
-    }));
+    for (const acpxAgent of ["copilot"]) {
+      expect(() => resolveNativeRuntimeMode({
+        ...eligible,
+        adapterConfig: { provider: "acpx", acpxAgent, model: "explicit-provider-model" },
+      })).toThrow(expect.objectContaining({
+        code: "paperclip_runner_acpx_agent_unavailable",
+      }));
+    }
     expect(() => resolveNativeRuntimeMode({
       ...eligible,
       adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5" },

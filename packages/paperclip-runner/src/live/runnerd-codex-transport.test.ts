@@ -1,3 +1,5 @@
+import { QUALIFIED_ACPX_PROFILES } from "../drivers/acpx/qualified-profiles.js";
+import { coldAdmissionTimeoutMs, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import {
   chmod,
   cp,
@@ -22,8 +24,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ControlPlanePort } from "../contracts/control-plane-port.js";
+import { bindAcpxAgentFiles } from "../drivers/acpx/agent-files-binding.js";
 import type { NativeExecutionInputV1 } from "../contracts/native-execution.js";
 import type {
   NativeSession,
@@ -42,12 +45,14 @@ import { parsePaperclipQuestionSet } from "../contracts/question-set.js";
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
 import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import * as durableControlPlane from "../control-plane/durable-prp-control-plane.js";
+import * as codexCommandRuntime from "../drivers/codex/codex-command.js";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
   PAPERCLIP_EXECUTION_PROMPT,
   PAPERCLIP_EXECUTION_PROMPT_REVISION,
   canonicalNativeRuntimeContextDigest,
+  composeNativeSystemInstructions,
   nativeRuntimePromptDigest,
   type NativeRuntimeContextSnapshot,
 } from "../contracts/runtime-context.js";
@@ -524,6 +529,120 @@ it("carries the provider attachment seed across consecutive authority rotations"
   });
 });
 
+it("restores ACPX with the current registered copy after the old run copy is collected", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-acpx-context-rotation-"));
+  const priorRoot = join(root, "prior-run-copy");
+  const currentRoot = join(root, "current-run-copy");
+  await Promise.all([mkdir(priorRoot), mkdir(currentRoot)]);
+  const context = (rootPath: string) => {
+    const value = assignedRuntimeContext(join(root, "skills"), join(rootPath, "bundle"));
+    value.instructions.workingCopy = { kind: "agent_files", rootPath, entryPath: "AGENTS.md" };
+    return value;
+  };
+  const prior = context(priorRoot);
+  const current = context(currentRoot);
+  const customInstructions = `Keep custom instructions intact. A historical path example is ${priorRoot}.`;
+  const desired = {
+    runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "new-run",
+    normalizedSessionId: "same-session", turnId: "new-turn", itemId: "new-item",
+  };
+  const provider = {
+    kind: "acpx", agent: "copilot", runId: "old-run",
+    normalizedSessionId: "same-session", commandDigest: "sha256:immutable",
+    model: "explicit-model", runtimeContext: prior,
+    instructions: composeNativeSystemInstructions(prior, customInstructions),
+  };
+  const state = {
+    runAttachTemplate: { provider, workspace: { cwd: root } },
+    commands: [{ type: "turn.start", payload: { text: "must not replay" } }],
+  };
+  try {
+    await rm(priorRoot, { recursive: true });
+    expect(() => bindAcpxAgentFiles(prior, [])).toThrowError(
+      expect.objectContaining({ code: "ENOENT" }),
+    );
+    const restored = runnerdRecoveryInternals.rotatedRunAttachPayload(
+      state, desired, null, undefined, current,
+    );
+    const restoredProvider = restored.provider as typeof provider;
+    expect(restoredProvider).toEqual({
+      ...provider, runId: desired.runId, runtimeContext: current,
+      instructions: composeNativeSystemInstructions(current, customInstructions),
+    });
+    expect(restoredProvider.instructions).toContain(customInstructions);
+    expect(restoredProvider.instructions).not.toContain(`(AGENT_HOME) is ${priorRoot}.`);
+    expect(restoredProvider.instructions).toContain(`(AGENT_HOME) is ${currentRoot}.`);
+    expect(bindAcpxAgentFiles(restoredProvider.runtimeContext, [])?.root).toContain("current-run-copy");
+    expect(restored).not.toHaveProperty("text");
+    expect(state.runAttachTemplate.provider.runtimeContext).toBe(prior);
+    // A reopened provider can retain the current grant on another restoration.
+    const same = runnerdRecoveryInternals.rotatedRunAttachPayload(
+      { runAttachTemplate: restored }, desired, null, undefined, current,
+    );
+    expect(same).toEqual(restored);
+    expect((same.provider as typeof provider).runtimeContext).not.toBe(current);
+    // Live warm attachment has no new provider process and must preserve its
+    // existing context until settlement, rather than replace its filesystem grant.
+    const live = runnerdRecoveryInternals.rotatedRunAttachPayload(
+      state, desired, null, undefined,
+    );
+    expect((live.provider as typeof provider).runtimeContext).toEqual(prior);
+    expect((live.provider as typeof provider).instructions).toBe(provider.instructions);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("retargets only composed instruction framing and retains legacy custom instructions", () => {
+  const prior = assignedRuntimeContext("/skills", "/old-bundle");
+  prior.instructions.workingCopy = { kind: "agent_files", rootPath: "/old-copy", entryPath: "AGENTS.md" };
+  const current = assignedRuntimeContext("/skills", "/new-bundle");
+  current.instructions.workingCopy = { kind: "agent_files", rootPath: "/new-copy", entryPath: "AGENTS.md" };
+  const desired = {
+    runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "new-run",
+    normalizedSessionId: "same-session", turnId: "turn", itemId: "item",
+  };
+  const restore = (
+    oldContext: NativeRuntimeContextSnapshot,
+    nextContext: NativeRuntimeContextSnapshot | null,
+    instructions: string,
+    currentInstructions?: string,
+  ) => (runnerdRecoveryInternals.rotatedRunAttachPayload(
+    { runAttachTemplate: { provider: { kind: "acpx", runtimeContext: oldContext, instructions } } },
+    desired, null, undefined, nextContext,
+    currentInstructions === undefined ? undefined : { text: currentInstructions, context: nextContext },
+  ).provider as { instructions: string }).instructions;
+  // A quoted complete old asset paragraph is custom text, not a rewrite target.
+  const quotedOldBlock = composeNativeSystemInstructions(prior, "").slice(prior.prompt.text.length);
+  for (const custom of ["", `Historical example:${quotedOldBlock}\n\nKeep this exact custom ending.`]) {
+    expect(restore(prior, current, composeNativeSystemInstructions(prior, custom)))
+      .toBe(composeNativeSystemInstructions(current, custom));
+    expect(restore(prior, null, composeNativeSystemInstructions(prior, custom)))
+      .toBe([prior.prompt.text, custom].filter(Boolean).join("\n\n"));
+  }
+  const noWorkingCopy = assignedRuntimeContext("/skills", "/plain-bundle");
+  expect(restore(noWorkingCopy, current, composeNativeSystemInstructions(noWorkingCopy, "Custom")))
+    .toBe(composeNativeSystemInstructions(current, "Custom"));
+  expect(restore(prior, noWorkingCopy, composeNativeSystemInstructions(prior, "Custom")))
+    .toBe(composeNativeSystemInstructions(noWorkingCopy, "Custom"));
+  const opaque = "Legacy custom instructions mention /old-copy; keep every byte.";
+  expect(restore(prior, current, opaque)).toBe(opaque);
+  const fresh = composeNativeSystemInstructions(current, "Updated registered entry content");
+  expect(restore(prior, current, composeNativeSystemInstructions(prior, "Old content"), fresh))
+    .toBe(fresh);
+  const remote = assignedRuntimeContext("/runner/skills", "/runner/context/instructions");
+  remote.instructions.workingCopy = { ...current.instructions.workingCopy, rootPath: "/runner/agent-home" };
+  const custom = "Current instructions keep a literal example /new-copy unchanged.";
+  const remoteProvider = runnerdRecoveryInternals.rotatedRunAttachPayload(
+    { runAttachTemplate: { provider: { kind: "acpx", runtimeContext: prior, instructions: composeNativeSystemInstructions(prior, "Old") } } },
+    desired, null, undefined, remote,
+    { text: composeNativeSystemInstructions(current, custom), context: current },
+  ).provider as { instructions: string; runtimeContext: NativeRuntimeContextSnapshot };
+  expect(remoteProvider.instructions).toBe(composeNativeSystemInstructions(remote, custom));
+  expect(remoteProvider.runtimeContext).toEqual(remote);
+
+});
+
 it("replays the durable run attachment outcome and latest provider identity", () => {
   expect(
     runnerdRecoveryInternals.recoveredRunAttachment({
@@ -594,6 +713,9 @@ it("identifies an active provider turn that must stop before suspension", () => 
     activeProviderTurnId: null,
     providerSettled: true,
   });
+  expect(runnerdRecoveryInternals.providerDrainStateFromSnapshot({
+    activeProviderTurnId: null, pendingEvents: [], providerExitUnconfirmed: true,
+  })).toEqual({ pendingEventCount: 0, activeProviderTurnId: null, providerSettled: false });
 });
 
 it.each([
@@ -604,6 +726,7 @@ it.each([
   { pendingEvents: [], activeProviderTurnId: 1 },
   { pendingEvents: [], activeTurnId: "" },
   { pendingEvents: [], ambiguousTurnStartPending: "false" },
+  { pendingEvents: [], providerExitUnconfirmed: "false" },
 ])(
   "does not treat a malformed provider snapshot as drained (%j)",
   (snapshot) => {
@@ -1270,6 +1393,42 @@ it("reserves a bounded suspension window after close preparation", () => {
   });
 });
 
+it.each([
+  { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: undefined, drained: true },
+  { provider: "codex" as const, acpxAgent: undefined, closeGraceMs: undefined, drained: false },
+  { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: 400, drained: false },
+])("keeps Pi stop, remote drain and suspension within a finite close budget ($provider, $closeGraceMs)", async ({ drained, ...options }) => {
+  vi.useFakeTimers();
+  try {
+    const { preparationDeadline, closeDeadline } = runnerdRecoveryInternals.runnerCloseDeadlines(
+      Date.now(), runnerdRecoveryInternals.runnerCloseGraceMs(options),
+    );
+    // The retained restart failure spent 5.2s stopping idle Pi before its
+    // remote drain acknowledgement crossed the next command round trip.
+    await vi.advanceTimersByTimeAsync(5_200);
+    const commands: { commandId: string; status: string; result?: unknown }[] = [];
+    const result = runnerdRecoveryInternals.awaitProviderDrainBarrier({
+      readProviderState: () => null,
+      semanticResultsSettled: () => true,
+      commands: () => commands,
+      queueDrain: commandId => {
+        const command = { commandId, status: "pending", result: undefined as unknown };
+        commands.push(command);
+        setTimeout(() => {
+          command.status = "completed";
+          command.result = { result: { retainedEventsDrained: true } };
+        }, 2_800);
+      },
+      pump: () => undefined,
+      deadline: Date.now() + Math.min(5_000, Math.max(0, preparationDeadline - Date.now())),
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await result).toBe(drained);
+    expect(closeDeadline - preparationDeadline).toBeLessThanOrEqual(2_500);
+    expect(runnerdRecoveryInternals.runnerCloseGraceMs(options)).toBeLessThanOrEqual(15_000);
+  } finally { vi.useRealTimers(); }
+});
+
 it("joins an already-completed suspension without queuing a command to an exited runner", async () => {
   const commands = [
     { commandId: "exact-suspend", type: "runner.suspend", status: "completed" },
@@ -1427,6 +1586,15 @@ it.each(["acpx-runtime-sidecar.cjs", "opencode-app-server-proxy.cjs"] as const)(
     }
   },
 );
+
+it("requires a remote OpenCode executable before resolving controller dependencies", () => {
+  expect(() => runnerdLaunchProfileInternals.resolveRunnerOpenCodeExecutable({
+    runnerFilesystemRoot: "/provider-pack",
+  })).toThrow("OpenCode executable is missing from the provider pack");
+  expect(runnerdLaunchProfileInternals.resolveRunnerOpenCodeExecutable({
+    runnerFilesystemRoot: "/provider-pack", opencodeCommand: "/provider-pack/opencode",
+  })).toBe("/provider-pack/opencode");
+});
 
 it("derives the ACPX package authority only from the verified dist/cli layout", () => {
   const runnerPackageRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -1769,12 +1937,10 @@ it.each([
     denied: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] },
   {
     agent: "pi" as const,
-    allowed: ["OPENROUTER_API_KEY"],
+    allowed: ["OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "COPILOT_GITHUB_TOKEN"],
     denied: [
-      "ANTHROPIC_API_KEY",
-      "CLAUDE_CODE_OAUTH_TOKEN",
-      "OPENAI_API_KEY",
-      "CODEX_API_KEY",
+      "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+      "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_API_KEY",
       "PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET",
     ],
   },
@@ -1910,6 +2076,21 @@ it.each(["opencode", "acpx"] as const)(
   },
 );
 
+it("admits Pi runnerd transport without candidate opt-in and keeps pending Copilot gated", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-pi-production-admission-"));
+  const { transport } = createCapabilityRunnerdCodexTransport({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", stateDirectory: root });
+  try {
+    await expect(transport.request("collaborationMode/list", {})).resolves.toMatchObject({ data: [{ mode: "plan" }] });
+    for (const acpxAgent of ["copilot"] as const) {
+      expect(() => createCapabilityRunnerdCodexTransport({ provider: "acpx", acpxAgent, stateDirectory: root }))
+        .toThrow("explicit evaluation opt-in");
+    }
+  } finally {
+    await transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("allows trusted package-manager runtime roots without exposing HOME paths", () => {
   expect(
     trustedRuntimeReadOnlyRoots({
@@ -1938,6 +2119,108 @@ it("denies the isolated Codex home without denying a remote execution workspace"
   expect(serialized).not.toContain('"/workspaces/task"="none"');
   expect(serialized).not.toContain('"/workspaces/task/.codex"="none"');
   expect(serialized).toContain('\":workspace_roots\"={\".\"=\"write\"}');
+});
+
+it.each(["installed", "explicit"] as const)("records the selected %s Codex command before launch", async (selection) => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-codex-command-selection-"));
+  const command = join(root, "codex");
+  const runnerBinary = join(root, "runnerd");
+  await writeFile(command, "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+  await writeFile(runnerBinary, "unexecuted fixture artifact", { mode: 0o700 });
+  const resolver = vi.spyOn(codexCommandRuntime, "resolveCodexCommand").mockReturnValue(command);
+  let template: Record<string, unknown> | null = null;
+  const launch = vi.fn(() => { throw new Error("A provider process must not start in this fixture"); });
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    provider: "codex", runnerBinary, stateDirectory: root, sourceCodexHome: "",
+    environment: { PATH: "/missing-ambient-codex" },
+    ...(selection === "explicit" ? { codexCommand: command } : {}),
+    controlPlaneRegistration: async (authority) => {
+      template = structuredClone(authority.store.state.runAttachTemplate!);
+      throw new Error("fixture_stop_before_runner_launch");
+    },
+    runnerProcessLauncher: launch,
+  });
+  try {
+    await expect(transport.request("thread/start", { cwd: root, model: "gpt-6.1-sol", dynamicTools: [] }))
+      .rejects.toThrow("fixture_stop_before_runner_launch");
+    expect(template).toMatchObject({ provider: { command, model: "gpt-6.1-sol" } });
+    expect(JSON.stringify(template)).toContain(`${JSON.stringify(command).replaceAll('"', '\\"')}=\\"read\\"`);
+    if (selection === "explicit") expect(resolver).not.toHaveBeenCalled();
+    else expect(resolver).toHaveBeenCalledExactlyOnceWith(undefined, { PATH: "/missing-ambient-codex" }, root);
+    expect(launch).not.toHaveBeenCalled();
+  } finally {
+    resolver.mockRestore();
+    await transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("rejects remote Codex without a guest executable before resolving controller dependencies", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-runner-remote-codex-command-"));
+  const runnerBinary = join(root, "runnerd");
+  await writeFile(runnerBinary, "unexecuted fixture artifact", { mode: 0o700 });
+  const resolver = vi.spyOn(codexCommandRuntime, "resolveCodexCommand").mockImplementation(() => {
+    throw new Error("Controller package resolution must not authorize a guest executable");
+  });
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    provider: "codex", runnerBinary, stateDirectory: root, sourceCodexHome: "",
+    runnerFilesystemRoot: "/workspaces/task/.paperclip-runtime/session",
+  });
+  try {
+    await expect(transport.request("thread/start", { cwd: "/workspaces/task", model: "gpt-6.1-sol", dynamicTools: [] }))
+      .rejects.toThrow("runner_remote_provider_artifact_incompatible: remote Codex omitted its qualified guest executable");
+    expect(resolver).not.toHaveBeenCalled();
+  } finally {
+    resolver.mockRestore();
+    await transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it.each(["missing", "changed"] as const)("reuses the recorded Codex command when dependency discovery is %s during resume", async (discovery) => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-codex-recorded-command-"));
+  const command = join(root, "recorded-codex");
+  const replacement = join(root, "replacement-codex");
+  const runnerBinary = join(root, "runnerd");
+  await writeFile(command, "#!/bin/sh\nexit 99\n", { mode: 0o700 });
+  await writeFile(runnerBinary, "unexecuted fixture artifact", { mode: 0o700 });
+  const priorIdentity = { runnerInstanceId: "runner-command", environmentLeaseId: "lease-command", normalizedSessionId: "session-command",
+    runId: "run-prior", turnId: "turn-prior", itemId: "item-prior" };
+  const nextIdentity = { ...priorIdentity, runId: "run-next", turnId: "turn-next", itemId: "item-next" };
+  const core = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity: priorIdentity,
+    expectedRunnerVersion: "fixture", expectedRunnerDigest: "sha256:" + createHash("sha256").update(await readFile(runnerBinary)).digest("hex") });
+  core.persistRunAttachTemplate({ provider: { kind: "codex", command, args: [], model: "gpt-6.1-sol" }, workspace: { cwd: root } });
+  await core.stop();
+  await mkdir(join(root, "runner"), { mode: 0o700 });
+  await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1", ...priorIdentity, lifecycle: "suspended" }), { mode: 0o600 });
+  const resolver = vi.spyOn(codexCommandRuntime, "resolveCodexCommand").mockImplementation(() => {
+    if (discovery === "missing") throw new Error("The current dependency is missing");
+    return replacement;
+  });
+  let template: Record<string, unknown> | null = null;
+  const launch = vi.fn(() => { throw new Error("A provider process must not start in this fixture"); });
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    provider: "codex", runnerBinary, stateDirectory: root, sourceCodexHome: "", prpIdentity: nextIdentity,
+    environment: { PATH: "/missing-ambient-codex" },
+    controlPlaneRegistration: async (authority) => {
+      template = structuredClone(authority.store.state.commands.find(command => command.type === "run.attach")?.payload ?? null);
+      throw new Error("fixture_stop_before_resumed_runner_launch");
+    },
+    runnerProcessLauncher: launch,
+  });
+  try {
+    await expect(transport.request("thread/read", { threadId: "provider-prior" }))
+      .rejects.toThrow("fixture_stop_before_resumed_runner_launch");
+    expect(template).toMatchObject({ provider: { command, model: "gpt-6.1-sol" } });
+    expect(JSON.stringify(template)).toContain(`${JSON.stringify(command).replaceAll('"', '\\"')}=\\"read\\"`);
+    expect(JSON.stringify(template)).not.toContain(replacement);
+    expect(resolver).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  } finally {
+    resolver.mockRestore();
+    await transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 it("rejects remote OpenCode before spawn when provider-pack paths are absent", async () => {
@@ -4486,9 +4769,14 @@ it("steers the active provider turn through the durable PRP command path", async
   }
 }, 30_000);
 
-it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
-  "preserves old warm-attach authority and event ownership across %s",
-  async (mode) => {
+it.each([
+  ["held-ack", "normal"],
+  ["lost-ack", "normal"],
+  ["rejected-attach", "normal"],
+  ["lost-ack", "after-activation"],
+] as const)(
+  "preserves old warm-attach authority and event ownership across %s (%s observer)",
+  async (mode, observer) => {
     const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-ack-"));
     const callsPath = join(stateDirectory, "calls.log");
     const cores: DurablePrpControlPlane[] = [];
@@ -4624,6 +4912,34 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
       const runnerPid = bundle.evidence().runnerPid;
       providerPid = bundle.evidence().codexPid;
       const rotations: (typeof core.store.state)[] = [];
+      const preparedStates: (typeof core.store.state)[] = [];
+      const commit = core.store.commit.bind(core.store);
+      vi.spyOn(core.store, "commit").mockImplementation((candidate) => {
+        commit(candidate);
+        // Capture the durable old epoch at publication. The authenticated
+        // successor may activate before attachRun observes the completed command.
+        if (
+          candidate.identity.runId === oldIdentity.runId &&
+          candidate.warmTransition?.phase === "prepared"
+        ) {
+          preparedStates.push(structuredClone(core.store.state));
+        }
+      });
+      if (observer === "after-activation") {
+        const getCommand = core.getCommand.bind(core);
+        vi.spyOn(core, "getCommand").mockImplementation((commandId) => {
+          const command = getCommand(commandId);
+          if (
+            command?.type === "run.attach" &&
+            command.status === "completed" &&
+            core.store.state.completedWarmTransition === undefined
+          ) {
+            // Deterministically exercise an observer that misses the old epoch.
+            return { ...command, status: "pending", result: null };
+          }
+          return command;
+        });
+      }
       const rotate = core.rotateRunIdentity.bind(core);
       vi.spyOn(core, "rotateRunIdentity").mockImplementation(
         (identity, template) => {
@@ -4697,7 +5013,16 @@ it.each(["held-ack", "lost-ack", "rejected-attach"] as const)(
         releaseCommit();
         await within("warm attach after old ACK", attachment, 10_000);
         expect(rotations).toHaveLength(1);
-        const retired = rotations[0]!;
+        expect(preparedStates.length).toBeGreaterThan(0);
+        const retired = preparedStates[0]!;
+        if (observer === "after-activation") {
+          expect(rotations[0]!.identity.runId).toBe("run-warm-ack-next");
+          expect(
+            rotations[0]!.committedEvents.some(
+              (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
+            ),
+          ).toBe(false);
+        }
         const attachedEvent = retired.committedEvents.find(
           (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
         )!;
@@ -6131,6 +6456,81 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
   }
 }, 30_000);
 
+it("reopens Pi after a completed turn within its cold admission budget during warm attachment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-pi-warm-admission-"));
+  const providerNode = process.platform === "linux" ? join(root, "node") : process.execPath;
+  if (process.platform === "linux") {
+    await cp(process.execPath, providerNode, { dereference: true });
+    await chmod(providerNode, 0o500);
+    expect((await stat(providerNode)).mode & 0o777).toBe(0o500);
+  }
+  const cliRoot = join(root, "dist/cli");
+  await mkdir(cliRoot, { recursive: true, mode: 0o700 });
+  const sidecarPath = join(cliRoot, "acpx-runtime-sidecar.cjs");
+  const journal = join(root, "commands.ndjson");
+  const fixture = await readFile(fileURLToPath(new URL("./fixtures/fake-pi-warm-sidecar.cjs", import.meta.url)), "utf8");
+  await writeFile(sidecarPath, fixture.replace("/* fixture-config */ null", JSON.stringify({ journal, resumeDelayMs: 32_000, commandDigest: QUALIFIED_ACPX_PROFILES.pi.commandDigest })), { mode: 0o600 });
+  const digest = (path: string) => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+  const bundle = createCapabilityRunnerdCodexTransport({
+    provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", acpxPermissionMode: "deny-all",
+    runnerBinary: defaultCapabilityRunnerdBinary(), stateDirectory: root, runnerFilesystemRoot: root,
+    providerNodeCommand: providerNode, providerNodeCommandSha256: digest(providerNode),
+    acpxSidecarPath: sidecarPath, acpxSidecarSha256: digest(sidecarPath),
+    providerPackAuthorityDigest: `sha256:${"d".repeat(64)}`,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    environment: { PATH: "/usr/bin:/bin" },
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [{ type: "inputText", text: "Completion report accepted." }],
+  }));
+  let failure: unknown;
+  try {
+    await bundle.transport.request("initialize", {});
+    await bundle.transport.request("thread/start", {
+      cwd: root, model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      dynamicTools: codexSemanticToolSpecs(),
+      completionContract: { revision: "warm-pi-contract", criterionIds: [] },
+    });
+    const runnerPid = bundle.evidence().runnerPid;
+    const notifications = bundle.transport.notifications()[Symbol.asyncIterator]();
+    const completeTurn = async () => {
+      await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Complete the fixture turn." }] });
+      for (let index = 0; index < 64; index += 1) {
+        const next = await Promise.race([
+          notifications.next(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Fixture completion timed out")), 5_000)),
+        ]);
+        if (next.value?.method === "turn/completed") return;
+      }
+      throw new Error("Fixture turn did not complete");
+    };
+    await completeTurn();
+    const started = Date.now();
+    await bundle.transport.attachRun!({ runId: "run-pi-warm-second", turnId: "turn-pi-warm-second", itemId: "item-pi-warm-second" });
+    expect(Date.now() - started).toBeGreaterThan(30_000);
+    await completeTurn();
+    expect(bundle.evidence()).toMatchObject({ runnerPid, runnerExited: false });
+    const commands = (await readFile(journal, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(commands.filter((entry) => entry.event === "spawn")).toHaveLength(2);
+    expect(commands.filter((entry) => entry.command === "session.open")).toHaveLength(2);
+    expect(commands.filter((entry) => entry.resumed)).toHaveLength(1);
+    expect(commands.filter((entry) => entry.command === "turn.start")).toHaveLength(2);
+    expect(commands.filter((entry) => entry.command === "session.close")).toHaveLength(1);
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    try {
+      await bundle.transport.close();
+    } catch (cleanupError) {
+      if (failure) throw new AggregateError([failure, cleanupError], "Warm attachment and strict cleanup failed");
+      throw cleanupError;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}, 75_000);
+
 it("waits for a warm runner to re-authenticate before probing attachment readiness", async () => {
   const stateDirectory = await mkdtemp(
     join(tmpdir(), "runnerd-warm-reattach-before-probe-"),
@@ -7310,12 +7710,14 @@ it("surfaces a runner exit while provider-ingress readiness is still pending", a
 
 it("rejects the notification stream promptly when runnerd exits after accepting a turn", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-exit-stream-"));
+  const diagnostics: string[] = [];
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(stateDirectory, "--linger-after-turn-start"),
     stateDirectory,
     closeGraceMs: 400,
+    onDiagnostic: (message) => diagnostics.push(message),
   });
   bundle.transport.setServerRequestHandler(async () => ({
     success: true,
@@ -7370,6 +7772,12 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
         ),
       );
       expect(runnerState.lifecycle).not.toBe("suspended");
+      const settlement = diagnostics.find((message) => message.startsWith("native_session_settlement_incomplete "));
+      expect(settlement).toBeDefined();
+      expect(JSON.parse(settlement!.slice("native_session_settlement_incomplete ".length))).toMatchObject({
+        runnerSuspended: false,
+        suspensionState: { commandStatus: "pending", runnerIdentityMatches: true },
+      });
     } finally {
       await rm(stateDirectory, { recursive: true, force: true });
     }
@@ -7548,7 +7956,7 @@ it("preserves prepared input and completion feedback through runnerd and the rea
   // because its signing and dylib lookup can depend on that location.
   const providerNode = process.platform === "linux" ? join(root, "node") : process.execPath;
   if (process.platform === "linux") {
-    await cp(process.execPath, providerNode);
+    await cp(process.execPath, providerNode, { dereference: true });
     await chmod(providerNode, 0o500);
   }
   // The qualified launch boundary unlinks its executable after exec. Use a
@@ -7637,3 +8045,86 @@ it("preserves prepared input and completion feedback through runnerd and the rea
     evidence: () => bundle.evidence(),
   });
 }, 30_000);
+
+
+it.each([
+  { provider: "codex", acpxAgent: "cursor", acpxMode: "plan" },
+  { provider: "acpx", acpxAgent: "copilot", acpxMode: "" },
+  { provider: "acpx", acpxAgent: "cursor", acpxMode: 3 },
+] as const)("rejects invalid provider mode transport options before allocating resources: %j", options => {
+  expect(() => createCapabilityRunnerdCodexTransport(options as unknown as Parameters<typeof createCapabilityRunnerdCodexTransport>[0]))
+    .toThrow(/acpxMode|Provider mode/);
+});
+
+it.each([undefined, "medium", "minimal", "xhigh", null])("rejects non-exact Pi transport thinking level %s before spawn", piThinkingLevel => {
+  expect(() => createCapabilityRunnerdCodexTransport({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: piThinkingLevel as never })).toThrow(/thinking/);
+});
+it("rejects Pi thinking settings on a different transport provider", () => {
+  expect(() => createCapabilityRunnerdCodexTransport({ provider: "codex", piThinkingLevel: "low" })).toThrow(/only supported/);
+});
+
+
+describe("cold process admission budget", () => {
+  it("bounds Pi cold startup and recovery at 60 seconds", () => {
+    expect(coldAdmissionTimeoutMs("acpx", "pi", true)).toBe(60_000);
+  });
+  it("preserves live adoption and every other provider at 30 seconds", () => {
+    expect(coldAdmissionTimeoutMs("acpx", "pi", false)).toBe(30_000);
+    for (const agent of ["codex", "claude", "cursor", "copilot", "grok", undefined]) {
+      expect(coldAdmissionTimeoutMs("acpx", agent, true)).toBe(30_000);
+    }
+    for (const provider of ["codex", "opencode", undefined]) {
+      expect(coldAdmissionTimeoutMs(provider, "pi", true)).toBe(30_000);
+    }
+  });
+});
+
+
+it("shares Pi's absolute cold deadline across recovery barriers and rejects a late ACK", async () => {
+  vi.useFakeTimers();
+  try {
+    const deadline = Date.now() + coldAdmissionTimeoutMs("acpx", "pi", true);
+    let status = "pending";
+    const wait = (type: string) => waitForRunnerCommand({
+      type, deadline, abortOnClose: true, isClosed: () => false,
+      throwIfFailed: () => undefined, command: () => ({ status }),
+      runnerHasExited: async () => false, failureCode: () => "startup_failed",
+    });
+    const attached = wait("run.attach");
+    await vi.advanceTimersByTimeAsync(40_000);
+    status = "completed";
+    await vi.advanceTimersByTimeAsync(10);
+    await attached;
+    status = "pending";
+    const drain = wait("runner.drain");
+    const rejection = expect(drain).rejects.toThrow("runner.drain timed out");
+    await vi.advanceTimersByTimeAsync(20_000);
+    await rejection;
+    status = "completed";
+    await expect(wait("session.open")).rejects.toThrow("session.open timed out");
+  } finally { vi.useRealTimers(); }
+});
+
+it("aborts startup promptly on close while allowing the owned cleanup command to drain", async () => {
+  vi.useFakeTimers();
+  try {
+    let closed = false;
+    let status = "pending";
+    const input = {
+      deadline: Date.now() + 60_000, isClosed: () => closed,
+      throwIfFailed: () => undefined, command: () => ({ status }),
+      runnerHasExited: async () => false, failureCode: () => "startup_failed",
+    };
+    const opening = waitForRunnerCommand({ ...input, type: "session.open", abortOnClose: true });
+    const rejection = expect(opening).rejects.toThrow("closed while waiting for session.open");
+    closed = true;
+    await vi.advanceTimersByTimeAsync(10);
+    await rejection;
+    // A late open ACK cannot revive the cancelled waiter, but cleanup still owns the process.
+    const drain = waitForRunnerCommand({ ...input, type: "runner.drain", abortOnClose: false });
+    await vi.advanceTimersByTimeAsync(10);
+    status = "completed";
+    await vi.advanceTimersByTimeAsync(10);
+    await drain;
+  } finally { vi.useRealTimers(); }
+});

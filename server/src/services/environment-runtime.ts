@@ -3875,6 +3875,86 @@ export function environmentRuntimeService(
     return driver;
   }
 
+  async function destroyScopedReusableSandboxLease(input: {
+    environment: Environment;
+    leaseRow: typeof environmentLeases.$inferSelect;
+    scopeCondition?: ReturnType<typeof and>;
+    failureReason: string;
+  }): Promise<EnvironmentLease | null> {
+    const now = new Date();
+    const attemptId = randomUUID();
+    // Persist recovery ownership before any provider work. Re-check scope and
+    // run liveness in this write: the earlier selection cannot fence a resume.
+    // The in-flight lease also excludes concurrent closures and cleanup sweeps.
+    const [claimed] = await db.update(environmentLeases).set({
+      status: "pending_cleanup",
+      failureReason: input.failureReason,
+      cleanupStatus: "failed",
+      releasedAt: now,
+      lastUsedAt: now,
+      updatedAt: now,
+      metadata: sql`(case when jsonb_typeof(${environmentLeases.metadata}) = 'object'
+        then ${environmentLeases.metadata} else '{}'::jsonb end - 'remoteExecutionTermination')
+        || ${JSON.stringify({ pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true,
+          pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000 })}::jsonb`,
+    }).where(and(
+      eq(environmentLeases.id, input.leaseRow.id),
+      eq(environmentLeases.companyId, input.leaseRow.companyId),
+      eq(environmentLeases.environmentId, input.environment.id),
+      eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+      eq(environmentLeases.status, input.leaseRow.status),
+      input.scopeCondition,
+      sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') != 'true'`,
+      sql`NOT EXISTS (
+        SELECT 1 FROM ${heartbeatRuns}
+        WHERE ${heartbeatRuns.id} = ${environmentLeases.heartbeatRunId}
+          AND ${heartbeatRuns.status} IN ('queued', 'scheduled_retry', 'running')
+      )`,
+    )).returning();
+    if (!claimed) return null;
+    const lease = toEnvironmentLeaseSnapshot(claimed);
+    let renewalInFlight = false;
+    const renewal = setInterval(() => {
+      if (renewalInFlight) return;
+      renewalInFlight = true;
+      void db.update(environmentLeases).set({
+        metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({
+          pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
+        })}::jsonb`,
+      }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "pending_cleanup"),
+        sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
+        sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
+      )).then(() => {}).catch(() => {
+        logger.warn({ leaseId: lease.id }, "scoped cleanup ownership renewal failed");
+      }).finally(() => { renewalInFlight = false; });
+    }, 30_000);
+    renewal.unref();
+    try {
+      const driver = getDriver(getLeaseDriverKey(lease, input.environment));
+      if (!driver?.destroyRunLease) return lease;
+      return await driver.destroyRunLease({
+        environment: input.environment,
+        lease,
+        failureReason: input.failureReason,
+      }) ?? lease;
+    } catch {
+      // Even a failed settlement write leaves the durable provider handle for
+      // the sweep. Continue with later leases without logging provider errors.
+      return lease;
+    } finally {
+      clearInterval(renewal);
+      // A crash skips this write; the bounded ownership lease lets the sweep
+      // recover. A completed failure becomes eligible for a later explicit retry.
+      await db.update(environmentLeases).set({
+        metadata: sql`${environmentLeases.metadata} || '{"pendingCleanupInFlight":false}'::jsonb`,
+      }).where(and(eq(environmentLeases.id, lease.id),
+        sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
+      )).catch(() => {
+        logger.warn({ leaseId: lease.id }, "scoped cleanup ownership settlement failed");
+      });
+    }
+  }
+
   return {
     getDriver,
 
@@ -3963,7 +4043,10 @@ export function environmentRuntimeService(
           and(
             eq(environmentLeases.heartbeatRunId, heartbeatRunId),
             or(eq(environmentLeases.status, "active"), and(eq(environmentLeases.status, "pending_cleanup"),
-              sql`(${environmentLeases.metadata} ? 'nativeWorkspaceExportResume' or ${environmentLeases.metadata} ? 'sandboxStopAndRetain')`)),
+              sql`(${environmentLeases.metadata} ? 'nativeWorkspaceExportResume' or ${environmentLeases.metadata} ? 'sandboxStopAndRetain')`),
+              providerResourceDisposition === "destroy"
+                ? and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed"))
+                : undefined),
           ),
         );
       if (leaseRows.length === 0) {
@@ -4180,7 +4263,7 @@ export function environmentRuntimeService(
           and(
             eq(environmentLeases.companyId, input.companyId),
             eq(environmentLeases.leasePolicy, "reuse_by_environment"),
-            inArray(environmentLeases.status, ["active", "released", "retained", "pending_cleanup"]),
+            inArray(environmentLeases.status, ["active", "released", "retained", "failed", "pending_cleanup"]),
             ...scopeConditions,
           ),
         );
@@ -4222,18 +4305,12 @@ export function environmentRuntimeService(
           ? await environmentsSvc.getById(leaseRow.environmentId)
           : null;
         if (!environment) continue;
-        const leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
-        const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
-        const lease = driver?.destroyRunLease
-          ? await driver.destroyRunLease({
-              environment,
-              lease: leaseSnapshot,
-              failureReason: input.failureReason ?? "reusable_lease_destroyed",
-            })
-          : await environmentsSvc.releaseLease(leaseSnapshot.id, "pending_cleanup", {
-              failureReason: input.failureReason ?? "reusable_lease_destroyed",
-              cleanupStatus: "failed",
-            });
+        const lease = await destroyScopedReusableSandboxLease({
+          environment,
+          leaseRow,
+          scopeCondition: and(...scopeConditions),
+          failureReason: input.failureReason ?? "reusable_lease_destroyed",
+        });
         if (!lease) continue;
         destroyed.push({
           environment,
@@ -4271,7 +4348,9 @@ export function environmentRuntimeService(
           and(
             eq(environmentLeases.environmentId, input.environmentId),
             eq(environmentLeases.leasePolicy, "reuse_by_environment"),
-            inArray(environmentLeases.status, ["active", "released", "retained"]),
+            // A failed run may have stopped its reusable sandbox without
+            // destroying it; that provider handle still needs scoped teardown.
+            inArray(environmentLeases.status, ["active", "released", "retained", "failed"]),
           ),
         );
 
@@ -4302,73 +4381,20 @@ export function environmentRuntimeService(
       let failed = 0;
       let skippedLiveRun = 0;
       const failureReason = input.failureReason ?? "environment_delete_requested";
-      const now = new Date();
       for (const leaseRow of leaseRows) {
         if (leaseRow.heartbeatRunId && liveRunIds.has(leaseRow.heartbeatRunId)) {
           skippedLiveRun += 1;
           continue;
         }
-        // Claim the row BEFORE the provider call, mirroring the inline-teardown
-        // invariant used elsewhere in this file: no provider destroy without a
-        // durable `pending_cleanup` reference already on disk. The claim is one
-        // conditional UPDATE, so it is the fence against a racing resume: a
-        // resume that re-activates the lease first makes the status predicate
-        // (or the run-liveness predicate) fail and the claim loses — the live
-        // run keeps its sandbox. A claim that wins parks the lease where the
-        // cleanup sweep owns it, so a crash or thrown destroy after this point
-        // is recovered by the sweep's idempotent teardown, and a double write
-        // failure cannot strand the lease in a reusable status.
-        const claimedRow = await db
-          .update(environmentLeases)
-          .set({
-            status: "pending_cleanup",
-            failureReason,
-            cleanupStatus: "failed",
-            releasedAt: now,
-            lastUsedAt: now,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(environmentLeases.id, leaseRow.id),
-              inArray(environmentLeases.status, ["active", "released", "retained"]),
-              sql`NOT EXISTS (
-                SELECT 1 FROM ${heartbeatRuns}
-                WHERE ${heartbeatRuns.id} = ${environmentLeases.heartbeatRunId}
-                  AND ${heartbeatRuns.status} IN ('queued', 'scheduled_retry', 'running')
-              )`,
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
-        if (!claimedRow) {
+        const lease = await destroyScopedReusableSandboxLease({ environment, leaseRow, failureReason });
+        if (!lease) {
           // Lost to a racing resume or a concurrent terminal transition — the
           // lease is no longer ours to destroy.
           skippedLiveRun += 1;
           continue;
         }
-        const leaseSnapshot = toEnvironmentLeaseSnapshot(claimedRow);
-        try {
-          const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
-          if (!driver?.destroyRunLease) {
-            // No driver available: the claim already parked the lease for the
-            // sweep, which retries once the driver's plugin is back.
-            failed += 1;
-            continue;
-          }
-          const lease = await driver.destroyRunLease({
-            environment,
-            lease: leaseSnapshot,
-            failureReason,
-          });
-          if (lease && lease.status !== "pending_cleanup") destroyed += 1;
-          else failed += 1;
-        } catch {
-          // The claim above already parked the lease in `pending_cleanup`, so
-          // the sweep owns the retry; its teardown is idempotent, so a destroy
-          // that reached the provider before the throw resolves as success.
-          failed += 1;
-        }
+        if (lease.status !== "pending_cleanup") destroyed += 1;
+        else failed += 1;
       }
       return { destroyed, failed, skippedLiveRun };
     },

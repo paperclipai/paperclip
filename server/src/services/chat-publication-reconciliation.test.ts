@@ -220,18 +220,18 @@ describe("createCoalescedAsyncTrigger", () => {
 
 describe("chat publication commit signals", () => {
   it("emits the accepted signals only after their durable source writes", () => {
-    const heartbeatSource = readFileSync(
-      new URL("./heartbeat.ts", import.meta.url),
+    const lifecycleSource = readFileSync(
+      new URL("./heartbeat/run-lifecycle.ts", import.meta.url),
       "utf8",
     );
-    const appendRunEventStart = heartbeatSource.indexOf(
+    const appendRunEventStart = lifecycleSource.indexOf(
       "async function appendRunEvent(",
     );
-    const persistedEvent = heartbeatSource.indexOf(
+    const persistedEvent = lifecycleSource.indexOf(
       "await appendHeartbeatRunEvent",
       appendRunEventStart,
     );
-    const emittedEvent = heartbeatSource.indexOf(
+    const emittedEvent = lifecycleSource.indexOf(
       "publishLiveEvent({",
       persistedEvent,
     );
@@ -239,6 +239,10 @@ describe("chat publication commit signals", () => {
     expect(persistedEvent).toBeGreaterThan(appendRunEventStart);
     expect(emittedEvent).toBeGreaterThan(persistedEvent);
 
+    const heartbeatSource = readFileSync(
+      new URL("./heartbeat.ts", import.meta.url),
+      "utf8",
+    );
     const presentationMarker = heartbeatSource.indexOf(
       'eventType: "run.presentation.resolved"',
     );

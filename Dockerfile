@@ -49,7 +49,9 @@ COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
-RUN pnpm install --frozen-lockfile
+# CI owns repository lock updates. Resolve manifest changes in the image's
+# private build tree, then install from that exact generated lock.
+RUN pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile && pnpm install --frozen-lockfile
 
 FROM base AS rust-toolchain
 WORKDIR /app

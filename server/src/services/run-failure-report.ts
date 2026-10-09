@@ -12,6 +12,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { isUnexpectedRunCancellation } from "./run-cancellation.js";
 import { readConnectionFailure, type ConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
+import { isAiConnectionConfigurationReason } from "./ai-connection-configuration-failure.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -45,6 +46,22 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+/** An owned AI selection rejection before dispatch, not its broad catch wrapper. */
+function isAiConnectionSelectionBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  // Resumed native input may already have provider effects, even during preparation.
+  if (run.runtimeMode === "native" && asRecord(run.runnerProfileJson)?.nativeExecutionInput !== undefined) return false;
+  if (
+    run.status !== "failed" || run.errorCode !== "configuration_incomplete" ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const configuration = asRecord(run.resultJson?.configurationIncomplete);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return configuration?.reason === "ai_connection_unavailable" &&
+    isAiConnectionConfigurationReason(configuration.selectionFailure) &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
 /** A known owner action before dispatch, not a secret-provider or runtime failure. */
@@ -162,6 +179,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
   if (!isRunFailureStatus(run.status)) return Promise.resolve();
   if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
   if (isMissingSecretConfigurationBlocker(run, options)) return Promise.resolve();
+  if (isAiConnectionSelectionBlocker(run, options)) return Promise.resolve();
   if (isLocalPathWorkspaceConfigurationBlocker(run, options)) return Promise.resolve();
   if (isGitConnectionFailure(run, options)) return Promise.resolve();
   const runStatus = run.status;

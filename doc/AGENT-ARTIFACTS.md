@@ -13,6 +13,17 @@ remote workspace. Supply a workspace-relative `contentRef`, basename `filename`,
 The tool verifies the file, stores an attachment and artifact work product, and
 binds it to the response. Generic API tools and a legacy API key are unnecessary.
 
+The completion gate permits a narrow sentence-bound exception for one requested
+file when the following sentence explicitly qualifies it, for example:
+`Write memory.txt. This is personal memory, not a task deliverable.` or
+`Write internal-proof.txt. This is an internal verification file, not a deliverable.`
+Each qualifier applies to one file in the immediately preceding request sentence.
+Separate file requests can each qualify when each has its own following qualifier.
+Multiple files requested in one sentence, unqualified report requests, and explicit
+attachment/download requests still need verified accessible publication evidence. Saying only “for internal verification”
+does not establish this exception. Expected denied native writes in a negative
+test are separately recognized as denied attempts, not requested deliverables.
+
 Wait for the receipt. It includes `attachmentId`, `contentPath`, and
 `downloadPath`, along with the existing command, revision, entity references,
 and disposition. Reuse the original key after an ambiguous result. A receipt

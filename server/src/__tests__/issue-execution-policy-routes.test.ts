@@ -173,11 +173,15 @@ type TestActor =
       runId: string | null;
     };
 
-async function createApp(actor?: TestActor) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     import("../middleware/index.js"),
     import("../routes/issues.js"),
   ]);
+}
+
+async function createApp(actor?: TestActor) {
+  const [{ errorHandler }, { issueRoutes }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -196,7 +200,7 @@ async function createApp(actor?: TestActor) {
 }
 
 describe("issue execution policy routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../routes/issues.js");
@@ -263,6 +267,9 @@ describe("issue execution policy routes", () => {
       };
     });
     mockAccessService.hasPermission.mockResolvedValue(false);
+    // Finish cold imports before a test configures its request-specific mocks.
+    // A timed-out import must not resume a request against the next test's mocks.
+    await loadAppModules();
   });
 
   it("reauthorizes a terminal verdict against the review policy held under the update lock", async () => {

@@ -2220,6 +2220,20 @@
       "when": 1791456875836,
       "tag": "0318_strong_blacklash",
       "breakpoints": true
+    },
+    {
+      "idx": 319,
+      "version": "7",
+      "when": 1791490887468,
+      "tag": "0319_heavy_captain_midlands",
+      "breakpoints": true
+    },
+    {
+      "idx": 320,
+      "version": "7",
+      "when": 1791497222457,
+      "tag": "0320_daily_onslaught",
+      "breakpoints": true
     }
   ]
 }

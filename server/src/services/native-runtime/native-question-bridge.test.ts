@@ -23,6 +23,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import type { PrpEvent } from "@paperclipai/paperclip-runner";
+import { respondIssueThreadInteractionSchema } from "@paperclipai/shared";
 
 import {
   getEmbeddedPostgresTestSupport,
@@ -440,6 +441,54 @@ describeEmbeddedPostgres("native question bridge", () => {
     if (answered.kind !== "ask_user_questions") throw new Error("expected question interaction");
     await expect(nativeQuestionRunToCancel(db, answered)).resolves.toBe(runId);
     release();
+  });
+
+  it.each(["legacy", "canonical_select"])("keeps %s custom-answer normalization and rejects blank public answers", async (mode) => {
+    await seed();
+    const event = runtimeRequestEvent();
+    const input = (event.payload.request as { input: { questions: Record<string, unknown>[] } }).input;
+    input.questions[0]!.customAnswer = { enabled: true };
+    const interaction = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+    if (mode === "legacy") {
+      const payload = { ...interaction!.payload };
+      if ("questionSet" in payload) delete payload.questionSet;
+      await db.update(issueThreadInteractions).set({ payload }).where(eq(issueThreadInteractions.id, interaction!.id));
+    }
+    const service = issueThreadInteractionService(db);
+    await expect(service.answerQuestions({ id: issueId, companyId, status: "in_progress" }, interaction!.id,
+      respondIssueThreadInteractionSchema.parse({ answers: [{ questionId: "color", optionIds: [], otherText: " \n " }] }), { userId: "operator-1" },
+    )).rejects.toThrow(/requires an answer/);
+    const answered = await service.answerQuestions({ id: issueId, companyId, status: "in_progress" }, interaction!.id,
+      respondIssueThreadInteractionSchema.parse({ answers: [{ questionId: "color", optionIds: [], otherText: "  Extra\\nline  " }] }), { userId: "operator-1" },
+    );
+    expect(answered.result).toMatchObject({ answers: [{ questionId: "color", otherText: "Extra\nline" }] });
+  });
+
+  it("persists initial text without resolving and delivers only an explicit edited answer", async () => {
+    await seed();
+    const initialText = "  Editable draft\n漢字\n";
+    const event = runtimeRequestEvent();
+    const request = event.payload.request as Record<string, unknown>;
+    request.input = { schema: "paperclip.question_set.v1", questions: [{ id: "draft", prompt: "Edit", required: true, answerMode: "text", initialText }] };
+    const interaction = await projectNativeRuntimeRequest({ db, binding: binding(), event });
+    expect(interaction).toMatchObject({ status: "pending", payload: { questionSet: { questions: [{ initialText }] } } });
+    const [stored] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction!.id));
+    expect(stored).toMatchObject({ status: "pending", result: null, payload: { questionSet: { questions: [{ initialText }] } } });
+    const queueCommand = vi.fn(() => ({ commandId: "edited", controllerSeq: 1 }));
+    const release = registerNativeQuestionCommandTarget({ binding: { companyId, issueId, runId, agentId }, queueCommand });
+    try {
+      await flushNativeQuestionResponses(db, runId);
+      expect(queueCommand).not.toHaveBeenCalled();
+      const edited = "\n  Operator 漢字 edited\n\nLiteral \\n stays literal.  \n";
+      await issueThreadInteractionService(db).answerQuestions(
+        { id: issueId, companyId, status: "in_progress" }, interaction!.id,
+        respondIssueThreadInteractionSchema.parse({ answers: [{ questionId: "draft", optionIds: [], otherText: edited }] }), { userId: "operator-1" },
+      );
+      await flushNativeQuestionResponses(db, runId);
+      expect(queueCommand).toHaveBeenCalledExactlyOnceWith("request.resolve", {
+        requestId: "request-1", response: { schema: "paperclip.question_response.v1", answers: { draft: { text: edited } } },
+      }, `question_${interaction!.id}`);
+    } finally { release(); }
   });
 
   it.each(["succeeded", "failed", "cancelled", "timed_out"])("delivers a historical answer exactly once after a %s native run", async status => {

@@ -479,6 +479,15 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     await expect(oauth.authenticate(next.access_token)).rejects.toThrow();
   });
 
+  it.each([new Date(0), null])("rejects personal refresh tokens with invalid expiry %s", async expiresAt => {
+    const f = await fixture();
+    const [stored] = await db.select().from(mcpOauthTokens).where(eq(mcpOauthTokens.tokenHash, hashMcpSecret(f.tokens.refresh_token!)));
+    expect(stored!.expiresAt!.getTime() - Date.now()).toBeGreaterThan(29 * 24 * 60 * 60_000);
+    await db.update(mcpOauthTokens).set({ expiresAt }).where(eq(mcpOauthTokens.id, stored!.id));
+    await expect(oauth.token({ grant_type: "refresh_token", client_id: f.client.client_id,
+      resource: config.resource, refresh_token: f.tokens.refresh_token })).rejects.toThrow();
+  });
+
   it("rejects token expiry, revocation and membership loss on the next call", async () => {
     const f = await fixture();
     await db.update(mcpOauthTokens).set({ expiresAt: new Date(0) }).where(eq(mcpOauthTokens.tokenHash, hashMcpSecret(f.tokens.access_token)));

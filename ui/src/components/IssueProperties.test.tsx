@@ -2728,6 +2728,30 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("renders reviewer and approver controls for a monitor-only execution policy", async () => {
+    const policy = {
+      monitor: {
+        nextCheckAt: "2026-10-08T16:00:00.000Z",
+        notes: "Check pull request",
+        scheduledBy: "assignee",
+        kind: "external_service",
+        serviceName: "github-pr",
+      },
+    } as IssueExecutionPolicy;
+    const root = renderProperties(container, {
+      issue: createIssue({ executionPolicy: policy }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(findRowTrigger(container, "Reviewers")?.textContent).toContain("None");
+    expect(findRowTrigger(container, "Approvers")?.textContent).toContain("None");
+    expect(container.querySelector('[data-testid="monitor-row-trigger"]')).not.toBeNull();
+
+    act(() => root.unmount());
+  });
+
   it("shows a run review action after reviewers are configured and starts execution explicitly when clicked", async () => {
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
