@@ -89,3 +89,17 @@ test("scanModuleBoundaries rejects outward dependencies and module-internal impo
 test("the repository's feature modules satisfy their import boundaries", () => {
   assert.deepEqual(scanModuleBoundaries(), []);
 });
+
+test("agent lifecycle adapters and entry point cannot depend on services", () => {
+  const serverSrc = mkdtempSync(join(tmpdir(), "paperclip-lifecycle-boundaries-"));
+  const modulesRoot = join(serverSrc, "modules");
+  try {
+    mkdirSync(join(modulesRoot, "agent-lifecycle", "adapters"), { recursive: true });
+    writeFileSync(join(modulesRoot, "agent-lifecycle", "index.ts"), 'import "../../services/example.js";');
+    writeFileSync(join(modulesRoot, "agent-lifecycle", "adapters", "records.ts"), 'import "../../../services/example.js";');
+    assert.equal(scanModuleBoundaries({ serverSrc, modulesRoot }).filter(item =>
+      item.reason === "agent lifecycle must receive service integrations through its ports").length, 2);
+  } finally {
+    rmSync(serverSrc, { recursive: true, force: true });
+  }
+});

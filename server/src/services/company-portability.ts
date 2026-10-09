@@ -1,4 +1,4 @@
-import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
 import { agentAppearanceSchema } from "@paperclipai/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";

@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { eq, inArray } from "drizzle-orm";
-import { deleteTerminatedCompanyAgents, terminateCompanyAgents } from "../modules/agent-lifecycle/index.js";
+import { deleteTerminatedCompanyAgents, terminateCompanyAgents } from "./agent-lifecycle.js";
 import {
   companies,
   companyLogos,

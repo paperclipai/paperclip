@@ -2,25 +2,22 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { agents, agentApiKeys, companies, budgetPolicies, type Db } from "@paperclipai/db";
 import type { AgentLifecycleOperation } from "@paperclipai/shared";
-import { withAccountingTransaction } from "../../../services/accounting-transaction.js";
-import { clearPrimaryAgent } from "../../../services/primary-agent.js";
-import { recordAgentStatusEvent, recordResourceCreationEvent } from "../../../services/resource-lifecycle-events.js";
 import { AgentLifecycleConflict, compatibilityStatus, transition } from "../domain/policy.js";
-import { policyBlocks } from "../../../services/budgets.js";
+import type { LifecycleEffects } from "./effects.js";
 import type { LifecycleStore } from "../application/ports.js";
 
 export function assertRootDatabase(db: Db) {
   if ("nestedIndex" in db) throw new AgentLifecycleConflict("Lifecycle commands require the root database connection");
 }
 
-export function createLifecycleStore(db: Db): LifecycleStore {
+export function createLifecycleStore(db: Db, effects: LifecycleEffects): LifecycleStore {
   const get = (id: string) => db.select().from(agents).where(eq(agents.id, id)).then(rows => rows[0] ?? null);
   return {
     get,
     async change(id, command, options = {}) {
       const existing = await get(id);
       if (!existing) return null;
-      return withAccountingTransaction(db, existing.companyId, async tx => {
+      return effects.transaction(db, existing.companyId, async tx => {
         const [agent] = await tx.select().from(agents).where(eq(agents.id, id)).for("update", command === "reconcile" ? { skipLocked: true } : undefined);
         if (!agent) return null;
         if (options.version !== undefined && options.version !== agent.lifecycleVersion) return null;
@@ -44,7 +41,7 @@ export function createLifecycleStore(db: Db): LifecycleStore {
           const policies = await tx.select().from(budgetPolicies).where(and(eq(budgetPolicies.companyId, agent.companyId),
             eq(budgetPolicies.scopeType, "agent"), eq(budgetPolicies.scopeId, id)));
           let budgetBlocked = false;
-          for (const policy of policies) if (await policyBlocks(tx, policy)) budgetBlocked = true;
+          for (const policy of policies) if (await effects.policyBlocks(tx, policy)) budgetBlocked = true;
           holds = holds.filter(hold => hold !== "budget" && hold !== "company_archived" && hold !== "company_paused");
           if (budgetBlocked) holds.push("budget");
           if (company.status === "archived") holds.push("company_archived");
@@ -83,11 +80,11 @@ export function createLifecycleStore(db: Db): LifecycleStore {
         }).where(eq(agents.id, id)).returning();
         if (next === "terminating" || next === "rejected") {
           await tx.update(agentApiKeys).set({ revokedAt: new Date() }).where(eq(agentApiKeys.agentId, id));
-          await clearPrimaryAgent(tx, agent.companyId, id);
+          await effects.clearPrimary(tx, agent.companyId, id);
         }
-        if (command === "approve") await recordResourceCreationEvent(tx, agent.companyId, "agent", id);
+        if (command === "approve") await effects.recordCreation(tx, agent.companyId, id);
         if (next === "pausing" || next === "resuming" || next === "terminating" || next === "rejected") {
-          await recordAgentStatusEvent(tx, agent.companyId, id,
+          await effects.recordStatus(tx, agent.companyId, id,
             next === "resuming" ? "paused" : "idle",
             next === "resuming" ? "idle" : next === "pausing" ? "paused" : "terminated");
         }

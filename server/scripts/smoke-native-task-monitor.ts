@@ -17,7 +17,8 @@ process.env.PAPERCLIP_INSTANCE_ID = "monitor-smoke";
 process.env.PAPERCLIP_TELEMETRY_ENABLED = "false";
 const { createDb, companies, agents, authUsers, companyMemberships, issues, heartbeatRuns, agentWakeupRequests, nativeRunResults, statusDecisions } = await import("@paperclipai/db");
 const { startEmbeddedPostgresTestDatabase } = await import("../src/__tests__/helpers/embedded-postgres.js");
-const { createAgentLifecycle, startAgentLifecycle } = await import("../src/modules/agent-lifecycle/index.js");
+const { createAgentLifecycle, startAgentLifecycle } = await import("../src/services/agent-lifecycle.js");
+const { createLifecycleDriver } = await import("../src/services/agent-lifecycle-driver.js");
 const { createPluginWorkerManager } = await import("../src/services/plugin-worker-manager.js");
 const { heartbeatService } = await import("../src/services/heartbeat.js");
 const { setupRunnerPrpWebSocketServer, runnerPrpWebSocketInternals } = await import("../src/realtime/runner-prp-ws.js");
@@ -32,7 +33,7 @@ process.env.PAPERCLIP_API_URL = `http://127.0.0.1:${address.port}`;
 setupRunnerPrpWebSocketServer(server, { apiUrl: process.env.PAPERCLIP_API_URL });
 const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
 const heartbeat = heartbeatService(db);
-const lifecycle = startAgentLifecycle(db, createPluginWorkerManager(), () => true);
+const lifecycle = startAgentLifecycle(db, createLifecycleDriver(db, createPluginWorkerManager()), () => true);
 const readRuns = () => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)).orderBy(heartbeatRuns.createdAt);
 console.log(JSON.stringify({ root, companyId, agentId, issueId }));
 try {
@@ -44,8 +45,15 @@ try {
   await createAgentLifecycle(db).requestHire(companyId, { id: agentId, name: "Monitor verifier", status: "active", adapterType: "paperclip_runner",
     adapterConfig: { provider: "codex", cwd, lifecycleMode: "warm", idleTimeoutMs: 300_000, timeoutSeconds: 180 },
     runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } } });
-  await lifecycle.sweep();
-  assert.equal((await createAgentLifecycle(db).get(agentId))?.lifecycleState, "ready");
+  const setupDeadline = Date.now() + 3 * 60_000;
+  while (true) {
+    const agent = await createAgentLifecycle(db).get(agentId);
+    assert.ok(agent, "the hired agent must exist");
+    assert.equal(agent.lifecycleError, null, "agent setup failed");
+    if (agent.lifecycleState === "ready") break;
+    assert.ok(Date.now() < setupDeadline, "agent setup timed out");
+    await delay(250);
+  }
   await db.insert(issues).values({ id: issueId, companyId, title: "Verify a one-shot native task monitor", identifier: "MON-1", status: "in_progress", assigneeAgentId: agentId,
     description: "This is an isolated two-run integration test. First run: use set_task_monitor on this task with a fresh nextCheckAt about 45 seconds in the future (compute the current UTC time if needed), notes saying to verify issue_monitor_due, and idempotencyKey monitor-live-first. Confirm the receipt. Then call paperclip_finish with yielded and continuation.kind monitor, accurately retaining the second run as blocking remaining work. End immediately after acceptance. Do not sleep or poll. Second run: if the wake reason is issue_monitor_due, the requested check succeeded. Report that reason and finish done using the current completion contract. Do not schedule another monitor or request human review. No files or other deliverables are required." });
   await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", reason: "monitor_smoke",

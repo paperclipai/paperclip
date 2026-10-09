@@ -1941,8 +1941,8 @@ describe("agent live run routes", () => {
   });
 });
 
-vi.mock("../modules/agent-lifecycle/index.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../modules/agent-lifecycle/index.js")>();
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
   return { ...actual, createAgentLifecycle: () => ({
     purgeAgent: (...args: unknown[]) => mockAgentService.remove(...args),
   }) };

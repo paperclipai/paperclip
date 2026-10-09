@@ -1,7 +1,7 @@
 import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import { activityLog, agents, companies, dotAgentBindings, type Db } from "@paperclipai/db";
 import { agentService } from "./agents.js";
-import { createAgentLifecycle, scheduleAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { createAgentLifecycle, scheduleAgentLifecycle } from "./agent-lifecycle.js";
 import { withDedicatedDbConnection } from "@paperclipai/db";
 import { approvalService } from "./approvals.js";
 import { accessService } from "./access.js";

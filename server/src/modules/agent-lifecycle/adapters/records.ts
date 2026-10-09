@@ -1,8 +1,7 @@
 import { AgentLifecycleConflict } from "../domain/policy.js";
 import { createLifecycleStore } from "./postgres.js";
-import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "../../../services/budgets.js";
-import { withAccountingTransaction } from "../../../services/accounting-transaction.js";
-import type { ActivityPublication } from "../../../services/activity-log.js";
+import type { LifecycleEffects } from "./effects.js";
+import type { ActivityPublication } from "../../../types/activity-publication.js";
 import { agentAppearanceSchema, randomAgentAppearance } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import { and, eq, or, sql } from "drizzle-orm";
@@ -34,23 +33,12 @@ import {
   newStandardAgentGrantScope,
   normalizeAgentPermissions,
   permissionsImplyLowTrust,
-} from "../../../services/agent-permissions.js";
-import { recordAgentStatusEvent, recordResourceCreationEvent } from "../../../services/resource-lifecycle-events.js";
+} from "../../../lib/agent-permissions.js";
+
+import { readBuiltInAgentMarker } from "../../../lib/built-in-agent-metadata.js";
 
 import {
-  assertClaudeOAuthBindingInvariant,
-  secretService,
-  type ClaudeOAuthBindingInvariantDecision,
-} from "../../../services/secrets.js";
-
-import { readBuiltInAgentMarker } from "../../../services/built-in-agent-metadata.js";
-import { issueThreadInteractionService } from "../../../services/issue-thread-interactions.js";
-
-import { clearPrimaryAgent, initializePrimaryAgent } from "../../../services/primary-agent.js";
-import { agentIdentityService } from "../../../services/agent-identity.js";
-
-import {
-  agentRecordSupport,
+  agentRecordQueries,
   UpdateAgentOptions,
   CreateAgentOptions,
   isPlainRecord,
@@ -62,21 +50,17 @@ import {
   normalizeRuntimeConfigForNewAgent,
   diffConfigSnapshot,
   deduplicateAgentName,
-} from "../../../services/agent-record-support.js";
-import { agentService } from "../../../services/agents.js";
+} from "../../../lib/agent-records.js";
 
-export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
+export function agentRecords(db: Db, effects: LifecycleEffects) {
   const {
-    secretsSvc,
     normalizeAgentRow,
     getById,
     ensureManager,
     assertNoCycle,
     assertCompanyShortnameAvailable,
-    syncAgentSecretBindings,
-    enforceClaudeOAuthBindingClaim,
     assertBuiltInAgentMetadataMutationAllowed
-  } = agentRecordSupport(db);
+  } = agentRecordQueries(db);
   async function updateAgent(
     id: string,
     data: Partial<Omit<typeof agents.$inferInsert, "status" | "pauseReason" | "pausedAt" | "lifecycleState" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation" | "lifecycleRequiredPluginIds" | "lifecycleHolds">>,
@@ -136,10 +120,10 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
       isPlainRecord(normalizedPatch.adapterConfig)
     ) {
-      const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+      const normalizedAdapterConfig = await effects.normalizeAdapterConfig(db,
         existing.companyId,
         normalizedPatch.adapterConfig,
-        { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
+        (normalizedPatch.adapterType ?? existing.adapterType) as string,
       );
       normalizedPatch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
         (normalizedPatch.adapterType ?? existing.adapterType) as string,
@@ -154,18 +138,6 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         existing.adapterConfig,
       );
     }
-    // Run the server-enforced binding invariant when the patch touches the
-    // adapter config. The update, approval, and rollback paths keep an existing
-    // fixed binding but reject a newly introduced binding, because they carry no
-    // stored-session claim.
-    const bindingDecision = Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")
-      ? assertClaudeOAuthBindingInvariant({
-          adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string,
-          nextConfig: normalizedPatch.adapterConfig,
-          priorConfig: existing.adapterConfig,
-        })
-      : null;
-
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
@@ -187,7 +159,7 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
       if (updated.status === "terminated") {
-        await clearPrimaryAgent(txDb, updated.companyId, id);
+        await effects.clearPrimary(txDb, updated.companyId, id);
       }
 
       const priorAdapterConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
@@ -203,29 +175,24 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       }
 
       if (Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
-        if (bindingDecision) {
-          await enforceClaudeOAuthBindingClaim(txDb, {
-            companyId: existing.companyId,
-            decision: bindingDecision,
-            consume: false,
-            environmentId: null,
-            claudeLogin: options?.claudeLogin,
-          });
-        }
-        await syncAgentSecretBindings(
-          updated,
+        await effects.bindCredentials(txDb, {
+          companyId: existing.companyId, adapterType: updated.adapterType,
+          adapterConfig: updated.adapterConfig, previousAdapterConfig: existing.adapterConfig,
+          consume: false, claudeLogin: options?.claudeLogin,
+        });
+        await effects.syncSecrets(
           txDb,
+          updated,
           existing.adapterConfig,
           options?.recordRevision,
         );
       }
 
       if (normalizedPatch.budgetMonthlyCents !== undefined) {
-        await budgetServiceInTransaction(txDb, publications).upsertPolicy(existing.companyId, {
-          scopeType: "agent", scopeId: id, amount: normalizedPatch.budgetMonthlyCents, isActive: normalizedPatch.budgetMonthlyCents > 0, windowKind: "calendar_month_utc",
-        }, options?.recordRevision?.createdByUserId ?? null);
+        await effects.setAgentBudget(txDb, publications, existing.companyId, id,
+          normalizedPatch.budgetMonthlyCents, options?.recordRevision?.createdByUserId ?? null);
       }
-      const normalizedUpdated = await agentService(txDb).getById(updated.id);
+      const normalizedUpdated = await agentRecordQueries(txDb).getById(updated.id);
       if (!normalizedUpdated) {
         throw notFound("Agent not found");
       }
@@ -249,15 +216,15 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       }
 
       if (lifecycleCommand) {
-        await createLifecycleStore(txDb).change(id, lifecycleCommand, { reason: lifecycleCommand === "resume" ? "user" : "manual" });
-        return agentService(txDb).getById(id);
+        await createLifecycleStore(txDb, effects).change(id, lifecycleCommand, { reason: lifecycleCommand === "resume" ? "user" : "manual" });
+        return agentRecordQueries(txDb).getById(id);
       }
       return normalizedUpdated;
     };
 
     if (normalizedPatch.budgetMonthlyCents !== undefined || lifecycleCommand) {
-      const result = await withAccountingTransaction(db, existing.companyId, applyUpdate);
-      if (normalizedPatch.budgetMonthlyCents !== undefined) await deliverBudgetEnforcement(db, budgetHooks, existing.companyId);
+      const result = await effects.transaction(db, existing.companyId, applyUpdate);
+      if (normalizedPatch.budgetMonthlyCents !== undefined) await effects.enforceBudget(db, existing.companyId);
       return result;
     }
 
@@ -289,28 +256,14 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
       const adapterType = data.adapterType ?? "process";
       const rawAdapterConfig = isPlainRecord(data.adapterConfig)
-        ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
+        ? await effects.normalizeAdapterConfig(db, companyId, data.adapterConfig, adapterType)
         : {};
       const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
-      // Run the server-enforced binding invariant after generic normalization
-      // and before any database write. A create has no prior config.
-      const bindingDecision = assertClaudeOAuthBindingInvariant({
-        adapterType,
-        nextConfig: adapterConfig,
-        priorConfig: null,
-      });
-      return withAccountingTransaction(db, companyId, async (txDb) => {
+      return effects.transaction(db, companyId, async (txDb) => {
         const tx = txDb;
-        // Consume the stored-session claim and create the fixed definition inside
-        // the same transaction that inserts the binding. A rejected claim rolls
-        // back the whole transaction and inserts no binding.
-        await enforceClaudeOAuthBindingClaim(txDb, {
-          companyId,
-          decision: bindingDecision,
-          consume: true,
-          environmentId: (data.defaultEnvironmentId as string | null | undefined) ?? null,
-          claudeLogin: options?.claudeLogin,
-          childAdapterConfig: adapterConfig,
+        await effects.bindCredentials(txDb, {
+          companyId, adapterType, adapterConfig, consume: true,
+          environmentId: data.defaultEnvironmentId ?? null, claudeLogin: options?.claudeLogin,
         });
         const created = await tx
           .insert(agents)
@@ -334,7 +287,7 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           })
           .returning()
           .then((rows) => rows[0]);
-        await agentIdentityService(txDb).ensureAgentIdentity(companyId, created.id);
+        await effects.ensureIdentity(txDb, companyId, created.id);
         // New standard agents receive the standard direct grants at activation.
         // Low-trust and bundled agents keep their explicit, narrower grants.
         if (created.status !== "pending_approval" && !permissionsImplyLowTrust(normalizedPermissions) &&
@@ -358,14 +311,14 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             createdByUserId: install.createdByUserId,
           }))).onConflictDoNothing();
         }
-        await syncAgentSecretBindings(created, txDb);
+        await effects.syncSecrets(txDb, created);
         if (options?.createdByUserId && !readBuiltInAgentMarker(created.metadata)) {
-          await initializePrimaryAgent(txDb, companyId, options.createdByUserId, created.id);
+          await effects.initializePrimary(txDb, companyId, options.createdByUserId, created.id);
         }
         if (created.status !== "pending_approval" && created.status !== "terminated") {
-          await recordResourceCreationEvent(txDb, companyId, "agent", created.id);
+          await effects.recordCreation(txDb, companyId, created.id);
         }
-        const normalizedCreated = await agentService(txDb).getById(created.id);
+        const normalizedCreated = await agentRecordQueries(txDb).getById(created.id);
         if (!normalizedCreated) {
           throw notFound("Agent not found");
         }
@@ -412,9 +365,9 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         lifecycleVersion: sql`${agents.lifecycleVersion} + 1`, lifecycleOperation: null,
         updatedAt: new Date() }).where(and(eq(agents.id, id), eq(agents.lifecycleState, "pending_approval"))).returning();
       for (const row of rows) {
-        await clearPrimaryAgent(db, row.companyId, id);
+        await effects.clearPrimary(db, row.companyId, id);
         await db.update(agentApiKeys).set({ revokedAt: new Date() }).where(eq(agentApiKeys.agentId, id));
-        await recordAgentStatusEvent(db, row.companyId, id, "pending_approval", "terminated");
+        await effects.recordStatus(db, row.companyId, id, "pending_approval", "terminated");
       }
       return rows;
     },
@@ -431,7 +384,7 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         });
       }
 
-      return withAccountingTransaction(db, existing.companyId, async (tx) => {
+      return effects.transaction(db, existing.companyId, async (tx) => {
         const [decisionHold] = await tx.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
           eq(budgetReservations.companyId, existing.companyId), eq(budgetReservations.agentId, id),
           eq(budgetReservations.state, "held"), sql`${budgetReservations.decisionInvocationId} is not null`,
@@ -442,8 +395,7 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("update");
         if (!current) return null;
         if (!["terminated", "rejected"].includes(current.lifecycleState)) throw new AgentLifecycleConflict("Complete termination before deleting the agent");
-        await issueThreadInteractionService(tx as unknown as Db)
-          .cancelPendingForDeletedAddressee(existing.companyId, id);
+        await effects.cancelInteractions(tx as unknown as Db, existing.companyId, id);
         await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
         await tx
           .update(issues)
@@ -480,31 +432,24 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     activatePendingApproval: async (id: string, approvedPayload?: Record<string, unknown> | null, requestedByUserId?: string | null) => {
       const activatedAgent = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        const existing = await agentService(txDb).getById(id);
+        const existing = await agentRecordQueries(txDb).getById(id);
         if (!existing || existing.status !== "pending_approval") return null;
         const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
         let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
-        let approvalBindingDecision: ClaudeOAuthBindingInvariantDecision | null = null;
+        const hasApprovedAdapterConfig = Object.prototype.hasOwnProperty.call(patch, "adapterConfig") && isPlainRecord(patch.adapterConfig);
         if (
           Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
           isPlainRecord(patch.adapterConfig)
         ) {
-          const normalizedAdapterConfig = await secretService(txDb).normalizeAdapterConfigForPersistence(
+          const normalizedAdapterConfig = await effects.normalizeAdapterConfig(txDb,
             existing.companyId,
             patch.adapterConfig,
-            { adapterType: (patch.adapterType ?? existing.adapterType) as string },
+            (patch.adapterType ?? existing.adapterType) as string,
           );
           patch.adapterConfig = normalizePaperclipRunnerAdapterConfig(
             (patch.adapterType ?? existing.adapterType) as string,
             normalizedAdapterConfig,
           );
-          // The approval activation keeps an existing fixed binding but rejects a
-          // newly introduced binding, because it carries no stored-session claim.
-          approvalBindingDecision = assertClaudeOAuthBindingInvariant({
-            adapterType: (patch.adapterType ?? existing.adapterType) as string,
-            nextConfig: patch.adapterConfig,
-            priorConfig: existing.adapterConfig,
-          });
         } else if (
           Object.prototype.hasOwnProperty.call(patch, "adapterType")
           && isPlainRecord(existing.adapterConfig)
@@ -526,15 +471,13 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!updated) return null;
-        if (approvalBindingDecision) {
-          await enforceClaudeOAuthBindingClaim(txDb, {
-            companyId: existing.companyId,
-            decision: approvalBindingDecision,
-            consume: false,
-            environmentId: null,
+        if (hasApprovedAdapterConfig) {
+          await effects.bindCredentials(txDb, {
+            companyId: existing.companyId, adapterType: updated.adapterType,
+            adapterConfig: updated.adapterConfig, previousAdapterConfig: existing.adapterConfig, consume: false,
           });
         }
-        await syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
+        await effects.syncSecrets(txDb, updated, existing.adapterConfig);
         if (!permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
           await tx.insert(principalPermissionGrants).values(
             NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
@@ -546,8 +489,8 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             })),
           ).onConflictDoNothing();
         }
-        await recordResourceCreationEvent(txDb, existing.companyId, "agent", updated.id);
-        const agent = await agentService(txDb).getById(updated.id);
+        await effects.recordCreation(txDb, existing.companyId, updated.id);
+        const agent = await agentRecordQueries(txDb).getById(updated.id);
         if (!agent) {
           throw notFound("Agent not found");
         }

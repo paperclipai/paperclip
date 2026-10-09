@@ -1,6 +1,6 @@
 import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
-import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";

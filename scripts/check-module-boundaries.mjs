@@ -100,6 +100,12 @@ export function scanModuleBoundaries({
       const targetSegments = targetServerSegments(serverSrc, target);
       const targetLocation = target ? moduleLocation(modulesRoot, target) : null;
 
+      if (sourceLocation?.moduleName === "agent-lifecycle" &&
+          (targetSegments.includes("services") || targetSegments.includes("routes"))) {
+        addViolation(violations, sourceLabel, sourceLocation.layer, specifier,
+          "agent lifecycle must receive service integrations through its ports");
+      }
+
       if (sourceLocation?.layer === "domain") {
         if (isDatabasePackage(specifier)) {
           addViolation(violations, sourceLabel, "domain", specifier, "domain cannot import database packages");

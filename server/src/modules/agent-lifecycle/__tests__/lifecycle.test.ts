@@ -1,4 +1,6 @@
+import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { deleteCompany } from "../../../services/company-deletion.js";
+import { requireServerAdapter } from "../../../adapters/index.js";
 import { agentExecutionsHaveStopped } from "../../../services/agent-execution-stop.js";
 import { remoteTerminationReceipt } from "../../../services/remote-execution-termination.js";
 import { approvalService } from "../../../services/approvals.js";
@@ -8,17 +10,19 @@ import express from "express";
 import request from "supertest";
 import { agentRoutes } from "../../../routes/agents.js";
 import { errorHandler } from "../../../middleware/error-handler.js";
-import { createLifecycleDriver } from "../adapters/driver.js";
+import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, projects, issues, heartbeatRuns, environmentLeases, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
+import { agents, projects, issues, heartbeatRuns, nativeRunFinalizations, environmentLeases, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
-import { createAgentLifecycle, configureAgentLifecycle, reconcileAgentPolicyHolds } from "../index.js";
-import { createLifecycleStore } from "../adapters/postgres.js";
+import { createAgentLifecycle, configureAgentLifecycle, reconcileAgentPolicyHolds } from "../../../services/agent-lifecycle.js";
+import { createLifecycleStore as createStore } from "../adapters/postgres.js";
 import { transition } from "../domain/policy.js";
 import type { LifecycleAgent } from "../application/ports.js";
 import { budgetService } from "../../../services/budgets.js";
+
+const createLifecycleStore = (db: Db) => createStore(db, createAgentLifecycleEffects());
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("agent lifecycle commands", () => {
@@ -78,6 +82,38 @@ const support = await getEmbeddedPostgresTestSupport();
     await agentConfiguration(db).update(agent.id, { adapterConfig: { command: process.execPath } });
     await work.process(agent.id);
     expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", status: "idle", lifecycleError: null });
+  });
+
+  it.each(["claude_local", "gemini_local"])("keeps %s authentication warnings out of ready", async adapterType => {
+    const adapter = requireServerAdapter(adapterType);
+    const probe = vi.spyOn(adapter, "testEnvironment").mockResolvedValue({ adapterType, status: "warn",
+      testedAt: new Date().toISOString(), checks: [{ code: `${adapterType.split("_")[0]}_hello_probe_auth_required`, level: "warn", message: "Login required" }] });
+    try {
+      const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Login test", adapterType });
+      const work = worker(createLifecycleDriver(db, {} as never).runHost);
+      await work.process(agent.id);
+      expect(probe).toHaveBeenCalled();
+      expect(await current(agent.id)).toMatchObject({ lifecycleState: "verifying", lifecycleError: "The lifecycle step failed. Retry the operation." });
+    } finally { probe.mockRestore(); }
+  });
+
+  it("recovers an expired native owner only after the cancelled run and controller stop", async () => {
+    const agent = await hire();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Cancelled native run" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, nativeIssueId: issue.id,
+      status: "cancelled", invocationSource: "on_demand", runtimeMode: "native",
+      startedAt: new Date(), finishedAt: new Date(), processPid: process.pid }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue.id, runId: run.id,
+      phase: "executing", leaseOwner: "stopped-server", leaseExpiresAt: new Date(0), controllerPid: process.pid });
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(nativeRunFinalizations).set({ controllerPid: null }).where(eq(nativeRunFinalizations.runId, run.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_000 }).where(eq(heartbeatRuns.id, run.id));
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, run.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, run.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0]).toMatchObject({ leaseOwner: null, leaseExpiresAt: null });
   });
 
   it("does not advance termination while a cancelled process still runs", async () => {

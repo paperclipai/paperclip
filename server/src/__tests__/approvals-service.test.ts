@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { approvalService } from "../services/approvals.ts";
 import { companies } from "@paperclipai/db";
 
-vi.mock("../services/budgets.js", () => ({
+vi.mock("../services/budgets.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/budgets.js")>(),
   budgetService: () => ({ deliverPendingEnforcement: vi.fn(async () => {}) }),
   budgetServiceInTransaction: () => ({ upsertPolicy: vi.fn(async () => {}) }),
 }));

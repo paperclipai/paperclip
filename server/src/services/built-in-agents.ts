@@ -1,4 +1,4 @@
-import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
 import fs from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";

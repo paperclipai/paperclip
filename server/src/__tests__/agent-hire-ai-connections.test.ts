@@ -22,7 +22,7 @@ import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
-import { configureAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
 
 const captureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../sentry.js", async (importOriginal) => ({

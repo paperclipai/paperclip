@@ -10194,14 +10194,16 @@ export function heartbeatService(
     const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
     const leasesToRelease = await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases)
       .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))
-      .where(and(inArray(heartbeatRuns.agentId, agentIds), eq(heartbeatRuns.status, "cancelled"),
-        inArray(environmentLeases.status, ["active", "pending_cleanup"])));
+      .where(and(inArray(heartbeatRuns.agentId, agentIds),
+        or(and(eq(heartbeatRuns.status, "cancelled"), inArray(environmentLeases.status, ["active", "pending_cleanup"])),
+          and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed")))));
     const needsRelease = new Set(leasesToRelease.map(lease => lease.runId));
     for (const run of runs) {
       if (!isHeartbeatRunTerminalStatus(run.status) || liveRunExecutions.has(run.id) ||
-          adapterExecutionControls.has(run.id) || processRunCancellationSettlements.has(run.id)) return false;
+          adapterExecutionControls.has(run.id) || processRunCancellationSettlements.has(run.id) ||
+          (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date())) return false;
       if (needsRelease.has(run.id)) {
-        // Retry cleanup even after cancellation made the run terminal.
+        // Retry incomplete cleanup after a run becomes terminal.
         await releaseEnvironmentLeasesForRun({ runId: run.id, companyId: run.companyId,
           agentId: run.agentId, status: run.status, providerResourceDisposition: "destroy" });
       }

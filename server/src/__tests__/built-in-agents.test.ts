@@ -1,4 +1,4 @@
-import { createAgentLifecycle, configureAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import fs from "node:fs/promises";
 import { fileHash } from "../services/agent-file-store.js";
 import { stockHash } from "../services/managed-resource-drift.js";

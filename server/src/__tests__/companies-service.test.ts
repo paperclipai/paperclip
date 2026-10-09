@@ -33,7 +33,7 @@ vi.mock("../services/cloud-lifecycle-sync.js", () => ({
   notifyCloudOfPrimaryCompanyLifecycleChange: notifyCloudSpy,
 }));
 
-import { configureAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { companyService } from "../services/companies.js";
 import { deriveIssuePrefixBase } from "../services/issue-prefix.js";
 import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";

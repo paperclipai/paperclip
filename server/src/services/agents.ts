@@ -10,15 +10,15 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 
 import {
-  agentRecordSupport,
+  agentRecordQueries,
   hashToken,
   createToken,
   containsRedactedMarker,
   configPatchFromSnapshot,
-} from "./agent-record-support.js";
-import { createAgentLifecycle, updateAgentConfiguration } from "../modules/agent-lifecycle/index.js";
+} from "../lib/agent-records.js";
+import { createAgentLifecycle, updateAgentConfiguration } from "./agent-lifecycle.js";
 
-export { hasAgentShortnameCollision, deduplicateAgentName } from "./agent-record-support.js";
+export { hasAgentShortnameCollision, deduplicateAgentName } from "../lib/agent-records.js";
 
 export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const {
@@ -26,7 +26,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     listCompanyAgentRows,
     hydrateAgentSpend,
     getById
-  } = agentRecordSupport(db);
+  } = agentRecordQueries(db);
   const updateAgent = (id: string, data: Parameters<typeof updateAgentConfiguration>[3], options?: Parameters<typeof updateAgentConfiguration>[4]) => updateAgentConfiguration(db, budgetHooks, id, data, options);
   return {
     list: async (companyId: string, options?: { includeTerminated?: boolean }) => {

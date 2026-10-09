@@ -1,4 +1,4 @@
-import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
 import { and, eq, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {

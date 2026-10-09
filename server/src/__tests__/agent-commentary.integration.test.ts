@@ -1,4 +1,4 @@
-import { createAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";

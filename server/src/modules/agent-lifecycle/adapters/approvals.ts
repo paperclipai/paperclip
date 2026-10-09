@@ -5,13 +5,12 @@ import type { Db } from "@paperclipai/db";
 import { unprocessable } from "../../../errors.js";
 
 import { agentRecords as agentService } from "./records.js";
-import { budgetServiceInTransaction } from "../../../services/budgets.js";
-import { withAccountingTransaction } from "../../../services/accounting-transaction.js";
+import type { LifecycleEffects } from "./effects.js";
 
-import { approvalRecords } from "../../../services/approvals.js";
+import { approvalResolutionRecords } from "../../../lib/approval-records.js";
 
-export function hireApprovalService(db: Db) {
-  const { getExistingApproval, resolveApproval } = approvalRecords(db);
+export function hireApprovalService(db: Db, effects: LifecycleEffects) {
+  const { getExistingApproval, resolveApproval } = approvalResolutionRecords(db);
 
   return {
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
@@ -19,9 +18,8 @@ export function hireApprovalService(db: Db) {
       if (existing.type !== "hire_agent") throw unprocessable("Expected a hire approval");
       // Receipt writers lock company before agent. Hire approval must use that
       // order too, including activation of an existing pending agent.
-      const result = await withAccountingTransaction(db, existing.companyId, async (txDb, publications) => {
-        const agentsSvc = agentService(txDb);
-        const budgets = budgetServiceInTransaction(txDb, publications);
+      const result = await effects.transaction(db, existing.companyId, async (txDb, publications) => {
+        const agentsSvc = agentService(txDb, effects);
         const { approval: updated, applied } = await resolveApproval(
           id,
           "approved",
@@ -67,16 +65,8 @@ export function hireApprovalService(db: Db) {
             const budgetMonthlyCents =
               typeof payload.budgetMonthlyCents === "number" ? payload.budgetMonthlyCents : 0;
             if (budgetMonthlyCents > 0) {
-              await budgets.upsertPolicy(
-                updated.companyId,
-                {
-                  scopeType: "agent",
-                  scopeId: hireApprovedAgentId,
-                  amount: budgetMonthlyCents,
-                  windowKind: "calendar_month_utc",
-                },
-                decidedByUserId,
-              );
+              await effects.setAgentBudget(txDb, publications, updated.companyId, hireApprovedAgentId,
+                budgetMonthlyCents, decidedByUserId);
             }
 
           }
@@ -90,7 +80,7 @@ export function hireApprovalService(db: Db) {
     reject: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const existing = await getExistingApproval(id);
       if (existing.type !== "hire_agent") throw unprocessable("Expected a hire approval");
-      return withAccountingTransaction(db, existing.companyId, async tx => {
+      return effects.transaction(db, existing.companyId, async tx => {
         const txDb = tx as unknown as Db;
         const { approval: updated, applied } = await resolveApproval(
           id,
@@ -104,7 +94,7 @@ export function hireApprovalService(db: Db) {
           const payload = updated.payload as Record<string, unknown>;
           const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
           if (payloadAgentId) {
-            await agentService(txDb).rejectPendingHire(payloadAgentId);
+            await agentService(txDb, effects).rejectPendingHire(payloadAgentId);
           }
         }
 

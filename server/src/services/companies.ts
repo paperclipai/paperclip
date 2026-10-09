@@ -1,5 +1,5 @@
 import { deleteCompany } from "./company-deletion.js";
-import { reconcileAgentPolicyHolds } from "../modules/agent-lifecycle/index.js";
+import { reconcileAgentPolicyHolds } from "./agent-lifecycle.js";
 import { publishAccountingActivities } from "./accounting-transaction.js";
 import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";

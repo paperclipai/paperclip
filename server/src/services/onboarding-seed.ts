@@ -5,7 +5,7 @@ import type { ApplyOnboardingSeed } from "@paperclipai/shared";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { findActiveServerAdapter } from "../adapters/registry.js";
 import { agentService } from "./agents.js";
-import { createAgentLifecycle, scheduleAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { createAgentLifecycle, scheduleAgentLifecycle } from "./agent-lifecycle.js";
 import { withDedicatedDbConnection } from "@paperclipai/db";
 import { PAPERCLIP_CORE_SKILL_KEYS } from "./company-skills.js";
 import { goalService } from "./goals.js";

@@ -12,6 +12,7 @@ import {
   stopSshEnvLabFixture,
 } from "@paperclipai/adapter-utils/ssh";
 import {
+  activityLog,
   costEvents,
   agents,
   builtInManagedResources,
@@ -219,6 +220,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       await stopSshEnvLabFixture(path.join(root, "state.json")).catch(() => undefined);
       await rm(root, { recursive: true, force: true }).catch(() => undefined);
     }
+    await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issues);
     await db.delete(costEvents);
@@ -5778,6 +5780,21 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       status: "retained",
       cleanupStatus: "failed",
     });
+  });
+
+  it("destroys a failed retained lease when the agent stops", async () => {
+    const { lease, workerManager, runtimeWithPlugin, runId } = await seedStaleLifecycleReusableLease("retain_on_failure");
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    await runtimeWithPlugin.releaseRunLeases(runId, "failed");
+    await expect(environmentService(db).getLeaseById(lease.id)).resolves.toMatchObject({ status: "retained", cleanupStatus: "failed" });
+    vi.mocked(workerManager.getWorker).mockReturnValue({ supportedMethods: ["environmentDestroyLease"] } as never);
+    vi.mocked(workerManager.call).mockResolvedValue({ providerLeaseId: lease.providerLeaseId, state: "destroyed" });
+    const { heartbeatService } = await import("../services/heartbeat.js");
+    const stopped = await heartbeatService(db, { pluginWorkerManager: workerManager })
+      .stopInvocationsForAgents([lease.metadata!.agentId as string], "Agent lifecycle stop requested");
+    expect(stopped).toBe(true);
+    expect(workerManager.call).toHaveBeenCalledWith(expect.any(String), "environmentDestroyLease", expect.objectContaining({ providerLeaseId: lease.providerLeaseId }), expect.any(Number));
+    await expect(environmentService(db).getLeaseById(lease.id)).resolves.toMatchObject({ status: "expired", cleanupStatus: "success" });
   });
 
   it("fails closed on expiry destruction when the worker no longer advertises the destroy lifecycle method", async () => {

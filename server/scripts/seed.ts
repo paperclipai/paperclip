@@ -1,5 +1,5 @@
 import { createDb } from "@paperclipai/db";
-import { createAgentLifecycle } from "../src/modules/agent-lifecycle/index.js";
+import { createAgentLifecycle } from "../src/services/agent-lifecycle.js";
 import {
   companies,
   goals,

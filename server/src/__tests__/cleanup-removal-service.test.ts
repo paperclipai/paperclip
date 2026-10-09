@@ -1,4 +1,4 @@
-import { createAgentLifecycle, configureAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";

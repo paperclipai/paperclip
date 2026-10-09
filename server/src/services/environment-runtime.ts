@@ -4043,7 +4043,10 @@ export function environmentRuntimeService(
           and(
             eq(environmentLeases.heartbeatRunId, heartbeatRunId),
             or(eq(environmentLeases.status, "active"), and(eq(environmentLeases.status, "pending_cleanup"),
-              sql`(${environmentLeases.metadata} ? 'nativeWorkspaceExportResume' or ${environmentLeases.metadata} ? 'sandboxStopAndRetain')`)),
+              sql`(${environmentLeases.metadata} ? 'nativeWorkspaceExportResume' or ${environmentLeases.metadata} ? 'sandboxStopAndRetain')`),
+              providerResourceDisposition === "destroy"
+                ? and(eq(environmentLeases.status, "retained"), eq(environmentLeases.cleanupStatus, "failed"))
+                : undefined),
           ),
         );
       if (leaseRows.length === 0) {

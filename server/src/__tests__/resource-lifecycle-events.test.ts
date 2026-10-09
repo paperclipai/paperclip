@@ -1,4 +1,4 @@
-import { createAgentLifecycle, configureAgentLifecycle } from "../modules/agent-lifecycle/index.js";
+import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { eq, sql } from "drizzle-orm";
