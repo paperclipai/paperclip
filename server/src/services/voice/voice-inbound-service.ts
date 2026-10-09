@@ -248,7 +248,7 @@ export function voiceInboundService(db: Db, options: {
     catch (error) { if (error instanceof Error && "status" in error && [403, 404].includes(Number(error.status))) return false; throw error; }
   }
   async function reconcile(limit: number) {
-    await db.delete(chatVoiceInboundCalls).where(and(isNull(chatVoiceInboundCalls.sessionId), isNull(chatVoiceInboundCalls.intakeIssueId), inArray(chatVoiceInboundCalls.state, ["denied", "expired", "ended"]), lte(chatVoiceInboundCalls.expiresAt, new Date(Date.now() - 7 * 86_400_000))));
+    await db.delete(chatVoiceInboundCalls).where(and(isNull(chatVoiceInboundCalls.sessionId), isNull(chatVoiceInboundCalls.intakeIssueId), inArray(chatVoiceInboundCalls.state, ["denied", "expired", "ended"]), lte(chatVoiceInboundCalls.expiresAt, new Date(Date.now() - 7 * 86_400_000)), lte(chatVoiceInboundCalls.updatedAt, new Date(Date.now() - 7 * 86_400_000))));
     const rows = await db.select().from(chatVoiceInboundCalls).where(and(inArray(chatVoiceInboundCalls.state, ["guest_intake", "awaiting_approval", "approving", "denied", "expired"]), lte(chatVoiceInboundCalls.expiresAt, new Date()))).orderBy(asc(chatVoiceInboundCalls.updatedAt)).limit(limit);
     for (const call of rows) {
       try {
