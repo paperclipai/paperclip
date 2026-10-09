@@ -48,14 +48,26 @@ describe("decideProviderLoginHold", () => {
     const runs = [authFailure(6)];
     const first = decideProviderLoginHold(runs, now, config);
     expect(first).toEqual({ hold: false, reason: "probe_cooldown_elapsed", probe: true, failures: 1 });
-    expect(decideProviderLoginHold(runs, now, config, { probeGrantedAt: minutesAgo(0.5) })).toMatchObject({
+    expect(decideProviderLoginHold(runs, now, config, { probe: { grantedAt: minutesAgo(0.5), finished: false } })).toMatchObject({
       hold: true,
       reason: "probe_in_flight",
     });
   });
 
+  it("keeps the probe in flight when another run of the lane finishes first", () => {
+    const runs: LaneRun[] = [{ status: "failed", finishedAt: minutesAgo(0.2), errorCode: "adapter_failed" }, authFailure(6)];
+    expect(decideProviderLoginHold(runs, now, config, { probe: { grantedAt: minutesAgo(0.5), finished: false } })).toMatchObject({
+      hold: true,
+      reason: "probe_in_flight",
+    });
+    expect(decideProviderLoginHold(runs, now, config, { probe: { grantedAt: minutesAgo(0.5), finished: true } })).toMatchObject({
+      hold: false,
+      probe: true,
+    });
+  });
+
   it("releases a new probe when the previous probe timed out", () => {
-    expect(decideProviderLoginHold([authFailure(30)], now, config, { probeGrantedAt: minutesAgo(11) })).toMatchObject({
+    expect(decideProviderLoginHold([authFailure(30)], now, config, { probe: { grantedAt: minutesAgo(11), finished: false } })).toMatchObject({
       hold: false,
       probe: true,
     });

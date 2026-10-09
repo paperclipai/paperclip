@@ -1,6 +1,6 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, max } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, heartbeatRuns } from "@paperclipai/db";
+import { agentConfigRevisions, agents, heartbeatRuns } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { isAiAuthenticationFailure } from "./ai-auth-failure.js";
 
@@ -14,8 +14,9 @@ import { isAiAuthenticationFailure } from "./ai-auth-failure.js";
  * authentication failure therefore holds the lane. Held runs stay `queued`.
  * Queue recovery claims them again later. One probe run is released after a
  * cooldown. A successful probe opens the lane. A failed probe holds it again
- * with a doubled cooldown. An agent whose AI connection is repaired gets a new
- * lane key, so the repair is not held.
+ * with a doubled cooldown. An agent whose login settings change gets a new lane
+ * key, and its runs from before the change no longer count, so the repair is
+ * not held.
  */
 
 export type ProviderLoginHoldConfig = {
@@ -62,19 +63,17 @@ export function decideProviderLoginHold(
   runs: LaneRun[],
   now: Date,
   config: ProviderLoginHoldConfig,
-  state: { probeGrantedAt?: Date | null } = {},
+  state: { probe?: { grantedAt: Date; finished: boolean } | null } = {},
 ): ProviderLoginHoldDecision {
   if (config.disabled) return { hold: false, reason: "disabled" };
   const nowMs = now.getTime();
   let failures = 0;
   let newestFailureMs: number | null = null;
-  let newestFinishedMs: number | null = null;
   let errorCode = "";
   for (const run of runs) {
     const finishedMs = run.finishedAt?.getTime() ?? null;
     if (finishedMs === null || finishedMs < nowMs - config.windowMs) break;
     if (finishedMs > nowMs) continue;
-    newestFinishedMs ??= finishedMs;
     if (run.status === "succeeded") break;
     if (!FAILED_STATUSES.has(run.status) || !isAiAuthenticationFailure(run.errorCode)) continue;
     if (newestFailureMs === null) {
@@ -92,11 +91,13 @@ export function decideProviderLoginHold(
   }
 
   // Release one probe. Other runs wait until the probe finishes or times out.
-  const probeMs = state.probeGrantedAt?.getTime() ?? null;
+  // Only the probe run itself ends the probe: another run of the lane that was
+  // already running can finish while the probe is still in flight.
+  const probeMs = state.probe?.grantedAt.getTime() ?? null;
   if (
     probeMs !== null &&
     probeMs > newestFailureMs &&
-    (newestFinishedMs === null || newestFinishedMs < probeMs) &&
+    !state.probe?.finished &&
     nowMs - probeMs < config.probeTimeoutMs
   ) {
     return { hold: true, reason: "probe_in_flight", failures, errorCode, holdUntil: new Date(probeMs + config.probeTimeoutMs) };
@@ -125,8 +126,24 @@ export function providerLoginLaneKey(agent: {
   return JSON.stringify([agent.adapterType, credentials, record(agent.runtimeConfig).aiConnection ?? null]);
 }
 
+type GrantedProbe = { runId: string; grantedAt: Date };
+
+// The scheduler, HTTP wakes, and other entry points each build their own
+// heartbeat service. Probes are shared per database so that every entry point
+// respects the single probe of a lane.
+const probesByDb = new WeakMap<object, Map<string, GrantedProbe>>();
+
+function probeRegistry(db: Db) {
+  let registry = probesByDb.get(db);
+  if (!registry) {
+    registry = new Map();
+    probesByDb.set(db, registry);
+  }
+  return registry;
+}
+
 export function providerLoginHoldService(db: Db, config: ProviderLoginHoldConfig = readProviderLoginHoldConfig()) {
-  const probeByLane = new Map<string, Date>();
+  const probeByLane = probeRegistry(db);
 
   /**
    * Returns the hold for a queued run. A query error opens the lane: one extra
@@ -151,13 +168,30 @@ export function providerLoginHoldService(db: Db, config: ProviderLoginHoldConfig
       const perUser = Boolean(record(self.runtimeConfig).aiConnection);
       const responsibleUserId = perUser ? run.responsibleUserId ?? null : null;
 
+      const laneIds = lane.map((candidate) => candidate.id);
+      // A run counts for the lane only if its agent still had the same login
+      // settings when the run started. Any later configuration change drops
+      // the agent's older runs from the lane history.
+      const revisions = await db
+        .select({ agentId: agentConfigRevisions.agentId, changedAt: max(agentConfigRevisions.createdAt) })
+        .from(agentConfigRevisions)
+        .where(and(eq(agentConfigRevisions.companyId, run.companyId), inArray(agentConfigRevisions.agentId, laneIds)))
+        .groupBy(agentConfigRevisions.agentId);
+      const changedAtByAgent = new Map(revisions.map((revision) => [revision.agentId, revision.changedAt]));
+
       const now = new Date();
-      const runs = await db
-        .select({ status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt, errorCode: heartbeatRuns.errorCode })
+      const history = await db
+        .select({
+          agentId: heartbeatRuns.agentId,
+          startedAt: heartbeatRuns.startedAt,
+          status: heartbeatRuns.status,
+          finishedAt: heartbeatRuns.finishedAt,
+          errorCode: heartbeatRuns.errorCode,
+        })
         .from(heartbeatRuns)
         .where(and(
           eq(heartbeatRuns.companyId, run.companyId),
-          inArray(heartbeatRuns.agentId, lane.map((candidate) => candidate.id)),
+          inArray(heartbeatRuns.agentId, laneIds),
           perUser
             ? responsibleUserId
               ? eq(heartbeatRuns.responsibleUserId, responsibleUserId)
@@ -169,14 +203,40 @@ export function providerLoginHoldService(db: Db, config: ProviderLoginHoldConfig
         ))
         .orderBy(desc(heartbeatRuns.finishedAt))
         .limit(60);
+      const runs = history.filter((entry) => {
+        const changedAt = changedAtByAgent.get(entry.agentId);
+        return !changedAt || (entry.startedAt !== null && entry.startedAt >= changedAt);
+      });
 
       const probeKey = JSON.stringify([run.companyId, responsibleUserId, laneKey]);
+      const stored = probeByLane.get(probeKey) ?? null;
+      // A probe that was granted but did not start is claimed again as itself.
+      const granted = stored?.runId === run.id ? null : stored;
+      let probeFinished = false;
+      if (granted) {
+        const [probeRun] = await db
+          .select({ finishedAt: heartbeatRuns.finishedAt })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, granted.runId));
+        probeFinished = !probeRun || probeRun.finishedAt !== null;
+        const latest = probeByLane.get(probeKey);
+        if (latest && latest !== stored) {
+          // Another claim granted a new probe while this one was reading.
+          return {
+            hold: true,
+            reason: "probe_in_flight",
+            failures: 0,
+            errorCode: "",
+            holdUntil: new Date(latest.grantedAt.getTime() + config.probeTimeoutMs),
+          } as const;
+        }
+      }
       // Decide and grant the probe without an await in between, so two
       // concurrent claims cannot both receive the probe.
       const decision = decideProviderLoginHold(runs, new Date(), config, {
-        probeGrantedAt: probeByLane.get(probeKey) ?? null,
+        probe: granted ? { grantedAt: granted.grantedAt, finished: probeFinished } : null,
       });
-      if (!decision.hold && decision.probe) probeByLane.set(probeKey, new Date());
+      if (!decision.hold && decision.probe) probeByLane.set(probeKey, { runId: run.id, grantedAt: new Date() });
       return decision;
     } catch (err) {
       logger.warn({ err, runId: run.id }, "Could not evaluate the provider login hold; the run is not held");
