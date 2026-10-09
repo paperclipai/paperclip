@@ -136,7 +136,7 @@ export async function runRepositorySkillsFlow(input: {
     expect(executionInput.binding).toMatchObject({ companyId: fixtures.company.id, agentId: fixtures.agent.id, runId: runs[0]!.id, issueId: issue.id, executionWorkspaceId: runs[0]!.id });
     expect(executionInput.session.normalizedSessionId).toBe(sessionId);
     expect(executionInput.provider.kind).toBe("codex");
-    if (!("runtimeContext" in executionInput) || !("cwd" in executionInput.workspace)) throw new Error("Missing local repository runtime context");
+    if (!("runtimeContext" in executionInput) || "access" in executionInput.workspace) throw new Error("Missing local repository runtime context");
     const context = executionInput.runtimeContext;
     expect(context.skills.map(skill => skill.key).sort()).toEqual(imported.imported.map((skill: Row) => skill.key).sort());
     runtimeLocation = { kind: "local", instanceRoot, owner: { companyId: executionInput.binding.companyId, agentId: executionInput.binding.agentId,
