@@ -35,6 +35,7 @@ const apiPrefixes: Record<string, string> = {
   "chat-channels.ts": "/api",
   "slack-tools.ts": "/api",
   "email.ts": "/api",
+  "github-pr-feedback.ts": "/api",
   "cloud.ts": "/api/cloud",
   "customer-success.ts": "/api/customer-success/v1",
   "companies.ts": "/api/companies",
@@ -126,6 +127,8 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // board API document, while this exact exclusion keeps route coverage honest.
   "POST /api/chat-webhooks/agentmail/{publicId}",
   "POST /api/chat-webhooks/{publicId}/{provider}",
+  // GitHub's signed pull request feedback webhook: same reasoning.
+  "POST /api/chat-webhooks/github-pr-feedback/{companyId}",
 ]);
 
 // The set of contract-first routes whose OpenAPI document leads the mounted
@@ -163,7 +166,7 @@ function normalizeExpressPath(routePath: string) {
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
-    (file === "chat-channels.ts" || file === "email.ts") &&
+    (file === "chat-channels.ts" || file === "email.ts" || file === "github-pr-feedback.ts") &&
     routePath.startsWith("/api/chat-webhooks/")
   ) {
     return routePath;
