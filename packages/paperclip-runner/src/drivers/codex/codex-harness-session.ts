@@ -157,6 +157,8 @@ export class CodexHarnessSession
     /** Set by orchestration only after successful provider-session recovery. */
     continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
+    /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
+    reasoningMode?: "default" | "disabled";
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode: "default" | "plan";
@@ -231,6 +233,7 @@ export class CodexHarnessSession
     try {
       response = await this.transport.request("turn/start", {
         threadId: this.opened.threadId,
+        ...(input.reasoningMode === undefined ? {} : { reasoningMode: input.reasoningMode }),
         ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:

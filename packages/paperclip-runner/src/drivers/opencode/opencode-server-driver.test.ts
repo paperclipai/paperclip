@@ -1539,7 +1539,7 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
-  it("sends only the authoritative wake envelope when resuming an existing provider session", async () => {
+  it("resends system instructions without repeating the task envelope on recovery", async () => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(
       join(tmpdir(), "paperclip-opencode-resume-context-"),
@@ -1595,7 +1595,7 @@ describe("OpenCodeServerDriver", () => {
       ],
     });
     expect(submittedPrompt).not.toHaveProperty("tools");
-    expect(submittedPrompt).not.toHaveProperty("system");
+    expect(submittedPrompt).toHaveProperty("system", "large original system context");
     await recovered!.session!.close({ reason: "recovery-test" });
   });
 
@@ -1948,11 +1948,9 @@ describe("OpenCodeServerDriver", () => {
     },
   );
 
-  it.each([
-    ["allow", undefined], ["ask", "default"], ["deny", "disabled"],
-  ] as const)(
-    "pins %s permissions and explicit %s reasoning while retaining external-directory denial",
-    async (permissionMode, reasoningMode) => {
+  it.each(["allow", "ask", "deny"] as const)(
+    "pins the %s permission mode while retaining external-directory denial",
+    async (permissionMode) => {
       await chmod(fixture, 0o755);
       const root = await mkdtemp(
         join(tmpdir(), `paperclip-opencode-mode-${permissionMode}-`),
@@ -1969,7 +1967,6 @@ describe("OpenCodeServerDriver", () => {
         environment: {
           PATH: process.env.PATH,
           OPENROUTER_API_KEY: "fixture-key",
-          PAPERCLIP_OPENCODE_REASONING: reasoningMode,
         },
       });
       const session = await driver.openSession({
@@ -1991,9 +1988,7 @@ describe("OpenCodeServerDriver", () => {
       expect(config.provider.openrouter.models).toHaveProperty(
         "deepseek/deepseek-v4-flash-0731",
       );
-      expect(config.provider.openrouter.models["deepseek/deepseek-v4-flash-0731"].options).toEqual(
-        reasoningMode === "disabled" ? { reasoning: { enabled: false } } : undefined,
-      );
+      expect(config.provider.openrouter.models["deepseek/deepseek-v4-flash-0731"].options).toBeUndefined();
       expect(config.permission.paperclip_finish).toBeUndefined();
       expect(config.permission["paperclip_*"]).toBe("allow");
       await session.close({ reason: "permission mode test complete" });

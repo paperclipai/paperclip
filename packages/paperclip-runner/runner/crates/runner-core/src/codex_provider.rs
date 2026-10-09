@@ -42,7 +42,6 @@ const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "PAPERCLIP_NATIVE_MCP_URL",
     "PAPERCLIP_NATIVE_MCP_TOKEN",
     "PAPERCLIP_OPENCODE_PERMISSION_MODE",
-    "PAPERCLIP_OPENCODE_REASONING",
     "PAPERCLIP_OPENCODE_RUNTIME_DIR",
     "PAPERCLIP_RUNNER_INSTANCE_ID",
     "PAPERCLIP_RUN_ID",
@@ -1680,6 +1679,23 @@ impl CodexProvider {
         cwd: &str,
         skills: &[CodexSkillInput],
     ) -> Result<Value, LocalRunnerError> {
+        self.start_turn_with_reasoning(message, cwd, skills, None)
+    }
+
+    pub fn start_turn_with_reasoning(
+        &mut self,
+        message: &str,
+        cwd: &str,
+        skills: &[CodexSkillInput],
+        reasoning_mode: Option<&str>,
+    ) -> Result<Value, LocalRunnerError> {
+        if reasoning_mode.is_some_and(|mode| {
+            self.config.provider != "opencode" || !matches!(mode, "default" | "disabled")
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "turn.reasoningMode requires OpenCode and must be default or disabled",
+            ));
+        }
         if skills.len() > 64 || (self.config.provider != "codex" && !skills.is_empty()) {
             return Err(LocalRunnerError::invalid(
                 "explicit skills require Codex and at most 64 selections",
@@ -1728,6 +1744,9 @@ impl CodexProvider {
         let turn_params_object = turn_params
             .as_object_mut()
             .expect("Codex turn parameters are an object");
+        if let Some(mode) = reasoning_mode {
+            turn_params_object.insert("reasoningMode".to_owned(), json!(mode));
+        }
         if self.permission_profile == "paperclip-runner-external-sandbox" {
             turn_params_object.insert(
                 "sandboxPolicy".to_owned(),

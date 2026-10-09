@@ -131,6 +131,7 @@ describe("OpenCode runnerd proxy task envelope", () => {
         criterionIds: ["objective", "verification"],
       },
     })).toMatchObject({
+      constraints: ["Use Paperclip MCP tools for semantic operations."],
       completionContract: {
         revision: "17",
         criteria: [

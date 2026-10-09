@@ -3278,9 +3278,6 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
   if (input.provider === "opencode") {
     return {
       ...createSanitizedOpenCodeRunnerEnvironment(input.options.environment),
-      ...(input.options.environment?.PAPERCLIP_OPENCODE_REASONING !== undefined
-        ? { PAPERCLIP_OPENCODE_REASONING: input.options.environment.PAPERCLIP_OPENCODE_REASONING }
-        : {}),
       PAPERCLIP_OPENCODE_PERMISSION_MODE:
         input.options.opencodePermissionMode ?? "allow",
       PAPERCLIP_OPENCODE_RUNTIME_DIR:
@@ -5886,6 +5883,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       .filter((item) => item.type !== "skill")
       .map((item) => (typeof item.text === "string" ? item.text : ""))
       .join("\n");
+    const reasoningMode = params.reasoningMode;
+    if (reasoningMode !== undefined && (
+      this.options.provider !== "opencode"
+      || (reasoningMode !== "default" && reasoningMode !== "disabled")
+    )) throw new Error("turn.reasoningMode requires OpenCode and must be default or disabled");
     const skills = resolveRunnerdCodexSkillInputs(
       input.filter((item) => item.type === "skill"),
       this.options.runtimeContext ?? null,
@@ -5919,6 +5921,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         "turn.start",
         {
           text: message,
+          ...(reasoningMode === undefined ? {} : { reasoningMode }),
           ...(skills.length ? { skills } : {}),
           turnId: pendingTurnId,
         },

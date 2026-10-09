@@ -167,8 +167,6 @@ export type OpenCodeCompletionFeedback = (result: PrpStructuredRunResult, call: 
 
 export interface OpenCodeServerDriverOptions {
   model: string;
-  /** OpenRouter only; omitted/default leaves model reasoning unchanged. */
-  reasoningMode?: OpenCodeReasoningMode;
   permissionMode?: "allow" | "ask" | "deny";
   taskEnvelope?: CodexTaskEnvelope;
   conversationMode?: "task" | "prepared";
@@ -245,13 +243,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
   readonly #options: OpenCodeServerDriverOptions;
 
   constructor(options: OpenCodeServerDriverOptions) {
-    const reasoningMode = parseOpenCodeReasoningMode(
-      options.reasoningMode ?? options.environment?.PAPERCLIP_OPENCODE_REASONING,
-    );
-    if (reasoningMode === "disabled" && !options.model.startsWith("openrouter/")) {
-      throw new Error("Disabled OpenCode reasoning is supported only for OpenRouter models");
-    }
-    this.#options = { ...options, reasoningMode };
+    this.#options = options;
   }
 
   async descriptor(): Promise<HarnessDriverDescriptor> {
@@ -653,9 +645,14 @@ class OpenCodeHarnessSession implements HarnessSession {
 
   async startTurn(input: {
     message: NativeUserMessage;
+    reasoningMode?: OpenCodeReasoningMode;
   }): Promise<{ turnId: string }> {
     if (this.#activeTurnId !== null)
       throw new Error("OpenCode session already has an active turn");
+    const reasoningMode = parseOpenCodeReasoningMode(input.reasoningMode);
+    if (input.reasoningMode !== undefined && !this.#model.startsWith("openrouter/")) {
+      throw new Error("Per-turn OpenCode reasoning is supported only for OpenRouter models");
+    }
     const turnId = `turn-${randomBytes(12).toString("hex")}`;
     this.#streamingParts.clear();
     this.#activeTurnId = turnId;
@@ -667,12 +664,9 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#emit("turn.started", { status: "inProgress" }, { turnId });
     const [providerID, ...modelParts] = this.#model.split("/");
     const modelID = modelParts.join("/");
-    // A resumed OpenCode provider session already retains the original system
-    // instructions and task envelope in its conversation. Repeating both on
-    // every Paperclip continuation can overflow smaller context windows and
-    // OpenCode then completes with `finish: unknown` and zero tokens. The
-    // native model envelope still carries the authoritative wake delta,
-    // interaction responses, completion contract, and current issue context.
+    // Keep the task envelope only on the initial task-mode wake. OpenCode
+    // rebuilds system instructions from the latest user message, so system
+    // instructions must still accompany every prompt (including recovery).
     const prompt = this.#sendFullContext
       ? JSON.stringify({
           task: this.#taskEnvelope,
@@ -694,12 +688,15 @@ class OpenCodeHarnessSession implements HarnessSession {
           // at this HTTP boundary.
           providerID,
           modelID,
+          // Always select the empty default variant on an ordinary turn so a
+          // previous disabled turn cannot change this turn's provider defaults.
+          ...(providerID === "openrouter"
+            ? { variant: reasoningMode === "disabled" ? "paperclip-no-reasoning" : "paperclip-default" }
+            : {}),
           // Keep question enabled in the isolated config. OpenCode 1.18.32
           // turns a prompt's deprecated `tools` map into replacement session
           // permissions, so a sparse override here discards the session policy.
-          ...(this.#sendFullContext
-            ? { system: this.#systemInstructions }
-            : {}),
+          system: this.#systemInstructions,
           parts: [{ type: "text", text: prompt }],
         }),
       },
@@ -2291,8 +2288,11 @@ async function startRuntime(input: {
           models: {
             [providerModelId]: {
               name: providerModelId,
-              ...(input.options.reasoningMode === "disabled"
-                ? { options: { reasoning: { enabled: false } } }
+              ...(modelProvider === "openrouter"
+                ? { variants: {
+                    "paperclip-default": {},
+                    "paperclip-no-reasoning": { reasoning: { enabled: false } },
+                  } }
                 : {}),
             },
           },

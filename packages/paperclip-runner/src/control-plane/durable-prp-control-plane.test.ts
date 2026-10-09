@@ -399,7 +399,6 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
       ANTHROPIC_AUTH_TOKEN: "managed-claude-key",
       ANTHROPIC_BASE_URL: "https://gateway.example",
       PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
-      PAPERCLIP_OPENCODE_REASONING: "disabled",
       PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
       DATABASE_URL: "must-not-reach-runnerd",
       PAPERCLIP_API_KEY: "must-not-reach-runnerd",
@@ -435,7 +434,6 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
     ANTHROPIC_AUTH_TOKEN: "managed-claude-key",
     ANTHROPIC_BASE_URL: "https://gateway.example",
     PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
-    PAPERCLIP_OPENCODE_REASONING: "disabled",
     PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
   });
   expect(launches[0]!.environment.DATABASE_URL).toBeUndefined();
