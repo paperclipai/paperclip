@@ -1,3 +1,4 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -93,7 +94,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-issue-liveness-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     // Dependency reconciliation heals missing wakes by enqueuing an
@@ -355,6 +356,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,
       companyId,

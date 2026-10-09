@@ -1,3 +1,4 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import {
@@ -12,6 +13,7 @@ import {
 import {
   agents,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   agentWakeupRequests,
@@ -87,7 +89,7 @@ describe("durable inbound chat scheduler receipts", () => {
         testedAt: new Date(0).toISOString(),
       }),
     });
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterEach(() => {
     execute.mockClear();
     for (const unregister of unregisterAuthorities.splice(0)) unregister();
@@ -111,6 +113,7 @@ describe("durable inbound chat scheduler receipts", () => {
       defaultResponsibleUserId: "board-user",
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,
       companyId,

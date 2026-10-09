@@ -1,3 +1,4 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -97,7 +98,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       }
       return baseExecute();
     });
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     mockAdapterExecute.mockClear();
@@ -299,6 +300,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const { companyId, agentId } = await seedCompany();
     const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
     const commenterUserId = `commenter-${randomUUID()}`;
+    await db.insert(companyMemberships).values([issueResponsibleUserId, commenterUserId].map(principalId => ({ companyId, principalType: "user" as const, principalId, status: "active", membershipRole: "member" })));
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
@@ -355,6 +357,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       const { companyId, agentId } = await seedCompany();
       const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
       const commenterUserId = `commenter-${randomUUID()}`;
+      await db.insert(companyMemberships).values([issueResponsibleUserId, commenterUserId].map(principalId => ({ companyId, principalType: "user" as const, principalId, status: "active", membershipRole: "member" })));
       const issueId = randomUUID();
       const commentId = randomUUID();
       await db.insert(issues).values({

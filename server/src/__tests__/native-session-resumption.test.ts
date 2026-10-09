@@ -1,3 +1,4 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -9,6 +10,7 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  companyMemberships,
   completionContracts,
   createDb,
   executionWorkspaces,
@@ -260,7 +262,7 @@ describe("P6-25 pre-result native session recovery", () => {
         leaseExpiresAt: new Date(0),
       })),
     ]);
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterAll(async () => temporary?.cleanup());
 
@@ -795,6 +797,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         status: "active",
         defaultResponsibleUserId: "responsible-user",
       });
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
       await db
         .insert(projects)
         .values({
@@ -952,7 +955,7 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
           authorUserId: "responsible-user",
           body: "Verify the newest user instruction before completing this task.",
         });
-    }, 30_000);
+    }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
     afterAll(async () => {
       if (

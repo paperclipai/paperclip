@@ -37,9 +37,11 @@ export function gradeTaskWorkspaces(value: TaskWorkspaceObservation) {
   check("projectless-task-owned-root", complete && value.projectCount === 0 && value.checkpoints.every(p =>
     p.issue.projectId === null && p.workspace.projectId === null && p.confinedTaskRoot && p.issue.executionWorkspaceId === p.workspace.id),
   "Task and execution workspace remain projectless, with a confined company/task directory rather than agent home.");
-  check("immutable-root-and-binding", complete && value.initial !== null && value.initial.repositories === 0 &&
+  // The provider may enqueue its receipt before the first browser observation.
+  // Deferred acquisition is checked at the settled first-turn checkpoint below.
+  check("immutable-root-and-binding", complete && value.initial !== null &&
     value.checkpoints.every(p => p.workspace.id === value.initial!.workspaceId && p.workspace.cwd === value.initial!.cwd),
-  "The independently observed pre-preparation root and binding survive all three admissions.");
+  "The independently observed initial root and binding survive all three admissions.");
   check("task-file-continuity", complete && value.checkpoints.every(p => p.note === `task-files-turn-${p.turn}-${value.nonce}\n`),
   "Public execution-workspace file reads match the exact expected bytes after every turn.");
   const a = first?.repositories[0], b = second?.repositories[0], c = third?.repositories[0];

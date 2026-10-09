@@ -49,6 +49,13 @@ describe("task workspace product E2E", () => {
     legacy.checkpoints.forEach(point => { point.run.runtimeMode = "legacy"; delete point.prepareCalls; });
     expect(gradeTaskWorkspaces(legacy).filter(check => !check.passed)).toEqual([]);
   });
+  it("accepts a pending receipt queued before the first browser observation", () => {
+    const observation = valid();
+    observation.initial!.repositories = 1;
+    expect(gradeTaskWorkspaces(observation).filter(check => !check.passed)).toEqual([]);
+    observation.checkpoints[0]!.repositories[0]!.state = "ready";
+    expect(gradeTaskWorkspaces(observation).find(check => check.id === "deferred-idempotent-acquisition")?.passed).toBe(false);
+  });
   it.each([
     ["missing evidence", (v: TaskWorkspaceObservation) => { v.checkpoints = []; }],
     ["agent home", (v: TaskWorkspaceObservation) => { v.checkpoints[0]!.confinedTaskRoot = false; }],

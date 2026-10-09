@@ -105,7 +105,8 @@ describePostgres("saved Slack invitation command in heartbeat prompts", () => {
     const f = await seed();
     for (let index = 0; index < 2; index++) {
       const input = await turn(f);
-      expect(input.runtime.sessionId).toBe(index === 0 ? null : "invitation-session");
+      const completed = await heartbeat.getRun(input.runId);
+      expect(input.runtime.sessionId, JSON.stringify(completed?.resultJson?.configFreshness)).toBe(index === 0 ? null : "invitation-session");
       const context = input.context;
       for (const key of ["paperclipTaskMarkdown", "paperclipTaskMarkdownCompact", "paperclipTaskMarkdownAssignment", "paperclipTaskMarkdownAssignmentCompact"]) {
         const prompt = String(context[key]);

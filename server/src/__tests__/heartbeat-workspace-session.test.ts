@@ -2468,6 +2468,7 @@ describe("effective run session config freshness", () => {
       workspaceConfig: {
         requestedMode: "shared_workspace",
         effectiveMode: "shared_workspace",
+        issueSettings: null,
         reusableExecutionWorkspaceConfig: null,
         existingExecutionWorkspace: null,
       },
@@ -2476,6 +2477,7 @@ describe("effective run session config freshness", () => {
       workspaceConfig: {
         requestedMode: "shared_workspace",
         effectiveMode: "shared_workspace",
+        issueSettings: { mode: "shared_workspace" },
         reusableExecutionWorkspaceConfig: {
           strategyType: "project_primary",
           workspaceGeneration: 1,

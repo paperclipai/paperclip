@@ -1,3 +1,4 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -14,6 +15,7 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  companyMemberships,
   companySkills,
   createDb,
   documentRevisions,
@@ -166,6 +168,7 @@ async function seedRunTarget(db: Db, repoRoot: string) {
     createdAt: new Date(),
     updatedAt: new Date(),
   });
+  await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
   await db.insert(projects).values({
     id: projectId,
     companyId,
@@ -265,7 +268,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-finalize-branch-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the
@@ -299,14 +302,15 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await deleteHeartbeatRowsAfterActivityLogDrains(db);
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
-    await db.delete(executionWorkspaces);
     await db.delete(environments);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
