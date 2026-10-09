@@ -1,5 +1,4 @@
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
-import { aiRoutingHarness } from "@paperclipai/shared";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 

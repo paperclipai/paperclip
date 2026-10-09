@@ -1,4 +1,3 @@
-import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
 import {
   cancelHeartbeatNativeRun,
