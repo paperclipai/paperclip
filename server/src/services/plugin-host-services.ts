@@ -3581,28 +3581,12 @@ export function buildHostServices(
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
 
-        // Plugin-originated wakeups write activity entries (PLUGIN_SPEC). An
-        // unattributed send keeps its previous behaviour and writes none.
-        if (actorUserId || projectId) {
-          await logPluginActivity({
-            companyId,
-            action: "agent.session_wakeup_requested",
-            entityType: "agent",
-            entityId: session.agentId,
-            actor: { actorUserId },
-            details: {
-              agentId: session.agentId,
-              sessionId: params.sessionId,
-              runId: run.id,
-              reason: params.reason ?? null,
-              ...(projectId ? { projectId } : {}),
-            },
-          });
-        }
-
         // Subscribe to live events and forward to the plugin worker as notifications.
         // Track the subscription so it can be cleaned up on dispose() if the run
         // never reaches a terminal status (hang, crash, network partition).
+        // Attach before any further await: the run is already queued, and live
+        // events are not replayed to a listener that subscribes late.
+        let cleanupSubscription: (() => void) | null = null;
         if (notifyWorker) {
           const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 
@@ -3667,6 +3651,31 @@ export function buildHostServices(
 
           const entry = { unsubscribe, timer: timeoutTimer };
           activeSubscriptions.add(entry);
+          cleanupSubscription = cleanup;
+        }
+
+        // Plugin-originated wakeups write activity entries (PLUGIN_SPEC). An
+        // unattributed send keeps its previous behaviour and writes none.
+        if (actorUserId || projectId) {
+          try {
+            await logPluginActivity({
+              companyId,
+              action: "agent.session_wakeup_requested",
+              entityType: "agent",
+              entityId: session.agentId,
+              actor: { actorUserId },
+              details: {
+                agentId: session.agentId,
+                sessionId: params.sessionId,
+                runId: run.id,
+                reason: params.reason ?? null,
+                ...(projectId ? { projectId } : {}),
+              },
+            });
+          } catch (error) {
+            cleanupSubscription?.();
+            throw error;
+          }
         }
 
         return { runId: run.id };

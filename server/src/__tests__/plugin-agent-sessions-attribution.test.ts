@@ -23,6 +23,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
 import { heartbeatService, resolveLedgerScopeForRun } from "../services/heartbeat.js";
+import { publishLiveEvent, subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -184,13 +185,14 @@ describeEmbeddedPostgres("plugin agent session sends: user and project attributi
   function pluginHost(
     capabilities: PluginCapability[] = ["agent.sessions.create", "agent.sessions.send"],
     pluginKey = PLUGIN_KEY,
+    notifyWorker?: (method: string, params: unknown) => void,
   ) {
     const services = buildHostServices(
       db,
       `${pluginKey}-record-id`,
       pluginKey,
       createEventBusStub(),
-      undefined,
+      notifyWorker,
       { heartbeatRuntimeEnv: {} },
     );
     disposers.push(() => services.dispose());
@@ -539,6 +541,34 @@ describeEmbeddedPostgres("plugin agent session sends: user and project attributi
         projectId: secondProjectId,
         paperclipAgentMessage: expect.objectContaining({ text: "second" }),
       }),
+    });
+  });
+
+  it("forwards run events published while the activity entry is being written", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const projectId = await addProject(companyId);
+    const notifications: Array<{ method: string; params: any }> = [];
+    const host = pluginHost(undefined, undefined, (method, params) => notifications.push({ method, params }));
+    const session = await host.createSession(companyId, agentId);
+
+    // Finish the run the moment the activity entry lands, before sendMessage
+    // returns. A listener attached only after that write would miss it.
+    const stop = subscribeCompanyLiveEvents(companyId, (event) => {
+      const payload = event.payload as Record<string, any> | undefined;
+      if (event.type !== "activity.logged" || payload?.action !== "agent.session_wakeup_requested") return;
+      publishLiveEvent({
+        companyId,
+        type: "heartbeat.run.status",
+        payload: { runId: payload.details.runId, status: "succeeded", finalText: "done early" },
+      });
+    });
+    disposers.push(stop);
+
+    const { runId } = await host.send({ sessionId: session.sessionId, companyId, projectId });
+
+    expect(notifications).toContainEqual({
+      method: "agents.sessions.event",
+      params: expect.objectContaining({ runId, eventType: "done", message: "done early" }),
     });
   });
 
