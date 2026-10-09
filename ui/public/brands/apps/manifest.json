@@ -640,6 +640,12 @@
       "provider": "Windsor.ai",
       "catalogVisible": true,
       "localAsset": "/brands/apps/windsor-ai.png"
+    },
+    {
+      "slug": "hindsight",
+      "provider": "Hindsight",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/hindsight.svg"
     }
   ]
 }

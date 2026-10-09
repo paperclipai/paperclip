@@ -1,7 +1,7 @@
 # Experimental memory connectors
 
 Enable **Settings → Experimental → Memory connectors**, then open **Connectors**
-and choose Mem0, Zep, Supermemory, Cognee, or Honcho. The flag defaults to off.
+and choose Mem0, Zep, Supermemory, Cognee, Honcho, or Hindsight. The flag defaults to off.
 It hides catalog setup and rejects new curated setup and initial OAuth-start
 requests on the server. Existing connections keep running and can reconnect or
 rotate credentials without re-enabling the toggle.
@@ -25,13 +25,17 @@ Official documentation and public endpoint discovery checked September 24, 2026.
 | [Supermemory](https://supermemory.ai/docs/supermemory-mcp/mcp) | Remote MCP, `https://mcp.supermemory.ai/mcp`, OAuth | Sign in and select the workspace, read/write access, and optional container tags offered by Supermemory. Developer API keys are separate from hosted MCP sign-in. |
 | [Cognee](https://docs.cognee.ai/cognee-cloud/connections/cloud-mcp) | Bundled Cloud API bridge, Cloud API key | Copy the tenant API Base URL and key from Cognee Cloud → API Keys. Requires an active Cloud workspace. The bundled bridge works in public deployments without a local MCP runtime host. |
 | [Honcho](https://honcho.dev/docs/v3/guides/integrations/mcp) | Remote MCP, `https://mcp.honcho.dev`, Bearer API key | Create an organization and API key in the Honcho dashboard. Configure the required workspace in Paperclip; it is projected into workspace-scoped tool arguments. Peer and session selectors follow provider/task context. |
+| [Hindsight](https://hindsight.vectorize.io/sdks/mcp) | Remote MCP, `https://api.hindsight.vectorize.io/mcp`, OAuth | Sign in and choose the organization to authorize. Memory is organized into banks; a bank argument selects a bank and the grant reaches every bank in the authorized organization. Authorize an organization containing only the banks agents should see. |
 
 Zep and Supermemory use user grants, the existing PKCE OAuth broker, and automatic
 client registration/discovery. Zep advertises its authorization server at
 `https://api.getzep.com/v1/oauth`, with `graph:read graph:write` scopes.
 Supermemory advertises `https://api.supermemory.ai/api/auth`, with
-`openid profile email offline_access`. Neither requires Paperclip ID or a new
-Paperclip-hosted credential service.
+`openid profile email offline_access`. Hindsight advertises
+`https://api.hindsight.vectorize.io`, with the same
+`openid profile email offline_access` scopes, a `registration_endpoint` for
+automatic client registration and `S256` code challenges. None of the three
+requires Paperclip ID or a new Paperclip-hosted credential service.
 
 Cognee does not advertise a hosted MCP endpoint. Paperclip bundles a narrow
 Cloud API bridge for `remember`, `recall`, and `forget`, matching the reviewed

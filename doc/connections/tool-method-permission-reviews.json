@@ -2544,6 +2544,27 @@
       "reviewedAt": "2026-10-08",
       "evidenceLevel": "provider-documentation-reviewed",
       "liveProof": "not-run"
+    },
+    {
+      "app": "hindsight",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "profile",
+        "email",
+        "offline_access"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Recall and save memory in the organization selected at provider consent. A bank argument selects a bank; the grant reaches every bank in that organization.",
+      "evidence": [
+        "https://hindsight.vectorize.io/sdks/mcp",
+        "https://api.hindsight.vectorize.io/.well-known/oauth-protected-resource",
+        "https://api.hindsight.vectorize.io/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-09",
+      "liveProof": "not-run"
     }
   ]
 }

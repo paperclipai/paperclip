@@ -9,6 +9,7 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "agentmail",
   "browser-use-cloud",
   "cognee",
+  "hindsight",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "enterpret",
   "zapier",
