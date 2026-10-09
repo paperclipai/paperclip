@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as openCodeFallbackModels } from "@paperclipai/adapter-opencode-local";
+import { models as codexStaticModels } from "@paperclipai/adapter-codex-local";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 vi.mock("acpx/runtime", () => ({
@@ -31,6 +32,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 const mockListOpenCodeModels = vi.hoisted(() => vi.fn());
+const mockListCodexSubscriptionModels = vi.hoisted(() => vi.fn());
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
@@ -98,6 +100,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/environments.js", () => ({
     environmentService: () => mockEnvironmentService,
+  }));
+
+  vi.doMock("../services/codex-subscription-models.js", () => ({
+    listCodexSubscriptionModels: mockListCodexSubscriptionModels,
   }));
 }
 
@@ -176,6 +182,8 @@ describe("adapter model refresh route", () => {
     mockEnvironmentService.getById.mockResolvedValue(null);
     mockListOpenCodeModels.mockReset();
     mockListOpenCodeModels.mockResolvedValue([{ id: "dynamic-opencode-model", label: "dynamic-opencode-model" }]);
+    mockListCodexSubscriptionModels.mockReset();
+    mockListCodexSubscriptionModels.mockResolvedValue([]);
     await unregisterTestAdapter(refreshableAdapterType);
   });
 
@@ -248,5 +256,42 @@ describe("adapter model refresh route", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual([{ id: "dynamic-opencode-model", label: "dynamic-opencode-model" }]);
     expect(mockListOpenCodeModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts the ChatGPT subscription's Codex catalog ahead of the static list", async () => {
+    const live = [
+      { id: "gpt-7-preview", label: "GPT-7-Preview" },
+      { id: codexStaticModels[0]!.id, label: "Live label" },
+    ];
+    mockListCodexSubscriptionModels.mockResolvedValue(live);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/adapters/codex_local/models?refresh=1"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([...live, ...codexStaticModels.slice(1)]);
+    expect(mockListCodexSubscriptionModels).toHaveBeenCalledWith(expect.anything(), "company-1", "local-board", { refresh: true });
+  });
+
+  it("keeps the static Codex list in a sandbox environment", async () => {
+    mockEnvironmentService.getById.mockResolvedValue({
+      id: "env-1",
+      companyId: "company-1",
+      name: "Sandbox",
+      driver: "sandbox",
+      config: {},
+    });
+    mockListCodexSubscriptionModels.mockResolvedValue([{ id: "gpt-7-preview", label: "GPT-7-Preview" }]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/adapters/codex_local/models?environmentId=env-1"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual(codexStaticModels);
+    expect(mockListCodexSubscriptionModels).not.toHaveBeenCalled();
   });
 });

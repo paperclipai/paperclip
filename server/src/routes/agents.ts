@@ -1,4 +1,5 @@
 import { aiRoutingHarness } from "@paperclipai/shared";
+import { listCodexSubscriptionModels } from "../services/codex-subscription-models.js";
 import { agentIdentityService } from "../services/agent-identity.js";
 import { aiConnectionRouterService, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
 import { connectionIntentService } from "../services/connection-intents.js";
@@ -3404,6 +3405,17 @@ export function agentRoutes(
     const models = refresh
       ? await refreshAdapterModels(modelAdapterType)
       : await listAdapterModels(modelAdapterType);
+    // A ChatGPT subscription lists the models the installed Codex CLI can run
+    // with it, including ones newer than the static list. The CLI version is the
+    // host's, so the Paperclip Runner and sandbox environments keep the static list.
+    if (type === "codex_local" && (!environment || environment.driver === "local")) {
+      const live = await listCodexSubscriptionModels(db, companyId, getActorInfo(req).actorId, { refresh });
+      if (live.length > 0) {
+        const liveIds = new Set(live.map((model) => model.id));
+        res.json([...live, ...models.filter((model) => !liveIds.has(model.id))]);
+        return;
+      }
+    }
     res.json(models);
   });
 
