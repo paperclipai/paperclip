@@ -37,6 +37,16 @@ workspace: their independent agent copy therefore lives under the excluded
 `.paperclip-runtime/agent-files/<agent>/<run>/` area. It is not included in task
 workspace sync, Git staging, or task deliverables.
 
+Sandbox transfer scratch lives separately under
+`.paperclip-runtime/paperclip-runner/agent-file-transfers/<agent>/<run>/`.
+Workspace-staging transfer scratch stays outside `AGENT_HOME`, including
+recovery after controller restart. Remote warm Codex checkpoints may temporarily
+stage changed-file payloads under `AGENT_HOME/.paperclip-runtime/checkpoint-*`;
+these are checkpoint scratch, not managed personal files. Cleanup removes
+only the original materialization's agent directory and transfer scratch
+through its owned lease. A later warm turn keeps that original materialization
+identity; it does not grant collection or cleanup of another run's files.
+
 Claude CLI runs keep the working-copy location in each run's prompt, separate
 from the cached system instructions. A new copy path alone does not reset the
 task session. Each turn names the current copy for relative file references;
