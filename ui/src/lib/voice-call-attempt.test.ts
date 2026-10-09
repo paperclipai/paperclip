@@ -14,6 +14,16 @@ function fixture() {
   return { rows, storage, client, journal };
 }
 describe("voice reload recovery", () => {
+  it.each([400, 401, 403, 404, 422])("allows a new endpoint after definitive admission rejection %s", async (status) => {
+    const f = fixture();
+    f.client.start.mockRejectedValueOnce(new ApiError("Rejected", status, {error: "Rejected"}));
+    const attempt = createVoiceCallAttempt("company", f.client, f.journal);
+    await expect(attempt.start({endpointId: "stale"})).rejects.toBeInstanceOf(ApiError);
+    expect(f.journal.read()).toBeUndefined();
+    await attempt.start({endpointId: "valid", issueId: "new-task"});
+    expect(f.client.start.mock.calls[1]?.[1]).toMatchObject({endpointId: "valid", issueId: "new-task"});
+    expect(f.client.start.mock.calls[1]?.[1].idempotencyKey).not.toBe(f.client.start.mock.calls[0]?.[1].idempotencyKey);
+  });
   it("retains exact cleanup identity and a safe credit reason after a rejected creation", async () => {
     const f=fixture();f.client.start.mockRejectedValue(new ApiError("private provider detail",409,{details:{code:"voice_credits_required",sessionId:"failed-call"}}));
     const attempt=createVoiceCallAttempt("company",f.client,f.journal);
