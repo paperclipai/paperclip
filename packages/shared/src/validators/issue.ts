@@ -891,6 +891,8 @@ export const updateIssueSchema = objectWithoutDefaults(
 )
   .partial()
   .extend({
+    /** Reject a policy write if the policy changed after the caller read it. */
+    expectedExecutionPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
