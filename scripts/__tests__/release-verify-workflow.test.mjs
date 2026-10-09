@@ -15,6 +15,45 @@ function readWorkflow(name) {
   return readFileSync(path.join(repoRoot, ".github/workflows", name), "utf8");
 }
 
+test("Docker Hub mirrors apply to both image builders without widening publication access", () => {
+  const dockerWorkflow = readWorkflow("docker.yml");
+  const releaseWorkflow = readWorkflow("release.yml");
+  const docker = dockerWorkflow.split("  build-and-push:\n")[1].split("\n  merge-and-push:")[0];
+  const preview = releaseWorkflow.split("  image_preview:\n")[1].split("\n  publish_image_preview:")[0];
+
+  for (const job of [docker, preview]) {
+    const steps = job.split(/\n(?=      - )/);
+    const builder = steps.find((step) => /uses: docker\/setup-buildx-action@/.test(step));
+    const build = steps.find((step) => /uses: docker\/build-push-action@/.test(step));
+    assert.ok(builder && build, "the mirror must configure the builder that runs the image build");
+    assert.ok(steps.indexOf(builder) < steps.indexOf(build));
+    const config = builder.match(/buildkitd-config-inline: \|\n((?: {12,}[^\n]*(?:\n|$))+)/)?.[1];
+    assert.ok(config, "configure the BuildKit container, not only the host Docker daemon");
+    assert.deepEqual([...config.matchAll(/^\s*\[registry\."([^"]+)"\]/gm)].map((match) => match[1]), ["docker.io"],
+      "GHCR publishing and cache traffic must not use the pull mirror");
+    const mirrors = config.match(/^\s*mirrors = (\[[^\n]+\])$/m)?.[1];
+    assert.ok(mirrors);
+    assert.deepEqual(JSON.parse(mirrors), ["mirror.gcr.io"]);
+    assert.doesNotMatch(config, /^\s*(?:http|insecure|ca|keypair)\s*=/m,
+      "keep verified HTTPS and anonymous public-image pulls");
+    assert.doesNotMatch(builder, /driver-opts:|buildkitd-flags:|secrets\./,
+      "do not change bootstrap images, entitlements, or credentials");
+  }
+
+  assert.match(docker, /platform: linux\/amd64/);
+  assert.match(docker, /platform: linux\/arm64/);
+  assert.match(docker, /permissions:\n\s+contents: read\n\s+packages: write/);
+  assert.match(docker, /outputs: type=image,name=ghcr\.io\/\$\{\{ github\.repository \}\},push-by-digest=true,name-canonical=true,push=true/);
+  assert.match(docker, /cache-to: type=registry,ref=ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\},mode=max/);
+  assert.match(preview, /permissions:\n\s+contents: read\n\s+steps:/);
+  assert.match(preview, /platforms: linux\/amd64\n\s+push: false/);
+  assert.match(preview, /outputs: type=docker,dest=\$\{\{ runner\.temp \}\}\/preview-image\.tar/);
+  assert.doesNotMatch(preview, /docker\/login-action|secrets\.|packages: write|id-token: write/);
+  assert.match(releaseWorkflow, /publish_image_preview:\n[\s\S]*?needs: \[plan_preview, image_preview\]/);
+  assert.doesNotMatch(dockerWorkflow.split("  merge-and-push:\n")[1], /buildkitd-config-inline/,
+    "the registry-only manifest merge does not need a Docker Hub mirror");
+});
+
 test("chaos verification isolates callers that verify the same source commit", () => {
   const chaosWorkflow = readWorkflow("runner-chaos-evals.yml");
   const group = chaosWorkflow.match(/^  group: (.+)$/m)?.[1];

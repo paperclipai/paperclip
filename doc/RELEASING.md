@@ -291,6 +291,20 @@ suppresses push-triggered workflow runs for those pushes. The release jobs
 therefore dispatch `docker.yml` explicitly at the new tag ref; the tag
 mapping keys off `github.ref` either way.
 
+The Docker build matrix and the release preview image builder configure
+BuildKit to check `mirror.gcr.io` for Docker Hub images first. This covers
+both the Dockerfile frontend and base images. BuildKit keeps Docker Hub as
+the fallback when the cache has no usable copy. The image references,
+build arguments, GHCR publication, and release gates stay the same.
+
+This is an availability improvement, not an outage guarantee. Google can
+evict cached images, and mutable tags can lag upstream changes or deletions.
+Matching manifests at one point does not guarantee later tag freshness or
+blob availability. The initial `moby/buildkit` bootstrap still uses the host
+Docker daemon and can fail on Docker Hub before this configuration takes
+effect. See the [BuildKit mirror configuration](https://docs.docker.com/build/ci/github-actions/configure-builder/#registry-mirror)
+and [Google cache limits](https://docs.cloud.google.com/artifact-registry/docs/pull-cached-dockerhub-images).
+
 ## Local Commands
 
 ### Preview a canary locally
