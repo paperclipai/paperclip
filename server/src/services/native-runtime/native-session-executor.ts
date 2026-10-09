@@ -11520,9 +11520,10 @@ async function createRunnerdBackendWithinSessionClaim(
   const configuredProviderPackRoot =
     input.runnerRemoteProviderPackPath?.trim() || remotePiCompanion?.providerPack || null;
   let expectedProviderPackManifest: RemoteProviderPackManifest | null = null;
-  const useBundledCursorImageAssets = requiresRemoteProviderPack && !configuredProviderPackRoot &&
-    input.execution.provider.kind === "acpx" && input.execution.provider.agent === "cursor";
-  if (useBundledCursorImageAssets) {
+  const useBundledRemoteImageAssets = requiresRemoteProviderPack && !configuredProviderPackRoot &&
+    (input.execution.provider.kind === "opencode" ||
+      (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "cursor"));
+  if (useBundledRemoteImageAssets) {
     expectedProviderPackManifest = readBundledRemoteProviderPackManifest();
   } else if (requiresRemoteProviderPack) {
     if (
@@ -11551,7 +11552,7 @@ async function createRunnerdBackendWithinSessionClaim(
   // When an explicit remote artifact is configured, prepareRemoteRunner stages
   // these exact bytes at remoteBinary before launch.
   const controllerRunnerBinary = remoteTarget
-    ? input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledCursorImageAssets ? bundledRemoteRunnerBinary() : resolvePaperclipRunnerBinary())
+    ? input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? bundledRemoteRunnerBinary() : resolvePaperclipRunnerBinary())
     : resolvePaperclipRunnerBinary();
   const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
   const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
@@ -11930,7 +11931,7 @@ async function createRunnerdBackendWithinSessionClaim(
       if (!existsSync(sourceBinary)) {
         throw new Error("runner_remote_artifact_unavailable");
       }
-      if (!explicitRemoteBinary && !remotePiCompanion) {
+      if (!explicitRemoteBinary && !remotePiCompanion && !useBundledRemoteImageAssets) {
         const platform = await remoteCommandRunner.execute({
           command: "sh",
           args: ["-c", "uname -s; uname -m"],
