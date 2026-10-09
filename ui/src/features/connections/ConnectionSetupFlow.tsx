@@ -1027,7 +1027,7 @@ function StandardConnectionSetupFlow({
   const visibleGalleryApps = useMemo(
     () => (galleryQuery.data?.apps ?? []).filter((app) => memoryConnectorsEnabled || !isMemoryConnectorId(app.slug)).filter((app) =>
       app.slug === "agentmail" || chatConnectorsEnabled ||
-      !app.methods.some((method) => method.transport === "chat_sdk") ||
+      !app.methods.some((method) => method.purpose === "channel") ||
       appSupportsToolCatalogSetup(app),
     ),
     [galleryQuery.data, chatConnectorsEnabled, memoryConnectorsEnabled],

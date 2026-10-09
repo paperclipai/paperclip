@@ -1,3 +1,5 @@
+import { SpekoProviderSetup } from "@/components/voice/SpekoProviderSetup";
+import { NativeVoiceConversation } from "@/components/voice/NativeVoiceConversation";
 import { buildSlackAppManifest, defaultSlackAppConfiguration } from "@paperclipai/shared";
 import { SlackAppDetails, SlackSetupAdvanced } from "./SlackAppDetails";
 import { SlackAutomaticSetup } from "./SlackAutomaticSetup";
@@ -51,6 +53,7 @@ import {
 } from "./github-private-key-file";
 
 const providerNames: Record<ChatProvider, string> = {
+  speko: "Speko",
   agentmail: "AgentMail",
   slack: "Slack",
   github: "GitHub",
@@ -296,7 +299,7 @@ function ChatSdkEndpointSetup() {
     onSuccess: (next) => {
       setViewedStep(null);
       syncEndpointSnapshot(next);
-      if (next.provider === "imessage-photon" || next.provider === "slack") {
+      if (next.provider === "imessage-photon" || next.provider === "slack" || next.provider === "speko") {
         const resumed = new URLSearchParams(params);
         resumed.set("resume", next.id);
         setParams(resumed, { replace: true });
@@ -505,7 +508,7 @@ function ChatSdkEndpointSetup() {
       </p>
     );
 
-  if (purpose === "choice") {
+  if (purpose === "choice" && provider !== "speko") {
     return <ChatConnectionPurpose provider={provider} onChat={() => setPurpose("chat")} onTools={() => navigate(toolHref)} />;
   }
 
@@ -614,7 +617,15 @@ function ChatSdkEndpointSetup() {
             }}
           />
         )}
-        {endpoint && step === tryStep && (!automaticSlack || automaticSlackComplete) && (
+        {endpoint && step === tryStep && provider === "speko" && (
+          <div className="space-y-5">
+            <h1 className="text-xl font-bold">Test your Speko voice connection</h1>
+            <p className="text-sm text-muted-foreground">Ask the agent to do some work, add a spoken follow-up, and listen for its result. Accepted work stays in Paperclip when you end the call.</p>
+            <NativeVoiceConversation companyId={endpoint.companyId} endpointId={endpoint.id} agentName={selectedAgent?.name ?? endpoint.assignedAgentName} />
+            <SetupWizardFooter onSaveExit={() => navigate("/apps")}><Button disabled={testConnection.isPending} onClick={() => testConnection.mutate()}>Verify test conversation</Button></SetupWizardFooter>
+          </div>
+        )}
+        {endpoint && step === tryStep && provider !== "speko" && (!automaticSlack || automaticSlackComplete) && (
           automaticSlack ? <div className="flex flex-col items-center gap-6 py-8 text-center">
             <AgentCharacter
               agent={selectedAgent ?? { id: endpoint.assignedAgentId, name: endpoint.assignedAgentName }}
@@ -659,7 +670,7 @@ function ChatSdkEndpointSetup() {
             onSaveExit={() => navigate("/apps")}
           />
         )}
-        {step !== 0 && !isSlack && <div className="flex justify-start">
+        {step !== 0 && !isSlack && !(provider === "speko" && step === tryStep) && <div className="flex justify-start">
           <Button className="text-muted-foreground" variant="ghost" onClick={() => navigate("/apps")}>
             Save &amp; exit
           </Button>
@@ -887,6 +898,7 @@ function ProviderConnectStep({
     null,
     2,
   );
+  if (provider === "speko") return <SpekoProviderSetup agentName={agentName} credentials={credentials} onChange={setCredentials} onConnect={(values) => onAction(repairing ? "reconnect" : "configure", values)} callbackUrl={endpoint.setup?.webhookUrl} pending={pending} repairing={repairing} />;
   if (provider === "imessage-photon") return <PhotonConnectStep endpoint={endpoint} agentName={agentName} repairing={repairing} pending={pending} onAction={onAction} />;
   if (provider === "discord") {
     const applicationId = credentials.applicationId?.trim() ?? "";

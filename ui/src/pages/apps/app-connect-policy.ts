@@ -76,7 +76,8 @@ export function canEnterAppsConnect(
   const entry = getAppStoreDefinition(source);
   if (
     !chatConnectorsEnabled &&
-    entry?.methods.some((method) => method.transport === "chat_sdk") &&
+    source !== "agentmail" &&
+    entry?.methods.some((method) => method.purpose === "channel") &&
     !entry.methods.some((method) => (method.purpose ?? "tool") !== "channel" && method.transport !== "chat_sdk")
   ) return false;
   // A retained connection may belong to a provider hidden from fresh catalog

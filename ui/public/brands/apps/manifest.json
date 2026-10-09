@@ -599,6 +599,12 @@
       "localAsset": "/brands/apps/api-key-generic.svg"
     },
     {
+      "slug": "speko",
+      "provider": "Speko",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/speko.svg"
+    },
+    {
       "slug": "calendly",
       "provider": "Calendly",
       "catalogVisible": true,

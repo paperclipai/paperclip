@@ -1,3 +1,5 @@
+import { VoiceCallProvider } from "./components/voice/VoiceCallProvider";
+import { useAccountIdentity } from "./api/companies-query";
 import * as React from "react";
 import { StrictMode } from "react";
 import * as ReactDOM from "react-dom";
@@ -58,6 +60,12 @@ function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNod
   return <BreadcrumbProvider companyName={selectedCompany?.name ?? null}>{children}</BreadcrumbProvider>;
 }
 
+function CompanyVoiceCalls({ children }: { children: React.ReactNode }) {
+  const { selectedCompanyId } = useCompany();
+  const { userId } = useAccountIdentity();
+  return <VoiceCallProvider companyId={selectedCompanyId} userId={userId}>{children}</VoiceCallProvider>;
+}
+
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("Paperclip root element is missing");
 
@@ -79,7 +87,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                           <PanelProvider>
                             <PluginLauncherProvider>
                               <DialogProvider>
-                                <App />
+                                <CompanyVoiceCalls><App /></CompanyVoiceCalls>
                               </DialogProvider>
                             </PluginLauncherProvider>
                           </PanelProvider>

@@ -2,12 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { ExternalLink, MessageSquarePlus } from "lucide-react";
 import { chatEndpointsApi, type ChatProvider } from "@/api/chatEndpoints";
 import { Button } from "@/components/ui/button";
-import { StatusBadge } from "@/components/StatusBadge";
+import { Badge } from "@/components/ui/badge";
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 
 const providerNames: Record<ChatProvider, string> = {
+  speko: "Speko",
   slack: "Slack",
   github: "GitHub Code Review Bot",
   discord: "Discord",
@@ -79,7 +80,7 @@ export function AgentChannelsPanel({
                     "Provider identity"}
                 </p>
               </div>
-              <StatusBadge status={endpoint.status} />
+              <Badge variant="outline">{endpoint.status.replace(/[_-]/g, " ")}</Badge>
               <Button asChild size="sm" variant="outline">
                 <Link to={`/apps/chat/${endpoint.id}/settings`}>
                   Open connection <ExternalLink />

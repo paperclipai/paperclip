@@ -1,3 +1,7 @@
+import { SpekoPhoneLine } from "@/components/voice/SpekoPhoneLine";
+import { SpekoIncomingCalls } from "@/components/voice/SpekoIncomingCalls";
+import { SpekoCallActivityItem, SpekoUnapprovedCallActivityItem, useSpekoCallHistory } from "@/components/voice/SpekoCallHistory";
+import { SpekoPhoneCallback } from "@/components/voice/SpekoPhoneCallback";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Identity } from "@/components/Identity";
 import { SlackSetupAdvanced } from "./SlackAppDetails";
@@ -67,6 +71,7 @@ const tabItems = tabs.map((value) => ({
   label: value[0].toUpperCase() + value.slice(1),
 }));
 const providerNames: Record<ChatProvider, string> = {
+  speko: "Speko",
   agentmail: "AgentMail",
   slack: "Slack",
   github: "GitHub",
@@ -80,6 +85,10 @@ const providerLifecycleGuidance: Record<
   ChatProvider,
   { reconnect: string; remove: string }
 > = {
+  speko: {
+    reconnect: "Reverify this voice persona and update its signed session tools. Existing task assignments stay attached to their history.",
+    remove: "Stop this connection from accepting voice requests. Accepted work and task history remain in Paperclip.",
+  },
   agentmail: { reconnect: "Reconnect the same email inbox.", remove: "Disconnect email and retain task history." },
   slack: {
     reconnect:
@@ -307,8 +316,9 @@ export function ChatEndpointDetail() {
         <div className="flex min-w-0 items-center gap-3">
           <AgentAvatar agent={agentQuery.data ?? { id: endpoint.assignedAgentId, name: endpoint.assignedAgentName }} size={48} />
           <div>
-          <h1 className="text-xl font-bold">
-            {endpoint.assignedAgentName}
+          <h1 className={endpoint.provider === "speko" ? "flex items-center gap-3 text-xl font-bold" : "text-xl font-bold"}>
+            {endpoint.provider === "speko" && <AppLogo name="Speko" brandKey="speko" size={36} />}
+            {endpoint.assignedAgentName}{endpoint.provider === "speko" ? " in Speko" : ""}
           </h1>
           <p className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
             <AppLogo name={providerNames[endpoint.provider]} brandKey={endpoint.provider} size={16} compact />
@@ -327,6 +337,7 @@ export function ChatEndpointDetail() {
         </div>
         </div>
         <div className="flex items-center gap-2">
+          {endpoint.provider === "speko" && <a href="https://platform.speko.ai/agents" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-primary underline">Open Speko<ExternalLink className="size-3.5" aria-hidden="true" /></a>}
           {slackUrl && <Button asChild variant="outline"><a href={slackUrl} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button>}
           {setupIncomplete ? (
             <Button
@@ -340,19 +351,27 @@ export function ChatEndpointDetail() {
               Continue setup
             </Button>
           ) : null}
-          {["paused", "attention", "revoked"].includes(endpoint.status) && <StatusBadge status={endpoint.status} />}
+          {endpoint.status !== "active" && <StatusBadge status={endpoint.status} className={endpoint.provider === "speko" ? "text-foreground" : undefined} />}
         </div>
       </header>
+      {activeTab === "settings" && endpoint.provider === "speko" && endpoint.status === "active" && <div className="space-y-6"><SpekoPhoneCallback companyId={endpoint.companyId} endpointId={endpoint.id} /><SpekoPhoneLine companyId={endpoint.companyId} endpointId={endpoint.id} /><SpekoIncomingCalls companyId={endpoint.companyId} endpointId={endpoint.id} agentId={endpoint.assignedAgentId} /></div>}
       {activeTab === "settings" && (
         <>
 {endpoint.provider === "github" && <GitHubBotManagement endpoint={endpoint} view="settings" />}
 {endpoint.provider !== "github" && <Settings endpointId={endpoint.id} endpoint={endpoint} />}
 </>
       )}
+      {activeTab === "access" && endpoint.provider === "speko" && (
+        <section className="max-w-3xl space-y-3">
+          <h2 className="text-lg font-semibold">Private voice access</h2>
+          <p className="text-sm text-muted-foreground">Browser calls use the signed-in Paperclip user’s current company access. Each call stays bound to its selected agent and task.</p>
+          <p className="text-sm text-muted-foreground">Outgoing calls use your saved callback number and opt-in. For a private incoming call, enter the code spoken on the phone in signed-in Paperclip and select a task to approve that live call. Incoming calls can start a new conversation task without sign-in, under a task-scoped low-trust policy. Private mode is optional and requires approval before accessing existing tasks.</p>
+        </section>
+      )}
       {activeTab === "reviews" && endpoint.provider === "github" && <GitHubReviews endpointId={endpoint.id} />}
 {activeTab === "access" && endpoint.provider === "github" && <GitHubBotManagement endpoint={endpoint} view="access" />}
 {activeTab === "access" && endpoint.provider === "agentmail" && <EmailAccess endpoint={endpoint} />}
-{activeTab === "access" && endpoint.provider !== "github" && endpoint.provider !== "agentmail" && (
+{activeTab === "access" && endpoint.provider !== "speko" && endpoint.provider !== "github" && endpoint.provider !== "agentmail" && (
         <Access
           endpointId={endpoint.id}
           allowUnlinked={endpoint.allowUnlinkedPeople}
@@ -414,6 +433,7 @@ function Settings({
   const resourcesQuery = useQuery({
     queryKey: queryKeys.chatEndpoints.resources(endpointId),
     queryFn: () => chatEndpointsApi.listResources(endpointId),
+    enabled: endpoint.provider !== "speko",
     ...(endpoint.provider === "slack" ? liveChatQueryOptions : {}),
   });
   const saveResources = useMutation({
@@ -445,6 +465,7 @@ function Settings({
         tone: "error",
       }),
   });
+  if (endpoint.provider === "speko") return null;
   const resources = resourcesQuery.data ?? [];
   const destinationResources = resources.filter((resource) =>
     isIndividuallyToggleableResource(endpoint.provider, resource.type),
@@ -816,7 +837,7 @@ function Conversations({
         </div>
       ) : rows.length === 0 ? (
         <p className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-          {provider === "agentmail"
+          {provider === "speko" ? "No conversations yet. Open an assigned task and choose Talk to agent." : provider === "agentmail"
             ? "No email conversations yet. Send an email to this agent’s address to start one."
             : "No conversations yet. Message the agent to start one."}
         </p>
@@ -865,6 +886,7 @@ function Activity({
     ...liveChatQueryOptions,
     refetchInterval: cursor ? false : liveChatQueryOptions.refetchInterval,
   });
+  const calls = useSpekoCallHistory(endpoint.companyId, endpointId, endpoint.provider === "speko" && !cursor);
   const replay = useMutation({
     mutationFn: (item: ChatActivityItem) =>
       item.kind === "publication"
@@ -978,6 +1000,14 @@ function Activity({
       }),
   });
   const rows = query.data?.items ?? [];
+  // Calls use their own caller-authorized API and appear once in recent activity.
+  // Older connection-event pages retain the existing cursor contract.
+  const activityEntries = [
+    ...(!query.isError ? rows.map(item => ({ kind: "connection" as const, id: `connection:${item.id}`, createdAt: item.createdAt, item })) : []),
+    ...(!cursor && !calls.error ? calls.entries.map(entry => ({ kind: "call" as const, id: `call:${entry.session.id}`, createdAt: entry.session.createdAt, entry })) : []),
+    ...(!cursor && !calls.error ? calls.unapprovedCalls.map(call => ({ kind: "unapproved_call" as const, id: `unapproved:${call.id}`, createdAt: call.createdAt, call })) : []),
+  ].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+
   const { status } = endpoint;
   const health = connectionHealthPresentation(endpoint);
   const lifecycleAction = lifecycle.variables;
@@ -989,7 +1019,7 @@ function Activity({
       ] as const)
     : [];
   return (
-    <section className="space-y-5">
+    <section className="space-y-5" aria-label="Connection activity">
       <h2 className="text-lg font-semibold">Connection activity</h2>
       {((status !== "active" && health.message) || health.error) && (
         <div
@@ -1140,9 +1170,10 @@ function Activity({
         </div>
       </details>
       <div className="space-y-2">
-        <h3 className="text-sm font-semibold">
-          Recent activity
-        </h3>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">Recent activity</h3>
+          {endpoint.provider === "speko" && !cursor && <Button size="sm" variant="ghost" onClick={() => { void query.refetch(); calls.onRetry(); }} disabled={query.isFetching || calls.loading}>Refresh</Button>}
+        </div>
         {endpoint.provider === "agentmail" && rows.some((item) => item.kind === "publication" && item.status === "delivery_unknown") && (
           <p className="text-sm text-muted-foreground">
             Review unconfirmed email delivery in the{" "}
@@ -1150,7 +1181,7 @@ function Activity({
           </p>
         )}
         <div className="divide-y divide-border border-y border-border">
-          {query.isLoading && (
+          {(query.isLoading || calls.loading) && (
             <div className="flex items-center gap-2 py-5 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading activity…
@@ -1170,11 +1201,15 @@ function Activity({
               </Button>
             </div>
           )}
-          {!query.isLoading &&
-            !query.isError &&
-            rows.map((item) => (
+          {calls.error && endpoint.provider === "speko" && !cursor && <div className="flex flex-wrap items-center justify-between gap-3 py-4"><p role="alert" className="text-sm text-destructive">Call activity could not be loaded. {calls.error}</p><Button size="sm" variant="outline" onClick={calls.onRetry}>Retry calls</Button></div>}
+          {activityEntries.map(entry => {
+            if (entry.kind === "call") return <SpekoCallActivityItem key={entry.id} entry={entry.entry} presentation="activity" onEnd={calls.onEnd} ending={calls.endingSessionId === entry.entry.session.id} />;
+            if (entry.kind === "unapproved_call") return <SpekoUnapprovedCallActivityItem key={entry.id} call={entry.call} presentation="activity" />;
+            const item = entry.item;
+            return (
               <div
-                key={item.id}
+                key={entry.id}
+                data-activity-kind="connection"
                 className="flex items-start gap-3 px-2 py-3 transition-colors hover:bg-accent/50"
               >
                 <span className="mt-0.5 text-muted-foreground" aria-hidden="true">
@@ -1230,8 +1265,9 @@ function Activity({
                   </Button>
                 )}
               </div>
-            ))}
-          {!query.isLoading && !query.isError && rows.length === 0 && (
+            );
+          })}
+          {!query.isLoading && !query.isError && !calls.loading && !calls.error && activityEntries.length === 0 && (
             <p className="py-5 text-sm text-muted-foreground">
               No connection activity yet.
             </p>

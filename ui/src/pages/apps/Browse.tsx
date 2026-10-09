@@ -568,6 +568,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       });
     }
     const nativeChatApps = [
+      { slug: "speko", name: "Speko", description: "Talk with an agent using experimental browser voice." },
       { slug: "agentmail", name: "AgentMail", description: "Give agents email inboxes and handle each conversation as a task." },
       { slug: "imessage-photon", name: "iMessage Photon", description: "Message agents and share photos from Apple Messages with a dedicated Photon number." },
       {
@@ -704,6 +705,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       );
       if (!target) {
         const names = {
+          speko: "Speko",
           slack: "Slack",
           github: "GitHub",
           discord: "Discord",
