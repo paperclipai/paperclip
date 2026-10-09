@@ -428,10 +428,53 @@ test("plan approval hands the preserved revision to an assigned project task", a
     );
     expect(plan.body).toContain(original.body);
     expect(output.body).toContain(plan.body);
+    // Wait for the completion reporting turn, not just the handoff or task run.
+    await idle(request, f.chatPath, 3);
     expect(
       (await json(await request.get(`/api/issues/${chat.id}/documents/plan`)))
         .latestRevisionId,
     ).toBe(original.latestRevisionId);
+    const interactions = await json(
+      await request.get(`/api/issues/${chat.id}/interactions`),
+    );
+    expect(interactions).toHaveLength(1);
+    expect(interactions[0].status).toBe("accepted");
+    const runs = await json(
+      await request.get(`/api/companies/${f.company.id}/heartbeat-runs`),
+    );
+    const completionRuns = runs.filter(
+      (run: any) =>
+        run.contextSnapshot?.issueId === chat.id &&
+        run.contextSnapshot?.wakeReason === "chat_task_completed",
+    );
+    expect(completionRuns).toHaveLength(1);
+    expect(completionRuns[0].status).toBe("succeeded");
+    const replies = await json(
+      await request.get(`/api/issues/${chat.id}/comments`),
+    );
+    const reportingReplies = replies.filter(
+      (reply: any) => reply.createdByRunId === completionRuns[0].id,
+    );
+    expect(reportingReplies).toHaveLength(1);
+    const reportingRun = await json(
+      await request.get(`/api/heartbeat-runs/${completionRuns[0].id}`),
+    );
+    expect(reportingRun.resultJson.presentationDecision).toMatchObject({
+      commentAction: "reuse",
+      commentId: reportingReplies[0].id,
+    });
+    expect(replies).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        authorAgentId: f.agent.id,
+        createdByRunId: completionRuns[0].id,
+        body: "Received the delegated task completion update.",
+      }),
+    ]));
+    await expect(
+      page.getByText("Received the delegated task completion update.", {
+        exact: true,
+      }),
+    ).toBeVisible();
     await expect(
       page.getByRole("article", {
         name: "Project created: Approved plan project",

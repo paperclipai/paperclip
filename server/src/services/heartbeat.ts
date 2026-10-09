@@ -232,7 +232,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { nativeRetryCancellationCommitCondition, rethrowNativeCancellationLockConflict, claimCancellationRequest, startupCancellationFence } from "./native-runtime/native-cancellation-request.js";
-import { CHAT_COMPLETION_WAKE_REASON, prepareChatCompletionTurn, chatCompletionInstruction, isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
+import { CHAT_COMPLETION_WAKE_REASON, prepareChatCompletionTurn, chatCompletionInstruction, isCompletedOnboardingHandoffWake, acknowledgeReusedChatCompletionReply } from "./chat-completion-delivery.js";
 import { AgentDirectoryReuseInvalidatedError, isAgentDirectoryCopy } from "./agent-directory-working-copies.js";
 
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
@@ -13933,6 +13933,18 @@ export function heartbeatService(
                   source: "run_presentation_resolver",
                   presentationSource: presentationDecision.chosenSource,
                 },
+              });
+            } else if (
+              issueId &&
+              !skipRunIssueComment &&
+              presentationDecision.commentAction === "reuse" &&
+              presentationDecision.commentId
+            ) {
+              await acknowledgeReusedChatCompletionReply(db, {
+                companyId: livenessRun.companyId,
+                issueId,
+                runId: livenessRun.id,
+                commentId: presentationDecision.commentId,
               });
             } else if (presentationDecision.commentAction === "create") {
               presentationDecision = {

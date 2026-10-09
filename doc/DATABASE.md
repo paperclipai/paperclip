@@ -503,6 +503,14 @@ Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVID
 
 Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
 
+Delegated-task completion deliveries acknowledge only a final persisted reply
+selected by the server. Finalization also acknowledges an existing provider
+comment when it reuses that comment as the final response. The acknowledgement
+revalidates the company, task, run, agent and conversation generation under the
+publication lock and records the response comment against the turn's frozen
+delivery batch. Progress comments alone leave deliveries queued; subsequent
+sweeps leave acknowledged deliveries alone.
+
 ## Resource lifecycle events
 
 `resource_lifecycle_events` records content-free lifecycle hooks in the same
