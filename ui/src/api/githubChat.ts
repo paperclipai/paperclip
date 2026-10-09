@@ -2,6 +2,8 @@ import type {
   ChatEndpointSetupState,
   GitHubChatConfiguration,
   GitHubTaskReview,
+  GitHubAppRegistrationInput, GitHubAppWizardState,
+  GitHubRepositoryPage,
 } from "@paperclipai/shared";
 import { api } from "./client";
 import type { ChatEndpoint, ChatEndpointResource } from "./chatEndpoints";
@@ -21,6 +23,12 @@ export type GitHubVerification = {
 };
 const path = (endpointId: string) => `/chat-endpoints/${endpointId}/github`;
 export const githubChatApi = {
+  repositories: (id: string, options: { offset?: number; search?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 20), offset: String(options.offset ?? 0), search: options.search ?? "" });
+    return api.get<GitHubRepositoryPage>(`${path(id)}/repositories?${query}`);
+  },
+  toggleAllRepositories: (id: string, enabled: boolean) =>
+    api.put<{ success: true }>(`${path(id)}/repositories/access`, { enabled }),
   configuration: (id: string) =>
     api.get<GitHubConfigurationRecord>(`${path(id)}/configuration`),
   save: (
@@ -32,15 +40,16 @@ export const githubChatApi = {
       expectedRevision,
       configuration,
     }),
-  registration: (id: string, name: string) =>
-    api.post<{
-      registrationUrl: string;
-      manifest: Record<string, unknown>;
-      expiresAt: string;
-    }>(`${path(id)}/registration`, { name }),
+  registration: (id: string, input: GitHubAppRegistrationInput) =>
+    api.post<GitHubAppWizardState>(`${path(id)}/registration`, input),
+  restartRegistration: (id: string, registrationId: string) => api.post<GitHubAppWizardState>(`${path(id)}/registration/restart`, { registrationId, appNotCreated: true }),
+  saveDraft: (id: string, input: GitHubAppRegistrationInput) => api.put<{ saved: true }>(`${path(id)}/draft`, input),
+  advance: (id: string) => api.post<GitHubAppWizardState>(`${path(id)}/setup`, {}),
+  startIdentity: (id: string) => api.post<{ authorizationUrl: string }>(`${path(id)}/identity/start`, {}),
+  confirmIdentity: (id: string, githubUserId: string) => api.post<GitHubAppWizardState>(`${path(id)}/identity/confirm`, { githubUserId }),
   connectApp: (
     id: string,
-    credentials: { appId: string; privateKey: string; webhookSecret: string },
+    credentials: { appId: string; privateKey: string; webhookSecret: string; clientId?: string; clientSecret?: string },
   ) => api.post<ChatEndpoint>(`${path(id)}/app`, credentials),
   refreshRepositories: (id: string) =>
     api.post<ChatEndpointResource[]>(`${path(id)}/repositories/refresh`, {}),
@@ -74,5 +83,6 @@ export const githubChatApi = {
       `${path(id)}/people/lookup`,
       { login },
     ),
+  review: (id: string, reviewId: string) => api.get<GitHubTaskReview>(`${path(id)}/reviews/${reviewId}`),
   reviews: (id: string) => api.get<GitHubTaskReview[]>(`${path(id)}/reviews`),
 };

@@ -2563,6 +2563,12 @@ function managedConnectorProfile(value: string | undefined): {
   return null;
 }
 
+function gitHubRepositoryOwnerType(repository: Record<string, unknown>) {
+  const type = recordValue(repository.owner) ? repository.owner.type : undefined;
+  return type === "Organization" ? "organization" as const
+    : type === "User" ? "personal" as const : undefined;
+}
+
 export async function loadGitHubTokenRepositories(
   headers: Record<string, string>,
   request: typeof fetch = fetch,
@@ -2570,6 +2576,7 @@ export async function loadGitHubTokenRepositories(
   const repositories: Array<{
     id: string;
     fullName: string;
+    ownerType?: "personal" | "organization";
     private?: boolean;
   }> = [];
   for (let page = 1; ; page += 1) {
@@ -2606,6 +2613,7 @@ export async function loadGitHubTokenRepositories(
       repositories.push({
         id: githubId(row.id)!,
         fullName: row.full_name,
+        ...(gitHubRepositoryOwnerType(row) ? { ownerType: gitHubRepositoryOwnerType(row) } : {}),
         ...(typeof row.private === "boolean" ? { private: row.private } : {}),
       });
     }
@@ -2632,6 +2640,7 @@ export async function loadGitHubGrantMetadata(
     id: string;
     fullName: string;
     installationId: string;
+    ownerType?: "personal" | "organization";
     private?: boolean;
   }>;
   installationUrl: string;
@@ -2713,7 +2722,7 @@ export async function loadGitHubGrantMetadata(
   const managementUrls = new Set<string>();
   const repositories = new Map<
     string,
-    { id: string; fullName: string; installationId: string; private?: boolean }
+    { id: string; fullName: string; installationId: string; ownerType?: "personal" | "organization"; private?: boolean }
   >();
   for (const installation of installations) {
     const installationId = githubId(installation.id);
@@ -2763,6 +2772,7 @@ export async function loadGitHubGrantMetadata(
         id,
         fullName,
         installationId,
+        ...(gitHubRepositoryOwnerType(repository) ? { ownerType: gitHubRepositoryOwnerType(repository) } : {}),
         ...(typeof repository.private === "boolean"
           ? { private: repository.private }
           : {}),

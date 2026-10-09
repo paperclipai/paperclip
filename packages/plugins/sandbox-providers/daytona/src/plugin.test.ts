@@ -36,7 +36,7 @@ import plugin, {
   __setDaytonaPluginContextForTest,
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
+import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
 import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
 
@@ -553,6 +553,57 @@ describe("Daytona sandbox provider plugin", () => {
     });
     afterEach(() => { vi.useRealTimers(); });
 
+    it.each(["create", "workspace", "shell", "expiry", "sentinel"] as const)("records the %s acquisition deadline without advancing late setup", async phase => {
+      const sandbox = createMockSandbox();
+      const never = () => new Promise<never>(() => {});
+      mockCreate.mockResolvedValue(sandbox);
+      if (phase === "create") mockCreate.mockImplementation(never);
+      if (phase === "workspace") sandbox.getWorkDir.mockImplementation(never);
+      if (phase === "shell") sandbox.process.executeCommand.mockImplementation(never);
+      if (phase === "expiry") sandbox.setTtl.mockImplementation(never);
+      if (phase === "sentinel") sandbox.fs.uploadFile.mockImplementation(never);
+      const pending = plugin.definition.onEnvironmentAcquireLease!({ ...params,
+        config: { ...params.config, timeoutMs: 2_000 },
+        ...(phase === "sentinel" ? { agentId: "agent-fixture", issueId: "issue-fixture" } : {}),
+        ...(phase === "expiry" ? { requestedExpiresAt: new Date(Date.now() + 60_000).toISOString() } : {}),
+      }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(2_000);
+      const error = await pending;
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase, elapsedMs: 2_000, budgetMs: 2_000 });
+      expect(error.message).toBe("Daytona lease acquisition timed out; allocation cleanup is pending");
+      expect(sandbox.delete).not.toHaveBeenCalled();
+    });
+
+    it.each(["create", "workspace"] as const)("keeps the original %s observation when cleanup consumes the remaining deadline", async phase => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockResolvedValue(sandbox);
+      const fail = () => new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("private-provider-failure")), 100));
+      if (phase === "create") { mockCreate.mockImplementation(fail); mockGet.mockImplementation(() => new Promise(() => {})); }
+      else { sandbox.getWorkDir.mockImplementation(fail); sandbox.delete.mockImplementation(() => new Promise(() => {})); }
+      const pending = plugin.definition.onEnvironmentAcquireLease!({ ...params, config: { ...params.config, timeoutMs: 2_000 } }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(2_000);
+      const error = await pending;
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase, elapsedMs: 100, budgetMs: 2_000 });
+      expect(error.message).toBe("Daytona lease acquisition timed out; allocation cleanup is pending");
+      expect(JSON.stringify(environmentCreationCleanupErrorData(error, true))).not.toContain("private-");
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(readEnvironmentAcquisitionDiagnostic(error)?.elapsedMs).toBe(100);
+    });
+
+    it("isolates overlapping acquisition observations and does not annotate successful leases", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockImplementationOnce(() => new Promise(() => {})).mockResolvedValueOnce(sandbox);
+      sandbox.getWorkDir.mockImplementation(() => new Promise(() => {}));
+      const first = plugin.definition.onEnvironmentAcquireLease!({ ...params, config: { ...params.config, timeoutMs: 2_000 } }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(100);
+      const second = plugin.definition.onEnvironmentAcquireLease!({ ...params, config: { ...params.config, timeoutMs: 3_000 } }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(readEnvironmentAcquisitionDiagnostic(await first)).toEqual({ phase: "create", elapsedMs: 2_000, budgetMs: 2_000 });
+      expect(readEnvironmentAcquisitionDiagnostic(await second)).toEqual({ phase: "workspace", elapsedMs: 3_000, budgetMs: 3_000 });
+      mockCreate.mockResolvedValue(createMockSandbox());
+      expect(await plugin.definition.onEnvironmentAcquireLease!(params)).not.toHaveProperty("acquisitionDiagnostic");
+    });
+
     it("allows a slow create and setup that finish inside the total budget", async () => {
       const sandbox = createMockSandbox();
       mockCreate.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(sandbox), 280_000)));
@@ -617,6 +668,7 @@ describe("Daytona sandbox provider plugin", () => {
         observedProviderLeaseId: sandbox.id, companyId: params.companyId, runId: params.runId,
       });
       expect(vi.getTimerCount()).toBe(0);
+      expect(readEnvironmentAcquisitionDiagnostic(error)).toEqual({ phase: "workspace", elapsedMs: 0, budgetMs: 300_000 });
     });
   });
 

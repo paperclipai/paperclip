@@ -189,7 +189,7 @@ describe("Connectors landing page", () => {
     manageComposioAppAccountMock.mockReset();
     listAgentsMock.mockResolvedValue([{ id: "default-agent", name: "Default agent", role: "ceo", reportsTo: null, status: "active", createdAt: new Date(0) }]);
     aggregatorCatalogMock.splice(0);
-    experimentalMock.mockResolvedValue({ enableChatConnectors: true });
+    experimentalMock.mockResolvedValue({ enableChatConnectors: true, enableGitHubReviewBots: true });
     chatListMock.mockResolvedValue([]);
     chatSetupMock.mockReset().mockResolvedValue({ status: "archived" });
     emailControlMock.mockReset().mockResolvedValue({ status: "archived" });
@@ -993,7 +993,7 @@ describe("Connectors landing page", () => {
     expect(container.querySelector('button[aria-label="Add key GitHub"]')).toBeNull();
   });
 
-  it("separates tools and saved bots and hides only bots when chat connectors are disabled", async () => {
+  it("separates tools and saved bots and gates bots independently of chat connectors", async () => {
     listGalleryMock.mockResolvedValue({ apps: ["github", "github-code-review-bot"].map(getAppStoreDefinition) });
     listApplicationsMock.mockResolvedValue({ applications: [
       application({ id: "github-tools", name: "GitHub", metadata: { sourceTemplateKey: "github" } }),
@@ -1023,7 +1023,10 @@ describe("Connectors landing page", () => {
     const finish = [...bots.querySelectorAll("button")].find((button) => button.textContent === "Finish setup")!;
     await act(() => finish.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&purpose=chat&resume=endpoint-2");
-    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false }); });
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false, enableGitHubReviewBots: true }); });
+    await flushReact();
+    expect(container.querySelector('[data-app-slug="github-code-review-bot"]')).not.toBeNull();
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: true, enableGitHubReviewBots: false }); });
     await flushReact();
     expect(container.querySelector('[data-app-slug="github-code-review-bot"]')).toBeNull();
     expect(container.textContent).not.toContain("Review agent");

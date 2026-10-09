@@ -123,6 +123,22 @@ function TimestampReview() {
   );
 }
 
+function SteeringSenderAvatarReview() {
+  const comments = [
+    { ...steeredComment, id: "my-steer", authorUserId: "viewer", body: "Use the current design tokens." },
+    { ...steeredComment, id: "colleague-steer", authorUserId: "colleague", body: "Please show who sent this steering message." },
+  ];
+  const items = commentsToTaskChatItems(comments, {
+    currentUserId: "viewer",
+    userProfileMap: new Map([["colleague", { label: "Alex Rivera", image: null }]]),
+  });
+  return (
+    <div className="flex max-w-xl flex-col gap-6 rounded-lg border border-border bg-background p-4">
+      {items.map((item) => <TaskChatBubble key={item.id} item={item as TaskChatMessageItem} animateEntry={false} />)}
+    </div>
+  );
+}
+
 function ReconnectingAlignmentReview() {
   const [open, setOpen] = useState(false);
   return (
@@ -155,6 +171,10 @@ export const CollapsedRunningChainOfThought: Story = {};
 
 export const RegularTimestampAfterSteering: Story = {
   render: () => <TimestampReview />,
+};
+
+export const SteeringSenderAvatar: Story = {
+  render: () => <SteeringSenderAvatarReview />,
 };
 
 export const ReconnectingCaretAndDotAlignment: Story = {
