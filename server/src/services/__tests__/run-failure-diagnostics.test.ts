@@ -1,3 +1,4 @@
+import { captureEnvironmentAcquisitionDiagnostic } from "../environment-acquisition-diagnostics.js";
 import { describe, expect, it } from "vitest";
 import type { heartbeatRuns } from "@paperclipai/db";
 import { collectRunFailureDiagnostics, collectRunFailureSecretValues, redactRunFailureSecretValues, sanitizeRunFailureDiagnostics, sanitizeRunFailureText } from "../run-failure-diagnostics.js";
@@ -7,6 +8,36 @@ const run = (overrides: Partial<Run> = {}) => ({ resultJson: null, ...overrides 
 const collect = (error: unknown) => collectRunFailureDiagnostics(run(), { error });
 
 describe("run failure diagnostics", () => {
+  it("reports only private acquisition observations for the exact failed setup run", () => {
+    const scope = { companyId: "company-fixture", environmentId: "environment-fixture", runId: "run-fixture" };
+    const diagnostic = { phase: "workspace", elapsedMs: 100, budgetMs: 2_000 } as const;
+    const error = Object.freeze(new Error("Acquisition failed"));
+    const properties = Object.getOwnPropertyDescriptors(error);
+    captureEnvironmentAcquisitionDiagnostic(error, scope, diagnostic);
+    const fixture = run({ id: scope.runId, companyId: scope.companyId, errorCode: "setup_failed" });
+    const collectSetup = (failure: unknown, record = fixture) => collectRunFailureDiagnostics(record, { error: failure, phase: "setup" }).execution;
+    expect(collectSetup(new Error("Cleanup confirmed", { cause: error }))).toMatchObject({
+      environmentAcquisitionPhase: "workspace", environmentAcquisitionElapsedMs: 100, environmentAcquisitionBudgetMs: 2_000,
+    });
+    expect(collectSetup(error, run({ ...fixture, id: "another-run" }))).not.toHaveProperty("environmentAcquisitionPhase");
+    expect(collectSetup(error, run({ ...fixture, companyId: "another-company" }))).not.toHaveProperty("environmentAcquisitionPhase");
+    expect(collectSetup(error, run({ ...fixture, errorCode: "adapter_failed" }))).not.toHaveProperty("environmentAcquisitionPhase");
+    expect(collectRunFailureDiagnostics(fixture, { error, phase: "execute" }).execution).not.toHaveProperty("environmentAcquisitionPhase");
+    expect(Object.getOwnPropertyDescriptors(error)).toEqual(properties);
+    captureEnvironmentAcquisitionDiagnostic(error, scope, null);
+    expect(collectSetup(error)).not.toHaveProperty("environmentAcquisitionPhase");
+  });
+
+  it("ignores forged acquisition fields and persisted JSON without private producer evidence", () => {
+    const acquisitionDiagnostic = { phase: "shell", elapsedMs: 2_000, budgetMs: 2_000 };
+    const error = Object.assign(new Error("Acquisition failed"), { acquisitionDiagnostic,
+      data: { schema: "paperclip/environment-creation-cleanup/v1", acquisitionDiagnostic },
+    });
+    expect(collectRunFailureDiagnostics(run({ errorCode: "setup_failed", resultJson: { acquisitionDiagnostic,
+      environmentAcquisitionPhase: "shell", environmentAcquisitionElapsedMs: 2_000,
+    } }), { error, phase: "setup" }).execution).toEqual({ failurePhase: "setup" });
+  });
+
   it("exports only bounded workspace base-ref observations without treating them as proof", () => {
     const resultJson = { configurationIncomplete: { reason: "workspace_base_ref_unresolved",
       requestedRef: "private-ref", fetchError: "private-stderr", baseRefDiagnostic: {

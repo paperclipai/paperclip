@@ -1601,7 +1601,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       sendMessage(createErrorResponse(id, errorCode, errorMessage,
         method === "environmentAcquireLease" || method === "environmentDestroyLease"
-          ? environmentCreationCleanupErrorData(err)
+          ? environmentCreationCleanupErrorData(err, method === "environmentAcquireLease")
           : method === "environmentSyncOut" ? environmentSyncErrorData(err) : undefined));
     } finally {
       done?.();

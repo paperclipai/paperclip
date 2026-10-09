@@ -1,7 +1,8 @@
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
-import { readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
+import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import { preserveEnvironmentSyncOutErrorDiagnostic } from "./environment-sync-out-error.js";
+import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { hasNativeWorkspaceExportResume, releaseCompletedNativeWorkspaceExportRetention } from "./native-runtime/native-workspace-export-resume.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -2126,11 +2127,17 @@ function createSandboxEnvironmentDriver(
               ),
             );
           } catch (error) {
+            captureEnvironmentAcquisitionDiagnostic(error, {
+              companyId: input.companyId, environmentId: input.environment.id, runId: acquisitionRunId,
+            }, null);
             const cleanup = readEnvironmentCreationCleanupError(error);
             // The authenticated worker may identify its uncertain allocation,
             // but cannot redirect cleanup to another company, environment, or run.
             if (cleanup && cleanup.companyId === input.companyId &&
                 cleanup.environmentId === input.environment.id && cleanup.runId === acquisitionRunId) {
+              if (error instanceof JsonRpcCallError) captureEnvironmentAcquisitionDiagnostic(error, {
+                companyId: input.companyId, environmentId: input.environment.id, runId: acquisitionRunId,
+              }, readEnvironmentAcquisitionDiagnostic(error));
               const cleanupMetadata = {
                 ...sandboxConfigForLeaseMetadata(storedConfig),
                 failedCreateCleanup: cleanup,
