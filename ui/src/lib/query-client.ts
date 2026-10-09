@@ -1,0 +1,203 @@
+/**
+ * The app's React Query client and its outage-aware defaults.
+ *
+ * - Queries retry transient errors with backoff for about 30 seconds and never
+ *   retry a 4xx. `networkMode: "online"` plus `bindConnectivity` means a
+ *   confirmed outage pauses queries instead of failing them.
+ * - Mutations fail fast by default (`networkMode: "always"`, no retry). A
+ *   mutation that is safe to send twice opts in with
+ *   `meta: { replay: "idempotent" }`: it pauses while the server is
+ *   unreachable, retries transient errors, and resumes on reconnect.
+ * - `QueryCache`/`MutationCache` events feed the connectivity store; final
+ *   query errors go to Sentry unless they are transient or client errors.
+ * - A mutation with no `onError` of its own gets a readable toast for a
+ *   non-transient failure. Transient failures never toast: the connection
+ *   banner covers them.
+ */
+
+import {
+  MutationCache,
+  QueryCache,
+  QueryClient,
+  onlineManager,
+  type DefaultError,
+  type Mutation,
+  type MutationOptions,
+  type QueryClientConfig,
+} from "@tanstack/react-query";
+import { classifyError, describeError, errorRetryAfterMs, isTransientError } from "@/api/errors";
+import { MAX_PROBE_DELAY_MS, PROBE_BACKOFF_MS, type ConnectivityStore } from "./connectivity";
+
+export interface AppMutationMeta extends Record<string, unknown> {
+  /**
+   * `"idempotent"`: sending this mutation twice has the same effect as once
+   * (an absolute-value PATCH, a POST with an idempotency key). It may pause
+   * across an outage and resend on reconnect.
+   */
+  replay?: "idempotent";
+  /** `false` suppresses the global error toast for a mutation without `onError`. */
+  errorToast?: false;
+}
+
+declare module "@tanstack/react-query" {
+  interface Register {
+    mutationMeta: AppMutationMeta;
+  }
+}
+
+/** Delay before each transient retry; together roughly 30 seconds. */
+export const TRANSIENT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000] as const;
+/** Unexpected failures (5xx other than gateway errors, parse errors) retry briefly. */
+export const UNKNOWN_RETRY_LIMIT = 2;
+const MAX_RETRY_DELAY_MS = 30_000;
+
+/** Retry policy shared by queries and replayable mutations. */
+export function shouldRetryRequest(failureCount: number, error: unknown): boolean {
+  const kind = classifyError(error);
+  if (kind === "transient") return failureCount < TRANSIENT_RETRY_DELAYS_MS.length;
+  if (kind === "unknown") return failureCount < UNKNOWN_RETRY_LIMIT;
+  return false;
+}
+
+/** Backoff for `shouldRetryRequest`; a longer server `Retry-After` wins. */
+export function retryDelayFor(failureCount: number, error: unknown): number {
+  const base = TRANSIENT_RETRY_DELAYS_MS[Math.min(failureCount, TRANSIENT_RETRY_DELAYS_MS.length - 1)];
+  const retryAfterMs = errorRetryAfterMs(error);
+  return retryAfterMs === null ? base : Math.min(Math.max(base, retryAfterMs), MAX_RETRY_DELAY_MS);
+}
+
+/**
+ * For reads the app cannot open without (the access gate): retry transient
+ * errors without limit, never anything else. Retries pause while the
+ * connectivity store reports an outage, so this does not poll a down server.
+ */
+export function retryWhileTransient(_failureCount: number, error: unknown): boolean {
+  return isTransientError(error);
+}
+
+/** Backoff for `retryWhileTransient`: the connectivity probe schedule, capped at 15s. */
+export function reconnectDelayFor(failureCount: number, error: unknown): number {
+  const base = PROBE_BACKOFF_MS[Math.min(failureCount, PROBE_BACKOFF_MS.length - 1)];
+  const retryAfterMs = errorRetryAfterMs(error);
+  return retryAfterMs === null ? base : Math.min(Math.max(base, retryAfterMs), MAX_PROBE_DELAY_MS);
+}
+
+/** Query errors worth a Sentry event: not outages, not denials or missing items. */
+export function shouldReportQueryError(error: unknown): boolean {
+  return classifyError(error) === "unknown";
+}
+
+export interface MutationErrorToast {
+  title: string;
+  body: string;
+}
+
+export interface AppQueryClientDeps {
+  connectivity: Pick<ConnectivityStore, "reportError" | "reportSuccess">;
+  reportError?: (error: unknown) => void;
+  /** Show a toast for a failed mutation that has no handler of its own. */
+  notifyMutationError?: (toast: MutationErrorToast) => void;
+}
+
+/** Whether the global handler should toast for this failed mutation. */
+export function shouldToastMutationError(
+  error: unknown,
+  mutation: Pick<Mutation<unknown, DefaultError, unknown, unknown>, "options" | "meta">,
+): boolean {
+  if (mutation.options.onError) return false;
+  if (mutation.meta?.errorToast === false) return false;
+  const kind = classifyError(error);
+  return kind !== "transient" && kind !== "aborted";
+}
+
+class AppQueryClient extends QueryClient {
+  override defaultMutationOptions<T extends MutationOptions<any, any, any, any>>(options?: T): T {
+    const defaulted = super.defaultMutationOptions(options);
+    if (options?._defaulted || defaulted.meta?.replay !== "idempotent") return defaulted;
+    return {
+      ...defaulted,
+      networkMode: options?.networkMode ?? "online",
+      retry: options?.retry ?? shouldRetryRequest,
+      retryDelay: options?.retryDelay ?? retryDelayFor,
+    };
+  }
+}
+
+/** A polling query that keeps failing reports once per window, not on every poll. */
+const QUERY_ERROR_REPORT_WINDOW_MS = 10 * 60_000;
+
+export function createAppQueryClient(deps: AppQueryClientDeps, config: QueryClientConfig = {}): QueryClient {
+  const lastReportedAt = new Map<string, number>();
+  const queryCache = new QueryCache({
+    onError: (error, query) => {
+      if (!deps.reportError || !shouldReportQueryError(error)) return;
+      const now = Date.now();
+      const last = lastReportedAt.get(query.queryHash);
+      if (last !== undefined && now - last < QUERY_ERROR_REPORT_WINDOW_MS) return;
+      lastReportedAt.set(query.queryHash, now);
+      deps.reportError(error);
+    },
+  });
+  const mutationCache = new MutationCache({
+    onError: (error, _variables, _context, mutation) => {
+      if (!deps.notifyMutationError || !shouldToastMutationError(error, mutation)) return;
+      const { title, body } = describeError(error);
+      deps.notifyMutationError({ title, body });
+    },
+  });
+
+  // Retry failures are only visible as cache events, and connectivity needs
+  // the first failure, not the last one.
+  queryCache.subscribe((event) => {
+    if (event.type !== "updated") return;
+    if (event.action.type === "failed" || event.action.type === "error") deps.connectivity.reportError(event.action.error);
+    // `setQueryData` (optimistic and live-event writes) dispatches a manual
+    // success that never touched the server; only fetched data proves reachability.
+    else if (event.action.type === "success" && !event.action.manual) deps.connectivity.reportSuccess();
+  });
+  mutationCache.subscribe((event) => {
+    if (event.type !== "updated") return;
+    if (event.action.type === "failed" || event.action.type === "error") deps.connectivity.reportError(event.action.error);
+    else if (event.action.type === "success") deps.connectivity.reportSuccess();
+  });
+
+  return new AppQueryClient({
+    ...config,
+    queryCache,
+    mutationCache,
+    defaultOptions: {
+      ...config.defaultOptions,
+      queries: {
+        retry: shouldRetryRequest,
+        retryDelay: retryDelayFor,
+        networkMode: "online",
+        ...config.defaultOptions?.queries,
+      },
+      mutations: {
+        networkMode: "always",
+        retry: 0,
+        ...config.defaultOptions?.mutations,
+      },
+    },
+  });
+}
+
+/**
+ * Drive React Query's `onlineManager` from the connectivity store and refresh
+ * live queries once when the server comes back. Returns a cleanup.
+ */
+export function bindConnectivity(queryClient: QueryClient, store: ConnectivityStore): () => void {
+  const isOnline = () => store.getSnapshot().status === "online";
+  onlineManager.setEventListener((setOnline) => {
+    setOnline(isOnline());
+    return store.subscribe(() => setOnline(isOnline()));
+  });
+  const stopRecover = store.onRecover(() => {
+    void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
+  });
+  const stopBrowserEvents = store.start();
+  return () => {
+    stopRecover();
+    stopBrowserEvents();
+  };
+}

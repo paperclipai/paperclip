@@ -1,18 +1,20 @@
+import { errorCopy, isTransientError } from "./errors";
+
 /** A proxy or restarting server answered an API request without usable JSON. */
 export class ApiUnavailableError extends Error {
   constructor(public readonly status: number) {
-    super("Paperclip is temporarily unavailable. Please try again in a moment.");
+    super(errorCopy("transient").body);
     this.name = "ApiUnavailableError";
   }
 }
 
+/**
+ * Thin alias for `classifyError(error) === "transient"` (see `api/errors.ts`),
+ * kept so existing callers such as `CloudAccessGate` pick up new transient
+ * codes (`tenant_app_unavailable` in any status, 408/425/429) automatically.
+ */
 export function isTemporaryApiError(error: unknown): boolean {
-  if (error instanceof ApiUnavailableError) return true;
-  if (!(error instanceof Error)) return false;
-  if ("status" in error && [502, 503, 504].includes(error.status as number)) return true;
-  // Fetch uses different network-failure messages across browsers. Do not
-  // classify arbitrary TypeErrors (programming bugs) or aborts as outages.
-  return error instanceof TypeError && /fetch|network|load failed/i.test(error.message);
+  return isTransientError(error);
 }
 
 export async function readApiJson<T = unknown>(response: Response): Promise<T> {

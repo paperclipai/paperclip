@@ -12,6 +12,7 @@
  * action is permitted, it only explains the answer the server already gave.
  */
 
+import { describeError, errorCopy, isRawErrorCode, isTransientError } from "@/api/errors";
 import type { InteractionAudienceDescription } from "./interaction-audience";
 
 /**
@@ -71,12 +72,15 @@ function errorStatus(error: unknown): number | null {
   return typeof status === "number" ? status : null;
 }
 
-/** The server's human-readable reason, preserved verbatim apart from punctuation. */
+/**
+ * The server's human-readable reason, preserved verbatim apart from
+ * punctuation. A raw code (`tenant_app_unavailable`) is not a reason.
+ */
 function serverReason(error: unknown): string | null {
   const body = record(record(error)?.body);
   const fromBody = typeof body?.error === "string" ? body.error.trim() : "";
   const fromError = error instanceof Error ? error.message.trim() : "";
-  const reason = fromBody || fromError;
+  const reason = [fromBody, fromError].find((text) => text && !isRawErrorCode(text));
   if (!reason) return null;
   // The API writes reasons as bare clauses ("This interaction is human-only").
   return /[.!?]$/.test(reason) ? reason : `${reason}.`;
@@ -130,8 +134,8 @@ export function describeInteractionResolutionFailure(
       message: [
         reason
           ?? (coded
-            ? "You are not in this card's resolver audience."
-            : "You do not have permission to respond to this card."),
+            ? errorCopy("interaction_audience_denied").body
+            : errorCopy("interaction_forbidden").body),
         responder,
       ]
         .filter(Boolean)
@@ -143,14 +147,20 @@ export function describeInteractionResolutionFailure(
     return {
       kind: "settled",
       code,
-      message: reason ?? "This request is no longer waiting for a decision.",
+      message: reason ?? errorCopy("interaction_settled").body,
     };
+  }
+
+  // An outage or gateway blip: the server's text is a status line or a raw
+  // code, so use the shared copy (which already invites a retry).
+  if (isTransientError(error)) {
+    return { kind: "transient", code, message: describeError(error).body };
   }
 
   return {
     kind: "transient",
     code,
-    message: reason ? `${reason} Try again.` : "Couldn't submit. Try again.",
+    message: reason ? `${reason} Try again.` : errorCopy("interaction_submit_failed").body,
   };
 }
 
