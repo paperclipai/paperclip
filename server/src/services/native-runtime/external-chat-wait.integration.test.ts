@@ -3866,9 +3866,11 @@ describe("native external-chat response wait", () => {
         .select({ resultJson: heartbeatRuns.resultJson })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, fixture.runId));
+      const authorizationReason = provider === "github"
+        ? "internal_agent_write" : "allow_chat_run_presentation";
       await expect(
         resolveChatRunPresentationAuthorizationReason(db, fixture),
-      ).resolves.toBe("allow_chat_run_presentation");
+      ).resolves.toBe(authorizationReason);
       const response = resolveHeartbeatRunResponse({
         resultJson: finalizedRun!.resultJson,
         preferFinalResponseOverExistingComment: true,
@@ -3884,14 +3886,14 @@ describe("native external-chat response wait", () => {
         fixture.issueId,
         response.text!,
         { agentId: fixture.agentId, runId: fixture.runId },
-        { authorizationReason: "allow_chat_run_presentation" },
+        { authorizationReason },
       );
       await expect(
         db
           .select()
           .from(chatPublications)
           .where(eq(chatPublications.commentId, comment.id)),
-      ).resolves.toEqual([
+      ).resolves.toEqual(provider === "github" ? [] : [
         expect.objectContaining({
           conversationId: fixture.conversationId,
           endpointId: fixture.endpointId,
