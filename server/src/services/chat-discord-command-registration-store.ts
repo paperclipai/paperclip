@@ -136,6 +136,19 @@ export async function readRegisteredDiscordCommandRegistration(
     : null;
 }
 
+/** Lock-free: is this endpoint's stored registration waiting for a future retryAt? */
+export async function isDiscordCommandRegistrationDeferred(
+  database: Database,
+  scope: DiscordCommandRegistrationScope,
+): Promise<boolean> {
+  const result = (await stored(database, scope, false, true))?.row.result;
+  const due =
+    result?.schema === resultSchema && typeof result.retryAt === "string"
+      ? Date.parse(result.retryAt)
+      : NaN;
+  return Number.isFinite(due) && (result?.retryIndefinite === true || due > Date.now());
+}
+
 export async function reconcileStoredDiscordCommandRegistration(
   db: Db,
   options: StoredDiscordCommandRegistrationOptions,

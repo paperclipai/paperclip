@@ -10,7 +10,7 @@ import { githubAutomaticReviewEvent } from "../services/chat-github-events.js";
 import { githubBotToolsForSession } from "../services/chat-github-tools.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
-import { chatGitHubRegistrations, chatGitHubReviews, toolCatalogEntries } from "@paperclipai/db";
+import { chatGitHubRegistrations, chatGitHubReviews, secretAccessEvents, toolCatalogEntries } from "@paperclipai/db";
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as cloudRuntimeIdentity from "../services/cloud-runtime-identity.js";
 import {
@@ -3401,6 +3401,34 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         );
         await f.service.reconcileProviderRuntimes();
         expect(f.calls).toEqual(["GET", "POST"]);
+      } finally {
+        await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
+    it("does not resolve credentials on idle ticks while the registration is not due", async () => {
+      const f = await registrationFixture();
+      try {
+        await f.configure();
+        const credentialReads = async () =>
+          (
+            await db
+              .select({ id: secretAccessEvents.id })
+              .from(secretAccessEvents)
+              .where(
+                and(
+                  eq(secretAccessEvents.consumerId, f.endpoint.connectionId),
+                  like(secretAccessEvents.configPath, "credentials.%"),
+                ),
+              )
+          ).length;
+        const before = await credentialReads();
+        await f.service.reconcileProviderRuntimes();
+        expect(await credentialReads()).toBe(before);
+        expect(f.calls).toEqual(["GET", "POST"]);
+        await f.makeDue();
+        await f.service.reconcileProviderRuntimes();
+        expect(await credentialReads()).toBeGreaterThan(before);
       } finally {
         await retireRegistrationFixture(f.service, f.endpoint.id);
       }
