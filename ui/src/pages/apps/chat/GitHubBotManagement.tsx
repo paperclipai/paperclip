@@ -177,6 +177,7 @@ export function GitHubBotManagement({
   });
   const [draft, setDraft] = useState<GitHubConfigurationRecord | null>(null);
   const [editorVersion, setEditorVersion] = useState(0);
+  const [scoreValid, setScoreValid] = useState(true);
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -292,6 +293,7 @@ export function GitHubBotManagement({
         ) : (
           <>
             <GitHubPolicyEditor key={editorVersion}
+              onValidityChange={setScoreValid}
               accessHref={`/apps/chat/${endpoint.id}/access`}
               policy={config.defaults}
               onChange={(defaults) => edit({ ...config, defaults })}
@@ -309,7 +311,7 @@ export function GitHubBotManagement({
           {notice}
         </p>
       )}
-      {dirty && (
+      {(dirty || !scoreValid) && (
         <div className="sticky bottom-(--tc-composer-bottom) z-10 flex items-center justify-between gap-3 border-t border-border bg-background py-4 md:bottom-0">
           <Button
             variant="ghost"
@@ -323,7 +325,7 @@ export function GitHubBotManagement({
             Discard changes
           </Button>
           <Button
-            disabled={pending}
+            disabled={pending || !scoreValid}
             onClick={() =>
               void act(async () => {
                 const saved = await githubChatApi.save(

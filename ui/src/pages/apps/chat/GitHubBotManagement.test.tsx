@@ -55,6 +55,9 @@ vi.mock("@/api/agents", () => ({ agentsApi: { get: vi.fn() } }));
 vi.mock("@/context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: mocks.setBreadcrumbs }),
 }));
+vi.mock("@/context/CompanyContext", () => ({
+  useOptionalCompany: () => ({ companies: [{ id: "company", name: "Acme Research" }], selectedCompany: { id: "other", name: "Wrong company" } }),
+}));
 vi.mock("@/context/ToastContext", () => ({
   useToast: () => ({ pushToast: vi.fn() }),
 }));
@@ -353,8 +356,7 @@ describe("GitHub bot management", () => {
     await render();
     await input(container.querySelector("textarea")!, "Edited instructions");
     await render("access");
-    await vi.waitFor(() => expect(container.querySelector('[aria-label="Run automatically for @maya"]')?.hasAttribute("disabled")).toBe(false));
-    await click("Run automatically for @maya");
+    await click("Allow mentions from all linked members");
     await render("reviews");
     await render("settings");
     expect(container.querySelector("textarea")?.value).toBe(
@@ -369,7 +371,7 @@ describe("GitHub bot management", () => {
     expect(saved).toEqual({
       ...base,
       defaults: { ...base.defaults, instructions: "Edited instructions" },
-      people: [{ ...base.people[0], automaticReviews: false }],
+      memberAccess: "all_linked",
     });
     await vi.waitFor(() =>
       expect(container.textContent).toContain("Changes saved."),
@@ -431,20 +433,17 @@ describe("GitHub bot management", () => {
     expect(saved.defaults.instructions).toBe("Updated default instructions");
     expect(saved.repositories).toEqual(overrides);
   });
-  it("configures implicit linked-member events without switching to a narrower selected-member list", async () => {
-    mocks.config.mockResolvedValue({
-      revision: 4,
-      configuration: { ...base, memberAccess: "all_linked", people: [] },
-    });
+  it("names the endpoint company and omits per-person automatic switches", async () => {
+    mocks.config.mockResolvedValue({ revision: 4, configuration: { ...base, memberAccess: "all_linked", people: [] } });
     await render("access");
-    await vi.waitFor(() =>
-      expect(container.querySelector('[aria-label="Run automatically for @maya"]')).not.toBeNull(),
-    );
-    await click("Run automatically for @maya");
+    await vi.waitFor(() => expect(container.textContent).toContain("@maya"));
+    expect(container.textContent).toContain("Includes members from Acme Research who link their GitHub account later.");
+    expect(container.textContent).not.toContain("Wrong company");
+    expect(container.querySelector('[aria-label="Run automatically for @maya"]')).toBeNull();
+    await click("Allow mentions from all linked members");
+    await click("Allow mentions from @maya");
     await click("Save changes");
-    await vi.waitFor(() => expect(mocks.save).toHaveBeenCalled());
-    expect(mocks.save.mock.calls[0][2].memberAccess).toBe("all_linked");
-    expect(mocks.save.mock.calls[0][2].people[0].automaticReviews).toBe(true);
+    expect(mocks.save.mock.calls[0][2].people).toEqual([{ kind: "member", userId: "member", githubUserId: "42", login: "maya" }]);
   });
   it("does not show an off switch or silently enable a retained disabled bot", async () => {
     mocks.config.mockResolvedValue({
@@ -510,32 +509,59 @@ describe("GitHub bot management", () => {
     await click("Save changes");
     expect(mocks.save.mock.calls[0][2].defaults).toEqual({ ...base.defaults, invocation: "allowed_authors", instructions: "Still keep the same audience" });
   });
-  it("uses the score slider for report-only and preserves unrelated review decisions", async () => {
+  it("defaults to a typed score of 5 and preserves report-only and other review decisions", async () => {
     await render();
-    await input(container.querySelector('input[type="range"]')!, "0");
+    const score = container.querySelector<HTMLInputElement>('input[type="number"]')!;
+    expect(score.value).toBe("5");
+    expect(container.querySelector('input[type="range"]')).toBeNull();
+    await input(score, "3");
     await click("Save changes");
-    expect(mocks.save.mock.calls[0][2].defaults).toEqual({ ...base.defaults, ratingThreshold: null });
-    await input(container.querySelector('input[type="range"]')!, "3");
+    expect(mocks.save.mock.calls[0][2].defaults).toEqual({ ...base.defaults, ratingThreshold: 3 });
+    await click("Report only");
     await click("Save changes");
-    expect(mocks.save.mock.calls[1][2].defaults.ratingThreshold).toBe(3);
+    expect(mocks.save.mock.calls[1][2].defaults.ratingThreshold).toBeNull();
+    expect(score.disabled).toBe(true);
+    await click("Report only");
+    expect(score.value).toBe("5");
   });
-  it("turns off selected member access without leaving automatic permission enabled", async () => {
+  it.each(["", "0", "6", "2.5"])("does not save an invalid score %s and allows correction or discard", async (value) => {
+    await render();
+    const score = container.querySelector<HTMLInputElement>('input[type="number"]')!;
+    await input(score, value);
+    expect(container.textContent).toContain("Enter a whole number from 1 to 5.");
+    await click("Save changes");
+    expect(mocks.save).not.toHaveBeenCalled();
+    await input(score, "4");
+    await click("Save changes");
+    expect(mocks.save.mock.calls[0][2].defaults.ratingThreshold).toBe(4);
+    await input(score, value);
+    await click("Discard changes");
+    expect(container.querySelector<HTMLInputElement>('input[type="number"]')?.value).toBe("4");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+  it("retains a saved report-only policy until the user changes it", async () => {
+    mocks.config.mockResolvedValue({ revision: 4, configuration: { ...base, defaults: { ...base.defaults, ratingThreshold: null } } });
+    await render();
+    expect(container.querySelector<HTMLInputElement>('input[type="number"]')?.disabled).toBe(true);
+    await input(container.querySelector("textarea")!, "Updated guidance");
+    await click("Save changes");
+    expect(mocks.save.mock.calls[0][2].defaults.ratingThreshold).toBeNull();
+  });
+  it("turns off selected member access without retaining an authorization entry", async () => {
     await render("access");
     await vi.waitFor(() => expect(container.querySelector('[aria-label="Allow mentions from @maya"]')?.hasAttribute("disabled")).toBe(false));
     await click("Allow mentions from @maya");
-    expect(container.querySelector('[aria-label="Run automatically for @maya"]')?.hasAttribute("disabled")).toBe(true);
+    expect(container.querySelector('[aria-label="Run automatically for @maya"]')).toBeNull();
     await click("Save changes");
     expect(mocks.save.mock.calls[0][2].people).toEqual([]);
     expect(mocks.save.mock.calls[0][2].memberAccess).toBe("selected");
   });
-  it("keeps automatic permissions dormant when global automatic runs are off", async () => {
+  it("keeps automatic runs off when editing member access", async () => {
     mocks.config.mockResolvedValue({ revision: 4, configuration: { ...base, defaults: { ...base.defaults, invocation: "mentions_only" } } });
     await render("access");
-    await vi.waitFor(() => expect(container.querySelector('[aria-label="Run automatically for @maya"]')?.hasAttribute("disabled")).toBe(false));
-    await click("Run automatically for @maya");
+    await click("Allow mentions from all linked members");
     await click("Save changes");
     expect(mocks.save.mock.calls[0][2].defaults.invocation).toBe("mentions_only");
-    expect(mocks.save.mock.calls[0][2].people[0].automaticReviews).toBe(false);
   });
   it("keeps newlines and commas while editing filters, saves separate entries, and restores discarded values", async () => {
     await render();

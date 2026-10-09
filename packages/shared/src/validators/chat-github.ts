@@ -55,7 +55,8 @@ export const githubReviewPolicySchema = z
 const person = {
   githubUserId: githubIdSchema,
   login: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}(?:\[bot\])?$/),
-  automaticReviews: z.boolean(),
+  // Accept legacy saved configurations; automatic scheduling uses author filters.
+  automaticReviews: z.boolean().optional(),
 };
 export const githubAllowedPersonSchema = z.discriminatedUnion("kind", [
   z

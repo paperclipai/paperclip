@@ -28797,7 +28797,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       event_disabled: "Automatic runs are off for this GitHub event.",
       person_not_authorized: "The GitHub author is not authorized to start automatic work.",
       identity_revoked: "The GitHub author's identity link was revoked.",
-      automatic_reviews_disabled_for_person: "Automatic runs are off for this GitHub author.",
       guest_automatic_reviews_disabled: "Automatic runs are off for external contributors.",
       responsible_user_unavailable: "The member responsible for automatic tasks is unavailable.",
       repository_disabled: "Destination is not enabled in Paperclip",

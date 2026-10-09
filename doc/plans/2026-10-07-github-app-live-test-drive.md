@@ -773,3 +773,35 @@ Logs: `/private/tmp/github-ux-{tests,typecheck,build,storybook-build,tokens}.log
 Screenshots: `/private/tmp/github-bot-settings-ux-20261009.png` and
 `/private/tmp/github-bot-access-ux-20261009.png`. The existing test drive remains
 available on port 3110.
+
+
+## Typed score and author filters — 2026-10-09
+
+This follow-up replaces the slider and per-person automatic permissions described
+above. The score is a whole-number input from 1 to 5, defaulting to 5. Invalid input
+has an inline error and cannot be saved. Explicit report-only configurations remain
+supported. Inline help distinguishes Paperclip's assessment/check conclusion from
+GitHub's branch-rule requirement and from formal PR approval.
+
+Access no longer shows per-person automatic switches. The scheduler ignores legacy
+`automaticReviews` fields and uses author filters. Current member authorization,
+repository restrictions, global automation, event selection, the external-author
+opt-in and active sponsorship are still enforced. The linked-members description
+uses the connection company's name, even if another company is selected elsewhere.
+
+Live browser checks on the existing port-3110 test drive verified score validation,
+correction and discard, the actual event-specific slash picker, insertion of the
+`github-instruction-smoke` rich link, and retention when switching events. The New
+issue instructions remained separate. Verified company-specific copy and absence
+of per-person switches in Access. Desktop and 390px score layouts were inspected.
+All test draft edits were discarded; no saved bot configuration or GitHub rule was
+changed and no agent run was started during this follow-up.
+
+Focused management/wizard/policy/native-input tests passed (107). A further group
+covering management, policy and heartbeat GitHub launchers passed (69; includes
+repeat coverage). UI and server typechecks, UI build, token gates and whitespace
+checks passed. Repository-wide tests were not repeated; the existing draft PR's
+full-suite/CI qualification gaps remain. Evidence:
+`/private/tmp/github-settings-refinements-*.log`,
+`/private/tmp/github-score-refinements-20261009.png`, and
+`/private/tmp/github-access-refinements-20261009.png`.

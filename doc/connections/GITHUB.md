@@ -30,13 +30,20 @@ content and other companies' skills cannot assign skills to the run.
 
 Authorized @mentions remain available when **Run automatically** is on or off.
 The switch in Settings reveals the PR and issue event checkboxes. Access lists
-company members and external contributors separately, with mentions and automatic
-runs shown on each row. An automatic event needs both an enabled event in Settings
-and permission for its author in Access. External contributors additionally need
-**Allow automatic runs for external contributors**. Their restricted guest profile
-and sponsor requirements are unchanged.
+company members and external contributors separately. Author include/exclude filters
+in Settings control whose activity starts automatic work; there is no per-person
+automatic-run switch. Automatic events still require an authorized author and an
+enabled event. Legacy `people[].automaticReviews` values are accepted but ignored.
+External contributors additionally need **Allow automatic runs for external contributors**.
+Their restricted guest profile and sponsor requirements are unchanged.
 
-The passing-score slider selects report-only or a threshold from 1/5 to 5/5.
+The passing-score number field accepts a whole number from 1 to 5, defaulting to 5.
+Paperclip publishes a successful **Paperclip Review** check only after a complete
+assessment of the current commit meets the threshold; lower scores fail and
+incomplete assessments require action. To block merging, separately require this
+check from the dedicated App in GitHub branch protection or a ruleset. A new head
+commit needs its own check. Report-only mode publishes a neutral conclusion, which
+GitHub can accept for a required check; it does not enforce a score requirement.
 A passing score does not formally approve a PR. **Approvals and change requests**
 contains those optional agent permissions. Scheduling filters, ignored files,
 and inline-comment options have separate disclosures. The header shows the App

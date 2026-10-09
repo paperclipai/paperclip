@@ -139,9 +139,8 @@ export function githubReviewSchedulingDecision(input: {
     };
   if (policy.invocation === "mentions_only")
     return { allowed: false, reason: "mentions_only" };
-  // An explicit per-person choice takes precedence over the all-linked default.
-  if (person && !person.automaticReviews)
-    return { allowed: false, reason: "automatic_reviews_disabled_for_person" };
+  // Author filters below control automatic scheduling. Legacy per-person
+  // automaticReviews flags are retained for compatibility but no longer gate work.
   if (guestAllowed && policy.invocation !== "allowed_authors")
     return { allowed: false, reason: "guest_automatic_reviews_disabled" };
   const isIssue = context.event === "issue_opened";

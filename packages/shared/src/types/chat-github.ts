@@ -38,7 +38,8 @@ export interface GitHubReviewPolicy {
 export type GitHubAllowedPerson = {
   githubUserId: string;
   login: string;
-  automaticReviews: boolean;
+  /** @deprecated Automatic scheduling uses policy author filters. Ignored when present. */
+  automaticReviews?: boolean;
 } & (
   | { kind: "member"; userId: string }
   | { kind: "guest"; sponsorUserId: string; permissionProfile: "restricted" }

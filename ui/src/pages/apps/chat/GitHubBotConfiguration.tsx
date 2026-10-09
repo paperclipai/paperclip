@@ -10,6 +10,7 @@ import {
 import { accessApi } from "@/api/access";
 import { chatEndpointsApi } from "@/api/chatEndpoints";
 import { githubChatApi } from "@/api/githubChat";
+import { useOptionalCompany } from "@/context/CompanyContext";
 import { Button } from "@/components/ui/button";
 import {
   AtSign,
@@ -158,14 +159,71 @@ function GitHubListInput({
   return separator === "\n" ? <Textarea {...props} /> : <Input {...props} />;
 }
 
+function GitHubPassingScore({
+  value,
+  onChange,
+  onValidityChange,
+}: {
+  value: GitHubReviewPolicy["ratingThreshold"];
+  onChange: (value: GitHubReviewPolicy["ratingThreshold"]) => void;
+  onValidityChange?: (valid: boolean) => void;
+}) {
+  const id = useId();
+  const [text, setText] = useState(String(value ?? 5));
+  const number = Number(text);
+  const valid = value === null || (text.trim() !== "" && Number.isInteger(number) && number >= 1 && number <= 5);
+  useEffect(() => setText(String(value ?? 5)), [value]);
+  useEffect(() => { onValidityChange?.(valid); }, [valid, onValidityChange]);
+  useEffect(() => () => { onValidityChange?.(true); }, [onValidityChange]);
+  return (
+    <div className="space-y-3 py-3">
+      <Label htmlFor={id}>Passing score</Label>
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-2">
+          <Input id={id} type="number" min={1} max={5} step={1} required
+            className="w-20" value={text} disabled={value === null}
+            aria-invalid={!valid} aria-describedby={`${id}-help${valid ? "" : ` ${id}-error`}`}
+            onChange={(event) => {
+              const next = event.target.value;
+              setText(next);
+              const score = Number(next);
+              if (next.trim() && Number.isInteger(score) && score >= 1 && score <= 5)
+                onChange(score as 1 | 2 | 3 | 4 | 5);
+            }} />
+          <span className="text-sm text-muted-foreground">out of 5</span>
+        </div>
+        <Label className="flex items-center gap-2 text-sm font-normal">
+          <Checkbox aria-label="Report only" checked={value === null}
+            onCheckedChange={(checked) => onChange(checked === true ? null : 5)} />
+          Report only
+        </Label>
+      </div>
+      {!valid && <p id={`${id}-error`} role="alert" className="text-xs text-destructive">Enter a whole number from 1 to 5.</p>}
+      <p id={`${id}-help`} className="text-xs text-muted-foreground">
+        {value === null
+          ? "Publishes a neutral check without a score requirement. GitHub can accept neutral checks for merging."
+          : "Paperclip passes the check when a complete review of the latest commit meets this score. Lower scores fail. This does not approve the PR."}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        To block merging, require the <strong>Paperclip Review</strong> check from this App in your GitHub branch rules.{" "}
+        <a className="underline hover:text-foreground"
+          href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository"
+          target="_blank" rel="noreferrer">Configure on GitHub</a>
+      </p>
+    </div>
+  );
+}
+
 export function GitHubPolicyEditor({
   policy,
   onChange,
   accessHref,
+  onValidityChange,
 }: {
   accessHref?: string;
   policy: GitHubReviewPolicy;
   onChange: (policy: GitHubReviewPolicy) => void;
+  onValidityChange?: (valid: boolean) => void;
 }) {
   const id = useId();
   const automaticMode = useRef<"linked_authors" | "allowed_authors">(
@@ -261,6 +319,9 @@ export function GitHubPolicyEditor({
                     })
               }
             />
+            <p className="text-xs text-muted-foreground">
+              Added to the main instructions for this event. Type / to select a skill for the agent to use.
+            </p>
           </div>
         </GitHubSettingsDisclosure>
       </section>
@@ -332,8 +393,7 @@ export function GitHubPolicyEditor({
               </Label>
             </div>
             <p className="text-xs text-muted-foreground">
-              Only people with automatic runs enabled in Access can trigger
-              these events.
+              Runs for authorized authors in Access. Use the author filters below to limit whose issues and PRs start work.
             </p>
             <GitHubSettingsDisclosure title="Automatic review filters">
               <div>
@@ -344,7 +404,7 @@ export function GitHubPolicyEditor({
                 />
                 <GitHubToggle
                   label="Include bot authors"
-                  description="The account also needs a sponsor and automatic runs enabled in Access."
+                  description="The account also needs a sponsor and external-contributor automatic runs enabled in Access."
                   checked={policy.reviewBotAuthors}
                   onChange={(value) => set("reviewBotAuthors", value)}
                 />
@@ -421,61 +481,8 @@ export function GitHubPolicyEditor({
             onChange={(value) => set("publishInline", value)}
           />
         </div>
-        <div className="space-y-3 py-3">
-          <div className="flex items-center justify-between gap-4">
-            <Label htmlFor={`${id}-github-rating`}>Passing score</Label>
-            <output
-              htmlFor={`${id}-github-rating`}
-              className="text-sm font-medium"
-            >
-              {policy.ratingThreshold === null
-                ? "Report only"
-                : `${policy.ratingThreshold}/5 or higher`}
-            </output>
-          </div>
-          <input
-            id={`${id}-github-rating`}
-            type="range"
-            min={0}
-            max={5}
-            step={1}
-            value={policy.ratingThreshold ?? 0}
-            aria-valuetext={
-              policy.ratingThreshold === null
-                ? "Report only"
-                : `${policy.ratingThreshold} out of 5 or higher`
-            }
-            className="h-6 w-full cursor-pointer accent-primary focus-visible:outline-2 focus-visible:outline-ring"
-            onChange={(e) =>
-              set(
-                "ratingThreshold",
-                Number(e.target.value) === 0
-                  ? null
-                  : (Number(e.target.value) as 1 | 2 | 3 | 4 | 5),
-              )
-            }
-          />
-          <div
-            className="flex justify-between text-xs text-muted-foreground"
-            aria-hidden="true"
-          >
-            <span>Report only</span>
-            <span>5/5</span>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {policy.ratingThreshold === null
-              ? "Report findings without a score requirement."
-              : "A complete review must meet this score for the current commit to pass the Paperclip Review check."}
-          </p>
-          <a
-            className="text-xs text-muted-foreground underline hover:text-foreground"
-            href="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Require this check before merging in GitHub
-          </a>
-        </div>
+        <GitHubPassingScore value={policy.ratingThreshold}
+          onChange={(value) => set("ratingThreshold", value)} onValidityChange={onValidityChange} />
       </section>
       <div className="divide-y divide-border">
         <GitHubSettingsDisclosure title="Ignored files">
@@ -560,6 +567,7 @@ export function GitHubAccessEditor({
   configuration: GitHubChatConfiguration;
   onChange: (configuration: GitHubChatConfiguration) => void;
 }) {
+  const company = useOptionalCompany()?.companies.find((item) => item.id === companyId);
   const accountLink = useRef<HTMLAnchorElement>(null);
   const [linkCopied, setLinkCopied] = useState(false);
   const [dialog, setDialog] = useState<"member" | "guest" | null>(null);
@@ -616,7 +624,6 @@ export function GitHubAccessEditor({
         userId: link.paperclipUserId!,
         githubUserId: link.githubUserId!,
         login: link.githubLogin ?? link.externalLabel,
-        automaticReviews: false,
       })),
   ];
   const updatePerson = (person: GitHubAllowedPerson) =>
@@ -665,7 +672,7 @@ export function GitHubAccessEditor({
           person.kind === "guest" ||
           configuration.memberAccess === "all_linked" ||
           explicit;
-        const canConfigureAutomatic = linked && mentions;
+        const removable = explicit && (person.kind === "guest" || configuration.memberAccess === "selected");
         return (
           <div
             key={person.githubUserId}
@@ -709,20 +716,7 @@ export function GitHubAccessEditor({
                   />
                 )}
               </div>
-              <div className="flex flex-col items-center gap-2">
-                <span className="text-xs text-muted-foreground">
-                  Automatic runs
-                </span>
-                <ToggleSwitch
-                  aria-label={`Run automatically for @${person.login}`}
-                  checked={person.automaticReviews}
-                  disabled={!canConfigureAutomatic}
-                  onCheckedChange={(value) =>
-                    updatePerson({ ...person, automaticReviews: value })
-                  }
-                />
-              </div>
-              <DropdownMenu>
+              {(identity || removable) && <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
                     size="icon"
@@ -733,12 +727,9 @@ export function GitHubAccessEditor({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  {explicit && (
+                  {removable && (
                     <DropdownMenuItem onClick={() => removePerson(person)}>
-                      {person.kind === "member" &&
-                      configuration.memberAccess === "all_linked"
-                        ? "Reset individual event settings"
-                        : "Remove access"}
+                      Remove access
                     </DropdownMenuItem>
                   )}
                   {identity && (
@@ -750,7 +741,7 @@ export function GitHubAccessEditor({
                     </DropdownMenuItem>
                   )}
                 </DropdownMenuContent>
-              </DropdownMenu>
+              </DropdownMenu>}
             </div>
           </div>
         );
@@ -786,7 +777,7 @@ export function GitHubAccessEditor({
           label="Allow mentions from all linked members"
           description={
             configuration.memberAccess === "all_linked"
-              ? "Includes members who link their GitHub account later."
+              ? `Includes members from ${company?.name ?? "this company"} who link their GitHub account later.`
               : "Only members you enable below can mention this bot."
           }
           checked={configuration.memberAccess === "all_linked"}
@@ -811,8 +802,7 @@ export function GitHubAccessEditor({
         <p className="text-xs text-muted-foreground">
           {automatic ? (
             <>
-              Automatic runs apply to issues and PRs authored by that person,
-              using the events enabled in{" "}
+              Automatic runs use the events and author filters in{" "}
               <Link
                 className="underline underline-offset-4"
                 to={`/apps/chat/${endpointId}/settings`}
@@ -830,8 +820,7 @@ export function GitHubAccessEditor({
               >
                 Settings
               </Link>
-              . These permissions are saved for when you turn them on.
-              Authorized @mentions still work.
+              . Authorized @mentions still work.
             </>
           )}
         </p>
@@ -865,7 +854,7 @@ export function GitHubAccessEditor({
             label="Allow automatic runs for external contributors"
             description={
               automatic
-                ? "Only contributors with their own Automatic runs switch on can trigger events."
+                ? "Authorized contributors can trigger the events and author filters configured in Settings."
                 : "Turn on automatic runs in Settings first. Mentions remain available."
             }
             checked={guestsAutomatic}
@@ -1096,7 +1085,6 @@ export function GitHubAccessEditor({
                         kind: "guest",
                         sponsorUserId: sponsor,
                         permissionProfile: "restricted",
-                        automaticReviews: false,
                       });
                       setDialog(null);
                       setCandidate(null);

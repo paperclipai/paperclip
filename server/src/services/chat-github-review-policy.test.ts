@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   defaultGitHubReviewPolicy,
+  githubAllowedPersonSchema,
   type GitHubChatConfiguration,
   type GitHubReviewAssessment,
   type GitHubReviewEventContext,
@@ -48,6 +49,20 @@ describe("configured GitHub instruction skills", () => {
     expect(githubConfiguredInstructionSources({ githubIssue: { context: { body: "untrusted /skill" }, policy } }))
       .toEqual([policy.instructions, policy.issueOpenedInstructions]);
     expect(githubConfiguredInstructionSources({ message: "untrusted /skill", raw: { policy } })).toEqual([]);
+  });
+  it.each(["opened", "synchronize", "reopened", "ready_for_review", "mention", "comment"] as const)("carries the configured %s skill into its task prompt only", (event) => {
+    const skill = "[/review](paperclip://skills/11111111-1111-4111-8111-111111111111?slug=review)";
+    const policy = defaultGitHubReviewPolicy();
+    policy.prompts[event] = `Use ${skill}.`;
+    const manual = event === "mention" || event === "comment";
+    const admitted = manual ? { githubManual: { policy, event } } : { githubAutomatic: { context: { ...context, event }, policy } };
+    expect(githubConfiguredInstructionSources(admitted)).toEqual([policy.instructions, `Use ${skill}.`]);
+    const prompt = manual
+      ? githubManualMessagePrompt({ event, policy, repository: "test/repo", thread: "thread", sender: context.sender, message: "untrusted text" })
+      : githubReviewPrompt({ ...context, event }, policy, 1);
+    expect(prompt).toContain(skill);
+    const other = event === "opened" ? "synchronize" : "opened";
+    expect(githubConfiguredInstructionSources({ githubAutomatic: { context: { ...context, event: other }, policy } }).join("\n")).not.toContain(skill);
   });
   it("includes skill guidance and saved skill links before provider context in both prompt paths", () => {
     const policy = { ...defaultGitHubReviewPolicy(), instructions: "Use [/review](paperclip://skills/11111111-1111-4111-8111-111111111111?slug=review)." };
@@ -113,13 +128,18 @@ function decide(config = configuration(), overrides = {}) {
 }
 
 describe("GitHub review authorization and scheduling", () => {
+  it("accepts both legacy people and new entries without an automatic flag", () => {
+    const person = { kind: "member", userId: "owner", githubUserId: "42", login: "author" };
+    expect(githubAllowedPersonSchema.parse(person)).toEqual(person);
+    expect(githubAllowedPersonSchema.parse({ ...person, automaticReviews: false }).automaticReviews).toBe(false);
+  });
   it("admits linked authors but not unlinked webhook senders", () => {
     expect(decide().allowed).toBe(true);
     expect(decide(configuration(), { linkedMemberUserId: null }).allowed).toBe(
       false,
     );
   });
-  it("requires explicit per-person automatic guest permission and a live sponsor", () => {
+  it("requires an explicit guest, the external-author mode and a live sponsor", () => {
     const config = configuration();
     config.defaults.invocation = "allowed_authors";
     config.people = [
@@ -132,12 +152,16 @@ describe("GitHub review authorization and scheduling", () => {
         automaticReviews: false,
       },
     ];
-    expect(decide(config, { linkedMemberUserId: null }).allowed).toBe(false);
+    expect(decide(config, { linkedMemberUserId: null }).allowed).toBe(true);
+    config.defaults.invocation = "linked_authors";
+    expect(decide(config, { linkedMemberUserId: null }).reason).toBe("guest_automatic_reviews_disabled");
+    config.defaults.invocation = "allowed_authors";
     expect(
       decide(config, { linkedMemberUserId: null, manual: true }).guest,
     ).toBe(true);
-    config.people[0]!.automaticReviews = true;
-    expect(decide(config, { linkedMemberUserId: null }).allowed).toBe(true);
+    config.defaults.excludeAuthors = ["author"];
+    expect(decide(config, { linkedMemberUserId: null }).reason).toBe("author_excluded");
+    config.defaults.excludeAuthors = [];
     expect(
       decide(config, {
         linkedMemberUserId: null,
@@ -161,7 +185,7 @@ describe("GitHub review authorization and scheduling", () => {
       decide(config, { manual: true, linkedMemberUserId: null }).allowed,
     ).toBe(false);
   });
-  it("does not auto-enable an explicitly added member", () => {
+  it("uses author filters instead of legacy per-person automatic settings", () => {
     const config = configuration();
     config.people = [
       {
@@ -172,7 +196,14 @@ describe("GitHub review authorization and scheduling", () => {
         automaticReviews: false,
       },
     ];
-    expect(decide(config).reason).toBe("automatic_reviews_disabled_for_person");
+    expect(decide(config).allowed).toBe(true);
+    config.defaults.includeAuthors = ["someone-else"];
+    expect(decide(config).allowed).toBe(false);
+    config.defaults.includeAuthors = ["author"];
+    expect(decide(config).allowed).toBe(true);
+    config.defaults.excludeAuthors = ["AUTHOR"];
+    expect(decide(config).reason).toBe("author_excluded");
+    expect(decide(config, { manual: true }).allowed).toBe(true);
   });
   it("requires both an explicit sponsored account and the bot-author opt-in", () => {
     const config = configuration();
@@ -229,15 +260,14 @@ describe("GitHub issue intake authorization", () => {
     config.repositories["12"] = { issueOpened: false };
     expect(decide(config, { context: issue }).reason).toBe("event_disabled");
   });
-  it("retains repository, member, per-person and responsible-user gates", () => {
+  it("retains repository, member and responsible-user gates without per-person automatic flags", () => {
     const config = configuration();
     config.defaults.issueOpened = true;
     expect(decide(config, { context: issue, repositoryEnabled: false }).reason).toBe("repository_disabled");
     expect(decide(config, { context: issue, linkedMemberUserId: null }).reason).toBe("person_not_authorized");
     expect(decide(config, { context: issue, activeSponsorUserIds: new Set() }).reason).toBe("responsible_user_unavailable");
     config.people = [{ kind: "member", githubUserId: "42", login: "author", userId: "owner", automaticReviews: false }];
-    expect(decide(config, { context: issue }).reason).toBe("automatic_reviews_disabled_for_person");
-    config.people[0]!.automaticReviews = true;
+    expect(decide(config, { context: issue }).allowed).toBe(true);
     config.memberAccess = "selected";
     expect(decide(config, { context: issue }).allowed).toBe(true);
     expect(decide(config, { context: { ...issue, author: { ...issue.author, id: "99" } } }).reason).toBe("person_not_authorized");
