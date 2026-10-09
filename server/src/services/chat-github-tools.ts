@@ -67,7 +67,7 @@ export const GITHUB_BOT_TOOLS = [
     name: "comment",
     title: "Reply in GitHub",
     description:
-      "Post a governed comment in this task's bound GitHub conversation. Uses the bot App; does not change the review rating. Supply a stable idempotency key for retries.",
+      "Publish the final answer by replacing this request's working comment in its bound GitHub conversation. Uses the bot App; does not change the review rating. Supply a stable idempotency key for retries. Use update_comment for progress before the answer is ready.",
     risk: "write",
     schema: objectSchema(
       {
@@ -76,6 +76,14 @@ export const GITHUB_BOT_TOOLS = [
       },
       ["body", "idempotencyKey"],
     ),
+  },
+  {
+    name: "update_comment",
+    title: "Update GitHub progress",
+    description:
+      "Edit this request's existing working comment with useful progress while you work. The server selects the App-owned comment; no comment ID or other destination is accepted. Periodically update it for meaningful milestones or longer work, then use comment for the final answer or submit_review for a review. Supply a new stable idempotency key for each distinct update; retries reuse that key. Does not complete a review or change its rating.",
+    risk: "write",
+    schema: objectSchema({ body: { ...text, maxLength: 24000 }, idempotencyKey: { ...text, maxLength: 160 } }, ["body", "idempotencyKey"]),
   },
   {
     name: "begin_review",
@@ -268,6 +276,25 @@ export async function githubBotToolsForSession(
         isNull(toolCatalogEntries.quarantinedAt),
       ),
     );
+  // Add the scoped editing companion only to an already enabled bot with an
+  // active, reviewed reply capability. Existing profiles, grants, disabled
+  // tools and quarantine decisions are never reset during discovery.
+  const progress = GITHUB_BOT_TOOLS.find(tool => tool.name === "update_comment")!;
+  for (const row of rows) {
+    if (row.entry.name !== "github_bot:comment" || !row.configuration.toolsEnabled ||
+        !["active", "verifying"].includes(row.endpoint.status) ||
+        rows.some(other => other.connection.id === row.connection.id && other.entry.name === "github_bot:update_comment")) continue;
+    const versionHash = createHash("sha256").update(JSON.stringify(progress)).digest("hex");
+    const [entry] = await db.insert(toolCatalogEntries).values({
+      companyId: row.endpoint.companyId, applicationId: row.connection.applicationId,
+      connectionId: row.connection.id, entryKind: "tool", name: "github_bot:update_comment",
+      toolName: progress.name, title: progress.title, description: progress.description,
+      inputSchema: progress.schema, riskLevel: "write", isReadOnly: false, isWrite: true,
+      versionHash, schemaHash: versionHash, status: "active",
+      reviewedByUserId: row.entry.reviewedByUserId, reviewedAt: row.entry.reviewedAt,
+    }).onConflictDoNothing().returning();
+    if (entry) rows.push({ ...row, entry });
+  }
   return rows
     .filter(
       (row) =>

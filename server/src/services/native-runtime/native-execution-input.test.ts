@@ -6,6 +6,7 @@ import { nativeCompletionSource, buildNativeCompletionContract } from "./complet
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 
 describe("LCA-05 explicit native work mode", () => {
   it.each(["standard", "planning", "ask"])("title and description cannot override %s mode", (workMode) => {
@@ -455,6 +456,28 @@ describe("native execution input external-chat framing", () => {
         "Never infer the file's contents or substitute an older file",
       );
 
+      const runtimeContext = nativeRuntimeContextFixture();
+      runtimeContext.skills = ["configured", "provider-mentioned"].map((name) => ({
+        key: `company/test/${name}`,
+        runtimeName: name,
+        versionId: null,
+        bundle: { ...runtimeContext.instructions.bundle },
+      }));
+      runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(runtimeContext);
+      const skillArgs = {
+        ...args,
+        issue: { ...args.issue, description: "Stale provider message: /provider-mentioned" },
+        taskPrompt: `${args.taskPrompt}\nGitHub message: /provider-mentioned`,
+        runtimeContext,
+        githubInstructionSkillKeys: ["company/test/configured", "company/other/unknown"],
+      };
+      const skillInput = buildNativeExecutionInput(skillArgs);
+      expect(skillInput.task.description).toBe("Configured GitHub instruction skills:\n/configured");
+      expect(buildNativeModelEnvelope(skillInput)).toMatchObject({ requestedSkills: ["configured"] });
+      expect(buildNativeModelEnvelope(buildNativeExecutionInput({
+        ...skillArgs, githubInstructionSkillKeys: [],
+      }))).toMatchObject({ requestedSkills: [] });
+
       const wake = args.wakePayload as Record<string, unknown>;
       for (const patch of [
         { externalChatProvider: "slack" },
@@ -472,6 +495,13 @@ describe("native execution input external-chat framing", () => {
         expect(unrelated.task.prompt).not.toContain(
           "Paperclip owns recovery navigation for unavailable GitHub attachments",
         );
+        if (["slack", "discord", "telegram", "microsoft-teams"].includes(patch.externalChatProvider ?? "")) {
+          const unrelatedSkills = buildNativeExecutionInput({
+            ...skillArgs, wakePayload: { ...wake, ...patch },
+          });
+          expect(unrelatedSkills.task.description).toBeNull();
+          expect(buildNativeModelEnvelope(unrelatedSkills)).toMatchObject({ requestedSkills: [] });
+        }
       }
     },
   );

@@ -56,6 +56,8 @@ export interface BuildNativeExecutionInput {
   wakePayload?: unknown;
   /** Additive source ownership emitted by the server task/wake builders. */
   turnContext?: unknown;
+  /** Skill keys selected from the admitted, manager-authored GitHub configuration. */
+  githubInstructionSkillKeys?: readonly string[];
   resumedSession?: boolean;
   previousTurn?: { runId: string; task: { title: string; description: string | null } } | null;
   conversationMode?: boolean;
@@ -184,6 +186,15 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
   const externalChatTurn =
     isPaperclipExternalChatContractTurn(wakePayload) ||
     isPaperclipExternalChatQuestionResponseTurn(wakePayload);
+  const configuredGitHubSkillKeys = new Set(input.githubInstructionSkillKeys ?? []);
+  const configuredGitHubSkills = externalChatTurn && wake?.externalChatProvider === "github"
+    ? input.runtimeContext.skills.filter((skill) => configuredGitHubSkillKeys.has(skill.key))
+    : [];
+  // Native skill invocation reads task.description. Project only verified skill
+  // names here; never restore the first provider message or scan untrusted text.
+  const externalChatSkillDescription = configuredGitHubSkills.length > 0
+    ? `Configured GitHub instruction skills:\n${configuredGitHubSkills.map((skill) => `/${skill.runtimeName}`).join("\n")}`
+    : null;
   const taskPrompt = [
     wakePrompt,
     // Durable task questions must survive the current provider turn.
@@ -232,7 +243,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
       // explicitly labeled background, but give authenticated external-chat
       // turns neutral structured fields.
       title: externalChatTurn ? "External chat follow-up" : input.issue.title,
-      description: externalChatTurn ? null : input.issue.description,
+      description: externalChatTurn ? externalChatSkillDescription : input.issue.description,
       prompt: taskPrompt,
       workMode: input.issue.workMode,
     },

@@ -16,6 +16,13 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("preserves the exact expected execution policy snapshot without defaults", () => {
+    const snapshot = { mode: "normal", stages: [], monitor: { nextCheckAt: "2026-10-10T12:00:00Z" } };
+    expect(updateIssueSchema.parse({ expectedExecutionPolicy: snapshot }).expectedExecutionPolicy).toEqual(snapshot);
+    expect(updateIssueSchema.parse({ expectedExecutionPolicy: null }).expectedExecutionPolicy).toBeNull();
+    expect(updateIssueSchema.parse({}).expectedExecutionPolicy).toBeUndefined();
+    expect(updateIssueSchema.safeParse({ expectedExecutionPolicy: [] }).success).toBe(false);
+  });
   it("accepts private visibility without adding defaults to updates", () => {
     expect(createIssueSchema.parse({ title: "Private", visibility: "private" }).visibility).toBe("private");
     expect(createIssueSchema.parse({ title: "Open" }).visibility).toBe("open");

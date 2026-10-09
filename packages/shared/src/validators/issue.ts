@@ -564,6 +564,10 @@ export const retryWorkspaceExportSchema = z.object({
 
 export const resolveIssueRecoveryActionSchema = z
   .object({
+    workspaceBaseRef: z.object({
+      requestedRef: z.string().trim().min(1).max(1024),
+      branch: z.string().trim().refine(isValidExistingBranchName, { message: "Choose a valid Git branch name" }),
+    }).strict().optional(),
     executionReconciliation: z
       .object({
         runId: z.string().guid(),
@@ -581,6 +585,9 @@ export const resolveIssueRecoveryActionSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (value.workspaceBaseRef && (!value.actionId || value.outcome !== "restored" || value.sourceIssueStatus !== "todo" || value.executionReconciliation)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceBaseRef"], message: "Branch repair must retry the exact recovery action" });
+    }
     if (value.outcome === "restored") {
       // A retained-source repair records evidence without changing task state.
       // The route verifies the exact server-owned source and unchanged status.
@@ -884,6 +891,8 @@ export const updateIssueSchema = objectWithoutDefaults(
 )
   .partial()
   .extend({
+    /** Reject a policy write if the policy changed after the caller read it. */
+    expectedExecutionPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),

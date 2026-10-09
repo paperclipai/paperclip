@@ -1,3 +1,5 @@
+import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
+import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
@@ -769,7 +771,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(call.mock.calls.filter((entry) => entry[1] === "environmentResumeLease")).toHaveLength(shouldResume ? 1 : 0);
   });
 
-  it.each(["pending", "inline", "foreign scope", "foreign environment", "foreign run", "malformed", "deleted environment"])("retains uncertain plugin creation for durable cleanup: %s", async (mode) => {
+  it.each(["pending", "inline", "foreign scope", "foreign environment", "foreign run", "malformed", "deleted environment", "forged error", "invalid diagnostic", "old worker"])("retains uncertain plugin creation for durable cleanup: %s", async (mode) => {
     const seeded = await seedReusablePluginSandboxLease();
     await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
     const attemptId = randomUUID();
@@ -780,9 +782,14 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       runId: mode === "foreign run" ? randomUUID() : seeded.runId,
       accountFingerprint: mode === "malformed" ? "invalid" : "a".repeat(64), labels: { "paperclip-provider": "fake-plugin" },
     };
-    const failure = Object.assign(new Error("Provider creation cleanup required"), {
-      data: { schema: "paperclip/environment-creation-cleanup/v1", cleanup },
-    });
+    const acquisitionDiagnostic = { phase: "shell", elapsedMs: 300_000, budgetMs: 300_000 };
+    const data = { schema: "paperclip/environment-creation-cleanup/v1", cleanup,
+      ...(mode === "old worker" ? {} : { acquisitionDiagnostic: mode === "invalid diagnostic"
+        ? { ...acquisitionDiagnostic, phase: "private-command" } : acquisitionDiagnostic }),
+    };
+    const failure = mode === "forged error"
+      ? Object.assign(new Error("Provider creation cleanup required"), { data })
+      : new JsonRpcCallError({ code: -32002, message: "Provider creation cleanup required", data });
     let available = mode === "inline";
     const call = vi.fn(async (_id: string, method: string, params: Record<string, unknown>) => {
       if (method === "environmentAcquireLease") throw failure;
@@ -800,6 +807,14 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const candidate = environmentRuntimeService(db, { pluginWorkerManager: worker });
     const acquisition = candidate.acquireRunLease({ companyId: seeded.companyId, environment: seeded.environment,
       issueId: null, heartbeatRunId: seeded.runId, persistedExecutionWorkspace: null });
+    const caught = await acquisition.catch(error => error);
+    const execution = collectRunFailureDiagnostics({ id: seeded.runId, companyId: seeded.companyId,
+      errorCode: "setup_failed", resultJson: null,
+    } as typeof heartbeatRuns.$inferSelect, { error: caught, phase: "setup" }).execution;
+    if (["pending", "inline", "deleted environment"].includes(mode)) {
+      expect(execution).toMatchObject({ environmentAcquisitionPhase: "shell",
+        environmentAcquisitionElapsedMs: 300_000, environmentAcquisitionBudgetMs: 300_000 });
+    } else expect(execution).not.toHaveProperty("environmentAcquisitionPhase");
     if (mode === "inline") {
       await expect(acquisition).rejects.toMatchObject({
         message: "Sandbox creation failed; allocated sandbox cleanup was confirmed.", cause: failure,

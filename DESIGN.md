@@ -67,6 +67,13 @@ already revealed conversation and composer mounted and visible.
 Bound the initial wait to 15 seconds. If a request stalls, reveal the available
 conversation and composer with a notice that some history is still loading.
 
+Only the viewer's own human comments sit on the right in blue bubbles. Agents
+and other humans sit on the left on the page surface, with their own name and
+avatar above the message. Human identity comes from the company directory;
+missing photos use the shared initials fallback. Match ownership by the stored
+author user ID and the authenticated viewer ID, never by display name or the bot
+that relayed a message from another channel.
+
 ## Contextual feedback
 
 Task chat shows execution errors and waits only while they remain relevant.
@@ -78,6 +85,15 @@ Run history retains the full diagnostic record. Session reset boundaries remain
 in the conversation. Time passing or a new human comment alone does not resolve
 an error. Stored notices need run or recovery provenance before they can be hidden;
 child-task relays and other unrelated system updates stay visible.
+
+Credential-sharing denials stay expanded as an error card in the task conversation.
+Name the agent and selected AI connection when known, and say which person lacks
+access. Use “you” only for that person’s own run. Link to the agent’s AI connection
+settings; retrying before changing the connection cannot repair a sharing denial.
+Show the connection name to the affected user so they can identify what blocked
+their task, and to viewers in the connection's human sharing audience. Other task
+readers see a generic credential label. Never show credential secrets or grant IDs.
+The same run-relevance rules hide the card after a newer attempt or terminal task.
 
 Do not show a toast for task or run state already visible on the current screen.
 This includes descendant runs represented by the open subtree. Show local action

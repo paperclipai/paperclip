@@ -2553,7 +2553,9 @@ export function recoveryService(
                       ? "Board operator: repair the project workspace repository URL or clone access, or configure a local checkout cwd, then explicitly retry or reassign."
                       : "Board operator: repair the source task workspace link, project workspace cwd, or git checkout, then explicitly retry or reassign."
                   : recoveryCause === "configuration_incomplete"
-                    ? readConfigurationIncompletePayload(input.latestRun)?.reason === "ai_connection_unavailable"
+                    ? readConfigurationIncompletePayload(input.latestRun)?.reason === "workspace_base_ref_unresolved"
+                      ? "Check the starting branch and repository access, then repair the task’s branch and retry the original assignee."
+                      : readConfigurationIncompletePayload(input.latestRun)?.reason === "ai_connection_unavailable"
                       ? "Reconnect the selected AI account or choose an available connection, then continue the task."
                       : readConfigurationIncompletePayload(input.latestRun)
                         ?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
@@ -4074,10 +4076,14 @@ export function recoveryService(
         .then((rows) =>
           rows.some(
             (row) =>
-              noticeMetadataReferencesRecoveryAction(
+              (noticeMetadataReferencesRecoveryAction(
                 row.metadata,
                 recoveryAction.id,
-              ) || (row.body ?? "").includes(escalationCommentMarker),
+              ) || (row.body ?? "").includes(escalationCommentMarker))
+              // Task threads attach notices to runs. A reused incident needs
+              // one notice for each failed run so its latest repair stays visible.
+              && (readConfigurationIncompletePayload(input.latestRun)?.reason !== "workspace_base_ref_unresolved"
+                || row.metadata?.sourceRunId === input.latestRun?.id),
           ),
         );
 

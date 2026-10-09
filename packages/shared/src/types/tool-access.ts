@@ -256,6 +256,7 @@ export interface ConnectionGrant {
         id: string;
         fullName: string;
         installationId: string;
+        ownerType?: "personal" | "organization";
         private?: boolean;
       }>;
       installationUrl?: string;

@@ -268,7 +268,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.getByIdentifier).toHaveBeenCalledWith("PC1A2-475");
     expect(mockIssueService.getById).not.toHaveBeenCalled();
-    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1");
+    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1");
     expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
   });
 

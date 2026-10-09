@@ -540,6 +540,34 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await ensureIssueRelationsTable(db);
   }, 20_000);
 
+  it("rejects stale monitor cancellation under the task lock and preserves saved policy settings", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Monitor cancellation", issuePrefix: "MCL", requireBoardApprovalForNewAgents: false });
+    const oldPolicy = {
+      mode: "normal" as const, commentRequired: true, stages: [],
+      monitor: { nextCheckAt: "2026-10-10T12:00:00.000Z", notes: "Check status", scheduledBy: "board" as const },
+    };
+    const savedPolicy = {
+      ...oldPolicy,
+      stages: [{ type: "review" as const, approvalsNeeded: 1 as const, participants: [{ type: "user" as const, userId: "reviewer" }] }],
+      maxReviewRounds: 4,
+      authorizationPolicy: { assignmentPolicy: { mode: "protected" as const } },
+    };
+    await db.insert(issues).values({ id: issueId, companyId, title: "Monitored task", executionPolicy: oldPolicy });
+    await svc.update(issueId, { executionPolicy: savedPolicy });
+    const { monitor: _oldMonitor, ...staleCancellation } = oldPolicy;
+    await expect(svc.update(issueId, { executionPolicy: staleCancellation, expectedExecutionPolicy: oldPolicy }))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await svc.getById(issueId))?.executionPolicy).toEqual(savedPolicy);
+    const { monitor: _savedMonitor, ...cancellation } = savedPolicy;
+    await svc.update(issueId, { executionPolicy: cancellation, expectedExecutionPolicy: savedPolicy });
+    expect((await svc.getById(issueId))?.executionPolicy).toEqual(cancellation);
+    await expect(svc.update(issueId, { executionPolicy: null, expectedExecutionPolicy: null }))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await svc.getById(issueId))?.executionPolicy).toEqual(cancellation);
+  });
+
   afterEach(async () => {
     await db.delete(issueComments);
     await db.delete(issueThreadInteractions);

@@ -214,6 +214,9 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
       <Route path="apps/chat/:endpointId" element={
         <ChatConnectorsExperimentalGate><Navigate to="settings" replace /></ChatConnectorsExperimentalGate>
       } />
+      <Route path="apps/chat/:endpointId/reviews/:reviewId" element={
+        <ChatConnectorsExperimentalGate><ChatEndpointDetail /></ChatConnectorsExperimentalGate>
+      } />
       <Route path="apps/chat/:endpointId/:tab" element={
         <ChatConnectorsExperimentalGate><ChatEndpointDetail /></ChatConnectorsExperimentalGate>
       } />
@@ -483,8 +486,8 @@ function AppsConnectEntryRoute({
 } = {}) {
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
-  const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
-  return canEnterAppsConnect(searchParams, { chatConnectorsEnabled })
+  const { enabled: chatConnectorsEnabled, githubEnabled: githubReviewBotsEnabled } = useChatConnectorsEnabled();
+  return canEnterAppsConnect(searchParams, { chatConnectorsEnabled, githubReviewBotsEnabled })
     ? <AppsConnect credentialSource={credentialSource} />
     : <Navigate to="/apps" replace />;
 }

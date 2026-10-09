@@ -938,6 +938,47 @@ describe("openapi routes", () => {
     expect(replacement.responses["422"]).toBeDefined();
   });
 
+  it("documents the manager-only GitHub wizard and compatible owner-aware registration", () => {
+    const { spec } = loadSpecRoutes();
+    for (const [suffix, method] of [["draft", "put"], ["setup", "post"], ["identity/start", "post"], ["identity/confirm", "post"]]) {
+      const operation = spec.paths[`/api/chat-endpoints/{endpointId}/github/${suffix}`][method];
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    }
+    const registration = spec.paths["/api/chat-endpoints/{endpointId}/github/registration"].post;
+    const input = registration.requestBody.content["application/json"].schema;
+    expect(input.properties.ownerType.enum).toEqual(["personal", "organization"]);
+    expect(input.required).not.toContain("ownerType");
+    const response = registration.responses["200"].content["application/json"].schema;
+    expect(response.oneOf ?? response.anyOf).toHaveLength(2);
+  });
+
+  it("documents GitHub recovery, draft receipts, paged repositories and old review lookups", () => {
+    const { spec } = loadSpecRoutes();
+    const root = "/api/chat-endpoints/{endpointId}/github/";
+    const setup = spec.paths[root + "setup"].post.responses["200"].content["application/json"].schema;
+    expect(setup.properties.restartableRegistrationId.format).toBe("uuid");
+    const restart = spec.paths[root + "registration/restart"].post;
+    expect(restart["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    const restartInput = restart.requestBody.content["application/json"].schema;
+    expect(restartInput.required).toEqual(expect.arrayContaining(["registrationId", "appNotCreated"]));
+    expect(restartInput.properties.appNotCreated.enum ?? [restartInput.properties.appNotCreated.const]).toEqual([true]);
+    const receipt = spec.paths[root + "draft"].put.responses["200"].content["application/json"].schema;
+    expect(receipt.required).toEqual(["saved"]);
+    expect(receipt.properties).not.toHaveProperty("state");
+    const app = spec.paths[root + "app"].post.requestBody.content["application/json"].schema;
+    expect(app.properties.clientId).toBeDefined();
+    expect(app.properties.clientSecret).toBeDefined();
+    expect(app.required).not.toContain("clientId");
+    const page = spec.paths[root + "repositories"].get;
+    expect(page.parameters.map((param: { name: string }) => param.name)).toEqual(expect.arrayContaining(["endpointId", "offset", "limit", "search"]));
+    expect(page.responses["200"].content["application/json"].schema.properties).toHaveProperty("totalCount");
+    expect(spec.paths[root + "repositories/access"].put["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    const review = spec.paths[root + "reviews/{reviewId}"].get;
+    expect(review.parameters.map((param: { name: string }) => param.name)).toEqual(["endpointId", "reviewId"]);
+    expect(review.responses["404"]).toBeDefined();
+  });
+
   it("documents auth and reviewed response-code invariants", () => {
     const { spec } = loadSpecRoutes();
 
