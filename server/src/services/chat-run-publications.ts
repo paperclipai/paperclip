@@ -54,9 +54,9 @@ export { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON };
 // connections retain automatic progress and final-answer publication.
 function allowsAutomaticRunPublication() {
   return or(ne(chatEndpoints.provider, "github"), notExists(
-    sql`select 1 from ${chatGitHubConfigurations}
+    sql`(select 1 from ${chatGitHubConfigurations}
       where ${chatGitHubConfigurations.companyId} = ${chatEndpoints.companyId}
-        and ${chatGitHubConfigurations.endpointId} = ${chatEndpoints.id}`,
+        and ${chatGitHubConfigurations.endpointId} = ${chatEndpoints.id})`,
   ));
 }
 
