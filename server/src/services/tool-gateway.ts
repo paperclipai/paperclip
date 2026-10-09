@@ -692,7 +692,7 @@ function safeHeaderValue(
   return sanitized ? sanitized.slice(0, maxLength) : null;
 }
 
-function upstreamRequestIdFromHeaders(headers: Headers) {
+export function upstreamRequestIdFromHeaders(headers: Headers) {
   // A governance receipt identifies the durable tool-call record, so prefer it
   // over a transport request ID. Keep the stored value opaque and bounded.
   for (const name of [
@@ -6190,6 +6190,12 @@ export function createToolGatewayService(
         // automatically: the failed call may have changed app data.
         if (mcpSession) forgetMcpHttpSession(mcpSession);
       }
+      execution.response = {
+        httpStatus: response.status,
+        contentType: response.headers.get("content-type"),
+        bodySizeBytes: 0,
+        upstreamRequestId: upstreamRequestIdFromHeaders(response.headers),
+      };
       const body = response.ok
         ? JSON.stringify(await readMcpHttpResponse(response, requestId, {
             maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES,
@@ -6210,12 +6216,7 @@ export function createToolGatewayService(
             },
           }))
         : await readBoundedRemoteResponse(response);
-      execution.response = {
-        httpStatus: response.status,
-        contentType: response.headers.get("content-type"),
-        bodySizeBytes: Buffer.byteLength(body, "utf8"),
-        upstreamRequestId: upstreamRequestIdFromHeaders(response.headers),
-      };
+      execution.response.bodySizeBytes = Buffer.byteLength(body, "utf8");
       if (isInsufficientConnectionScope(response, body)) {
         await markRemoteConnectionHealth(connection, "degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
         throw new ToolGatewayHttpError(403, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE, "oauth_insufficient_scope", {
@@ -7269,9 +7270,10 @@ export function createToolGatewayService(
     });
 
     const startedAt = Date.now();
+    let connectedMcpExecution: RemoteHttpExecutionResult | null = null;
     try {
       const executionTimeoutMs = timeoutMs(args.timeoutMs);
-      const connectedMcpExecution =
+      connectedMcpExecution =
         (args.tool.providerType === "mcp_remote_http" || args.tool.providerType === "provider_rest")
           ? await executeRemoteHttpTool(
               args.session,
@@ -7386,7 +7388,8 @@ export function createToolGatewayService(
             ? err.reasonCode
             : "tool_execution_failed";
       const message = err instanceof Error ? err.message : String(err);
-      const failedExecution = executionAuditFromError(err);
+      const failedExecution =
+        executionAuditFromError(err) ?? connectedMcpExecution?.execution;
       await db
         .update(toolInvocations)
         .set({
@@ -8121,9 +8124,10 @@ export function createToolGatewayService(
       status: "executing",
     });
 
+    let connectedMcpExecution: RemoteHttpExecutionResult | null = null;
     try {
       const executionTimeoutMs = timeoutMs(APPROVED_EXECUTION_TIMEOUT_MS);
-      const connectedMcpExecution =
+      connectedMcpExecution =
         (tool.providerType === "mcp_remote_http" || tool.providerType === "provider_rest")
           ? await executeRemoteHttpTool(
               session,
@@ -8222,7 +8226,8 @@ export function createToolGatewayService(
         expectedInvocationStatus: "executing",
         error,
       });
-      const failedExecution = executionAuditFromError(error);
+      const failedExecution =
+        executionAuditFromError(error) ?? connectedMcpExecution?.execution;
       if (failedExecution?.response?.upstreamRequestId) {
         await db
           .update(toolInvocations)
@@ -10642,6 +10647,7 @@ export function createToolGatewayService(
         },
       });
 
+      let connectedMcpExecution: RemoteHttpExecutionResult | null = null;
       try {
         const executionTimeoutMs = timeoutMs(input.timeoutMs);
         if (
@@ -10654,7 +10660,7 @@ export function createToolGatewayService(
             "agent_context_required",
           );
         }
-        const connectedMcpExecution =
+        connectedMcpExecution =
           (tool.providerType === "mcp_remote_http" || tool.providerType === "provider_rest")
             ? await executeRemoteHttpTool(
                 session,
@@ -10842,7 +10848,9 @@ export function createToolGatewayService(
           throw normalizedError;
         }
         const completedAt = new Date();
-        const failedExecution = executionAuditFromError(normalizedError);
+        const failedExecution =
+          executionAuditFromError(normalizedError) ??
+          connectedMcpExecution?.execution;
         await db
           .update(toolInvocations)
           .set({
