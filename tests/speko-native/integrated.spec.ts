@@ -149,7 +149,8 @@ test("E01/E03–E11/E13/E15/E16: setup, delayed work, duplicate input, navigatio
   await expect.poll(async () => (await evidence()).runs.find((row: any) => row.id === delivery.targetRunId)?.status).toBe("succeeded");
   const beforeRestart = await evidence();
   process.kill(supervisorPid, "SIGUSR2");
-  await expect.poll(async () => (await evidence()).appPid, { timeout: 60_000 }).not.toBe(beforeRestart.appPid);
+  // Restart has the same startup budget as the initial fixture server.
+  await expect.poll(async () => (await evidence()).appPid, { timeout: 120_000 }).not.toBe(beforeRestart.appPid);
   await expect.poll(async () => {
     try { return (await page.request.get(`${origin}/api/health`)).ok(); } catch { return false; }
   }).toBe(true);
@@ -231,7 +232,7 @@ test("E01/E03–E11/E13/E15/E16: setup, delayed work, duplicate input, navigatio
   await expect(page.getByRole("alert").filter({hasText: "does not match"})).toBeVisible();
   const code = incoming.firstMessage.replace(/\D/g, ""); expect(code).toHaveLength(6);
   await page.getByRole("textbox", {name: "Code spoken on your call", exact: true}).fill(code);
-  const inboundTask = await post(`/companies/${company.id}/issues`, {title: "Approved incoming phone conversation", assigneeAgentId: agent.id, status: "backlog"});
+  const inboundTask = await post(`/companies/${company.id}/issues`, {title: "Approved incoming phone conversation", assigneeAgentId: agent.id, status: "todo"});
   // Refresh task inventory after this fixture task is created.
   await page.reload();
   await page.getByRole("textbox", {name: "Code spoken on your call", exact: true}).fill(code);
