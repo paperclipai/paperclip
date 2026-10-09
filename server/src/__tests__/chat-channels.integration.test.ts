@@ -29057,11 +29057,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   it("suppresses persisted GitHub queued, progress and completion comments on replay", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } = await configuredGitHubEndpoint(fixture);
-    const config = await githubChatManagementService(db).configuration(endpoint.id, "owner-user");
-    await db.insert(chatGitHubConfigurations).values({ companyId: fixture.companyId, endpointId: endpoint.id, configuration: config.configuration, updatedByUserId: "owner-user" });
     const thread = makeThread({ channelId: "github:paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:417" });
     await deliverMessage({ callbacks, endpointId: endpoint.id, provider: "github", thread: thread.thread,
       message: makeMessage({ id: "41701", text: "@maya produce one quiet response", mentioned: true }), trigger: "mention" });
+    const config = await githubChatManagementService(db).configuration(endpoint.id, "owner-user");
+    await db.insert(chatGitHubConfigurations).values({ companyId: fixture.companyId, endpointId: endpoint.id, configuration: config.configuration, updatedByUserId: "owner-user" });
     const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, endpoint.id));
     const [run] = await db.insert(heartbeatRuns).values({ companyId: fixture.companyId, agentId: fixture.assignedAgentId,
       status: "succeeded", contextSnapshot: await chatWakeContext({ endpointId: endpoint.id, issueId: conversation.issueId,
