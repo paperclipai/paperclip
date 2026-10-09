@@ -57,6 +57,7 @@ interface AgentWakeOptions extends BaseClientOptions {
 }
 
 interface AgentJsonPayloadOptions extends BaseClientOptions {
+  runner?: "auto" | "paperclip" | "legacy";
   companyId?: string;
   payloadJson: string;
 }
@@ -348,10 +349,11 @@ export function registerAgentCommands(program: Command): void {
       .description("Create an agent from a JSON payload")
       .option("-C, --company-id <id>", "Company ID")
       .requiredOption("--payload-json <json>", "CreateAgent JSON payload")
+      .option("--runner <runner>", "Runner: auto (default), paperclip, or legacy")
       .action(async (opts: AgentJsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const payload = createAgentSchema.parse(parseJson(opts.payloadJson));
+          const payload = createAgentSchema.parse({ ...parseJsonObject(opts.payloadJson), ...(opts.runner ? { runner: opts.runner } : {}) });
           const created = await ctx.api.post<Agent>(apiPath`/api/companies/${ctx.companyId}/agents`, payload);
           printOutput(created, { json: ctx.json });
         } catch (err) {
@@ -367,10 +369,11 @@ export function registerAgentCommands(program: Command): void {
       .description("Create an agent hire request")
       .option("-C, --company-id <id>", "Company ID")
       .requiredOption("--payload-json <json>", "CreateAgentHire JSON payload")
+      .option("--runner <runner>", "Runner: auto (default), paperclip, or legacy")
       .action(async (opts: AgentJsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
-          const result = await ctx.api.post(apiPath`/api/companies/${ctx.companyId}/agent-hires`, parseJson(opts.payloadJson));
+          const result = await ctx.api.post(apiPath`/api/companies/${ctx.companyId}/agent-hires`, { ...parseJsonObject(opts.payloadJson), ...(opts.runner ? { runner: opts.runner } : {}) });
           printOutput(result, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);

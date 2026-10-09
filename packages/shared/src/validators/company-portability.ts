@@ -71,6 +71,7 @@ export const portabilityBlobManifestEntrySchema = z.object({
 });
 
 export const portabilityAgentManifestEntrySchema = z.object({
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   slug: z.string().min(1),
   name: z.string().min(1),
   path: z.string().min(1),
@@ -324,6 +325,7 @@ export const companyPortabilityPreviewSchema = z.object({
 export type CompanyPortabilityPreview = z.infer<typeof companyPortabilityPreviewSchema>;
 
 export const portabilityAdapterOverrideSchema = z.object({
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   adapterType: z.string().min(1),
   adapterConfig: z.record(z.string(), z.unknown()).optional(),
 });

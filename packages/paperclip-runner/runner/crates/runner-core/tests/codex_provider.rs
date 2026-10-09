@@ -65,6 +65,7 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
         instructions: "Stay inside the test workspace.".to_owned(),
         approval_policy: "never".to_owned(),
         externally_sandboxed: false,
+        read_only: false,
         include_skill_instructions: None,
         conversation_mode: None,
     }

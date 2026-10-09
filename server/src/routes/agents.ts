@@ -1,4 +1,6 @@
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
+import { agentHarnessType, type AgentRunnerChoice } from "@paperclipai/shared";
+import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 
@@ -1843,7 +1845,7 @@ export function agentRoutes(
           "OpenAI Dot is experimental and disabled on this instance.",
           { code: "paperclip_runner_dot_disabled" },
         );
-      } else if (experimental.enableNativeRunner !== true) {
+      } else if (!([undefined, "codex"].includes(asRecord(config)?.provider as string | undefined)) && experimental.enableNativeRunner !== true) {
         throw unprocessable(
           "Paperclip Runner is experimental and disabled on this instance.",
           { code: "paperclip_runner_rollout_disabled" },
@@ -2194,7 +2196,7 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
-    if (adapterType !== "codex_local") return adapterConfig;
+    if (agentHarnessType(adapterType ?? "", adapterConfig) !== "codex_local") return adapterConfig;
     const existingEnv = asRecord(adapterConfig.env);
     if (!existingEnv) return adapterConfig;
     if (!codexLocalEnvKeyConfigured(existingEnv.OPENAI_API_KEY)) return adapterConfig;
@@ -2245,11 +2247,12 @@ export function agentRoutes(
     const noInheritance = { adapterConfig, inheritedFixedClaudeOAuthBinding: false };
     if (asRecord(runtimeConfig)?.aiConnection) return noInheritance;
     if (req.actor.type !== "agent" || !req.actor.agentId) return noInheritance;
-    const credentialKeys = adapterType ? INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS[adapterType] : undefined;
+    const harness = agentHarnessType(adapterType ?? "", adapterConfig) === "codex_local" ? "codex_local" : adapterType ?? "";
+    const credentialKeys = INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS[harness];
     if (!credentialKeys) return noInheritance;
 
     const parent = await svc.getById(req.actor.agentId);
-    if (!parent || parent.companyId !== companyId || parent.adapterType !== adapterType) return noInheritance;
+    if (!parent || parent.companyId !== companyId || (harness === "codex_local" ? agentHarnessType(parent.adapterType, parent.adapterConfig) !== harness : parent.adapterType !== adapterType)) return noInheritance;
     // Managed parents must not pass stale legacy credential references to hires.
     if (aiRuntimeConnectionBindingSchema.safeParse(parent.runtimeConfig.aiConnection).success) return noInheritance;
     const parentEnv = asRecord(asRecord(parent.adapterConfig)?.env);
@@ -3063,7 +3066,9 @@ export function agentRoutes(
       try {
         if (!target.executionTarget && target.fallbackChecks.length > 0) throw unprocessable("The agent environment is not available for adoption");
         await withManagedAiProbe(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true }, async managed => {
-        const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding, managed, agentId);
+        const managedAiCredentialHome = adapterType === "paperclip_runner" && asRecord(managed.config)?.provider === "codex" && managed.home
+          ? path.join(managed.home, "provider") : undefined;
+        const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, managedAiCredentialHome, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding, managed, agentId);
         if (result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)) throw unprocessable("The selected AI connection failed validation in this agent’s environment. Run the agent test to see the failing checks.", {
           code: "ai_connection_validation_failed",
           checks: result.checks.filter(check => check.level === "error" || check.code === ADAPTER_AUTH_MISSING_CHECK_CODE).map(check => ({ code: check.code, level: check.level })),
@@ -3080,10 +3085,8 @@ export function agentRoutes(
     validate(testAdapterEnvironmentSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      const type = assertKnownAdapterType(req.params.type as string);
+      let type = assertKnownAdapterType(req.params.type as string);
       await assertCanCreateAgentsForCompany(req, companyId);
-
-      const adapter = requireServerAdapter(type);
 
       const requestedBinding = req.body.aiConnection ? aiRuntimeConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
       const aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
@@ -3099,11 +3102,6 @@ export function agentRoutes(
         await assertCanUpdateAgent(req, savedAgent);
       }
       const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
-      if (poolBinding?.mode === "router") {
-        await validateManagedAgentBinding(req, companyId, savedAgentId ?? "", type, req.body.adapterConfig ?? {}, poolBinding, req.body.environmentId, false, !savedAgentId);
-        res.json({ adapterType: type, status: "warn", testedAt: new Date().toISOString(), checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Pool configuration is available. Run a task to verify the selected account and harness; this preview does not allocate a task or contact a provider." }] });
-        return;
-      }
       const requestedEnvironmentId = await resolveAdapterTestEnvironmentId(
         companyId,
         // Omission tests the saved selection. Explicit null tests a prospective
@@ -3142,6 +3140,20 @@ export function agentRoutes(
         adapterConfigForTest = canRestoreEnv
           ? restoreRedactedAgentEnv(inputAdapterConfig, savedAgent.adapterConfig)
           : inputAdapterConfig;
+      }
+      const selection = await resolveNewAgentRunnerForCompany(db, companyId, {
+        adapterType: type, adapterConfig: adapterConfigForTest,
+        runner: req.body.runner ?? (savedAgent && savedAgent.adapterType === type ? (type === "paperclip_runner" ? undefined : "legacy") : undefined),
+        defaultEnvironmentId: requestedEnvironmentId,
+      });
+      type = selection.adapterType;
+      adapterConfigForTest = selection.adapterConfig;
+      const adapter = requireServerAdapter(type);
+      if (!savedAgent || req.body.runner !== undefined || type !== savedAgent.adapterType) await assertSelectableAdapterType(type, adapterConfigForTest);
+      if (poolBinding?.mode === "router") {
+        await validateManagedAgentBinding(req, companyId, savedAgentId ?? "", type, adapterConfigForTest, poolBinding, requestedEnvironmentId, false, !savedAgentId);
+        res.json({ adapterType: type, status: "warn", testedAt: new Date().toISOString(), checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Pool configuration is available. Run a task to verify the selected account and harness; this preview does not allocate a task or contact a provider." }] });
+        return;
       }
       if (type === "paperclip_runner" && inputAdapterConfig.provider === "openai_dot") {
         const dotEnabled = await dotRunnerBroker(db).enabled();
@@ -3279,7 +3291,9 @@ export function agentRoutes(
           }
         }
         const result = aiBinding ? await withManagedAiProbe(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !req.body.agentId, allowUninstalledShared: !req.body.agentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }, async managed => {
-          const tested = await testManagedEnvironment(type, { companyId, adapterType: type, config: managed.config, executionTarget, environmentName }, aiBinding, managed, savedAgentId ?? undefined);
+          const managedAiCredentialHome = type === "paperclip_runner" && asRecord(managed.config)?.provider === "codex" && managed.home
+            ? path.join(managed.home, "provider") : undefined;
+          const tested = await testManagedEnvironment(type, { companyId, adapterType: type, config: managed.config, managedAiCredentialHome, executionTarget, environmentName }, aiBinding, managed, savedAgentId ?? undefined);
           tested.checks.unshift({ code: "ai_connection_tested", level: "info", message: `Tested ${managed.accountName} — ${managed.accountOwnerUserId ? managed.accountOwnerUserId === responsibleUserForAiRequest(req) ? "your personal account" : "the owner’s account authorized for this agent" : "company-shared account"}. Responsible user: ${req.actor.type === "agent" ? responsibleUserForAiRequest(req) ?? "unavailable" : "the signed-in user"}.` });
           return tested;
         }) : await adapter.testEnvironment({ companyId, adapterType: type, config: effectiveAdapterConfig, executionTarget, environmentName });
@@ -4193,8 +4207,19 @@ export function agentRoutes(
       onboardingFirstAgent: hireOnboardingFirstAgent,
       // This intent flag is consumed below and must never reach agent create.
       inheritRuntimeFrom,
+      runner: hireRunner,
       ...hireInput
     } = req.body;
+
+    // Check actor restrictions on the requested harness before runner translation
+    // changes its identity or reads the selected execution target.
+    const hiredAgentId = randomUUID();
+    const requestedHireConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
+    assertNoAgentAdapterConfigMutation(req, requestedHireConfig);
+    assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType ?? "process", requestedHireConfig, await callerUsesAiConnectionPool(req, companyId));
+    assertNoAgentProcessAdapterMutation(req, hireInput.adapterType ?? "process", Object.keys(requestedHireConfig).length > 0);
+    assertExternalInstructionsAdmin(req, { id: hiredAgentId, companyId, name: hireInput.name, adapterConfig: requestedHireConfig });
 
     if (inheritRuntimeFrom === "caller") {
       if (req.actor.type !== "agent" || !req.actor.agentId) {
@@ -4218,6 +4243,8 @@ export function agentRoutes(
       hireInput.adapterConfig = inheritNativeRunnerAdapterConfig(caller.adapterConfig);
       hireInput.defaultEnvironmentId = caller.defaultEnvironmentId ?? null;
     }
+    if (inheritRuntimeFrom === "caller" && hireRunner !== undefined) throw unprocessable("inheritRuntimeFrom=caller cannot be combined with runner");
+    Object.assign(hireInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...hireInput, runner: hireRunner }));
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType, hireInput.adapterConfig);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
@@ -4233,7 +4260,6 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType, rawHireAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
     assertNoAgentProcessAdapterMutation(req, hireInput.adapterType, Object.keys(rawHireAdapterConfig).length > 0);
-    const hiredAgentId = randomUUID();
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,
       companyId,
@@ -4348,7 +4374,8 @@ export function agentRoutes(
         },
         {
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
-        responsibleUserId: responsibleUserForAiRequest(req),
+          runnerResolved: true,
+          responsibleUserId: responsibleUserForAiRequest(req),
           aiConnectionInstall: managedHireConnection ? { ...managedHireConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
           claudeLogin: {
             storedSessionId: hireStoredSessionId ?? null,
@@ -4530,8 +4557,18 @@ export function agentRoutes(
       // The onboarding marker is not an agent column. The server consumes it to
       // seed the chief-of-staff persona; it never reaches the insert values.
       onboardingFirstAgent: createOnboardingFirstAgent,
+      runner: createRunner,
       ...createInput
     } = req.body;
+    // Preserve the requested harness's actor restrictions before translation.
+    const agentId = randomUUID();
+    const requestedCreateConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
+    assertNoAgentAdapterConfigMutation(req, requestedCreateConfig);
+    assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType ?? "process", requestedCreateConfig, await callerUsesAiConnectionPool(req, companyId));
+    assertNoAgentProcessAdapterMutation(req, createInput.adapterType ?? "process", Object.keys(requestedCreateConfig).length > 0);
+    assertExternalInstructionsAdmin(req, { id: agentId, companyId, name: createInput.name, adapterConfig: requestedCreateConfig });
+    Object.assign(createInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...createInput, runner: createRunner }));
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType, createInput.adapterConfig);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
@@ -4547,7 +4584,6 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType, rawCreateAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
     assertNoAgentProcessAdapterMutation(req, createInput.adapterType, Object.keys(rawCreateAdapterConfig).length > 0);
-    const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       agentId,
@@ -4605,6 +4641,7 @@ export function agentRoutes(
       },
       {
         createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+        runnerResolved: true,
         responsibleUserId: responsibleUserForAiRequest(req),
         aiConnectionInstall: managedConnection ? { ...managedConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
         claudeLogin: {
@@ -5148,6 +5185,8 @@ export function agentRoutes(
     }
 
     const patchData = { ...(req.body as Record<string, unknown>) };
+    const runner = patchData.runner as AgentRunnerChoice | undefined;
+    delete patchData.runner;
     const requestedStatus = patchData.status;
     delete patchData.status;
     if (requestedStatus !== undefined && !["paused", "idle", "terminated"].includes(String(requestedStatus))) throw badRequest("Use an agent lifecycle command to change status");
@@ -5176,6 +5215,15 @@ export function agentRoutes(
     // it gets the selectable check; keeping the agent's current adapter (even
     // one since disabled) stays allowed, so a disabled harness does not make an
     // existing agent uneditable.
+    if (runner !== undefined) {
+      await assertCanUpdateAgent(req, existing);
+      const config = hasOwn(patchData, "adapterConfig") ? { ...(replaceAdapterConfig ? {} : existing.adapterConfig), ...asRecord(patchData.adapterConfig) } : existing.adapterConfig;
+      Object.assign(patchData, await resolveNewAgentRunnerForCompany(db, existing.companyId, {
+        adapterType: typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType,
+        adapterConfig: config, runner,
+        defaultEnvironmentId: hasOwn(patchData, "defaultEnvironmentId") ? patchData.defaultEnvironmentId as string | null : existing.defaultEnvironmentId,
+      }));
+    }
     const nextAdapterType = hasOwn(patchData, "adapterType")
       ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
       : existing.adapterType;

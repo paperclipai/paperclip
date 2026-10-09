@@ -12624,12 +12624,12 @@ describe("runnerd provider runtime wiring", () => {
 
   it.each([
     ...["current", "preinstalled-exact", "preinstalled-mismatch", "preinstalled-error", "preinstalled-timeout", "stale", "missing", "retained", "retained-mismatch", "retained-error", "retained-timeout", "retained-explicit"]
-      .map((image) => ({ image, version: "0.160.0", compatible: true })),
+      .map((image) => ({ image, version: "0.160.0" })),
     ...["0.149.0", "0.149.1", "0.153.4", "0.156.0", "0.160.1"]
-      .map((version) => ({ image: "current", version, compatible: true })),
+      .map((version) => ({ image: "current", version })),
     ...["0.148.9", "0.161.0", "1.0.0", "0.160.0-alpha.1", "unknown"]
-      .map((version) => ({ image: "current", version, compatible: false })),
-  ])("uses shared Codex and the server-owned replacement artifact (image=$image, Codex=$version)", async ({ image, version, compatible }) => {
+      .map((version) => ({ image: "current", version })),
+  ])("uses shared Codex and the server-owned replacement artifact (image=$image, Codex=$version)", async ({ image, version }) => {
     const retained = image.startsWith("retained");
     const exactRetained = image === "retained" || image === "retained-explicit";
     const needsReplacement = image !== "current" && image !== "preinstalled-exact" && !exactRetained;
@@ -12721,16 +12721,10 @@ describe("runnerd provider runtime wiring", () => {
       controlPlaneRegistration: (authority: unknown) => Promise<unknown>;
     };
     await expect(transport.controlPlaneRegistration({})).rejects.toThrow(
-      compatible ? "reached-preinstalled-codex-verification" : "runner_remote_provider_artifact_incompatible: supported Codex versions >=0.149.0 <0.161.0",
+      "reached-preinstalled-codex-verification",
     );
-    if (!compatible) {
-      expect(syncIn).not.toHaveBeenCalled();
-      expect(remoteExecute.mock.calls.some(([call]) => call.command === "npm" || call.args?.[1]?.includes("paperclip_codex_launcher_tmp"))).toBe(false);
-      expect(onLog).not.toHaveBeenCalledWith("stderr", expect.stringContaining("using compatible Codex"));
-      return;
-    }
     if (version !== "0.160.0") {
-      expect(onLog).toHaveBeenCalledWith("stderr", expect.stringContaining(`using compatible Codex ${version}`));
+      expect(onLog).toHaveBeenCalledWith("stderr", expect.stringContaining(`using installed Codex ${version === "unknown" || version.includes("alpha") ? "unrecognized version" : version}`));
     }
     if (needsReplacement) {
       expect(transport.runnerBinary).toBe(controllerArtifact);
@@ -12776,12 +12770,9 @@ describe("runnerd provider runtime wiring", () => {
     ].map((scenario) => ({ ...scenario, recover: false })),
     { version: "0.156.0", model: "gpt-6.1-sol", floor: null, recover: true },
     { version: "0.158.0", model: "gpt-6.1-sol", floor: null, recover: true },
-  ])("verifies sandbox Codex $version against the prepared $model selection (floor=$floor, recover=$recover)", async ({ version, model, floor, recover }) => {
-    // A preinstalled Codex inside the compatibility window can still be too
-    // old for the configured model: the ChatGPT backend rejects every turn
-    // with "not supported when using Codex with a ChatGPT account". The
-    // verifier names the stale image instead of letting the run fail as an
-    // account problem.
+  ])("lets sandbox Codex $version reach actual model verification ($model, recover=$recover)", async ({ version, model, recover }) => {
+    // Version metadata is diagnostic. A working app-server reaches the model
+    // turn instead of being rejected or replaced by a static CLI version floor.
     const preparedModel = recover ? resolvePaperclipRunnerNativeProviderInput({
       backend: "codex_app_server", adapterConfig: { provider: "codex", model }, codexCliVersion: version,
     }).model : model;
@@ -12851,16 +12842,10 @@ describe("runnerd provider runtime wiring", () => {
       );
     }
     await expect(transport.controlPlaneRegistration({})).rejects.toThrow(
-      floor
-        ? `runner_remote_provider_artifact_incompatible: ${model} requires Codex ${floor} or newer with ChatGPT sign-in, received ${version} from the sandbox image; promote a sandbox image with Codex 0.160.0 or configure PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.160.0`
-        : "reached-preinstalled-codex-verification",
+      "reached-preinstalled-codex-verification",
     );
-    if (floor) {
-      // No npm spec is configured, so there is no fallback install; the run
-      // fails before launch instead of running against the stale CLI.
-      expect(remoteExecute.mock.calls.some(([call]) => call.command === "npm")).toBe(false);
-      expect(remoteExecute.mock.calls.some(([call]) => call.args?.[1]?.includes("paperclip_codex_launcher_tmp"))).toBe(false);
-    }
+    expect(remoteExecute.mock.calls.some(([call]) => call.command === "npm")).toBe(false);
+
   });
 
   it("binds a remote launch to the configured controller-owned runner artifact", async () => {

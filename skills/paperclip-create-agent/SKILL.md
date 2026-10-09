@@ -186,3 +186,21 @@ For each linked issue, either:
 - Short role drafting guide: `skills/paperclip-create-agent/references/baseline-role-guide.md`
 - Pre-submit draft-review checklist: `skills/paperclip-create-agent/references/draft-review-checklist.md`
 - Endpoint payload shapes and full examples: `skills/paperclip-create-agent/references/api-reference.md`
+
+## Harness and runner selection
+
+Choose the underlying harness in `adapterType`, such as `codex_local` or
+`claude_local`. New Codex agents use Paperclip Runner automatically on supported
+execution targets. Other harnesses retain their existing adapters. The saved
+response may therefore have `adapterType: paperclip_runner` and `provider: codex`;
+use that returned configuration for later reads and edits.
+
+The optional creation field `runner` accepts `auto`, `paperclip`, or `legacy`.
+Use `legacy` when the user needs custom Codex CLI settings the native runtime
+cannot honor. Setup and authentication errors never silently change runners.
+Existing agents keep their saved execution after unrelated edits. An approved
+hire uses the configuration reviewed by the board. `inheritRuntimeFrom: caller`
+keeps its existing runtime inheritance and credential restrictions.
+
+CLI equivalents: `paperclipai agent create --runner legacy --payload-json ...`
+and `paperclipai agent hire --runner legacy --payload-json ...`.

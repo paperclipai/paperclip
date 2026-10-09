@@ -98,7 +98,8 @@ vi.mock("../api/resourceMemberships", () => ({
   resourceMembershipsApi: mockResourceMembershipsApi,
 }));
 
-vi.mock("../adapters/adapter-display-registry", () => ({
+vi.mock("../adapters/adapter-display-registry", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../adapters/adapter-display-registry")>(),
   getAdapterLabel: (type: string) => type,
 }));
 

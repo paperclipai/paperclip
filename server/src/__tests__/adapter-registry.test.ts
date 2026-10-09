@@ -15,7 +15,13 @@ import {
 import {
   resolveExternalAdapterRegistration,
   setOverridePaused,
+  hasActiveAdapterOverride,
 } from "../adapters/registry.js";
+
+const nativeSetup = vi.hoisted(() => ({ authenticate: vi.fn() }));
+vi.mock("../services/native-runtime/setup-readiness.js", () => ({
+  testNativeRunnerAuthentication: nativeSetup.authenticate,
+}));
 
 vi.mock("../vendor/paperclip-runner/live/index.js", () => ({
   probeAcpxClaudeInstallation: vi.fn(async () => undefined),
@@ -265,6 +271,26 @@ describe("server adapter registry", () => {
         level: "error",
       }],
     });
+  });
+
+  it.each(["pass", "fail"] as const)("uses the selected native Codex runtime for setup (%s)", async status => {
+    nativeSetup.authenticate.mockReset().mockResolvedValue({ adapterType: "paperclip_runner", status, testedAt: "", checks: [{ code: `codex_hello_probe_${status === "pass" ? "passed" : "auth_required"}`, level: status === "pass" ? "info" : "error", message: "Selected native account" }] });
+    const context = { companyId: "company-1", adapterType: "paperclip_runner", config: { provider: "codex", model: "gpt-5.6-sol", modelReasoningEffort: "high", env: { OPENAI_API_KEY: "selected-key" } } };
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment(context);
+    expect(result.status).toBe(status);
+    expect(nativeSetup.authenticate).toHaveBeenCalledWith(context, "codex", "gpt-5.6-sol");
+  });
+
+  it("identifies only active external overrides for automatic runner selection", () => {
+    try {
+      expect(hasActiveAdapterOverride("codex_local")).toBe(false);
+      registerServerAdapter({ ...externalAdapter, type: "codex_local" });
+      expect(hasActiveAdapterOverride("codex_local")).toBe(true);
+      setOverridePaused("codex_local", true);
+      expect(hasActiveAdapterOverride("codex_local")).toBe(false);
+      setOverridePaused("codex_local", false);
+      expect(hasActiveAdapterOverride("codex_local")).toBe(true);
+    } finally { unregisterServerAdapter("codex_local"); }
   });
 
   it.each([

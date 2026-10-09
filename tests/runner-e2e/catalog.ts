@@ -99,6 +99,9 @@ function commonAgent(
     capabilities:
       "Completes deterministic standard, planning, and ask-mode runner acceptance tasks.",
     adapterType,
+    // These are explicit legacy regression controls. Ordinary Codex creation
+    // defaults are exercised through the production onboarding wizard below.
+    ...(adapterType === "codex_local" ? { runner: "legacy" as const } : {}),
     adapterConfig,
     defaultEnvironmentId: input.environmentId,
     budgetMonthlyCents: 0,
@@ -1427,7 +1430,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["onboarding"],
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
     environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 52,
-    definitionMetadata: { version: 4, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "post-onboarding-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
+    definitionMetadata: { version: 5, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "codex-production-default-claude-explicit-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",

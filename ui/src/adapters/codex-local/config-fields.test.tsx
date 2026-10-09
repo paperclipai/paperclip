@@ -51,6 +51,32 @@ async function renderRunner(config: Record<string, unknown>, expand?: string, in
 }
 
 describe("Paperclip Runner Codex configuration", () => {
+  it("edits the legacy execution engine through the shared keyboard picker", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const changes: unknown[][] = [];
+    await act(async () => root.render(<QueryClientProvider client={new QueryClient()}><TooltipProvider>
+      <CodexLocalConfigFields mode="edit" isCreate={false} adapterType="codex_local" values={null} set={null}
+        config={{ engine: "acp" }} eff={(_group, _field, original) => original}
+        mark={(...change) => { changes.push(change); }} models={[]} hideInstructionsFile />
+    </TooltipProvider></QueryClientProvider>));
+    const picker = container.querySelector<HTMLButtonElement>('[aria-label="Execution engine"]')!;
+    await act(async () => picker.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    const selected = document.body.querySelector<HTMLButtonElement>('[role="option"][aria-selected="true"]')!;
+    expect(selected.textContent).toBe("ACP");
+    await act(async () => selected.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true })));
+    expect(document.activeElement?.textContent).toBe("Codex CLI");
+    await act(async () => (document.activeElement as HTMLButtonElement).click());
+    expect(changes).toEqual([["adapterConfig", "engine", "cli"]]);
+    await act(async () => root.unmount());
+    container.remove();
+  });
+  it("preserves an unknown native provider instead of presenting it as Codex", async () => {
+    const html = await renderRunner({ provider: "future-provider" });
+    expect(html).toContain("future-provider");
+    expect(html).not.toContain('aria-label="Permission mode"');
+  });
   it("keeps Dot out of the general harness picker and hides that picker for Dot", async () => {
     expect(await renderRunner({ provider: "codex" }, "Harness", true)).not.toContain("OpenAI Dot");
     const dot = await renderRunner({ provider: "openai_dot" });

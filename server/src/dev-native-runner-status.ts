@@ -6,6 +6,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { resolveMigrationConnection } from "@paperclipai/db/migration-runtime";
+import { paperclipRunnerSupportsPlatform } from "@paperclipai/shared";
 
 import { instanceSettingsService } from "./services/instance-settings.js";
 
@@ -48,8 +49,12 @@ async function main(): Promise<void> {
 
     console.log(
       JSON.stringify({
-        nativeRunnerRequired:
-          experimental.enableNativeRunner === true || experimental.enableOpenAiDot === true || persistedNativeRun,
+        // New Codex agents can use runnerd immediately, including on instances
+        // that have disabled the experimental providers.
+        nativeRunnerRequired: paperclipRunnerSupportsPlatform("codex_local", process.platform, process.arch)
+          || experimental.enableNativeRunner === true
+          || experimental.enableOpenAiDot === true
+          || persistedNativeRun,
         rolloutEnabled: experimental.enableNativeRunner === true,
         dotRolloutEnabled: experimental.enableOpenAiDot === true,
         persistedNativeRun,

@@ -72,6 +72,7 @@ import { releaseMaterializedNativeRuntimeSkills } from "../drivers/runtime-conte
 import { RUNNERD_CANONICAL_ITEM } from "../drivers/codex/codex-driver-values.js";
 
 import {
+  probeNativeRunnerEnvironment,
   parseAcpxTurnControlCapabilities,
   authorizedToolSetForProvider,
   createCapabilityRunnerdCodexTransport,
@@ -2702,6 +2703,105 @@ function fakeCodexArgs(stateDirectory: string, ...args: string[]): string[] {
     ...args,
   ];
 }
+
+it.each(["complete", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-native-setup-"));
+  const runtimeDirectory = join(root, "native-state");
+  await mkdir(runtimeDirectory, { mode: 0o700 });
+  const calls = join(root, "calls.jsonl");
+  const sourceHome = join(root, "bound-account");
+  await mkdir(sourceHome, { mode: 0o700 });
+  await writeFile(join(sourceHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: mode === "api-key" ? "unrelated-login" : "selected-account" }), { mode: 0o600 });
+  if (mode === "api-key") await writeFile(join(sourceHome, "config.toml"), 'model = "ambient-model"\n[mcp_servers.ambient]\ncommand = "untrusted-ambient-command"\n', { mode: 0o600 });
+  const remote = mode.startsWith("remote-") || mode.startsWith("late-remote-");
+  const remoteRoot = join(root, "assigned-remote-filesystem");
+  const remoteFilesystem = join(remoteRoot, "filesystem");
+  const remoteWorkspace = join(remoteFilesystem, "workspace");
+  let registrationReleased = false;
+  let refreshed = false;
+  let cleanupConfirmed = false;
+  try {
+    const probe = probeNativeRunnerEnvironment({
+      runtimeDirectory, provider: "codex", model: mode === "default-model" ? null : "gpt-6.1-sol", reasoningEffort: "low",
+      environment: { PATH: process.env.PATH, OPENAI_API_KEY: mode === "api-key" ? "selected-account" : "", HOME: "/unrelated/home" },
+      timeoutMs: mode.startsWith("late-remote-") ? 800 : mode === "late-bootstrap" ? 100 : mode === "missing-completion" ? 1_000 : 10_000,
+      ...(remote ? { workingDirectory: remoteWorkspace } : {}),
+      transportOptions: {
+        ...(remote ? {
+          runnerFilesystemRoot: remoteFilesystem, runnerStateDirectory: join(remoteRoot, "runner"),
+          readRunnerState: async () => JSON.parse(await readFile(join(remoteRoot, "runner", "runner-state.json"), "utf8")),
+          controlPlaneRegistration: async authority => {
+            await mkdir(remoteWorkspace, { recursive: true, mode: 0o700 });
+            const remoteHome = join(remoteFilesystem, "codex-home");
+            await mkdir(remoteHome, { mode: 0o700 });
+            for (const name of ["auth.json", "config.toml"] as const) await cp(join(runtimeDirectory, "codex-home", name), join(remoteHome, name));
+            if (mode.startsWith("late-remote-")) await new Promise(resolve => setTimeout(resolve, 1000));
+            await authority.start();
+            return { connectUrl: authority.connectUrl, release: async () => { registrationReleased = true; await authority.stop(); if (mode === "late-remote-release-error") throw new Error("PRP registration release failed"); } };
+          },
+        } : {}),
+        runnerBinary: mode === "missing-runtime" ? join(root, "missing-runner") : resolve("runner/target/debug/paperclip-runnerd"),
+        codexCommand: fakeCodex, codexArgs: fakeCodexArgs(root, "--request-log", calls,
+          ...(mode === "missing-completion" ? ["--hold-turn"] : []),
+          ...(mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" ? ["--returned-model", "another-model"] : []),
+          ...(mode === "missing-model" ? ["--returned-model", ""] : []),
+          ...(mode === "late-bootstrap" ? ["--thread-start-delay-ms", "1000"] : [])),
+        sourceCodexHome: sourceHome,
+      },
+      onCodexCredentialRefresh: async filename => {
+        expect(filename).toBe(join(remote ? remoteFilesystem : runtimeDirectory, "codex-home", "auth.json"));
+        expect(JSON.parse(await readFile(filename, "utf8"))).toEqual({ OPENAI_API_KEY: "selected-account" });
+        if (mode === "api-key") {
+          const config = await readFile(join(runtimeDirectory, "codex-home", "config.toml"), "utf8");
+          expect(config).not.toContain("ambient-model"); expect(config).not.toContain("untrusted-ambient-command");
+          expect((await stat(filename)).mode & 0o777).toBe(0o600);
+        }
+        refreshed = true;
+        if (mode === "model-refresh-error") throw new Error("credential refresh failed after the native model error");
+      },
+      onCleanupConfirmed: async () => {
+        cleanupConfirmed = true;
+        expect(refreshed || mode === "missing-runtime" || mode === "late-bootstrap" || mode.startsWith("late-remote-")).toBe(true);
+        if (mode === "model-cleanup-error") throw new Error("owned temporary state cleanup failed");
+        await rm(runtimeDirectory, { recursive: true, force: true });
+      },
+    });
+    if (mode === "complete" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
+      const observedModel = mode === "default-model" ? "gpt-test" : "gpt-6.1-sol";
+      await expect(probe).resolves.toEqual({ provider: "codex", providerDriver: "codex_app_server", effectiveModel: observedModel, helloProbePassed: true });
+      expect(refreshed).toBe(true);
+      if (remote) expect(registrationReleased).toBe(true);
+      expect(cleanupConfirmed).toBe(true);
+      await expect(stat(runtimeDirectory)).rejects.toThrow();
+      const requests = (await readFile(calls, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      expect(requests.find(value => value.method === "thread/start").params).toMatchObject({ ...(remote ? { cwd: remoteWorkspace } : {}), permissions: "paperclip-runner-workspace-read-only", dynamicTools: [] });
+      expect(requests.find(value => value.method === "turn/start").params).toMatchObject({ effort: "low", permissions: "paperclip-runner-workspace-read-only" });
+    } else {
+      await expect(probe).rejects.toThrow(mode === "missing-runtime" ? /ENOENT|unavailable|cleanup/i : mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" ? /observed model|mismatched provider model/i : /timed out|cleanup|suspension/i);
+      if (mode === "late-remote-release-error") {
+        expect(registrationReleased).toBe(true); expect(cleanupConfirmed).toBe(false);
+        expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
+      }
+      if (mode === "model-refresh-error") {
+        expect(refreshed).toBe(true);
+        expect(cleanupConfirmed).toBe(false);
+        expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
+      }
+      if (mode === "model-cleanup-error") {
+        expect(cleanupConfirmed).toBe(true);
+        expect((await stat(runtimeDirectory)).isDirectory()).toBe(true);
+      }
+      if (mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "missing-model") {
+        expect(cleanupConfirmed).toBe(true);
+        await expect(stat(runtimeDirectory)).rejects.toThrow();
+      }
+      if (mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" || mode === "missing-model" || mode === "late-bootstrap" || mode.startsWith("late-remote-")) {
+        const requests = (await readFile(calls, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+        expect(requests.some(value => value.method === "turn/start")).toBe(false);
+      }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 20_000);
 
 function assignedRuntimeContext(
   skillRoot: string,

@@ -29,6 +29,7 @@ import {
   unregisterServerAdapter,
   isOverridePaused,
   setOverridePaused,
+  waitForExternalAdapters,
 } from "../adapters/registry.js";
 import {
   listAdapterPlugins,
@@ -47,11 +48,13 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
-import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
+import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
+import { agentRunnerAvailability, type RunnerTarget } from "../services/agent-runner-selection.js";
+import type { AgentRunnerAvailability } from "@paperclipai/shared";
 
 const execFileAsync = promisify(execFile);
 
@@ -123,7 +126,7 @@ interface AdapterCapabilities {
   login?: AdapterLoginProjection;
 }
 
-interface AdapterInfo {
+interface AdapterInfo extends AgentRunnerAvailability {
   type: string;
   label: string;
   source: "builtin" | "external";
@@ -193,7 +196,7 @@ export function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterC
   };
 }
 
-function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterPluginRecord | undefined, disabledSet: Set<string>): AdapterInfo {
+function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterPluginRecord | undefined, disabledSet: Set<string>, target?: RunnerTarget): AdapterInfo {
   const fromDisk = externalRecord ? readAdapterPackageVersionFromDisk(externalRecord) : undefined;
   return {
     type: adapter.type,
@@ -203,6 +206,7 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
     loaded: true, // If it's in the registry, it's loaded
     disabled: disabledSet.has(adapter.type),
     capabilities: buildAdapterCapabilities(adapter),
+    ...agentRunnerAvailability(adapter.type, target),
     ...(adapter.acp ? { acp: adapter.acp } : {}),
     overriddenBuiltin: externalRecord ? BUILTIN_ADAPTER_TYPES.has(adapter.type) : undefined,
     overridePaused: BUILTIN_ADAPTER_TYPES.has(adapter.type) ? isOverridePaused(adapter.type) : undefined,
@@ -260,6 +264,7 @@ function registerWithSessionManagement(adapter: ServerAdapterModule): void {
 export function adapterRoutes(options: {
   getNativeRunnerEnabled?: () => Promise<boolean>;
   getOpenAiDotEnabled?: () => Promise<boolean>;
+  resolveRunnerTarget?: (companyId: string, environmentId?: string) => Promise<RunnerTarget>;
 } = {}) {
   const router = Router();
 
@@ -276,19 +281,33 @@ export function adapterRoutes(options: {
     // instance-admin only because they affect the whole server runtime.
     assertBoardOrgAccess(_req);
 
+    const companyId = _req.query.companyId;
+    const environmentId = _req.query.environmentId;
+    if ((companyId !== undefined && (typeof companyId !== "string" || !companyId.trim()))
+      || (environmentId !== undefined && (typeof environmentId !== "string" || !environmentId.trim()))) {
+      throw badRequest("companyId and environmentId must be nonempty strings.");
+    }
+    if (environmentId !== undefined && companyId === undefined) throw badRequest("companyId is required when selecting an environment.");
+    let target: RunnerTarget | undefined;
+    if (typeof companyId === "string") {
+      assertCompanyAccess(_req, companyId);
+      if (!options.resolveRunnerTarget) throw badRequest("Scoped adapter discovery is unavailable.");
+      target = await options.resolveRunnerTarget(companyId, typeof environmentId === "string" ? environmentId : undefined);
+    }
+    await waitForExternalAdapters();
+
     const registeredAdapters = listServerAdapters();
     const externalRecords = new Map(
       listAdapterPlugins().map((r) => [r.type, r]),
     );
     const disabledSet = new Set(getDisabledAdapterTypes());
-    const nativeRunnerEnabled = await options.getNativeRunnerEnabled?.().catch(() => false) ?? false;
-    const openAiDotEnabled = await options.getOpenAiDotEnabled?.().catch(() => false) ?? false;
     // One shared implementation, with independent provider rollouts. Explicit
     // adapter-admin disabling still applies to both choices.
-    if (!nativeRunnerEnabled && !openAiDotEnabled) disabledSet.add("paperclip_runner");
+    // Codex is generally available; the other native providers retain their
+    // provider-specific selection gates. Explicit adapter disabling still applies.
 
     const result: AdapterInfo[] = registeredAdapters.map((adapter) =>
-      buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet),
+      buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet, target),
     ).sort((a, b) => a.type.localeCompare(b.type));
 
     res.json(result);

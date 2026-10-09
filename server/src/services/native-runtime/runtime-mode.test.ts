@@ -43,10 +43,18 @@ describe("resolveNativeRuntimeMode", () => {
     }
   });
 
-  it("rejects a fresh Paperclip Runner start while the rollout flag is disabled", () => {
+  it("admits fresh native Codex when the experimental rollout is disabled", () => {
+    expect(resolveNativeRuntimeMode({
+      ...eligible,
+      enabled: false,
+    })).toMatchObject({ kind: "native", profile: { backend: "codex_app_server" } });
+  });
+
+  it("still rejects experimental providers while the rollout flag is disabled", () => {
     expect(() => resolveNativeRuntimeMode({
       ...eligible,
       enabled: false,
+      adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
     })).toThrow(expect.objectContaining({
       code: "paperclip_runner_rollout_disabled",
     }));
@@ -187,14 +195,17 @@ describe("resolveNativeRuntimeMode", () => {
     }));
   });
 
-  it("keeps a persisted active run native while the global flag rejects a fresh runner start", () => {
-    const disabled = { ...eligible, enabled: false };
+  it("keeps a persisted experimental run native while the flag rejects a fresh start", () => {
+    const disabled = { ...eligible, enabled: false,
+      adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" },
+    };
     expect(resolveHeartbeatNativeRuntimeMode({
       ...disabled,
       persisted: {
         runtimeMode: "native",
         runtimeModeReason: "eligible_opt_in",
         runtimeModeResolvedAt: new Date(),
+        driverKind: "opencode_server",
       },
     })).toEqual(expect.objectContaining({
       kind: "native",
@@ -458,6 +469,7 @@ describe("resolveHeartbeatRuntimeMode compatibility", () => {
       ...compatibilityInput,
       enabled: false,
       adapterType: "paperclip_runner",
+      adapterConfig: { provider: "opencode", model: "opencode/gpt-5" },
     })).toThrow(NativeRunnerSelectionError);
   });
 });

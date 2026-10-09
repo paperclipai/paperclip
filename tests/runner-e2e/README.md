@@ -139,8 +139,9 @@ Paperclip task, run an agent, or replace a Product E2E result.
 `--suite confirmation-replies` selects ten local native Claude/Codex cells:
 conversational single-task approval, saved-plan approval, rejection, card-click
 acceptance as a control, and ambiguous approval with two independent pending
-proposals. The onboarding cells use the production wizard, runtime switch and
-persona. The ambiguity fixture creates ordinary board cards through the public
+proposals. The onboarding cells use the production wizard and persona. Codex
+retains its automatic native selection; Claude uses an explicit runtime switch.
+The ambiguity fixture creates ordinary board cards through the public
 API, sends "Yes, go ahead" through the browser, requires both to stay pending
 with a clarification reply and no execution, then approves only one and rejects
 the other through separate browser messages.
@@ -184,8 +185,9 @@ pnpm test:e2e:runner -- --suite confirmation-replies
 and native Claude, each with onboarding, idle handoff, busy handoff, two-task
 handoff, and restart recovery. These exercise the production completion-delivery
 path and agent-authored responses. There is no separate completion feature flag.
-The onboarding cell reuses the real wizard and its existing pre-execution native
-runtime switch, retaining the production persona.
+The onboarding cell reuses the real wizard and retains the production persona.
+Codex uses its automatic native default; Claude explicitly changes runtime
+before execution.
 
 The idle chat cell asks the agent to delegate one welcome note to a named worker and
 report its result without another user message. A bounded local file read in
@@ -1082,18 +1084,19 @@ default is retained**, even when it differs from that profile's normal harness
 model. Configured and provider-observed model identities are reported separately.
 
 There are thirteen cases on `legacy-codex`, `legacy-claude`, `runner-codex`, and
-`runner-acpx-claude`, local only (52 cells). Native profiles complete the same
-production wizard using their legacy provider, then change only the agent's
-runtime configuration via the public API before its first task. The wizard does
-not currently offer native Runner. Persona, managed instructions, skills, seeded
-question, and task invocation are preserved. Explicit model choices are retained;
-an unset model resolves through the production runtime-switch defaults. The
-production switch removes the legacy Paperclip operational skill because Runner
-supplies its control-plane contract through its protocol; other assigned skills,
-including `/first-task`, are retained. Native runtime permissions come from the
-existing qualified profile. Evidence labels
-this setup `post-onboarding-runtime-switch`; it does not claim a native wizard
-path exists. Legacy setup is labeled `production-wizard`.
+`runner-acpx-claude`, local only (52 cells). `runner-codex` selects OpenAI in the
+production wizard, omits the runner override, and verifies the saved native
+configuration without changing runners afterward. `legacy-codex` selects
+Legacy runner in Advanced before authentication and creation. Both are labeled
+`production-wizard`. Claude's creation default is unchanged: `legacy-claude`
+retains its wizard configuration, while `runner-acpx-claude` explicitly changes
+runtime through the public API before its first task and is labeled
+`post-onboarding-runtime-switch`. Persona, managed instructions, skills, seeded
+question, and task invocation are preserved. The native path removes the legacy
+Paperclip operational skill because Runner supplies that contract through its
+protocol; other assigned skills, including `/first-task`, are retained.
+Each isolated onboarding company has a $5 task budget. Setup probes have a
+separate campaign reservation because they do not create task cost events.
 
 | First response / control | Complete journey |
 | --- | --- |
@@ -1449,12 +1452,11 @@ released on failure and normal isolated-instance cleanup removes the workspace.
 The usual provider billing and partial-attempt reporting apply. No production
 prompts, onboarding defaults, or provider permissions are changed.
 
-For pre-default native onboarding qualification, select all `first-task` cases
-with profiles `runner-codex,runner-acpx-claude` (26 cells). The existing public-API
-runtime switch occurs after the real wizard creates its first agent and before
-any provider work. It preserves the wizard's model, persona, skills, and task.
-This tests the native first-task process in advance of the UI/default rollout;
-it does not certify a native option in the wizard, which is not offered yet.
+For native onboarding qualification, select `first-task` with profiles
+`runner-codex,runner-acpx-claude` (26 cells). Codex verifies the production
+creation default with the experimental flag disabled. Claude still uses the
+existing public-API runtime switch before provider work; that case does not
+qualify a native Claude creation default.
 
 Current proof and remaining decisions are recorded in
 [the 21 September qualification report](QUALIFICATION-2026-09-21.md). In particular,

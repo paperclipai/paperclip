@@ -1437,10 +1437,28 @@ test.describe("Exact failed chat run retry", () => {
           surface === "agent run"
             ? `/${seed.prefix}/agents/${seed.agentId}/runs/${failedRunId}`
             : `/${seed.prefix}/inbox/all`;
+        const canonicalAgentResponse =
+          surface === "agent run"
+            ? page.waitForResponse((response) => {
+                const url = new URL(response.url());
+                return (
+                  response.request().method() === "GET" &&
+                  url.pathname === "/api/agents/maya" &&
+                  url.searchParams.get("companyId") === seed.companyId
+                );
+              })
+            : null;
         await page.goto(startPath);
-        if (surface === "agent run") {
-          // Canonicalization reloads the agent query. Interact after that
-          // navigation so a remount cannot discard the retry mutation result.
+        if (canonicalAgentResponse) {
+          // The URL changes before the canonical query finishes. Wait for its
+          // body so the loading boundary cannot discard the retry mutation.
+          const response = await canonicalAgentResponse;
+          expect(response.ok()).toBe(true);
+          expect(await response.json()).toMatchObject({
+            id: seed.agentId,
+            companyId: seed.companyId,
+            urlKey: "maya",
+          });
           await expect(page).toHaveURL(
             new RegExp(`/${seed.prefix}/agents/maya/runs/${failedRunId}$`),
           );

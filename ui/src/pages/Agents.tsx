@@ -34,7 +34,7 @@ import {
 } from "../hooks/useResourceMemberships";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
-import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { agentDisplayAdapterType, getAdapterLabel } from "../adapters/adapter-display-registry";
 
 const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
@@ -700,7 +700,7 @@ function AgentMetaColumns({
   showEnvironment: boolean;
 }) {
   const model = getConfiguredModel(agent);
-  const adapterLabel = getAdapterLabel(agent.adapterType);
+  const adapterLabel = getAdapterLabel(agentDisplayAdapterType(agent));
   return (
     <>
       <div className="w-44 min-w-0 leading-tight">

@@ -64,10 +64,37 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     return companyId;
   }
 
+  it("resolves internal Codex creation once and preserves legacy agents through ordinary edits", async () => {
+    const companyId = await seedCompany();
+    const service = agentService(db);
+    const lifecycle = createAgentLifecycle(db);
+    const native = await lifecycle.requestHire(companyId, { name: "New Codex", adapterType: "codex_local", adapterConfig: { modelReasoningEffort: "high" }, status: "pending_approval" });
+    const legacy = await lifecycle.requestHire(companyId, { name: "Legacy Codex", adapterType: "codex_local", runner: "legacy", adapterConfig: { extraArgs: ["--search"] }, status: "pending_approval" });
+    const reviewedLegacy = await lifecycle.requestHire(companyId, { name: "Historical approved hire", adapterType: "codex_local", adapterConfig: {}, status: "pending_approval" }, { runnerResolved: true });
+    // Only public Linux x64 artifacts qualify an automatic native default;
+    // source-built macOS/Windows agents keep legacy until their packaging is qualified.
+    if (process.platform === "linux" && process.arch === "x64") {
+      expect(native).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", modelReasoningEffort: "high" } });
+    } else {
+      expect(native).toMatchObject({ adapterType: "codex_local", adapterConfig: { modelReasoningEffort: "high" } });
+    }
+    expect(legacy.adapterType).toBe("codex_local");
+    expect(reviewedLegacy.adapterType).toBe("codex_local");
+    for (const agent of [native, legacy, reviewedLegacy]) {
+      expect(agent).not.toHaveProperty("runner");
+      // Ordinary title changes on an activated agent must not revisit creation defaults.
+      await lifecycle.approveHire(agent.id);
+      await service.update(agent.id, { title: "Updated title" });
+      const saved = await service.getById(agent.id);
+      expect(saved?.adapterType).toBe(agent.adapterType);
+      expect(saved?.adapterConfig).toEqual(agent.adapterConfig);
+    }
+  });
+
   it("freezes generic pending hire config and reapplies the approval snapshot on activation", async () => {
     const companyId = await seedCompany();
     const agentSvc = agentService(db);
-  const agentSvcLifecycle = createAgentLifecycle(db);
+    const agentSvcLifecycle = createAgentLifecycle(db);
     const approvalSvc = approvalService(db);
     const pending = await agentSvcLifecycle.requestHire(companyId, {
       name: "Pending Coder",

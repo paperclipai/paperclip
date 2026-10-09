@@ -4,7 +4,7 @@ import { agents, costEvents, type Db } from "@paperclipai/db";
 import {
   agentAppearanceSchema, resolveAgentAppearance, agentAvatarUrl,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS, agentRuntimeConfigSchema, getAgentWorkEligibility,
-  normalizeAgentUrlKey, type AgentEligibilityAgent,
+  normalizeAgentUrlKey, type AgentEligibilityAgent, type AgentRunnerChoice,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -80,13 +80,15 @@ export interface UpdateAgentOptions {
   claudeLogin?: ClaudeLoginContext;
 }
 
-export type CreateAgentData = Omit<typeof agents.$inferInsert, "companyId" | "lifecycleState" | "lifecycleRequiredPluginIds" | "lifecycleHolds" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation">;
+export type CreateAgentData = Omit<typeof agents.$inferInsert, "companyId" | "lifecycleState" | "lifecycleRequiredPluginIds" | "lifecycleHolds" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation"> & { runner?: AgentRunnerChoice };
 export type AgentConfigurationRecord = typeof agents.$inferSelect;
 export const AGENT_CONFIGURATION_FIELDS = [...CONFIG_REVISION_FIELDS, "permissions"] as const;
 export type AgentConfigurationPatch = Partial<Pick<typeof agents.$inferInsert, typeof AGENT_CONFIGURATION_FIELDS[number]>>;
 export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status">;
 
 export interface CreateAgentOptions {
+  /** Reviewed/historical execution already resolved by a governed internal caller. */
+  runnerResolved?: boolean;
   responsibleUserId?: string | null;
   createdByUserId?: string | null;
   aiConnectionInstall?: { connectionId: string; memberConnectionIds?: string[]; createdByUserId: string | null };

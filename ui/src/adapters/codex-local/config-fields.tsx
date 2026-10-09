@@ -1,4 +1,4 @@
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectPopover } from "../../components/ui/select";
 import { AdapterMark } from "../../components/AdapterMark";
 import { DotRunnerConnection } from "../../components/DotRunnerConnection";
 import { configFieldsForSection } from "../config-sections";
@@ -27,7 +27,7 @@ import {
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
   type PaperclipRunnerPermissionMode,
-  type PaperclipRunnerProvider,
+  type PaperclipRunnerPermissionCapability,
 } from "@paperclipai/adapter-utils";
 
 const inputClass =
@@ -62,6 +62,7 @@ export function CodexLocalConfigFields({
   models,
   hideInstructionsFile,
   managedSandboxOnly,
+  hideRunnerHarness,
 }: AdapterConfigFieldsProps) {
   const runnerManaged = adapterType === "paperclip_runner";
   // The execution engine picks which binary runs on the execution host, and the
@@ -74,13 +75,11 @@ export function CodexLocalConfigFields({
       ? values!.adapterSchemaValues?.provider
       : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex")
     : "codex";
-  const runnerProvider: PaperclipRunnerProvider = isPaperclipRunnerProvider(
-    configuredRunnerProvider,
-  )
-    ? configuredRunnerProvider
-    : "codex";
-  const runnerPermissionCapability =
-    PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[runnerProvider];
+  const runnerProvider = String(configuredRunnerProvider ?? "codex");
+  const runnerPermissionCapability: PaperclipRunnerPermissionCapability =
+    isPaperclipRunnerProvider(runnerProvider)
+      ? PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[runnerProvider]
+      : { configurable: false, defaultMode: "provider-managed", options: [], description: "Unknown provider configuration is preserved." };
   const configuredRunnerPermissionMode =
     runnerManaged && runnerPermissionCapability.configurable
       ? isCreate
@@ -106,7 +105,7 @@ export function CodexLocalConfigFields({
   const runnerPermissionMode =
     runnerManaged && runnerPermissionCapability.configurable
       ? resolvePaperclipRunnerPermissionMode(
-          runnerProvider,
+          isPaperclipRunnerProvider(runnerProvider) ? runnerProvider : "codex",
           configuredRunnerPermissionMode,
         )
       : runnerPermissionCapability.defaultMode;
@@ -176,14 +175,14 @@ export function CodexLocalConfigFields({
           label="Execution engine"
           hint="Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it."
         >
-          <select
-            className={inputClass}
+          <SelectPopover
+            aria-label="Execution engine"
             value={engine}
-            onChange={(e) => {
+            onValueChange={(next) => {
               const value =
-                e.target.value === "acp"
+                next === "acp"
                   ? "acp"
-                  : e.target.value === "cli"
+                  : next === "cli"
                     ? "cli"
                     : "auto";
               isCreate
@@ -194,14 +193,15 @@ export function CodexLocalConfigFields({
                     value === "auto" ? undefined : value,
                   );
             }}
-          >
-            <option value="auto">Default (ACP)</option>
-            <option value="cli">Codex CLI</option>
-            <option value="acp">ACP</option>
-          </select>
+            options={[
+              { value: "auto", label: "Default (ACP)" },
+              { value: "cli", label: "Codex CLI" },
+              { value: "acp", label: "ACP" },
+            ]}
+          />
         </Field>
       )}
-      {runnerManaged && runnerProvider !== "openai_dot" && (
+      {runnerManaged && !hideRunnerHarness && runnerProvider !== "openai_dot" && (
         <Field configSection="adapter"
           label="Harness"
           hint="Choose the agent harness that runs your tasks."
@@ -253,6 +253,7 @@ export function CodexLocalConfigFields({
           >
             <SelectTrigger className="w-full" aria-label="Harness"><SelectValue /></SelectTrigger>
             <SelectContent>
+              {!isPaperclipRunnerProvider(runnerProvider) && <SelectItem value={runnerProvider} disabled>{runnerProvider} (unknown provider)</SelectItem>}
               {runnerHarnessOptions.map((option) => (
                 <SelectItem key={option.value} value={option.value}>
                   <AdapterMark type={option.adapter} className="size-4" />
@@ -469,7 +470,7 @@ export function CodexLocalConfigFields({
             }
             onValueChange={(selectedMode) => {
               const value = resolvePaperclipRunnerPermissionMode(
-                runnerProvider,
+                isPaperclipRunnerProvider(runnerProvider) ? runnerProvider : "codex",
                 selectedMode,
               ) as PaperclipRunnerPermissionMode;
               if (isCreate) {

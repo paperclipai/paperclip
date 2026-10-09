@@ -93,6 +93,7 @@ export const createAgentSchema = z.object({
   capabilities: z.string().optional().nullable(),
   desiredSkills: z.array(agentDesiredSkillSelectionSchema).optional(),
   adapterType: agentAdapterTypeSchema,
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   adapterConfig: adapterConfigSchema.optional().default({}),
   instructionsBundle: createAgentInstructionsBundleSchema.optional(),
   runtimeConfig: agentRuntimeConfigSchema.optional().default({}),
@@ -121,6 +122,7 @@ export type CreateAgent = z.infer<typeof createAgentSchema>;
 
 export const builtInAgentProvisionSchema = z.object({
   adapterType: agentAdapterTypeSchema.optional(),
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   adapterConfig: adapterConfigSchema.optional(),
   budgetMonthlyCents: z.number().int().nonnegative().optional(),
 }).strict();
@@ -256,6 +258,7 @@ export const resetAgentSessionSchema = z.object({
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   aiConnection: aiConnectionBindingSchema.optional(),
   /** Saved agent whose redacted environment entries are restored for this probe. */
   agentId: z.string().guid().optional(),

@@ -3,10 +3,10 @@ import type { RunnerApi } from "./api.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { CredentialName, MatrixExecution } from "./types.js";
 
-/** Provision only credentials for the UI-created company. The production wizard
+/** Provision credentials and a bounded budget for the UI-created company. The production wizard
  * remains the sole creator/configurer of its first agent and onboarding task. */
 export async function provisionFirstTaskFixtures(input: {
-  api: Pick<RunnerApi, "get" | "postSensitive">;
+  api: Pick<RunnerApi, "get" | "patch" | "postSensitive">;
   execution: MatrixExecution;
   nonce: string;
   company: LiveFixtureValues["company"];
@@ -30,6 +30,7 @@ export async function provisionFirstTaskFixtures(input: {
   const credential = execution.profile.credential;
   const value = credentials[credential];
   if (!value) throw new Error(`Missing credential ${credential}`);
+  await api.patch(`/api/companies/${company.id}`, { budgetMonthlyCents: 500 });
   const environments = await api.get<Array<LiveFixtureValues["environment"]>>(
     `/api/companies/${company.id}/environments?driver=local`,
   );
@@ -59,8 +60,9 @@ export async function provisionFirstTaskFixtures(input: {
   };
 }
 
-/** Reuse the qualified runtime configuration only, never the QA persona from
- * buildAgent. Native onboarding is not offered by the production wizard yet. */
+/** Reuse the qualified runtime configuration for explicit regression switches,
+ * never the QA persona from buildAgent. Codex default qualification does not
+ * call this helper; its wizard must persist the native selection directly. */
 export function firstTaskNativeRuntimePatch(
   execution: MatrixExecution,
   fixtures: LiveFixtureValues,

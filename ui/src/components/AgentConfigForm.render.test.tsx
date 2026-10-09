@@ -9,7 +9,7 @@ import type { Agent, Environment, UserSecretDefinition } from "@paperclipai/shar
 import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
-import { AgentConfigForm, AdapterLoginPanel, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
+import { AgentConfigForm, AdapterLoginPanel, ModelDropdown, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
@@ -68,6 +68,10 @@ const mockSecretsApi = vi.hoisted(() => ({
 
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
+}));
+
+vi.mock("../api/adapters", () => ({
+  adaptersApi: { list: async () => [{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }] },
 }));
 
 vi.mock("../api/environments", () => ({
@@ -264,6 +268,7 @@ async function renderForm(
   agentOverrides: Partial<Agent> = {},
   options: {
     showAdapterTestEnvironmentButton?: boolean;
+    showAdapterTypeField?: boolean;
     content?: "configuration" | "secrets";
     environmentVariablesPlacement?: "configuration" | "secrets";
     hideInlineSave?: boolean;
@@ -301,7 +306,7 @@ async function renderForm(
               onDirtyChange={options.onDirtyChange}
               onSaveActionChange={options.onSaveActionChange}
               onCancelActionChange={options.onCancelActionChange}
-              showAdapterTypeField={false}
+              showAdapterTypeField={options.showAdapterTypeField ?? false}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
             />
           </TooltipProvider>
@@ -651,6 +656,58 @@ async function flushUntil(check: () => boolean, timeoutMs = 4000) {
 
 describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
+
+  it.each(["codex_local", "paperclip_runner"])("keeps a saved %s runner during unrelated edits", async adapterType => {
+    const adapterConfig = { model: "gpt-5.6-sol", ...(adapterType === "paperclip_runner" ? { provider: "codex", reasoningEffort: "high" } : { modelReasoningEffort: "high" }) };
+    const result = await renderForm([], { adapterType, adapterConfig }, { showAdapterTypeField: true });
+    roots.push(result.root);
+    expect(result.container.querySelector('[aria-label="Harness"]')?.textContent).toContain("Codex");
+    await clickByText(result.container, "Advanced");
+    expect(result.container.querySelector('[aria-label="Runner"]')?.textContent).toContain(adapterType === "paperclip_runner" ? "Paperclip Runner" : "Legacy runner");
+    await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed Cody"));
+    await flushReact();
+    await clickByText(result.container, "Save");
+    expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed Cody" });
+  });
+
+  it("submits only an explicit runner change and retains saved configuration for server translation", async () => {
+    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol", reasoningEffort: "high", env: { CODEX_HOME: { type: "secret_ref", secretId: "codex-account" } } } });
+    roots.push(result.root);
+    await clickByText(result.container, "Advanced");
+    await clickElement(result.container.querySelector('[aria-label="Runner"]'));
+    await clickElement([...document.querySelectorAll('[role="option"]')].find(option => option.textContent?.startsWith("Legacy runner")));
+    await clickByText(result.container, "Save");
+    expect(result.onSave).toHaveBeenCalledWith({ runner: "legacy" });
+  });
+
+  it.each([false, true])("keeps experimental native selection gated when enableNativeRunner is %s", async enabled => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: enabled });
+    const result = await renderForm([], { adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-5" } }, { showAdapterTypeField: true });
+    roots.push(result.root);
+    await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+    const option = [...document.querySelectorAll('[role="option"]')].find(element => element.getAttribute("data-value") === "paperclip_runner");
+    expect(Boolean(option)).toBe(enabled);
+    if (!enabled) return;
+    expect(document.body.textContent).toContain("Advanced");
+    await clickElement(option);
+    await clickByText(result.container, "Save");
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({
+      adapterType: "paperclip_runner",
+      adapterConfig: expect.objectContaining({ provider: "acpx", acpxAgent: "claude" }),
+    }));
+    expect(result.onSave.mock.calls[0][0].runner).toBeUndefined();
+  });
+
+  it.each([{ provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.6" }, { provider: "acpx", acpxAgent: "claude" }, { provider: "unknown-provider" }])("preserves saved native $provider configuration with the experimental gate off", async adapterConfig => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig }, { showAdapterTypeField: true });
+    roots.push(result.root);
+    expect(result.container.querySelector('[aria-label="Runner"]')).toBeNull();
+    await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed native agent"));
+    await flushReact();
+    await clickByText(result.container, "Save");
+    expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed native agent" });
+  });
 
   beforeEach(() => {
     mockAgentsApi.adapterModels.mockResolvedValue([]);
@@ -1244,6 +1301,33 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).toContain("Network unavailable");
   });
 
+  it("moves through model options with the same keyboard controls as the harness picker", async () => {
+    const curated = [
+      { id: "claude-fable-5-1", label: "Claude Fable 5.1" },
+      { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
+      { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+      { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+    ];
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<TooltipProvider>
+        <ModelDropdown models={curated} value="" onChange={() => {}} open onOpenChange={() => {}} allowDefault={false} required groupByProvider={false} preserveOrder />
+      </TooltipProvider>));
+      const search = document.body.querySelector("input")!;
+      await act(() => { search.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+      expect(document.activeElement?.textContent).toBe(curated[0].label);
+      await act(() => { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })); });
+      expect(document.activeElement?.textContent).toBe(curated.at(-1)?.label);
+      await act(() => { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })); });
+      expect(document.activeElement?.textContent).toBe(curated[0].label);
+    } finally {
+      await act(() => root.unmount());
+      container.remove();
+    }
+  });
+
   it("hides the Login button before Test and shows it after the adapter_auth_missing check for a Codex sandbox", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
     const result = await renderCodexSandbox();
@@ -1254,6 +1338,29 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
 
     expect(findButton(result.container, "Sign in")).toBeTruthy();
+  });
+
+  it.each([
+    ["auth_required", false], ["auth_required", true], ["failed", false],
+  ] as const)("gates native Codex sandbox login on the shared auth check (%s, %s)", async (diagnostic, authentication) => {
+    mockAgentsApi.testEnvironment.mockResolvedValue({
+      adapterType: "paperclip_runner", status: "fail", testedAt: new Date(0).toISOString(),
+      checks: [
+        { code: `codex_hello_probe_${diagnostic}`, level: "error", message: "Native Codex setup failed." },
+        ...(authentication ? [{ code: "adapter_auth_missing", level: "error", message: "The selected Codex account needs authentication." }] : []),
+      ],
+    });
+    const result = await renderCodexSandbox({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } });
+    roots.push(result.root);
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
+    await runTest(result.container);
+    expect(Boolean(findButton(result.container, "Sign in"))).toBe(authentication);
+    if (authentication) {
+      await startLogin(result.container);
+      expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith("company-1", "codex_local", { environmentId: "sandbox-1" });
+    } else {
+      expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    }
   });
 
   it("hides the Codex login for a provider without the login pseudo-terminal capability", async () => {

@@ -1,3 +1,7 @@
+import type { AgentRunnerChoice } from "@paperclipai/shared";
+import { agentHarnessType } from "@paperclipai/shared";
+import { adaptersApi } from "../api/adapters";
+import { CodexRunnerSelect } from "./CodexRunnerSelect";
 import { healthApi } from "@/api/health";
 import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
 import { useLocalAiLogin } from "./ai-connections/useLocalAiLogin";
@@ -147,16 +151,15 @@ type Step = 0 | 1 | 2 | 3 | 4 | 5;
 // wizard's registry-driven approach rather than a fixed union.
 type AdapterType = string;
 
-// First-run onboarding stays on the proven direct adapters even when an
-// instance administrator has opted into Paperclip Runner elsewhere. The
-// experimental flag only exposes the runner in explicit agent configuration.
+// People select a harness. The server resolves the runner for a new hire.
 const ONBOARDING_EXCLUDED_ADAPTER_TYPES = new Set([
   "process",
   "http",
   "paperclip_runner",
 ]);
 
-function restoreOnboardingAdapterType(savedAdapterType: unknown): AdapterType {
+function restoreOnboardingAdapterType(savedAdapterType: unknown, provider?: unknown): AdapterType {
+  if (savedAdapterType === "paperclip_runner" && (provider === undefined || provider === "codex")) return "codex_local";
   return typeof savedAdapterType === "string" && savedAdapterType !== "paperclip_runner"
     ? savedAdapterType
     : "claude_local";
@@ -594,8 +597,10 @@ function OnboardingWizardInner({
     (saved?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
   );
   const [adapterType, setAdapterType] = useState<AdapterType>(() =>
-    restoreOnboardingAdapterType(saved?.adapterType),
+    restoreOnboardingAdapterType(saved?.adapterType, saved?.runnerProvider),
   );
+  const [runner, setRunner] = useState<AgentRunnerChoice>(() => saved?.runner === "legacy" || saved?.runner === "paperclip"
+    ? saved.runner : saved?.adapterType === "paperclip_runner" && (saved?.runnerProvider === undefined || saved?.runnerProvider === "codex") ? "paperclip" : "auto");
   /**
    * Whether a model source has been chosen, as opposed to which one
    * `adapterType` happens to hold.
@@ -621,11 +626,10 @@ function OnboardingWizardInner({
   const [sourcePicked, setSourcePicked] = useState(false);
   const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner";
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
-  // Native drafts may carry provider-specific configuration that is invalid
-  // for the legacy adapter selected above. Keep the portable working
-  // directory, but clear runner-specific execution fields while restoring.
+  // Recover the harness and runner separately. Host command overrides from an
+  // old native draft cannot describe the provider; portable model/cwd survive.
   const [model, setModel] = useState(
-    savedNativeRunnerDraft ? "" : (saved?.model as string) ?? "",
+    savedNativeRunnerDraft && saved?.runnerProvider !== undefined && saved.runnerProvider !== "codex" ? "" : (saved?.model as string) ?? "",
   );
   const [command, setCommand] = useState(
     savedNativeRunnerDraft ? "" : (saved?.command as string) ?? "",
@@ -904,7 +908,7 @@ function OnboardingWizardInner({
     if (!effectiveOnboardingOpen) return;
     const state = {
       step, companyName,
-      agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
+      agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url,
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
@@ -913,7 +917,7 @@ function OnboardingWizardInner({
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
     effectiveOnboardingOpen, step, companyName,
-    agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
+    agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url,
     credentialMode, credentialModeChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
@@ -981,6 +985,11 @@ function OnboardingWizardInner({
     loginEnvironmentList,
     experimentalSettingsForLogin?.enableManagedSandboxOnly,
   ]);
+  const runnerDiscovery = useQuery({
+    queryKey: queryKeys.adapters.availability(createdCompanyId, resolvedLoginEnvironmentId),
+    queryFn: () => adaptersApi.list({ companyId: createdCompanyId!, environmentId: resolvedLoginEnvironmentId }),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4,
+  });
   const resolvedLoginEnvironment = useMemo(
     () =>
       loginEnvironmentList.find((environment) => environment.id === resolvedLoginEnvironmentId) ??
@@ -1541,7 +1550,7 @@ function OnboardingWizardInner({
     setAdapterEnvResult(null);
     adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
-  }, [step, adapterType, model, command, args, url, credentialMode, apiKey, selectedSavedKey, selectedApiKey?.id, savedSubscription?.id]);
+  }, [step, adapterType, runner, model, command, args, url, credentialMode, apiKey, selectedSavedKey, selectedApiKey?.id, savedSubscription?.id, createdCompanyId, resolvedLoginEnvironmentId, runner === "auto" ? runnerDiscovery.data?.find(item => item.type === "codex_local")?.defaultRunner : undefined]);
 
   /**
    * Leaving the step puts the row back to a question.
@@ -1628,6 +1637,7 @@ function OnboardingWizardInner({
     setAgentAppearance(randomAgentAppearance());
     setAgentRole(DEFAULT_AGENT_ROLE);
     setAdapterType("claude_local");
+    setRunner("auto");
     setModel("");
     setCommand("");
     setArgs("");
@@ -1821,6 +1831,7 @@ function OnboardingWizardInner({
     const config = adapter.buildAdapterConfig({
       ...defaultCreateValues,
       adapterType,
+      runner,
       model:
         adapterType === "gemini_local"
           ? model || DEFAULT_GEMINI_LOCAL_MODEL
@@ -1838,7 +1849,7 @@ function OnboardingWizardInner({
         adapterType === "claude_local" || adapterType === "opencode_local",
       dangerouslyBypassSandbox:
         adapterType === "codex_local"
-          ? DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
+          ? runner === "legacy" && DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
           : defaultCreateValues.dangerouslyBypassSandbox
     });
     if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
@@ -1952,6 +1963,7 @@ function OnboardingWizardInner({
         adapterType,
         {
           adapterConfig: adapterConfigOverride ?? buildAdapterConfig(),
+          ...(adapterType === "codex_local" && runner !== "auto" ? { runner } : {}),
           ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}),
           environmentId,
         }
@@ -2018,13 +2030,11 @@ function OnboardingWizardInner({
   // doesn't hire a second agent.
   async function handleGiveHeartbeat() {
     if (!createdCompanyId) return;
-    // The grid and restore path both exclude native runner. Keep this final
-    // guard at the mutation boundary so a stale or modified client cannot use
-    // first-run onboarding to create a native agent.
+    // Onboarding submits a harness. The server resolves its execution choice.
     if (adapterType === "paperclip_runner") {
       setAdapterType("claude_local");
       setModel("");
-      setError("Paperclip Runner is not available during onboarding. Choose a legacy adapter.");
+      setError("Choose a harness to continue onboarding.");
       return;
     }
     if (createdAgentId) {
@@ -2178,7 +2188,7 @@ function OnboardingWizardInner({
       const existing = existingAgents?.find(
         (agent) =>
           agent.name.trim().toLowerCase() === hireName.toLowerCase() &&
-          agent.adapterType === adapterType,
+          agentHarnessType(agent.adapterType, agent.adapterConfig) === adapterType,
       );
       if (existing) {
         if (!isCurrent()) return;
@@ -2202,6 +2212,7 @@ function OnboardingWizardInner({
         role: agentRole,
         adapterType,
         adapterConfig: hireAdapterConfig,
+        ...(adapterType === "codex_local" && runner !== "auto" ? { runner } : {}),
         ...(shouldApplyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
         // The server owns what the first agent is told now: this marker seeds
         // the chief-of-staff persona over the agent's entry instruction file.
@@ -2692,6 +2703,7 @@ function OnboardingWizardInner({
                         autoConnectStartedRef.current = false;
                         setSourcePicked(true);
                         setAdapterType(id);
+                        if (id !== adapterType) setRunner("auto");
                         if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
                         else if (id !== "codex_local") setModel("");
                         setConnectPhase("collapsing");
@@ -2895,6 +2907,15 @@ function OnboardingWizardInner({
                       ) : <p className="text-xs text-muted-foreground">This environment does not support browser sign-in. Choose another sign-in environment or connect with an API key.</p>
                     ) : null}
                   </motion.div>
+
+                  {sourceSelected && adapterType === "codex_local" && <details className="space-y-3">
+                    <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                    <CodexRunnerSelect value={runner} disabled={loading || adapterEnvLoading}
+                      pending={runnerDiscovery.isFetching} error={runnerDiscovery.error?.message} onRetry={() => { void runnerDiscovery.refetch(); }}
+                      defaultRunner={runnerDiscovery.data?.find(item => item.type === "codex_local")?.defaultRunner}
+                      supportedRunners={runnerDiscovery.data?.find(item => item.type === "codex_local")?.supportedRunners}
+                      onChange={setRunner} />
+                  </details>}
 
                   {/* Conditional adapter fields */}
                   {/* No model picker. Every adapter this step offers resolves

@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, userEvent, within } from "storybook/test";
 import { AgentSettingsPreview } from "../prototypes/agent-settings/AgentSettingsPreview";
 const meta = {
   title: "Agents/Configuration refresh",
@@ -53,6 +54,7 @@ export const Runtime: Story = {
   args: { initialTab: "runtime" },
 };
 export const CodexRuntime: Story = {
+  name: "Codex · Existing legacy runner",
   args: { initialTab: "runtime", adapterType: "codex_local" },
 };
 export const OpenCodeRuntime: Story = {
@@ -62,8 +64,18 @@ export const PiRuntime: Story = {
   args: { initialTab: "runtime", adapterType: "pi_local" },
 };
 export const RunnerRuntime: Story = {
+  name: "Codex · Existing Paperclip Runner",
   args: { initialTab: "runtime", adapterType: "paperclip_runner" },
 };
+export const CodexLegacyLight: Story = { ...CodexRuntime, globals: { theme: "light" } };
+export const CodexNativeLight: Story = { ...RunnerRuntime, globals: { theme: "light" } };
+export const CodexLegacyMobile: Story = { ...CodexRuntime, globals: { viewport: { value: "mobile1", isRotated: false } } };
+export const CodexNativeMobile: Story = { ...RunnerRuntime, globals: { viewport: { value: "mobile1", isRotated: false } } };
+export const CodexLegacyAdvanced: Story = { ...CodexRuntime, play: async ({ canvasElement }) => {
+  const canvas = within(canvasElement);
+  await userEvent.click(await canvas.findByRole("button", { name: "Advanced" }));
+  await expect(await canvas.findByRole("button", { name: "Runner" })).toHaveTextContent("Legacy runner");
+} };
 export const Secrets: Story = {
   name: "Secrets & variables",
   args: { initialTab: "secrets" },

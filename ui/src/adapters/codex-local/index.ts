@@ -8,5 +8,15 @@ export const codexLocalUIAdapter: UIAdapterModule = {
   label: "Codex",
   parseStdoutLine: parseCodexStdoutLine,
   ConfigFields: CodexLocalConfigFields,
-  buildAdapterConfig: buildCodexLocalConfig,
+  buildAdapterConfig: (values) => {
+    const config = buildCodexLocalConfig(values);
+    // Legacy permission flags cannot describe the native provider policy.
+    if (values.runner !== "legacy") delete config.dangerouslyBypassApprovalsAndSandbox;
+    return {
+      ...config,
+      ...(values.codexPermissionMode !== undefined ? { codexPermissionMode: values.codexPermissionMode } : {}),
+      ...(values.paperclipRunnerLifecycleMode !== undefined ? { lifecycleMode: values.paperclipRunnerLifecycleMode } : {}),
+      ...(values.paperclipRunnerIdleTimeoutMs !== undefined ? { idleTimeoutMs: values.paperclipRunnerIdleTimeoutMs } : {}),
+    };
+  },
 };

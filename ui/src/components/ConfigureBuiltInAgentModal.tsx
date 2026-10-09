@@ -1,4 +1,7 @@
 import { useMemo, useState } from "react";
+import { agentHarnessType, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
+import { adaptersApi } from "@/api/adapters";
+import { CodexRunnerSelect } from "./CodexRunnerSelect";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -65,8 +68,12 @@ export function ConfigureBuiltInAgentModal({
   const { definition } = state;
 
   const [adapterType, setAdapterType] = useState<string>(
-    () => state.agent?.adapterType ?? defaultAdapterType(state),
+    () => state.agent && agentHarnessType(state.agent.adapterType, state.agent.adapterConfig) === "codex_local" ? "codex_local" : state.agent?.adapterType ?? defaultAdapterType(state),
   );
+  const [runner, setRunner] = useState<AgentRunnerChoice | undefined>();
+  const environmentId = state.agent?.defaultEnvironmentId ?? null;
+  const adapters = useQuery({ queryKey: queryKeys.adapters.availability(companyId, environmentId), queryFn: () => adaptersApi.list({ companyId, environmentId }), enabled: open });
+  const codexAvailability = adapters.data?.find(item => item.type === "codex_local");
   const [model, setModel] = useState<string>(() => {
     const config = state.agent?.adapterConfig;
     const configuredModel = typeof config === "object" && config !== null
@@ -127,9 +134,18 @@ export function ConfigureBuiltInAgentModal({
     mutationFn: async () => {
       const adapterConfig: Record<string, unknown> = {};
       if (model.trim()) adapterConfig.model = model.trim();
+      const existing = state.agent;
+      const sameHarness = existing && agentHarnessType(existing.adapterType, existing.adapterConfig) === adapterType;
+      const savedModel = typeof existing?.adapterConfig.model === "string" ? existing.adapterConfig.model.trim() : "";
+      // Completed setup can translate saved settings for a runner-only change.
+      // Unfinished setup must submit the displayed config to clear its setup requirement.
+      const alreadyConfigured = state.status === "ready" || state.status === "paused";
+      const adapterInput = alreadyConfigured && sameHarness && normalizedModel === savedModel ? {}
+        : sameHarness ? { adapterType: existing.adapterType, adapterConfig: { ...existing.adapterConfig, ...adapterConfig } }
+        : { adapterType, adapterConfig };
       const result = await builtInAgentsApi.provision(companyId, definition.key, {
-        adapterType,
-        adapterConfig,
+        ...adapterInput,
+        ...(adapterType === "codex_local" && runner !== undefined ? { runner } : {}),
         ...(budgetMonthlyCents !== undefined ? { budgetMonthlyCents } : {}),
       });
       return result;
@@ -163,16 +179,25 @@ export function ConfigureBuiltInAgentModal({
             board.
           </InlineBanner>
 
-          <Field label="Adapter type">
+          <Field label="Harness">
             <AdapterTypeDropdown
               value={adapterType}
               onChange={(next) => {
                 setAdapterType(next);
                 setModel("");
+                setRunner(undefined);
               }}
               disabledTypes={disabledTypes}
             />
           </Field>
+
+          {adapterType === "codex_local" && <details className="space-y-3">
+            <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+            <CodexRunnerSelect value={runner ?? (state.agent ? agentRunner(state.agent.adapterType) : "auto")}
+              pending={adapters.isFetching} error={adapters.error?.message} onRetry={() => { void adapters.refetch(); }}
+              defaultRunner={codexAvailability?.defaultRunner} supportedRunners={codexAvailability?.supportedRunners}
+              onChange={setRunner} />
+          </details>}
 
           {modelRequired && (
             // ModelDropdown supplies its own "Model" Field label + hint.

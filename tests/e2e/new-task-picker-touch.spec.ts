@@ -65,7 +65,7 @@ test("new-task assignee, model, and project sheets scroll by touch and retain th
     await json(await request.post(`/api/companies/${company.id}/agents`, {
       data: {
         name: `Touch Agent ${String(index).padStart(2, "0")}`, role: "engineer",
-        adapterType: "codex_local", adapterConfig: { model: "gpt-6-sol" },
+        adapterType: "codex_local", runner: "legacy", adapterConfig: { model: "gpt-6-sol" },
         runtimeConfig: { heartbeat: { enabled: false } },
       },
     }));
@@ -166,7 +166,7 @@ test.describe("desktop picker scrolling", () => {
       await json(await request.post(`/api/companies/${company.id}/agents`, {
         data: {
           name: `Wheel Agent ${String(index).padStart(2, "0")}`, role: "engineer",
-          adapterType: "codex_local", adapterConfig: { model: "gpt-6-sol" },
+          adapterType: "codex_local", runner: "legacy", adapterConfig: { model: "gpt-6-sol" },
           runtimeConfig: { heartbeat: { enabled: false } },
         },
       }));

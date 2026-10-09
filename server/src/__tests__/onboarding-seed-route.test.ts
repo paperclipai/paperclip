@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -38,8 +38,17 @@ const SEED = {
 
 describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () => {
   const ctx = useEmbeddedPostgres("onboarding-seed-route");
+  let runnerSelectionSpy: { mockRestore(): void } | undefined;
+
+  beforeEach(async () => {
+    // Exercise real runner policy on the qualified Linux release target.
+    const selection = await import("../services/agent-runner-selection.js");
+    runnerSelectionSpy = vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>
+      selection.resolveNewAgentRunner({ ...input, target: { driver: "local", platform: "linux", architecture: "x64" } }));
+  });
 
   afterEach(async () => {
+    runnerSelectionSpy?.mockRestore();
     await ctx.db.delete(activityLog);
     await ctx.db.delete(companyOnboardingSeeds);
     await ctx.db.delete(issues);
@@ -140,6 +149,25 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
       } else {
         process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE = previous;
       }
+    }
+  });
+
+  it("uses the creation default for server-seeded Codex without changing the Claude fallback", async () => {
+    const previous = process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE;
+    process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE = "codex_local";
+    try {
+      const { companyId, app } = await seedCompany();
+      const response = await post(app, companyId, SEED);
+      expect(response.status).toBe(200);
+      const [agent] = await ctx.db.select().from(agents).where(eq(agents.companyId, companyId));
+      expect(agent).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } });
+      expect(agent?.adapterConfig).toMatchObject({ paperclipSkillSync: { desiredSkills: expect.arrayContaining(["paperclipai/paperclip/paperclip-create-agent"]) } });
+      expect((await post(app, companyId, SEED)).body.changed).toBe(false);
+      const [replayed] = await ctx.db.select().from(agents).where(eq(agents.companyId, companyId));
+      expect(replayed?.adapterConfig).toEqual(agent?.adapterConfig);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE;
+      else process.env.PAPERCLIP_ONBOARDING_SEED_ADAPTER_TYPE = previous;
     }
   });
 

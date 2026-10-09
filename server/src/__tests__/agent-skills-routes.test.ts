@@ -3,6 +3,17 @@ import { readFile } from "node:fs/promises";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const runnerTarget = vi.hoisted(() => ({ driver: "local", platform: "linux", architecture: "x64" }));
+vi.mock("../services/agent-runner-selection.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-runner-selection.js")>();
+  return {
+    ...actual,
+    // Exercise the real selection/translation policy on an explicit target.
+    resolveNewAgentRunnerForCompany: vi.fn(async (...[_db, _companyId, input]: Parameters<typeof actual.resolveNewAgentRunnerForCompany>) =>
+      actual.resolveNewAgentRunner({ ...input, target: runnerTarget })),
+  };
+});
+
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   update: vi.fn(),
@@ -50,6 +61,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
 }));
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(),
   getExperimental: vi.fn(),
 }));
 
@@ -251,6 +263,8 @@ function makeAgent(adapterType: string) {
 
 describe("agent skill routes", () => {
   beforeEach(async () => {
+    runnerTarget.platform = "linux";
+    runnerTarget.architecture = "x64";
     vi.resetModules();
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
@@ -279,6 +293,7 @@ describe("agent skill routes", () => {
       agent: makeAgent("claude_local"),
     });
     mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: { env: {} } });
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: null, experimental: {}, general: {} });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBetaSkills: false });
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
@@ -1005,7 +1020,7 @@ describe("agent skill routes", () => {
           }),
         }),
       }),
-      { createdByUserId: "local-board", responsibleUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "local-board", responsibleUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
     );
     expect(mockTrackAgentCreated).toHaveBeenCalledWith(
       expect.anything(),
@@ -1055,7 +1070,7 @@ describe("agent skill routes", () => {
       expect.objectContaining({
         role: "security",
       }),
-      { createdByUserId: "local-board", responsibleUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
+      { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "local-board", responsibleUserId: "local-board", claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
     );
     expect(mockTrackAgentCreated).toHaveBeenCalledWith(
       expect.anything(),
@@ -1242,31 +1257,45 @@ describe("agent skill routes", () => {
       .toContain("paperclipai/paperclip/first-task");
   });
 
-  it.each(["codex_local", "claude_local"].flatMap((adapterType) => [
+  const codexRunnerCases = [
+    { adapterType: "codex_local", runner: "auto", platform: "linux", expectedType: "paperclip_runner" },
+    { adapterType: "codex_local", runner: "legacy", platform: "linux", expectedType: "codex_local" },
+    { adapterType: "codex_local", runner: "auto", platform: "darwin", expectedType: "codex_local" },
+  ];
+  it.each([...codexRunnerCases, { adapterType: "claude_local", runner: "auto", platform: "linux", expectedType: "claude_local" }].flatMap((runnerCase) => [
     ["agents", "paperclipai/paperclip/paperclip-create-agent"],
     ["agent-hires", "paperclipai/paperclip/paperclip-create-agent"],
     ["agents", "paperclip"],
     ["agent-hires", "paperclip"],
     ["agents", "paperclipai/paperclip/first-task"],
     ["agent-hires", "paperclipai/paperclip/first-task"],
-  ].map(([route, skill]) => ({ adapterType, route, skill }))))("gives $adapterType onboarding agents core and first-task skills via $route, preserving $skill pins", async ({ adapterType, route, skill }) => {
+  ].map(([route, skill]) => ({ ...runnerCase, route, skill }))))("assigns onboarding skills via $route for $adapterType/$runner on $platform with $skill pins", async ({ adapterType, runner, platform, expectedType, route, skill }) => {
+    runnerTarget.platform = platform;
+    runnerTarget.architecture = platform === "darwin" ? "arm64" : "x64";
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBetaSkills: true });
     const versionId = "22222222-2222-4222-8222-222222222222";
     const res = await request(await createApp(createDb(route === "agent-hires")))
       .post(`/api/companies/company-1/${route}`)
       .send({
-        name: "Chiff", role: "general", adapterType,
+        name: "Chiff", role: "general", adapterType, ...(runner === "auto" ? {} : { runner }),
         onboardingFirstAgent: true,
         desiredSkills: [{ key: skill, versionId }],
       });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     const input = mockAgentService.create.mock.calls[0][1];
     expect(input.role).toBe("general");
+    expect(input.adapterType).toBe(expectedType);
+    const native = expectedType === "paperclip_runner";
+    if (native) expect(input.adapterConfig.provider).toBe("codex");
     const canonicalKey = skill === "paperclip" ? "paperclipai/paperclip/paperclip" : skill;
     const expected = ["paperclip", "paperclip-board", "paperclip-converting-plans-to-tasks", "paperclip-create-agent", "para-memory-files", "first-task"]
+      // Native PRP supplies the operational contract; role skills and their pins remain assigned.
+      .filter((name) => !native || name !== "paperclip")
       .map((name) => ({ key: `paperclipai/paperclip/${name}`, versionId: `paperclipai/paperclip/${name}` === canonicalKey ? versionId : null }));
-    expect(input.adapterConfig.paperclipSkillSync.desiredSkills).toEqual(expect.arrayContaining(expected));
-    expect(input.adapterConfig.paperclipSkillSync.desiredSkills).toHaveLength(6);
+    const desiredSkills = input.adapterConfig.paperclipSkillSync.desiredSkills.map((entry: string | { key: string; versionId: string | null }) =>
+      typeof entry === "string" ? { key: entry, versionId: null } : entry);
+    expect(desiredSkills).toEqual(expect.arrayContaining(expected));
+    expect(desiredSkills).toHaveLength(expected.length);
   });
 
   it.each(["agents", "agent-hires"])("leaves ordinary general agents' defaults unchanged via %s", async (route) => {
@@ -1277,13 +1306,23 @@ describe("agent skill routes", () => {
     expect(mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync).toBeUndefined();
   });
 
-  it.each(["agents", "agent-hires"])("does not assign first-task to ordinary CEOs via %s", async (route) => {
+  it.each(codexRunnerCases.flatMap((runnerCase) => ["agents", "agent-hires"].map((route) => ({ ...runnerCase, route }))))("assigns core skills without first-task to ordinary CEOs via $route using $runner on $platform", async ({ route, runner, platform, expectedType }) => {
+    runnerTarget.platform = platform;
+    runnerTarget.architecture = platform === "darwin" ? "arm64" : "x64";
     const res = await request(await createApp())
       .post(`/api/companies/company-1/${route}`)
-      .send({ name: "CEO", role: "ceo", adapterType: "codex_local" });
+      .send({ name: "CEO", role: "ceo", adapterType: "codex_local", ...(runner === "auto" ? {} : { runner }) });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    const desiredSkills = mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync.desiredSkills;
-    expect(desiredSkills).toContain("paperclipai/paperclip/paperclip");
+    const input = mockAgentService.create.mock.calls[0][1];
+    expect(input.adapterType).toBe(expectedType);
+    const native = expectedType === "paperclip_runner";
+    if (native) expect(input.adapterConfig.provider).toBe("codex");
+    const desiredSkills = input.adapterConfig.paperclipSkillSync.desiredSkills;
+    const expected = ["paperclip", "paperclip-board", "paperclip-converting-plans-to-tasks", "paperclip-create-agent", "para-memory-files"]
+      .filter((name) => !native || name !== "paperclip")
+      .map((name) => `paperclipai/paperclip/${name}`);
+    expect(desiredSkills).toEqual(expect.arrayContaining(expected));
+    expect(desiredSkills).toHaveLength(expected.length);
     expect(desiredSkills).not.toContain("paperclipai/paperclip/first-task");
   });
 
@@ -1491,6 +1530,8 @@ describe("agent skill routes", () => {
         }),
       }),
       {
+        runnerResolved: true,
+        aiConnectionInstall: undefined,
         createdByUserId: "local-board", responsibleUserId: "local-board",
         claudeLogin: {
           storedSessionId: null,

@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { getAdapterDisplay, getAdapterLabel, getAdapterLabels } from "./adapter-display-registry";
+import { agentDisplayAdapterType, getAdapterDisplay, getAdapterLabel, getAdapterLabels } from "./adapter-display-registry";
 
 describe("adapter display registry", () => {
+  it("brands saved Codex runners as Codex without guessing managed or unknown providers", () => {
+    expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } })).toBe("codex_local");
+    expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: {} })).toBe("codex_local");
+    for (const provider of ["claude_managed", "aws_agentcore", "unknown"]) {
+      expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider } })).toBe("paperclip_runner");
+    }
+  });
   it("uses user-facing labels without the legacy local qualifier for built-in adapters", () => {
     expect(getAdapterLabel("codex_local")).toBe("Codex");
     expect(getAdapterLabel("claude_local")).toBe("Claude Code");

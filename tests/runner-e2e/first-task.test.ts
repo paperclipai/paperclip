@@ -6,6 +6,8 @@ import { firstTaskRejectionReplyRecorded, isFirstTaskRejectionCancellation } fro
 import { createIssueThreadInteractionSchema } from "../../packages/shared/src/validators/issue.js";
 import { renderInteractionCard } from "./interaction-report.js";
 import { main as judgeCommand } from "./first-task-judge.js";
+import { projectFirstTaskResult } from "./first-task-flow.js";
+import { validateRetainedRunnerResult } from "./result-validation.js";
 import {
   firstTaskNativeRuntimePatch,
   provisionFirstTaskFixtures,
@@ -31,6 +33,7 @@ import {
   QUALITY_DIMENSIONS,
   judgeFirstTask,
   pendingQuality,
+  qualityInput,
   validateQualityScores,
 } from "./first-task-quality.js";
 import { renderFirstTaskDetails } from "./first-task-report.js";
@@ -215,6 +218,81 @@ const scores = () =>
     rationale: "Concrete and relevant",
     evidence: ["response-1"],
   }));
+
+describe("first-task public result projection", () => {
+  it("keeps fixture-visible evidence while excluding private records from both normalized result fields", () => {
+    const e = recording();
+    const sentinel = "PRIVATE_SESSION_ACCOUNT_SENTINEL";
+    e.instructions[0].content = sentinel;
+    e.instructions[0].path = `/private/${sentinel}/AGENTS.md`;
+    e.runtimeSettings = {
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", model: "gpt-5.6-sol", env: { OPENAI_API_KEY: sentinel }, codexHome: sentinel },
+      runtimeConfig: { accountId: sentinel }, permissions: { privateTrace: sentinel },
+      onboardingRuntime: { mode: "production-wizard", originalAdapterType: "paperclip_runner", testedAdapterType: "paperclip_runner", accountId: sentinel },
+    };
+    for (const checkpoint of e.checkpoints) {
+      checkpoint.tasks.forEach(t => Object.assign(t, { executionState: { sessionId: sentinel }, responsibleUserId: sentinel }));
+      checkpoint.agents.forEach(a => Object.assign(a, { accountId: sentinel, metadata: { auth: sentinel }, adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-sol", env: { TOKEN: sentinel }, home: sentinel } }));
+      checkpoint.comments.forEach(c => Object.assign(c, { hiddenReasoning: sentinel, metadata: { sessionId: sentinel },
+        ...(c.authorUserId ? { authorUserId: sentinel } : {}) }));
+      checkpoint.interactions.forEach(i => Object.assign(i, { nativeQuestionId: sentinel, metadata: { sessionId: sentinel },
+        payload: { ...i.payload, providerSessionId: sentinel, toolAction: { secret: sentinel } },
+        result: { ...i.result, outcome: "answered", refreshToken: sentinel } }));
+      checkpoint.documents.forEach(d => Object.assign(d, { privateStorageRef: sentinel }));
+      checkpoint.runs.forEach(r => Object.assign(r, { nativeSessionId: sentinel, sessionIdBefore: sentinel, sessionIdAfter: sentinel,
+        runnerProfileJson: { sessionCheckpoint: { providerSessionId: sentinel } }, contextSnapshot: { home: sentinel },
+        resultJson: { model: "gpt-5.6-sol", privateAuth: sentinel }, stdoutExcerpt: sentinel, error: sentinel }));
+    }
+    e.checks = gradeFirstTask(e);
+    e.checks.push({ id: "native-session-continuity", passed: false, evidence: ["finished-3"], detail: sentinel });
+    const original = structuredClone(e);
+    const raw = { ...result(e), error: sentinel, failureClass: "candidate_failure" as const,
+      usage: { runs: [{ runId: "parent-run", usage: { inputTokens: 100, outputTokens: 20, cachedInputTokens: 30,
+        costUsdExact: "0.499592800", costUsd: null, costStatus: "estimated", accountingReceiptReady: true,
+        pricingProvenance: { source: "rate_card", version: "openai-standard-2026-09-30", accountId: sentinel },
+        persistedSessionId: sentinel, providerRequestId: sentinel, accountingReceiptSourceId: sentinel } }] },
+      matcherResults: e.checks.map(c => ({ matcher: { kind: "json_path" as const, path: `firstTask.checks.${c.id}`, expected: true }, passed: c.passed, detail: c.detail })) };
+    raw.matcherResults.push({ matcher: { kind: "json_path", path: "cleanup.provider-retired", expected: true }, passed: false, detail: sentinel });
+    const projected = projectFirstTaskResult(raw);
+    const normalized = { results: [projected] };
+    expect(JSON.stringify(normalized)).not.toContain(sentinel);
+    expect(JSON.stringify(raw)).toContain(sentinel);
+    expect(e).toEqual(original);
+    expect(projected.firstTask!.checks.map(c => ({ id: c.id, passed: c.passed, notReached: Boolean(c.notReached) })))
+      .toEqual(e.checks.map(c => ({ id: c.id, passed: c.passed, notReached: Boolean(c.notReached) })));
+    expect(projected.matcherResults!.map(c => ({ matcher: c.matcher, passed: c.passed })))
+      .toEqual(raw.matcherResults.map(c => ({ matcher: c.matcher, passed: c.passed })));
+    expect(projected.firstTask!.runtimeSettings).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" } });
+    expect(projected.usage).toMatchObject({ runs: [{ runId: "parent-run", usage: { inputTokens: 100, outputTokens: 20,
+      cachedInputTokens: 30, costUsdExact: "0.499592800", costStatus: "estimated", accountingReceiptReady: true,
+      pricingProvenance: { source: "rate_card", version: "openai-standard-2026-09-30" } } }] });
+    expect(summarizeExecutionBilling(projected)).toEqual(summarizeExecutionBilling(raw));
+    expect(qualityInput(projected.firstTask!)).toContain(firstTaskScenario(e.caseId, e.nonce).acceptance);
+    expect(qualityInput(projected.firstTask!)).toContain(firstTaskScenario(e.caseId, e.nonce).marker);
+    expect(renderFirstTaskDetails(projected)).not.toContain(sentinel);
+    expect(projected.firstTask!.checkpoints.at(-1)!.documents[0].body).toBe(e.checkpoints.at(-1)!.documents[0].body);
+    validateRetainedRunnerResult(projected);
+  });
+
+  it("preserves failures, unreached checks, cleanup controls and private artifact hashes", () => {
+    const e = recording();
+    e.checks = [{ id: "recorded-response", passed: false, evidence: ["response-1"], detail: "private diagnostic" },
+      { id: "durable-completion", passed: false, notReached: "private interrupted-session reason", evidence: ["finished-3"], detail: "private diagnostic" }];
+    const raw = { ...result(e), error: "private transport/session error", failureClass: "candidate_failure" as const, cleanup: "failed" as const,
+      matcherResults: [{ matcher: { kind: "json_path" as const, path: "cleanup.provider-retired", expected: true }, passed: false, detail: "private process details" }] };
+    const projected = projectFirstTaskResult(raw);
+    expect(projected).toMatchObject({ status: "failed", failureClass: "candidate_failure", cleanup: "failed" });
+    expect(projected.firstTask!.checks[0].passed).toBe(false);
+    expect(projected.firstTask!.checks[1]).toMatchObject({ passed: false, notReached: expect.any(String) });
+    expect(projected.matcherResults![0]).toMatchObject({ matcher: raw.matcherResults[0].matcher, passed: false });
+    expect(projected.firstTask!.instructions[0]).toMatchObject({ sha256: e.instructions[0].sha256, redacted: true });
+    expect(raw.error).toBe("private transport/session error");
+    expect(projected.error).not.toContain("private transport/session error");
+    expect(projectFirstTaskResult(projected)).toEqual(projected);
+  });
+});
 
 describe("first-task attachment evidence", () => {
   it("reads persisted bytes, verifies their hash, and redacts the retained text", async () => {
@@ -695,9 +773,10 @@ Accept the card above and I write it. This task stays in review until then.`;
       (e) => e.suite.id === "first-task" && e.profile.id === "legacy-codex",
     )!;
     const get = vi.fn().mockResolvedValue([{ id: "local", driver: "local" }]);
+    const patch = vi.fn().mockResolvedValue({});
     const postSensitive = vi.fn().mockResolvedValue({ id: "encrypted-secret" });
     const fixtures = await provisionFirstTaskFixtures({
-      api: { get, postSensitive },
+      api: { get, patch, postSensitive },
       execution,
       nonce: "test",
       company: {
@@ -709,6 +788,9 @@ Accept the card above and I write it. This task stays in review until then.`;
     });
     expect(get).toHaveBeenCalledExactlyOnceWith(
       "/api/companies/ui-created-company/environments?driver=local",
+    );
+    expect(patch).toHaveBeenCalledExactlyOnceWith(
+      "/api/companies/ui-created-company", { budgetMonthlyCents: 500 },
     );
     expect(postSensitive).toHaveBeenCalledExactlyOnceWith(
       "/api/companies/ui-created-company/secrets",
@@ -723,7 +805,7 @@ Accept the card above and I write it. This task stays in review until then.`;
     expect(JSON.stringify(fixtures)).not.toContain("fixture-key");
     await expect(
       provisionFirstTaskFixtures({
-        api: { get, postSensitive },
+        api: { get, patch, postSensitive },
         execution,
         nonce: "test",
         company: fixtures.company,

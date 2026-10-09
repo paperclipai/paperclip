@@ -8,6 +8,7 @@ export async function testAgentSetup(input: {
   companyId: string;
   agentId?: string;
   adapterType: string;
+  runner?: import("@paperclipai/shared").AgentRunnerChoice;
   providerAdapter: string;
   adapterConfig: Record<string, unknown>;
   aiConnection?: import("@paperclipai/shared").AiRuntimeConnectionBinding;
@@ -15,6 +16,7 @@ export async function testAgentSetup(input: {
   environmentId: string | null;
 }): Promise<AdapterEnvironmentTestResult> {
   const payload = {
+    ...(input.runner ? { runner: input.runner } : {}),
     ...(input.agentId ? { agentId: input.agentId } : {}),
     ...(input.aiConnection ? { aiConnection: input.aiConnection } : {}),
     adapterConfig: input.adapterConfig,
@@ -41,6 +43,9 @@ export async function testAgentSetup(input: {
     input.providerAdapter,
     {
       ...payload,
+      // This supplementary CLI probe is authentication evidence only. The
+      // first probe must establish readiness of the selected runtime.
+      runner: "legacy",
       adapterConfig: {
         ...input.adapterConfig,
         engine: "cli",
@@ -59,7 +64,7 @@ export async function testAgentSetup(input: {
     ).values(),
   ];
   return {
-    adapterType: input.adapterType,
+    adapterType: runtime.adapterType,
     testedAt: provider.testedAt,
     status:
       provider.status === "fail"

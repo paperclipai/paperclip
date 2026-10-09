@@ -59,6 +59,7 @@ export * from "./drivers/acpx/sidecar-protocol.js";
 export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
+  probeNativeRunnerEnvironment,
   runnerCodexDynamicToolsFit,
   defaultCapabilityRunnerdBinary,
   readRunnerdArtifactBinding,

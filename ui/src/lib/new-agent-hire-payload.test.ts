@@ -2,8 +2,18 @@
 import { describe, expect, it } from "vitest";
 import { buildNewAgentHirePayload } from "./new-agent-hire-payload";
 import { defaultCreateValues } from "../components/agent-config-defaults";
+import { codexLocalUIAdapter } from "../adapters/codex-local";
 
 describe("buildNewAgentHirePayload", () => {
+  it.each([undefined, "auto", "paperclip", "legacy"] as const)("keeps runner %s separate from Codex execution settings", (runner) => {
+    const values = { ...defaultCreateValues, adapterType: "codex_local", runner, model: "gpt-5.6-sol", thinkingEffort: "high" };
+    const payload = buildNewAgentHirePayload({ name: "Codex", effectiveRole: "general", configValues: values, adapterConfig: codexLocalUIAdapter.buildAdapterConfig(values) });
+    expect(payload.adapterType).toBe("codex_local");
+    expect(payload.runner).toBe(runner);
+    expect(payload.adapterConfig).toMatchObject({ model: values.model, modelReasoningEffort: "high" });
+    if (runner === "legacy") expect(payload.adapterConfig.dangerouslyBypassApprovalsAndSandbox).toBe(false);
+    else expect(payload.adapterConfig).not.toHaveProperty("dangerouslyBypassApprovalsAndSandbox");
+  });
   it("persists the selected default environment id", () => {
     expect(
       buildNewAgentHirePayload({

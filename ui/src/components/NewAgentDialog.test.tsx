@@ -101,77 +101,30 @@ it("requires a name and an enabled adapter before navigating", async () => {
   expect(query.get("name")).toBe("Ada & Co");
   expect(query.get("adapterType")).toBe("codex_local");
 });
-it("offers native Codex, Claude ACPX, and OpenCode runners", async () => {
+it("offers one Codex harness without a runner/provider tile", async () => {
   await name();
-  await act(async () =>
-    (
-      document.querySelector(
-        'input[value="paperclip_runner"]',
-      ) as HTMLInputElement
-    ).click(),
-  );
-  const options = [...document.querySelectorAll("option")].map(
-    (option) => option.textContent,
-  );
-  expect(options).toContain("Codex (app server)");
-  expect(options).toContain("Claude (ACPX)");
-  expect(options).toContain("OpenCode");
-  expect(options.join(" ")).not.toContain("ACPX Codex");
+  expect(document.querySelector('input[value="paperclip_runner"]')).toBeNull();
+  expect(document.querySelectorAll('input[value="codex_local"]')).toHaveLength(1);
+  expect(document.querySelector("select")).toBeNull();
 });
-
-it.each([false, undefined])(
-  "hides the runner unless explicitly enabled (%s)",
-  async (enableNativeRunner) => {
-    await act(async () => {
-      cache.setQueryData(queryKeys.instance.experimentalSettings, {
-        enableNativeRunner,
-      });
-    });
-    await name();
-    expect(
-      document.querySelector('input[value="paperclip_runner"]'),
-    ).toBeNull();
-    expect(document.querySelector('input[value="codex_local"]')).not.toBeNull();
-  },
-);
-
-it.each([true, false, undefined])("gates the Cloud native runner on explicit enablement (%s)", async (enableNativeRunner) => {
-  await act(async () => {
-    cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner });
-    cache.setQueryData(queryKeys.health, {
-      status: "ok",
-      cloud: { managed: true },
-    });
-    cache.setQueryData(
-      queryKeys.adapters.all,
-      [
-        "claude_local",
-        "codex_local",
-        "opencode_local",
-        "cursor",
-        "cursor_cloud",
-        "gemini_local",
-        "grok_local",
-        "kimi_local",
-        "pi_local",
-        "hermes_local",
-        "paperclip_runner",
-      ].map((type) => ({ type, loaded: true })),
-    );
-  });
+it.each(["claude", "grok", "opencode"])("preserves explicit experimental %s creation in Advanced", async provider => {
   await name();
-  expect(
-    [...document.querySelectorAll<HTMLInputElement>('input[type="radio"]')].map(
-      (input) => input.value,
-    ),
-  ).toEqual(["claude_local", "codex_local", "opencode_local", "grok_local", ...(enableNativeRunner ? ["paperclip_runner"] : [])]);
-  await act(async () =>
-    document.querySelector<HTMLInputElement>('input[value="grok_local"]')!.click(),
-  );
+  await act(async () => (document.querySelector("summary") as HTMLElement).click());
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Experimental harness"]')!.click());
+  await act(async () => document.querySelector<HTMLButtonElement>(`[role="option"][data-value="${provider}"]`)!.click());
   await click("Configure agent");
   const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
-  expect(query.get("adapterType")).toBe("grok_local");
-  expect(query.get("name")).toBe("Ada & Co");
+  expect(query.get("adapterType")).toBe("paperclip_runner");
+  expect(query.get("runnerProvider")).toBe(provider);
+});
+it.each(["gate off", "disabled adapter"])("hides experimental native creation when %s", async reason => {
+  await act(async () => {
+    if (reason === "gate off") cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner: false });
+    else cache.setQueryData(queryKeys.adapters.all, state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry));
+  });
+  await name();
+  expect(document.querySelector('[aria-label="Experimental harness"]')).toBeNull();
+  expect(document.querySelectorAll('input[value="codex_local"]')).toHaveLength(1);
 });
 
 it("moves Dot out of the harness picker into experimental external invitations", async () => {

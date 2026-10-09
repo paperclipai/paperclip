@@ -113,11 +113,13 @@ describe("confirmation-reply independent oracle", () => {
   });
   it.each(runnerMatrix.filter(e => e.suite.id === "confirmation-replies" && e.task.flow === "first_task"))("provisions the real onboarding fixture contract for $id", async execution => {
     const get = vi.fn().mockResolvedValue([{ id: "local", driver: "local" }]);
+    const patch = vi.fn().mockResolvedValue({ id: "company" });
     const postSensitive = vi.fn().mockResolvedValue({ id: "secret" });
     const credential = execution.profile.credential;
-    const fixtures = await provisionFirstTaskFixtures({ api: { get, postSensitive }, execution, nonce: "fixture",
+    const fixtures = await provisionFirstTaskFixtures({ api: { get, patch, postSensitive }, execution, nonce: "fixture",
       company: { id: "company", name: "Garden" }, credentials: { [credential]: "test-credential" } });
     expect(get).toHaveBeenCalledExactlyOnceWith("/api/companies/company/environments?driver=local");
+    expect(patch).toHaveBeenCalledExactlyOnceWith("/api/companies/company", { budgetMonthlyCents: 500 });
     expect(postSensitive).toHaveBeenCalledExactlyOnceWith("/api/companies/company/secrets", expect.objectContaining({ key: credential }));
     expect(fixtures.agent.id).toBe(""); // The real wizard must still create the agent.
     expect(JSON.stringify(fixtures)).not.toContain("test-credential");

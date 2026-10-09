@@ -70,6 +70,18 @@ describe("agent lifecycle commands", () => {
     ]);
   });
 
+  it("sends automatic selection when omitted and supports explicit runner overrides", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    const payload = { name: "Builder", adapterType: "codex_local" };
+    await run(["agent", "create", "--company-id", COMPANY_ID, "--payload-json", JSON.stringify(payload)]);
+    await run(["agent", "create", "--company-id", COMPANY_ID, "--payload-json", JSON.stringify({ ...payload, runner: "auto" }), "--runner", "legacy"]);
+    await run(["agent", "hire", "--company-id", COMPANY_ID, "--payload-json", JSON.stringify(payload), "--runner", "paperclip"]);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).runner).toBeUndefined();
+    expect(JSON.parse(fetchMock.mock.calls[1]![1].body).runner).toBe("legacy");
+    expect(JSON.parse(fetchMock.mock.calls[2]![1].body).runner).toBe("paperclip");
+  });
+
   it("wraps configuration, runtime, skills, and instructions endpoints", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
     vi.stubGlobal("fetch", fetchMock);

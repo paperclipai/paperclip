@@ -39,6 +39,7 @@ import type {
 } from "../drivers/codex/app-server-transport.js";
 import { createSanitizedCodexEnvironment } from "../drivers/codex/app-server-transport.js";
 import {
+  CodexAppServerDriver,
   codexSemanticToolSpecs,
   createIsolatedCodexAppServerArgs,
 } from "../drivers/codex/codex-app-server-driver.js";
@@ -50,6 +51,7 @@ import type { NativeRunIdentity, NativeTurnControlCapabilities } from "../contra
 import type { PrpEvent } from "../protocol/replay-contract.js";
 import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
 import type {
+  HarnessSession,
   HarnessRuntimeRequestResolution,
   PersistedHarnessProviderIdentity,
 } from "../contracts/harness-driver.js";
@@ -3534,6 +3536,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #deferredTurnStartEvents: DurableRecoveryCommittedEvent[] = [];
   #recoveryTurnBindingPending = false;
   #threadId = "";
+  #observedProviderModel: string | undefined;
   #sessionId: string | null = null;
   #providerIdentity: Record<string, unknown> | null = null;
   #turnControls: NativeTurnControlCapabilities = { steering: false, queuedFollowUp: false };
@@ -4977,6 +4980,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                   externallySandboxed:
                     provider === "codex" &&
                     this.options.externallySandboxed === true,
+                  ...(provider === "codex" && params.permissions === "paperclip-runner-workspace-read-only" ? { readOnly: true } : {}),
                   instructions:
                     provider === "codex"
                       ? withCodexCollaborationRuntimeInstructions(
@@ -5084,6 +5088,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const provider = this.options.provider ?? "codex";
     const acpxAgent = this.options.acpxAgent ?? "codex";
     return {
+      ...(provider === "codex" ? { model: this.#observedProviderModel } : {}),
       thread: {
         id: this.#threadId,
         sessionId: this.#sessionId,
@@ -5916,6 +5921,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         "turn.start",
         {
           text: message,
+          ...((this.options.provider ?? "codex") === "codex" && params.effort !== undefined ? { effort: params.effort } : {}),
           ...(skills.length ? { skills } : {}),
           turnId: pendingTurnId,
         },
@@ -6545,6 +6551,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const started = record(record(event.envelope.payload).payload);
     const runtimeIdentity = record(started.runtimeIdentity);
     const descriptor = record(started.providerDescriptor);
+    if (typeof descriptor.effectiveModel === "string" && descriptor.effectiveModel.trim()) this.#observedProviderModel = descriptor.effectiveModel;
     const {
       processId: pid,
       threadId,
@@ -7022,6 +7029,176 @@ export function createCapabilityRunnerdCodexTransport(
 
 export const createRunnerdCodexTransport =
   createCapabilityRunnerdCodexTransport;
+
+/** A setup turn uses the same daemon/provider boundary as ordinary native runs. */
+export async function probeNativeRunnerEnvironment(options: {
+  runtimeDirectory: string;
+  provider: "codex";
+  model: string | null;
+  reasoningEffort?: string;
+  environment: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+  /** The selected remote filesystem supplies this cwd; never inspect it on the controller. */
+  workingDirectory?: string;
+  transportOptions?: CapabilityRunnerdCodexTransportOptions;
+  onCodexCredentialRefresh?: (filename: string) => Promise<void>;
+  onCleanupConfirmed?: () => Promise<void>;
+}): Promise<{
+  provider: "codex";
+  providerDriver: string;
+  effectiveModel: string;
+  helloProbePassed: true;
+}> {
+  const environment = { ...options.environment };
+  const remoteFilesystemRoot = options.transportOptions?.runnerFilesystemRoot;
+  if (options.workingDirectory !== undefined && !remoteFilesystemRoot) throw new Error("Native setup remote working directory requires a remote runner filesystem.");
+  const workingDirectory = options.workingDirectory ?? resolve(options.runtimeDirectory, "workspace");
+  if (!remoteFilesystemRoot) mkdirSync(workingDirectory, { mode: 0o700 });
+  const controller = new AbortController();
+  let registrationTeardownError: unknown;
+  let registrationOperation: Promise<unknown> | undefined;
+  const sourceCodexHome = options.transportOptions?.sourceCodexHome ?? resolveSourceCodexHome(environment);
+  // Never let an unbound home or an external-sandbox flag admit host state or
+  // weaken this read-only probe. The normal materializer copies bound auth and
+  // the managed provider projection into a new daemon-owned Codex home.
+  delete environment.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX;
+  environment.HOME = resolve(remoteFilesystemRoot ?? options.runtimeDirectory, "probe-home");
+  environment.CODEX_HOME = resolve(remoteFilesystemRoot ?? options.runtimeDirectory, "codex-home");
+  environment.PAPERCLIP_WORKSPACE_CWD = workingDirectory;
+  const bundle = createRunnerdCodexTransport({
+    ...options.transportOptions,
+    ...(options.transportOptions?.controlPlaneRegistration ? { controlPlaneRegistration: (authority, identity) => {
+      const operation = (async () => {
+        controller.signal.throwIfAborted();
+        const registration = await options.transportOptions!.controlPlaneRegistration!(authority, identity);
+        if (controller.signal.aborted) {
+          try { await registration.release(); }
+          catch (error) { registrationTeardownError = error; throw error; }
+          controller.signal.throwIfAborted();
+        }
+        return registration;
+      })();
+      registrationOperation = operation;
+      return operation;
+    } } : {}),
+    ...(options.transportOptions?.runnerProcessLauncher ? { runnerProcessLauncher: spec => {
+      controller.signal.throwIfAborted();
+      return options.transportOptions!.runnerProcessLauncher!(spec);
+    } } : {}),
+    provider: options.provider,
+    sourceCodexHome: sourceCodexHome ?? "",
+    stateDirectory: options.runtimeDirectory,
+    environment,
+    externallySandboxed: false,
+    closeGraceMs: 10_000,
+    lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+  });
+  const driver = new CodexAppServerDriver({
+    taskEnvelope: {
+      schema: "paperclip.skillless_task.v1", objective: "Verify the selected native account and model.",
+      completionContract: { revision: "environment-probe-v1", criteria: [] },
+      constraints: [], expectedResultSchema: "paperclip.run_result.v1",
+    },
+    ...(options.model ? { model: options.model } : {}),
+    ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+    conversationMode: "direct",
+    requestedCollaborationMode: "plan",
+    approvalPolicy: "never",
+    includeCollaborationModeInstructions: false,
+    dynamicTools: [],
+    environment,
+    transportFactory: () => bundle.transport,
+    requireProviderSessionIdentity: true,
+    ...(remoteFilesystemRoot ? { workingDirectoryAuthority: "remote_runner" as const } : {}),
+  });
+  let rejectAborted!: (error: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
+  const timer = setTimeout(() => {
+    const error = new Error("Native provider hello probe timed out.");
+    controller.abort(error);
+    rejectAborted(error);
+  }, Math.max(1, Math.min(options.timeoutMs ?? 45_000, 120_000)));
+  let session: HarnessSession | undefined;
+  let completed = false;
+  let effectiveModel: string | undefined;
+  let failure: unknown;
+  const operation = (async () => {
+    session = await driver.openSession({ runId: "environment-probe", normalizedSessionId: "environment-probe",
+      workingDirectory, signal: controller.signal });
+    controller.signal.throwIfAborted();
+    const ids = session.ids();
+    const expectedDriver = "codex_app_server";
+    if (!ids.driverSessionId || !ids.providerSessionId || bundle.evidence().providerDriver !== expectedDriver) {
+      throw new Error(`The native environment probe returned no matching provider identity (${bundle.evidence().providerDriver ?? "missing driver"}).`);
+    }
+    const events = session.events()[Symbol.asyncIterator]();
+    const first = await events.next();
+    const context = record(first.value?.payload.context);
+    if (first.value?.eventType !== "session.started" || !context.model || record(record(context.sandbox).permissionProfile).id !== "paperclip-runner-workspace-read-only") {
+      throw new Error("The native environment probe returned no observed model or read-only runtime identity.");
+    }
+    {
+      effectiveModel = typeof context.model === "string" && context.model.trim() && context.model !== "unknown" ? context.model : undefined;
+      if (!effectiveModel || (options.model !== null && effectiveModel !== options.model)) throw new Error("The selected native runtime returned a missing or mismatched provider model.");
+    }
+    controller.signal.throwIfAborted();
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Respond only with hello. Do not use tools or inspect files." } });
+    let responseObserved = false;
+    while (true) {
+      const next = await events.next();
+      if (next.done) break;
+      const event = next.value;
+      if (event.turnId !== turnId) continue;
+      if (event.eventType === "item.completed" && event.payload.kind === "agentMessage"
+        && typeof event.payload.text === "string" && event.payload.text.trim()) {
+        responseObserved = true;
+      }
+      if (event.eventType === "turn.completed") {
+        if (!responseObserved || !effectiveModel) throw new Error("The native provider hello probe returned no response or observed model.");
+        completed = true;
+        return;
+      }
+      if (event.eventType === "turn.failed" || event.eventType === "turn.interrupted" || event.eventType === "turn.cancelled") {
+        const detail = record(event.payload.error).message;
+        throw new Error(typeof detail === "string" ? detail : "The native provider hello probe failed.");
+      }
+    }
+    throw new Error("The native provider hello probe ended without a successful turn.");
+  })();
+  try {
+    await Promise.race([operation, aborted]);
+  } catch (error) {
+    failure = error;
+  } finally {
+    clearTimeout(timer);
+    // Preserve private recovery state if the production close cannot confirm
+    // teardown; callers remove it only after an authoritative receipt.
+    const teardownErrors: unknown[] = [];
+    try {
+      if (session) await session.close({ reason: "environment probe complete" });
+      else await bundle.transport.close("environment probe complete");
+      if (bundle.evidence().runnerPid !== null && !bundle.evidence().runnerExited) throw new Error("Native setup probe cleanup is incomplete.");
+    } catch (error) { teardownErrors.push(error); }
+    await operation.catch(() => undefined);
+    await registrationOperation?.catch(() => undefined);
+    if (registrationTeardownError !== undefined) teardownErrors.push(registrationTeardownError);
+    if (bundle.evidence().runnerPid !== null && bundle.evidence().runnerExited && options.provider === "codex" && options.onCodexCredentialRefresh) {
+      try { await options.onCodexCredentialRefresh(resolve(remoteFilesystemRoot ?? options.runtimeDirectory, "codex-home", "auth.json")); }
+      catch (error) { teardownErrors.push(error); }
+    }
+    if (!teardownErrors.length && options.onCleanupConfirmed) {
+      try { await options.onCleanupConfirmed(); }
+      catch (error) { teardownErrors.push(error); }
+    }
+    if (teardownErrors.length) {
+      const errors = [...(failure === undefined ? [] : [failure]), ...teardownErrors];
+      throw new AggregateError(errors, errors.map(error => error instanceof Error ? error.message : "Native probe cleanup failed.").join("; "), { cause: failure ?? teardownErrors[0] });
+    }
+  }
+  if (failure !== undefined) throw failure;
+  if (!completed) throw new Error("The native provider hello probe did not complete.");
+  return Object.freeze({ provider: options.provider, providerDriver: bundle.evidence().providerDriver!, effectiveModel: effectiveModel!, helloProbePassed: true });
+}
 
 /** The transport provider identifies the biller, independently of model family. */
 function openedThreadModelProvider(

@@ -12,8 +12,19 @@ import { secretService, assertClaudeOAuthBindingInvariant } from "./secrets.js";
 import { agentCredentialService } from "./agent-credentials.js";
 import { agentIdentityService } from "./agent-identity.js";
 import { initializePrimaryAgent } from "./primary-agent.js";
+import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 
-export async function prepareAgentHire(db: Db, companyId: string, data: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
+export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
+  // Resolve every new hire before adapter-specific normalization and credentials.
+  // Approval/import callers freeze their reviewed execution; runner is request-only.
+  const { runner, ...data } = input;
+  const selection = options?.runnerResolved
+    ? { adapterType: data.adapterType ?? "process", adapterConfig: isPlainRecord(data.adapterConfig) ? data.adapterConfig : {} }
+    : await resolveNewAgentRunnerForCompany(db, companyId, {
+        ...data, adapterConfig: isPlainRecord(data.adapterConfig) ? data.adapterConfig : {}, runner,
+      });
+  data.adapterType = selection.adapterType;
+  data.adapterConfig = selection.adapterConfig;
   const { ensureManager, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
   if (data.appearance?.customAvatarAssetId) throw unprocessable("Create the agent before uploading its avatar");
   assertBuiltInAgentMetadataMutationAllowed(null, data.metadata, options);

@@ -34,7 +34,7 @@ import { captureStockHarness, gradeStockHarness, gradeStockHire } from "./stock-
 import { verifyStockHarnessPreflight, STOCK_PREFLIGHT_ENV } from "./stock-harness-admission.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 
-import { runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
+import { projectFirstTaskResult, runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
 import { runChatFlow } from "./chat-flow.js";
 import { restartChatServer } from "./chat-restart.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
@@ -870,10 +870,12 @@ for (const execution of executions) {
         const receipt = verifyStockHarnessPreflight(process.env[STOCK_PREFLIGHT_ENV]);
         await writeSanitizedJson(snapshotsDir, "stock-harness-preflight.json", receipt, secrets);
       }
+      // Codex default journeys must work with the experimental gate disabled.
+      const nativeRolloutEnabled = execution.profile.provider !== "codex";
       const experimental = await api.patch<{
         enableNativeRunner: boolean;
       }>("/api/instance/settings/experimental", {
-        enableNativeRunner: true,
+        enableNativeRunner: nativeRolloutEnabled,
         ...(["warm_three_turn", "everyday_workflow"].includes(execution.task.flow)
           ? { enableIsolatedWorkspaces: true }
           : {}),
@@ -882,7 +884,7 @@ for (const execution of executions) {
           ? { enableRunnerPreviewIngress: true }
           : {}),
       });
-      expect(experimental.enableNativeRunner).toBe(true);
+      expect(experimental.enableNativeRunner).toBe(nativeRolloutEnabled);
 
       if (execution.suite.id === "extended-harnesses" && execution.profile.qualificationCandidate === "pi" && execution.task.id === "file-edit-validate") {
         piFileSeed = await seedPiFile(workspacePath, nonce);
@@ -3145,10 +3147,13 @@ for (const execution of executions) {
         ...resultWithoutBilling,
         billing: summarizeExecutionBilling(resultWithoutBilling),
       };
+      if (firstTaskEvidence) {
+        await writeSanitizedJson(snapshotsDir, "first-task-result-private.json", result, secrets);
+      }
       await mkdir(privateDir, { recursive: true });
       await writeFile(
         resultPath,
-        `${JSON.stringify(sanitizeJson(result, secrets), null, 2)}\n`,
+        `${JSON.stringify(sanitizeJson(projectFirstTaskResult(result), secrets), null, 2)}\n`,
         "utf8",
       );
       await testInfo.attach("runner-e2e-result", {

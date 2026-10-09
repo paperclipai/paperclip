@@ -1,4 +1,7 @@
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
+import { agentHarnessType, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
+import { adaptersApi } from "../api/adapters";
+import { CodexRunnerSelect } from "./CodexRunnerSelect";
 import { aiRoutingHarness } from "@paperclipai/shared";
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
@@ -38,16 +41,11 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, selectTriggerClassName } from "@/components/ui/select";
+import { NativeSelect, SelectPopover } from "@/components/ui/select";
 import { AdapterMark } from "./AdapterMark";
-import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert, Bug } from "lucide-react";
+import { FolderOpen, Heart, X, Copy, Check, ExternalLink, Loader2, TriangleAlert, Bug } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
@@ -191,6 +189,7 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
   return (
     Object.keys(o.identity).length > 0 ||
     o.adapterType !== undefined ||
+    o.runner !== undefined ||
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
     Object.keys(o.debug).length > 0 ||
@@ -246,6 +245,7 @@ export function subtractPersistedOverlay(
     );
   return {
     identity: subtractGroup(current.identity, persisted.identity),
+    ...(current.runner !== undefined && current.runner !== persisted.runner ? { runner: current.runner } : {}),
     ...(current.adapterType !== undefined && current.adapterType !== persisted.adapterType
       ? { adapterType: current.adapterType }
       : {}),
@@ -606,8 +606,29 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const adapterType = isCreate
     ? props.values.adapterType
     : overlay.adapterType ?? props.agent.adapterType;
+  const effectiveConfig = isCreate ? props.values.adapterSchemaValues ?? {} : { ...config, ...overlay.adapterConfig };
+  const harnessType = agentHarnessType(adapterType, effectiveConfig);
+  const isCodexHarness = harnessType === "codex_local";
+  const rawCurrentDefaultEnvironmentId = isCreate
+    ? props.values.defaultEnvironmentId ?? ""
+    : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
+  const currentDefaultEnvironmentId = useMemo(() => {
+    if (!rawCurrentDefaultEnvironmentId) return "";
+    const selected = environments.find((environment) => environment.id === rawCurrentDefaultEnvironmentId) ?? null;
+    return selected?.driver === "local" ? "" : rawCurrentDefaultEnvironmentId;
+  }, [environments, rawCurrentDefaultEnvironmentId]);
+  const runnerDiscovery = useQuery({
+    queryKey: queryKeys.adapters.availability(selectedCompanyId, rawCurrentDefaultEnvironmentId || null),
+    queryFn: () => adaptersApi.list({ companyId: selectedCompanyId!, environmentId: rawCurrentDefaultEnvironmentId || null }),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const codexRunnerAvailability = runnerDiscovery.data?.find(item => item.type === "codex_local");
+  const runner: AgentRunnerChoice = isCreate ? props.values.runner ?? "auto" : overlay.runner ?? agentRunner(adapterType);
+  const fieldsAdapterType = isCodexHarness
+    ? (runner === "paperclip" || (runner === "auto" && codexRunnerAvailability?.defaultRunner === "paperclip") ? "paperclip_runner" : "codex_local")
+    : adapterType;
   const getCapabilities = useAdapterCapabilities();
-  const adapterCaps = getCapabilities(adapterType);
+  const adapterCaps = getCapabilities(isCodexHarness ? harnessType : adapterType);
   const isDotRunner = adapterType === "paperclip_runner" && (isCreate ? props.values.adapterSchemaValues?.provider : eff("adapterConfig", "provider", config.provider)) === "openai_dot";
   const isLocal = !isDotRunner && (adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt);
   
@@ -619,9 +640,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     && !hideHostPaths
     && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+  const fieldsUiAdapter = useMemo(() => getUIAdapter(fieldsAdapterType), [fieldsAdapterType]);
   const supportedEnvironmentDrivers = useMemo(
-    () => new Set(supportedEnvironmentDriversForAdapter(adapterType)),
-    [adapterType],
+    () => new Set(supportedEnvironmentDriversForAdapter(fieldsAdapterType)),
+    [fieldsAdapterType],
   );
   const val = isCreate ? props.values : null;
   const set = isCreate
@@ -774,14 +796,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     invalidateUserSecretDefinitions();
   };
 
-  const rawCurrentDefaultEnvironmentId = isCreate
-    ? val!.defaultEnvironmentId ?? ""
-    : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
-  const currentDefaultEnvironmentId = useMemo(() => {
-    if (!rawCurrentDefaultEnvironmentId) return "";
-    const selected = environments.find((environment) => environment.id === rawCurrentDefaultEnvironmentId) ?? null;
-    return selected?.driver === "local" ? "" : rawCurrentDefaultEnvironmentId;
-  }, [environments, rawCurrentDefaultEnvironmentId]);
   const currentDefaultEnvironment = useMemo(
     () => environments.find((environment) => environment.id === currentDefaultEnvironmentId) ?? null,
     [currentDefaultEnvironmentId, environments],
@@ -904,8 +918,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
   const connectionModels = useConnectionModels(selectedCompanyId, isCreate ? undefined : aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data, aiRoutingHarness(adapterType, runnerProvider, eff("adapterConfig", "acpxAgent", config.acpxAgent)));
   // Fetch adapter models for the effective provider, including unsaved changes.
+  const modelAdapterType = isCodexHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, modelProvider)
+    ? queryKeys.agents.adapterModels(selectedCompanyId, modelAdapterType, currentDefaultEnvironmentId || null, modelProvider)
     : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
@@ -913,7 +928,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     isLoading: fetchingModels,
   } = useQuery({
     queryKey: modelQueryKey,
-    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
+    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, modelAdapterType, {
       environmentId: currentDefaultEnvironmentId || null,
       provider: modelProvider,
     }),
@@ -954,7 +969,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     agentId: isCreate ? undefined : props.agent.id,
     mode,
     isCreate,
-    adapterType,
+    adapterType: fieldsAdapterType,
+    hideRunnerHarness: isCodexHarness,
     values: isCreate ? props.values : null,
     set: isCreate ? (patch: Partial<CreateConfigValues>) => props.onChange(patch) : null,
     config,
@@ -979,7 +995,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const renderAdapterFields = (section: AdapterConfigSection) => (
     <>
       {adapterType === "claude_local" && <ClaudeLocalAdvancedFields {...adapterFieldProps} section={section} />}
-      <uiAdapter.ConfigFields {...adapterFieldProps} section={section} hideModel={isLocal} />
+      <fieldsUiAdapter.ConfigFields {...adapterFieldProps} section={section} hideModel={isLocal} />
     </>
   );
   // Popover states
@@ -1088,9 +1104,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
               : adapterType
           : adapterType;
-        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId });
+        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId, ...(isCodexHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {}) });
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId });
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId, ...(isCodexHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {}) });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1137,7 +1153,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     resetTestEnvironmentRef.current();
     setTestActionError(null);
     clearClaudeLoginClaimRef.current();
-  }, [adapterType, effectiveLoginEnvironmentId]);
+  }, [adapterType, runner, effectiveLoginEnvironmentId, runner === "auto" ? codexRunnerAvailability?.defaultRunner : undefined]);
 
   // Show the login affordance only for a current sandbox adapter that declares a
   // login capability, and whose most recent Test result carries the canonical
@@ -1148,7 +1164,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const adapterSupportsSandboxLogin = adapterCaps.login != null;
   const testResult = testEnvironment.data;
   const testResultSupportsSandboxLogin =
-    testResult != null && getCapabilities(testResult.adapterType).login != null;
+    testResult != null && getCapabilities(isCodexHarness ? harnessType : testResult.adapterType).login != null;
   const authMissingCheck =
     testResult && testResultSupportsSandboxLogin
       ? testResult.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
@@ -1243,7 +1259,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // environment id, so both are present here.
       login:
         showAdapterLogin && selectedCompanyId && effectiveLoginEnvironmentId
-          ? { companyId: selectedCompanyId, adapterType, environmentId: effectiveLoginEnvironmentId }
+          ? { companyId: selectedCompanyId, adapterType: isCodexHarness ? harnessType : adapterType, environmentId: effectiveLoginEnvironmentId }
           : null,
     });
     return () => {
@@ -1271,7 +1287,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
@@ -1281,7 +1297,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }
 
   const thinkingEffortKey =
-    adapterType === "codex_local"
+    isCodexHarness
       ? "modelReasoningEffort"
       : adapterType === "cursor"
         ? "mode"
@@ -1290,7 +1306,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : adapterType === "grok_local" ? "reasoningEffort"
           : adapterType === "pi_local" ? "thinking" : "effort";
   const thinkingEffortOptions =
-    adapterType === "codex_local"
+    isCodexHarness
       ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
           id: option.value,
           label: option.label,
@@ -1311,11 +1327,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
-    : adapterType === "codex_local"
+    : isCodexHarness
       ? eff(
           "adapterConfig",
-          "modelReasoningEffort",
-          String(config.modelReasoningEffort ?? config.reasoningEffort ?? ""),
+          thinkingEffortKey,
+          String(config[thinkingEffortKey] ?? config.reasoningEffort ?? config.modelReasoningEffort ?? ""),
         )
       : adapterType === "cursor"
         ? eff("adapterConfig", "mode", String(config.mode ?? ""))
@@ -1324,7 +1340,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
   const showThinkingEffort = adapterType !== "gemini_local"
     && adapterType !== "cursor_cloud"
-    && adapterType !== "paperclip_runner";
+    && (adapterType !== "paperclip_runner" || isCodexHarness);
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
@@ -1610,18 +1626,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
         <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
           {showAdapterTypeField && (
-            <Field label="Adapter type" hint={help.adapterType}>
+            <Field label="Harness" hint={help.adapterType}>
               <AdapterTypeDropdown
-                value={isDotRunner ? "openai_dot" : adapterType}
+                value={isDotRunner ? "openai_dot" : isCodexHarness ? harnessType : adapterType}
                 disabledTypes={adapterPickerDisabledTypes}
                 openAiDotEnabled={experimentalSettings?.enableOpenAiDot === true}
+                nativeRunnerEnabled={experimentalSettings?.enableNativeRunner === true}
                 onChange={(choice) => {
                   const dot = choice === "openai_dot";
                   const t = dot ? "paperclip_runner" : choice;
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
                     const { adapterType: _at, ...defaults } = defaultCreateValues;
-                    const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
+                    const nextValues: CreateConfigValues = { ...defaults, adapterType: t, runner: undefined };
                     if (t === "codex_local") {
                       nextValues.dangerouslyBypassSandbox =
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
@@ -1647,6 +1664,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
+                      runner: t === "codex_local" ? "auto" : undefined,
                       adapterConfig: {
                         model:
                           t === "gemini_local"
@@ -1665,12 +1683,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         modelReasoningEffort: "",
                         variant: "",
                         mode: "",
-                        ...(t === "codex_local"
-                          ? {
-                              dangerouslyBypassApprovalsAndSandbox:
-                                DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-                            }
-                          : dot
+                        ...(dot
                             ? { provider: "openai_dot", lifecycleMode: "per_turn", allowUnmeteredProvider: false, dotAttachmentAccess: false, dotWorkspaceAccess: false }
                           : t === "paperclip_runner"
                             ? {
@@ -1707,7 +1720,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <AdapterLoginPanel
               key={`${adapterType}:${effectiveLoginEnvironmentId}`}
               companyId={selectedCompanyId!}
-              adapterType={adapterType}
+              adapterType={isCodexHarness ? harnessType : adapterType}
               environmentId={effectiveLoginEnvironmentId!}
               onStored={isCreate ? handleClaudeLoginStored : handleClaudeLoginStoredEdit}
               onApplyStored={
@@ -1749,8 +1762,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 loadingModels={connectionModels?.isLoading ?? fetchingModels}
                 value={currentModelId}
                 onChange={(v) => {
-                  const supportedEfforts = setupEfforts(adapterType, v);
-                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(adapterType)
+                  const supportedEfforts = setupEfforts(isCodexHarness ? harnessType : adapterType, v);
+                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(isCodexHarness ? harnessType : adapterType)
                     && Boolean(currentThinkingEffort)
                     && !supportedEfforts.includes(String(currentThinkingEffort));
                   if (isCreate) {
@@ -1816,7 +1829,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     onChange={(v) =>
                       isCreate
                         ? set!({ thinkingEffort: v })
-                        : mark("adapterConfig", thinkingEffortKey, v || undefined)
+                        : (() => {
+                            mark("adapterConfig", thinkingEffortKey, v || undefined);
+                            if (isCodexHarness) mark("adapterConfig", thinkingEffortKey === "reasoningEffort" ? "modelReasoningEffort" : "reasoningEffort", undefined);
+                          })()
                     }
                     open={thinkingEffortOpen}
                     onOpenChange={setThinkingEffortOpen}
@@ -1877,6 +1893,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 onToggle={() => setConfigurationAdvancedOpen(!configurationAdvancedOpen)}
               >
                 <div className="space-y-3">
+                  {isCodexHarness && <CodexRunnerSelect value={runner}
+                    pending={runnerDiscovery.isFetching} error={runnerDiscovery.error?.message} onRetry={() => { void runnerDiscovery.refetch(); }}
+                    defaultRunner={codexRunnerAvailability?.defaultRunner}
+                    supportedRunners={codexRunnerAvailability?.supportedRunners}
+                    onChange={next => isCreate ? set!({ runner: next }) : setOverlay(prev => ({ ...prev, runner: next }))} />}
                   {isLocal && (<>              {/*
                 The command names a binary on the execution host, so the
                 managed-sandbox-only policy hides it: the platform-managed image
@@ -3679,77 +3700,32 @@ export function AdapterTypeDropdown({
   onChange,
   disabledTypes,
   openAiDotEnabled = false,
+  nativeRunnerEnabled = false,
 }: {
   value: string;
   onChange: (type: string) => void;
   disabledTypes: Set<string>;
   openAiDotEnabled?: boolean;
+  nativeRunnerEnabled?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
   const selectedDisplay = getAdapterDisplay(value);
-  const adapterList = useMemo(
-    () =>
-      [...listAdapterOptions((type) => adapterLabels[type] ?? getAdapterLabel(type)),
-        ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
-      ].filter(
-        (item) => !disabledTypes.has(item.value),
-      ),
-    [disabledTypes, openAiDotEnabled],
-  );
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          data-size="default"
-          className={cn(selectTriggerClassName, "w-full")}
-        >
-          <span className="inline-flex min-w-0 items-center gap-1.5">
-            <span aria-hidden="true" className="inline-flex shrink-0">
-              <AdapterMark type={value} className="size-4" />
-            </span>
-            <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
-            {selectedDisplay.experimental && <ExperimentalBadge />}
-          </span>
-          <ChevronDown className="size-4 opacity-50" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
-        {adapterList.map((item) => (
-          <button
-            key={item.value}
-            type="button"
-            disabled={item.comingSoon}
-            className={cn(
-              "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded",
-              item.comingSoon
-                ? "opacity-40 cursor-not-allowed"
-                : "hover:bg-accent/50",
-              item.value === value && !item.comingSoon && "bg-accent",
-            )}
-            onClick={() => {
-              if (!item.comingSoon) {
-                onChange(item.value);
-                setOpen(false);
-              }
-            }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <span aria-hidden="true" className="inline-flex shrink-0">
-                <AdapterMark type={item.value} className="size-4" />
-              </span>
-              <span>{item.label}</span>
-              {item.experimental && <ExperimentalBadge />}
-            </span>
-            {item.comingSoon && (
-              <span className="text-(length:--text-nano) text-muted-foreground">Coming soon</span>
-            )}
-          </button>
-        ))}
-      </PopoverContent>
-    </Popover>
-  );
+  const adapterList = useMemo(() =>
+    [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
+      ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
+    ].filter(item => (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
+      .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
+    [disabledTypes, openAiDotEnabled, nativeRunnerEnabled]);
+  return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
+    displayValue={<span className="inline-flex min-w-0 items-center gap-1.5">
+      <span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={value} className="size-4" /></span>
+      <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
+      {selectedDisplay.experimental && <ExperimentalBadge />}
+    </span>}
+    options={adapterList.map(item => ({ value: item.value, disabled: item.comingSoon,
+      group: item.value === "paperclip_runner" ? "Advanced" : undefined,
+      label: <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={item.value} className="size-4" /></span><span>{item.label}</span>{item.experimental && <ExperimentalBadge />}</span>,
+      suffix: item.comingSoon ? <span className="text-(length:--text-nano) text-muted-foreground">Coming soon</span> : undefined,
+    }))} />;
 }
 
 function ExperimentalBadge() {
@@ -3917,29 +3893,17 @@ export function ModelDropdown({
 
   return (
     <Field label="Model" hint={help.model}>
-      <Popover
+      <SelectPopover aria-label="Model" value={value}
+        displayValue={<span className={cn("truncate", !value && "text-muted-foreground")}>
+          {selected?.label ?? (value || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model"))}
+        </span>}
         open={open}
         onOpenChange={(nextOpen) => {
           onOpenChange(nextOpen);
           if (!nextOpen) setModelSearch("");
         }}
       >
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            data-size="default"
-            className={cn(selectTriggerClassName, "w-full")}
-          >
-            <span className={cn("truncate", !value && "text-muted-foreground")}>
-              {selected
-                ? selected.label
-                : value
-                  || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model")}
-            </span>
-            <ChevronDown className="size-4 opacity-50" />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
+        <div role="listbox" aria-label="Model">
           <div className="relative mb-1">
             <input
               className="w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
@@ -3998,6 +3962,7 @@ export function ModelDropdown({
           {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
             <button
               type="button"
+              role="option" aria-selected
               className={cn(
                 "flex items-center w-full px-2 py-1.5 text-sm rounded bg-accent/50",
               )}
@@ -4016,6 +3981,7 @@ export function ModelDropdown({
           {detectedModel && detectedModel !== value && (
             <button
               type="button"
+              role="option" aria-selected={false}
               className={cn(
                 "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
               )}
@@ -4040,6 +4006,7 @@ export function ModelDropdown({
                 <button
                   key={`detected-${candidate}`}
                   type="button"
+                  role="option" aria-selected={false}
                   className={cn(
                     "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
                   )}
@@ -4061,6 +4028,7 @@ export function ModelDropdown({
             {allowDefault && (
               <button
                 type="button"
+                role="option" aria-selected={!value}
                 className={cn(
                   "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
                   !value && "bg-accent",
@@ -4076,6 +4044,7 @@ export function ModelDropdown({
             {canCreateManualModel && (
               <button
                 type="button"
+                role="option" aria-selected={false}
                 className="flex items-center justify-between gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50"
                 onClick={() => {
                   onChange(manualModel);
@@ -4098,6 +4067,7 @@ export function ModelDropdown({
                   <button
                     type="button"
                     key={m.id}
+                    role="option" aria-selected={m.id === value}
                     className={cn(
                       "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
                       m.id === value && "bg-accent",
@@ -4124,8 +4094,8 @@ export function ModelDropdown({
               </div>
             )}
           </div>
-        </PopoverContent>
-      </Popover>
+        </div>
+      </SelectPopover>
     </Field>
   );
 }
@@ -4143,36 +4113,11 @@ function ThinkingEffortDropdown({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const selected = options.find((option) => option.id === value) ?? options[0];
-
-  return (
-    <Field label="Thinking effort" hint={help.thinkingEffort}>
-      <Popover open={open} onOpenChange={onOpenChange}>
-        <PopoverTrigger asChild>
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-            <span className={cn(!value && "text-muted-foreground")}>{selected?.label ?? "Auto"}</span>
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
-          {options.map((option) => (
-            <button
-              key={option.id || "auto"}
-              className={cn(
-                "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                option.id === value && "bg-accent",
-              )}
-              onClick={() => {
-                onChange(option.id);
-                onOpenChange(false);
-              }}
-            >
-              <span>{option.label}</span>
-              {option.id ? <span className="text-xs text-muted-foreground font-mono">{option.id}</span> : null}
-            </button>
-          ))}
-        </PopoverContent>
-      </Popover>
-    </Field>
-  );
+  return <Field label="Thinking effort" hint={help.thinkingEffort}>
+    <SelectPopover aria-label="Thinking effort" value={value} onValueChange={onChange}
+      open={open} onOpenChange={onOpenChange}
+      options={options.map(option => ({ value: option.id, label: option.label,
+        suffix: option.id ? <span className="text-xs text-muted-foreground font-mono">{option.id}</span> : undefined,
+      }))} />
+  </Field>;
 }

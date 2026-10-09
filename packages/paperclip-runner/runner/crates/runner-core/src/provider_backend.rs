@@ -2608,7 +2608,14 @@ impl CodexCommandExecutor {
             .as_ref()
             .and_then(|state| state.thread_id.as_ref())
             .is_some();
-        let (thread_id, provider_session_id, process_id, active_provider_turn_id, goal_probe) = {
+        let (
+            thread_id,
+            provider_session_id,
+            process_id,
+            active_provider_turn_id,
+            goal_probe,
+            observed_model,
+        ) = {
             let provider = self.ensure_provider()?;
             (
                 provider.thread_id().to_owned(),
@@ -2616,6 +2623,7 @@ impl CodexCommandExecutor {
                 provider.process_id(),
                 provider.active_provider_turn_id().map(str::to_owned),
                 provider.get_goal(),
+                provider.observed_model().map(str::to_owned),
             )
         };
         let (goal_capability, goal) = match goal_probe {
@@ -2703,6 +2711,7 @@ impl CodexCommandExecutor {
                         "providerSessionId": thread_id,
                         "providerAccountSessionId": provider_session_id,
                         "processId": process_id,
+                        "providerDescriptor": { "driver": driver, "providerVersion": provider_version, "effectiveModel": observed_model },
                     }),
                 ),
                 (
@@ -2986,7 +2995,7 @@ impl CodexCommandExecutor {
             rejected_accepted_turn,
         ) = {
             let provider = self.ensure_provider()?;
-            let result = provider.start_turn_with_skills(text, &cwd, &skills);
+            let result = provider.start_turn_with_options(text, &cwd, &skills, Some(payload));
             (
                 result,
                 provider.completed_turn_authority().is_some(),
@@ -4974,6 +4983,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5355,6 +5365,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5446,6 +5457,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5499,6 +5511,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5542,6 +5555,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5634,6 +5648,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5701,6 +5716,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5751,6 +5767,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5875,6 +5892,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -5987,6 +6005,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6044,6 +6063,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6165,6 +6185,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6206,6 +6227,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6244,6 +6266,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },
@@ -6321,6 +6344,7 @@ mod tests {
                 instructions: String::new(),
                 approval_policy: "never".to_owned(),
                 externally_sandboxed: false,
+                read_only: false,
                 include_skill_instructions: None,
                 conversation_mode: None,
             },

@@ -147,11 +147,11 @@ describe("adapter routes", () => {
     }
   });
 
-  it("keeps paperclip_runner hidden from selection unless the rollout flag is enabled", async () => {
+  it("keeps the shared runner implementation available for Codex without the experimental flag", async () => {
     const disabledResponse = await request(createApp()).get("/api/adapters");
     expect(disabledResponse.status).toBe(200);
     expect(disabledResponse.body.find((adapter: any) => adapter.type === "paperclip_runner"))
-      .toMatchObject({ disabled: true });
+      .toMatchObject({ disabled: false });
 
     const enabledResponse = await request(createApp({}, {
       getNativeRunnerEnabled: async () => true,
@@ -164,6 +164,47 @@ describe("adapter routes", () => {
           supportsInstructionsBundle: true,
         },
       });
+  });
+
+  it.each([
+    [{ driver: "ssh", platform: "linux", architecture: "x64" }, "paperclip"],
+    [{ driver: "ssh", platform: "darwin", architecture: "arm64" }, "legacy"],
+  ])("projects the selected environment once for the whole adapter inventory (%s)", async (target, defaultRunner) => {
+    const resolveRunnerTarget = vi.fn(async () => target);
+    const response = await request(createApp({}, { resolveRunnerTarget })).get("/api/adapters?companyId=company-1&environmentId=selected");
+    expect(response.status).toBe(200);
+    expect(resolveRunnerTarget).toHaveBeenCalledExactlyOnceWith("company-1", "selected");
+    expect(response.body.find((adapter: any) => adapter.type === "codex_local")).toMatchObject({ defaultRunner });
+    expect(response.body.find((adapter: any) => adapter.type === "claude_local")).toMatchObject({ defaultRunner: "legacy" });
+  });
+
+  it("uses the company's effective default environment when discovery omits an override", async () => {
+    const resolveRunnerTarget = vi.fn(async () => ({ driver: "sandbox" }));
+    const response = await request(createApp({}, { resolveRunnerTarget })).get("/api/adapters?companyId=company-1");
+    expect(response.status).toBe(200);
+    expect(resolveRunnerTarget).toHaveBeenCalledExactlyOnceWith("company-1", undefined);
+    expect(response.body.find((adapter: any) => adapter.type === "codex_local")).toMatchObject({ defaultRunner: "paperclip" });
+  });
+
+  it("keeps unscoped inventory independent of company target discovery", async () => {
+    const resolveRunnerTarget = vi.fn();
+    const response = await request(createApp({}, { resolveRunnerTarget })).get("/api/adapters");
+    expect(response.status).toBe(200);
+    expect(resolveRunnerTarget).not.toHaveBeenCalled();
+  });
+
+  it("rejects a foreign company before selecting or probing an environment", async () => {
+    const resolveRunnerTarget = vi.fn();
+    const response = await request(createApp({ source: "session", companyIds: ["allowed"] }, { resolveRunnerTarget })).get("/api/adapters?companyId=foreign&environmentId=selected");
+    expect(response.status).toBe(403);
+    expect(resolveRunnerTarget).not.toHaveBeenCalled();
+  });
+
+  it.each(["environmentId=selected", "companyId=", "companyId=one&companyId=two", "companyId=one&environmentId="])("rejects malformed discovery scope before resolution (%s)", async query => {
+    const resolveRunnerTarget = vi.fn();
+    const response = await request(createApp({}, { resolveRunnerTarget })).get(`/api/adapters?${query}`);
+    expect(response.status).toBe(400);
+    expect(resolveRunnerTarget).not.toHaveBeenCalled();
   });
 
   it("keeps the shared implementation available for Dot independently, while honoring adapter-admin disabling", async () => {

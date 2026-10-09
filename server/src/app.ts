@@ -73,6 +73,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+import { resolveAgentRunnerTargetForCompany } from "./services/agent-runner-selection.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import {
   buildSetupTokenLoginTransport,
@@ -991,6 +992,7 @@ export async function createApp(
   );
   api.use(
     adapterRoutes({
+      resolveRunnerTarget: (companyId, environmentId) => resolveAgentRunnerTargetForCompany(db, companyId, environmentId),
       getNativeRunnerEnabled: async () =>
         (await instanceSettingsService(db).getExperimental())
           .enableNativeRunner === true,

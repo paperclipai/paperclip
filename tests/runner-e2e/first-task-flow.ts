@@ -21,10 +21,11 @@ import {
   collectChatRunEvidence,
 } from "./chat-flow.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
-import type { CredentialName, MatrixExecution } from "./types.js";
+import type { CredentialName, MatrixExecution, RunnerE2EResult } from "./types.js";
 import { firstTaskScenario } from "./first-task-cases.js";
 import {
   activeRuns,
+  digestText,
   snapshotInstruction,
   gradeFirstTask,
   firstTaskCompletionSettled,
@@ -32,6 +33,117 @@ import {
   type FirstTaskCheckpoint,
   type Row,
 } from "./first-task-scoring.js";
+
+/** Results enter the public history bundle. Full observations stay in the
+ * access-controlled snapshots and are graded before this projection. */
+export function projectFirstTaskResult(result: RunnerE2EResult): RunnerE2EResult {
+  const e = result.firstTask;
+  if (!e) return result;
+  const pick = (value: unknown, fields: readonly string[]): Row => {
+    const row = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    return Object.fromEntries(fields.flatMap(key => {
+      const item = row[key];
+      return item === null || ["string", "number", "boolean"].includes(typeof item)
+        ? [[key, item]] : [];
+    })) as Row;
+  };
+  const rows = (value: unknown): Row[] => Array.isArray(value)
+    ? value.filter(row => row && typeof row === "object") : [];
+  const strings = (value: unknown): string[] => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string") : [];
+  const usage = (value: unknown) => {
+    const u = value as Row | undefined;
+    const measurements = ["inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens", "cacheReadTokens", "cachedReadTokens", "input", "output", "promptTokens", "completionTokens", "cacheAdjustedCostUsd", "costUsd", "providerCostUsd", "costUsdExact"];
+    return {
+      ...pick(u, [...measurements, "model", "provider", "biller", "billingType", "costStatus", "usageSource", "accountingReceiptReady"]),
+      ...Object.fromEntries(["runDelta", "total", "cumulative"].filter(key => u?.[key]).map(key => [key, pick(u?.[key], measurements)])),
+      ...(u?.cost ? { cost: pick(u.cost, ["currency", "amount", "total"]) } : {}),
+      ...(u?.pricingProvenance ? { pricingProvenance: pick(u.pricingProvenance, ["source", "version", "contextTier", "serviceTier", "inputCentsPerMillion", "outputCentsPerMillion", "cacheWriteCentsPerMillion", "cachedInputCentsPerMillion"]) } : {}),
+    };
+  };
+  const questionSet = (value: unknown) => {
+    const set = value as Row | undefined;
+    return { ...pick(set, ["title", "description", "submitLabel"]), questions: rows(set?.questions).map(q => ({
+      ...pick(q, ["id", "prompt", "header", "helpText", "required", "answerMode", "selectionMode", "allowOther"]),
+      options: rows(q.options).map(option => pick(option, ["id", "label", "description", "recommended", "freeText"])),
+      ...(q.customAnswer ? { customAnswer: pick(q.customAnswer, ["enabled", "label", "placeholder"]) } : {}),
+    })) };
+  };
+  const interaction = (row: Row): Row => {
+    const payload = row.payload as Row | undefined;
+    const answers = row.result?.answers;
+    const answerRows: Row[] = Array.isArray(answers) ? rows(answers) : answers && typeof answers === "object"
+      ? Object.entries(answers).map(([questionId, answer]) => ({ ...answer as Row, questionId })) : [];
+    return {
+      ...pick(row, ["id", "issueId", "kind", "status", "createdAt", "resolvedAt", "resolvedByAgentId"]),
+      ...(row.resolvedByUserId ? { resolvedByUserId: "fixture-board" } : {}),
+      payload: {
+        ...pick(payload, ["version", "title", "prompt", "detailsMarkdown", "acceptLabel", "rejectLabel", "rejectRequiresReason", "rejectReasonLabel", "submitLabel"]),
+        ...(payload?.questions ? questionSet(payload) : {}),
+        ...(payload?.questionSet ? { questionSet: questionSet(payload.questionSet) } : {}),
+        ...(payload?.target ? { target: pick(payload.target, ["type", "key", "label", "revisionNumber"]) } : {}),
+      },
+      ...(row.result ? { result: {
+        ...pick(row.result, ["outcome", "reason", "commentId"]),
+        answers: answerRows.map(answer => ({
+          ...pick(answer, ["id", "questionId", "text", "otherText", "customText"]),
+          optionIds: strings(answer.optionIds ?? answer.selectedOptionIds),
+        })),
+      } } : {}),
+    };
+  };
+  const privateInstructions = "Full instructions are retained in the access-controlled first-task snapshot.";
+  const settings = e.runtimeSettings as Record<string, any> | undefined;
+  const checkpointIds = new Set(e.checkpoints.map(c => c.id));
+  const firstTask: FirstTaskEvidence = {
+    caseId: e.caseId, nonce: e.nonce, onboardingIssueId: e.onboardingIssueId,
+    agentId: e.agentId, initialTaskIds: [...e.initialTaskIds],
+    ...(e.source ? { source: { sha: e.source.sha, ref: e.source.ref, dirty: e.source.dirty } } : {}),
+    configuredModel: e.configuredModel, observedModels: [...e.observedModels],
+    instructions: e.instructions.map(i => ({
+      path: /^(?:\/|[A-Za-z]:)|(?:^|\/)\.\.(?:\/|$)/.test(i.path) ? "private-instruction-path" : i.path,
+      sha256: i.sha256, content: privateInstructions, contentSha256: digestText(privateInstructions), redacted: true,
+    })),
+    runtimeSettings: {
+      ...pick(settings, ["adapterType", "completionDeliveryProbe"]),
+      adapterConfig: pick(settings?.adapterConfig, ["provider", "model", "modelReasoningEffort", "lifecycleMode", "codexPermissionMode"]),
+      ...(settings?.onboardingRuntime ? { onboardingRuntime: pick(settings.onboardingRuntime, ["mode", "originalAdapterType", "testedAdapterType", "originalModel"]) } : {}),
+    },
+    checkpoints: e.checkpoints.map(c => ({
+      id: c.id, at: c.at, phase: c.phase, issueId: c.issueId,
+      tasks: c.tasks.map(t => pick(t, ["id", "identifier", "title", "description", "status", "parentId", "assigneeAgentId", "createdAt", "completedAt"])),
+      agents: c.agents.map(a => ({ ...pick(a, ["id", "name", "adapterType"]),
+        adapterConfig: pick(a.adapterConfig, ["provider", "model", "modelReasoningEffort", "lifecycleMode", "codexPermissionMode"]) })),
+      comments: c.comments.map(comment => ({ ...pick(comment, ["id", "issueId", "body", "authorAgentId", "createdAt"]),
+        ...(comment.authorUserId ? { authorUserId: "fixture-board" } : {}) })),
+      interactions: c.interactions.map(interaction),
+      documents: c.documents.map(d => pick(d, ["id", "issueId", "key", "title", "body", "format", "latestRevisionId", "latestRevisionNumber", "createdAt", "updatedAt"])),
+      attachments: (c.attachments ?? []).map(a => pick(a, ["id", "issueId", "title", "originalFilename", "filename", "body", "contentVerified", "contentSha256", "byteSize", "createdAt"])),
+      runs: c.runs.map(run => ({ ...pick(run, ["id", "issueId", "status", "startedAt", "finishedAt", "runtimeMode", "driverKind"]),
+        ...pick({ model: run.resultJson?.model ?? run.usageJson?.model }, ["model"]) })),
+    })),
+    checks: e.checks.map(check => ({
+      id: check.id, passed: check.passed,
+      ...(check.notReached ? { notReached: "The journey did not reach this check; private evidence retains the reason." } : {}),
+      evidence: check.evidence.filter(ref => checkpointIds.has(ref)),
+      detail: `${check.id}: ${check.notReached ? "not reached" : check.passed ? "passed" : "failed"}. Full diagnostic evidence is retained in the access-controlled snapshot.`,
+    })),
+  };
+  return {
+    ...result, firstTask,
+    ...(result.usage ? { usage: Array.isArray(result.usage.runs)
+      ? { runs: rows(result.usage.runs).map(run => ({ runId: run.runId, usage: run.usage ? usage(run.usage) : null })) }
+      : usage(result.usage) } : {}),
+    ...(result.error ? { error: "First-task journey failed; inspect the recorded checks and access-controlled evidence for the original error." } : {}),
+    matcherResults: (result.matcherResults ?? []).map(matcher => ({
+      ...matcher,
+      detail: matcher.matcher.kind === "json_path"
+        ? firstTask.checks.find(check => matcher.matcher.kind === "json_path" && matcher.matcher.path === `firstTask.checks.${check.id}`)?.detail
+          ?? `${matcher.matcher.kind}: ${matcher.passed ? "passed" : "failed"}. Private evidence retains diagnostics.`
+        : `${matcher.matcher.kind}: ${matcher.passed ? "passed" : "failed"}. Private evidence retains diagnostics.`,
+    })),
+  };
+}
 
 /** The wizard creates the agent/task. Only credential provisioning uses Node fetch,
  * keeping plaintext keys out of Playwright's trace and recorded form values. */
@@ -93,6 +205,11 @@ export async function setupFirstTaskFixtures(input: {
     exact: true,
   });
   const savedKey = page.getByRole("combobox", { name: "Saved API key" });
+  if (execution.profile.id === "legacy-codex") {
+    await page.getByText("Advanced", { exact: true }).click();
+    await page.getByRole("button", { name: "Runner", exact: true }).click();
+    await page.getByRole("option", { name: "Legacy runner", exact: true }).click();
+  }
   // Credential mode depends on the selected provider and its asynchronous key lookup.
   await expect(savedKey.or(useKey).first()).toBeVisible();
   if (await useKey.isVisible()) await useKey.click();
@@ -110,16 +227,22 @@ export async function setupFirstTaskFixtures(input: {
   expect(agents).toHaveLength(1);
   const wizardAdapter =
     execution.profile.credential === "OPENAI_API_KEY"
-      ? "codex_local"
+      ? execution.profile.id === "runner-codex" ? "paperclip_runner" : "codex_local"
       : "claude_local";
   expect(agents[0].adapterType).toBe(wizardAdapter);
+  if (execution.profile.id === "runner-codex") {
+    expect(agents[0].adapterConfig?.provider).toBe("codex");
+  }
   fixtures.onboardingRuntime = {
     mode: "production-wizard",
     originalAdapterType: wizardAdapter,
     testedAdapterType: wizardAdapter,
     originalModel: agents[0].adapterConfig?.model ?? null,
   };
-  if (execution.profile.generation === "native") {
+  // Claude remains an explicit native regression path in this Codex-only
+  // rollout. Codex is never switched after onboarding: the saved default is
+  // the execution under test.
+  if (execution.profile.id === "runner-acpx-claude") {
     const runtimePatch = firstTaskNativeRuntimePatch(
       execution,
       fixtures,

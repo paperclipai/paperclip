@@ -188,6 +188,8 @@ export const models = [
 
 export const agentConfigurationDoc = `# codex_local agent configuration
 
+New agents select this Codex harness with adapterType: codex_local. On qualified Linux x64 targets, automatic selection stores adapterType: paperclip_runner with provider: codex. macOS, Windows, and Linux ARM retain legacy defaults until their runner artifacts are qualified. Other harness defaults are unchanged. Set the request-level runner: legacy to use this adapter's execution and custom settings. Existing agents and reviewed pending hires retain their saved runner; runtime errors never silently switch runners.
+
 Adapter: codex_local
 
 Core fields:
@@ -229,7 +231,7 @@ Notes:
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. For new and updated agents, Paperclip assigns an isolated managed home at ~/.paperclip/instances/<id>/companies/<companyId>/agents/<agentId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - New and updated codex_local agents persist an empty OPENAI_API_KEY override by default so a host-level OPENAI_API_KEY cannot leak into Codex runs through process inheritance. Explicit CODEX_HOME overrides must not point at the shared company codex-home, $CODEX_HOME, or ~/.codex.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
-- With ChatGPT sign-in, the Codex backend accepts a model only from a recent enough Codex CLI: GPT-6.1 Sol needs 0.159.0 or newer, GPT-6 Sol and GPT-6 Luna need 0.157.0 or newer. An older CLI fails every turn with "The '<model>' model is not supported when using Codex with a ChatGPT account." The environment Test and the remote runner compare the installed \`codex --version\` against these floors before running; in a managed sandbox, the fix is a sandbox image that ships the Codex version Paperclip pins.
+- With ChatGPT sign-in, model availability depends on the installed Codex capabilities. Legacy setup reports known model/version mismatches. Native setup tests the actual app-server and selected model; a version number alone does not reject or replace an installed CLI. If the provider rejects the model, select an available model or update Codex in the execution environment.
 - Fast mode is supported on GPT-6 (astra/sol/luna), GPT-6.1 Sol, GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 - The ACP engine keeps its workspace sandbox and enables network access on each turn. Explicit sandbox_workspace_write.network_access overrides in extraArgs (or env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS="false") disable it; execution-target network denial wins. The bundled ACP patch is needed because upstream mode presets override Codex config.toml on every turn.

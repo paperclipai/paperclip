@@ -53,6 +53,8 @@ export interface AdapterConfigFieldsProps {
   managedSandboxOnly?: boolean;
   /** Show Dot for new selections only when its experimental prerequisites are enabled. */
   openAiDotEnabled?: boolean;
+  /** Codex's harness identity and runner are selected by the shared form. */
+  hideRunnerHarness?: boolean;
 }
 
 export interface UIAdapterModule extends TranscriptParserSource {

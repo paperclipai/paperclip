@@ -367,6 +367,8 @@ pub struct CodexProviderConfig {
     pub approval_policy: String,
     #[serde(default)]
     pub externally_sandboxed: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub read_only: bool,
     // Older persisted configurations deliberately retain the provider default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_skill_instructions: Option<bool>,
@@ -662,6 +664,7 @@ pub struct CodexProvider {
     next_request_id: u64,
     thread_id: String,
     provider_session_id: Option<String>,
+    observed_model: Option<String>,
     active_provider_turn_id: Option<String>,
     pending_messages: VecDeque<BufferedProviderMessage>,
     deferred_ambiguous_messages: VecDeque<BufferedProviderMessage>,
@@ -824,6 +827,10 @@ fn codex_permission_profile(provider: &str, external_sandbox: bool) -> &'static 
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 impl CodexProvider {
     pub fn start(
         config: &CodexProviderConfig,
@@ -897,11 +904,15 @@ impl CodexProvider {
             ));
         }
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
-        let permission_profile = codex_permission_profile(
-            &config.provider,
-            config.externally_sandboxed
-                || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
-        );
+        let permission_profile = if config.read_only {
+            "paperclip-runner-workspace-read-only"
+        } else {
+            codex_permission_profile(
+                &config.provider,
+                config.externally_sandboxed
+                    || std::env::var("PAPERCLIP_RUNNER_EXTERNAL_SANDBOX").as_deref() == Ok("1"),
+            )
+        };
         let (dynamic_tools, authorized_tool_ids) =
             codex_dynamic_tools(authorized_tools.iter().cloned())?;
         let common_environment_keys = [
@@ -996,6 +1007,7 @@ impl CodexProvider {
             next_request_id: 1,
             thread_id: String::new(),
             provider_session_id: None,
+            observed_model: None,
             active_provider_turn_id: None,
             pending_messages: VecDeque::new(),
             deferred_ambiguous_messages: VecDeque::new(),
@@ -1126,6 +1138,12 @@ impl CodexProvider {
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned);
+            provider.observed_model = opened
+                .get("model")
+                .or_else(|| opened.pointer("/thread/model"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty() && value.len() <= 240)
+                .map(str::to_owned);
 
             if resume_thread_id.is_some() {
                 stage = ProviderStartupStage::ThreadRead;
@@ -1166,6 +1184,10 @@ impl CodexProvider {
 
     pub fn provider_session_id(&self) -> Option<&str> {
         self.provider_session_id.as_deref()
+    }
+
+    pub fn observed_model(&self) -> Option<&str> {
+        self.observed_model.as_deref()
     }
 
     pub(crate) fn take_provider_trace_frame_id(&mut self) -> Option<u64> {
@@ -1679,6 +1701,16 @@ impl CodexProvider {
         cwd: &str,
         skills: &[CodexSkillInput],
     ) -> Result<Value, LocalRunnerError> {
+        self.start_turn_with_options(message, cwd, skills, None)
+    }
+
+    pub(crate) fn start_turn_with_options(
+        &mut self,
+        message: &str,
+        cwd: &str,
+        skills: &[CodexSkillInput],
+        options: Option<&Value>,
+    ) -> Result<Value, LocalRunnerError> {
         if skills.len() > 64 || (self.config.provider != "codex" && !skills.is_empty()) {
             return Err(LocalRunnerError::invalid(
                 "explicit skills require Codex and at most 64 selections",
@@ -1686,6 +1718,19 @@ impl CodexProvider {
         }
         for skill in skills {
             skill.validate()?;
+        }
+        let effort = options
+            .and_then(|value| value.get("effort"))
+            .filter(|value| !value.is_null());
+        if effort.is_some_and(|value| {
+            !matches!(
+                value.as_str(),
+                Some("minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra")
+            )
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "unsupported native Codex reasoning effort",
+            ));
         }
         if self.quarantined {
             return Err(LocalRunnerError::invalid(
@@ -1727,6 +1772,9 @@ impl CodexProvider {
         let turn_params_object = turn_params
             .as_object_mut()
             .expect("Codex turn parameters are an object");
+        if let Some(effort) = effort {
+            turn_params_object.insert("effort".to_owned(), effort.clone());
+        }
         if self.permission_profile == "paperclip-runner-external-sandbox" {
             turn_params_object.insert(
                 "sandboxPolicy".to_owned(),
@@ -4073,6 +4121,7 @@ done
             instructions: "Test only.".to_owned(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            read_only: false,
             include_skill_instructions: None,
             conversation_mode: None,
         };
@@ -4460,6 +4509,7 @@ done
             instructions: String::new(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            read_only: false,
             include_skill_instructions: None,
             conversation_mode: None,
         };
@@ -4580,6 +4630,7 @@ done
             instructions: String::new(),
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
+            read_only: false,
             include_skill_instructions: None,
             conversation_mode: None,
         };
