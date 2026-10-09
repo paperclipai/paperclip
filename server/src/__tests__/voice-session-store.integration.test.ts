@@ -83,6 +83,14 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(restarted.runTool({ ...request, fingerprint: "changed" })).rejects.toMatchObject({ status: 409 });
   });
 
+  it("rejects Backlog voice work before claiming that it was accepted", async () => {
+    const f = await fixture();
+    await db.update(issues).set({status: "backlog"}).where(eq(issues.id, f.issueId));
+    await expect(f.store.runTool(f.toolInput("submit_request", {text: "Inspect disk space"}))).rejects.toMatchObject({status: 409, message: "Move this task to Todo in Paperclip before requesting voice work."});
+    expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpointId))).toHaveLength(0);
+    expect(await db.select().from(chatVoiceToolCalls).where(eq(chatVoiceToolCalls.sessionId, f.sessionId))).toHaveLength(0);
+  });
+
   it("delivers urgent live-call guidance only after accepted work and retires it after hangup or revocation", async () => {
     const f = await fixture(), scope = { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId };
     expect(await liveVoiceExecutionGuidance(db, scope)).toBeNull();
@@ -504,6 +512,8 @@ const support = await getEmbeddedPostgresTestSupport();
   it("sends long approved phone answers as durable ordered parts and resumes after a rate limit", async () => {
     const f = await pushFixture(), text = "😀 answer ".repeat(4000) + "FINAL";
     await db.update(chatPublications).set({payload: {text}}).where(eq(chatPublications.id, f.publication.id));
+    const [later] = await db.insert(chatPublications).values({companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(), state: "published", payload: {text: "Later answer B"}}).returning();
+    await f.store.enqueuePublication(f.companyId, later.id);
     f.transport.sendCallMessage.mockResolvedValueOnce({messageId: "part-0"}).mockRejectedValueOnce(new SpekoProviderError("provider_unavailable", false, 429));
     await f.push();
     const [reply] = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.publicationId, f.publication.id));
@@ -521,7 +531,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await voiceSessionService(db, {allowLocalBoard: false, credentials: f.credentials, provider: () => f.transport, onQuestionAnswered: vi.fn()}).pushReplies(25, f.companyId, f.endpointId);
     await f.push();
     const calls = f.transport.sendCallMessage.mock.calls;
-    expect(calls).toHaveLength(4); expect(calls[1]?.[1]).toBe(calls[2]?.[1]);
+    expect(calls).toHaveLength(5); expect(calls[4]?.[1]).toBe("Later answer B"); expect(calls[1]?.[1]).toBe(calls[2]?.[1]);
     expect([calls[0]![1], calls[2]![1], calls[3]![1]].join("")).toBe(text);
     for (const call of calls) {expect(call[1].length).toBeLessThanOrEqual(16_000); expect(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(call[1])).toBe(false);}
     const [delivered] = await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.id, reply.id));
@@ -530,6 +540,8 @@ const support = await getEmbeddedPostgresTestSupport();
   it("does not retry an uncertain long-answer part or send its suffix", async () => {
     const f = await pushFixture();
     await db.update(chatPublications).set({payload: {text: "answer ".repeat(5000)}}).where(eq(chatPublications.id, f.publication.id));
+    const [later] = await db.insert(chatPublications).values({companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(), state: "published", payload: {text: "Later answer B"}}).returning();
+    await f.store.enqueuePublication(f.companyId, later.id);
     f.transport.sendCallMessage.mockResolvedValueOnce({messageId: "part-0"}).mockRejectedValueOnce(new SpekoProviderError("provider_unavailable", true));
     await f.push(); await f.push();
     expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(2);

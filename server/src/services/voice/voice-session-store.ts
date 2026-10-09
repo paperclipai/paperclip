@@ -317,6 +317,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       if (replay) throw conflict("Voice webhook id was already used for a different tool call");
       let deliveryId: string | null = null, response: Record<string, unknown>;
       if (input.envelope.tool === "submit_request") {
+        if (context.task.status === "backlog") throw conflict("Move this task to Todo in Paperclip before requesting voice work.");
         if (session.callerAuthority === "guest_intake") {
           const requests = await tx.select({id: chatVoiceToolCalls.id}).from(chatVoiceToolCalls).where(and(eq(chatVoiceToolCalls.sessionId, session.id), eq(chatVoiceToolCalls.tool, "submit_request"))).limit(20);
           if (requests.length >= 20) throw conflict("This call has reached its message limit. Continue in Paperclip.");
@@ -347,9 +348,13 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
         // The durable delivered marker is authoritative. A later publication
         // can finish before an earlier stream; a caller cursor must not hide
         // that older, still-unclaimed answer when it eventually publishes.
-        const available = await tx.select({ reply: chatVoiceReplies, payload: chatPublications.payload }).from(chatVoiceReplies).innerJoin(chatPublications, and(eq(chatPublications.id, chatVoiceReplies.publicationId), eq(chatPublications.companyId, session.companyId)))
-          .where(and(eq(chatVoiceReplies.sessionId, session.id), eq(chatVoiceReplies.companyId, session.companyId), repeat ? sql`${chatVoiceReplies.deliveredAt} is not null` : and(isNull(chatVoiceReplies.deliveredAt), sql`not exists (select 1 from chat_actions a where a.company_id = ${session.companyId} and a.endpoint_id = ${session.endpointId} and a.kind = 'speko_voice_reply_push' and a.payload->>'replyId' = ${chatVoiceReplies.id}::text and (a.status in ('dispatching', 'unknown') or (a.status = 'completed' and a.payload->>'questionNotification' = 'false')))`), eq(chatPublications.endpointId, session.endpointId), eq(chatPublications.conversationId, session.conversationId), eq(chatPublications.issueId, session.issueId), eq(chatPublications.state, "published")))
+        const available = await tx.select({ reply: chatVoiceReplies, payload: chatPublications.payload, pushBlocked: sql<boolean>`exists (select 1 from chat_actions a where a.company_id = ${session.companyId} and a.endpoint_id = ${session.endpointId} and a.kind = 'speko_voice_reply_push' and a.payload->>'replyId' = ${chatVoiceReplies.id}::text and (a.status in ('dispatching', 'unknown') or (a.status = 'completed' and a.payload->>'questionNotification' = 'false')))` }).from(chatVoiceReplies).innerJoin(chatPublications, and(eq(chatPublications.id, chatVoiceReplies.publicationId), eq(chatPublications.companyId, session.companyId)))
+          .where(and(eq(chatVoiceReplies.sessionId, session.id), eq(chatVoiceReplies.companyId, session.companyId), repeat ? sql`${chatVoiceReplies.deliveredAt} is not null` : isNull(chatVoiceReplies.deliveredAt), eq(chatPublications.endpointId, session.endpointId), eq(chatPublications.conversationId, session.conversationId), eq(chatPublications.issueId, session.issueId), eq(chatPublications.state, "published")))
           .orderBy(repeat ? desc(chatVoiceReplies.deliveredAt) : asc(chatVoiceReplies.cursor), desc(chatVoiceReplies.cursor)).limit(repeat ? 1 : 8);
+        // Never skip a partly pushed answer to retrieve later replies. The
+        // accepted prefix cannot be replayed, and its suffix remains ordered.
+        const pushBoundary = available.findIndex(row => row.pushBlocked);
+        if (!repeat && pushBoundary >= 0) available.splice(pushBoundary);
         // Deliver a bounded burst in one voice turn. Separate typed hints would
         // interrupt the preceding answer. Stop at a question so later answers
         // cannot displace the clarification the caller must respond to.
