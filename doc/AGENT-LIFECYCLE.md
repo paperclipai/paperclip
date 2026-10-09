@@ -6,6 +6,31 @@ Use its commands to create an agent or change its lifecycle state.
 Do not pass a database transaction to a command.
 Each hire or transition command owns its transaction.
 
+## Application use
+
+Application code imports the configured factory from `services/agent-lifecycle.ts`.
+This service supplies the module dependencies. Use the root database connection.
+Apply the existing caller authorization checks before you call a command.
+
+```ts
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
+
+const lifecycle = createAgentLifecycle(db);
+await lifecycle.updateConfiguration(agentId, { title: "Engineer" });
+await lifecycle.pauseAgent(agentId);
+const state = await lifecycle.get(agentId);
+```
+
+The pause command records the request. The worker completes the external steps.
+Read `lifecycleState` to check progress.
+Configuration updates accept only the fields in `AGENT_CONFIGURATION_FIELDS`.
+They reject identity, company, accounting, timestamp, and lifecycle fields.
+
+Do not import module adapters or construct module dependencies in a caller.
+The company deletion service uses the separate deletion entry point.
+The listed configuration workflows use the restricted transaction service.
+These are the only transaction integrations. They are described below.
+
 ## States
 
 | State | Meaning | Next state |
@@ -74,7 +99,8 @@ The service checks accounting holds. The module then deletes the agent record.
 An error rolls back both operations. Neither path permits incomplete termination.
 
 The ordinary agent service owns reads, permissions, and keys.
-The configuration service owns configuration validation, writes, and revisions.
+The configuration service owns validation and configuration revisions.
+The lifecycle module owns the agent configuration write.
 Credential checks remain in the agent credential service.
 Secret proposal approval saves the secret before it applies the agent binding.
 If the binding fails, the secret remains approved and the binding remains pending.
@@ -154,6 +180,11 @@ Return `complete` only after the requested effect is complete.
 Return `pending` while external work continues.
 Throw an error when the step fails.
 The host stores a fixed error message. It does not store the provider error text.
+Server logs identify the failed step, phase, operation, and plugin when available.
+They include only known error codes. Unknown codes become `unclassified`.
+They do not include provider messages, stacks, or configuration values.
+A failure before the agent is read can have only a step and agent ID.
+A scan failure has no agent ID.
 
 Calls can repeat after a timeout or a server restart.
 A plugin must make repeated calls safe.
@@ -216,3 +247,12 @@ Production creation and lifecycle state writes must use the lifecycle module.
 Production record deletion must also use the lifecycle module.
 Execution configuration writes must use the module. The offline worktree seed
 command can disable timers in a copied database before the server starts.
+
+## Extension rules
+
+Add a lifecycle command to the module entry point. Put state transition rules in
+`domain/policy.ts`. Put database operations in the module adapters.
+Keep harness and provider rules in services. Supply external work through the
+worker driver. Report completion only after that work is complete.
+Add a test for a failed or repeated operation. Run `pnpm check:module-boundaries`
+to check the import and write boundaries.

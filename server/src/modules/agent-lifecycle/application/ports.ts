@@ -28,3 +28,14 @@ export interface LifecycleDriver {
   runHost(agent: LifecycleAgent): Promise<"complete" | "pending">;
   runPlugin(agent: LifecycleAgent, pluginId: string): Promise<"complete" | "pending">;
 }
+
+export interface LifecycleFailure {
+  stage: "claim" | "renew" | "select_plugins" | "save_plugins" | "host" | "plugin"
+    | "complete_host" | "complete_plugin" | "transition" | "defer" | "scan" | "policy_scan";
+  agentId?: string;
+  companyId?: string;
+  phase?: AgentLifecycleState;
+  operationId?: string;
+  version?: number;
+  pluginId?: string;
+}

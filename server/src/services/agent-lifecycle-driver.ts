@@ -23,13 +23,13 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
       const [settings] = await db.select().from(pluginCompanySettings).where(and(
         eq(pluginCompanySettings.pluginId, pluginId), eq(pluginCompanySettings.companyId, agent.companyId)));
       if (settings?.enabled === false || !plugin || plugin.status !== "ready" || !plugin.manifestJson.agentLifecycle || !plugin.manifestJson.capabilities.includes("agents.lifecycle.manage")) {
-        throw new Error("A required lifecycle plugin is unavailable");
+        throw Object.assign(new Error("A required lifecycle plugin is unavailable"), { code: "required_plugin_unavailable" });
       }
       const operationId = agent.lifecycleOperation!.id;
       const result = await manager.call(plugin.id, "agentLifecycle", { companyId: agent.companyId,
         agentId: agent.id, operationId, version: agent.lifecycleVersion, phase: agent.lifecycleState }, 30_000);
       if (!result || result.operationId !== operationId || result.version !== agent.lifecycleVersion || !["complete", "pending"].includes(result.status)) {
-        throw new Error("Invalid lifecycle result");
+        throw Object.assign(new Error("Invalid lifecycle result"), { code: "invalid_lifecycle_result" });
       }
       return result.status;
     },

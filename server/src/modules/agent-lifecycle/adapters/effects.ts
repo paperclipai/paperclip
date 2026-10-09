@@ -1,3 +1,4 @@
+import type { LifecycleFailure } from "../application/ports.js";
 import type { Db } from "@paperclipai/db";
 import type { budgetPolicies } from "@paperclipai/db";
 import type { CreateAgentData, CreateAgentOptions, AgentConfigurationPatch, AgentConfigurationRecord, AgentHireRecord, UpdateAgentOptions } from "../../../lib/agent-records.js";
@@ -5,6 +6,7 @@ import type { ActivityPublication } from "../../../types/activity-publication.js
 
 /** Services supply integrations; lifecycle owns the transaction and state writes. */
 export interface LifecycleEffects {
+  reportFailure(context: LifecycleFailure, error: unknown): void;
   deleteDependencies(db: Db, companyId: string, agentId: string): Promise<void>;
   prepareConfiguration(db: Db, current: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch>;
   completeConfiguration(db: Db, before: AgentConfigurationRecord, after: AgentConfigurationRecord, patch: AgentConfigurationPatch, options: UpdateAgentOptions | undefined, publications: ActivityPublication[]): Promise<void>;

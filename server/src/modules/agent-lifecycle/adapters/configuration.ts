@@ -1,19 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
-import { agentRecordQueries, jsonEqual, type AgentConfigurationPatch, type UpdateAgentOptions } from "../../../lib/agent-records.js";
+import { agentRecordQueries, AGENT_CONFIGURATION_FIELDS, jsonEqual, type AgentConfigurationPatch, type UpdateAgentOptions } from "../../../lib/agent-records.js";
 import type { ActivityPublication } from "../../../types/activity-publication.js";
 import { AgentLifecycleConflict } from "../domain/policy.js";
 import type { LifecycleEffects } from "./effects.js";
 
 export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions, publications: ActivityPublication[] = []) {
   if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Configuration integration requires a database transaction");
-  for (const field of ["status", "pauseReason", "pausedAt", "lifecycleState", "lifecycleRequiredPluginIds", "lifecycleHolds", "lifecycleVersion", "lifecycleError", "lifecycleOperation"]) {
-    if (Object.prototype.hasOwnProperty.call(data, field)) throw new AgentLifecycleConflict("Use an agent lifecycle command to change lifecycle state");
-  }
+  assertConfigurationFields(data);
   const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("update");
   if (!current) return null;
   const patch = await effects.prepareConfiguration(tx, current, data, options);
+  assertConfigurationFields(patch);
   const changed = ["adapterType", "adapterConfig", "runtimeConfig", "defaultEnvironmentId"].some(key =>
     Object.prototype.hasOwnProperty.call(patch, key) && !jsonEqual(patch[key as keyof typeof patch], current[key as keyof typeof current]));
   const invalidate = changed && ["preparing", "verifying", "resuming"].includes(current.lifecycleState);
@@ -24,4 +23,10 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
   } : {}) }).where(eq(agents.id, id)).returning();
   await effects.completeConfiguration(tx, current, updated, patch, options, publications);
   return agentRecordQueries(tx).getById(id);
+}
+
+function assertConfigurationFields(data: AgentConfigurationPatch) {
+  if (Object.keys(data).some(field => !AGENT_CONFIGURATION_FIELDS.some(allowed => allowed === field))) {
+    throw new AgentLifecycleConflict("Unsupported configuration field; use the command that owns this field, such as a lifecycle command");
+  }
 }

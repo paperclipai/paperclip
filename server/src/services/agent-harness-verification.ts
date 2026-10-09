@@ -19,7 +19,7 @@ export function assertHarnessTestPassed(result: AdapterEnvironmentTestResult) {
   const authenticationFailed = result.checks.some(check =>
     check.code === ADAPTER_AUTH_MISSING_CHECK_CODE || /_hello_probe_auth_required$/.test(check.code));
   const incomplete = !verified && (result.status === "warn" || result.checks.some(check => check.code.includes("hello_probe")));
-  if (result.status === "fail" || authenticationFailed || incomplete) throw new Error("The harness test failed");
+  if (result.status === "fail" || authenticationFailed || incomplete) throw Object.assign(new Error("The harness test failed"), { code: "harness_test_failed" });
 }
 
 export function agentHarnessVerificationService(db: Db, manager: PluginWorkerManager) {
@@ -61,7 +61,7 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     const target = await tests.resolveAdapterTestExecutionContext({ agentId: agent.id, companyId: agent.companyId, adapterType: agent.adapterType, environmentId });
     let status: "released" | "failed" = "failed";
     try {
-      if (target.fallbackChecks.length) throw new Error("The test environment is unavailable");
+      if (target.fallbackChecks.length) throw Object.assign(new Error("The test environment is unavailable"), { code: "test_environment_unavailable" });
       const input = { companyId: agent.companyId, adapterType: agent.adapterType, config,
         executionTarget: target.executionTarget, environmentName: target.environmentName };
       const result = binding ? await withManagedAiProbe(db, { ...input, agentId: agent.id, responsibleUserId, binding },

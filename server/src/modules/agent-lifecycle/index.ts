@@ -15,12 +15,12 @@ import type { LifecycleDriver } from "./application/ports.js";
 export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSetup } from "./domain/policy.js";
 
 export type { HireDecisionTarget } from "./adapters/approvals.js";
-export type { LifecycleDriver, LifecycleAgent } from "./application/ports.js";
+export type { LifecycleDriver, LifecycleAgent, LifecycleFailure } from "./application/ports.js";
 
 const workers = new WeakMap<Db, ReturnType<typeof createLifecycleWorker>>();
 export function configureAgentLifecycle(db: Db, effects: LifecycleEffects, driver: LifecycleDriver, canRun = () => true) {
   assertRootDatabase(db);
-  const worker = createLifecycleWorker(createLifecycleStore(db, effects), driver, canRun);
+  const worker = createLifecycleWorker(createLifecycleStore(db, effects), driver, effects.reportFailure, canRun);
   workers.set(db, worker);
   return worker;
 }
@@ -107,7 +107,8 @@ export function startAgentLifecycle(db: Db, effects: LifecycleEffects, driver: L
     if (stopped || !canRun()) return Promise.resolve();
     return running ??= (async () => {
       if (Date.now() >= nextPolicySweep) {
-        await createAgentLifecycle(db, effects).reconcilePolicyHolds();
+        try { await createAgentLifecycle(db, effects).reconcilePolicyHolds(); }
+        catch (error) { effects.reportFailure({ stage: "policy_scan" }, error); throw error; }
         nextPolicySweep = Date.now() + 60_000;
       }
       await worker.sweep();

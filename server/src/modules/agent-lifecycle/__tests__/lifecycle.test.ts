@@ -544,6 +544,25 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await current(agent.id)).toMatchObject({ lifecycleState: "ready", lifecycleVersion: ready.lifecycleVersion });
   });
 
+  it("rejects identity, accounting, and unknown fields through every configuration entry point", async () => {
+    const agent = await hire();
+    const lifecycle = createAgentLifecycle(db);
+    const before = await current(agent.id);
+    for (const patch of [{ id: randomUUID() }, { companyId: randomUUID() }, { spentMonthlyCents: 0 },
+      { spendMonthUtc: "2099-01" }, { lastHeartbeatAt: new Date() }, { errorReason: null },
+      { createdAt: new Date() }, { updatedAt: new Date() }, { lifecycleState: "ready" }, { futureColumn: true }]) {
+      await expect(lifecycle.updateConfiguration(agent.id, patch as never)).rejects.toThrow("Unsupported configuration field");
+      await expect(lifecycle.updateAndTransition(agent.id, "pause", patch as never)).rejects.toThrow("Unsupported configuration field");
+      await expect(db.transaction(tx => updateAgentConfigurationInTransaction(tx as unknown as Db, agent.id, patch as never)))
+        .rejects.toThrow("Unsupported configuration field");
+    }
+    expect(await current(agent.id)).toEqual(before);
+    const effects = createAgentLifecycleEffects();
+    const malformed = createLifecycleCommands(db, { ...effects, prepareConfiguration: async () => ({ id: randomUUID() }) as never });
+    await expect(malformed.updateConfiguration(agent.id, { name: "Changed" })).rejects.toThrow("Unsupported configuration field");
+    expect(await current(agent.id)).toEqual(before);
+  });
+
   it("records only the changed configuration fields for a legacy appearance", async () => {
     const [agent] = await db.insert(agents).values({ companyId, name: "Legacy", appearance: null }).returning();
     await createAgentLifecycle(db).updateConfiguration(agent.id, { name: "Renamed" },
