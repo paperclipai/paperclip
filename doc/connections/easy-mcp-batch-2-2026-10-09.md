@@ -40,25 +40,9 @@ monday.com is recorded as provider-approval blocked in the research ledger. Clic
 
 Provider-specific changes use durable overrides so ingestion preserves them. Bitly and Resend use full documented account capabilities; Context7 and Hugging Face add or qualify public read endpoints. No custom skills or channels are required for these basic MCP tool connections.
 
-## Permission and public-read screenshots
-
-![Bitly: zero agents selected, write actions Off](easy-mcp-batch-2-evidence-2026-10-09/bitly-permissions.jpg)
-
-![Context7: successful public documentation read](easy-mcp-batch-2-evidence-2026-10-09/context7-read.jpg)
-
-![Hugging Face: four read actions and zero selected agents](easy-mcp-batch-2-evidence-2026-10-09/hugging-face-permissions.jpg)
-
-![Resend: all actions Off after read qualification](easy-mcp-batch-2-evidence-2026-10-09/resend-permissions.jpg)
-
-![monday.com: retained draft reaches its setup wizard; provider approval remains blocked](easy-mcp-batch-2-evidence-2026-10-09/monday-draft-resume.jpg)
-
-![Context7: resumed public setup survives activation and reaches success with zero agents](easy-mcp-batch-2-evidence-2026-10-09/context7-resumed-completion.jpg)
-
-![Context7: completed URL restores the exact saved permissions page with zero agents](easy-mcp-batch-2-evidence-2026-10-09/context7-completed-route.jpg)
-
 ## Evidence and sources
 
-Account-profile and domain results remain private and are not committed. Permission screenshots and public documentation results can be shared after visual review. Provider-specific `liveProof` and `evidenceLimit` records are in [tool-method-permission-reviews.json](tool-method-permission-reviews.json); the dated research entries are in [self-serve-mcp-research.json](../../packages/shared/src/self-serve-mcp-research.json).
+Evidence is recorded as text only. Account-profile and domain results are omitted; no evidence images are included. Provider-specific `liveProof` and `evidenceLimit` records are in [tool-method-permission-reviews.json](tool-method-permission-reviews.json); the dated research entries are in [self-serve-mcp-research.json](../../packages/shared/src/self-serve-mcp-research.json).
 
 - [Bitly hosted MCP quickstart](https://dev.bitly.com/bitly-mcp/overview/quickstart/) and [token response format](https://dev.bitly.com/docs/getting-started/authentication/).
 - [Context7 API guide](https://context7.com/docs/api-guide) and [official MCP source](https://github.com/upstash/context7/blob/master/packages/mcp/src/index.ts).
