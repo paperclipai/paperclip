@@ -1549,6 +1549,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "rest_api", config: { provider: "agentmail" } }).success).toBe(true);
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "rest_api", config: { provider: "slack" } }).success).toBe(false);
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "runtime_auth", config: { provider: "agentmail" } }).success).toBe(false);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "voice", config: { provider: "speko" } }).success).toBe(true);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "voice", config: { provider: "slack" } }).success).toBe(false);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "chat_sdk", config: { provider: "speko" } }).success).toBe(false);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "tool", transport: "voice", config: { provider: "speko" } }).success).toBe(false);
     expect(aiConnectionBindingSchema.safeParse({ provider: "anthropic", mode: "responsible_user" }).success).toBe(false);
     expect(aiConnectionBindingSchema.safeParse({ provider: "anthropic", mode: "shared", connectionId: randomUUID(), grantId: randomUUID() }).success).toBe(false);
     expect(isAiConnectionCompatible({ provider: "anthropic", method: "api_key", mode: "responsible_user" }, "paperclip_runner", "same-model", "acpx", "claude")).toBe(true);

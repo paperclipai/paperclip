@@ -118,7 +118,7 @@ export const chatEndpoints = pgTable(
     check("chat_endpoints_email_policy_check", sql`${table.provider} <> 'agentmail' or (${table.publicationMode} = 'explicit' and ${table.externalExecutionPolicy} = 'agent')`),
     check(
       "chat_endpoints_provider_check",
-      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail', 'imessage-photon')`,
+      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'speko', 'agentmail', 'imessage-photon')`,
     ),
     check(
       "chat_endpoints_status_check",
@@ -283,7 +283,7 @@ export const chatExternalPrincipals = pgTable(
   (table) => [
     check(
       "chat_external_principals_provider_check",
-      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail', 'imessage-photon')`,
+      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'speko', 'agentmail', 'imessage-photon')`,
     ),
     check(
       "chat_external_principals_kind_check",

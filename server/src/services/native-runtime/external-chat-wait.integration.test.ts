@@ -35,6 +35,7 @@ import {
   statusDecisions,
   toolApplications,
   toolConnections,
+  chatVoiceSessions, chatVoiceReplies, chatVoiceToolCalls,
   workspaceOperations,
 } from "@paperclipai/db";
 import type {
@@ -61,6 +62,8 @@ import {
   resolveExternalChatResponseWaitAuthorization,
 } from "./chat-attachment-reuse.js";
 import { attestReviewedExternalChatRun, buildPaperclipWakePayload } from "../heartbeat.js";
+import { voiceCredentialFingerprint } from "../voice/voice-session-store.js";
+import { nativeSha256 } from "./canonical.js";
 import { questionResponseDeliveryValues } from "../question-response-delivery.js";
 import { resolveExternalChatQuestionResponse } from "./external-chat-question-response.js";
 import { materializeExternalChatQuestionResponseInput } from "./external-chat-question-response-input.js";
@@ -1114,6 +1117,46 @@ describe("native external-chat response wait", () => {
     },
   );
 
+  it.each(["native", "legacy"] as const)("requires the exact durable Speko answer receipt before authorizing a %s question continuation", async (sourceRuntime) => {
+    const f = await seedAnsweredChatTurn();
+    const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
+    const [connection] = await db.update(toolConnections).set({ transport: "voice", status: "active", enabled: true }).where(eq(toolConnections.id, endpoint.connectionId)).returning();
+    await db.update(chatEndpoints).set({ provider: "speko", setup: { step: "complete", runtimeGeneration: 1 } as typeof endpoint.setup }).where(eq(chatEndpoints.id, f.endpointId));
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const sourceContext = JSON.parse(JSON.stringify(source.contextSnapshot).replaceAll("chat:telegram", "chat:speko").replaceAll('"telegram"', '"speko"'));
+    await db.update(heartbeatRuns).set({ contextSnapshot: sourceContext, runtimeMode: sourceRuntime, nativeIssueId: sourceRuntime === "native" ? f.issueId : null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const resolve = () => resolveExternalChatQuestionResponse(db, f, f.context, "read", true);
+    expect(await resolve()).toBeNull();
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.interactionId));
+    const sessionId = randomUUID();
+    await db.insert(chatVoiceSessions).values({ id: sessionId, companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, issueId: f.issueId, assignedAgentId: f.agentId, callerId: f.userId, callerAuthority: "member",
+      mode: "browser", state: "ended", providerSessionId: randomUUID(), generation: 1, credentialFingerprint: voiceCredentialFingerprint(connection.credentialSecretRefs),
+      toolTokenHash: "a".repeat(64), idempotencyKey: randomUUID(), requestFingerprint: "fixture", expiresAt: new Date(Date.now() + 60000) });
+    await db.insert(chatVoiceReplies).values({ companyId: f.companyId, sessionId, publicationId: f.publicationId, cursor: 1,
+      deliveredAt: new Date(interaction.resolvedAt!.getTime() - 1) });
+    const [receipt] = await db.insert(chatVoiceToolCalls).values({ companyId: f.companyId, sessionId, providerToolCallId: randomUUID(),
+      webhookId: randomUUID(), fingerprint: "signed-tool-fingerprint", tool: "answer_question",
+      response: { status: "answered", interactionId: f.interactionId, resultSha256: nativeSha256(interaction.result) } }).returning();
+    // The answer also publishes a terminal acknowledgment. It cannot compete
+    // with the pre-answer presentation as authority for the continuation.
+    const [terminal] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(), state: "published",
+      payload: { text: "Answered: High.", interactionId: f.interactionId } }).returning();
+    await db.insert(chatVoiceReplies).values({ companyId: f.companyId, sessionId, publicationId: terminal.id, cursor: 2 });
+    expect(await resolve()).toMatchObject({ provider: "speko", marker: { interactionId: f.interactionId } });
+    // Voice authority is the authenticated session, not a synthetic provider
+    // identity link. Exercise the real native run attestation and recheck path.
+    await db.update(chatExternalPrincipals).set({ provider: "speko", externalId: `voice:${sessionId}` }).where(eq(chatExternalPrincipals.id, f.principalId));
+    await db.delete(chatIdentityLinks).where(eq(chatIdentityLinks.principalId, f.principalId));
+    await attestAnswer(f);
+    expect(await authorizeChatConversationForBoundRun(db, f, f.context, "read")).toMatchObject({ conversationId: f.conversationId });
+    await db.update(companyMemberships).set({ status: "removed" }).where(eq(companyMemberships.principalId, f.userId));
+    await expect(authorizeChatConversationForBoundRun(db, f, f.context, "read")).rejects.toThrow("paperclip_runner_chat_attachment_principal_denied");
+    await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, f.userId));
+    await db.update(chatVoiceToolCalls).set({ response: { ...receipt.response, resultSha256: "different-answer" } }).where(eq(chatVoiceToolCalls.id, receipt.id));
+    expect(await resolve()).toBeNull();
+  });
   it.each(["valid", "wrong_task", "revoked_identity", "wrong_answer_actor"] as const)(
     "attests legacy Slack question continuations only with the durable source binding: %s",
     async (condition) => {

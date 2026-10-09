@@ -22,6 +22,7 @@ import {
   browserUseSettingsSchema,
   browserUseViewportSchema,
   browserUseViewerSchema,
+  startVoiceSessionSchema, voiceCallbackPreferenceSchema, voicePhoneConfigurationSchema, voiceInboundDecisionSchema, VOICE_SESSION_STATES,
   slackToolCallSchema,
   slackSearchConfigSchema,
   // Agent
@@ -1699,7 +1700,10 @@ function operationKey(method: string, path: string) {
   return `${method.toUpperCase()} ${path}`;
 }
 
+function isVoiceSessionOperation(path: string) { return /^\/api\/companies\/\{companyId\}\/voice-(sessions|callbacks|phone|history)(?:\/|$)/.test(path); }
+
 function isBoardOnlyOperation(method: string, path: string) {
+  if (isVoiceSessionOperation(path)) return true;
   const key = operationKey(method, path);
   if (BOARD_ONLY_OPERATIONS.has(key)) return true;
   return BOARD_ONLY_PREFIXES.some((prefix) => path.startsWith(prefix));
@@ -1816,6 +1820,11 @@ function applyDocumentFixups(document: any): any {
               : authLevel === "authenticated"
                 ? { actor: "board_or_agent" }
                 : { actor: "public" };
+
+      if (isVoiceSessionOperation(path)) {
+        operation.security = [{[BOARD_SESSION_AUTH_SCHEME]: []}];
+        operation["x-paperclip-authorization"] = {actor: "board", sessionBound: true};
+      }
 
       const key = operationKey(method, path);
       if (authLevel !== "public") {
@@ -2210,6 +2219,30 @@ for (const [method, path, summary, body] of browserUseOperations) {
     ...(path.endsWith("/viewer") ? { query: browserUseViewerSchema.partial() } : {}),
     responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
   });
+}
+
+// Voice endpoints accept current authenticated board sessions (or local implicit board),
+// never agent keys or board API keys. Provider callbacks use signatures and are
+// intentionally documented separately from this board API contract.
+const voiceSessionResponseSchema = z.object({id:z.string().uuid(), companyId:z.string().uuid(), endpointId:z.string().uuid(), issueId:z.string().uuid(), assignedAgentId:z.string().uuid(), state:z.enum(VOICE_SESSION_STATES), mode:z.enum(["browser","inbound_phone","outbound_phone"]), generation:z.number().int(), callerAuthority:z.enum(["member","instance_admin","local_board","guest_intake","pending_approval"]), replyCursor:z.number().int(), createdAt:z.string(), expiresAt:z.string(), endedAt:z.string().nullable(), errorCode:z.string().nullable()}).strict();
+const voiceMediaResponseSchema = z.object({sessionId:z.string().uuid(), generation:z.number().int(), transportToken:z.string(), transportUrl:z.string()}).strict();
+const voiceStartResponseSchema = z.object({session:voiceSessionResponseSchema, media:voiceMediaResponseSchema.optional()}).strict();
+for (const [method,path,summary,body,response] of [
+  ["post","/api/companies/{companyId}/voice-sessions","Create or resume a caller-bound voice session",startVoiceSessionSchema,voiceStartResponseSchema],
+  ["get","/api/companies/{companyId}/voice-sessions/{sessionId}","Inspect your current voice session",undefined,voiceSessionResponseSchema],
+  ["post","/api/companies/{companyId}/voice-sessions/{sessionId}/end","End your call while preserving task work",undefined,voiceSessionResponseSchema],
+  ["get","/api/companies/{companyId}/voice-sessions/{sessionId}/notification","Check for an approved reply notification",undefined,undefined],
+  ["get","/api/companies/{companyId}/voice-sessions/{sessionId}/report","Read the safe transcript and separate provider charge",undefined,undefined],
+  ["get","/api/companies/{companyId}/voice-history/{endpointId}","List your permitted completed and active calls",undefined,undefined],
+  ["get","/api/companies/{companyId}/voice-callbacks/{endpointId}","Read your own saved callback preference",undefined,voiceCallbackPreferenceSchema],
+  ["put","/api/companies/{companyId}/voice-callbacks/{endpointId}","Save your own number and callback consent",voiceCallbackPreferenceSchema,voiceCallbackPreferenceSchema],
+  ["get","/api/companies/{companyId}/voice-phone/{endpointId}","Inspect the company's existing Speko number inventory",undefined,undefined],
+  ["put","/api/companies/{companyId}/voice-phone/{endpointId}","Configure private calls or restricted guest intake",voicePhoneConfigurationSchema,undefined],
+  ["get","/api/companies/{companyId}/voice-phone/{endpointId}/incoming","List current live calls awaiting authenticated approval",undefined,undefined],
+  ["get","/api/companies/{companyId}/voice-phone/{endpointId}/history","List unapproved calls without private task bindings",undefined,undefined],
+  ["post","/api/companies/{companyId}/voice-phone/{endpointId}/incoming/{callId}","Approve or deny this exact live call",voiceInboundDecisionSchema,undefined],
+] as const) {
+  registry.registerPath({method,path,tags:["voice-sessions"],summary,description:"Experimental Speko connection. Requires a current authenticated board session (or local implicit board), company membership and current task/connection authority. Agent keys and board API keys cannot act as a caller. Caller ID grants no private access. Media tokens are short-lived; durable provider credentials are never returned. Ending your owned call remains available after losing task access.",request:{params:z.object(Object.fromEntries([...path.matchAll(/\{([^}]+)\}/g)].map(m=>[m[1],z.string().uuid()]))),...(body?{body:jsonBody(body)}:{})},responses:{200:r.ok(response),...(method==="post" && path.endsWith("voice-sessions")?{201:r.ok(voiceStartResponseSchema)}:{}),400:r.badRequest,401:r.unauthorized,403:r.forbidden,404:r.notFound,409:r.conflict,422:r.unprocessable,429:{description:"Voice attempt limit reached"}}});
 }
 
 // Explicit task-bound email. Board setup and agent actions share the same vaulted
