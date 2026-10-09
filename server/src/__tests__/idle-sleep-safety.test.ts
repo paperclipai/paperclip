@@ -329,9 +329,33 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     },
   );
 
-  it("accepts a cleanup reference to the internal lease id", async () => {
+  it.each(["canonical", "uppercase"])("accepts a %s cleanup reference to the internal lease id", async format => {
     const { session, lease } = await seedFinishedLogin();
-    await db.update(adapterAuthSessions).set({ providerLeaseId: lease.id }).where(eq(adapterAuthSessions.id, session.id));
+    await db.update(adapterAuthSessions).set({ providerLeaseId: format === "uppercase" ? lease.id.toUpperCase() : lease.id })
+      .where(eq(adapterAuthSessions.id, session.id));
+    expect(await read()).toEqual(none);
+  });
+
+  it.each(["fixture-provider-id", "00000000-0000-0000-0000-00000000000z", randomUUID()])(
+    "accepts cleaned external provider reference %s without an unsafe UUID cast", async providerLeaseId => {
+      const { session, lease } = await seedFinishedLogin();
+      await db.update(environmentLeases).set({ providerLeaseId }).where(eq(environmentLeases.id, lease.id));
+      await db.update(adapterAuthSessions).set({ providerLeaseId }).where(eq(adapterAuthSessions.id, session.id));
+      expect(await read()).toEqual(none);
+    },
+  );
+
+  it("keeps a UUID-shaped external reference awake when an internal lease conflicts", async () => {
+    const { companyId, environment, session, lease } = await seedFinishedLogin();
+    const conflictingId = randomUUID();
+    await db.update(environmentLeases).set({ providerLeaseId: conflictingId }).where(eq(environmentLeases.id, lease.id));
+    await db.update(adapterAuthSessions).set({ providerLeaseId: conflictingId }).where(eq(adapterAuthSessions.id, session.id));
+    await db.insert(environmentLeases).values({
+      id: conflictingId, companyId, environmentId: environment.id,
+      status: "released", cleanupStatus: "failed", releasedAt: new Date(now),
+    });
+    expect(await read()).toEqual(present);
+    await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, conflictingId));
     expect(await read()).toEqual(none);
   });
 

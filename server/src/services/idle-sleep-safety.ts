@@ -73,19 +73,24 @@ const WORK_CHECKS = [
   // Login history keeps its provider reference after teardown. A terminal
   // label alone is insufficient: require a finished, unclaimed session and
   // positive cleanup evidence for its resource in the same company/environment.
+  // Cast only UUID-shaped session references, leaving both lease indexes usable.
   `SELECT 1 FROM adapter_auth_sessions s WHERE
     s.status NOT IN ('authenticated', 'completed', 'failed', 'timed_out', 'cancelled')
     OR s.finished_at IS NULL OR s.promotion_expires_at IS NOT NULL
     OR (s.provider_lease_id IS NOT NULL AND NOT EXISTS (
       SELECT 1 FROM environment_leases l WHERE l.company_id = s.company_id
         AND l.environment_id = s.environment_id
-        AND (l.provider_lease_id = s.provider_lease_id OR l.id::text = s.provider_lease_id)
+        AND (l.provider_lease_id = s.provider_lease_id OR l.id = CASE
+          WHEN s.provider_lease_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          THEN s.provider_lease_id::uuid END)
         AND l.status IN ('released', 'expired') AND l.cleanup_status = 'success'
         AND l.released_at IS NOT NULL))
     OR (s.provider_lease_id IS NOT NULL AND EXISTS (
       SELECT 1 FROM environment_leases l WHERE l.company_id = s.company_id
         AND l.environment_id = s.environment_id
-        AND (l.provider_lease_id = s.provider_lease_id OR l.id::text = s.provider_lease_id)
+        AND (l.provider_lease_id = s.provider_lease_id OR l.id = CASE
+          WHEN s.provider_lease_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          THEN s.provider_lease_id::uuid END)
         AND (l.status IN ('released', 'expired') AND l.cleanup_status = 'success'
           AND l.released_at IS NOT NULL) IS NOT TRUE))`,
   // These less common work sources fail closed on any retained state. Their
