@@ -23,6 +23,7 @@ import * as extracted from "./run-state.js";
 function readingDatabase(serverEncoding: string, ...results: unknown[][]) {
   const scopes: unknown[][] = [];
   const columns: Record<string, unknown>[] = [];
+  const offsets: number[] = [];
   const execute = vi.fn(async () => [{ server_encoding: serverEncoding }]);
   const select = vi.fn((projection: Record<string, unknown> = {}) => {
     columns.push(projection);
@@ -35,11 +36,15 @@ function readingDatabase(serverEncoding: string, ...results: unknown[][]) {
       },
       orderBy: () => query,
       limit: () => query,
+      offset: (value: number) => {
+        offsets.push(value);
+        return query;
+      },
       then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(rows).then(resolve),
     };
     return query;
   });
-  return { db: { execute, select } as unknown as Db, execute, select, columns, scopes };
+  return { db: { execute, select } as unknown as Db, execute, select, columns, scopes, offsets };
 }
 
 describe("heartbeat run state module", () => {
@@ -68,6 +73,19 @@ describe("heartbeat run state module", () => {
     expect(two?.sessionDisplayId).toBe("second");
     expect(first.scopes[0]).toEqual(["company-one", "agent-one", "codex_local", "task-one"]);
     expect(second.scopes[0]).toEqual(["company-two", "agent-two", "claude_local", "task-two"]);
+  });
+
+  it("passes offset through to the run list query only when one is set", async () => {
+    const paged = readingDatabase("UTF8", [{ id: "run-3" }]);
+    const pagedState = extracted.createHeartbeatRunState(paged.db);
+    const page = await pagedState.listRuns("company-one", undefined, 2, { offset: 2 });
+    expect(page.map((row) => row.id)).toEqual(["run-3"]);
+    expect(paged.offsets).toEqual([2]);
+
+    const unpaged = readingDatabase("UTF8", [{ id: "run-1" }]);
+    const unpagedState = extracted.createHeartbeatRunState(unpaged.db);
+    await unpagedState.listRuns("company-one");
+    expect(unpaged.offsets).toEqual([]);
   });
 
   it("keeps encoding caches local to each factory and preserves full-result reads", async () => {
@@ -145,6 +163,23 @@ describePostgres("heartbeat run state database wiring", () => {
       companyId, sessionDisplayId: "our-session", sessionParamsJson: { sessionId: "our-session" },
     });
     expect((await state.listRuns(companyId)).map((row) => row.id)).toEqual([run.id]);
+  });
+
+  it("pages listRuns with limit and offset in newest-first order", async () => {
+    const { companyId, agent, state } = await fixture();
+    const insertRun = async (createdAt: string) =>
+      (await db.insert(heartbeatRuns).values({
+        companyId, agentId: agent.id, invocationSource: "assignment", status: "succeeded",
+        createdAt: new Date(createdAt),
+      }).returning())[0];
+    const oldest = await insertRun("2026-01-01T00:00:00Z");
+    const middle = await insertRun("2026-01-02T00:00:00Z");
+    const newest = await insertRun("2026-01-03T00:00:00Z");
+
+    expect((await state.listRuns(companyId)).map((row) => row.id)).toEqual([newest.id, middle.id, oldest.id]);
+    expect((await state.listRuns(companyId, undefined, 2)).map((row) => row.id)).toEqual([newest.id, middle.id]);
+    expect((await state.listRuns(companyId, undefined, 2, { offset: 2 })).map((row) => row.id)).toEqual([oldest.id]);
+    expect((await state.listRuns(companyId, undefined, undefined, { offset: 1 })).map((row) => row.id)).toEqual([middle.id, oldest.id]);
   });
 
   it("subtracts prior cumulative usage while excluding the current run", async () => {
