@@ -67,7 +67,11 @@ The existing company approval rules still apply.
 `pauseAgent`, `resumeAgent`, and `terminateAgent` record the requested change.
 They do not wait for external resource operations.
 `retry` makes a failed step available for another attempt.
-`reconcilePolicyHolds` updates budget and company holds.
+`reconcilePolicyHolds` updates budget and company holds for the specified company.
+The background policy check processes at most 100 eligible agents each minute.
+It continues from the last agent ID and returns to the start after the last page.
+Pending hires and agents in termination or a final state are excluded.
+An explicit company or budget change still updates all affected agents immediately.
 `updateAndTransition` applies a configuration change and a lifecycle command
 in one transaction. A failed command does not save the configuration change.
 

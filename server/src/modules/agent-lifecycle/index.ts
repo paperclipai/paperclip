@@ -1,6 +1,6 @@
 import { hireApprovalService as approvalRecords, type HireDecisionTarget } from "./adapters/approvals.js";
 import { agents } from "@paperclipai/db";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { LifecycleEffects } from "./adapters/effects.js";
 export type { LifecycleEffects } from "./adapters/effects.js";
@@ -16,6 +16,9 @@ export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSet
 
 export type { HireDecisionTarget } from "./adapters/approvals.js";
 export type { LifecycleDriver, LifecycleAgent, LifecycleFailure } from "./application/ports.js";
+
+const policyStates = ["preparing", "verifying", "ready", "pausing", "paused", "resuming"] as const;
+const policyPageSize = 100;
 
 const workers = new WeakMap<Db, ReturnType<typeof createLifecycleWorker>>();
 export function configureAgentLifecycle(db: Db, effects: LifecycleEffects, driver: LifecycleDriver, canRun = () => true) {
@@ -79,10 +82,11 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
       scheduleAgentLifecycle(db, id);
       return agent;
     },
-    async reconcilePolicyHolds(companyId?: string, agentId?: string | null) {
+    async reconcilePolicyHolds(companyId: string, agentId?: string | null) {
       if (agentId === null) return;
       const rows = await db.select({ id: agents.id }).from(agents).where(and(
-        companyId ? eq(agents.companyId, companyId) : undefined, agentId ? eq(agents.id, agentId) : undefined,
+        eq(agents.companyId, companyId), agentId ? eq(agents.id, agentId) : undefined,
+        inArray(agents.lifecycleState, policyStates),
       ));
       for (const row of rows) {
         await store.change(row.id, "reconcile");
@@ -103,11 +107,23 @@ export function startAgentLifecycle(db: Db, effects: LifecycleEffects, driver: L
   let running: Promise<void> | undefined;
   let stopped = false;
   let nextPolicySweep = 0;
+  let policyCursor: string | undefined;
+  const store = createLifecycleStore(db, effects);
   function sweep() {
     if (stopped || !canRun()) return Promise.resolve();
     return running ??= (async () => {
       if (Date.now() >= nextPolicySweep) {
-        try { await createAgentLifecycle(db, effects).reconcilePolicyHolds(); }
+        try {
+          const rows = await db.select({ id: agents.id }).from(agents).where(and(
+            inArray(agents.lifecycleState, policyStates), policyCursor ? gt(agents.id, policyCursor) : undefined,
+          )).orderBy(asc(agents.id)).limit(policyPageSize);
+          for (const row of rows) {
+            await store.change(row.id, "reconcile");
+            scheduleAgentLifecycle(db, row.id);
+            policyCursor = row.id;
+          }
+          if (rows.length < policyPageSize) policyCursor = undefined;
+        }
         catch (error) { effects.reportFailure({ stage: "policy_scan" }, error); throw error; }
         nextPolicySweep = Date.now() + 60_000;
       }
