@@ -345,7 +345,7 @@ describe("GitHub App wizard", () => {
       assignedAgentId: "reviewer",
     });
     expect(container.querySelector("h1")?.textContent).toBe("Connect GitHub");
-    expect(container.querySelector("output")?.textContent).toContain(
+    expect(container.querySelector("output:not([for])")?.textContent).toContain(
       "resume=draft-1",
     );
   });
@@ -496,7 +496,7 @@ describe("GitHub App wizard", () => {
       ownerType: "organization",
       ownerLogin: "acme",
     });
-    expect(container.querySelector("output")?.textContent).toBe("/apps");
+    expect(container.querySelector("output:not([for])")?.textContent).toBe("/apps");
   });
   it("replaces stale cached form defaults when the saved draft refreshes", async () => {
     await render("resume=draft-1");
@@ -688,7 +688,7 @@ describe("GitHub App wizard", () => {
     expect(document.body.textContent).toContain("Actual GitHub Name");
     expect(document.body.textContent).toContain("GitHub App name and logo");
     expect(document.body.textContent).toContain("1 repository enabled");
-    expect(container.querySelector("output")?.textContent).toBe("/apps/chat/draft-1/settings");
+    expect(container.querySelector("output:not([for])")?.textContent).toBe("/apps/chat/draft-1/settings");
     expect(document.querySelector('[role="dialog"] details')?.hasAttribute("open")).toBe(false);
     expect(document.body.textContent).toContain("Before your first review");
     expect(document.body.textContent).toContain("Configure a runtime");
@@ -712,7 +712,7 @@ describe("GitHub App wizard", () => {
       await settle();
     } else await click(action);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(container.querySelector("output")?.textContent).toBe("/apps/chat/draft-1/settings");
+    expect(container.querySelector("output:not([for])")?.textContent).toBe("/apps/chat/draft-1/settings");
     expect(container.querySelector("textarea")).toBe(settings);
     expect(container.querySelector("h1")?.textContent).toBe("Reviewer");
     expect(document.activeElement).toBe(container.querySelector("h1"));

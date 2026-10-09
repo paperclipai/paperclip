@@ -1,6 +1,7 @@
-import { ChevronRight, ExternalLink } from "lucide-react";
+import { ExternalLink, RefreshCw } from "lucide-react";
 import type { ChatEndpoint } from "@/api/chatEndpoints";
 import { AgentAvatarDownload } from "@/components/AgentAvatarDownload";
+import { GitHubSettingsDisclosure } from "./GitHubSettingsDisclosure";
 import { CopyText } from "@/components/CopyText";
 import { Button } from "@/components/ui/button";
 import { Link } from "@/lib/router";
@@ -45,30 +46,33 @@ export function GitHubAppBranding({
   avatarUrl?: string;
 }) {
   return (
-    <details className="group text-sm">
-      <summary className="flex cursor-pointer list-none items-center gap-2 text-muted-foreground hover:text-foreground">
-        <ChevronRight className="size-4 shrink-0 transition-transform group-open:rotate-90" />
-        GitHub App name and logo
-      </summary>
+    <GitHubSettingsDisclosure title="GitHub App name and logo">
       <div className="mt-4 space-y-4">
         <p className="text-sm text-muted-foreground">
-          Change the name or upload a logo in the App’s Display information settings on GitHub.
+          Change the name or upload a logo in the App’s Display information
+          settings on GitHub.
         </p>
         <div className="flex flex-wrap items-center gap-3">
-          {avatarUrl && <>
-            <img
-              src={avatarUrl}
-              alt={`${endpoint.assignedAgentName}’s avatar for download`}
-              className="size-12 shrink-0 object-contain"
-            />
-            <AgentAvatarDownload
-              avatarUrl={avatarUrl}
-              name={endpoint.botLabel ?? endpoint.assignedAgentName}
-            />
-          </>}
+          {avatarUrl && (
+            <>
+              <img
+                src={avatarUrl}
+                alt={`${endpoint.assignedAgentName}’s avatar for download`}
+                className="size-12 shrink-0 object-contain"
+              />
+              <AgentAvatarDownload
+                avatarUrl={avatarUrl}
+                name={endpoint.botLabel ?? endpoint.assignedAgentName}
+              />
+            </>
+          )}
           <Button variant="outline" asChild>
-            <a href={gitHubAppSettingsUrl(endpoint)} target="_blank" rel="noreferrer"
-              aria-label="Edit App name and logo on GitHub">
+            <a
+              href={gitHubAppSettingsUrl(endpoint)}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Edit App name and logo on GitHub"
+            >
               Edit on GitHub <ExternalLink className="size-4" />
             </a>
           </Button>
@@ -80,9 +84,51 @@ export function GitHubAppBranding({
             to={`/apps/chat/connect?provider=github&resume=${endpoint.id}&reconnect=1`}
           >
             Reconnect afterward
-          </Link>{" "}to update it here.
+          </Link>{" "}
+          to update it here.
         </p>
       </div>
-    </details>
+    </GitHubSettingsDisclosure>
+  );
+}
+
+/** Provider-owned branding actions live beside the App identity, not among review rules. */
+export function GitHubAppIdentityActions({
+  endpoint,
+  avatarUrl,
+}: {
+  endpoint: ChatEndpoint;
+  avatarUrl?: string;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {avatarUrl && (
+        <AgentAvatarDownload
+          avatarUrl={avatarUrl}
+          name={endpoint.botLabel ?? endpoint.assignedAgentName}
+          iconOnly
+        />
+      )}
+      <Button variant="ghost" size="sm" asChild>
+        <a
+          href={gitHubAppSettingsUrl(endpoint)}
+          target="_blank"
+          rel="noreferrer"
+          aria-label="Edit App name and logo on GitHub"
+          title="Change the App name or upload its logo on GitHub"
+        >
+          Edit App <ExternalLink className="size-3.5" />
+        </a>
+      </Button>
+      <Button variant="ghost" size="icon" asChild>
+        <Link
+          to={`/apps/chat/connect?provider=github&resume=${endpoint.id}&reconnect=1`}
+          aria-label="Refresh GitHub App identity"
+          title="Reconnect after renaming the App to refresh its @mention"
+        >
+          <RefreshCw className="size-3.5" />
+        </Link>
+      </Button>
+    </div>
   );
 }

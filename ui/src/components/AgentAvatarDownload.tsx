@@ -10,9 +10,11 @@ export function agentAvatarFilename(name: string) {
 export function AgentAvatarDownload({
   avatarUrl,
   name,
+  iconOnly = false,
 }: {
   avatarUrl: string;
   name: string;
+  iconOnly?: boolean;
 }) {
   const [downloading, setDownloading] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -43,8 +45,14 @@ export function AgentAvatarDownload({
   };
   return (
     <div className="space-y-2">
-      <Button variant="outline" asChild>
+      <Button
+        variant={iconOnly ? "ghost" : "outline"}
+        size={iconOnly ? "icon" : "default"}
+        asChild
+      >
         <a
+          aria-label="Download avatar"
+          title="Download avatar"
           href={avatarUrl}
           download={agentAvatarFilename(name)}
           aria-disabled={downloading}
@@ -58,7 +66,7 @@ export function AgentAvatarDownload({
           ) : (
             <Download className="size-4" />
           )}
-          Download avatar
+          {!iconOnly && "Download avatar"}
         </a>
       </Button>
       {failed && (

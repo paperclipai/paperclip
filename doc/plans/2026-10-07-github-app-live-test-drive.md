@@ -740,3 +740,36 @@ in `/private/tmp/github-instruction-skill-live-v2-evidence.json` and the screens
 `/private/tmp/github-instruction-skills-live-result-20261009.jpg`. The broader
 repository suite was not repeated; the earlier full-suite and current-head CI
 limitations still apply. The retained test drive runs on port 3110.
+
+
+## Settings and Access usability — 2026-10-09
+
+Settings now separates always-available authorized mentions from the automatic-run
+switch and event checkboxes. The passing-score slider spans report-only through
+5/5. Automatic filters are grouped by authors, branches and labels. Ignored files,
+inline options and formal review actions use the same disclosure treatment. The
+header prioritizes the actual App name and includes a larger agent avatar, PNG
+download icon, branding link and identity refresh.
+
+Access separates company members from external contributors. Each row shows
+mentions and automatic-run permissions. Member linking and contributor lookup use
+focused dialogs. The existing all-linked/selected member policy and
+linked-author/allowed-author automatic policies are preserved. Changing an
+individual automatic permission does not silently enable global automation or
+change the member allowlist. Repository pagination and immediate saves are unchanged.
+
+Browser checks covered the running test drive and production Storybook fixtures
+at desktop and 390px mobile widths. Verified cross-tab drafts, discard, the score
+slider, grouped filters, contributor lookup/add/save, and saved filter round trips.
+The walkthrough found that existing list editors deleted trailing separators,
+joining file patterns and category names while typing. They now preserve raw
+editing text while saving normalized lists. All live draft changes were discarded;
+no bot configuration or GitHub access was saved during this UI qualification.
+
+Verification: 52 focused management/wizard tests, UI typecheck/build, Storybook
+build, token gates and whitespace checks passed. Repository-wide checks were not
+repeated for this UI follow-up; the draft PR retains its earlier CI limitations.
+Logs: `/private/tmp/github-ux-{tests,typecheck,build,storybook-build,tokens}.log`.
+Screenshots: `/private/tmp/github-bot-settings-ux-20261009.png` and
+`/private/tmp/github-bot-access-ux-20261009.png`. The existing test drive remains
+available on port 3110.

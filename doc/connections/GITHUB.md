@@ -28,11 +28,19 @@ isolation restrictions. The admitted configuration snapshot determines skill
 selection for each wake, including queued events. GitHub messages, repository
 content and other companies' skills cannot assign skills to the run.
 
-Authorized @mentions work in every invocation mode. Choosing **@mentions +
-automatic events** adds the configured PR or issue events; it does not disable
-mentions. Automatic events additionally require **Run automatically** for the
-GitHub author in Access. Member and external-contributor authorization still
-applies to both kinds of request.
+Authorized @mentions remain available when **Run automatically** is on or off.
+The switch in Settings reveals the PR and issue event checkboxes. Access lists
+company members and external contributors separately, with mentions and automatic
+runs shown on each row. An automatic event needs both an enabled event in Settings
+and permission for its author in Access. External contributors additionally need
+**Allow automatic runs for external contributors**. Their restricted guest profile
+and sponsor requirements are unchanged.
+
+The passing-score slider selects report-only or a threshold from 1/5 to 5/5.
+A passing score does not formally approve a PR. **Approvals and change requests**
+contains those optional agent permissions. Scheduling filters, ignored files,
+and inline-comment options have separate disclosures. The header shows the App
+identity, copyable mention, avatar download, and GitHub branding settings.
 
 ## Self-hosted setup
 

@@ -8,7 +8,7 @@ import { resolveAgentAppearance } from "@paperclipai/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { ChatConversationList } from "./ChatConversationList";
 import { GitHubBotManagement, GitHubReviews } from "./GitHubBotManagement";
-import { GitHubBotMention } from "./GitHubAppIdentity";
+import { GitHubBotMention, GitHubAppIdentityActions } from "./GitHubAppIdentity";
 import { GitHubConnectionComplete, type GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
 import { EmailEndpointSettings } from "./EmailEndpointSetup";
 import { EmailConnectionAccess } from "@/components/EmailConnectionAccess";
@@ -306,15 +306,18 @@ export function ChatEndpointDetail() {
     <div className="max-w-5xl space-y-6 pb-12">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
-          {endpoint.provider === "github" && <AgentAvatar agent={avatarAgent.data ?? { id: endpoint.assignedAgentId, name: endpoint.assignedAgentName }} size={40} />}
+          {endpoint.provider === "github" && <AgentAvatar agent={avatarAgent.data ?? { id: endpoint.assignedAgentId, name: endpoint.assignedAgentName }} size={64} />}
           <div className="min-w-0">
           <h1 ref={heading} tabIndex={-1} className="text-xl font-bold">
-            {endpoint.provider === "github" ? <Link to={`/agents/${endpoint.assignedAgentId}`} className="hover:underline">{endpoint.assignedAgentName}</Link> : `${endpoint.assignedAgentName} in ${providerNames[endpoint.provider]}`}
+            {endpoint.provider === "github" ? (endpoint.botLabel ?? endpoint.assignedAgentName) : `${endpoint.assignedAgentName} in ${providerNames[endpoint.provider]}`}
           </h1>
           <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            {endpoint.provider === "github" ? <><AppLogo name="GitHub" brandKey="github" compact className="size-4! rounded-sm bg-transparent" />{endpoint.botLabel ?? endpoint.botUsername ?? "GitHub"}{endpoint.providerAccountLabel && <span>· {endpoint.providerAccountLabel}</span>}</> : endpoint.providerAccountLabel ?? (endpoint.provider === "agentmail" ? endpoint.botExternalId ?? "Email connection" : "Chat connection")}
+            {endpoint.provider === "github" ? <><AppLogo name="GitHub" brandKey="github" compact className="size-4! rounded-sm bg-transparent" /><Link to={`/agents/${endpoint.assignedAgentId}`} className="hover:underline">{endpoint.assignedAgentName}</Link>{endpoint.providerAccountLabel && <span>· {endpoint.providerAccountLabel}</span>}</> : endpoint.providerAccountLabel ?? (endpoint.provider === "agentmail" ? endpoint.botExternalId ?? "Email connection" : "Chat connection")}
           </p>
-          {endpoint.provider === "github" && <div className="mt-1"><GitHubBotMention endpoint={endpoint} /></div>}
+          {endpoint.provider === "github" && <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <GitHubBotMention endpoint={endpoint} />
+            <GitHubAppIdentityActions endpoint={endpoint} avatarUrl={avatarAgent.data ? agentAvatarUrl(resolveAgentAppearance(avatarAgent.data.appearance, endpoint.assignedAgentId), 512, 1, "rest") : undefined} />
+          </div>}
           {endpoint.provider === "imessage-photon" && endpoint.botExternalId && endpoint.photonAllocation !== "shared" && (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
               <span>{endpoint.botExternalId}</span>
@@ -344,8 +347,7 @@ export function ChatEndpointDetail() {
         </div>
       </header>
       {endpoint.provider === "github" && <div hidden={activeTab !== "settings" && activeTab !== "access"}>
-        <GitHubBotManagement key={endpoint.id} endpoint={endpoint} view={activeTab === "access" ? "access" : "settings"}
-          avatarUrl={avatarAgent.data ? agentAvatarUrl(resolveAgentAppearance(avatarAgent.data.appearance, endpoint.assignedAgentId), 512, 1, "rest") : undefined} />
+        <GitHubBotManagement key={endpoint.id} endpoint={endpoint} view={activeTab === "access" ? "access" : "settings"} />
       </div>}
       {activeTab === "settings" && endpoint.provider !== "github" && <Settings endpointId={endpoint.id} endpoint={endpoint} />}
       {activeTab === "reviews" && endpoint.provider === "github" && <GitHubReviews endpointId={endpoint.id} reviewId={reviewId} />}

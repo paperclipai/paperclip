@@ -36,7 +36,6 @@ import {
   GitHubPolicyEditor,
   GitHubToggle,
 } from "./GitHubBotConfiguration";
-import { GitHubAppBranding } from "./GitHubAppIdentity";
 
 export function GitHubRepositoryAccess({
   endpointId,
@@ -167,11 +166,9 @@ export function GitHubRepositoryAccess({
 export function GitHubBotManagement({
   endpoint,
   view,
-  avatarUrl,
 }: {
   endpoint: ChatEndpoint;
   view: "settings" | "access";
-  avatarUrl?: string;
 }) {
   const client = useQueryClient();
   const query = useQuery({
@@ -179,6 +176,7 @@ export function GitHubBotManagement({
     queryFn: () => githubChatApi.configuration(endpoint.id),
   });
   const [draft, setDraft] = useState<GitHubConfigurationRecord | null>(null);
+  const [editorVersion, setEditorVersion] = useState(0);
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -293,11 +291,11 @@ export function GitHubBotManagement({
           </>
         ) : (
           <>
-            <GitHubPolicyEditor
+            <GitHubPolicyEditor key={editorVersion}
+              accessHref={`/apps/chat/${endpoint.id}/access`}
               policy={config.defaults}
               onChange={(defaults) => edit({ ...config, defaults })}
             />
-            <GitHubAppBranding endpoint={endpoint} avatarUrl={avatarUrl} />
           </>
         )}
       </fieldset>
@@ -318,6 +316,7 @@ export function GitHubBotManagement({
             disabled={pending}
             onClick={() => {
               setDraft(null);
+              setEditorVersion((value) => value + 1);
               setError("");
             }}
           >

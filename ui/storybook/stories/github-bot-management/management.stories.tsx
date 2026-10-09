@@ -51,7 +51,7 @@ const meta = {
   argTypes: {
     state: {
       control: "select",
-      options: ["populated", "empty", "loading", "error", "long", "many", "setup", "skills"],
+      options: ["populated", "empty", "loading", "error", "long", "many", "setup", "skills", "guests", "mentions"],
     },
   },
   render: ({ state }) => (
@@ -300,4 +300,25 @@ export const ReviewDetail: Story = {
     component(
       <GitHubReviewDetail endpointId={endpoint.id} review={reviews[0]} />,
     ),
+};
+
+export const SettingsMobile: Story = {
+  name: "02 States / Mobile settings",
+  globals: { viewport: { value: "mobile1", isRotated: false } },
+};
+export const AccessMobile: Story = {
+  name: "02 States / Mobile people and contributors",
+  args: { state: "guests" },
+  parameters: route("access"),
+  globals: { viewport: { value: "mobile1", isRotated: false } },
+};
+export const ContributorAccess: Story = {
+  name: "02 States / Selected members and external contributors",
+  args: { state: "guests" },
+  parameters: route("access"),
+};
+export const MentionsOnly: Story = {
+  name: "02 States / All linked members with automatic runs off",
+  args: { state: "mentions" },
+  parameters: route("access"),
 };

@@ -208,7 +208,7 @@ describe("GitHub bot management", () => {
       expect(
         container.querySelector(
           'textarea[placeholder="What should this agent do on GitHub?"]',
-        ) || container.querySelector("#github-member-access"),
+        ) || container.querySelector('[aria-label="Allow mentions from all linked members"]'),
       ).not.toBeNull(),
     );
   }
@@ -353,7 +353,7 @@ describe("GitHub bot management", () => {
     await render();
     await input(container.querySelector("textarea")!, "Edited instructions");
     await render("access");
-    await vi.waitFor(() => expect(container.textContent).toContain("@maya"));
+    await vi.waitFor(() => expect(container.querySelector('[aria-label="Run automatically for @maya"]')?.hasAttribute("disabled")).toBe(false));
     await click("Run automatically for @maya");
     await render("reviews");
     await render("settings");
@@ -438,13 +438,13 @@ describe("GitHub bot management", () => {
     });
     await render("access");
     await vi.waitFor(() =>
-      expect(container.textContent).toContain("Configure events"),
+      expect(container.querySelector('[aria-label="Run automatically for @maya"]')).not.toBeNull(),
     );
-    await click("Configure events");
+    await click("Run automatically for @maya");
     await click("Save changes");
     await vi.waitFor(() => expect(mocks.save).toHaveBeenCalled());
     expect(mocks.save.mock.calls[0][2].memberAccess).toBe("all_linked");
-    expect(mocks.save.mock.calls[0][2].people[0].automaticReviews).toBe(false);
+    expect(mocks.save.mock.calls[0][2].people[0].automaticReviews).toBe(true);
   });
   it("does not show an off switch or silently enable a retained disabled bot", async () => {
     mocks.config.mockResolvedValue({
@@ -494,16 +494,65 @@ describe("GitHub bot management", () => {
         </TooltipProvider>,
       ),
     );
-    await input(
-      container.querySelector<HTMLSelectElement>(
-        'select[id$="github-invocation"]',
-      )!,
-      "mentions_only",
-    );
+    await click("Run automatically");
     expect(change.mock.calls[0][0]).toEqual({
       ...base.defaults,
       invocation: "mentions_only",
     });
+  });
+  it("keeps external-author mode and event choices when automatic runs are switched off and back on", async () => {
+    mocks.config.mockResolvedValue({ revision: 4, configuration: { ...base, defaults: { ...base.defaults, invocation: "allowed_authors" } } });
+    await render();
+    await click("Run automatically");
+    await click("Run automatically");
+    expect(container.querySelector('[aria-label="Save changes"]')).toBeNull();
+    await input(container.querySelector("textarea")!, "Still keep the same audience");
+    await click("Save changes");
+    expect(mocks.save.mock.calls[0][2].defaults).toEqual({ ...base.defaults, invocation: "allowed_authors", instructions: "Still keep the same audience" });
+  });
+  it("uses the score slider for report-only and preserves unrelated review decisions", async () => {
+    await render();
+    await input(container.querySelector('input[type="range"]')!, "0");
+    await click("Save changes");
+    expect(mocks.save.mock.calls[0][2].defaults).toEqual({ ...base.defaults, ratingThreshold: null });
+    await input(container.querySelector('input[type="range"]')!, "3");
+    await click("Save changes");
+    expect(mocks.save.mock.calls[1][2].defaults.ratingThreshold).toBe(3);
+  });
+  it("turns off selected member access without leaving automatic permission enabled", async () => {
+    await render("access");
+    await vi.waitFor(() => expect(container.querySelector('[aria-label="Allow mentions from @maya"]')?.hasAttribute("disabled")).toBe(false));
+    await click("Allow mentions from @maya");
+    expect(container.querySelector('[aria-label="Run automatically for @maya"]')?.hasAttribute("disabled")).toBe(true);
+    await click("Save changes");
+    expect(mocks.save.mock.calls[0][2].people).toEqual([]);
+    expect(mocks.save.mock.calls[0][2].memberAccess).toBe("selected");
+  });
+  it("keeps automatic permissions dormant when global automatic runs are off", async () => {
+    mocks.config.mockResolvedValue({ revision: 4, configuration: { ...base, defaults: { ...base.defaults, invocation: "mentions_only" } } });
+    await render("access");
+    await vi.waitFor(() => expect(container.querySelector('[aria-label="Run automatically for @maya"]')?.hasAttribute("disabled")).toBe(false));
+    await click("Run automatically for @maya");
+    await click("Save changes");
+    expect(mocks.save.mock.calls[0][2].defaults.invocation).toBe("mentions_only");
+    expect(mocks.save.mock.calls[0][2].people[0].automaticReviews).toBe(false);
+  });
+  it("keeps newlines and commas while editing filters, saves separate entries, and restores discarded values", async () => {
+    await render();
+    const paths = container.querySelector<HTMLTextAreaElement>('textarea[id$="github-ignoredPaths"]')!;
+    await input(paths, "dist/**\n");
+    expect(paths.value).toBe("dist/**\n");
+    await input(paths, `${paths.value}vendor/**`);
+    const categories = container.querySelector<HTMLInputElement>('input[id$="github-categories"]')!;
+    await input(categories, "security, ");
+    expect(categories.value).toBe("security, ");
+    await input(categories, `${categories.value}correctness`);
+    await click("Save changes");
+    expect(mocks.save.mock.calls[0][2].defaults.ignoredPaths).toEqual(["dist/**", "vendor/**"]);
+    expect(mocks.save.mock.calls[0][2].defaults.findingCategories).toEqual(["security", "correctness"]);
+    await input(paths, "tmp/**");
+    await click("Discard changes");
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[id$="github-ignoredPaths"]')?.value).toBe("dist/**\nvendor/**");
   });
   it("saves skill links in general and event instructions without resetting other guidance", async () => {
     await render();
@@ -526,9 +575,8 @@ describe("GitHub bot management", () => {
       await act(async () => root.render(<TooltipProvider>
         <GitHubPolicyEditor policy={{ ...base.defaults, invocation }} onChange={() => {}} />
       </TooltipProvider>));
-      const selector = container.querySelector<HTMLSelectElement>('select[id$="github-invocation"]')!;
-      expect(selector.selectedOptions[0].textContent).toContain("@mentions");
-      expect(container.textContent).toContain("Authorized @mentions work in every mode.");
+      expect(container.querySelector('[aria-label="Run automatically"]')?.getAttribute("aria-checked")).toBe(String(invocation !== "mentions_only"));
+      expect(container.textContent).toContain("Authorized people can always @mention this bot.");
     },
   );
 });

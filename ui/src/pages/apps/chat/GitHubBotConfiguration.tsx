@@ -1,5 +1,5 @@
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   GITHUB_REVIEW_EVENTS,
@@ -11,13 +11,30 @@ import { accessApi } from "@/api/access";
 import { chatEndpointsApi } from "@/api/chatEndpoints";
 import { githubChatApi } from "@/api/githubChat";
 import { Button } from "@/components/ui/button";
-import { Copy, HelpCircle, MoreHorizontal } from "lucide-react";
+import {
+  AtSign,
+  Check,
+  Copy,
+  HelpCircle,
+  MoreHorizontal,
+  Plus,
+} from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { GitHubSettingsDisclosure } from "./GitHubSettingsDisclosure";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { MarkdownEditor } from "@/components/MarkdownEditor";
@@ -102,14 +119,82 @@ export function GitHubToggle({
     </div>
   );
 }
+/** Keep separators while typing; the saved policy still contains normalized lists. */
+function GitHubListInput({
+  id,
+  values,
+  separator = "\n",
+  onChange,
+}: {
+  id: string;
+  values: string[];
+  separator?: "\n" | ",";
+  onChange: (values: string[]) => void;
+}) {
+  const joiner = separator === "," ? ", " : "\n";
+  const [text, setText] = useState(values.join(joiner));
+  const parse = (value: string) =>
+    value
+      .split(separator)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  useEffect(() => {
+    setText((current) =>
+      JSON.stringify(parse(current)) === JSON.stringify(values)
+        ? current
+        : values.join(joiner),
+    );
+  }, [values, separator]);
+  const props = {
+    id,
+    value: text,
+    onChange: (
+      event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
+    ) => {
+      setText(event.target.value);
+      onChange(parse(event.target.value));
+    },
+  };
+  return separator === "\n" ? <Textarea {...props} /> : <Input {...props} />;
+}
+
 export function GitHubPolicyEditor({
   policy,
   onChange,
+  accessHref,
 }: {
+  accessHref?: string;
   policy: GitHubReviewPolicy;
   onChange: (policy: GitHubReviewPolicy) => void;
 }) {
   const id = useId();
+  const automaticMode = useRef<"linked_authors" | "allowed_authors">(
+    "linked_authors",
+  );
+  if (policy.invocation !== "mentions_only")
+    automaticMode.current = policy.invocation;
+  const filterField = (
+    key:
+      | "includeAuthors"
+      | "excludeAuthors"
+      | "targetBranches"
+      | "excludedBranches"
+      | "requiredLabels"
+      | "excludedLabels"
+      | "ignoredPaths",
+    label: string,
+    help: string,
+  ) => (
+    <div className="space-y-2">
+      <Label htmlFor={`${id}-github-${key}`}>{label}</Label>
+      <GitHubListInput
+        id={`${id}-github-${key}`}
+        values={policy[key]}
+        onChange={(values) => set(key, values)}
+      />
+      <p className="text-xs text-muted-foreground">{help}</p>
+    </div>
+  );
   const [prompt, setPrompt] = useState<
     (typeof GITHUB_REVIEW_EVENTS)[number] | "issue_opened"
   >("opened");
@@ -137,12 +222,10 @@ export function GitHubPolicyEditor({
           onChange={(value) => set("instructions", value)}
         />
         <p className="text-xs text-muted-foreground">
-          Included in every GitHub task. Type / to select a skill for the agent to use.
+          Included in every GitHub task. Type / to select a skill for the agent
+          to use.
         </p>
-        <details className="text-sm">
-          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-            Event-specific instructions
-          </summary>
+        <GitHubSettingsDisclosure title="Event-specific instructions">
           <div className="grid gap-3 pt-3">
             <Label htmlFor={`${id}-github-prompt-event`} className="sr-only">
               Event
@@ -179,7 +262,7 @@ export function GitHubPolicyEditor({
               }
             />
           </div>
-        </details>
+        </GitHubSettingsDisclosure>
       </section>
       <section
         className="space-y-3"
@@ -191,57 +274,128 @@ export function GitHubPolicyEditor({
         >
           When to run
         </h2>
-        <Label htmlFor={`${id}-github-invocation`} className="sr-only">
-          When to run
-        </Label>
-        <select
-          id={`${id}-github-invocation`}
-          className={githubSelectClass}
-          value={policy.invocation}
-          onChange={(e) =>
-            set(
-              "invocation",
-              e.target.value as GitHubReviewPolicy["invocation"],
-            )
+        <div className="flex items-start gap-3 py-2">
+          <AtSign className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <div className="space-y-1">
+            <p className="text-sm font-medium">When mentioned</p>
+            <p className="text-xs text-muted-foreground">
+              Authorized people can always @mention this bot.{" "}
+              {accessHref && (
+                <Link className="underline underline-offset-4" to={accessHref}>
+                  Manage people in Access
+                </Link>
+              )}
+            </p>
+          </div>
+        </div>
+        <GitHubToggle
+          label="Run automatically"
+          description="Start work without a mention when an allowed person creates an issue or updates a pull request."
+          checked={policy.invocation !== "mentions_only"}
+          onChange={(enabled) =>
+            set("invocation", enabled ? automaticMode.current : "mentions_only")
           }
-        >
-          <option value="mentions_only">@mentions only</option>
-          <option value="linked_authors">
-            @mentions + automatic events from linked members
-          </option>
-          <option value="allowed_authors">
-            @mentions + automatic events from allowed authors
-          </option>
-        </select>
-        <p className="text-xs text-muted-foreground">
-          Authorized @mentions work in every mode. Automatic events also need
-          “Run automatically” enabled for that person in Access.
-        </p>
+        />
         {policy.invocation !== "mentions_only" && (
-          <div
-            className="grid gap-x-8 sm:grid-cols-2"
-            aria-label="Automatic events"
-          >
-            {GITHUB_REVIEW_EVENTS.slice(0, 4).map((event) => (
-              <GitHubToggle
-                key={event}
-                label={eventLabels[event]}
-                checked={policy.events.includes(event)}
-                onChange={(enabled) =>
-                  set(
-                    "events",
-                    enabled
-                      ? [...new Set([...policy.events, event])]
-                      : policy.events.filter((value) => value !== event),
-                  )
-                }
-              />
-            ))}
-            <GitHubToggle
-              label="New issues"
-              checked={policy.issueOpened === true}
-              onChange={(enabled) => set("issueOpened", enabled)}
-            />
+          <div className="space-y-4">
+            <div
+              className="grid gap-x-6 gap-y-3 sm:grid-cols-2"
+              aria-label="Automatic events"
+            >
+              {GITHUB_REVIEW_EVENTS.slice(0, 4).map((event) => (
+                <Label
+                  key={event}
+                  className="flex cursor-pointer items-center gap-3 text-sm font-normal"
+                >
+                  <Checkbox
+                    checked={policy.events.includes(event)}
+                    onCheckedChange={(enabled) =>
+                      set(
+                        "events",
+                        enabled === true
+                          ? [...new Set([...policy.events, event])]
+                          : policy.events.filter((value) => value !== event),
+                      )
+                    }
+                  />
+                  {eventLabels[event]}
+                </Label>
+              ))}
+              <Label className="flex cursor-pointer items-center gap-3 text-sm font-normal">
+                <Checkbox
+                  checked={policy.issueOpened === true}
+                  onCheckedChange={(enabled) =>
+                    set("issueOpened", enabled === true)
+                  }
+                />
+                New issues
+              </Label>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Only people with automatic runs enabled in Access can trigger
+              these events.
+            </p>
+            <GitHubSettingsDisclosure title="Automatic review filters">
+              <div>
+                <GitHubToggle
+                  label="Include draft PRs"
+                  checked={policy.reviewDrafts}
+                  onChange={(value) => set("reviewDrafts", value)}
+                />
+                <GitHubToggle
+                  label="Include bot authors"
+                  description="The account also needs a sponsor and automatic runs enabled in Access."
+                  checked={policy.reviewBotAuthors}
+                  onChange={(value) => set("reviewBotAuthors", value)}
+                />
+              </div>
+              <GitHubSettingsDisclosure title="Authors">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {filterField(
+                    "includeAuthors",
+                    "Included authors",
+                    "Leave empty for all authorized authors. One username or glob per line.",
+                  )}
+                  {filterField(
+                    "excludeAuthors",
+                    "Excluded authors",
+                    "One username or glob per line.",
+                  )}
+                </div>
+              </GitHubSettingsDisclosure>
+              <GitHubSettingsDisclosure title="Branches">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {filterField(
+                    "targetBranches",
+                    "Target branches",
+                    "Leave empty for all branches. Supports * and **.",
+                  )}
+                  {filterField(
+                    "excludedBranches",
+                    "Excluded branches",
+                    "Supports * and **.",
+                  )}
+                </div>
+              </GitHubSettingsDisclosure>
+              <GitHubSettingsDisclosure title="Labels">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {filterField(
+                    "requiredLabels",
+                    "Required labels",
+                    "All listed labels must be present.",
+                  )}
+                  {filterField(
+                    "excludedLabels",
+                    "Excluded labels",
+                    "Any listed label prevents automatic review.",
+                  )}
+                </div>
+              </GitHubSettingsDisclosure>
+              <p className="text-xs text-muted-foreground">
+                Reviews requested by @mention bypass these scheduling filters.
+                Repository access and ignored files still apply.
+              </p>
+            </GitHubSettingsDisclosure>
           </div>
         )}
       </section>
@@ -267,31 +421,51 @@ export function GitHubPolicyEditor({
             onChange={(value) => set("publishInline", value)}
           />
         </div>
-        <div className="space-y-2">
-          <Label htmlFor={`${id}-github-rating`}>Passing score</Label>
-          <select
+        <div className="space-y-3 py-3">
+          <div className="flex items-center justify-between gap-4">
+            <Label htmlFor={`${id}-github-rating`}>Passing score</Label>
+            <output
+              htmlFor={`${id}-github-rating`}
+              className="text-sm font-medium"
+            >
+              {policy.ratingThreshold === null
+                ? "Report only"
+                : `${policy.ratingThreshold}/5 or higher`}
+            </output>
+          </div>
+          <input
             id={`${id}-github-rating`}
-            className={githubSelectClass}
-            value={policy.ratingThreshold ?? "report"}
+            type="range"
+            min={0}
+            max={5}
+            step={1}
+            value={policy.ratingThreshold ?? 0}
+            aria-valuetext={
+              policy.ratingThreshold === null
+                ? "Report only"
+                : `${policy.ratingThreshold} out of 5 or higher`
+            }
+            className="h-6 w-full cursor-pointer accent-primary focus-visible:outline-2 focus-visible:outline-ring"
             onChange={(e) =>
               set(
                 "ratingThreshold",
-                e.target.value === "report"
+                Number(e.target.value) === 0
                   ? null
                   : (Number(e.target.value) as 1 | 2 | 3 | 4 | 5),
               )
             }
+          />
+          <div
+            className="flex justify-between text-xs text-muted-foreground"
+            aria-hidden="true"
           >
-            {[5, 4, 3, 2, 1].map((score) => (
-              <option key={score} value={score}>
-                Pass at {score}/5 or higher
-              </option>
-            ))}
-            <option value="report">Report only</option>
-          </select>
+            <span>Report only</span>
+            <span>5/5</span>
+          </div>
           <p className="text-xs text-muted-foreground">
-            The Paperclip Review check applies to the exact reviewed commit. An
-            incomplete review cannot pass.
+            {policy.ratingThreshold === null
+              ? "Report findings without a score requirement."
+              : "A complete review must meet this score for the current commit to pass the Paperclip Review check."}
           </p>
           <a
             className="text-xs text-muted-foreground underline hover:text-foreground"
@@ -303,101 +477,25 @@ export function GitHubPolicyEditor({
           </a>
         </div>
       </section>
-      <details className="text-sm">
-        <summary className="cursor-pointer font-medium">
-          Advanced review settings
-        </summary>
-        <div className="space-y-6 pt-4">
-          <div>
-            <GitHubToggle
-              label="Include draft PRs"
-              checked={policy.reviewDrafts}
-              onChange={(value) => set("reviewDrafts", value)}
-            />
-            <GitHubToggle
-              label="Include bot authors"
-              description="The bot account also needs a sponsor and automatic events enabled in Access."
-              checked={policy.reviewBotAuthors}
-              onChange={(value) => set("reviewBotAuthors", value)}
-            />
-          </div>
-          <div className="space-y-3">
-            <h3 className="text-sm font-medium">Filters</h3>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {(
-                [
-                  [
-                    "includeAuthors",
-                    "Included authors",
-                    "Empty includes every authorized author. One username or glob per line.",
-                  ],
-                  [
-                    "excludeAuthors",
-                    "Excluded authors",
-                    "One username or glob per line.",
-                  ],
-                  [
-                    "targetBranches",
-                    "Target branches",
-                    "Empty includes all branches. Supports * and **.",
-                  ],
-                  [
-                    "excludedBranches",
-                    "Excluded branches",
-                    "Supports * and **.",
-                  ],
-                  [
-                    "requiredLabels",
-                    "Required labels",
-                    "All listed labels must be present.",
-                  ],
-                  [
-                    "excludedLabels",
-                    "Excluded labels",
-                    "Any listed label prevents automatic review.",
-                  ],
-                  [
-                    "ignoredPaths",
-                    "Ignored files",
-                    "Excluded from manual and automatic analysis. Supports * and **.",
-                  ],
-                ] as const
-              ).map(([key, label, help]) => (
-                <div className="space-y-2" key={key}>
-                  <Label htmlFor={`${id}-github-${key}`}>{label}</Label>
-                  <Textarea
-                    id={`${id}-github-${key}`}
-                    value={policy[key].join("\n")}
-                    onChange={(e) =>
-                      set(key, e.target.value.split("\n").filter(Boolean))
-                    }
-                  />
-                  <p className="text-xs text-muted-foreground">{help}</p>
-                </div>
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Manual requests bypass automatic scheduling filters. Repository
-              restrictions and ignored files still apply.
-            </p>
-          </div>
+      <div className="divide-y divide-border">
+        <GitHubSettingsDisclosure title="Ignored files">
+          {filterField(
+            "ignoredPaths",
+            "File patterns",
+            "Excluded from all reviews, including @mentions. One pattern per line; supports * and **.",
+          )}
+        </GitHubSettingsDisclosure>
+        <GitHubSettingsDisclosure title="Inline comment options">
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor={`${id}-github-categories`}>
                 Finding categories
               </Label>
-              <Input
+              <GitHubListInput
                 id={`${id}-github-categories`}
-                value={policy.findingCategories.join(", ")}
-                onChange={(e) =>
-                  set(
-                    "findingCategories",
-                    e.target.value
-                      .split(",")
-                      .map((v) => v.trim())
-                      .filter(Boolean),
-                  )
-                }
+                values={policy.findingCategories}
+                separator=","
+                onChange={(values) => set("findingCategories", values)}
               />
             </div>
             <div className="space-y-2">
@@ -425,8 +523,13 @@ export function GitHubPolicyEditor({
               </p>
             </div>
           </div>
+        </GitHubSettingsDisclosure>
+        <GitHubSettingsDisclosure title="Approvals and change requests">
+          <p className="text-xs text-muted-foreground">
+            Optional formal decisions on GitHub. Scores, comments, and checks
+            still work when these are off.
+          </p>
           <div>
-            <h3 className="text-sm font-medium">Formal review actions</h3>
             <GitHubToggle
               label="Allow approvals"
               help="Lets the agent submit an Approve review on GitHub after a complete assessment. The agent must explicitly choose it; a 5/5 score or passing check does not approve the PR. Off still allows scores, comments, and checks."
@@ -440,8 +543,8 @@ export function GitHubPolicyEditor({
               onChange={(value) => set("allowRequestChanges", value)}
             />
           </div>
-        </div>
-      </details>
+        </GitHubSettingsDisclosure>
+      </div>
     </div>
   );
 }
@@ -459,6 +562,7 @@ export function GitHubAccessEditor({
 }) {
   const accountLink = useRef<HTMLAnchorElement>(null);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [dialog, setDialog] = useState<"member" | "guest" | null>(null);
   const members = useQuery({
     queryKey: ["github-members", companyId],
     queryFn: () => accessApi.listMembers(companyId),
@@ -467,7 +571,6 @@ export function GitHubAccessEditor({
     queryKey: ["github-linked-members", endpointId],
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
   });
-  const [kind, setKind] = useState<"guest" | null>(null);
   const [login, setLogin] = useState("");
   const [sponsor, setSponsor] = useState(configuration.responsibleUserId);
   const [candidate, setCandidate] = useState<{
@@ -475,21 +578,8 @@ export function GitHubAccessEditor({
     login: string;
   } | null>(null);
   const [error, setError] = useState("");
+  const [lookupError, setLookupError] = useState("");
   const [busy, setBusy] = useState(false);
-  const add = (person: GitHubAllowedPerson) => {
-    if (
-      configuration.people.some((p) => p.githubUserId === person.githubUserId)
-    )
-      return;
-    onChange({
-      ...configuration,
-      ...(person.kind === "member" ? { memberAccess: "selected" } : {}),
-      people: [...configuration.people, person],
-    });
-    setKind(null);
-    setCandidate(null);
-    setLogin("");
-  };
   const activeMembers = (members.data?.members ?? []).filter(
     (member) =>
       member.status === "active" && member.membershipRole !== "viewer",
@@ -497,15 +587,56 @@ export function GitHubAccessEditor({
   const linkedAccounts = (links.data ?? []).filter(
     (link) => link.status === "linked",
   );
-  const unlistedAccounts = linkedAccounts.filter(
-    (link) =>
-      !configuration.people.some(
-        (person) => person.githubUserId === link.githubUserId,
-      ),
-  );
   const responsible = activeMembers.find(
     (member) => member.principalId === configuration.responsibleUserId,
   );
+  const memberName = (userId: string) =>
+    activeMembers.find((member) => member.principalId === userId)?.user?.name ??
+    userId;
+  const automatic = configuration.defaults.invocation !== "mentions_only";
+  const guestsAutomatic =
+    configuration.defaults.invocation === "allowed_authors";
+  const guests = configuration.people.filter(
+    (person) => person.kind === "guest",
+  );
+  // Preserve configured members whose identity link was revoked; show why they cannot run.
+  const memberRows = [
+    ...configuration.people.filter((person) => person.kind === "member"),
+    ...linkedAccounts
+      .filter(
+        (link) =>
+          link.githubUserId &&
+          link.paperclipUserId &&
+          !configuration.people.some(
+            (person) => person.githubUserId === link.githubUserId,
+          ),
+      )
+      .map((link): GitHubAllowedPerson => ({
+        kind: "member",
+        userId: link.paperclipUserId!,
+        githubUserId: link.githubUserId!,
+        login: link.githubLogin ?? link.externalLabel,
+        automaticReviews: false,
+      })),
+  ];
+  const updatePerson = (person: GitHubAllowedPerson) =>
+    onChange({
+      ...configuration,
+      people: configuration.people.some(
+        (p) => p.githubUserId === person.githubUserId,
+      )
+        ? configuration.people.map((p) =>
+            p.githubUserId === person.githubUserId ? person : p,
+          )
+        : [...configuration.people, person],
+    });
+  const removePerson = (person: GitHubAllowedPerson) =>
+    onChange({
+      ...configuration,
+      people: configuration.people.filter(
+        (p) => p.githubUserId !== person.githubUserId,
+      ),
+    });
   const unlink = async (principalId: string) => {
     setBusy(true);
     setError("");
@@ -520,341 +651,246 @@ export function GitHubAccessEditor({
       setBusy(false);
     }
   };
-  return (
-    <section className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-base font-semibold">People</h2>
-        <div className="flex items-center gap-2">
-          <Link
-            ref={accountLink}
-            to={`/apps/chat/connect?provider=github&resume=${endpointId}&stage=identity`}
-            className="text-sm text-muted-foreground underline underline-offset-4"
+  const peopleRows = (people: GitHubAllowedPerson[]) => (
+    <div className="divide-y divide-border">
+      {people.map((person) => {
+        const identity = linkedAccounts.find(
+          (link) => link.githubUserId === person.githubUserId,
+        );
+        const linked = person.kind === "guest" || Boolean(identity);
+        const explicit = configuration.people.some(
+          (p) => p.githubUserId === person.githubUserId,
+        );
+        const mentions =
+          person.kind === "guest" ||
+          configuration.memberAccess === "all_linked" ||
+          explicit;
+        const canConfigureAutomatic = linked && mentions;
+        return (
+          <div
+            key={person.githubUserId}
+            className="flex flex-wrap items-center gap-x-4 gap-y-3 py-4"
           >
-            Link your account
-          </Link>
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label="Copy account linking URL"
-            onClick={() => {
-              if (accountLink.current)
-                void copyTextToClipboard(accountLink.current.href).then(
-                  () => setLinkCopied(true),
-                  () =>
-                    setError(
-                      "Could not copy the link. Open account linking and copy the address.",
-                    ),
-                );
-            }}
-          >
-            <Copy className="size-4" />
-            {linkCopied ? "Copied" : "Invite teammate"}
-          </Button>
-        </div>
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="github-member-access">Who can mention the bot</Label>
-        <select
-          id="github-member-access"
-          className={githubSelectClass}
-          value={configuration.memberAccess}
-          onChange={(e) =>
-            onChange({
-              ...configuration,
-              memberAccess: e.target.value as "all_linked" | "selected",
-            })
-          }
-        >
-          <option value="all_linked">All linked company members</option>
-          <option value="selected">Selected members only</option>
-        </select>
-        <p className="text-xs text-muted-foreground">
-          Automatic events also require the person’s permission below and an
-          enabled event in Settings.
-        </p>
-      </div>
-      <div className="divide-y divide-border border-y border-border">
-        {configuration.people.map((person) => {
-          const identity = linkedAccounts.find(
-            (link) => link.githubUserId === person.githubUserId,
-          );
-          const linked = person.kind === "guest" || Boolean(identity);
-          return (
-            <div key={person.githubUserId} className="space-y-3 py-4">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">
-                    @{person.login}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {person.kind === "guest"
-                      ? `External contributor · sponsored by ${activeMembers.find((member) => member.principalId === person.sponsorUserId)?.user?.name ?? person.sponsorUserId}`
-                      : (identity?.paperclipUserLabel ?? "Company member")}
-                  </p>
-                  {!linked && (
-                    <p className="mt-1 text-xs text-destructive">
-                      Link this member’s GitHub account to enable access.
-                    </p>
-                  )}
-                </div>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      aria-label={`Manage @${person.login}`}
-                    >
-                      <MoreHorizontal className="size-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      onClick={() =>
-                        onChange({
-                          ...configuration,
-                          people: configuration.people.filter(
-                            (p) => p.githubUserId !== person.githubUserId,
-                          ),
-                        })
-                      }
-                    >
-                      {person.kind === "member" &&
-                      configuration.memberAccess === "all_linked"
-                        ? "Reset individual event settings"
-                        : "Remove access"}
-                    </DropdownMenuItem>
-                    {identity && (
-                      <DropdownMenuItem
-                        disabled={busy}
-                        onClick={() => void unlink(identity.principalId)}
-                      >
-                        Unlink GitHub account
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-              <GitHubToggle
-                label={`Run automatically for @${person.login}`}
-                help="Lets PRs and issues authored by this person start work without mentioning the bot. Only events enabled in Settings run. Turn this off to keep this person’s use mention-only."
-                checked={person.automaticReviews}
-                onChange={(value) =>
-                  onChange({
-                    ...configuration,
-                    people: configuration.people.map((p) =>
-                      p.githubUserId === person.githubUserId
-                        ? { ...p, automaticReviews: value }
-                        : p,
-                    ),
-                  })
-                }
-              />
-              {person.kind === "guest" && (
-                <p className="text-xs text-muted-foreground">
-                  Restricted guest permissions; no company membership or
-                  personal credentials.
+            <div className="min-w-0 flex-1 basis-32">
+              <p className="break-words text-sm font-medium">@{person.login}</p>
+              <p className="text-xs text-muted-foreground">
+                {person.kind === "guest"
+                  ? `Sponsored by ${memberName(person.sponsorUserId)}`
+                  : (identity?.paperclipUserLabel ?? "Company member")}
+              </p>
+              {!linked && (
+                <p className="mt-1 text-xs text-destructive">
+                  GitHub account needs linking.
                 </p>
               )}
             </div>
-          );
-        })}
-        {unlistedAccounts.map((link) => (
-          <div
-            key={link.id}
-            className="flex items-center justify-between gap-3 py-4"
-          >
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium">
-                @{link.githubLogin ?? link.externalLabel}
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {link.paperclipUserLabel ?? "Linked member"} ·{" "}
-                {configuration.memberAccess === "all_linked"
-                  ? "Mentions allowed"
-                  : "Access not enabled"}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={!link.githubUserId || !link.paperclipUserId}
-                onClick={() =>
-                  onChange({
-                    ...configuration,
-                    people: [
-                      ...configuration.people,
-                      {
-                        kind: "member",
-                        userId: link.paperclipUserId!,
-                        githubUserId: link.githubUserId!,
-                        login: link.githubLogin ?? link.externalLabel,
-                        automaticReviews: false,
-                      },
-                    ],
-                  })
-                }
-              >
-                {configuration.memberAccess === "all_linked"
-                  ? "Configure events"
-                  : "Allow"}
-              </Button>
+            <div className="flex items-center gap-5">
+              <div className="flex flex-col items-center gap-2">
+                <span className="text-xs text-muted-foreground">Mentions</span>
+                {person.kind === "guest" ||
+                configuration.memberAccess === "all_linked" ? (
+                  <span
+                    className="flex h-5 items-center gap-1 text-xs"
+                    aria-label={`Mentions ${linked ? "allowed" : "unavailable"} for @${person.login}`}
+                  >
+                    {linked && (
+                      <Check className="size-3.5 text-muted-foreground" />
+                    )}
+                    {linked ? "Allowed" : "Unlinked"}
+                  </span>
+                ) : (
+                  <ToggleSwitch
+                    aria-label={`Allow mentions from @${person.login}`}
+                    checked={mentions}
+                    disabled={!linked}
+                    onCheckedChange={(enabled) =>
+                      enabled ? updatePerson(person) : removePerson(person)
+                    }
+                  />
+                )}
+              </div>
+              <div className="flex flex-col items-center gap-2">
+                <span className="text-xs text-muted-foreground">
+                  Automatic runs
+                </span>
+                <ToggleSwitch
+                  aria-label={`Run automatically for @${person.login}`}
+                  checked={person.automaticReviews}
+                  disabled={!canConfigureAutomatic}
+                  onCheckedChange={(value) =>
+                    updatePerson({ ...person, automaticReviews: value })
+                  }
+                />
+              </div>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
                     size="icon"
                     variant="ghost"
-                    aria-label={`Manage @${link.githubLogin ?? link.externalLabel}`}
+                    aria-label={`Manage @${person.login}`}
                   >
                     <MoreHorizontal className="size-4" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    disabled={busy}
-                    onClick={() => void unlink(link.principalId)}
-                  >
-                    Unlink GitHub account
-                  </DropdownMenuItem>
+                  {explicit && (
+                    <DropdownMenuItem onClick={() => removePerson(person)}>
+                      {person.kind === "member" &&
+                      configuration.memberAccess === "all_linked"
+                        ? "Reset individual event settings"
+                        : "Remove access"}
+                    </DropdownMenuItem>
+                  )}
+                  {identity && (
+                    <DropdownMenuItem
+                      disabled={busy}
+                      onClick={() => void unlink(identity.principalId)}
+                    >
+                      Unlink GitHub account
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
           </div>
-        ))}
+        );
+      })}
+    </div>
+  );
+  return (
+    <section className="space-y-6" aria-label="People">
+      <div className="space-y-1">
+        <h2 className="text-base font-semibold">People</h2>
+        <p className="text-sm text-muted-foreground">
+          Choose who can mention this bot and whose activity can start work
+          automatically.
+        </p>
+      </div>
+      <section className="space-y-2" aria-label="Company members">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">Company members</h3>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setDialog("member");
+              setLinkCopied(false);
+              setError("");
+            }}
+          >
+            <Plus className="size-4" />
+            Link a member
+          </Button>
+        </div>
+        <GitHubToggle
+          label="Allow mentions from all linked members"
+          description={
+            configuration.memberAccess === "all_linked"
+              ? "Includes members who link their GitHub account later."
+              : "Only members you enable below can mention this bot."
+          }
+          checked={configuration.memberAccess === "all_linked"}
+          onChange={(enabled) =>
+            onChange({
+              ...configuration,
+              memberAccess: enabled ? "all_linked" : "selected",
+            })
+          }
+        />
+        {peopleRows(memberRows)}
         {links.isPending && (
           <p role="status" className="py-4 text-sm text-muted-foreground">
             Loading linked accounts…
           </p>
         )}
-        {!links.isPending &&
-          !links.isError &&
-          configuration.people.length === 0 &&
-          unlistedAccounts.length === 0 && (
-            <p className="py-4 text-sm text-muted-foreground">
-              No accounts linked yet. Invite a teammate to confirm their GitHub
-              identity.
-            </p>
-          )}
-      </div>
-      <Button variant="ghost" size="sm" onClick={() => setKind("guest")}>
-        Add external contributor
-      </Button>
-      {kind === "guest" && (
-        <div className="space-y-4 rounded-lg border border-border p-4">
-          <p className="text-sm">
-            Allow one GitHub account to mention the bot with restricted guest
-            permissions. A sponsor is required.
+        {!links.isPending && !links.isError && memberRows.length === 0 && (
+          <p className="py-4 text-sm text-muted-foreground">
+            No members linked yet. Link an account to get started.
           </p>
-          <div className="space-y-2">
-            <Label htmlFor="github-guest-login">GitHub username</Label>
-            <div className="flex gap-2">
-              <Input
-                id="github-guest-login"
-                value={login}
-                onChange={(e) => {
-                  setLogin(e.target.value);
-                  setCandidate(null);
-                }}
-              />
-              <Button
-                variant="outline"
-                disabled={busy || !login}
-                onClick={async () => {
-                  setBusy(true);
-                  setError("");
-                  try {
-                    setCandidate(await githubChatApi.lookup(endpointId, login));
-                  } catch (error) {
-                    setError(
-                      error instanceof Error ? error.message : "Lookup failed",
-                    );
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
+        )}
+        <p className="text-xs text-muted-foreground">
+          {automatic ? (
+            <>
+              Automatic runs apply to issues and PRs authored by that person,
+              using the events enabled in{" "}
+              <Link
+                className="underline underline-offset-4"
+                to={`/apps/chat/${endpointId}/settings`}
               >
-                Look up
-              </Button>
-            </div>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="github-guest-sponsor">Sponsor</Label>
-            <select
-              id="github-guest-sponsor"
-              className={githubSelectClass}
-              value={sponsor}
-              onChange={(e) => setSponsor(e.target.value)}
-            >
-              {activeMembers.map((member) => (
-                <option key={member.principalId} value={member.principalId}>
-                  {member.user?.name ?? member.principalId}
-                </option>
-              ))}
-            </select>
-          </div>
-          {candidate && (
-            <p className="text-sm">
-              @{candidate.login} · GitHub ID {candidate.githubUserId}
-            </p>
+                Settings
+              </Link>
+              .
+            </>
+          ) : (
+            <>
+              Automatic runs are off in{" "}
+              <Link
+                className="underline underline-offset-4"
+                to={`/apps/chat/${endpointId}/settings`}
+              >
+                Settings
+              </Link>
+              . These permissions are saved for when you turn them on.
+              Authorized @mentions still work.
+            </>
           )}
-          <div className="flex justify-between">
-            <Button variant="ghost" onClick={() => setKind(null)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={
-                !candidate ||
-                !sponsor ||
-                configuration.people.some(
-                  (p) => p.githubUserId === candidate.githubUserId,
-                )
-              }
-              onClick={() =>
-                candidate &&
-                add({
-                  ...candidate,
-                  kind: "guest",
-                  sponsorUserId: sponsor,
-                  permissionProfile: "restricted",
-                  automaticReviews: false,
-                })
-              }
-            >
-              Add contributor
-            </Button>
-          </div>
+        </p>
+      </section>
+      <section
+        className="space-y-2 border-t border-border pt-6"
+        aria-label="External contributors"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">External contributors</h3>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setDialog("guest");
+              setLookupError("");
+            }}
+          >
+            <Plus className="size-4" />
+            Add external contributor
+          </Button>
         </div>
-      )}
-      <details className="text-sm">
-        <summary className="cursor-pointer text-muted-foreground">
-          Automatic task responsibility
-        </summary>
-        <div className="mt-4 space-y-2">
+        <p className="text-xs text-muted-foreground">
+          Allow specific GitHub users with a member as their sponsor. They
+          receive restricted access, without company membership or the sponsor’s
+          personal credentials.
+        </p>
+        {peopleRows(guests)}
+        {guests.length > 0 && (
+          <GitHubToggle
+            label="Allow automatic runs for external contributors"
+            description={
+              automatic
+                ? "Only contributors with their own Automatic runs switch on can trigger events."
+                : "Turn on automatic runs in Settings first. Mentions remain available."
+            }
+            checked={guestsAutomatic}
+            disabled={!automatic}
+            onChange={(enabled) =>
+              onChange({
+                ...configuration,
+                defaults: {
+                  ...configuration.defaults,
+                  invocation: enabled ? "allowed_authors" : "linked_authors",
+                },
+              })
+            }
+          />
+        )}
+      </section>
+      <GitHubSettingsDisclosure title="Automatic task responsibility">
+        <div className="space-y-2">
           {activeMembers.length === 1 && responsible ? (
-            <p>
-              <span className="inline-flex items-center gap-2">
-                Responsible member{" "}
-                <GitHubHelp label="Responsible member">
-                  The Paperclip member accountable for automatically created
-                  tasks. This does not change the GitHub author or grant the bot
-                  access to the member’s personal credentials.
-                </GitHubHelp>
-              </span>
-              :{" "}
-              {responsible.user?.name ??
-                responsible.user?.email ??
-                responsible.principalId}
+            <p className="text-sm">
+              Responsible member: {memberName(configuration.responsibleUserId)}
             </p>
           ) : (
             <>
-              <div className="flex items-center gap-2">
-                <Label htmlFor="github-responsible">Responsible member</Label>
-                <GitHubHelp label="Responsible member">
-                  The Paperclip member accountable for automatically created
-                  tasks. This does not change the GitHub author or grant the bot
-                  access to the member’s personal credentials.
-                </GitHubHelp>
-              </div>
+              <Label htmlFor="github-responsible">Responsible member</Label>
               <select
                 id="github-responsible"
                 className={githubSelectClass}
@@ -882,11 +918,12 @@ export function GitHubAccessEditor({
             </>
           )}
           <p className="text-xs text-muted-foreground">
-            Automatically created tasks are attributed to this member in
-            Paperclip. The GitHub author is recorded separately.
+            The member accountable for automatically created Paperclip tasks.
+            GitHub authors remain recorded separately. This grants no access to
+            the member’s personal credentials.
           </p>
         </div>
-      </details>
+      </GitHubSettingsDisclosure>
       {error && (
         <p role="alert" className="text-sm text-destructive">
           {error}
@@ -909,6 +946,171 @@ export function GitHubAccessEditor({
           </Button>
         </div>
       )}
+      <Dialog
+        open={dialog !== null}
+        onOpenChange={(open) => {
+          if (!open) setDialog(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {dialog === "member"
+                ? "Link a company member"
+                : "Add external contributor"}
+            </DialogTitle>
+            <DialogDescription>
+              {dialog === "member"
+                ? "Each member confirms their own GitHub identity. Share this link with an existing company member, or link your own account."
+                : "Allow a GitHub user to mention this bot. A company member must sponsor their restricted access."}
+            </DialogDescription>
+          </DialogHeader>
+          {dialog === "member" ? (
+            <>
+              <Button
+                variant="outline"
+                aria-label="Copy account linking URL"
+                onClick={() => {
+                  if (accountLink.current)
+                    void copyTextToClipboard(accountLink.current.href).then(
+                      () => setLinkCopied(true),
+                      () =>
+                        setError(
+                          "Could not copy the link. Open account linking and copy the address.",
+                        ),
+                    );
+                }}
+              >
+                <Copy className="size-4" />
+                {linkCopied ? "Copied" : "Copy invitation link"}
+              </Button>
+              <Link
+                ref={accountLink}
+                to={`/apps/chat/connect?provider=github&resume=${endpointId}&stage=identity`}
+                className="text-sm underline underline-offset-4"
+              >
+                Link your account
+              </Link>
+              {error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {error}
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="github-guest-login">GitHub username</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="github-guest-login"
+                    value={login}
+                    placeholder="octocat"
+                    disabled={busy}
+                    onChange={(e) => {
+                      setLogin(e.target.value);
+                      setCandidate(null);
+                      setLookupError("");
+                    }}
+                  />
+                  <Button
+                    variant="outline"
+                    disabled={busy || !login.trim()}
+                    onClick={async () => {
+                      setBusy(true);
+                      setLookupError("");
+                      setCandidate(null);
+                      try {
+                        setCandidate(
+                          await githubChatApi.lookup(endpointId, login),
+                        );
+                      } catch (e) {
+                        setLookupError(
+                          e instanceof Error ? e.message : "Lookup failed",
+                        );
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    {busy ? "Looking up…" : "Look up"}
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="github-guest-sponsor">Sponsor</Label>
+                <select
+                  id="github-guest-sponsor"
+                  className={githubSelectClass}
+                  value={sponsor}
+                  onChange={(e) => setSponsor(e.target.value)}
+                >
+                  {!activeMembers.some(
+                    (member) => member.principalId === sponsor,
+                  ) && <option value={sponsor}>Select a member</option>}
+                  {activeMembers.map((member) => (
+                    <option key={member.principalId} value={member.principalId}>
+                      {member.user?.name ?? member.principalId}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {candidate && (
+                <p role="status" className="text-sm">
+                  {configuration.people.some(
+                    (p) => p.githubUserId === candidate.githubUserId,
+                  ) ||
+                  linkedAccounts.some(
+                    (link) => link.githubUserId === candidate.githubUserId,
+                  )
+                    ? `@${candidate.login} is already listed in People.`
+                    : `Found @${candidate.login}. They will be able to mention the bot after you save.`}
+                </p>
+              )}
+              {lookupError && (
+                <p role="alert" className="text-sm text-destructive">
+                  {lookupError}
+                </p>
+              )}
+              <DialogFooter className="flex-row justify-between sm:justify-between">
+                <Button variant="ghost" onClick={() => setDialog(null)}>
+                  Cancel
+                </Button>
+                <Button
+                  disabled={
+                    !candidate ||
+                    !activeMembers.some(
+                      (member) => member.principalId === sponsor,
+                    ) ||
+                    configuration.people.some(
+                      (p) => p.githubUserId === candidate.githubUserId,
+                    ) ||
+                    linkedAccounts.some(
+                      (link) => link.githubUserId === candidate.githubUserId,
+                    )
+                  }
+                  onClick={() => {
+                    if (candidate) {
+                      updatePerson({
+                        ...candidate,
+                        kind: "guest",
+                        sponsorUserId: sponsor,
+                        permissionProfile: "restricted",
+                        automaticReviews: false,
+                      });
+                      setDialog(null);
+                      setCandidate(null);
+                      setLogin("");
+                    }
+                  }}
+                >
+                  Add contributor
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }
