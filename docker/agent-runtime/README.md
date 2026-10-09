@@ -1,6 +1,6 @@
 # Agent Runtime Image Family
 
-Container images for running coding-agent harnesses in sandboxed environments (for example the kubernetes sandbox provider, stage 1 of the k8s contribution). Images are named `agent-runtime-{harness}:{version}` and published to `ghcr.io/paperclipai/` by the `agent-runtime-images` workflow. The registry is overridable: every reference flows through the `REGISTRY` bake variable.
+Container images for running coding-agent harnesses in sandboxed environments (for example the kubernetes sandbox provider, stage 1 of the k8s contribution). Images are named `agent-runtime-{harness}:{version}` and published to `ghcr.io/smadjapaul/` by the `agent-runtime-images` workflow. The registry is overridable: every reference flows through the `REGISTRY` bake variable.
 
 ## Image Lineup
 
@@ -59,7 +59,7 @@ Build and verify the `agent-runtime-claude` image runs locally:
 
 ```bash
 docker buildx bake -f docker/agent-runtime/buildx-bake.hcl base claude --load
-docker run --rm ghcr.io/paperclipai/agent-runtime-claude:dev claude-code --version
+docker run --rm ghcr.io/smadjapaul/agent-runtime-claude:dev claude-code --version
 ```
 
 ## Agent Container (paperclip-agent-shim)

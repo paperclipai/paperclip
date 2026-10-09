@@ -58,6 +58,20 @@ GitHub repos for repo-only project workspaces and refreshing worktree base
 refs. See
 [Execution workspaces](../guides/board-operator/execution-workspaces-and-runtime-services.md#private-repositories-and-repo-only-project-workspaces).
 
+### Direct GitHub App runtime credentials
+
+For a direct GitHub App path, bind `GITHUB_APP_ID`,
+`GITHUB_APP_INSTALLATION_ID`, and `GITHUB_APP_PRIVATE_KEY` as secret-backed
+environment values on the coding agent. The heartbeat resolves those values
+before the adapter starts, exchanges them for an installation token, removes
+the App material, and injects the short-lived token as both `GH_TOKEN` and
+`GITHUB_TOKEN`.
+
+The installation token is held only in memory for the run. Paperclip does not
+store or log it. Do not configure these bindings together with an active
+managed GitHub connection; the run fails closed instead of selecting an auth
+path silently.
+
 ## User-Specific Secrets
 
 User-specific secrets let a shared agent or project declare a slot such as

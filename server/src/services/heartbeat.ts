@@ -427,6 +427,12 @@ import {
   resolveManagedGitHubIdentitySelection,
   scrubGitCredentialText,
 } from "./git-credentials.js";
+import {
+  applyDirectGitHubAppRuntimeToken,
+  GITHUB_APP_RUNTIME_SECRET_KEYS,
+  GITHUB_APP_RUNTIME_TOKEN_KEYS,
+  mintDirectGitHubAppToken,
+} from "./github-app-runtime-credentials.js";
 // Re-exported because heartbeat's workspace surface exposed the scrubber before the
 // git-credentials module became its canonical home; existing importers keep working.
 export { scrubGitCredentialText };
@@ -9644,6 +9650,7 @@ export function heartbeatService(
         ["local", "ssh"].includes(
           selectedEnvironmentForConfig?.driver ?? "local",
         );
+      let directGithubAppToken: string | null = null;
 
       const { resolvedConfig, configuredTaskEnvironment, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
@@ -9666,6 +9673,32 @@ export function heartbeatService(
           secretsSvc,
           trustPreset,
         });
+      const resolvedAdapterEnv = parseObject(resolvedConfig.env);
+      const directAppBindingPresent = GITHUB_APP_RUNTIME_SECRET_KEYS.some((key) =>
+        Object.prototype.hasOwnProperty.call(resolvedAdapterEnv, key),
+      );
+      if (directAppBindingPresent) {
+        for (const key of [...GITHUB_APP_RUNTIME_SECRET_KEYS, ...GITHUB_APP_RUNTIME_TOKEN_KEYS]) {
+          secretKeys.add(key);
+        }
+        if (githubSelection.configured) {
+          throw new ConfigurationIncompleteFailure(
+            "Direct GitHub App credentials cannot be combined with an active managed GitHub connection",
+            { configurationIncomplete: { reason: "github_auth_paths_conflict", agentId: agent.id } },
+          );
+        }
+        try {
+          const directAppRuntime = await mintDirectGitHubAppToken({ env: resolvedAdapterEnv });
+          if (!directAppRuntime) throw new Error("GitHub App runtime credentials are incomplete");
+          directGithubAppToken = directAppRuntime.token;
+          resolvedConfig.env = applyDirectGitHubAppRuntimeToken(resolvedAdapterEnv, directAppRuntime);
+        } catch (error) {
+          throw new ConfigurationIncompleteFailure(
+            error instanceof Error ? error.message : "GitHub App runtime credentials are unavailable",
+            { configurationIncomplete: { reason: "github_app_runtime_unavailable", agentId: agent.id } },
+          );
+        }
+      }
       readFailureReportSecrets = () => collectRunFailureSecretValues(resolvedConfig.env, secretKeys);
       if (aiBinding) {
         try {
@@ -10187,6 +10220,7 @@ export function heartbeatService(
           heartbeatRunId: run.id,
           responsibleUserId: run.responsibleUserId,
           agentId: agent.id,
+          directAppToken: directGithubAppToken,
         },
       );
       const {

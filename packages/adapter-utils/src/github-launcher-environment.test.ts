@@ -9,6 +9,7 @@ import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import { githubBrokerEnvironment } from "./github-launcher.js";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
+  normalizeNodeOptionsForChild,
   prepareGitHubOperationLaunchers,
   prepareGitHubExecutionEnvironment,
   runAdapterExecutionTargetProcess,
@@ -67,6 +68,33 @@ async function sandbox(layout: string) {
 }
 
 describe("managed GitHub launcher environment", () => {
+  it("resolves relative Node preloads from the Paperclip runtime, not the workspace", () => {
+    expect(normalizeNodeOptionsForChild(
+      "--trace-warnings --import ./server/dist/instrumentation.js --require=../hooks/trace.cjs",
+      "/app",
+    )).toBe("--trace-warnings --import /app/server/dist/instrumentation.js --require=/hooks/trace.cjs");
+    expect(normalizeNodeOptionsForChild("--import tsx/esm", "/app")).toBe("--import tsx/esm");
+    expect(normalizeNodeOptionsForChild(undefined, "/app")).toBeUndefined();
+  });
+
+  it("runs the local GitHub probe with a relative preload from an arbitrary workspace", async () => {
+    const runtimeRoot = await mkdtemp(path.join(process.cwd(), ".paperclip-node-options-test-"));
+    roots.push(runtimeRoot);
+    const preload = path.join(runtimeRoot, "instrumentation.mjs");
+    await writeFile(preload, "export const bootstrapProbe = true;\n");
+    const relativePreload = `./${path.relative(process.cwd(), preload)}`;
+    vi.stubEnv("NODE_OPTIONS", `--import ${relativePreload}`);
+
+    const workspace = path.join(runtimeRoot, "instances", "default", "projects", "kube-ops");
+    await mkdir(workspace, { recursive: true });
+    const env = await prepareGitHubExecutionEnvironment({
+      target: null, cwd: workspace, env: {}, hostCredentials: false, networkAccess: true,
+    });
+
+    expect(env.PAPERCLIP_GITHUB_AUTH_MODE).toBe("managed");
+    expect(env.PAPERCLIP_RUNNER_NETWORK_ACCESS).toBe("enabled");
+  });
+
   it.each(["module", "commonjs"])("runs managed GitHub launchers inside a %s project", async (type) => {
     const fixture = await sandbox("usr/bin");
     const packageJson = JSON.stringify({ type });

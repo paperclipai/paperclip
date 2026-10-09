@@ -494,6 +494,22 @@ describe("redaction", () => {
     expect(result).not.toContain(jwt);
   });
 
+  it("redacts unstructured Paperclip credentials from event text and payloads", () => {
+    const boardToken = "pcp_board_1234567890abcdef1234567890abcdef";
+    const cliAuthToken = "pcp_cli_auth_1234567890abcdef1234567890abcdef";
+    const result = redactEventPayload({
+      message: `board=${boardToken}`,
+      diagnostic: [`challenge=${cliAuthToken}`],
+    });
+
+    expect(JSON.stringify(result)).not.toContain(boardToken);
+    expect(JSON.stringify(result)).not.toContain(cliAuthToken);
+    expect(result).toEqual({
+      message: `board=${REDACTED_EVENT_VALUE}`,
+      diagnostic: [`challenge=${REDACTED_EVENT_VALUE}`],
+    });
+  });
+
   it("redacts authorization variants and standalone bearer credentials from diagnostic text", () => {
     const input = [
       "Authorization: Basic dXNlcjpwYXNz",

@@ -46,7 +46,7 @@ const GIT_CREDENTIAL_HELPER =
 
 export type GitCredential = {
   token: string;
-  source: "managed_connection" | "company_secret" | "server_env";
+  source: "managed_connection" | "company_secret" | "server_env" | "github_app";
   /** The company-secret name the token came from; null for a server-environment token. */
   secretName: string | null;
   githubIdentity?: { userId: string; login: string };
@@ -182,7 +182,9 @@ export function describeGitAuthFailure(input: {
       ? `the ${input.used.secretName} company-secret GitHub credential`
       : input.used.source === "managed_connection"
         ? "the resolved GitHub connection"
-      : "the server-environment GitHub credential";
+        : input.used.source === "github_app"
+          ? "the ephemeral GitHub App installation credential"
+          : "the server-environment GitHub credential";
     return `The operation authenticated with ${label}, which was rejected or lacks access to this repository.`;
   }
   return "No GitHub credential is configured — add a GITHUB_TOKEN or GH_TOKEN company secret in Settings → Secrets, or configure a local checkout cwd for this project workspace.";
@@ -215,6 +217,7 @@ export function createGitRemoteAuthProvider(
     heartbeatRunId?: string | null;
     responsibleUserId?: string | null;
     agentId?: string | null;
+    directAppToken?: string | null;
   },
   deps?: {
     secrets?: GitCredentialSecretsDeps;
@@ -237,6 +240,9 @@ export function createGitRemoteAuthProvider(
     if (managed.configured) {
       if (!managed.credential) throw new Error(managed.error ?? "Managed GitHub connection is unavailable");
       return managed.credential;
+    }
+    if (context?.directAppToken) {
+      return { token: context.directAppToken, source: "github_app", secretName: null };
     }
     for (const secretName of secretNames) {
       const secret = await Promise.resolve(secrets.getByName(companyId, secretName)).catch(() => null);

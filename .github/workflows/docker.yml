@@ -208,7 +208,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/smadjapaul/paperclip
           tags: |
             type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
             type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
@@ -237,7 +237,7 @@ jobs:
           # By digest, not by tag: two runners cannot each push the same tag
           # and end up with a manifest list. Each leg publishes an untagged
           # image and `merge` names them together.
-          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=ghcr.io/smadjapaul/paperclip,push-by-digest=true,name-canonical=true,push=true
           # Registry-backed BuildKit cache instead of type=gha: the Actions
           # cache is capped at 10GB per repo, and two multi-arch mode=max jobs
           # evict each other, so most builds ran effectively cold. The cache
@@ -246,8 +246,8 @@ jobs:
           #
           # Per-arch refs now the legs are separate runners: a shared ref would
           # have each leg overwrite the other's cache on every build.
-          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }}
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }},mode=max
+          cache-from: type=registry,ref=ghcr.io/smadjapaul/paperclip:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=ghcr.io/smadjapaul/paperclip:buildcache-${{ matrix.arch }},mode=max
           labels: ${{ steps.meta.outputs.labels }}
 
       # The digest is the only thing `merge` needs from this job. Carried as an
@@ -326,7 +326,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/smadjapaul/paperclip
           tags: |
             type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
             type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
@@ -345,7 +345,7 @@ jobs:
           set -euo pipefail
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+            $(printf 'ghcr.io/smadjapaul/paperclip@sha256:%s ' *)
 
       # PID 1 must be an init that reaps adopted orphans. With node there, the
       # orphans agent runs leave behind are never wait()ed and pin as zombies
@@ -426,7 +426,7 @@ jobs:
 
       - name: Converge the channel tags onto the current npm canary
         env:
-          IMAGE: ghcr.io/${{ github.repository }}
+          IMAGE: ghcr.io/smadjapaul/paperclip
           GH_TOKEN: ${{ github.token }}
         run: |
           current="$(curl -fsS "https://registry.npmjs.org/-/package/@paperclipai%2Fdb/dist-tags" | jq -er .canary)"

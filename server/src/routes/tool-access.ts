@@ -68,6 +68,7 @@ import {
   appWithPaperclipCloudConnectorAvailability,
   isPaperclipCloudConnectorStrategy,
   invalidatePaperclipCloudConnectorCapabilities,
+  PaperclipCloudConnectorError,
   type PaperclipCloudConnector,
   paperclipCloudConnectorCapabilitiesFromEnv,
 } from "../services/paperclip-cloud-connector.js";
@@ -231,6 +232,25 @@ export function cloudConnectorEnrollmentReturnPath(issuePrefix: string, returnTo
     return `${companyRoot}${parsed.pathname}${parsed.search}`;
   }
   return `${companyRoot}/apps/connections?cloud_connector=enrolled`;
+}
+
+export function paperclipCloudConnectorCallbackFailure(callbackError: unknown) {
+  const httpDetails = callbackError instanceof HttpError && callbackError.details && typeof callbackError.details === "object" && !Array.isArray(callbackError.details)
+    ? callbackError.details as Record<string, unknown>
+    : null;
+  const cloudError = callbackError instanceof PaperclipCloudConnectorError
+    ? callbackError
+    : null;
+  return {
+    code: typeof httpDetails?.code === "string"
+      ? httpDetails.code
+      : cloudError?.code ?? "paperclip_cloud_connector_callback_failed",
+    status: callbackError instanceof HttpError
+      ? callbackError.status
+      : cloudError?.status ?? 500,
+    installationUrl: httpDetails?.installationUrl,
+    managementUrl: httpDetails?.managementUrl,
+  };
 }
 
 export function toolAccessRoutes(
@@ -1183,11 +1203,24 @@ function connectorEnrollmentPrincipal(req: Request): string {
       res.json(result);
     } catch (callbackError) {
       if (!acceptsHtml) throw callbackError;
-      const details = callbackError instanceof HttpError && callbackError.details && typeof callbackError.details === "object"
-        ? callbackError.details as Record<string, unknown>
-        : null;
+      const callbackFailure = paperclipCloudConnectorCallbackFailure(callbackError);
+      const callbackCode = callbackFailure.code;
+      const callbackStatus = callbackFailure.status;
+      await logActivity(db, {
+        companyId: pendingState.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_app.oauth_failed",
+        entityType: "tool_connection",
+        entityId: pendingState.connectionId,
+        details: {
+          code: callbackCode,
+          status: callbackStatus,
+          provider: "paperclip_cloud_connector",
+        },
+      });
       if (pendingConnectionIntent && pendingState.interactionId && req.actor.userId) {
-        const outcome = details?.code === "oauth_authorization_denied" ? "declined" : "failed";
+        const outcome = callbackCode === "oauth_authorization_denied" ? "declined" : "failed";
         await finishConnectionIntentOAuth({
           interactionId: pendingState.interactionId,
           userId: req.actor.userId,
@@ -1203,14 +1236,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
         });
         return;
       }
-      const outcome = details?.code === "oauth_authorization_denied" ? "denied" : "failed";
+      const outcome = callbackCode === "oauth_authorization_denied" ? "denied" : "failed";
       res.redirect(303, await oauthRecoveryPath(
         pendingConnection,
         outcome,
-        typeof details?.code === "string" ? details.code : null,
+        callbackCode,
         {
-          installationUrl: details?.installationUrl,
-          managementUrl: details?.managementUrl,
+          installationUrl: callbackFailure.installationUrl,
+          managementUrl: callbackFailure.managementUrl,
         },
       ));
     }

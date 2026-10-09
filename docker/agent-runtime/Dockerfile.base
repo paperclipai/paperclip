@@ -1,6 +1,14 @@
 # syntax=docker/dockerfile:1.6
 ARG NODE_VERSION=24
 ARG TARGETARCH
+ARG GH_VERSION=2.86.0
+ARG JUST_VERSION=1.48.0
+ARG KUSTOMIZE_VERSION=5.8.1
+ARG YQ_VERSION=4.50.1
+ARG GH_SHA256=f3b08bd6a28420cc2229b0a1a687fa25f2b838d3f04b297414c1041ca68103c7
+ARG JUST_SHA256=a62e100de2922519ff3d6128f580837b4c0e197aa61a6fb448f43e50e7dd9b9b
+ARG KUSTOMIZE_SHA256=029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d
+ARG YQ_SHA256=c7a1278e6bbc4924f41b56db838086c39d13ee25dcb22089e7fbf16ac901f0d4
 
 # ---------- Stage 1: build agent-shim ----------
 FROM golang:1.25-bookworm AS shim-build
@@ -19,6 +27,14 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
 # Add it when git workspace population lands.
 FROM ubuntu:22.04 AS base
 ARG NODE_VERSION
+ARG GH_VERSION
+ARG JUST_VERSION
+ARG KUSTOMIZE_VERSION
+ARG YQ_VERSION
+ARG GH_SHA256
+ARG JUST_SHA256
+ARG KUSTOMIZE_SHA256
+ARG YQ_SHA256
 # ripgrep (rg): required on PATH so OpenCode's skill tooling uses the system
 # binary instead of trying to download a pinned build from github.com at run
 # time. A sandbox with locked-down egress makes that download hang ~127s then
@@ -26,18 +42,41 @@ ARG NODE_VERSION
 # budget on every agent run. The root repo Dockerfile already ships rg; this
 # restores parity for the agent-runtime image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git tini gnupg ripgrep \
+      ca-certificates curl git tini gnupg jq ripgrep ruby-full \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 1000 paperclip \
-    && useradd -u 1000 -g 1000 -d /home/paperclip -m -s /bin/bash paperclip
+    && useradd -u 1000 -g 1000 -d /home/paperclip -m -s /bin/bash paperclip \
+    && curl -fsSL -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+    && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gh.tar.gz -C /tmp \
+    && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_amd64/bin/gh" /usr/local/bin/gh \
+    && curl -fsSL -o /tmp/just.tar.gz "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    && echo "${JUST_SHA256}  /tmp/just.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/just.tar.gz -C /tmp \
+    && install -m 0755 /tmp/just /usr/local/bin/just \
+    && curl -fsSL -o /tmp/kustomize.tar.gz "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+    && echo "${KUSTOMIZE_SHA256}  /tmp/kustomize.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/kustomize.tar.gz -C /tmp \
+    && install -m 0755 /tmp/kustomize /usr/local/bin/kustomize \
+    && curl -fsSL -o /tmp/yq "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" \
+    && echo "${YQ_SHA256}  /tmp/yq" | sha256sum -c - \
+    && install -m 0755 /tmp/yq /usr/local/bin/yq \
+    && rm -rf /tmp/gh.tar.gz /tmp/just.tar.gz /tmp/kustomize.tar.gz /tmp/yq "/tmp/gh_${GH_VERSION}_linux_amd64" /tmp/just /tmp/kustomize
 
 COPY --from=shim-build   /out/paperclip-agent-shim                          /usr/local/bin/paperclip-agent-shim
+COPY docker/agent-runtime/tool-probe.sh /usr/local/bin/agent-runtime-tool-probe
+RUN chmod 0755 /usr/local/bin/agent-runtime-tool-probe
 
 USER 1000:1000
 WORKDIR /workspace
+ENV HOME=/tmp \
+    TMPDIR=/tmp \
+    XDG_CACHE_HOME=/tmp/.cache \
+    XDG_CONFIG_HOME=/tmp/.config \
+    XDG_DATA_HOME=/tmp/.local/share
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/paperclip-agent-shim"]

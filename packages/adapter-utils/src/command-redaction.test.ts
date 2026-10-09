@@ -8,6 +8,19 @@ describe("explicit diagnostic credential forms", () => {
     expect(redactCommandText(`provider ${jwt}`)).not.toContain(jwt);
     expect(redactCommandText("plan.security.credentials.md")).toBe("plan.security.credentials.md");
   });
+
+  it("redacts unstructured Paperclip credential tokens", () => {
+    const boardToken = "pcp_board_1234567890abcdef1234567890abcdef";
+    const cliAuthToken = "pcp_cli_auth_1234567890abcdef1234567890abcdef";
+    const output = redactCommandText(
+      `provider diagnostic board=${boardToken} challenge=${cliAuthToken}`,
+    );
+
+    expect(output).not.toContain(boardToken);
+    expect(output).not.toContain(cliAuthToken);
+    expect(output).toContain("***REDACTED***");
+    expect(redactCommandText(output)).toBe(output);
+  });
 });
 import {
   REDACTED_COMMAND_TEXT_VALUE,

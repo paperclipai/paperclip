@@ -20,7 +20,7 @@ permissions:
   id-token: write   # cosign keyless OIDC
 
 env:
-  REGISTRY: ghcr.io/paperclipai
+  REGISTRY: ghcr.io/smadjapaul
   VERSION: ${{ github.event.inputs.version || format('git-{0}', github.sha) }}
 
 jobs:
@@ -69,6 +69,8 @@ jobs:
           echo "codex_digest=$CODEX_DIGEST" >> "$GITHUB_OUTPUT"
           echo "gemini_digest=$GEMINI_DIGEST" >> "$GITHUB_OUTPUT"
           echo "claude_digest=$CLAUDE_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "agent_image=${REGISTRY}/agent-runtime-opencode:${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "agent_image_digest=${REGISTRY}/agent-runtime-opencode@${OPENCODE_DIGEST}" >> "$GITHUB_OUTPUT"
         env:
           VERSION: ${{ env.VERSION }}
           REGISTRY: ${{ env.REGISTRY }}
@@ -96,3 +98,28 @@ jobs:
       - name: Cosign sign claude
         run: |
           cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-claude@${{ steps.bake.outputs.claude_digest }}"
+
+      - name: Probe immutable opencode runtime
+        run: |
+          AGENT_IMAGE="${{ steps.bake.outputs.agent_image }}"
+          AGENT_IMAGE_DIGEST="${{ steps.bake.outputs.agent_image_digest }}"
+          docker pull "$AGENT_IMAGE_DIGEST"
+          docker run --rm --read-only \
+            --tmpfs /tmp --tmpfs /run --tmpfs /workspace \
+            "$AGENT_IMAGE_DIGEST" \
+            /usr/local/bin/agent-runtime-tool-probe | tee tool-probe.txt
+          grep -Fx 'TOOL_PROBE=PASS' tool-probe.txt
+          {
+            echo "AGENT_IMAGE=$AGENT_IMAGE"
+            echo "AGENT_IMAGE_DIGEST=$AGENT_IMAGE_DIGEST"
+            echo 'TOOL_PROBE=PASS'
+            echo 'IMAGE_CI=PASS'
+          } | tee qualification.env
+          cat qualification.env >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Capture qualification evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-runtime-qualification
+          path: qualification.env
+          if-no-files-found: error

@@ -31,6 +31,9 @@ const COMMAND_AUTHORIZATION_BEARER_RE =
   /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
 const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
+// Paperclip board, CLI-auth, agent, and bootstrap credentials can appear in
+// unstructured provider diagnostics without a surrounding key/value label.
+const COMMAND_PAPERCLIP_TOKEN_RE = /\bpcp_[A-Za-z0-9_-]{16,}\b/g;
 const COMMAND_JWT_RE =
   /\b[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,}){2}(?:\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})?\b/g;
 /** Recognize encoded JSON headers, without treating dotted identifiers as tokens. */
@@ -65,6 +68,7 @@ const COMMAND_SECRET_HINTS = [
   "ghu_",
   "ghs_",
   "ghr_",
+  "pcp_",
 ] as const;
 
 function maybeContainsSecretText(command: string) {
@@ -100,6 +104,7 @@ export function redactCommandText(
     )
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
+    .replace(COMMAND_PAPERCLIP_TOKEN_RE, redactedValue)
     .replace(COMMAND_JWT_RE, (match) => looksLikeCredentialJwt(match) ? redactedValue : match);
 }
 

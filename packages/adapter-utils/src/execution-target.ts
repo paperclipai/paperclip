@@ -1549,6 +1549,34 @@ export function runtimeAssetDir(
   return prepared.assetDirs[key] ?? path.posix.join(fallbackRemoteCwd, ".paperclip-runtime", key);
 }
 
+/**
+ * Node resolves relative NODE_OPTIONS preload values from the child cwd. The
+ * GitHub execution-target probe intentionally runs from the agent workspace,
+ * so preserve the server's preload semantics by resolving relative preload
+ * paths against the controller runtime cwd before spawning the probe.
+ */
+export function normalizeNodeOptionsForChild(
+  nodeOptions: string | undefined,
+  runtimeCwd: string,
+): string | undefined {
+  if (nodeOptions === undefined || nodeOptions.trim() === "") return nodeOptions;
+
+  // NODE_OPTIONS uses Node's option syntax rather than a shell command line.
+  // This deliberately handles only the preload options whose values can be
+  // relative paths; bare package specifiers and unrelated options remain
+  // untouched.
+  const preload = /(^|\s)(--(?:import|require)(?:=|\s+))(?:("[^"]*")|('[^']*')|([^\s]+))/g;
+  return nodeOptions.replace(preload, (match, prefix: string, option: string, doubleQuoted?: string,
+    singleQuoted?: string, bare?: string) => {
+    const quoted = doubleQuoted ?? singleQuoted;
+    const rawValue = quoted !== undefined ? quoted.slice(1, -1) : bare;
+    if (!rawValue || (!rawValue.startsWith("./") && !rawValue.startsWith("../"))) return match;
+    const resolved = path.resolve(runtimeCwd, rawValue);
+    const value = quoted !== undefined ? `${quoted[0]}${resolved}${quoted[0]}` : resolved;
+    return `${prefix}${option}${value}`;
+  });
+}
+
 type GitHubLauncherLocation = {
   runId: string; target: AdapterExecutionTarget | null | undefined;
 };
@@ -1700,7 +1728,13 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
     discovered.PAPERCLIP_GIT_METADATA_ROOTS = JSON.stringify([...new Set(roots)]);
     discovered.PAPERCLIP_RUNNER_NETWORK_ROOTS = JSON.stringify([...new Set(networkRoots)]);
   } else {
-    const result = await promisify(execFile)(process.execPath, args, { cwd: input.cwd, timeout: 15_000, maxBuffer: 1024 * 1024 });
+    const probeEnv = { ...process.env };
+    const normalizedNodeOptions = normalizeNodeOptionsForChild(process.env.NODE_OPTIONS, process.cwd());
+    if (normalizedNodeOptions === undefined) delete probeEnv.NODE_OPTIONS;
+    else probeEnv.NODE_OPTIONS = normalizedNodeOptions;
+    const result = await promisify(execFile)(process.execPath, args, {
+      cwd: input.cwd, env: probeEnv, timeout: 15_000, maxBuffer: 1024 * 1024,
+    });
     try { discovered = JSON.parse(result.stdout.split("\0")[1] ?? ""); }
     catch { throw new Error("Could not read execution-target Git context"); }
   }
