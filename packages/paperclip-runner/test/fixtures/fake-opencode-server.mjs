@@ -402,8 +402,7 @@ const server = createServer(async (request, response) => {
       const promptPayload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       await appendFile(join(process.env.XDG_DATA_HOME, "fake-prompt-requests.ndjson"), JSON.stringify(promptPayload) + "\n");
       if (
-        promptPayload.providerID !== "openrouter" ||
-        promptPayload.modelID !== "deepseek/deepseek-v4-flash-0731" ||
+        `${promptPayload.providerID}/${promptPayload.modelID}` !== runtimeConfig.model ||
         "model" in promptPayload
       ) {
         return json(response, 400, {

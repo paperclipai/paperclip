@@ -7951,7 +7951,10 @@ it.each([true, false])("preserves prepared OpenCode cleanup errors (primary fail
   expect((failure as Error).message).not.toContain("fixture-secret");
 });
 
-it("preserves prepared input and completion feedback through runnerd and the real OpenCode proxy boundary", async () => {
+it.each([
+  { model: "openrouter/deepseek/deepseek-v4-flash-0731", supportsReasoning: true },
+  { model: "anthropic/claude-sonnet-4", supportsReasoning: false },
+])("preserves prepared input and completion feedback through runnerd and the real OpenCode proxy boundary ($model)", async ({ model, supportsReasoning }) => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-prepared-opencode-"));
   // GitHub-hosted Linux toolcache Node can be group-writable, unlike the AWS
   // fleet. Qualify an owned copy with strict permissions, never chmod the host
@@ -8006,7 +8009,7 @@ it("preserves prepared input and completion feedback through runnerd and the rea
   const driver = new CodexAppServerDriver({
     taskEnvelope: task,
     conversationMode: "prepared",
-    model: "openrouter/deepseek/deepseek-v4-flash-0731",
+    model,
     transportFactory: () => bundle.transport,
     workingDirectoryAuthority: "remote_runner",
     environment: { PAPERCLIP_WORKSPACE_CWD: root },
@@ -8025,7 +8028,15 @@ it("preserves prepared input and completion feedback through runnerd and the rea
   await withPreparedOpenCodeCleanup({
     run: async () => {
       session = await driver.openSession({ runId: "prepared-opencode", normalizedSessionId: "prepared-opencode", workingDirectory: root });
-      await session.startTurn({ message: { role: "user", text: prepared }, reasoningMode: "disabled" });
+      expect(bundle.transport.supportsTurnReasoning?.()).toBe(supportsReasoning);
+      const firstTurn = { message: { role: "user" as const, text: prepared } };
+      if (!supportsReasoning) {
+        await expect(session.startTurn({ ...firstTurn, reasoningMode: "disabled" }))
+          .rejects.toThrow("Per-turn reasoning is not supported");
+        await expect(bundle.transport.request("turn/start", { input: [{ type: "text", text: prepared }], reasoningMode: "disabled" }))
+          .rejects.toThrow("requires an OpenCode/OpenRouter model");
+      }
+      await session.startTurn({ ...firstTurn, ...(supportsReasoning ? { reasoningMode: "disabled" as const } : {}) });
       const events: PrpEvent[] = [];
       for await (const event of session.events()) {
         events.push(event);
@@ -8037,7 +8048,7 @@ it("preserves prepared input and completion feedback through runnerd and the rea
       expect(sessionRoots).toHaveLength(1);
       const requests = (await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-prompt-requests.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
       expect(requests.map((request) => request.parts)).toEqual([[{ type: "text", text: prepared }]]);
-      expect(requests[0].variant).toBe("paperclip-no-reasoning");
+      expect(requests[0].variant).toBe(supportsReasoning ? "paperclip-no-reasoning" : undefined);
       const outcomes = JSON.parse(await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-completion-feedback.json"), "utf8"));
       expect(outcomes).toHaveLength(2);
       expect(outcomes[0].result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("required document link") }] });
@@ -8045,7 +8056,8 @@ it("preserves prepared input and completion feedback through runnerd and the rea
       await session.startTurn({ message: { role: "user", text: "Reply Hi." } });
       for await (const event of session.events()) if (event.eventType === "turn.completed") break;
       const allRequests = (await readFile(join(runtime, sessionRoots[0]!.name, "data/fake-prompt-requests.ndjson"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-      expect(allRequests.map(request => request.variant)).toEqual(["paperclip-no-reasoning", "paperclip-default"]);
+      expect(allRequests.map(request => request.variant)).toEqual(supportsReasoning
+        ? ["paperclip-no-reasoning", "paperclip-default"] : [undefined, undefined]);
     },
     closeSession: async () => { await session?.close(); },
     closeTransport: () => bundle.transport.close(),

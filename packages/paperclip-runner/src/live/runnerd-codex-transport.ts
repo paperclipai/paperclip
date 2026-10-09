@@ -3539,7 +3539,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #turnControls: NativeTurnControlCapabilities = { steering: false, queuedFollowUp: false };
 
   supportsTurnReasoning(): boolean {
-    return this.options.provider === "opencode";
+    if (this.options.provider !== "opencode") return false;
+    // Use the durable selected model on both fresh and recovered sessions.
+    // Older states may retain the provider only in the preparation command.
+    const state = this.#core?.store.state;
+    const template = this.#runAttachTemplate ?? state?.runAttachTemplate
+      ?? state?.commands.findLast(command =>
+        (command.type === "run.prepare" || command.type === "run.attach")
+        && record(command.payload).provider !== undefined,
+      )?.payload;
+    const model = record(record(template).provider).model;
+    return typeof model === "string" && model.startsWith("openrouter/");
   }
 
   turnControlCapabilities(): NativeTurnControlCapabilities | null {
@@ -5889,9 +5899,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       .join("\n");
     const reasoningMode = params.reasoningMode;
     if (reasoningMode !== undefined && (
-      this.options.provider !== "opencode"
+      !this.supportsTurnReasoning()
       || (reasoningMode !== "default" && reasoningMode !== "disabled")
-    )) throw new Error("turn.reasoningMode requires OpenCode and must be default or disabled");
+    )) throw new Error("turn.reasoningMode requires an OpenCode/OpenRouter model and must be default or disabled");
     const skills = resolveRunnerdCodexSkillInputs(
       input.filter((item) => item.type === "skill"),
       this.options.runtimeContext ?? null,
