@@ -1,4 +1,5 @@
 import { useId, useRef, useState } from "react";
+import { isValidExistingBranchName } from "@paperclipai/shared";
 import { Check, ChevronDown, GitBranch, Loader2, TriangleAlert } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -14,6 +15,7 @@ export interface WorkspaceBaseRefRecoveryNoticeProps {
   agentName: string;
   /** Verified provenance, when available. */
   configuredBy?: string | null;
+  taskOverride?: boolean;
   failureKind?: "missing_branch" | "unresolved_ref";
   unavailableReason?: string | null;
   /** Resolve only after both the task setting and retry have server receipts. */
@@ -23,7 +25,7 @@ export interface WorkspaceBaseRefRecoveryNoticeProps {
 /** Inline task repair, also used by the interactive Storybook preview. */
 export function WorkspaceBaseRefRecoveryNotice({
   requestedRef, repository, defaultBranch, agentName, configuredBy,
-  failureKind = "unresolved_ref", unavailableReason, onRepair,
+  taskOverride = true, failureKind = "unresolved_ref", unavailableReason, onRepair,
 }: WorkspaceBaseRefRecoveryNoticeProps) {
   const id = useId();
   const [editing, setEditing] = useState(!defaultBranch);
@@ -38,6 +40,10 @@ export function WorkspaceBaseRefRecoveryNotice({
   async function repair(nextBranch: string) {
     const value = nextBranch.trim();
     if (!value || value === requestedRef || unavailableReason || inFlight.current || repairedBranch) return;
+    if (!isValidExistingBranchName(value)) {
+      setError("Enter a valid branch name, such as master or release/next.");
+      return;
+    }
     inFlight.current = true;
     setPending(true);
     setError(null);
@@ -103,10 +109,10 @@ export function WorkspaceBaseRefRecoveryNotice({
           </Button>
           {details && <div id={`${id}-details`} className="mt-2 rounded-md border border-border bg-background">
             <SystemNoticeMetadataSections tone="neutral" sections={[{ rows: [
-              { kind: "text", label: "Setting", value: "Task-specific starting branch" },
+              { kind: "text", label: "Setting", value: taskOverride ? "Task-specific starting branch" : "Workspace starting branch" },
               { kind: "code", label: "Requested branch", value: requestedRef },
               ...(configuredBy ? [{ kind: "text" as const, label: "Set by", value: configuredBy }] : []),
-              { kind: "text", label: "Why it stopped", value: "An explicit task branch overrides the repository default. Paperclip does not silently switch branches." },
+              { kind: "text", label: "Why it stopped", value: taskOverride ? "An explicit task branch overrides the repository default. Paperclip does not silently switch branches." : "The configured starting branch must resolve before the agent can start. This repair overrides it for this task." },
             ] }]} />
           </div>}
         </div>

@@ -89,6 +89,8 @@ export function activityService(db: Db) {
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
         'conversationReset', ${heartbeatRuns.resultJson} -> 'conversationReset',
+        'configurationIncomplete', case when ${heartbeatRuns.resultJson} -> 'configurationIncomplete' ->> 'reason' = 'workspace_base_ref_unresolved'
+          then jsonb_build_object('reason', 'workspace_base_ref_unresolved') end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
           in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,

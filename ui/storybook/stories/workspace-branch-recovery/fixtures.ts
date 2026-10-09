@@ -2,10 +2,10 @@ import type { WorkspaceBaseRefRecoveryNoticeProps } from "@/components/Workspace
 
 export const evidence = {
   requestedRef: "main",
-  repository: "paperclipai/paperclip",
+  repository: "example/docs-site",
   defaultBranch: "master",
-  agentName: "Felix Novak",
-  configuredBy: "Miranda Cole, when creating this task",
+  agentName: "Jordan Lee",
+  configuredBy: "Casey Morgan, when creating this task",
   failureKind: "missing_branch",
 } satisfies Omit<WorkspaceBaseRefRecoveryNoticeProps, "onRepair">;
 

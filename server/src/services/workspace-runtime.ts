@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -2446,12 +2446,14 @@ export class UnresolvedWorkspaceBaseRefError extends Error {
   recoveryIdentityRef: string;
   attemptedRefs: string[];
   fetchError: string | null;
+  defaultBranch: string | null;
 
   constructor(input: {
     requestedRef: string;
     recoveryIdentityRef: string;
     attemptedRefs: string[];
     fetchError?: string | null;
+    defaultBranch?: string | null;
   }) {
     super(
       `Configured workspace base ref "${input.requestedRef}" could not be resolved to a commit ` +
@@ -2462,6 +2464,7 @@ export class UnresolvedWorkspaceBaseRefError extends Error {
     this.recoveryIdentityRef = input.recoveryIdentityRef;
     this.attemptedRefs = input.attemptedRefs;
     this.fetchError = input.fetchError ?? null;
+    this.defaultBranch = input.defaultBranch ?? null;
   }
 }
 
@@ -2748,6 +2751,24 @@ async function findRegisteredGitWorktreeByPath(repoRoot: string, worktreePath: s
 
 async function isGitCheckout(cwd: string): Promise<boolean> {
   return Boolean(await runGit(["rev-parse", "--git-dir"], cwd).catch(() => null));
+}
+
+// A repair suggestion must come from the remote's advertised HEAD, never the
+// runtime's main/master fallback heuristic. Failure to inspect is not a guess.
+async function readAdvertisedDefaultBranch(repoRoot: string, resolveGitAuth?: GitRemoteAuthProvider | null): Promise<string | null> {
+  try {
+    const remoteUrl = await runGit(["remote", "get-url", "origin"], repoRoot);
+    const auth = resolveGitAuth ? await resolveGitAuth(remoteUrl) : null;
+    const output = await new Promise<string>((resolve, reject) => {
+      execFile("git", [...(auth?.configArgs ?? []), "ls-remote", "--symref", "origin", "HEAD"], {
+        cwd: repoRoot, timeout: 10_000, maxBuffer: 64 * 1024,
+        env: { ...process.env, ...auth?.env, GIT_TERMINAL_PROMPT: "0" },
+      }, (error, stdout) => error ? reject(error) : resolve(stdout));
+    });
+    return /^ref: refs\/heads\/(.+)\tHEAD$/m.exec(output)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function detectDefaultBranch(
@@ -3641,6 +3662,7 @@ export async function realizeExecutionWorkspace(input: {
       recoveryIdentityRef: baseRefResolution.recoveryIdentityRef,
       attemptedRefs: baseRefResolution.attemptedRefs,
       fetchError: baseRefResolution.fetchError,
+      defaultBranch: await readAdvertisedDefaultBranch(repoRoot, input.resolveGitAuth),
     });
     unresolvedBaseRefDiagnostics.set(error, readWorkspaceBaseRefDiagnostic(baseRefResolution.diagnostic)!);
     throw error;

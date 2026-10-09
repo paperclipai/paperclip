@@ -1716,11 +1716,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "You can retry this message now."
             : "Your message is preserved.";
         const restoreFailed = hasWorkspaceRestoreFailure(meta?.resultJson);
+        const branchUnavailable = (meta?.resultJson?.configurationIncomplete as Record<string, unknown> | undefined)?.reason === "workspace_base_ref_unresolved";
         const savedPlan = Boolean(planDocument && (meta?.resultJson?.savedPlanRevisionId === planDocument.latestRevisionId || interactions?.some((interaction) =>
           interaction.sourceRunId === source.id && interactionTargetsPlanRevision(interaction, planDocument),
         )));
         const aiRequest = interactions?.find((interaction) => interaction.kind === "connection_intent" && interaction.payload.purpose === "ai" && interaction.sourceRunId === source.id);
-        const detail = restoreFailed
+        const detail = branchUnavailable
+          ? "Repair the starting branch below before retrying."
+          : restoreFailed
           ? workspaceRestoreMarkerDetail({ result: meta?.resultJson, savedPlan, hasResponse: sourceHasPresentationComment || Boolean(acceptedSummary) })
           : aiRequest
           ? aiRequest.status === "pending"
@@ -1744,9 +1747,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             id,
             kind: "marker",
             variant: "interrupted",
-            label: restoreFailed ? "Workspace restore failed" : aiRequest?.status === "pending" ? "AI connection needed" : source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+            label: branchUnavailable ? "Starting branch unavailable" : restoreFailed ? "Workspace restore failed" : aiRequest?.status === "pending" ? "AI connection needed" : source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
             runId: source.status === "cancelled" ? undefined : source.id,
-            ...(aiRequest?.status === "pending" ? { retryable: false } : {}),
+            ...(branchUnavailable || aiRequest?.status === "pending" ? { retryable: false } : {}),
             ...(restoreFailed ? {
               retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive",
               collapsible: true,

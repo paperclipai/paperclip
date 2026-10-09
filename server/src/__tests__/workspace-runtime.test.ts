@@ -1277,6 +1277,7 @@ describe("realizeExecutionWorkspace", () => {
     expect(error).toBeInstanceOf(UnresolvedWorkspaceBaseRefError);
     const unresolved = error as UnresolvedWorkspaceBaseRefError;
     expect(unresolved.requestedRef).toBe("main");
+    expect(unresolved.defaultBranch).toBe("master");
     expect(unresolved.attemptedRefs).toEqual(["origin/main"]);
     expect(unresolved.fetchError).toContain("couldn't find remote ref refs/heads/main");
     expect(unresolved.message).toContain("Check that the ref exists");

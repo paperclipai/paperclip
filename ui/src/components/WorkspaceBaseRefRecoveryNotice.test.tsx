@@ -49,6 +49,13 @@ describe("workspace branch repair", () => {
     expect(button("Save branch & retry").disabled).toBe(false);
     expect(container.textContent).not.toContain("Branch updated");
   });
+  it("rejects invalid branch syntax before sending a repair", async () => {
+    const repair = vi.fn();
+    await render({ onRepair: repair, defaultBranch: "bad..branch" });
+    await act(async () => button("Use bad..branch & retry").click());
+    expect(repair).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Enter a valid branch name");
+  });
   it("does not guess a default branch or call an unresolved ref missing", async () => {
     await render({ defaultBranch: null, failureKind: "unresolved_ref" });
     expect(button("Use master & retry")).toBeUndefined();

@@ -1,3 +1,4 @@
+import { parseObject } from "../adapters/utils.js";
 import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "../services/workspace-restore-recovery-state.js";
 import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssueMonitor, summarizeIssueMonitor } from "../services/issue-monitors.js";
 import type { IssuePrivacyConstraints } from "@paperclipai/shared";
@@ -9440,11 +9441,17 @@ export function issueRoutes(
         sourceIssueStatus,
         resolutionNote,
         executionReconciliation,
+        workspaceBaseRef,
       } = req.body;
       if (outcome === "false_positive" || outcome === "cancelled") {
         assertBoard(req);
       }
 
+      if (workspaceBaseRef) {
+        assertBoard(req);
+        const decision = await access.decide({ actor: req.actor, action: "runtime:manage", resource: { type: "company", companyId: existing.companyId } });
+        if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      }
       const actor = getActorInfo(req);
       const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
       const postCommitActivityPublications: ActivityPublication[] = [];
@@ -9564,6 +9571,34 @@ export function issueRoutes(
           { source: "recovery_action_resolution" },
         );
 
+        let repairedWorkspaceSettings: Record<string, unknown> | undefined;
+        if (workspaceBaseRef) {
+          const currentSettings = parseObject(lockedIssue.executionWorkspaceSettings);
+          const currentStrategy = parseObject(currentSettings.workspaceStrategy);
+          const sourceRunId = activeRecoveryAction.evidence.latestRunId;
+          if (typeof sourceRunId !== "string" || !isUuidLike(sourceRunId)) throw conflict("The failed run is unavailable. Refresh the task before repairing its branch.");
+          const [failedRun] = await tx.select({ contextSnapshot: heartbeatRuns.contextSnapshot, resultJson: heartbeatRuns.resultJson,
+            agentId: heartbeatRuns.agentId, errorCode: heartbeatRuns.errorCode }).from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.companyId, lockedIssue.companyId),
+              eq(heartbeatRuns.id, sourceRunId),
+            ));
+          const failure = parseObject(parseObject(failedRun?.resultJson).configurationIncomplete);
+          if (lockedIssue.status !== "blocked" || activeRecoveryAction.status !== "active"
+            || activeRecoveryAction.cause !== "configuration_incomplete"
+            || activeRecoveryAction.returnOwnerAgentId !== lockedIssue.assigneeAgentId
+            || !lockedIssue.assigneeAgentId || failedRun?.agentId !== lockedIssue.assigneeAgentId
+            || parseObject(failedRun?.contextSnapshot).issueId !== lockedIssue.id
+            || (parseObject(failedRun?.contextSnapshot).projectId ?? null) !== (lockedIssue.projectId ?? null)
+            || (currentStrategy.type && currentStrategy.type !== "git_worktree")
+            || failedRun?.errorCode !== "configuration_incomplete" || failure.reason !== "workspace_base_ref_unresolved"
+            || failure.requestedRef !== workspaceBaseRef.requestedRef
+            || (typeof currentStrategy.baseRef === "string" && currentStrategy.baseRef.trim() && currentStrategy.baseRef !== workspaceBaseRef.requestedRef)
+            || workspaceBaseRef.branch === workspaceBaseRef.requestedRef) {
+            throw conflict("This branch repair no longer matches the task. Refresh before retrying.");
+          }
+          repairedWorkspaceSettings = { ...currentSettings, workspaceStrategy: { ...currentStrategy, type: "git_worktree", baseRef: workspaceBaseRef.branch } };
+        }
+
         if (outcome === "restored" && activeRecoveryAction.cause === "native_workspace_sync_out_unsafe_archive") {
           throw conflict("Unsafe workspace export recovers automatically without another provider turn.", { code: "workspace_export_automatic_recovery" });
         }
@@ -9579,12 +9614,12 @@ export function issueRoutes(
         if (
           outcome === "restored" &&
           sourceIssueStatus === "todo" &&
-          activeRecoveryAction.kind === "deliberate_wait_without_target"
+          (activeRecoveryAction.kind === "deliberate_wait_without_target" || workspaceBaseRef)
         ) {
           if (
             lockedIssue.status !== "blocked" ||
             activeRecoveryAction.ownerType !== "board" ||
-            activeRecoveryAction.wakePolicy?.type !== "board_escalation" ||
+            (!workspaceBaseRef && activeRecoveryAction.wakePolicy?.type !== "board_escalation") ||
             !activeRecoveryAction.returnOwnerAgentId ||
             lockedIssue.assigneeAgentId !== activeRecoveryAction.returnOwnerAgentId
           ) {
@@ -9766,6 +9801,7 @@ export function issueRoutes(
 
           const updateFields: Record<string, unknown> = {
             status: sourceIssueStatus,
+            ...(repairedWorkspaceSettings ? { executionWorkspaceSettings: repairedWorkspaceSettings } : {}),
           };
           if (!safeHandBack) {
             await assertInReviewReviewPath({
@@ -9927,6 +9963,7 @@ export function issueRoutes(
           outcome: result.recoveryAction.outcome,
           sourceIssueStatus: sourceIssueStatus ?? null,
           resolutionNote: result.recoveryAction.resolutionNote,
+          ...(workspaceBaseRef ? { workspaceBaseRef } : {}),
         },
       });
 

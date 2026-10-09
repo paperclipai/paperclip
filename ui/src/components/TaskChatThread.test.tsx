@@ -1011,6 +1011,18 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.textContent).not.toContain("Workspace restore failed");
   });
 
+  it("directs a missing starting branch to repair instead of offering an unchanged retry", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked" onRetryFailedRun={vi.fn()} linkedRuns={[{
+      runId: "missing-branch-run", runtimeMode: "legacy", status: "failed", errorCode: "configuration_incomplete",
+      agentId: "agent-1", agentName: "Worker", adapterType: "claude_local",
+      createdAt: "2026-08-25T18:00:00.000Z", startedAt: null, finishedAt: "2026-08-25T18:00:02.000Z",
+      resultJson: { configurationIncomplete: { reason: "workspace_base_ref_unresolved", requestedRef: "main" } },
+    }]} />);
+    expect(container.textContent).toContain("Starting branch unavailable");
+    expect(container.textContent).toContain("Repair the starting branch below before retrying.");
+    expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+  });
+
   it("directs a missing personal AI credential to its card without offering a premature retry", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked"
       onRetryFailedRun={vi.fn()} interactions={[{

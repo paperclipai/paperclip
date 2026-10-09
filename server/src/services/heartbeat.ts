@@ -861,6 +861,7 @@ function buildUnresolvedWorkspaceBaseRefResultJson(
       issueId: readNonEmptyString(context.issueId) ?? null,
       projectId: readNonEmptyString(context.projectId) ?? null,
       requestedRef: error.requestedRef,
+      defaultBranch: error.defaultBranch,
       attemptedRefs: error.attemptedRefs,
       fetchError: error.fetchError,
       fingerprint: `workspace_base_ref:${error.recoveryIdentityRef}`,

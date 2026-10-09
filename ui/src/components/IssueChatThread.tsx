@@ -1,3 +1,5 @@
+import { useWorkspaceBaseRefRecovery } from "./WorkspaceBaseRefRecovery";
+import { WorkspaceBaseRefRecoveryNotice } from "./WorkspaceBaseRefRecoveryNotice";
 import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "./DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import type { ComposerRunSettings } from "./task-chat/composer-run-settings";
@@ -3518,6 +3520,7 @@ function SystemNoticeCommentContent({
     ? custom.commentMetadata
     : null;
   const recoverySnapshot = useDispositionRecoverySnapshot(commentMetadata);
+  const branchRecovery = useWorkspaceBaseRefRecovery(commentMetadata);
   const runAgentId =
     typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
@@ -3613,6 +3616,8 @@ function SystemNoticeCommentContent({
         });
       });
   };
+
+  if (authorType === "system" && branchRecovery) return <div id={anchorId}><WorkspaceBaseRefRecoveryNotice key={branchRecovery.actionId} {...branchRecovery.props} /></div>;
 
   if (authorType === "system" && recoverySnapshot) {
     return <div id={anchorId}><DispositionRecoveryNotice snapshot={recoverySnapshot} createdAt={toValidIsoString(message.createdAt)} defaultExpanded={presentation?.detailsDefaultOpen} /></div>;

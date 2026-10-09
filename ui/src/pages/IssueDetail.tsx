@@ -1,3 +1,4 @@
+import { WorkspaceBaseRefRecoveryProvider } from "../components/WorkspaceBaseRefRecovery";
 import { isLockedIssueStub, LockedIssueChip } from "@/components/LockedIssueChip";
 import { canManageIssuePrivacy } from "../lib/issuePrivacy";
 import { TextAttachmentContext } from "../context/TextAttachmentContext";
@@ -7913,6 +7914,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 <ExecutionBlockerNotice companyId={issue.companyId} issueId={issue.id} blocker={issue.executionBlocker} onRetried={invalidateIssueDetail} />
               )}
               {resolvedDetailTab === "chat" ? (
+                <WorkspaceBaseRefRecoveryProvider issue={issue} agentMap={agentMap} onRepaired={() => { invalidateIssueDetail(); invalidateIssueCollections(); }}
+                  unavailableReason={!canManageBoardRuntime || !canResolveBoardRecoveryAction ? "You don’t have permission to repair this task’s workspace."
+                    : treeControlStateError ? "Couldn’t check whether this task is paused. Refresh to try again."
+                    : activePauseHold ? "Resume the task before retrying."
+                    : issue.project?.pausedAt ? "Resume the project before retrying."
+                    : interactions.some(i => i.status === "pending") ? "Respond to the pending question or confirmation before retrying." : null}>
                 <DispositionRecoveryProvider value={{
                   issue,
                   agentMap,
@@ -8184,6 +8191,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   linkCaseReferences={casesChipsEnabled}
                 />
                 </DispositionRecoveryProvider>
+                </WorkspaceBaseRefRecoveryProvider>
               ) : null}
             </TabsContent>
 
