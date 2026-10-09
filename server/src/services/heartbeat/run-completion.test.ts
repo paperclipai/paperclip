@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import * as usageReceipts from "../usage-receipts.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
+import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
@@ -262,6 +263,18 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledOnce();
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledOnce();
+  });
+
+  it("retains the default branch needed to repair an unresolved workspace base ref", async () => {
+    const f = await fixture();
+    const error = new UnresolvedWorkspaceBaseRefError({
+      requestedRef: "main", recoveryIdentityRef: "origin/main", attemptedRefs: ["origin/main"], defaultBranch: "master",
+    });
+    await f.completion.failRunSetup(f.setup(error));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "configuration_incomplete", resultJson: {
+      configurationIncomplete: { reason: "workspace_base_ref_unresolved", requestedRef: "main", defaultBranch: "master", attemptedRefs: ["origin/main"], fingerprint: "workspace_base_ref:origin/main" },
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    } });
   });
 
   it("leaves a winning terminal outcome and agent state untouched after a late setup error", async () => {
