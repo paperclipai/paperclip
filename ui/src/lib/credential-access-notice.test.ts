@@ -16,6 +16,9 @@ describe("credential access notice", () => {
   it("recognizes the fixed historical denial without guessing credential identity", () => {
     expect(credentialAccessNotice({ ...run, resultJson: null, error: "This credential is not shared with the responsible user" }, "nicky"))
       .toMatchObject({ deniedUser: "you", credentialName: undefined });
+    expect(credentialAccessNotice({ ...run, error: "This credential is not shared with the responsible user",
+      resultJson: { configurationIncomplete: { credentialAccess: { connectionName: "Dotta’s API Key" } } } }, "nicky"))
+      .toMatchObject({ deniedUser: "you", credentialName: "Dotta’s API Key" });
   });
   it("does not relabel unrelated configuration failures or successful attempts", () => {
     expect(credentialAccessNotice({ ...run, status: "succeeded" }, "nicky")).toBeUndefined();

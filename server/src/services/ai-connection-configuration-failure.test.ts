@@ -10,9 +10,9 @@ import {
 
 describe("AI selection failure provenance", () => {
   it("keeps the credential display name out of the public 403 while retaining run diagnostics", () => {
-    const error = aiConnectionCredentialNotSharedFailure({ connectionName: "Dotta’s API Key" });
+    const error = aiConnectionCredentialNotSharedFailure({ connectionName: "Dotta’s API Key", grantId: "private-grant" });
     expect(error.details).toBeUndefined();
-    expect(readAiCredentialAccessFailure(error)).toEqual({ connectionName: "Dotta’s API Key" });
+    expect(readAiCredentialAccessFailure(error)).toEqual({ connectionName: "Dotta’s API Key", grantId: "private-grant" });
     expect(readAiCredentialAccessFailure(forbidden(error.message))).toBeNull();
   });
   it("preserves HTTP behavior while retaining only an owned bounded reason", () => {

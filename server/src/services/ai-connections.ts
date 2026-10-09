@@ -352,7 +352,7 @@ export function aiConnectionService(db: Db) {
     if (!canUseCredential(grant, userId, audience)) {
       // Membership was checked above. A known user's sharing choice is an
       // operator action; absent identity must remain an unclassified denial.
-      if (userId) throw aiConnectionCredentialNotSharedFailure({ connectionName: connection.name });
+      if (userId) throw aiConnectionCredentialNotSharedFailure({ connectionName: connection.name, grantId: grant.id });
       throw forbidden("This credential is not shared with the responsible user");
     }
     const installs = await db

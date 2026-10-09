@@ -83,6 +83,9 @@ Credential-sharing denials stay expanded as an error card in the task conversati
 Name the agent and selected AI connection when known, and say which person lacks
 access. Use “you” only for that person’s own run. Link to the agent’s AI connection
 settings; retrying before changing the connection cannot repair a sharing denial.
+Show the connection name to the affected user so they can identify what blocked
+their task, and to viewers in the connection's human sharing audience. Other task
+readers see a generic credential label. Never show credential secrets or grant IDs.
 The same run-relevance rules hide the card after a newer attempt or terminal task.
 
 Do not show a toast for task or run state already visible on the current screen.

@@ -4,6 +4,8 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  connectionGrants,
+  connectionGrantMembers,
   documentRevisions,
   documents,
   environmentLeases,
@@ -84,7 +86,9 @@ export function activityService(db: Db) {
       ))
     end
   `.as("usageJson");
-  const summarizedResultJson = sql<Record<string, unknown> | null>`
+  // A denied user needs the selected connection's name to repair their task.
+  // Other readers need the connection's existing human sharing permission.
+  const summarizedResultJson = (viewerUserId: string | null) => sql<Record<string, unknown> | null>`
     case
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
@@ -93,11 +97,31 @@ export function activityService(db: Db) {
           when ${heartbeatRuns.resultJson} -> 'configurationIncomplete' ->> 'reason' = 'workspace_base_ref_unresolved'
           then jsonb_build_object('reason', 'workspace_base_ref_unresolved')
           when ${heartbeatRuns.errorCode} = 'configuration_incomplete'
-          and ${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+          and (${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+            or ${heartbeatRuns.error} = 'This credential is not shared with the responsible user')
           then jsonb_build_object(
-            'selectionFailure', 'ai_connection_credential_not_shared',
+            'selectionFailure', case when ${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+              then 'ai_connection_credential_not_shared' end,
             'credentialAccess', jsonb_build_object(
               'connectionName', case when jsonb_typeof(${heartbeatRuns.resultJson} #> '{configurationIncomplete,credentialAccess,connectionName}') = 'string'
+                and ${viewerUserId}::text is not null
+                and (${heartbeatRuns.responsibleUserId} = ${viewerUserId}
+                  or exists (
+                    select 1 from ${connectionGrants}
+                    where ${connectionGrants.companyId} = ${heartbeatRuns.companyId}
+                      and ${connectionGrants.id}::text = ${heartbeatRuns.resultJson} #>> '{configurationIncomplete,credentialAccess,grantId}'
+                      and ((${connectionGrants.kind} = 'user' and ${connectionGrants.subjectUserId} = ${viewerUserId})
+                        or (${connectionGrants.kind} = 'organization' and (
+                          not exists (select 1 from ${connectionGrantMembers}
+                            where ${connectionGrantMembers.companyId} = ${connectionGrants.companyId}
+                              and ${connectionGrantMembers.grantId} = ${connectionGrants.id})
+                          or exists (select 1 from ${connectionGrantMembers}
+                            where ${connectionGrantMembers.companyId} = ${connectionGrants.companyId}
+                              and ${connectionGrantMembers.grantId} = ${connectionGrants.id}
+                              and ${connectionGrantMembers.subjectType} = 'user'
+                              and ${connectionGrantMembers.subjectId} = ${viewerUserId})
+                        )))
+                  ))
                 then left(${heartbeatRuns.resultJson} #>> '{configurationIncomplete,credentialAccess,connectionName}', 240) end
             )
           ) end,
@@ -401,7 +425,7 @@ export function activityService(db: Db) {
         )
         .orderBy(desc(activityLog.createdAt)),
 
-    runsForIssue: async (companyId: string, issueId: string) => {
+    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null) => {
       scheduleRunLivenessBackfill(companyId, issueId);
       const runs = await db
         .select({
@@ -423,7 +447,7 @@ export function activityService(db: Db) {
               and ${heartbeatRuns.error} = 'This credential is not shared with the responsible user'
             then 'This credential is not shared with the responsible user' else null end`,
           usageJson: summarizedUsageJson,
-          resultJson: summarizedResultJson,
+          resultJson: summarizedResultJson(viewerUserId),
           logBytes: heartbeatRuns.logBytes,
           retryOfRunId: heartbeatRuns.retryOfRunId,
           scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
