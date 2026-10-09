@@ -188,7 +188,8 @@ export interface SlackAppConfiguration {
 }
 
 export interface ChatEndpointSetupState {
-  slackSetupMethod?: "automatic" | "manual" | "existing";
+  slackSetupMethod?: "managed" | "automatic" | "manual" | "existing";
+  slackManagerError?: string;
   slackRegistration?: import("../slack-app-manifest.js").SlackRegistrationState;
   /** Provider-confirmed app icon outcome; configuration tokens are never retained. */
   slackAvatar?: import("../slack-app-manifest.js").SlackAvatarState;
@@ -486,10 +487,11 @@ export interface CreateChatEndpointInput {
   applicationId?: string;
   name?: string;
   slackApp?: SlackAppConfiguration;
+  slackSetupMethod?: "managed" | "automatic" | "manual" | "existing";
 }
 
 export interface UpdateChatEndpointInput {
-  slackSetupMethod?: "automatic" | "manual" | "existing";
+  slackSetupMethod?: "managed" | "automatic" | "manual" | "existing";
   slackApp?: SlackAppConfiguration;
   communicationInstructions?: string;
   allowDirectMessages?: boolean;

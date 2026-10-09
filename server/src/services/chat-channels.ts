@@ -1,3 +1,4 @@
+import { isProvisionedSlackSetup } from "@paperclipai/shared";
 import { chatCredentialMutationLease, CREDENTIAL_MUTATION_LEASE_TTL_MS, type CredentialMutationLeaseGuard } from "./chat-credential-mutation-lease.js";
 import type { AgentAvatarRequest } from "./agent-avatars.js";
 import { slackChatRegistrationService, slackRegistrationProjection } from "./chat-slack-registration.js";
@@ -1527,6 +1528,7 @@ export interface ChatChannelServiceOptions {
     claimId: string;
   }) => Promise<void>;
   renderSlackAvatar?: (request: AgentAvatarRequest) => Promise<Buffer>;
+  slackManaged?: import("./connectors/slack/setup/registration.js").SlackSetupOptions["managed"];
   storage?: StorageService;
 }
 
@@ -2678,6 +2680,7 @@ function providerSetupState(
         slackApp: endpoint.setup.slackApp,
         slackSetupMethod: endpoint.setup.slackSetupMethod,
         slackAvatar: endpoint.setup.slackAvatar,
+        slackManagerError: endpoint.setup.slackManagerError,
         slackAccount: endpoint.setup.slackAccount,
         // Slack registers the slash command in the provider configuration.
         // Keep that identity immutable when the assigned agent is renamed;
@@ -5923,7 +5926,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     actorUserId?: string | null,
   ) {
     if ((input.provider as string) === "agentmail") throw badRequest("Use the email inbox setup API for AgentMail");
-    if (input.slackApp && input.provider !== "slack") throw unprocessable("Slack app details only apply to Slack connections");
+    if ((input.slackApp || input.slackSetupMethod) && input.provider !== "slack") throw unprocessable("Slack app details only apply to Slack connections");
+    if (input.slackSetupMethod === "managed" && !await slackRegistration.managerGrants.available()) throw conflict("Managed Slack setup is unavailable");
     const agent = await db
       .select({ id: agents.id, name: agents.name, status: agents.status })
       .from(agents)
@@ -6034,7 +6038,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           step: "provider_setup",
           ...(input.provider === "slack"
             ? { slackApp: input.slackApp ?? defaultSlackAppConfiguration(agent.name),
-                command: (input.slackApp ?? defaultSlackAppConfiguration(agent.name)).command, slackSetupMethod: "automatic" }
+                command: (input.slackApp ?? defaultSlackAppConfiguration(agent.name)).command, slackSetupMethod: input.slackSetupMethod ?? "automatic" }
             : {}),
         },
       });
@@ -6080,13 +6084,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           }
           values.communicationInstructions = input.communicationInstructions;
         }
+        if (input.slackSetupMethod === "managed" && !await slackRegistration.managerGrants.available()) throw conflict("Managed Slack setup is unavailable");
         if (input.slackSetupMethod && (existing.endpoint.provider !== "slack" || existing.endpoint.botExternalId || existing.endpoint.status !== "draft")) {
           throw conflict("Setup method can only change before connecting the app");
         }
         if (input.slackApp || input.slackSetupMethod) {
           const [registration] = await db.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, endpointId));
-          if (registration && registration.status !== "failed") {
-            if (input.slackApp || input.slackSetupMethod === "automatic") throw conflict("Slack app details are locked after creation starts");
+          if (registration && (registration.managerGrantId || registration.status !== "failed")) {
+            if (registration.managerGrantId || input.slackSetupMethod === "managed" || input.slackApp || input.slackSetupMethod === "automatic") throw conflict("Slack app details are locked after creation starts");
             // Manual recovery fences pending authorization under the same credential lease.
             await slackRegistration.cleanup(endpointId, credentialLease);
           }
@@ -9589,7 +9594,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           .then((rows) => rows[0] ?? null);
         if (!current) throw notFound("Chat endpoint not found");
         const observedSlackUrl = (current.setup as InternalSetupState).slackCallbackSurfaces?.events?.url;
-        const preserveSlackVerification = current.setup.slackSetupMethod === "automatic"
+        const preserveSlackVerification = isProvisionedSlackSetup(current.setup.slackSetupMethod)
           && (current.setup as InternalSetupState).slackVerificationSigningFingerprint === createHash("sha256").update(credentials.signingSecret ?? "").digest("hex")
           && Boolean(observedSlackUrl && slackCallbackMatchesPublicUrl(observedSlackUrl, `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/slack`));
         await tx
@@ -26600,7 +26605,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         .where(and(eq(toolConnections.id, current.connectionId), eq(toolConnections.companyId, current.companyId)));
       if (!connection || connection.status === "archived") return new Response("ignored", { status: 200 });
       let secret = (await resolveCredentialRefs(current, connection.refs.filter(ref => ref.configPath.replace(/^credentials\./, "") === "signingSecret"), tx)).signingSecret;
-      if (!secret && current.setup.slackSetupMethod === "automatic") {
+      if (!secret && isProvisionedSlackSetup(current.setup.slackSetupMethod)) {
         const [registration] = await tx.select().from(chatSlackRegistrations)
           .where(and(eq(chatSlackRegistrations.endpointId, current.id), eq(chatSlackRegistrations.companyId, current.companyId)));
         if (registration?.status !== "removed" && registration?.secretIds.signingSecret) {
@@ -27149,7 +27154,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           // Recheck the signature under the current credential/runtime fence;
           // an SDK acknowledgement alone is not authentication evidence.
           let signingFingerprint: string | null = null;
-          if (!currentSetup.webhookVerifiedAt && currentSetup.slackSetupMethod === "automatic"
+          if (!currentSetup.webhookVerifiedAt && isProvisionedSlackSetup(currentSetup.slackSetupMethod)
             && callback.surface === "events" && !callback.isUrlVerification
             && slackCallbackMatchesPublicUrl(callback.url, `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${current.publicId}/slack`)) {
             const payload = JSON.parse(eventBody) as { type?: string; team_id?: string; api_app_id?: string; event_id?: string; event?: { type?: string } };
@@ -38132,7 +38137,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   const slackRegistration = slackChatRegistrationService(db, {
-    publicOrigin: getPublicBaseUrl, webhookOrigin: getWebhookPublicBaseUrl, fetch: fetchImpl, renderAvatar: options.renderSlackAvatar,
+    publicOrigin: getPublicBaseUrl, webhookOrigin: getWebhookPublicBaseUrl, fetch: fetchImpl, renderAvatar: options.renderSlackAvatar, managed: options.slackManaged,
     withLock: async (endpointId, work) => {
       const record = await endpointRecord(endpointId);
       if (!record) throw notFound("Chat endpoint not found");

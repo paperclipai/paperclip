@@ -2227,6 +2227,20 @@
       "when": 1791490887468,
       "tag": "0319_heavy_captain_midlands",
       "breakpoints": true
+    },
+    {
+      "idx": 320,
+      "version": "7",
+      "when": 1791552915164,
+      "tag": "0320_friendly_bushwacker",
+      "breakpoints": true
+    },
+    {
+      "idx": 321,
+      "version": "7",
+      "when": 1791553285865,
+      "tag": "0321_lonely_loa",
+      "breakpoints": true
     }
   ]
 }

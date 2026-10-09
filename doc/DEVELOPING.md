@@ -2028,3 +2028,12 @@ Chromium. The test starts its own loopback Vite server and mocks API responses;
 it needs no running Paperclip instance or provider credentials. The same spec lives
 in the default `test:e2e` discovery tree, so the existing Chrome CI shards run it
 on pull requests.
+
+### Slack provisioning paths
+
+Self-hosted development continues to use independent Slack app setup. Managed
+Slack installation is a disabled-by-default Cloud feature that also requires the
+companion broker profile and Slack approval. Do not add manager client credentials
+to a local `.env` or an open-source deployment. See
+[Slack setup and Cloud qualification](connections/slack-setup.md) for the gates,
+recovery behavior, and production-component stories.

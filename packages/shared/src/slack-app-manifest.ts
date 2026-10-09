@@ -22,7 +22,7 @@ export function buildSlackAppManifest(input: {
   redirectUri?: string;
 }) {
   return {
-    display_information: { name: input.app.appName },
+    display_information: { name: input.app.appName, description: `Talk to ${input.agentName} and manage work in Paperclip.`.slice(0, 140) },
     features: {
       app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
       agent_view: { agent_description: "Work with a Paperclip agent in a task-backed conversation." },
@@ -60,6 +60,7 @@ export const slackRegistrationStateSchema = z.object({
   status: slackRegistrationStatusSchema,
   appId: z.string().nullable().optional(),
   managementUrl: z.string().url().nullable().optional(),
+  managerGrantId: z.string().uuid().nullable().optional(),
   errorCode: z.string().nullable().optional(),
 }).strict();
 export type SlackRegistrationState = z.infer<typeof slackRegistrationStateSchema>;
@@ -79,11 +80,18 @@ export const slackAccountStateSchema = z.object({
 }).strict();
 export type SlackAccountState = z.infer<typeof slackAccountStateSchema>;
 export const slackInstallAuthorizationSchema = z.object({ authorizationUrl: z.string().url(), expiresAt: z.string().datetime() });
+export const slackManagerAuthorizationSchema = slackInstallAuthorizationSchema.extend({ handoff: z.object({ kind: z.literal("paperclip_cloud"), session: z.string().min(16).max(512) }).optional() });
+export type SlackManagerAuthorization = z.infer<typeof slackManagerAuthorizationSchema>;
 export type SlackInstallAuthorization = z.infer<typeof slackInstallAuthorizationSchema>;
 export const slackSetupActionSchema = z.object({}).strict();
 
 export function slackRegistrationErrorMessage(code: string): string {
   const messages: Record<string, string> = {
+    slack_managed_unavailable: "Managed Slack setup is unavailable. Try again later or use your own app before creation starts.",
+    slack_manager_reauthorize: "Reconnect your Slack workspace to continue setting up this agent.",
+    slack_approval_pending: "Slack is waiting for your workspace administrator to approve this app.",
+    slack_approval_required: "Your Slack workspace requires approval. Continue in Slack to request it.",
+    slack_approval_denied: "Your Slack administrator declined this installation. Contact them to continue.",
     slack_configuration_token_invalid: "Slack rejected the app configuration access token. Generate a new access token and try again.",
     slack_manifest_invalid: "Slack rejected this app configuration. Check the app details or use manual setup.",
     slack_manifest_update_pending: "Your Slack app is saved, but its event settings still need to be applied. Enter an app configuration access token to retry configuring the same app.",
@@ -96,9 +104,29 @@ export function slackRegistrationErrorMessage(code: string): string {
     slack_install_identity_mismatch: "Slack returned a different app, workspace, or bot. Install the app created for this connection.",
     slack_install_scopes_missing: "Slack did not grant all required bot permissions. Install the app again and approve its requested permissions.",
     slack_bot_already_connected: "This Slack bot is already connected to Paperclip. Resume its existing connection or use a different app.",
+    slack_install_token_invalid: "Slack rejected the saved bot credentials. Continue in Slack to authorize this app again.",
     slack_configuration_incomplete: "The app is installed, but Paperclip could not finish connecting it. Retry connecting the saved installation.",
     slack_install_account_missing: "Slack did not identify your account. Authorize the same app again to connect your Slack account.",
     slack_install_account_conflict: "This Slack account already has an existing link. Manage account links in connection settings, or authorize with your own Slack account.",
   };
   return messages[code] ?? "Slack setup could not be completed. Resume setup and try again.";
 }
+
+/** Persisted legacy values keep their original meaning. Missing means manual. */
+export type SlackSetupMethod = "managed" | "automatic" | "manual" | "existing";
+export function isProvisionedSlackSetup(method: string | undefined): boolean {
+  return method === "automatic" || method === "managed";
+}
+export const SLACK_MANAGER_SCOPES = ["app_configurations:read", "app_configurations:write", "managed_apps:install"] as const;
+export const slackSetupOptionsSchema = z.object({
+  managedAvailable: z.boolean(),
+  defaultMethod: z.enum(["managed", "automatic"]),
+  workspaces: z.array(z.object({ grantId: z.string().uuid(), workspaceId: z.string(), workspaceName: z.string(), userId: z.string() })),
+});
+export type SlackSetupOptions = z.infer<typeof slackSetupOptionsSchema>;
+export const slackManagedProvisionSchema = z.object({
+  requestId: z.string().uuid(), grantId: z.string().uuid(), confirmedNoAppCreated: z.boolean().optional(),
+}).strict();
+export type SlackManagedProvisionInput = z.infer<typeof slackManagedProvisionSchema>;
+export const slackManagedResultSchema = z.object({ authorization: slackInstallAuthorizationSchema.optional() });
+export type SlackManagedResult = z.infer<typeof slackManagedResultSchema>;

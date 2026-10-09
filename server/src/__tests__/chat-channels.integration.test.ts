@@ -1,5 +1,6 @@
-import { chatSlackRegistrations, toolOauthStates } from "@paperclipai/db";
-import { buildSlackAppManifest } from "@paperclipai/shared";
+import { chatSlackManagerGrants, chatSlackRegistrations, toolOauthStates } from "@paperclipai/db";
+import type { PaperclipCloudConnector, SealedConnectorCredentials } from "../services/paperclip-cloud-connector.js";
+import { buildSlackAppManifest, SLACK_MANAGER_SCOPES } from "@paperclipai/shared";
 import { toolAccessService } from "../services/tool-access.js";
 import { toolActionRequests, toolInvocations } from "@paperclipai/db";
 import { GitHubPublicationLeaseLost, withGitHubPublicationLease } from "../services/chat-github-publication-lease.js";
@@ -4063,7 +4064,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const token = `xoxb-bot-token-canary-${id}`;
       const scopes = buildSlackAppManifest({ app: appDetails, agentName: "Maya", webhookUrl: "https://paperclip.example/hook" }).oauth_config.scopes.bot;
       const state = {
-        failCreate: false, failValidate: false, failInventory: false, failAuth: false, failExchange: false,
+        managedBotAppId: appId, grantedScopes: scopes, managedError: null as string | null, failCreate: false, failValidate: false, failInventory: false, failAuth: false, failExchange: false,
         failManifestUpdate: false, timeoutManifestUpdate: false,
         beforeManifestUpdate: null as null | (() => Promise<void>),
         failIcon: false, timeoutIcon: false, failUser: false, failWelcome: false, timeoutWelcome: false,
@@ -4071,20 +4072,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         user: { id: installerId, team_id: "TAUTO", name: "installer", real_name: "Installing Person", is_bot: false, deleted: false },
         beforeIcon: null as null | (() => Promise<void>),
         beforeAuth: null as null | (() => Promise<void>),
+        beforeExchange: null as null | (() => Promise<void>),
         oauth: { ok: true, app_id: appId, token_type: "bot", access_token: token, team: { id: "TAUTO" }, bot_user_id: botId, authed_user: { id: installerId }, scope: scopes.join(",") },
       };
       const fallback = fakeSlackFetch(botId);
       const provider = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
+        if (url.endsWith("bots.info")) return Response.json({ ok: true, bot: { id: "BMANAGED", app_id: state.managedBotAppId, user_id: botId, deleted: false } });
+        if (url.endsWith("apps.managedInstall")) return Response.json(state.managedError ? { ok: false, error: state.managedError } : { ok: true, app_id: appId, team_id: "TAUTO", api_access_tokens: { bot_access_token: token } });
         if (url.endsWith("apps.manifest.validate")) return Response.json(state.failValidate ? { ok: false, error: "invalid_auth", detail: configToken } : { ok: true });
         if (url.endsWith("apps.manifest.create")) {
           if (state.failCreate) throw new Error(`Timeout ${configToken} ${clientSecret}`);
-          return Response.json({ ok: true, app_id: appId, credentials: { client_id: "123.456", client_secret: clientSecret, signing_secret: signingSecret } });
+          return Response.json({ ok: true, app_id: appId, team_id: "TAUTO", credentials: { client_id: "123.456", client_secret: clientSecret, signing_secret: signingSecret } });
         }
         if (url.endsWith("apps.manifest.update")) {
           await state.beforeManifestUpdate?.();
           if (state.timeoutManifestUpdate) throw new Error(`Manifest timeout ${configToken} ${clientSecret}`);
-          return Response.json(state.failManifestUpdate ? { ok: false, error: "invalid_auth", detail: configToken } : { ok: true, app_id: appId });
+          return Response.json(state.failManifestUpdate ? { ok: false, error: "invalid_auth", detail: configToken } : { ok: true, app_id: appId, permissions_updated: true });
         }
         if (url.endsWith("apps.icon.set")) {
           await state.beforeIcon?.();
@@ -4092,13 +4096,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           return Response.json(state.failIcon ? { ok: false, error: "missing_scope", detail: `${configToken} ${signingSecret}` } : { ok: true });
         }
         if (url.endsWith("oauth.v2.access")) {
+          await state.beforeExchange?.();
           if (state.failExchange) throw new Error(`Timeout ${clientSecret} ${token}`);
           return Response.json(state.oauth);
         }
         if (url.endsWith("auth.test")) {
           await state.beforeAuth?.();
           if (state.failAuth) throw new Error(`Temporary failure ${token}`);
-          return Response.json({ ok: true, team_id: "TAUTO", user_id: botId, user: `maya-${id}`, team: "Test workspace" }, { headers: { "x-oauth-scopes": scopes.join(",") } });
+          return Response.json({ ok: true, team_id: "TAUTO", user_id: botId, bot_id: "BMANAGED", user: `maya-${id}`, team: "Test workspace" }, { headers: { "x-oauth-scopes": state.grantedScopes.join(",") } });
         }
         if (url.endsWith("users.info")) {
           await state.beforeUser?.();
@@ -4124,6 +4129,277 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const install = async () => new URL((await service.slackRegistration.install(endpoint.id, actor)).authorizationUrl).searchParams.get("state")!;
       return { ...company, endpoint, service, sdk, app, state, provider, create, install, createInput, token, appId, botId, installerId, avatarBytes, renderAvatar };
     }
+    async function managedFixture() {
+      const broker = {
+        getCapabilities: vi.fn(async () => ["slack.manager"]),
+        getSlackManagerAppId: vi.fn(async () => "AMANAGER"),
+        startAuthorization: vi.fn(async (_input: { returnState: string }) => ({ authorizationUrl: "https://slack.com/oauth/v2/authorize?state=broker", expiresAt: new Date(Date.now() + 600_000).toISOString() })),
+        claim: vi.fn(), refresh: vi.fn(), revoke: vi.fn(async () => undefined),
+      };
+      const f = await fixture({ slackManaged: { enabled: true, broker: broker as unknown as PaperclipCloudConnector } });
+      const credentials: SealedConnectorCredentials = { v: 1, provider: "slack", profile: "slack.manager", instanceId: "test", environment: "staging", subject: actor.userId, companyId: f.companyId,
+        accessToken: "xoxe.xoxp-manager-access-canary", refreshToken: "xoxe-manager-refresh-canary", tokenType: "user", accessTokenExpiresAt: new Date(Date.now() + 43_200_000).toISOString(), refreshTokenExpiresAt: null,
+        scopes: [...SLACK_MANAGER_SCOPES], slackManager: { appId: "AMANAGER", workspaceId: "TAUTO", workspaceName: "Test workspace", userId: f.installerId } };
+      broker.claim.mockResolvedValue(credentials);
+      broker.refresh.mockResolvedValue({ ...credentials, accessToken: "xoxe.rotated-canary", refreshToken: "xoxe.rotated-refresh-canary" });
+      await f.service.update(f.endpoint.id, { slackSetupMethod: "managed" }, actor.userId);
+      const grants = f.service.slackRegistration.managerGrants;
+      const authorize = async () => { await grants.authorize(f.endpoint.id, actor); return broker.startAuthorization.mock.calls.at(-1)![0].returnState; };
+      const authorizeState = await authorize();
+      await grants.complete(authorizeState, "claim-canary", null, actor);
+      const choices = await grants.choices(f.companyId, actor);
+      expect(choices.workspaces).toHaveLength(1);
+      const grantId = choices.workspaces[0]!.grantId;
+      const input = { requestId: randomUUID(), grantId };
+      const provision = () => f.service.slackRegistration.managed.provision(f.endpoint.id, actor, input);
+      return { ...f, broker, credentials, grants, authorize, authorizeState, grantId, input, provision };
+    }
+    describe("managed Slack", () => {
+      it("keeps open-source setup independent of the broker", async () => {
+        const f = await fixture();
+        expect(await f.service.slackRegistration.managerGrants.choices(f.companyId, actor)).toEqual({ managedAvailable: false, defaultMethod: "automatic", workspaces: [] });
+        await f.create();
+        expect((await f.service.get(f.endpoint.id)).setup.slackSetupMethod).toBe("automatic");
+        await expect(f.service.update(f.endpoint.id, { slackSetupMethod: "managed" }, actor.userId)).rejects.toThrow();
+      });
+      it("creates and installs once, uploads the avatar and links only the manager grant owner", async () => {
+        const f = await managedFixture();
+        await Promise.all([f.provision(), f.provision()]);
+        const saved = await f.service.get(f.endpoint.id);
+        expect(saved.setup).toMatchObject({ slackSetupMethod: "managed", slackRegistration: { status: "configured", appId: f.appId }, slackAvatar: { status: "uploaded" }, slackAccount: { status: "linked", paperclipUserId: actor.userId, externalUserId: f.installerId } });
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(1);
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.managedInstall"))).toHaveLength(1);
+        const activities = await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId));
+        for (const secret of [f.credentials.accessToken, f.credentials.refreshToken!, f.token, clientSecret, signingSecret, "claim-canary"]) expect(JSON.stringify({ saved, activities, choices: await f.grants.choices(f.companyId, actor) })).not.toContain(secret);
+        await expect(f.service.update(f.endpoint.id, { slackSetupMethod: "automatic" }, actor.userId)).rejects.toThrow();
+      });
+      it("reuses the same personal workspace grant for another draft without another authorization", async () => {
+        const f = await managedFixture();
+        const draft = await f.service.create(f.companyId, { provider: "slack", assignedAgentId: f.assignedAgentId, slackSetupMethod: "managed" }, actor.userId);
+        expect((await f.grants.choices(f.companyId, actor)).workspaces[0]!.grantId).toBe(f.grantId);
+        const otherActor = { ...actor, userId: "another-user", bypassPermissionCheck: true };
+        expect((await f.grants.choices(f.companyId, otherActor)).workspaces).toEqual([]);
+        await expect(f.service.slackRegistration.managed.provision(draft.id, otherActor, { ...f.input, requestId: randomUUID() })).rejects.toThrow();
+        expect(f.broker.startAuthorization).toHaveBeenCalledTimes(1);
+      });
+      it("installs a second bot using the same grant without new manager consent", async () => {
+        const f = await managedFixture(); await f.provision();
+        const secondBot = `${f.botId}SECOND`;
+        const secondApp = `${f.appId}SECOND`;
+        const scopes = buildSlackAppManifest({ app: appDetails, agentName: "Maya", webhookUrl: "https://paperclip.example/hook" }).oauth_config.scopes.bot;
+        const provider: typeof fetch = async (input, init) => {
+          const url = String(input);
+          if (url.endsWith("apps.manifest.create")) return Response.json({ ok: true, app_id: secondApp, team_id: "TAUTO", credentials: { client_id: "222.333", client_secret: clientSecret, signing_secret: signingSecret } });
+          if (url.endsWith("apps.managedInstall")) return Response.json({ ok: true, app_id: secondApp, team_id: "TAUTO", api_access_tokens: { bot_access_token: "xoxb-second-managed" } });
+          if (url.endsWith("auth.test")) return Response.json({ ok: true, team_id: "TAUTO", user_id: secondBot, bot_id: "BSECOND", team: "Test workspace" }, { headers: { "x-oauth-scopes": scopes.join(",") } });
+          if (url.endsWith("bots.info")) return Response.json({ ok: true, bot: { id: "BSECOND", app_id: secondApp, user_id: secondBot, deleted: false } });
+          return f.provider(input, init);
+        };
+        const { service } = createService(new FakeChatSdkRuntime(), provider, { renderSlackAvatar: f.renderAvatar, slackManaged: { enabled: true, broker: f.broker as unknown as PaperclipCloudConnector } });
+        const second = await service.create(f.companyId, { provider: "slack", assignedAgentId: f.assignedAgentId, slackSetupMethod: "managed", slackApp: appDetails }, actor.userId);
+        await service.slackRegistration.managed.provision(second.id, actor, { grantId: f.grantId, requestId: randomUUID() });
+        expect((await service.get(second.id)).setup.slackRegistration).toMatchObject({ status: "configured", appId: secondApp });
+        expect(f.broker.startAuthorization).toHaveBeenCalledTimes(1);
+        expect(f.broker.claim).toHaveBeenCalledTimes(1);
+      });
+      it("rejects missing tool scopes before activating a managed bot", async () => {
+        const f = await managedFixture(); f.state.grantedScopes = [];
+        await f.provision();
+        const saved = await f.service.get(f.endpoint.id);
+        expect(saved.providerAccountId).toBeNull();
+        expect(saved.setup.slackRegistration).toMatchObject({ status: "credentials_saved", errorCode: "slack_install_scopes_missing" });
+      });
+      it("reinstalls the saved app after missing bot scopes without creating another app", async () => {
+        const f = await managedFixture(); const scopes = f.state.grantedScopes;
+        f.state.grantedScopes = []; await f.provision();
+        f.state.grantedScopes = scopes; await f.provision();
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration?.status).toBe("configured");
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.managedInstall"))).toHaveLength(2);
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(1);
+      });
+      it("retains reinstall intent after a provider failure instead of retrying rejected credentials", async () => {
+        const f = await managedFixture(); const scopes = f.state.grantedScopes;
+        f.state.grantedScopes = []; await f.provision();
+        f.state.managedError = "internal_error"; await f.provision();
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration).toMatchObject({ status: "install", errorCode: "slack_provider_failure" });
+        f.state.managedError = null; f.state.grantedScopes = scopes; await f.provision();
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration?.status).toBe("configured");
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.managedInstall"))).toHaveLength(3);
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(1);
+      });
+      it("clears a manager reconnect error after renewing the bound grant", async () => {
+        const f = await managedFixture(); f.state.managedError = "invalid_auth"; await f.provision();
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration?.errorCode).toBe("slack_manager_reauthorize");
+        await f.grants.complete(await f.authorize(), "new-claim", null, actor);
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration?.errorCode).toBeNull();
+        f.state.managedError = null; await f.provision();
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration?.status).toBe("configured");
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(1);
+      });
+      it("reconnects a rejected manager token without losing pending manifest configuration", async () => {
+        const f = await managedFixture(); f.state.failManifestUpdate = true; await f.provision();
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration?.errorCode).toBe("slack_manifest_update_pending");
+        expect((await f.grants.choices(f.companyId, actor)).workspaces).toEqual([]);
+        expect((await f.grants.get(f.grantId, f.companyId, actor)).status).toBe("reauthorize");
+        await f.grants.complete(await f.authorize(), "new-claim", null, actor);
+        f.state.failManifestUpdate = false; await f.provision();
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration?.status).toBe("configured");
+        expect((await f.service.get(f.endpoint.id)).setup.slackAvatar?.status).toBe("uploaded");
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.icon.set"))).toHaveLength(1);
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(1);
+      });
+      it("does not restore a revoked grant when an in-flight refresh returns", async () => {
+        const f = await managedFixture();
+        await db.update(chatSlackManagerGrants).set({ expiresAt: new Date(0) }).where(eq(chatSlackManagerGrants.id, f.grantId));
+        f.broker.refresh.mockImplementation(async () => {
+          await f.grants.revoke(f.grantId, f.companyId, actor);
+          return f.credentials;
+        });
+        await expect(f.grants.token(f.grantId, f.companyId, actor)).rejects.toThrow();
+        expect((await f.grants.get(f.grantId, f.companyId, actor)).status).toBe("revoked");
+      });
+      it("claims concurrent manager callbacks once", async () => {
+        const f = await managedFixture(); const state = await f.authorize();
+        const results = await Promise.allSettled([1, 2].map(() => f.grants.complete(state, "claim", null, actor)));
+        expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+        expect(f.broker.claim).toHaveBeenCalledTimes(2);
+      });
+      it("atomically consumes manager state and rejects wrong actors and expired attempts", async () => {
+        const f = await managedFixture();
+        await expect(f.grants.complete(f.authorizeState, "replay", null, actor)).rejects.toThrow();
+        const state = await f.authorize();
+        await expect(f.grants.complete(state, "claim", null, { ...actor, userId: "another-user", bypassPermissionCheck: true })).rejects.toThrow();
+        await db.update(toolOauthStates).set({ expiresAt: new Date(0) }).where(eq(toolOauthStates.state, state));
+        await expect(f.grants.complete(state, "claim", null, actor)).rejects.toThrow();
+        expect(f.broker.claim).toHaveBeenCalledTimes(1);
+      });
+      it("preserves declined manager authorization as a safe recoverable outcome", async () => {
+        const f = await managedFixture();
+        await f.grants.complete(await f.authorize(), null, "access_denied", actor);
+        expect((await f.service.get(f.endpoint.id)).setup.slackManagerError).toBe("slack_install_declined");
+      });
+      it("resumes saved installation credentials after inventory failure without creating or reinstalling", async () => {
+        const f = await managedFixture(); f.state.failInventory = true;
+        await f.provision();
+        expect((await f.service.slackRegistration.registration(f.endpoint.id))?.status).toBe("credentials_saved");
+        f.state.failInventory = false; await f.provision();
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration?.status).toBe("configured");
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.managedInstall"))).toHaveLength(1);
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(1);
+      });
+      it("never recreates an uncertain app", async () => {
+        const f = await managedFixture(); f.state.failCreate = true;
+        await f.provision(); await f.provision();
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration?.status).toBe("uncertain");
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(1);
+      });
+      it("uses bound OAuth for approval fallback and rejects a different installer", async () => {
+        const f = await managedFixture(); f.state.managedError = "app_approval_request_eligible";
+        const result = await f.provision();
+        const state = new URL(result.authorization!.authorizationUrl).searchParams.get("state")!;
+        f.state.oauth.authed_user.id = "UOTHER";
+        await f.service.slackRegistration.complete(state, "code-canary", null, actor);
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration?.errorCode).toBe("slack_install_identity_mismatch");
+        expect((await f.service.get(f.endpoint.id)).providerAccountId).toBeNull();
+      });
+      it("does not activate a bot when the manager grant is revoked during child OAuth", async () => {
+        const f = await managedFixture(); f.state.managedError = "app_approval_request_eligible";
+        const result = await f.provision();
+        const state = new URL(result.authorization!.authorizationUrl).searchParams.get("state")!;
+        f.state.beforeExchange = () => f.grants.revoke(f.grantId, f.companyId, actor);
+        await f.service.slackRegistration.complete(state, "code-canary", null, actor);
+        const saved = await f.service.get(f.endpoint.id);
+        expect(saved.providerAccountId).toBeNull();
+        expect(saved.setup.slackRegistration?.errorCode).toBe("slack_install_identity_mismatch");
+      });
+      it("uses the held transaction for grant queries without acquiring another pool connection", async () => {
+        const f = await managedFixture();
+        const transactionContext = new AsyncLocalStorage<boolean>();
+        const originalTransaction = db.transaction.bind(db);
+        const transactionSpy = vi.spyOn(db, "transaction").mockImplementation((work, ...args) =>
+          originalTransaction(tx => transactionContext.run(true, () => work(tx)), ...args));
+        const querySpies = (["select", "insert", "update", "delete", "execute"] as const).map(method => {
+          const original = db[method].bind(db) as (...args: unknown[]) => unknown;
+          return vi.spyOn(db, method).mockImplementation(((...args: unknown[]) => {
+            if (transactionContext.getStore()) throw new Error("Acquired outer pool connection from held transaction");
+            return original(...args);
+          }) as never);
+        });
+        try {
+          await f.grants.token(f.grantId, f.companyId, actor);
+          await db.update(chatSlackManagerGrants).set({ expiresAt: new Date(0) }).where(eq(chatSlackManagerGrants.id, f.grantId));
+          await f.grants.token(f.grantId, f.companyId, actor);
+          expect(f.broker.refresh).toHaveBeenCalledTimes(1);
+          await f.grants.request(f.grantId, f.companyId, actor, "apps.manifest.validate", { manifest: "{}" });
+          await f.grants.complete(await f.authorize(), "renewed-claim", null, actor);
+          expect((await f.service.get(f.endpoint.id)).setup.slackManagerError).toBeUndefined();
+          await f.grants.revoke(f.grantId, f.companyId, actor);
+          expect(f.broker.revoke).toHaveBeenCalledTimes(2);
+        } finally {
+          transactionSpy.mockRestore();
+          for (const spy of querySpies) spy.mockRestore();
+        }
+      });
+      it("serializes refreshes across endpoints and never replays an ambiguous refresh", async () => {
+        const f = await managedFixture();
+        await db.update(chatSlackManagerGrants).set({ expiresAt: new Date(0) }).where(eq(chatSlackManagerGrants.id, f.grantId));
+        const tokens = await Promise.all([1, 2].map(() => f.grants.token(f.grantId, f.companyId, actor)));
+        expect(tokens.every(result => result.token === "xoxe.rotated-canary")).toBe(true);
+        expect(f.broker.refresh).toHaveBeenCalledTimes(1);
+        await db.update(chatSlackManagerGrants).set({ expiresAt: new Date(0) }).where(eq(chatSlackManagerGrants.id, f.grantId));
+        f.broker.refresh.mockRejectedValue(new Error("provider echoed manager-canary"));
+        await expect(f.grants.token(f.grantId, f.companyId, actor)).rejects.toThrow();
+        await expect(f.grants.token(f.grantId, f.companyId, actor)).rejects.toThrow();
+        expect(f.broker.refresh).toHaveBeenCalledTimes(2);
+      });
+      it("rejects a bot token belonging to a different Slack app before activation", async () => {
+        const f = await managedFixture(); f.state.managedBotAppId = "ADIFFERENT";
+        await f.provision();
+        const saved = await f.service.get(f.endpoint.id);
+        expect(saved.providerAccountId).toBeNull();
+        expect(saved.setup.slackRegistration).toMatchObject({ status: "credentials_saved", errorCode: "slack_install_identity_mismatch" });
+      });
+      it("rejects manager identity changes and both callback-origin and ingress-origin drift", async () => {
+        const f = await managedFixture(); const state = await f.authorize();
+        for (const change of [{ publicBaseUrl: "https://changed.example" }, { webhookPublicBaseUrl: "https://changed.example" }]) {
+          const changed = createService(new FakeChatSdkRuntime(), f.provider, { ...change, slackManaged: { enabled: true, broker: f.broker as unknown as PaperclipCloudConnector } }).service;
+          await expect(changed.slackRegistration.managerGrants.complete(state, "claim", null, actor)).rejects.toThrow();
+        }
+        f.broker.getSlackManagerAppId.mockResolvedValue("ANEWMANAGER");
+        await expect(f.provision()).rejects.toThrow();
+        expect((await f.grants.choices(f.companyId, actor)).workspaces).toEqual([]);
+      });
+      it("preserves provider rate-limit backoff across subsequent attempts", async () => {
+        const f = await managedFixture(); f.state.managedError = "ratelimited";
+        await f.provision();
+        f.state.managedError = null; await f.provision();
+        expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.managedInstall"))).toHaveLength(1);
+        expect((await f.service.get(f.endpoint.id)).setup.slackRegistration?.errorCode).toBe("slack_setup_rate_limited");
+      });
+      it("routes the broker claim_id callback back to the saved wizard without exposing the handoff", async () => {
+        const f = await managedFixture(); const state = await f.authorize();
+        const response = await request(f.app).get(`/api/chat-slack/managed/oauth/callback?state=${state}&claim_id=sealed-claim-canary`).set("accept", "application/json").expect(303);
+        expect(f.broker.claim.mock.calls.at(-1)![0].claimId).toBe("sealed-claim-canary");
+        expect(response.headers.location).toContain(f.endpoint.id);
+        expect(response.text).not.toContain("sealed-claim-canary");
+        expect(response.headers["cache-control"]).toBe("no-store");
+      });
+      it("does not accept another company's grant or keep authorizations after removal", async () => {
+        const f = await managedFixture(); const other = await seedCompany();
+        await expect(f.grants.token(f.grantId, other.companyId, { ...actor, bypassPermissionCheck: true })).rejects.toThrow();
+        const state = await f.authorize();
+        await f.service.configure(f.endpoint.id, { action: "remove" }, actor.userId);
+        await expect(f.grants.complete(state, "claim", null, actor)).rejects.toThrow();
+        expect((await f.grants.get(f.grantId, f.companyId, actor)).status).toBe("active");
+      });
+      it("revocation invalidates pending authorization and prevents future provisioning", async () => {
+        const f = await managedFixture(); const state = await f.authorize();
+        await f.grants.revoke(f.grantId, f.companyId, actor);
+        await expect(f.grants.complete(state, "claim", null, actor)).rejects.toThrow();
+        await expect(f.provision()).rejects.toThrow();
+        expect((await f.grants.choices(f.companyId, actor)).workspaces).toEqual([]);
+      });
+    });
     function setupEvent(f: Awaited<ReturnType<typeof fixture>>, patch: Record<string, unknown> = {}, url = f.endpoint.setup.webhookUrl!, secret = signingSecret, timestamp?: string) {
       return signedSlackWebhookRequest({ url, contentType: "application/json", signingSecret: secret, ...(timestamp ? { timestamp } : {}),
         body: JSON.stringify({ type: "event_callback", api_app_id: f.appId, team_id: "TAUTO", event_id: "EvSETUP", event: {

@@ -270,7 +270,8 @@ describe("chat connector UI contract", () => {
     });
     expect(setup).not.toContain("No credentials");
     expect(setup).not.toContain("managed Microsoft app");
-    expect(setup).toContain("endpoint.providerAccountId && !repairing");
+    expect(setup).toContain("slackSetupState({ endpoint, repairing");
+    expect(source("./slack/setup-state.ts")).toContain("endpoint.providerAccountId && !repairing");
     expect(setup).not.toContain('field("webhookSecret"');
     expect(setup).not.toContain("@paperclipai/teams-connect");
     expect(setup).not.toContain("Copy setup command");

@@ -155,6 +155,117 @@ test.describe.serial("native chat adapter UI", () => {
     seed = await seedCompanyAndAgent(request);
   });
 
+  test("Slack: managed workspace setup has three stops, resumes and completes without pasting credentials", async ({ page }) => {
+    const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
+    const mock = await installChatControlPlaneMock(page, slack, seed, { enableChatConnectors: true, managedSlack: true });
+    await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat`);
+    await selectMaya(page);
+    await expect(page.getByRole("heading", { name: "Add to Slack", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Connection setup progress" }).getByRole("button")).toHaveCount(3);
+    await expect(page.getByRole("button", { name: "Use your own app" })).toBeVisible();
+    await page.reload();
+    await page.getByRole("button", { name: "Add to Slack", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Send a message to your agent", exact: true })).toBeVisible();
+    await expect(page.getByLabel("App configuration access token", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("Signing Secret", { exact: true })).toHaveCount(0);
+    await page.reload();
+    expect(mock.slackCreations).toBe(1); expect(mock.slackInstallations).toBe(1);
+    mock.setWebhookVerified();
+    await expect(page.getByRole("heading", { name: "Success", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Connection setup progress" }).getByRole("button")).toHaveCount(3);
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+    await expect(page).toHaveURL(/\/apps\/chat\/endpoint-slack\/settings$/);
+  });
+  test("Slack: a failed manager refresh reloads workspace authorization before retry", async ({ page }) => {
+    const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
+    await installChatControlPlaneMock(page, slack, seed, { enableChatConnectors: true, managedSlack: true });
+    let refreshFailed = false;
+    let authorizationRequests = 0;
+    await page.route("**/chat-slack/setup-options", async route => {
+      if (!refreshFailed) return route.fallback();
+      await route.fulfill({ json: { managedAvailable: true, defaultMethod: "managed", workspaces: [] } });
+    });
+    await page.route("**/slack/managed/provision", async route => {
+      refreshFailed = true;
+      await route.fulfill({ status: 422, json: { error: "Reconnect your Slack workspace.", details: { code: "slack_manager_reauthorize" } } });
+    });
+    await page.route("**/slack/managed/authorize", async route => {
+      authorizationRequests++;
+      await route.fulfill({ json: { authorizationUrl: "https://slack.test/manager-consent", expiresAt: new Date(Date.now() + 600_000).toISOString() } });
+    });
+    await page.route("https://slack.test/manager-consent", route => route.fulfill({ contentType: "text/html", body: "Slack authorization fixture" }));
+    await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`);
+    await page.getByRole("button", { name: "Add to Slack", exact: true }).click();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await page.getByRole("button", { name: "Add to Slack", exact: true }).click();
+    await expect.poll(() => authorizationRequests).toBe(1);
+    await expect(page).toHaveURL("https://slack.test/manager-consent");
+  });
+  test("Slack: every uncertain creation retry needs a fresh confirmation", async ({ page }) => {
+    const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
+    const mock = await installChatControlPlaneMock(page, slack, seed, { enableChatConnectors: true, managedSlack: true });
+    mock.setSlackUncertain();
+    const attempts: { requestId: string; confirmedNoAppCreated?: boolean }[] = [];
+    await page.route("**/slack/managed/provision", async route => {
+      attempts.push(route.request().postDataJSON());
+      await route.fulfill({ json: {} });
+    });
+    await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`);
+    const confirm = page.getByRole("checkbox", { name: "I checked Slack and no app was created. Create a new app." });
+    const create = page.getByRole("button", { name: "Add to Slack", exact: true });
+    await expect(create).toBeDisabled();
+    await confirm.check(); await create.click();
+    await expect(confirm).not.toBeChecked(); await expect(create).toBeDisabled();
+    expect(attempts).toHaveLength(1); expect(attempts[0]!.confirmedNoAppCreated).toBe(true);
+    await confirm.check(); await create.click();
+    await expect(confirm).not.toBeChecked(); await expect(create).toBeDisabled();
+    expect(attempts).toHaveLength(2); expect(attempts[1]!.requestId).not.toBe(attempts[0]!.requestId);
+  });
+  test("Slack: own-app creation consumes confirmation even when the response is lost", async ({ page }) => {
+    const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
+    const mock = await installChatControlPlaneMock(page, slack, seed, { enableChatConnectors: true, automaticSlack: true });
+    mock.setSlackUncertain();
+    let attempts = 0;
+    await page.route("**/slack/registration", async route => {
+      attempts++; expect(route.request().postDataJSON().confirmedNoAppCreated).toBe(true);
+      await route.fulfill({ status: 502, json: { error: "Creation response unavailable" } });
+    });
+    await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`);
+    const confirm = page.getByRole("checkbox");
+    await confirm.check();
+    await page.getByLabel("App configuration access token", { exact: true }).fill("fixture-config-token");
+    await page.getByRole("button", { name: "Create Slack app", exact: true }).click();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(confirm).not.toBeChecked();
+    await expect(page.getByRole("button", { name: "Create Slack app", exact: true })).toBeDisabled();
+    expect(attempts).toBe(1);
+  });
+  test("Slack: temporarily unavailable managed setup can retry in place", async ({ page }) => {
+    const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
+    await installChatControlPlaneMock(page, slack, seed, { enableChatConnectors: true, managedSlack: true });
+    let available = false;
+    await page.route("**/chat-slack/setup-options", async route => {
+      if (available) return route.fallback();
+      await route.fulfill({ json: { managedAvailable: false, defaultMethod: "automatic", workspaces: [] } });
+    });
+    await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`);
+    await expect(page.getByText("Managed Slack setup is unavailable. Try again later.")).toBeVisible();
+    available = true; await page.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Add to Slack", exact: true })).toBeEnabled();
+    await expect(page.getByRole("heading", { name: "Add to Slack", exact: true })).toBeVisible();
+  });
+  test("Slack: own-app selection persists before provisioning", async ({ page }) => {
+    const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
+    await installChatControlPlaneMock(page, slack, seed, { enableChatConnectors: true, managedSlack: true });
+    await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`);
+    await page.getByRole("button", { name: "Use your own app" }).click();
+    await expect(page.getByRole("heading", { name: "App configuration access token", exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "App configuration access token", exact: true })).toBeVisible();
+    await page.getByText("Advanced", { exact: true }).click();
+    await page.getByRole("button", { name: "Use managed setup" }).click();
+    await expect(page.getByRole("heading", { name: "Add to Slack", exact: true })).toBeVisible();
+  });
   test("Slack: automatic creation survives refresh, consent, and connection evidence without copying durable secrets", async ({ page }) => {
     const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
     const mock = await installChatControlPlaneMock(page, slack, seed, { enableChatConnectors: true, automaticSlack: true });

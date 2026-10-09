@@ -1,3 +1,4 @@
+import type { SlackSetupOptions, SlackManagedProvisionInput, SlackManagedResult } from "@paperclipai/shared";
 import { api } from "./client";
 import type {
   SlackAppConfiguration,
@@ -139,7 +140,8 @@ export interface ChatEndpoint {
     messagingEndpoint?: string | null;
     command?: string | null;
     slackApp?: SlackAppConfiguration;
-    slackSetupMethod?: "automatic" | "manual" | "existing";
+    slackSetupMethod?: "managed" | "automatic" | "manual" | "existing";
+    slackManagerError?: string;
     slackRegistration?: SlackRegistrationState;
     slackAvatar?: SlackAvatarState;
     slackAccount?: SlackAccountState;
@@ -201,7 +203,7 @@ export const chatEndpointsApi = {
     api.get<ChatEndpoint>(`/chat-endpoints/${endpointId}`),
   create: (
     companyId: string,
-    input: { provider: ChatProvider; assignedAgentId: string; slackApp?: SlackAppConfiguration },
+    input: { provider: ChatProvider; assignedAgentId: string; slackApp?: SlackAppConfiguration; slackSetupMethod?: "managed" | "automatic" | "manual" | "existing" },
   ) => api.post<ChatEndpoint>(`/companies/${companyId}/chat-endpoints`, input),
   update: (
     endpointId: string,
@@ -215,6 +217,9 @@ export const chatEndpointsApi = {
       photon?: PhotonChannelConfiguration;
     },
   ) => api.post<ChatEndpoint>(`/chat-endpoints/${endpointId}/setup`, input),
+  slackSetupOptions: (companyId: string) => api.get<SlackSetupOptions>(`/companies/${companyId}/chat-slack/setup-options`),
+  authorizeSlackManager: (endpointId: string) => api.post<import("@paperclipai/shared").SlackManagerAuthorization>(`/chat-endpoints/${endpointId}/slack/managed/authorize`, {}),
+  provisionManagedSlack: (endpointId: string, input: SlackManagedProvisionInput) => api.post<SlackManagedResult>(`/chat-endpoints/${endpointId}/slack/managed/provision`, input),
   createSlackApp: (endpointId: string, input: SlackRegistrationInput) =>
     api.post<ChatEndpoint>(`/chat-endpoints/${endpointId}/slack/registration`, input),
   installSlackApp: (endpointId: string) =>

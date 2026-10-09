@@ -7,6 +7,7 @@ import {
   randomBytes,
   type KeyObject,
 } from "node:crypto";
+import { SLACK_MANAGER_SCOPES } from "@paperclipai/shared";
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
@@ -406,6 +407,16 @@ describe("Paperclip Cloud connector", () => {
     })).rejects.toMatchObject({ code: "CONNECTOR_BAD_RESPONSE" });
   });
 
+  it("opens Slack manager handoffs with their exact profile and personal identity", async () => {
+    const keys = config();
+    const credentials = { v: 1, accessToken: "manager-access-canary", refreshToken: "manager-refresh-canary", tokenType: "user", accessTokenExpiresAt: "2030-01-01T00:00:00.000Z", refreshTokenExpiresAt: null,
+      scopes: [...SLACK_MANAGER_SCOPES], subject, companyId, instanceId, environment: "staging", provider: "slack", profile: "slack.manager",
+      slackManager: { appId: "AMANAGER", workspaceId: "TWORKSPACE", workspaceName: "Paperclip", userId: "UOWNER" } };
+    const sealed = seal(credentials, keys.sealPublicKey, "initial", keys.config, "slack.manager");
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: vi.fn(async () => Response.json({ claimId: "claim", scopes: [...SLACK_MANAGER_SCOPES], sealed })) as typeof fetch });
+    await expect(connector.claim({ subject, companyId, profile: "slack.manager", claimId: "claim", redemptionId: "manager-state" })).resolves.toEqual(credentials);
+    await expect(connector.claim({ subject: "another-user", companyId, profile: "slack.manager", claimId: "claim", redemptionId: "manager-state" })).rejects.toThrow();
+  });
   it("opens an instance-sealed claim and verifies its user, company, and exact scopes", async () => {
     const keys = config();
     const credentials = {
@@ -612,7 +623,7 @@ function seal(
   recipientPublicKey: KeyObject,
   purpose: "initial" | "access",
   configValue: PaperclipCloudConnectorConfig,
-  profile: keyof typeof GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  profile: keyof typeof GOOGLE_WORKSPACE_CONNECTOR_PROFILES | "slack.manager",
 ) {
   const ephemeral = generateKeyPairSync("x25519");
   const ephemeralJwk = ephemeral.publicKey.export({ format: "jwk" }) as { x: string };
@@ -625,9 +636,9 @@ function seal(
     purpose,
     configValue.instanceId,
     configValue.environment,
-    "google",
+    profile === "slack.manager" ? "slack" : "google",
     profile,
-    [...GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes].sort().join(" "),
+    [...(profile === "slack.manager" ? SLACK_MANAGER_SCOPES : GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].scopes)].sort().join(" "),
   ].join("\n"));
   const key = Buffer.from(hkdfSync(
     "sha256",
@@ -644,7 +655,7 @@ function seal(
     v: 1,
     alg: "X25519-HKDF-SHA256-A256GCM",
     purpose,
-    provider: "google",
+    provider: profile === "slack.manager" ? "slack" : "google",
     profile,
     epk: ephemeralJwk.x,
     iv: iv.toString("base64url"),

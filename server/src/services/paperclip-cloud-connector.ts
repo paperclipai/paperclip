@@ -1,4 +1,4 @@
-import { ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
+import { SLACK_MANAGER_SCOPES, ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import {
   createDecipheriv,
   createHash,
@@ -34,8 +34,8 @@ export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "staging" | "production";
 export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack";
-export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId;
-export type PaperclipCloudConnectorProvider = "google" | "github" | "asana";
+export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager";
+export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
 
 export type PaperclipCloudConnectorConfig = {
   baseUrl: string;
@@ -60,6 +60,7 @@ export type SealedConnectorCredentials = {
   provider: PaperclipCloudConnectorProvider;
   profile: string;
   appSlug?: string;
+  slackManager?: { appId: string; workspaceId: string; workspaceName: string; userId: string };
 };
 
 export type SealedGmailCredentials = SealedConnectorCredentials & { provider: "google" };
@@ -95,6 +96,7 @@ type SealedEnvelope = {
 };
 
 type ConnectorResponse = {
+  slackManager?: unknown;
   confirmationUrl?: unknown;
   authorizationUrl?: unknown;
   handoff?: unknown;
@@ -394,6 +396,13 @@ export function createPaperclipCloudConnector(input: {
       return [...new Set(response.profiles.flatMap((value) =>
         typeof value === "string" && isPaperclipCloudConnectorProfileId(value) ? [value] : []
       ))];
+    },
+    async getSlackManagerAppId(): Promise<string | null> {
+      const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
+      const manager = response.slackManager;
+      if (response.active !== true || response.status !== "active" || !Array.isArray(response.profiles) || !response.profiles.includes("slack.manager")
+        || !manager || typeof manager !== "object" || !("appId" in manager) || typeof manager.appId !== "string" || !/^A[A-Z0-9]+$/.test(manager.appId)) return null;
+      return manager.appId;
     },
     async startAuthorization(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; returnUri: string; returnState: string }) {
       const profile = values.profile ?? "gmail.draft";
@@ -755,6 +764,7 @@ function connectorProfileDefinition(profile: PaperclipCloudConnectorProfileId): 
   provider: PaperclipCloudConnectorProvider;
   scopes: readonly string[];
 } {
+  if (profile === "slack.manager") return { provider: "slack", scopes: SLACK_MANAGER_SCOPES };
   if (isAsanaConnectorProfileId(profile)) {
     return { provider: "asana", scopes: ASANA_CONNECTOR_SCOPES };
   }
@@ -768,6 +778,7 @@ function isExpectedProviderAuthorizationUrl(
   profile: PaperclipCloudConnectorProfileId,
   url: URL,
 ): boolean {
+  if (profile === "slack.manager") return url.origin === "https://slack.com" && url.pathname === "/oauth/v2/authorize";
   if (isAsanaConnectorProfileId(profile)) {
     return url.origin === "https://app.asana.com" && url.pathname === "/-/oauth_authorize";
   }
@@ -778,7 +789,7 @@ function isExpectedProviderAuthorizationUrl(
 }
 
 function isPaperclipCloudConnectorProfileId(value: string): value is PaperclipCloudConnectorProfileId {
-  return isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value) || isAsanaConnectorProfileId(value);
+  return value === "slack.manager" || isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value) || isAsanaConnectorProfileId(value);
 }
 
 async function sha256Base64Url(value: string): Promise<string> {

@@ -1,4 +1,4 @@
-import { slackRegistrationSchema, slackSetupActionSchema } from "@paperclipai/shared";
+import { slackRegistrationSchema, slackSetupActionSchema, slackManagedProvisionSchema } from "@paperclipai/shared";
 import { isCrossSiteOAuthCallbackNavigation, oauthCallbackInterstitialHtml } from "../lib/oauth-browser-return.js";
 import {
   Router,
@@ -151,6 +151,10 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertConnectionManager(req, companyId);
+      if (req.body.provider === "slack" && !req.body.slackSetupMethod) {
+        req.body.slackSetupMethod = await service.slackRegistration.managerGrants.available() ? "managed" : "automatic";
+      }
+      if (req.body.slackSetupMethod === "managed" && !(await service.slackRegistration.managerGrants.available())) throw forbidden("Managed Slack setup is unavailable");
       res
         .status(201)
         .json(await service.create(companyId, req.body, actorUserId(req)));
@@ -169,6 +173,44 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     return { userId: actor.actorId, sessionId: actor.sessionId,
       bypassPermissionCheck: req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true };
   };
+  router.get("/companies/:companyId/chat-slack/setup-options", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertConnectionManager(req, companyId);
+    res.set("Cache-Control", "no-store");
+    res.json(await service.slackRegistration.managerGrants.choices(companyId, slackActor(req)));
+  });
+  router.post("/chat-endpoints/:endpointId/slack/managed/authorize", validate(slackSetupActionSchema), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.set("Cache-Control", "no-store");
+    res.json(await service.slackRegistration.managerGrants.authorize(endpointId(req), slackActor(req)));
+  });
+  router.post("/chat-endpoints/:endpointId/slack/managed/provision", validate(slackManagedProvisionSchema), async (req, res) => {
+    if (!(await assertEndpointManagementAccess(req, res))) return;
+    res.set("Cache-Control", "no-store");
+    res.json(await service.slackRegistration.managed.provision(endpointId(req), slackActor(req), req.body));
+  });
+  router.delete("/companies/:companyId/chat-slack/manager-grants/:grantId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertConnectionManager(req, companyId);
+    await service.slackRegistration.managerGrants.revoke(req.params.grantId as string, companyId, slackActor(req));
+    res.sendStatus(204);
+  });
+  router.get("/chat-slack/managed/oauth/callback", async (req, res) => {
+    res.set("Cache-Control", "no-store"); res.set("Referrer-Policy", "no-referrer");
+    const actor = slackActor(req);
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const expiredId = await service.slackRegistration.managerGrants.expiredReturn(state, actor);
+    if (expiredId) { res.redirect(303, await service.slackRegistration.returnPath(expiredId)); return; }
+    const pending = await service.slackRegistration.managerGrants.pending(state, actor);
+    await assertConnectionManager(req, pending.current.endpoint.companyId);
+    if (req.get("accept")?.includes("text/html") && isCrossSiteOAuthCallbackNavigation(req)) {
+      res.type("html").send(oauthCallbackInterstitialHtml()); return;
+    }
+    const id = await service.slackRegistration.managerGrants.complete(state,
+      typeof req.query.claim_id === "string" ? req.query.claim_id : null,
+      typeof req.query.error === "string" ? req.query.error : null, actor);
+    res.redirect(303, await service.slackRegistration.returnPath(id));
+  });
   router.post("/chat-endpoints/:endpointId/slack/registration", validate(slackRegistrationSchema), async (req, res) => {
     if (!(await assertEndpointManagementAccess(req, res))) return;
     res.set("Cache-Control", "no-store");
