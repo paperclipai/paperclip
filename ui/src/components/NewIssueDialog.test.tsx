@@ -1324,7 +1324,7 @@ describe("NewIssueDialog", () => {
       new File(["first image"], "first.png", { type: "image/png" }),
       new File(["second image"], "second.png", { type: "image/png" }),
     ] });
-    await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
     const submit = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
     await act(async () => submit.click());
     await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(1));
@@ -1353,7 +1353,7 @@ describe("NewIssueDialog", () => {
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
     Object.defineProperty(input, "files", { configurable: true,
       value: [new File(["image"], "image.png", { type: "image/png" })] });
-    await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click());
     await waitForAssertion(() => expect(toastState.pushToast).toHaveBeenCalledWith(expect.objectContaining({
       tone: "warn", body: expect.stringContaining("task remains in Backlog"),
