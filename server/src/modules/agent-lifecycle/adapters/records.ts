@@ -79,11 +79,11 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   } = agentRecordSupport(db);
   async function updateAgent(
     id: string,
-    data: Partial<Omit<typeof agents.$inferInsert, "status" | "pauseReason" | "pausedAt" | "lifecycleState" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation" | "lifecycleParticipants" | "lifecycleHolds">>,
+    data: Partial<Omit<typeof agents.$inferInsert, "status" | "pauseReason" | "pausedAt" | "lifecycleState" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation" | "lifecycleRequiredPluginIds" | "lifecycleHolds">>,
     options?: UpdateAgentOptions,
     lifecycleCommand?: "pause" | "resume" | "terminate",
   ) {
-    for (const field of ["status", "pauseReason", "pausedAt", "lifecycleState", "lifecycleParticipants", "lifecycleHolds", "lifecycleVersion", "lifecycleError", "lifecycleOperation"]) {
+    for (const field of ["status", "pauseReason", "pausedAt", "lifecycleState", "lifecycleRequiredPluginIds", "lifecycleHolds", "lifecycleVersion", "lifecycleError", "lifecycleOperation"]) {
       if (Object.prototype.hasOwnProperty.call(data, field)) throw conflict("Use an agent lifecycle command to change lifecycle state");
     }
     const existing = await getById(id);
@@ -177,7 +177,7 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         Object.prototype.hasOwnProperty.call(normalizedPatch, key) && !jsonEqual(normalizedPatch[key as keyof typeof normalizedPatch], current[key as keyof typeof current]));
       const verificationPatch = changedConfig && ["preparing", "verifying", "resuming"].includes(current.lifecycleState)
         ? { lifecycleVersion: current.lifecycleVersion + 1, lifecycleError: null,
-            lifecycleOperation: { ...current.lifecycleOperation!, id: randomUUID(), completed: [], leaseOwner: undefined, leaseUntil: undefined, retryAt: undefined } }
+            lifecycleOperation: { ...current.lifecycleOperation!, id: randomUUID(), hostComplete: false, completedPluginIds: [], leaseOwner: undefined, leaseUntil: undefined, retryAt: undefined } }
         : {};
       const updated = await txDb
         .update(agents)
@@ -270,7 +270,7 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
   return {
     getById,
-    create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId" | "lifecycleState" | "lifecycleParticipants" | "lifecycleHolds" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation">, options?: CreateAgentOptions) => {
+    create: async (companyId: string, data: Omit<typeof agents.$inferInsert, "companyId" | "lifecycleState" | "lifecycleRequiredPluginIds" | "lifecycleHolds" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation">, options?: CreateAgentOptions) => {
       if (Object.keys(data).some(key => key.startsWith("lifecycle"))) throw conflict("Lifecycle fields belong to the lifecycle module");
       if (data.appearance?.customAvatarAssetId) throw unprocessable("Create the agent before uploading its avatar");
       assertBuiltInAgentMetadataMutationAllowed(null, data.metadata, options);
@@ -321,7 +321,7 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
             lifecycleHolds: data.status === "paused" ? [data.pauseReason ?? "manual"] : [],
             pauseReason: data.status === "paused" ? data.pauseReason ?? "manual" : null,
             pausedAt: data.status === "paused" ? new Date() : null,
-            lifecycleOperation: { id: randomUUID(), participants: [], completed: [], attempts: 0, resumeState: "preparing", responsibleUserId: options?.responsibleUserId ?? options?.createdByUserId },
+            lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0, resumeState: "preparing", responsibleUserId: options?.responsibleUserId ?? options?.createdByUserId },
             status: data.status === "pending_approval" ? "pending_approval" : data.status === "terminated" ? "terminated" : "paused",
             name: uniqueName,
             appearance: data.appearance == null ? randomAgentAppearance() : agentAppearanceSchema.parse(data.appearance),
@@ -521,7 +521,7 @@ export function agentRecords(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         }
         const updated = await tx
           .update(agents)
-          .set({ ...patch, status: "paused", lifecycleState: "preparing", lifecycleVersion: existing.lifecycleVersion + 1, lifecycleError: null, lifecycleOperation: sql`jsonb_build_object('id', ${randomUUID()}::text, 'participants', '[]'::jsonb, 'completed', '[]'::jsonb, 'attempts', 0, 'responsibleUserId', coalesce(nullif(${agents.lifecycleOperation}->'responsibleUserId', 'null'::jsonb), to_jsonb(${requestedByUserId ?? null}::text)))`, updatedAt: new Date() })
+          .set({ ...patch, status: "paused", lifecycleState: "preparing", lifecycleVersion: existing.lifecycleVersion + 1, lifecycleError: null, lifecycleOperation: sql`jsonb_build_object('id', ${randomUUID()}::text, 'hostComplete', false, 'completedPluginIds', '[]'::jsonb, 'attempts', 0, 'responsibleUserId', coalesce(nullif(${agents.lifecycleOperation}->'responsibleUserId', 'null'::jsonb), to_jsonb(${requestedByUserId ?? null}::text)))`, updatedAt: new Date() })
           .where(and(eq(agents.id, id), eq(agents.status, "pending_approval")))
           .returning()
           .then((rows) => rows[0] ?? null);

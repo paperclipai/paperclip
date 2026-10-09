@@ -34,7 +34,7 @@ describePostgres("Resource lifecycle events", () => {
     vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", undefined);
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", undefined);
     await worker?.stop();
-    worker = configureAgentLifecycle(db, { participants: async () => ["host"], run: async () => "complete" });
+    worker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
     companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Lifecycle fixture", issuePrefix: `L${companyId.replaceAll("-", "").slice(0, 6)}` });
   });

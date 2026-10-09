@@ -21,7 +21,8 @@ export function configureAgentLifecycle(db: Db, driver: LifecycleDriver, canRun 
   assertRootDatabase(db);
   const worker = createLifecycleWorker(createLifecycleStore(db), {
     ...driver,
-    run: (agent, participant) => trackIdleWork(driver.run(agent, participant)),
+    runHost: agent => trackIdleWork(driver.runHost(agent)),
+    runPlugin: (agent, pluginId) => trackIdleWork(driver.runPlugin(agent, pluginId)),
   }, canRun);
   workers.set(db, worker);
   return worker;

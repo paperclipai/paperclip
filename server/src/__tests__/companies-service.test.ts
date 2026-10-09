@@ -51,7 +51,7 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("companyService", () => {
   let db!: ReturnType<typeof createDb>;
   let lifecycleWorker: ReturnType<typeof configureAgentLifecycle>;
-  beforeEach(() => { lifecycleWorker = configureAgentLifecycle(db, { participants: async () => ["host"], run: async () => "complete" }); });
+  beforeEach(() => { lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" }); });
   async function insertAgents(input: typeof agents.$inferInsert | Array<typeof agents.$inferInsert>) {
     const rows = Array.isArray(input) ? input : [input];
     await db.insert(agents).values(rows.map(row => ({ ...row,

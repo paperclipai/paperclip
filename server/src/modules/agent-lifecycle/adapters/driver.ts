@@ -66,30 +66,30 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
     } finally { await target.release(status); }
   }
   return {
-    async participants(agent) {
-      if (agent.lifecycleParticipants !== null) return ["host", ...agent.lifecycleParticipants];
+    async requiredPluginIds(agent) {
+      if (agent.lifecycleRequiredPluginIds !== null) return agent.lifecycleRequiredPluginIds;
       const installed = await db.select().from(plugins).where(inArray(plugins.status, ["ready", "error", "installed", "upgrade_pending"]));
       const disabled = await db.select({ pluginId: pluginCompanySettings.pluginId }).from(pluginCompanySettings)
         .where(and(eq(pluginCompanySettings.companyId, agent.companyId), eq(pluginCompanySettings.enabled, false)));
-      return ["host", ...installed.filter(plugin => !disabled.some(row => row.pluginId === plugin.id) &&
-        plugin.manifestJson.agentLifecycle && plugin.manifestJson.capabilities.includes("agents.lifecycle.manage")).map(plugin => plugin.id)];
+      return installed.filter(plugin => !disabled.some(row => row.pluginId === plugin.id) &&
+        plugin.manifestJson.agentLifecycle && plugin.manifestJson.capabilities.includes("agents.lifecycle.manage")).map(plugin => plugin.id);
     },
-    async run(agent, participant) {
-      if (participant !== "host") {
-        const [plugin] = await db.select().from(plugins).where(eq(plugins.id, participant));
-        const [settings] = await db.select().from(pluginCompanySettings).where(and(
-          eq(pluginCompanySettings.pluginId, participant), eq(pluginCompanySettings.companyId, agent.companyId)));
-        if (settings?.enabled === false || !plugin || plugin.status !== "ready" || !plugin.manifestJson.agentLifecycle || !plugin.manifestJson.capabilities.includes("agents.lifecycle.manage")) {
-          throw new Error("A required lifecycle participant is unavailable");
-        }
-        const operationId = agent.lifecycleOperation!.id;
-        const result = await manager.call(plugin.id, "agentLifecycle", { companyId: agent.companyId,
-          agentId: agent.id, operationId, version: agent.lifecycleVersion, phase: agent.lifecycleState }, 30_000);
-        if (!result || result.operationId !== operationId || result.version !== agent.lifecycleVersion || !["complete", "pending"].includes(result.status)) {
-          throw new Error("Invalid lifecycle result");
-        }
-        return result.status;
+    async runPlugin(agent, pluginId) {
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, pluginId));
+      const [settings] = await db.select().from(pluginCompanySettings).where(and(
+        eq(pluginCompanySettings.pluginId, pluginId), eq(pluginCompanySettings.companyId, agent.companyId)));
+      if (settings?.enabled === false || !plugin || plugin.status !== "ready" || !plugin.manifestJson.agentLifecycle || !plugin.manifestJson.capabilities.includes("agents.lifecycle.manage")) {
+        throw new Error("A required lifecycle plugin is unavailable");
       }
+      const operationId = agent.lifecycleOperation!.id;
+      const result = await manager.call(plugin.id, "agentLifecycle", { companyId: agent.companyId,
+        agentId: agent.id, operationId, version: agent.lifecycleVersion, phase: agent.lifecycleState }, 30_000);
+      if (!result || result.operationId !== operationId || result.version !== agent.lifecycleVersion || !["complete", "pending"].includes(result.status)) {
+        throw new Error("Invalid lifecycle result");
+      }
+      return result.status;
+    },
+    async runHost(agent) {
       if (agent.lifecycleState === "verifying") return verify(agent);
       if (["pausing", "terminating", "cleaning_up"].includes(agent.lifecycleState)) {
         const companyAgents = await db.select().from(agents).where(eq(agents.companyId, agent.companyId));

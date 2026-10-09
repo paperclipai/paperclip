@@ -26,7 +26,7 @@ export const agents = pgTable(
     appearance: jsonb("appearance").$type<AgentAppearance>(),
     status: text("status").notNull().default("idle"),
     lifecycleState: text("lifecycle_state").$type<AgentLifecycleState>().notNull().default("ready"),
-    lifecycleParticipants: jsonb("lifecycle_participants").$type<string[]>(),
+    lifecycleRequiredPluginIds: jsonb("lifecycle_required_plugin_ids").$type<string[]>(),
     lifecycleHolds: jsonb("lifecycle_holds").$type<string[]>().notNull().default([]),
     lifecycleVersion: integer("lifecycle_version").notNull().default(0),
     lifecycleError: text("lifecycle_error"),

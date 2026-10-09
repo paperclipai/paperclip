@@ -1,5 +1,5 @@
 {
-  "id": "aaeaf490-d8b4-432f-b891-7a9f49e5bf0f",
+  "id": "d6277736-9c05-4304-8d16-52dc0d2fbaef",
   "prevId": "af0b2d33-956b-4b12-8d68-8b4e14c991b2",
   "version": "7",
   "dialect": "postgresql",
@@ -3921,8 +3921,8 @@
           "notNull": true,
           "default": "'ready'"
         },
-        "lifecycle_participants": {
-          "name": "lifecycle_participants",
+        "lifecycle_required_plugin_ids": {
+          "name": "lifecycle_required_plugin_ids",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

@@ -8,8 +8,8 @@ export type AgentLifecycleState = typeof AGENT_LIFECYCLE_STATES[number];
 export interface AgentLifecycleOperation {
   id: string;
   resumeState?: "preparing" | "verifying" | "ready";
-  participants: string[];
-  completed: string[];
+  hostComplete: boolean;
+  completedPluginIds: string[];
   leaseOwner?: string;
   leaseUntil?: string;
   retryAt?: string;

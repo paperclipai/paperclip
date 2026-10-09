@@ -26,8 +26,8 @@ export function createLifecycleStore(db: Db): LifecycleStore {
         if (options.version !== undefined && options.version !== agent.lifecycleVersion) return null;
         if (command === "complete" && (!options.owner || !agent.lifecycleOperation?.leaseUntil || agent.lifecycleOperation?.leaseOwner !== options.owner ||
           Date.parse(agent.lifecycleOperation?.leaseUntil ?? "") <= Date.now() ||
-          !agent.lifecycleOperation?.participants.length ||
-          agent.lifecycleOperation.participants.some(id => !agent.lifecycleOperation!.completed.includes(id)))) return null;
+          !agent.lifecycleOperation.hostComplete || agent.lifecycleRequiredPluginIds === null ||
+          agent.lifecycleRequiredPluginIds.some(id => !agent.lifecycleOperation!.completedPluginIds.includes(id)))) return null;
         if (command === "retry") {
           transition(agent.lifecycleState, command);
           if (agent.lifecycleOperation?.leaseUntil && Date.parse(agent.lifecycleOperation.leaseUntil) > Date.now()) return agent;
@@ -67,7 +67,7 @@ export function createLifecycleStore(db: Db): LifecycleStore {
         }
         const operation: AgentLifecycleOperation = {
           responsibleUserId: agent.lifecycleOperation?.responsibleUserId,
-          id: randomUUID(), participants: options.participants ?? [], completed: [], attempts: 0,
+          id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0,
           resumeState: next === "pausing"
             ? agent.lifecycleState === "preparing" || agent.lifecycleState === "verifying" ? agent.lifecycleState : agent.lifecycleOperation?.resumeState ?? "ready"
             : agent.lifecycleOperation?.resumeState,
@@ -96,7 +96,7 @@ export function createLifecycleStore(db: Db): LifecycleStore {
     },
     async claim(id, owner, now) {
       const [agent] = await db.update(agents).set({
-        lifecycleOperation: sql`coalesce(${agents.lifecycleOperation}, '{"id":"", "participants":[], "completed":[], "attempts":0}'::jsonb)
+        lifecycleOperation: sql`coalesce(${agents.lifecycleOperation}, '{"id":"", "hostComplete":false, "completedPluginIds":[], "attempts":0}'::jsonb)
           || jsonb_build_object('leaseOwner', ${owner}::text, 'leaseUntil', ${(new Date(now.getTime() + 120_000)).toISOString()}::text,
             'attempts', coalesce((${agents.lifecycleOperation}->>'attempts')::integer, 0) + 1)`,
       }).where(and(eq(agents.id, id), inArray(agents.lifecycleState, ["preparing", "verifying", "pausing", "resuming", "terminating", "cleaning_up"]),
@@ -110,21 +110,34 @@ export function createLifecycleStore(db: Db): LifecycleStore {
         .where(and(eq(agents.id, agent.id), eq(agents.lifecycleVersion, agent.lifecycleVersion), sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });
       return rows.length > 0;
     },
-    async setParticipants(agent, owner, participants) {
+    async setRequiredPlugins(agent, owner, pluginIds) {
+      const rows = await db.update(agents).set({ lifecycleRequiredPluginIds: pluginIds })
+        .where(and(eq(agents.id, agent.id), eq(agents.lifecycleVersion, agent.lifecycleVersion),
+          sql`${agents.lifecycleRequiredPluginIds} is null`,
+          sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });
+      return rows.length > 0;
+    },
+    async completeHost(agent, owner) {
       const rows = await db.update(agents).set({
-        lifecycleParticipants: participants.filter(id => id !== "host"),
-        lifecycleOperation: sql`jsonb_set(${agents.lifecycleOperation}, '{participants}', ${JSON.stringify(participants)}::jsonb)`,
+        lifecycleOperation: sql`jsonb_set(${agents.lifecycleOperation}, '{hostComplete}', 'true'::jsonb)`,
       }).where(and(eq(agents.id, agent.id), eq(agents.lifecycleVersion, agent.lifecycleVersion),
         sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });
       return rows.length > 0;
     },
-    async recordResult(agent, owner, participant, error, now) {
-      const release = error !== null || participant === "";
+    async completePlugin(agent, owner, pluginId) {
+      const rows = await db.update(agents).set({
+        lifecycleOperation: sql`jsonb_set(${agents.lifecycleOperation}, '{completedPluginIds}',
+          coalesce(${agents.lifecycleOperation}->'completedPluginIds', '[]'::jsonb) || ${JSON.stringify([pluginId])}::jsonb)`,
+      }).where(and(eq(agents.id, agent.id), eq(agents.lifecycleVersion, agent.lifecycleVersion),
+        sql`${agents.lifecycleRequiredPluginIds} @> ${JSON.stringify([pluginId])}::jsonb`,
+        sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });
+      return rows.length > 0;
+    },
+    async defer(agent, owner, error, now) {
       const rows = await db.update(agents).set({
         lifecycleError: error,
-        lifecycleOperation: release
-          ? sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil') || jsonb_build_object('retryAt', ${new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString()}::text)`
-          : sql`jsonb_set(${agents.lifecycleOperation}, '{completed}', coalesce(${agents.lifecycleOperation}->'completed', '[]'::jsonb) || ${JSON.stringify([participant])}::jsonb)`,
+        lifecycleOperation: sql`(${agents.lifecycleOperation} - 'leaseOwner' - 'leaseUntil')
+          || jsonb_build_object('retryAt', ${new Date(now.getTime() + (error ? 60_000 : 2_000)).toISOString()}::text)`,
         updatedAt: now,
       }).where(and(eq(agents.id, agent.id), eq(agents.lifecycleVersion, agent.lifecycleVersion),
         sql`${agents.lifecycleOperation}->>'leaseOwner' = ${owner}`)).returning({ id: agents.id });

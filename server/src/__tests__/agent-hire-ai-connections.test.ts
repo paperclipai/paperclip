@@ -489,7 +489,7 @@ describe("agent-created hires use managed AI connections", () => {
 describe("hired agents sharing a subscription", () => {
   async function finishSetup(agentId: string) {
     // These tests cover task credentials after setup; lifecycle tests cover verification.
-    const worker = configureAgentLifecycle(db, { participants: async () => ["host"], run: async () => "complete" });
+    const worker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
     try { await worker.process(agentId); } finally { await worker.stop(); }
   }
   it("keeps a credential-lock timeout on automatic retry without blocking the task or starting a provider", async () => {

@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const protectedFields = new Set(["pauseReason", "pausedAt", "lifecycleState", "lifecycleVersion", "lifecycleError", "lifecycleOperation", "lifecycleParticipants", "lifecycleHolds"]);
+const protectedFields = new Set(["pauseReason", "pausedAt", "lifecycleState", "lifecycleVersion", "lifecycleError", "lifecycleOperation", "lifecycleRequiredPluginIds", "lifecycleHolds"]);
 export function agentLifecycleWriteViolations(source) {
   const aliases = [...source.matchAll(/\bagents(?:\s+as\s+(\w+))?\s*[,}]/g)].map(match => match[1] ?? "agents");
   const violations = [];

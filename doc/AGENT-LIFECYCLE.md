@@ -85,10 +85,12 @@ It must also request `agents.lifecycle.manage`.
 The plugin implements `onAgentLifecycle` in the SDK.
 This method is separate from event delivery and event acknowledgment.
 
-The host selects the enabled participants before the first lifecycle step.
-It stores that selection on the agent.
-A disabled or removed participant cannot silently release an existing requirement.
-Restore that participant to complete the operation.
+The host selects the required plugins before the first lifecycle step.
+`setRequiredPlugins` stores their IDs on the agent.
+The host is not a plugin ID. Each operation records host completion and
+completed plugin IDs separately. The host step must finish before plugin calls.
+A disabled or removed plugin cannot silently release an existing requirement.
+Restore that plugin to complete the operation.
 A later plugin installation does not change an existing selection.
 
 Each request contains these fields:
@@ -106,7 +108,7 @@ Throw an error when the step fails.
 The host stores a fixed error message. It does not store the provider error text.
 
 Calls can repeat after a timeout or a server restart.
-A participant must make repeated calls safe.
+A plugin must make repeated calls safe.
 It must retain the highest version for each company and agent.
 It must reject an older request after it accepts a newer version.
 It must also prevent an older operation from creating resources after cleanup.

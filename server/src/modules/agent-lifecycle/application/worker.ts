@@ -19,31 +19,37 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
       renewal.unref?.();
       try {
         const operation = agent.lifecycleOperation!;
-        const participants = operation.participants.length ? operation.participants : await driver.participants(agent);
-        if (!operation.participants.length && !await store.setParticipants(agent, owner, participants)) continue;
-        for (const participant of participants) {
-          if (operation.completed.includes(participant)) continue;
+        const pluginIds = agent.lifecycleRequiredPluginIds ?? await driver.requiredPluginIds(agent);
+        if (agent.lifecycleRequiredPluginIds === null && !await store.setRequiredPlugins(agent, owner, pluginIds)) continue;
+        if (!canRun()) {
+          await store.defer(agent, owner, null, new Date());
+          return;
+        }
+        if (!operation.hostComplete) {
+          if (!await store.renew(agent, owner, new Date())) continue;
+          if (await driver.runHost(agent) === "pending") {
+            if (!await store.defer(agent, owner, null, new Date())) continue;
+            return;
+          }
+          if (!await store.completeHost(agent, owner)) continue;
+        }
+        for (const pluginId of pluginIds) {
+          if (operation.completedPluginIds.includes(pluginId)) continue;
           if (!canRun()) {
-            await store.recordResult(agent, owner, "", null, new Date());
+            await store.defer(agent, owner, null, new Date());
             return;
           }
           if (!await store.renew(agent, owner, new Date())) continue phase;
-          try {
-            const result = await driver.run(agent, participant);
-            if (result === "pending") {
-              if (!await store.recordResult(agent, owner, "", null, new Date())) continue phase;
-              return;
-            }
-            if (!await store.recordResult(agent, owner, participant, null, new Date())) continue phase;
-          } catch {
-            if (!await store.recordResult(agent, owner, participant, "The lifecycle step failed. Retry the operation.", new Date())) continue phase;
+          if (await driver.runPlugin(agent, pluginId) === "pending") {
+            if (!await store.defer(agent, owner, null, new Date())) continue phase;
             return;
           }
+          if (!await store.completePlugin(agent, owner, pluginId)) continue phase;
         }
         const changed = await store.change(id, "complete", { version: agent.lifecycleVersion, owner });
         if (changed && !isLifecycleWorkPending(changed.lifecycleState)) return;
       } catch {
-        await store.recordResult(agent, owner, "", "The lifecycle step failed. Retry the operation.", new Date());
+        if (!await store.defer(agent, owner, "The lifecycle step failed. Retry the operation.", new Date())) continue;
         return;
       } finally {
         clearInterval(renewal);

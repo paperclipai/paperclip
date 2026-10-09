@@ -168,7 +168,7 @@ export function hasConfigPatchFields(data: Partial<typeof agents.$inferInsert>) 
 }
 
 export function changedPendingApprovalConfigFields(
-  existing: Omit<typeof agents.$inferSelect, "lifecycleOperation" | "lifecycleParticipants">,
+  existing: Omit<typeof agents.$inferSelect, "lifecycleOperation" | "lifecycleRequiredPluginIds">,
   data: Partial<typeof agents.$inferInsert>,
 ) {
   return CONFIG_REVISION_FIELDS.filter((field) =>
@@ -333,7 +333,7 @@ export function agentRecordSupport(db: Db) {
   }
 
   function normalizeAgentBaseRow(row: typeof agents.$inferSelect) {
-    const { lifecycleOperation, lifecycleParticipants, ...publicRow } = row;
+    const { lifecycleOperation, lifecycleRequiredPluginIds, ...publicRow } = row;
     return withUrlKey({
       ...publicRow,
       permissions: normalizeAgentPermissions(row.permissions),

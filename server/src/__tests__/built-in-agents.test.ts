@@ -154,7 +154,7 @@ describeEmbeddedPostgres("built-in agents", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-built-in-agents-");
     db = createDb(tempDb.connectionString);
-    lifecycleWorker = configureAgentLifecycle(db, { participants: async () => ["host"], run: async () => "complete" });
+    lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
   }, 20_000);
 
   afterEach(async () => {
@@ -1437,7 +1437,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const builtIns = createBuiltInAgentService(db);
     const created = await builtIns.ensure(companyId, "reflection-coach");
     await lifecycleWorker.stop();
-    lifecycleWorker = configureAgentLifecycle(db, { participants: async () => ["host"], run: async () => "pending" });
+    lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "pending" });
     try {
       const result = await builtIns.runRoutine(companyId, "reflection-coach", "recent-agent-reflection", { userId: "responsible-user" });
       expect(result.status).toBe("issue_created");
@@ -1454,7 +1454,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       await db.delete(routineRuns).where(eq(routineRuns.companyId, companyId));
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
       await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
-      lifecycleWorker = configureAgentLifecycle(db, { participants: async () => ["host"], run: async () => "complete" });
+      lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
     }
   });
 

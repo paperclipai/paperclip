@@ -33,8 +33,9 @@ const support = await getEmbeddedPostgresTestSupport();
     companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Lifecycle test", issuePrefix: `L${companyId.slice(0, 7)}` });
   });
-  function worker(run: (agent: LifecycleAgent, participant: string) => Promise<"complete" | "pending"> = async () => "complete", participants = ["host"]) {
-    const value = configureAgentLifecycle(db, { participants: async () => participants, run }); workers.push(value); return value;
+  function worker(runHost: (agent: LifecycleAgent) => Promise<"complete" | "pending"> = async () => "complete") {
+    const value = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost });
+    workers.push(value); return value;
   }
   async function hire(status = "idle") { return createAgentLifecycle(db).requestHire(companyId, { name: "Agent", status, adapterType: "process" }); }
   async function current(id: string) { return (await db.select().from(agents).where(eq(agents.id, id)))[0]!; }
@@ -49,7 +50,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const mapped = await current(row.id);
       expect(mapped.lifecycleState).toBe(["paused", "pending_approval", "terminated"].includes(row.status) ? row.status : "ready");
       expect(mapped.lifecycleOperation).toBeNull();
-      expect(mapped.lifecycleParticipants).toBeNull();
+      expect(mapped.lifecycleRequiredPluginIds).toBeNull();
       expect(mapped.lifecycleHolds).toEqual(row.status === "paused" ? ["budget"] : []);
     }
   });
@@ -70,7 +71,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("runs the saved harness test and keeps a failed configuration out of ready", async () => {
     const driver = createLifecycleDriver(db, {} as never);
-    const work = worker(driver.run);
+    const work = worker(driver.runHost);
     const agent = await hire();
     await work.process(agent.id);
     expect(await current(agent.id)).toMatchObject({ lifecycleState: "verifying", status: "paused" });
@@ -85,7 +86,7 @@ const support = await getEmbeddedPostgresTestSupport();
       status: "cancelled", invocationSource: "on_demand", runtimeMode: "legacy",
       startedAt: new Date(), finishedAt: new Date(), processPid: process.pid }).returning();
     const driver = createLifecycleDriver(db, {} as never);
-    const work = worker(driver.run);
+    const work = worker(driver.runHost);
     await createAgentLifecycle(db).terminateAgent(agent.id);
     await work.process(agent.id);
     expect((await current(agent.id)).lifecycleState).toBe("terminating");
@@ -102,7 +103,7 @@ const support = await getEmbeddedPostgresTestSupport();
       status: "idle", lifecycleState: "ready" }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: child.id,
       status: "queued", invocationSource: "on_demand" }).returning();
-    const work = worker(createLifecycleDriver(db, {} as never).run);
+    const work = worker(createLifecycleDriver(db, {} as never).runHost);
     await createAgentLifecycle(db).pauseAgent(parent.id);
     await work.process(parent.id);
     expect((await current(parent.id)).lifecycleState).toBe("paused");
@@ -160,7 +161,7 @@ const support = await getEmbeddedPostgresTestSupport();
     for (const savedOwner of [null, "original-owner"]) {
       const [agent] = await db.insert(agents).values({ companyId, name: "Migrated hire", status: "pending_approval",
         lifecycleState: "pending_approval", lifecycleOperation: savedOwner ? {
-          id: randomUUID(), participants: [], completed: [], attempts: 0, responsibleUserId: savedOwner,
+          id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0, responsibleUserId: savedOwner,
         } : null }).returning();
       const approval = await approvalService(db).create(companyId, { type: "hire_agent",
         requestedByUserId: "requesting-member", payload: { agentId: agent.id }, status: "pending" });
@@ -173,7 +174,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const agent = await hire("pending_approval");
     await expect(db.transaction(async tx => createAgentLifecycle(tx as unknown as Db))).rejects.toThrow("root database");
     await expect(agentConfiguration(db).update(agent.id, { status: "idle" } as never)).rejects.toThrow("lifecycle command");
-    await expect(createAgentLifecycle(db).requestHire(companyId, { name: "Bypass", lifecycleParticipants: [] } as never)).rejects.toThrow("Lifecycle fields");
+    await expect(createAgentLifecycle(db).requestHire(companyId, { name: "Bypass", lifecycleRequiredPluginIds: [] } as never)).rejects.toThrow("Lifecycle fields");
   });
 
   it("clears a rejected hire from the user's primary selection", async () => {
@@ -245,9 +246,9 @@ const support = await getEmbeddedPostgresTestSupport();
     await createAgentLifecycle(db).resumeAgent(agent.id);
     const claimed = await store.claim(agent.id, "old", new Date());
     expect(claimed).not.toBeNull();
-    await store.setParticipants(claimed!, "old", ["host"]);
+    await store.setRequiredPlugins(claimed!, "old", []);
     await createAgentLifecycle(db).terminateAgent(agent.id);
-    expect(await store.recordResult(claimed!, "old", "host", null, new Date())).toBe(false);
+    expect(await store.completeHost(claimed!, "old")).toBe(false);
     expect(await store.change(agent.id, "complete", { owner: "old", version: claimed!.lifecycleVersion })).toBeNull();
     expect((await current(agent.id)).lifecycleState).toBe("terminating");
   });
@@ -269,7 +270,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await current(agent.id)).toBeUndefined();
   });
 
-  it("retains participants and checks the operation and company on each reply", async () => {
+  it("retains required plugin IDs and checks the operation and company on each reply", async () => {
     const agent = await hire("paused");
     const pluginId = randomUUID();
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "lifecycle-test", version: "1.0.0", status: "ready",
@@ -277,26 +278,68 @@ const support = await getEmbeddedPostgresTestSupport();
     const call = vi.fn(async (_id, _method, input) => ({ operationId: input.operationId, version: input.version, status: "complete" }));
     const driver = createLifecycleDriver(db, { call } as never);
     const snapshot = (await createLifecycleStore(db).get(agent.id))!;
-    expect(await driver.participants(snapshot)).toContain(pluginId);
+    expect(await driver.requiredPluginIds(snapshot)).toContain(pluginId);
     await db.insert(pluginCompanySettings).values({ companyId, pluginId, enabled: false });
-    expect(await driver.participants(snapshot)).not.toContain(pluginId);
-    expect(await driver.participants({ ...snapshot, lifecycleParticipants: [pluginId] })).toContain(pluginId);
-    await expect(driver.run(snapshot, pluginId)).rejects.toThrow("unavailable");
+    expect(await driver.requiredPluginIds(snapshot)).not.toContain(pluginId);
+    expect(await driver.requiredPluginIds({ ...snapshot, lifecycleRequiredPluginIds: [pluginId] })).toContain(pluginId);
+    await expect(driver.runPlugin(snapshot, pluginId)).rejects.toThrow("unavailable");
     await db.update(pluginCompanySettings).set({ enabled: true }).where(eq(pluginCompanySettings.pluginId, pluginId));
-    expect(await driver.run(snapshot, pluginId)).toBe("complete");
+    expect(await driver.runPlugin(snapshot, pluginId)).toBe("complete");
     expect(call).toHaveBeenCalledWith(pluginId, "agentLifecycle", { companyId, agentId: agent.id,
       operationId: snapshot.lifecycleOperation!.id, version: snapshot.lifecycleVersion, phase: "paused" }, 30_000);
     call.mockResolvedValueOnce({ operationId: "stale", version: snapshot.lifecycleVersion, status: "complete" });
-    await expect(driver.run(snapshot, pluginId)).rejects.toThrow("Invalid lifecycle result");
+    await expect(driver.runPlugin(snapshot, pluginId)).rejects.toThrow("Invalid lifecycle result");
+  });
+
+  it("keeps host completion and required plugin results across a worker restart", async () => {
+    const pluginIds = [randomUUID(), randomUUID()];
+    const runHost = vi.fn(async () => "complete" as const);
+    const firstPlugin = vi.fn(async (_agent: LifecycleAgent, pluginId: string) =>
+      pluginId === pluginIds[0] ? "complete" as const : "pending" as const);
+    const first = configureAgentLifecycle(db, { requiredPluginIds: async () => pluginIds, runHost, runPlugin: firstPlugin });
+    workers.push(first);
+    const agent = await hire();
+    await first.process(agent.id);
+    expect(await current(agent.id)).toMatchObject({ lifecycleState: "preparing", lifecycleRequiredPluginIds: pluginIds,
+      lifecycleOperation: { hostComplete: true, completedPluginIds: [pluginIds[0]] } });
+    await first.stop();
+
+    const discover = vi.fn(async () => []);
+    const resumedPlugin = vi.fn(async (_agent: LifecycleAgent, _pluginId: string) => "complete" as const);
+    const resumed = configureAgentLifecycle(db, { requiredPluginIds: discover, runHost, runPlugin: resumedPlugin });
+    workers.push(resumed);
+    await createAgentLifecycle(db).retry(agent.id);
+    await resumed.process(agent.id);
+    expect((await current(agent.id)).lifecycleState).toBe("ready");
+    expect(discover).not.toHaveBeenCalled();
+    expect(runHost).toHaveBeenCalledTimes(2);
+    expect(resumedPlugin.mock.calls.map(call => call[1])).toEqual([pluginIds[1], ...pluginIds]);
+  });
+
+  it("requires host and plugin completion and freezes the selected plugin IDs", async () => {
+    const agent = await hire();
+    const store = createLifecycleStore(db);
+    const claimed = (await store.claim(agent.id, "test", new Date()))!;
+    const pluginId = randomUUID();
+    expect(await store.setRequiredPlugins(claimed, "test", [pluginId])).toBe(true);
+    expect(await store.setRequiredPlugins(claimed, "test", [])).toBe(false);
+    expect(await store.completePlugin(claimed, "test", randomUUID())).toBe(false);
+    const complete = () => store.change(agent.id, "complete", { owner: "test", version: claimed.lifecycleVersion });
+    expect(await complete()).toBeNull();
+    expect(await store.completePlugin(claimed, "test", pluginId)).toBe(true);
+    expect(await complete()).toBeNull();
+    expect(await store.completeHost(claimed, "test")).toBe(true);
+    expect(await complete()).toMatchObject({ lifecycleState: "verifying" });
+    expect(await store.completePlugin(claimed, "test", pluginId)).toBe(false);
   });
 
   it("fences verification when the saved configuration changes", async () => {
     const lifecycle = createAgentLifecycle(db); const store = createLifecycleStore(db);
     const agent = await hire();
     const claimed = (await store.claim(agent.id, "configuration-test", new Date()))!;
-    await store.setParticipants(claimed, "configuration-test", ["host"]);
+    await store.setRequiredPlugins(claimed, "configuration-test", []);
     await agentConfiguration(db).update(agent.id, { adapterConfig: { command: "echo" } });
-    expect(await store.recordResult(claimed, "configuration-test", "host", null, new Date())).toBe(false);
+    expect(await store.completeHost(claimed, "configuration-test")).toBe(false);
     expect((await lifecycle.get(agent.id))!.lifecycleVersion).toBeGreaterThan(claimed.lifecycleVersion);
   });
 
@@ -328,8 +371,8 @@ const support = await getEmbeddedPostgresTestSupport();
     await createAgentLifecycle(db).resumeAgent(agent.id);
     const claim = await store.claim(agent.id, "first", new Date(Date.now() - 180_000));
     expect(claim).not.toBeNull();
-    await store.setParticipants(claim!, "first", ["host"]);
-    await store.recordResult(claim!, "first", "host", null, new Date());
+    await store.setRequiredPlugins(claim!, "first", []);
+    await store.completeHost(claim!, "first");
     expect(await store.change(agent.id, "complete", { owner: "first", version: claim!.lifecycleVersion })).toBeNull();
     expect(await store.claim(agent.id, "second", new Date())).not.toBeNull();
   });

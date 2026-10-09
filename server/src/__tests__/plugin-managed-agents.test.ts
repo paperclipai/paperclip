@@ -262,7 +262,7 @@ describeEmbeddedPostgres("plugin-managed agents", () => {
     const reconciled = await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" });
 
     expect(reconciled.agent).toMatchObject({ lifecycleState: "resuming", pauseReason: null });
-    const worker = configureAgentLifecycle(db, { participants: async () => ["host"], run: async () => "complete" });
+    const worker = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
     await worker.process(created.agentId!);
     await worker.stop();
     expect((await services.agents.managedReconcile({ companyId, agentKey: "wiki-maintainer" })).agent).toMatchObject({
