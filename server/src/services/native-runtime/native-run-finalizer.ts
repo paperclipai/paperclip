@@ -607,7 +607,10 @@ async function resolveCommittedFinalizationRecovery(db: Db, run: typeof heartbea
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     eq(issueRecoveryActions.kind, "active_run_watchdog"), inArray(issueRecoveryActions.status, ["active", "escalated"]),
     sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
-    sql`${issueRecoveryActions.wakePolicy}->>'kind' = 'resume_native_run'`,
+    or(
+      sql`${issueRecoveryActions.wakePolicy}->>'kind' = 'resume_native_run'`,
+      eq(issueRecoveryActions.cause, "native_workspace_finalization_owner_unverified"),
+    ),
   ));
   for (const action of actions) await issueRecoveryActionService(db).resolveActiveForIssue({
     companyId: run.companyId, sourceIssueId: issueId, actionId: action.id,

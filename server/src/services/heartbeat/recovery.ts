@@ -1,4 +1,5 @@
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
+import { pendingNativeWorkspaceFinalizationCondition } from "../native-runtime/native-workspace-finalization-state.js";
 import { CHAT_COMPLETION_WAKE_REASON } from "../chat-completion-delivery.js";
 import {
   hasStopOnlyCleanup,
@@ -2059,6 +2060,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         nativeControllerProcessStartedAt:
           nativeRunFinalizations.controllerProcessStartedAt,
         nativeControllerLeaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
+        nativeWorkspaceFinalizationPending: pendingNativeWorkspaceFinalizationCondition(db),
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -2110,10 +2112,15 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       nativeControllerPid,
       nativeControllerProcessStartedAt,
       nativeControllerLeaseExpiresAt,
+      nativeWorkspaceFinalizationPending,
     } of activeRuns) {
       // Authentication timeout requires an explicit ownership resolution, not
       // repeated reattachment or a process-gone guess on subsequent sweeps.
       if (isNativeRunnerOwnershipHeld(run)) continue;
+      // The accepted result, not a missing provider process, owns this suffix.
+      // The reconciler above either finishes it, records a bounded failure, or
+      // preserves its explicit physical-copyback hold. Keep its source lease.
+      if (nativeWorkspaceFinalizationPending) continue;
       const nativeRun = run.runtimeMode === "native";
       const nativeProcessPidAlive =
         nativeRun && !!run.processPid && isProcessAlive(run.processPid);
