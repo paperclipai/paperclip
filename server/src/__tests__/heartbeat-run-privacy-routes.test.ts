@@ -324,7 +324,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     const readerId = `reader-${randomUUID()}`;
     await db.insert(authUsers).values({ id: readerId, name: "Task reader", email: `${readerId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({ companyId: fixture.companyId, principalType: "user", principalId: readerId, status: "active", membershipRole: "operator" });
-    await db.update(issues).set({ visibility: "public", privacyRootIssueId: null }).where(eq(issues.id, fixture.issueId));
+    await db.update(issues).set({ visibility: "open", privacyRootIssueId: null }).where(eq(issues.id, fixture.issueId));
     const applicationId = randomUUID(), connectionId = randomUUID(), grantId = randomUUID();
     await db.insert(toolApplications).values({ id: applicationId, companyId: fixture.companyId, name: "AI fixture", type: "rest_api" });
     await db.insert(toolConnections).values({ id: connectionId, companyId: fixture.companyId, applicationId, name: "Owner's API key", uid: "credential-fixture", connectionPurpose: "ai", transport: "runtime_auth" });
