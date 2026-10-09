@@ -73,6 +73,7 @@ Account-profile and domain results remain private and are not committed. Permiss
 - Shared catalog suite: 36 passed.
 - Durable override suite: 3 passed.
 - Focused UI setup, recovery, Browse, and OAuth-helper suites: 306 passed.
+- Targeted mock MCP Playwright journey: 1 passed in 34.9s on an isolated harness. It checks the exact saved Permissions route, both advertised actions, and reload persistence. CI caught its stale Browse expectation after View connection changed; the test now covers the intended destination.
 - Brand validation: 101 identities passed.
 - Full connector service suite: 420 passed, including the four-case JSON-token/access regression and existing managed OAuth lifecycle coverage.
 - Recursive typecheck: passed again after rebasing onto current master.
