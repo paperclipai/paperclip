@@ -320,4 +320,124 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
   });
+
+  describe("gateway header timeout", () => {
+    async function prepareWithProviders(
+      providers: Record<string, unknown>,
+      extraEnv: Record<string, string> = {},
+    ) {
+      const configHome = await makeConfigHome({ permission: { read: "allow" } });
+      const prepared = await prepareOpenCodeRuntimeConfig({
+        env: {
+          XDG_CONFIG_HOME: configHome,
+          PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify(providers),
+          ...extraEnv,
+        },
+        config: {},
+      });
+      cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+      const runtimeConfig = JSON.parse(
+        await fs.readFile(
+          path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+          "utf8",
+        ),
+      ) as Record<string, any>;
+      return { prepared, runtimeConfig };
+    }
+
+    const gateway = {
+      gpuai: {
+        npm: "@ai-sdk/openai-compatible",
+        options: { baseURL: "https://gateway.example/v1", apiKey: "vk" },
+        models: { auto: {} },
+      },
+    };
+
+    it("bounds time-to-first-byte on gateway providers by default", async () => {
+      const { prepared, runtimeConfig } = await prepareWithProviders(gateway);
+      expect(runtimeConfig.provider.gpuai.options.headerTimeout).toBe(120_000);
+      // The bound must not disturb the rest of the provider block.
+      expect(runtimeConfig.provider.gpuai.options.baseURL).toBe("https://gateway.example/v1");
+      expect(runtimeConfig.provider.gpuai.models).toEqual({ auto: {} });
+      expect(
+        prepared.notes.some((n) => n.includes("header timeout to 120000ms") && n.includes("gpuai")),
+      ).toBe(true);
+      await prepared.cleanup();
+    });
+
+    it("creates an options block for a gateway provider that has none", async () => {
+      const { prepared, runtimeConfig } = await prepareWithProviders({
+        gpuai: { npm: "@ai-sdk/openai-compatible", models: { auto: {} } },
+      });
+      expect(runtimeConfig.provider.gpuai.options).toEqual({ headerTimeout: 120_000 });
+      await prepared.cleanup();
+    });
+
+    it("honours an explicit numeric headerTimeout in the provider block", async () => {
+      const { prepared, runtimeConfig } = await prepareWithProviders({
+        gpuai: { ...gateway.gpuai, options: { ...gateway.gpuai.options, headerTimeout: 15_000 } },
+      });
+      expect(runtimeConfig.provider.gpuai.options.headerTimeout).toBe(15_000);
+      expect(prepared.notes.some((n) => n.includes("header timeout"))).toBe(false);
+      await prepared.cleanup();
+    });
+
+    it("honours an explicit headerTimeout of false (no TTFB bound)", async () => {
+      const { prepared, runtimeConfig } = await prepareWithProviders({
+        gpuai: { ...gateway.gpuai, options: { ...gateway.gpuai.options, headerTimeout: false } },
+      });
+      expect(runtimeConfig.provider.gpuai.options.headerTimeout).toBe(false);
+      await prepared.cleanup();
+    });
+
+    it("applies the env override to every gateway provider", async () => {
+      const { prepared, runtimeConfig } = await prepareWithProviders(
+        { gpuai: gateway.gpuai, other: { npm: "@ai-sdk/openai-compatible", options: {} } },
+        { PAPERCLIP_OPENCODE_PROVIDER_HEADER_TIMEOUT_MS: "45000" },
+      );
+      expect(runtimeConfig.provider.gpuai.options.headerTimeout).toBe(45_000);
+      expect(runtimeConfig.provider.other.options.headerTimeout).toBe(45_000);
+      await prepared.cleanup();
+    });
+
+    it("opts out when the env override disables the bound", async () => {
+      const { prepared, runtimeConfig } = await prepareWithProviders(gateway, {
+        PAPERCLIP_OPENCODE_PROVIDER_HEADER_TIMEOUT_MS: "false",
+      });
+      expect(runtimeConfig.provider.gpuai.options.headerTimeout).toBeUndefined();
+      await prepared.cleanup();
+    });
+
+    it("surfaces a note and leaves the default when the env override is not a positive number", async () => {
+      const { prepared, runtimeConfig } = await prepareWithProviders(gateway, {
+        PAPERCLIP_OPENCODE_PROVIDER_HEADER_TIMEOUT_MS: "soon",
+      });
+      expect(runtimeConfig.provider.gpuai.options.headerTimeout).toBeUndefined();
+      expect(
+        prepared.notes.some((n) =>
+          n.includes("PAPERCLIP_OPENCODE_PROVIDER_HEADER_TIMEOUT_MS is not a positive number"),
+        ),
+      ).toBe(true);
+      await prepared.cleanup();
+    });
+
+    it("does not touch providers that come from the user's own config", async () => {
+      const configHome = await makeConfigHome({
+        provider: { local: { npm: "@ai-sdk/openai-compatible", options: { baseURL: "http://127.0.0.1:1234/v1" } } },
+      });
+      const prepared = await prepareOpenCodeRuntimeConfig({
+        env: { XDG_CONFIG_HOME: configHome },
+        config: {},
+      });
+      cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+      const runtimeConfig = JSON.parse(
+        await fs.readFile(
+          path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+          "utf8",
+        ),
+      ) as Record<string, any>;
+      expect(runtimeConfig.provider.local.options).toEqual({ baseURL: "http://127.0.0.1:1234/v1" });
+      await prepared.cleanup();
+    });
+  });
 });
