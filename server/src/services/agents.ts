@@ -62,6 +62,7 @@ import {
   readBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { clearIssueRunReferences } from "./issue-run-references.js";
 
 import { clearPrimaryAgent, initializePrimaryAgent } from "./primary-agent.js";
 import { agentIdentityService } from "./agent-identity.js";
@@ -1139,6 +1140,19 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         );
         await tx.delete(issueExecutionDecisions).where(eq(issueExecutionDecisions.actorAgentId, id));
         await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
+        // Release the issue -> run references before deleting the runs. The two
+        // columns are `on delete set null`, so the delete below would otherwise
+        // lock the referencing `issues` rows from inside its own FK pass —
+        // heartbeat_runs before issues, the reverse of the order
+        // `issuesSvc.checkout` takes, which deadlocks. The assignee/creator
+        // update above only covers issues assigned to this agent; an issue that
+        // merely references one of its runs is not in that set.
+        const agentRunIds = await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, id))
+          .then((rows) => rows.map((row) => row.id));
+        await clearIssueRunReferences(tx as unknown as Db, agentRunIds);
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));

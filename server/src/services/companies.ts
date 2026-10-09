@@ -41,6 +41,7 @@ import {
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
+import { clearIssueRunReferences } from "./issue-run-references.js";
 import { notifyCloudOfPrimaryCompanyLifecycleChange } from "./cloud-lifecycle-sync.js";
 import {
   MAX_ISSUE_PREFIX_ATTEMPTS,
@@ -583,6 +584,15 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(runIdentityContexts).where(eq(runIdentityContexts.companyId, id));
+        // Release the issue -> run references before deleting the runs they
+        // point at. `issues.checkout_run_id` / `issues.execution_run_id` are
+        // `on delete set null`, so `delete from heartbeat_runs` would otherwise
+        // have to lock every referencing `issues` row from inside the delete —
+        // acquiring heartbeat_runs before issues. The run lifecycle takes the
+        // opposite order (`issuesSvc.checkout` locks the issue row, then the run
+        // row it points at), and the two orders deadlock. Nulling the columns
+        // first keeps this path on issues -> heartbeat_runs.
+        await clearIssueRunReferences(tx, companyRunIds.map((run) => run.id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
