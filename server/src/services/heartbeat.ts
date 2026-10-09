@@ -240,6 +240,11 @@ export {
   boundHeartbeatRunEventPayloadForStorage,
   compactRunLogChunk,
 } from "./heartbeat/run-log.js";
+import { resolveRunErrorMessage } from "./heartbeat/run-error-message.js";
+export {
+  extractStderrExcerptTail,
+  resolveRunErrorMessage,
+} from "./heartbeat/run-error-message.js";
 import { buildPaperclipTaskMarkdown } from "./heartbeat/task-markdown.js";
 export { buildPaperclipTaskMarkdown } from "./heartbeat/task-markdown.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "./legacy-workspace-restore-recovery.js";
@@ -8757,16 +8762,19 @@ export function heartbeatService(
           usageBasis: adapterResult.usageBasis ?? null,
         });
         const normalizedUsage = sessionUsageResolution.normalizedUsage;
+        const resolvedRunErrorMessage = resolveRunErrorMessage({
+          outcome,
+          adapterErrorMessage: adapterResult.errorMessage,
+          recordedError: latestRun?.error,
+          stderrExcerpt,
+        });
         const runErrorMessage =
-          outcome === "cancelled"
-            ? redactCurrentUserText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled", currentUserRedactionOptions)
-            : outcome === "succeeded"
-              ? null
-              : redactCurrentUserText(
-                  adapterResult.errorMessage ??
-                    (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
-                  currentUserRedactionOptions,
-                );
+          resolvedRunErrorMessage === null
+            ? null
+            : redactCurrentUserText(
+                resolvedRunErrorMessage,
+                currentUserRedactionOptions,
+              );
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(latestRun?.errorCode);
         const runErrorCode =
