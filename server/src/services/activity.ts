@@ -1,11 +1,10 @@
+import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
-  connectionGrants,
-  connectionGrantMembers,
   documentRevisions,
   documents,
   environmentLeases,
@@ -103,26 +102,7 @@ export function activityService(db: Db) {
             'selectionFailure', case when ${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
               then 'ai_connection_credential_not_shared' end,
             'credentialAccess', jsonb_build_object(
-              'connectionName', case when jsonb_typeof(${heartbeatRuns.resultJson} #> '{configurationIncomplete,credentialAccess,connectionName}') = 'string'
-                and ${viewerUserId}::text is not null
-                and (${heartbeatRuns.responsibleUserId} = ${viewerUserId}
-                  or exists (
-                    select 1 from ${connectionGrants}
-                    where ${connectionGrants.companyId} = ${heartbeatRuns.companyId}
-                      and ${connectionGrants.id}::text = ${heartbeatRuns.resultJson} #>> '{configurationIncomplete,credentialAccess,grantId}'
-                      and ((${connectionGrants.kind} = 'user' and ${connectionGrants.subjectUserId} = ${viewerUserId})
-                        or (${connectionGrants.kind} = 'organization' and (
-                          not exists (select 1 from ${connectionGrantMembers}
-                            where ${connectionGrantMembers.companyId} = ${connectionGrants.companyId}
-                              and ${connectionGrantMembers.grantId} = ${connectionGrants.id})
-                          or exists (select 1 from ${connectionGrantMembers}
-                            where ${connectionGrantMembers.companyId} = ${connectionGrants.companyId}
-                              and ${connectionGrantMembers.grantId} = ${connectionGrants.id}
-                              and ${connectionGrantMembers.subjectType} = 'user'
-                              and ${connectionGrantMembers.subjectId} = ${viewerUserId})
-                        )))
-                  ))
-                then left(${heartbeatRuns.resultJson} #>> '{configurationIncomplete,credentialAccess,connectionName}', 240) end
+              'connectionName', ${credentialAccessConnectionNameSql(viewerUserId)}
             )
           ) end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
