@@ -158,6 +158,7 @@ export interface ChatEndpointBehaviorPolicy {
   /** Defaults to queue and is not exposed in the initial settings UI. */
   concurrency: ChatConcurrencyPolicy;
   allowDirectMessages: boolean;
+  requireAtMention: boolean;
   allowGroupChats: boolean;
   allowUnlinkedPeople: boolean;
 }
@@ -188,6 +189,12 @@ export interface SlackAppConfiguration {
 }
 
 export interface ChatEndpointSetupState {
+  slackSetupMethod?: "automatic" | "manual" | "existing";
+  slackRegistration?: import("../slack-app-manifest.js").SlackRegistrationState;
+  /** Provider-confirmed app icon outcome; configuration tokens are never retained. */
+  slackAvatar?: import("../slack-app-manifest.js").SlackAvatarState;
+  slackAccount?: import("../slack-app-manifest.js").SlackAccountState;
+  slackOAuthCallbackUri?: string | null;
   github?: {
     stage: "connect" | "install" | "repositories" | "verify" | "identity" | "behavior" | "test";
     appSlug?: string;
@@ -247,6 +254,7 @@ export interface ChatEndpoint {
   botAvatarUrl?: string | null;
   photonAllocation?: "dedicated" | "shared";
   allowDirectMessages: boolean;
+  requireAtMention: boolean;
   allowGroupChats: boolean;
   allowUnlinkedPeople: boolean;
   replyMode: "subscribed";
@@ -479,12 +487,15 @@ export interface CreateChatEndpointInput {
   assignedAgentId: string;
   applicationId?: string;
   name?: string;
+  slackApp?: SlackAppConfiguration;
 }
 
 export interface UpdateChatEndpointInput {
+  slackSetupMethod?: "automatic" | "manual" | "existing";
   slackApp?: SlackAppConfiguration;
   communicationInstructions?: string;
   allowDirectMessages?: boolean;
+  requireAtMention?: boolean;
   allowGroupChats?: boolean;
   allowUnlinkedPeople?: boolean;
 }

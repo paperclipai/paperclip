@@ -681,6 +681,21 @@ describe("routine routes", () => {
       userId: "board-user",
       runId: null,
     });
-    expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+    try {
+      expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+    } catch (error) {
+      // Report mock wiring without importing modules again or changing timing.
+      console.error("Routine creation telemetry mock diagnostic", {
+        clientGetterCalls: mockGetTelemetryClient.mock.calls.length,
+        clientGetterResults: mockGetTelemetryClient.mock.results.slice(-4).map(result => ({
+          type: result.type,
+          truthy: Boolean(result.value),
+        })),
+        trackingCalls: mockTrackRoutineCreated.mock.calls.length,
+        createCalls: mockRoutineService.create.mock.calls.length,
+        activityCalls: mockLogActivity.mock.calls.length,
+      });
+      throw error;
+    }
   });
 });

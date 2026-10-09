@@ -36,9 +36,24 @@ import plugin, {
   __setDaytonaPluginContextForTest,
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
+import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
 import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
+
+describe("Daytona idle eligibility", () => {
+  it("permits a fresh unused provider but remains conservative after provider access", async () => {
+    __resetDaytonaSandboxHandleCacheForTest();
+    const signal = new AbortController().signal;
+    expect(await plugin.definition.onIdleDrain!(signal)).toBe("none");
+    mockGet.mockRejectedValueOnce(new Error("provider unreachable"));
+    await plugin.definition.onEnvironmentProbe!({
+      driverKey: "daytona", companyId: "fixture-company", environmentId: "fixture-environment",
+      config: { apiKey: "fixture-not-a-key" },
+    }).catch(() => undefined);
+    expect(await plugin.definition.onIdleDrain!(signal)).toBe("present");
+    __resetDaytonaSandboxHandleCacheForTest();
+  });
+});
 
 function createMockSandbox(overrides: {
   id?: string;
@@ -5248,33 +5263,32 @@ describe("daytona native file-sync hooks", () => {
     });
   });
 
-  it("classifies a deleted sandbox during syncOut with a stable unrecoverable code", async () => {
+  it.each(["sandbox_access", "file_download"] as const)("keeps the deleted-sandbox policy and bounded %s evidence", async (step) => {
     const hostDir = await makeHostDir();
-    mockGet.mockRejectedValue(
-      new MockDaytonaNotFoundError("provider detail must not escape"),
-    );
-
-    await expect(
-      plugin.definition.onEnvironmentSyncOut?.({
-        driverKey: "daytona",
-        companyId: "company-1",
-        environmentId: "env-1",
-        config: { timeoutMs: 300000, reuseLease: true },
-        lease: syncLease(),
-        operations: [
-          {
-            operationId: "sync-op-missing-sandbox",
-            files: [
-              {
-                sourcePath: `${REMOTE_DIR}/out/result.txt`,
-                targetPath: path.join(hostDir, "result.txt"),
-                kind: "file",
-              },
-            ],
-          },
-        ],
-      }),
-    ).rejects.toThrow("daytona_sandbox_not_found");
+    const source = Object.freeze(Object.assign(new MockDaytonaNotFoundError("private-provider-detail"), {
+      status: 404, cause: { code: "EIO", token: "private-provider-token" },
+    }));
+    if (step === "sandbox_access") mockGet.mockRejectedValue(source);
+    else {
+      const sandbox = createMockSandbox();
+      sandbox.fs.downloadFiles.mockRejectedValue(source);
+      mockGet.mockResolvedValue(sandbox);
+    }
+    await withEnvironmentSyncErrorCapture(async () => {
+      const error = await plugin.definition.onEnvironmentSyncOut!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: true }, lease: syncLease(),
+        operations: [{ operationId: "sync-op-missing-sandbox", files: [{
+          sourcePath: `${REMOTE_DIR}/out/result.txt`, targetPath: path.join(hostDir, "result.txt"), kind: "file",
+        }] }],
+      }).catch(error => error);
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toBe("daytona_sandbox_not_found");
+      expect(error).not.toHaveProperty("cause");
+      const diagnostic = readEnvironmentSyncErrorDiagnostic({ data: environmentSyncErrorData(error) });
+      expect(diagnostic).toEqual({ errorCode: "EIO", httpStatus: 404, transferStep: step });
+      expect(JSON.stringify(diagnostic)).not.toContain("private-provider-");
+    });
   });
 
   it("syncOut snapshot guard re-checks the resolved source is a non-symlink regular file immediately before copying (validation→copy TOCTOU)", async () => {

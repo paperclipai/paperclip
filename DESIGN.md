@@ -43,6 +43,10 @@ action on the left and the primary action on the right. A step owns its whole
 footer: do not render Save & exit in a separate parent block below it. Check this
 alignment in every step and conditional state, not just the first screen.
 
+Completed Slack setup is a success view: show the full agent avatar, success message,
+and one centered Done action. Omit Save & exit after the connection has been
+confirmed. The shared footer rule applies to its unfinished setup steps.
+
 ## Mobile navigation and text fields
 
 The fixed bottom navigation uses an opaque surface so scrolling content cannot

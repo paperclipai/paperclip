@@ -770,7 +770,11 @@ describe("CompanyEnvironments — test provider button", () => {
       // bindings even when the environment has none yet.
       "company-1",
     );
-    expect(getEnvironmentFormPage()).toBeNull();
+    // Saving awaits query invalidation before navigating away. A single flush
+    // can observe the API call before that asynchronous success path settles.
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()).toBeNull();
+    });
   });
 
   it("confirms before cancelling the edit page with unsaved environment variable drafts", async () => {

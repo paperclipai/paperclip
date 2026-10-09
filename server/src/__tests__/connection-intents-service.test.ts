@@ -1,3 +1,5 @@
+import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -773,7 +775,11 @@ describeEmbeddedPostgres("connectionIntentService", () => {
   it("recovers a resolution after a failed dispatch and acknowledges an already queued wake exactly once", async () => {
     const service = connectionIntentService(db);
     const pending = await service.request(claims, "airtable");
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.connection, notified);
     await service.decline(pending.interactionId!, claims.responsible_user_id);
+    unsubscribe();
+    expect(notified).toHaveBeenCalledTimes(1);
     const wakeup = vi.fn().mockRejectedValueOnce(new Error("simulated crash before durable enqueue"));
     const deliveries = connectionIntentDeliveryService(db, { wakeup } as never);
     await expect(deliveries.deliver(pending.interactionId!)).rejects.toThrow("simulated crash");

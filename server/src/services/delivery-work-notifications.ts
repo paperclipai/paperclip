@@ -1,0 +1,22 @@
+import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
+
+/** Topics for existing durable queues; register intent before their writes. */
+export const DELIVERY_QUEUES = {
+  feedback: "feedback-exports",
+  chatCompletion: "chat-completions",
+  connection: "connection-continuations",
+  question: "question-responses",
+  toolAction: "tool-action-receipts",
+} as const;
+export type DeliveryQueue = typeof DELIVERY_QUEUES[keyof typeof DELIVERY_QUEUES];
+
+export async function notifyDeliveryWork(transaction: object, queue: DeliveryQueue): Promise<void> {
+  await signalDatabaseWork(transaction, queue);
+}
+// Public delivery notification observers only see settled work. The coordinator
+// uses the lower-level lifecycle subscription to also fence in-flight writes.
+export function subscribeDeliveryWork(owner: object, queue: DeliveryQueue, wake: () => void): () => void {
+  return subscribeDatabaseWork(owner, queue, event => {
+    if (event === "settled") wake();
+  });
+}

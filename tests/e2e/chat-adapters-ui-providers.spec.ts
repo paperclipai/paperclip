@@ -1,3 +1,5 @@
+import { oauthCallbackInterstitialHtml } from "../../server/src/lib/oauth-browser-return";
+import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 
@@ -17,6 +19,15 @@ import {
   type ChatMock,
   GITHUB_PRIVATE_KEY_PASTE_FIXTURE,
 } from "./chat-adapters-ui.shared";
+
+async function findConnectorBySearch(page: Page, query: string, slug: string) {
+  const search = page.getByRole("searchbox", { name: "Search connectors" });
+  await expect(search).toBeVisible();
+  await search.fill(query);
+  const connector = page.locator(`[role="listitem"][data-app-slug="${slug}"]`);
+  await expect(connector).toBeVisible({ timeout: 30_000 });
+  return connector;
+}
 
 async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed, provider: ProviderCase) {
   await expect(page.getByRole("heading", { name: "Choose agent", exact: true })).toBeVisible();
@@ -113,6 +124,28 @@ async function exerciseGitHubReviewSetup(page: Page, mock: ChatMock, seed: Seed,
  * chat-control-plane mock live in ./chat-adapters-ui.shared.ts; the
  * messaging-flow describes run in chat-adapters-ui-messaging.spec.ts.
  */
+test("Slack OAuth continuation reloads once from the callback origin without echoing the code", async ({ page }) => {
+  const sites: Array<string | undefined> = [];
+  const server = createServer((req, res) => {
+    sites.push(req.headers["sec-fetch-site"] as string | undefined);
+    res.setHeader("Content-Type", "text/html");
+    res.setHeader("Cache-Control", "no-store");
+    if (sites.length === 1) res.end(oauthCallbackInterstitialHtml());
+    else res.end("<h1>Callback completed</h1>");
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing callback fixture listener");
+    const callback = `http://127.0.0.1:${address.port}/callback?code=fixture-code`;
+    await page.route("https://slack.test/consent", route => route.fulfill({ contentType: "text/html", body: `<a href="${callback}">Approve installation</a>` }));
+    await page.goto("https://slack.test/consent");
+    await page.getByRole("link", { name: "Approve installation" }).click();
+    await expect(page.getByRole("heading", { name: "Callback completed" })).toBeVisible();
+    expect(sites.slice(0, 2)).toEqual(["cross-site", "same-origin"]);
+  } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+});
+
 test.describe.serial("native chat adapter UI", () => {
   test.setTimeout(180_000);
 
@@ -120,6 +153,135 @@ test.describe.serial("native chat adapter UI", () => {
 
   test.beforeAll(async ({ request }) => {
     seed = await seedCompanyAndAgent(request);
+  });
+
+  test("Slack: automatic creation survives refresh, consent, and connection evidence without copying durable secrets", async ({ page }) => {
+    const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
+    const mock = await installChatControlPlaneMock(page, slack, seed, { enableChatConnectors: true, automaticSlack: true });
+    async function holdSetupRequest(action: "registration" | "install") {
+      let release!: () => void;
+      let received!: () => void;
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      const requested = new Promise<void>(resolve => { received = resolve; });
+      await page.route(`**/api/chat-endpoints/endpoint-slack/slack/${action}`, async route => {
+        received();
+        await pending;
+        await route.fallback();
+      }, { times: 1 });
+      return { release, requested };
+    }
+    async function expectNavigationLocked() {
+      const steps = page.getByRole("navigation", { name: "Connection setup progress" }).getByRole("button");
+      await expect(steps).toHaveCount(4);
+      for (const step of await steps.all()) await expect(step).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Save & exit", exact: true })).toBeDisabled();
+    }
+    const rootUrl = new URL(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`, test.info().project.use.baseURL).href;
+    const callbackUrl = new URL("/api/chat-slack/oauth/callback?state=fixture-state&code=fixture-code", rootUrl).href;
+    let callbackRequests = 0;
+    await page.route("**/api/chat-slack/oauth/callback?**", async route => {
+      callbackRequests += 1;
+      if (callbackRequests === 1) {
+        const body = oauthCallbackInterstitialHtml();
+        expect(body).not.toContain("fixture-code");
+        await route.fulfill({ contentType: "text/html", body });
+      } else {
+        mock.setSlackInstalled();
+        await route.fulfill({ status: 303, headers: { location: rootUrl } });
+      }
+    });
+    await page.context().route("https://slack.test/**", async route => {
+      await route.fulfill({ contentType: "text/html", body: `<h1>Fixture Slack consent</h1><a href="${callbackUrl}">Approve installation</a>` });
+    });
+    await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat`);
+    await expect(page.locator("summary:visible").filter({ hasText: "Advanced" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Set up with agent/i })).toHaveCount(0);
+    await page.getByRole("button", { name: "Choose an active agent" }).click();
+    await page.getByRole("button", { name: "Select Maya", exact: true }).click();
+    await page.locator("summary:visible").filter({ hasText: "Advanced" }).click();
+    await expect(page.getByLabel("Slack app name", { exact: true })).toHaveValue("maya-paperclip");
+    await expect(page.getByLabel("Bot display name", { exact: true })).toHaveValue("maya");
+    await expect(page.getByLabel("Slash command", { exact: true })).toHaveValue("/maya");
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "App configuration access token", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Get your App configuration access token" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Use an existing app", exact: true })).toBeHidden();
+    await page.getByLabel("App configuration access token", { exact: true }).fill("fixture-config-token");
+    const creation = await holdSetupRequest("registration");
+    const installationWindow = page.waitForEvent("popup");
+    try {
+      await page.getByRole("button", { name: "Create Slack app", exact: true }).click();
+      await creation.requested;
+      await expectNavigationLocked();
+      await expect(page.getByLabel("App configuration access token", { exact: true })).toHaveValue("");
+    } finally { creation.release(); }
+    const consentWindow = await installationWindow;
+    await expect(consentWindow.getByRole("heading", { name: "Fixture Slack consent" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Install Slack app", exact: true })).toBeVisible();
+    await consentWindow.close();
+    await expect(page.getByRole("navigation", { name: "Connection setup progress" }).getByRole("button", { name: /Choose agent/ })).toBeEnabled();
+    expect(mock.slackCreations).toBe(1);
+    await expect(page.getByLabel("Bot User OAuth Token", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("Signing Secret", { exact: true })).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Install Slack app", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Save & exit", exact: true }).click();
+    await page.goto(rootUrl);
+    expect(mock.slackInstallations).toBe(1);
+    const installation = await holdSetupRequest("install");
+    try {
+      await page.getByRole("button", { name: "Install in Slack", exact: true }).click();
+      await installation.requested;
+      await expectNavigationLocked();
+    } finally { installation.release(); }
+    await expect(page.getByRole("heading", { name: "Fixture Slack consent" })).toBeVisible();
+    await page.getByRole("link", { name: "Approve installation" }).click();
+    await expect(page.getByRole("heading", { name: "Send a message to your agent", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Open Slack app Settings" })).toBeHidden();
+    await expect(page.getByRole("link", { name: "Open Slack", exact: true })).toHaveAttribute("href", "https://app.slack.com/client/TE2E/DE2E");
+    await page.getByText("Didn’t work?", { exact: true }).click();
+    await expect(page.getByRole("link", { name: "Open Slack app Settings" })).toHaveAttribute("href", "https://api.slack.com/apps/AE2E/event-subscriptions");
+    mock.setWebhookVerified();
+    await expect(page.getByRole("heading", { name: "Success", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Download avatar" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Link .* to my Paperclip account/ })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Open your Slack DM" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Copy message" })).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Success", exact: true })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Connection setup progress" }).getByRole("button")).toHaveCount(4);
+    expect(mock.slackCreations).toBe(1); expect(mock.slackInstallations).toBe(2);
+    expect(callbackRequests).toBe(2);
+    await page.screenshot({ path: test.info().outputPath("automatic-slack-success.png"), fullPage: true });
+    await page.getByRole("button", { name: "Done", exact: true }).click();
+    await expect(page).toHaveURL(/\/apps\/chat\/endpoint-slack\/settings$/);
+    const stored = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
+    expect(stored).not.toContain("fixture-config-token");
+  });
+
+  test("Slack: uncertain creation locks fields and offers manual recovery on mobile", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
+    const mock = await installChatControlPlaneMock(page, slack, seed, { enableChatConnectors: true, automaticSlack: true });
+    mock.setSlackUncertain();
+    await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&purpose=chat&resume=endpoint-slack`);
+    await expect(page.getByRole("alert")).toContainText("Slack may have created the app");
+    await page.getByRole("button", { name: "Open sidebar" }).click();
+    await page.getByRole("navigation", { name: "Connection setup progress" }).getByRole("button", { name: /Choose agent/ }).click();
+    await page.locator("summary:visible").filter({ hasText: "Advanced" }).click();
+    await expect(page.getByLabel("Slack app name", { exact: true })).toHaveAttribute("readonly", "");
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await page.locator("summary:visible").filter({ hasText: "Advanced" }).click();
+    await expect(page.getByLabel("App configuration access token", { exact: true })).toHaveCount(0);
+    const save = await page.getByRole("button", { name: "Save & exit", exact: true }).boundingBox();
+    const create = await page.getByRole("button", { name: "Create Slack app", exact: true }).boundingBox();
+    expect(Math.abs(save!.y - create!.y)).toBeLessThan(4);
+    await page.getByRole("button", { name: "Use an existing app", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Add Slack credentials", exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Add Slack credentials", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Add Slack credentials", exact: true })).toBeVisible();
+    expect(mock.slackCreations).toBe(0);
   });
 
   test("GitHub: the default-off gate keeps direct tool setup and fences chat routes", async ({
@@ -136,10 +298,7 @@ test.describe.serial("native chat adapter UI", () => {
     await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible(
       { timeout: 30_000 },
     );
-    const connector = page.locator(
-      '[role="listitem"][data-app-slug="github"]',
-    );
-    await expect(connector).toBeVisible();
+    const connector = await findConnectorBySearch(page, "GitHub", "github");
     // Without the cloud connector GitHub's default method is a token, so the
     // card's verb is "Add key" rather than "Connect".
     await connector.getByRole("button", { name: "Add key GitHub" }).click();
@@ -214,17 +373,15 @@ test.describe.serial("native chat adapter UI", () => {
       await expect(
         page.getByRole("heading", { name: "Connectors" }),
       ).toBeVisible({ timeout: 30_000 });
-      const connector = page.locator(
-        `[role="listitem"][data-app-slug="${provider.slug}"]`,
-      );
-      await expect(connector).toBeVisible({ timeout: 30_000 });
+      let connector = await findConnectorBySearch(page, provider.name, provider.slug);
       if (provider.provider === "github") {
-        const tools = page.locator('[role="listitem"][data-app-slug="github"]');
+        const tools = await findConnectorBySearch(page, "GitHub", "github");
         await tools.getByRole("button", { name: "Add key GitHub", exact: true }).click();
         await page.getByRole("button", { name: "Change", exact: true }).click();
         await expect(page.getByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
         await expect(page.getByRole("heading", { name: "Choose how to connect" })).toHaveCount(0);
         await page.goto(`/${seed.prefix}/apps`);
+        connector = await findConnectorBySearch(page, provider.name, provider.slug);
       }
       await connector
         .getByRole("button", { name: `Connect ${provider.provider === "github" ? "GitHub Code Review Bot" : provider.name}` })
@@ -278,7 +435,7 @@ test.describe.serial("native chat adapter UI", () => {
           name: "Which agent do you want to chat with?",
         }),
       ).toBeVisible();
-      await expectSetupRail(page);
+      await expectSetupRail(page, true);
       await selectMaya(page);
       await expect.poll(() => mock.createdWithAgentId).toBe(seed.agentId);
       expect(mock.createdWithAgentId).not.toBe(seed.otherAgentId);
@@ -336,18 +493,8 @@ test.describe.serial("native chat adapter UI", () => {
         await expect(page.getByRole("heading", { name: "Verify Slack connection" })).toBeVisible();
         await expect(page.getByText("Slack needs to confirm that it can reach your Paperclip instance.")).toBeVisible();
         mock.setWebhookVerified();
-        await expect(page.getByRole("heading", { name: "Give Maya a face in Slack" })).toBeVisible();
-        const downloadEvent = page.waitForEvent("download");
-        await page.getByRole("link", { name: "Download avatar" }).click();
-        const download = await downloadEvent;
-        expect(download.suggestedFilename()).toBe("maya-paperclip-avatar.png");
-        const png = await readFile((await download.path())!);
-        expect(png.subarray(1, 4).toString()).toBe("PNG");
-        expect(png.readUInt32BE(16)).toBe(512);
-        expect(png.readUInt32BE(20)).toBe(512);
-        await page.getByRole("button", { name: "I’ve uploaded the avatar" }).click();
         await expect(page.getByRole("heading", { name: "Connect your Slack account" })).toBeVisible();
-        await expect(page.getByText("/maya-public connect", { exact: true })).toBeVisible();
+        await expect(page.getByText("/maya connect", { exact: true })).toBeVisible();
         await page.getByRole("button", { name: "Link Test operator to my Paperclip account" }).click();
         await page.getByRole("button", { name: "Continue to message test" }).click();
       }
@@ -356,7 +503,7 @@ test.describe.serial("native chat adapter UI", () => {
         page.getByRole("heading", { name: `Try Maya in ${provider.name}` }),
       ).toBeVisible();
       await expect(
-        page.getByRole("button", { name: "I've sent the test message" }),
+        page.getByRole("button", { name: provider.provider === "slack" ? "Done" : "I've sent the test message" }),
       ).toBeVisible();
       if (provider.provider !== "slack") {
         await expect(
@@ -395,7 +542,7 @@ test.describe.serial("native chat adapter UI", () => {
         expectedCredentialKeys(provider.provider),
       );
       await page
-        .getByRole("button", { name: "I've sent the test message" })
+        .getByRole("button", { name: provider.provider === "slack" ? "Done" : "I've sent the test message" })
         .click();
 
       await expect(page).toHaveURL(
@@ -404,7 +551,7 @@ test.describe.serial("native chat adapter UI", () => {
         ),
       );
       await expect(
-        page.getByRole("heading", { name: `Maya in ${provider.name}` }),
+        page.getByRole("heading", { name: "Maya", exact: true }),
       ).toBeVisible();
       await expect(
         page.getByText(provider.accountLabel, { exact: true }),
@@ -420,13 +567,14 @@ test.describe.serial("native chat adapter UI", () => {
         await expect(page.getByRole("navigation", { name: "Chat connection" }).getByRole("link", { name: tab , exact: true })).toBeVisible();
       }
       await expect(
-        page.getByRole("heading", { name: "Where this agent can work" }),
+        page.getByRole("heading", { name: provider.provider === "slack" ? "Allowed Channels" : "Destinations" }),
       ).toBeVisible();
       if (provider.provider === "slack") {
-        await expect(page.getByRole("heading", { name: "Chat in Slack" })).toBeVisible();
+        await page.locator("summary").filter({ hasText: "Message in a channel" }).click();
         await expect(page.getByText("@maya-paperclip you there?", { exact: true })).toBeVisible();
         await expect(page.getByRole("button", { name: "Copy message" })).toBeVisible();
         await expect(page.getByRole("heading", { name: "Allowed Channels" })).toBeVisible();
+        await page.locator("summary").filter({ hasText: /^Agent avatar$/ }).click();
         const avatarSection = page.getByRole("region", { name: "Slack avatar" });
         await expect(avatarSection.getByRole("link", { name: "Download avatar" })).toBeVisible();
         await avatarSection.getByText("How to upload in Slack", { exact: true }).click();
@@ -506,13 +654,18 @@ test.describe.serial("native chat adapter UI", () => {
 
       await page.getByRole("navigation", { name: "Chat connection" }).getByRole("link", { name: "Access", exact: true }).click();
       await expect(
-        page.getByRole("heading", { name: "External identity access" }),
+        page.getByRole("heading", { name: "People" }),
       ).toBeVisible();
-      await expect(
-        page.getByText(
-          /Their tasks run only with an isolated workspace and sandbox environment; otherwise Paperclip safely refuses the request/,
-        ),
-      ).toBeVisible();
+      if (provider.provider === "slack") {
+        await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(page.url()).origin });
+        await page.getByRole("button", { name: "Invite people", exact: true }).click();
+        await page.getByRole("dialog").getByRole("button", { name: "Copy invitation" }).click();
+        await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("connect");
+        expect(await page.evaluate(() => navigator.clipboard.readText())).not.toContain("token=");
+        await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+      }
+      await page.locator("summary").filter({ hasText: "Guest access" }).click();
+      await expect(page.getByText(/Requests are refused when isolation is unavailable/)).toBeVisible();
       const allowUnlinked = page.getByRole("switch", {
         name: "Allow unlinked people",
       });
@@ -525,18 +678,16 @@ test.describe.serial("native chat adapter UI", () => {
       await expect(
         page.getByText("Grace Hopper", { exact: true }),
       ).toBeVisible();
+
       await expect(
-        page.getByText("Linked to Grace Hopper", { exact: true }),
-      ).toBeVisible();
-      await expect(
-        page.getByRole("button", { name: "Create private link" }),
+        page.getByRole("button", { name: "Create confirmation link" }),
       ).toBeVisible();
       await page
         .context()
         .grantPermissions(["clipboard-read", "clipboard-write"], {
           origin: new URL(page.url()).origin,
         });
-      await page.getByRole("button", { name: "Create private link" }).click();
+      await page.getByRole("button", { name: "Create confirmation link" }).click();
       await expect
         .poll(() => mock.linkIntentPrincipalId)
         .toBe(`principal-${provider.provider}`);
@@ -551,13 +702,11 @@ test.describe.serial("native chat adapter UI", () => {
       await expect(
         page.getByText("Confirmation link copied", { exact: true }),
       ).toBeVisible();
-      await page.getByText("Grace Hopper", { exact: true }).locator("../..").getByRole("button", { name: "Revoke" }).click();
+      await page.getByRole("listitem").filter({ hasText: "Grace Hopper" }).getByRole("button", { name: "Disconnect", exact: true }).click();
       await expect
         .poll(() => mock.revokedPrincipalId)
         .toBe(`principal-${provider.provider}-linked`);
-      await expect(
-        page.getByText(`grace@${provider.provider}`, { exact: true }),
-      ).toBeVisible();
+      await expect(page.getByText("Disconnected", { exact: true })).toBeVisible();
 
       await page.getByRole("navigation", { name: "Chat connection" }).getByRole("link", { name: "Conversations", exact: true }).click();
       await expect(
@@ -570,10 +719,10 @@ test.describe.serial("native chat adapter UI", () => {
         page.getByText(provider.resourceLabel, { exact: true }),
       ).toHaveCount(1);
       const providerLink = page.getByRole("link", {
-        name: `Open ${provider.name}`,
+        name: provider.resourceLabel,
       });
       await expect(providerLink).toHaveAttribute("href", provider.externalUrl);
-      const taskLink = page.getByRole("link", { name: "Open task" });
+      const taskLink = page.getByRole("link", { name: `Investigate ${provider.name} delivery` });
       await expect(taskLink).toHaveAttribute(
         "href",
         new RegExp(`/${seed.prefix}/issues/issue-${provider.provider}$`),
@@ -835,10 +984,7 @@ test.describe("iMessage Photon setup and management", () => {
         theme,
       );
       await page.goto(`/${seed.prefix}/apps`);
-      const card = page.locator(
-        '[role="listitem"][data-app-slug="imessage-photon"]',
-      );
-      await expect(card).toBeVisible();
+      const card = await findConnectorBySearch(page, "iMessage Photon", "imessage-photon");
       await card
         .getByRole("button", { name: "Connect iMessage Photon" })
         .click();

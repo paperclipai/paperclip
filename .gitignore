@@ -82,3 +82,6 @@ test-results/
 
 # Retained local lifecycle behavior measurements
 .lifecycle-baseline/
+
+# Local native Runner test/session state
+.paperclip-runner-prp/

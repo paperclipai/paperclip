@@ -2728,6 +2728,30 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("renders reviewer and approver controls for a monitor-only execution policy", async () => {
+    const policy = {
+      monitor: {
+        nextCheckAt: "2026-10-08T16:00:00.000Z",
+        notes: "Check pull request",
+        scheduledBy: "assignee",
+        kind: "external_service",
+        serviceName: "github-pr",
+      },
+    } as IssueExecutionPolicy;
+    const root = renderProperties(container, {
+      issue: createIssue({ executionPolicy: policy }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(findRowTrigger(container, "Reviewers")?.textContent).toContain("None");
+    expect(findRowTrigger(container, "Approvers")?.textContent).toContain("None");
+    expect(container.querySelector('[data-testid="monitor-row-trigger"]')).not.toBeNull();
+
+    act(() => root.unmount());
+  });
+
   it("shows a run review action after reviewers are configured and starts execution explicitly when clicked", async () => {
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
@@ -2735,10 +2759,10 @@ describe("IssueProperties", () => {
         executionPolicy: createExecutionPolicy({
           stages: [
             {
-              id: "review-stage",
+              id: "00000000-0000-4000-8000-000000000010",
               type: "review",
               approvalsNeeded: 1,
-              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
             },
           ],
         }),
@@ -2767,10 +2791,10 @@ describe("IssueProperties", () => {
         executionPolicy: createExecutionPolicy({
           stages: [
             {
-              id: "approval-stage",
+              id: "00000000-0000-4000-8000-000000000011",
               type: "approval",
               approvalsNeeded: 1,
-              participants: [{ id: "participant-2", type: "user", agentId: null, userId: "user-1" }],
+              participants: [{ id: "00000000-0000-4000-8000-000000000014", type: "user", agentId: null, userId: "user-1" }],
             },
           ],
         }),
@@ -2793,10 +2817,10 @@ describe("IssueProperties", () => {
         executionPolicy: createExecutionPolicy({
           stages: [
             {
-              id: "review-stage",
+              id: "00000000-0000-4000-8000-000000000010",
               type: "review",
               approvalsNeeded: 1,
-              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
             },
           ],
         }),
@@ -2819,10 +2843,10 @@ describe("IssueProperties", () => {
         executionPolicy: createExecutionPolicy({
           stages: [
             {
-              id: "review-stage",
+              id: "00000000-0000-4000-8000-000000000010",
               type: "review",
               approvalsNeeded: 1,
-              participants: [{ id: "participant-1", type: "agent", agentId: "agent-1", userId: null }],
+              participants: [{ id: "00000000-0000-4000-8000-000000000012", type: "agent", agentId: "00000000-0000-4000-8000-000000000013", userId: null }],
             },
           ],
         }),
@@ -2922,6 +2946,60 @@ describe("IssueProperties", () => {
 
     act(() => root.unmount());
     dateNowSpy.mockRestore();
+  });
+
+  it.each([true, false])("clears a monitor with omitted stages while preserving independent limits (authorization: %s)", async (withAuthorization) => {
+    const onUpdate = vi.fn();
+    const executionPolicy = {
+      ...(withAuthorization ? { authorizationPolicy: { trustPreset: "standard" } } : {}),
+      maxReviewRounds: 4,
+      monitor: { nextCheckAt: "2099-01-01T12:00:00.000Z", notes: "Check service", scheduledBy: "board" },
+    } as IssueExecutionPolicy;
+    const before = structuredClone(executionPolicy);
+    const root = renderProperties(container, {
+      issue: createIssue({ executionPolicy }), childIssues: [], onUpdate, inline: true,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Reviewers");
+    expect(container.textContent).not.toContain("Execution policy unavailable");
+    const monitorTrigger = container.querySelector('[data-testid="monitor-row-trigger"]')?.closest("button");
+    expect(monitorTrigger).toBeTruthy();
+    await act(async () => { monitorTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    const clearButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Clear");
+    expect(clearButton).toBeTruthy();
+    await act(async () => { clearButton!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+
+    expect(onUpdate).toHaveBeenCalledWith({ executionPolicy: {
+      mode: "normal", commentRequired: true, stages: [],
+      ...(withAuthorization ? { authorizationPolicy: before.authorizationPolicy } : {}), maxReviewRounds: 4,
+    } });
+    expect(executionPolicy).toEqual(before);
+    act(() => root.unmount());
+  });
+
+  it.each([
+    { stages: {} },
+    { stages: [null] },
+    { stages: [{ type: "review", participants: {} }] },
+    { monitor: { nextCheckAt: {}, notes: {} } },
+  ])("keeps malformed policies unavailable without exposing destructive edits: %j", async (executionPolicy) => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ executionPolicy: executionPolicy as unknown as IssueExecutionPolicy }),
+      childIssues: [], onUpdate, inline: true,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Execution policy unavailable. Refresh to try again.");
+    expect(container.textContent).toContain("Assignee");
+    expect(container.textContent).not.toContain("No reviewers");
+    expect(container.textContent).not.toContain("No approvers");
+    expect(container.textContent).not.toContain("Run review now");
+    expect(container.querySelector('[data-testid="monitor-row-trigger"]')).toBeNull();
+    expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
+    expect(onUpdate).not.toHaveBeenCalled();
+    act(() => root.unmount());
   });
 
   it("renders scheduled, retrying, due, overdue, cleared, and empty monitor row states", async () => {

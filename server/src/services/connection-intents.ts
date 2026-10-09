@@ -1,3 +1,4 @@
+import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { emailChannelService } from "./email-channels.js";
 import { emailConnectionService } from "./email-connections.js";
 import { grantConnectionAgentTools } from "./connection-agent-access.js";
@@ -1035,7 +1036,7 @@ export function connectionIntentService(db: Db) {
           }
           const binding = options.validatedAdoption.binding;
           if (binding.provider !== payload.serviceSlug || binding.mode !== "responsible_user") throw conflict("Invalid legacy adoption binding");
-          const updated = await agentService(txDb).update(agent.id, {
+          const updated = await updateAgentConfigurationInTransaction(txDb, agent.id, {
             runtimeConfig: { ...agent.runtimeConfig, aiConnection: binding },
           }, { recordRevision: { createdByUserId: userId, source: "patch" } });
           if (!updated) throw notFound("Agent not found");

@@ -1,3 +1,4 @@
+import { resolvePiThinkingLevel } from "../acpx/pi-thinking.js";
 import { isProviderMode } from "../../contracts/provider-mode.js";
 import type { PersistedHarnessProviderIdentity } from "../../contracts/harness-driver.js";
 import type { NativeUserMessage } from "../../contracts/types.js";
@@ -79,6 +80,7 @@ export function parseProviderIdentity(
       "ACPX provider identity contains an invalid permission mode",
     );
   }
+  const piThinkingLevel = identity.piThinkingLevel === undefined ? undefined : resolvePiThinkingLevel("pi", identity.piThinkingLevel);
   const mode = identity.mode;
   if (mode !== undefined && !isProviderMode(mode)) {
     throw new Error("ACPX provider identity contains an invalid provider mode");
@@ -109,6 +111,7 @@ export function parseProviderIdentity(
     effectiveModel: identity.effectiveModel as string,
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(mode === undefined ? {} : { mode }),
+    ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
     providerLifetimeFenceCandidates: fenceCandidates as [
       number,
       number,

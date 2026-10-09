@@ -300,6 +300,10 @@ describe("registered run instruction copies", () => {
     expect((await revisions.readCurrent(target(), board()))?.content).toBe(initial);
     expect((await copies.list(companyId, agentId, board()))[0]).toMatchObject({ state: "pending_collection", content: null });
     await appendHeartbeatRunEvent(db, { ...target(), runId: copy.runId, eventType: "native.local_process_stopped", stream: "system" });
+    // Recovery scheduled a retry while stop authority was missing. Make that
+    // retry due before asking the restarted controller to collect the copy.
+    await db.update(agentInstructionWorkingCopies).set({ nextAttemptAt: new Date(0) })
+      .where(eq(agentInstructionWorkingCopies.runId, copy.runId));
     await copies.recoverStopped();
     expect((await revisions.readCurrent(target(), board()))?.content).toBe("edit before controller restart");
   });

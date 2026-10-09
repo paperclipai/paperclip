@@ -2,6 +2,7 @@ import { getAdapterDisplay } from "@/adapters/adapter-display-registry";
 import { cn } from "@/lib/utils";
 
 const brandMarks: Record<string, { src: string; dark?: string }> = {
+  openai_dot: { src: "/brands/adapters/openai-dot.svg" },
   claude_local: { src: "/brands/claude-color.svg" },
   codex_local: { src: "/brands/codex-color.svg" },
   gemini_local: { src: "/brands/adapters/gemini-color.svg" },

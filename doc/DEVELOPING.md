@@ -174,6 +174,16 @@ checkout, including a non-primary checkout. Changing projects clears the
 previous worktree choice. Switching from reuse to a new worktree or the project
 workspace restores the project default checkout. Task creation uses the selected company and has
 no separate heading or settings control.
+
+Task execution-policy controls apply the shared schema defaults when stages or
+participants are omitted. An invalid policy shows an unavailable notice and
+disables policy edits while leaving other task properties usable. Refresh to
+retry. Optional browser error monitoring reports only a fixed field category,
+once per mounted control; it never includes the policy or task identifiers.
+Edits in the reviewer and monitor controls retain an explicitly configured
+review-round limit when the last reviewer or monitor is removed, so adding a
+reviewer later uses the saved limit.
+
 Fresh tasks start with an empty request and the last task assignee chosen in that
 company, including a human. If that assignee is unavailable, the CEO is the
 default, or the first eligible agent when the company has no CEO. Explicit launch
@@ -538,6 +548,27 @@ Activity-only reorderings wait for one second without further activity changes;
 new and removed tasks appear immediately. Titles, status, and live indicators stay
 current during that delay.
 
+### OpenCode native runtime
+
+Paperclip Runner resolves the pinned OpenCode platform package installed with
+Paperclip. On Apple Silicon and Intel Macs it runs the matching macOS binary;
+on Linux x64 it runs the qualified baseline binary. No global OpenCode command
+or dependency postinstall script is required. This also works when installation
+scripts are disabled. The published server declares the same pinned dependency
+as the source Runner package.
+
+For native OpenCode and Cursor on Daytona, a complete installed Paperclip release
+also selects its packaged Linux daemon and provider-pack identity automatically.
+Use the matching Paperclip Daytona image: the controller verifies the image's
+pack manifest, executable hashes, bridge tree, and pinned versions before launch.
+The controller's operating system does not determine the remote daemon target.
+
+A plain Daytona sandbox image does not contain this provider pack. Custom images
+and source-development launchers must supply a verified Linux provider pack and
+daemon through the existing remote artifact overrides; see
+[the remote E2E setup](../tests/runner-e2e/README.md#match-the-local-controller-package-to-the-daytona-image).
+An explicit override remains authoritative and fails closed if invalid.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:
@@ -628,25 +659,34 @@ case.
 ### Slack chat setup in a test drive
 
 Enable **Chat connectors** in Instance Settings, then open **Connectors → Slack →
-Chat with an agent**. Before connecting, configure a public HTTPS URL that Slack
-can reach. The setup page shows this requirement above the app details.
-Slack app name, bot display name, and slash command are editable while the
-connection is a draft; valid edits save when a field loses focus. **Create Slack
-app** opens Slack with the generated manifest prefilled. **View Slack App Manifest**
-opens the read-only manifest in a modal to inspect or copy it. Once connected,
-the app details are locked so reconnecting cannot silently change the registered
-command. Slack still requires workspace selection, installation approval, and
-copying the bot token and signing secret back into Paperclip.
+Chat with an agent**. Before creating an app, configure a public HTTPS board URL
+and webhook ingress that Slack can reach. The setup page shows this prerequisite;
+a loopback test drive can exercise the UI before HTTPS is configured.
 
-After Slack verifies its Events Request URL, the wizard asks you to send
-`/<your-command> connect`. This command works before a sender or channel is
-allowed to start work. It records the Slack identity and sends a private,
-one-time confirmation link that expires after 15 minutes; it creates no task
-and grants no access. You can confirm **This is my Slack account** in the wizard,
-or follow the private link and sign into Paperclip. Both paths check company
-membership before linking, and future messages use the linked user's current
-permissions. The wizard only lists identities that sent the connect command to
-this endpoint during the current test.
+New Slack connections use five steps: choose an agent, enter an app configuration
+token, install the app, verify Slack delivery, and try a conversation. Agent
+selection generates readable defaults for the Slack app name, bot display name,
+and slash command; edit them under **Advanced** if needed. **Get your App
+configuration token** opens Slack app settings. Enter the temporary token directly
+into Paperclip, then select **Create Slack app**. Paperclip creates the app,
+vaults its credentials, and attempts avatar upload before discarding the token.
+App details lock after creation dispatch, including an uncertain result.
+
+**Install in Slack** obtains the bot token through OAuth, links the installing
+Slack account to the Paperclip account that started installation, and sends one
+welcome DM. Approve with your own Slack account. After Slack verifies the Events
+Request URL, use **Open your Slack DM**, send the suggested message, and continue
+in the thread. **Done** finishes setup; the conversation test is optional.
+See [Automatic Slack app setup](connections/SLACK-AUTOMATIC-SETUP.md) for
+HTTPS configuration and recovery.
+
+**Create manually** and **Use an existing app** are under **Advanced** on the
+token step. These paths retain manual credential entry and a separate personal
+account-linking step. Send `/<your-command> connect` to discover your identity
+without starting work, then confirm **This is my Slack account** in the wizard
+or use the private confirmation link. The link expires after 15 minutes and
+requires company membership. Future messages use the linked user's current
+permissions. Additional or different accounts can be linked later in **Access**.
 
 New Slack connections disable **Allow unlinked people** by default. The Access
 page includes the shareable connect command and instructions for other users.
@@ -664,14 +704,11 @@ company. Preview, access-request, and confirmation APIs also enforce the chat
 connector rollout flag on the server; invitees cannot read board experimental
 settings before they join. Expired or consumed tokens grant no access.
 
-The final wizard step suggests `@<your-bot> you there?`, then continuing in
-the agent's thread. Select the bot from Slack's @mention suggestions so the
-message includes a real mention. It detects a message or task command from the current user's
-linked Slack identity during this setup session and shows a checkmark. This
-conversation test is optional: **I've sent the test message** and **Skip test and
-finish** both finish setup once webhook verification and account linking are
-complete. The separate strict connection-test API retains its conversation and
-delivery checks.
+The manual path suggests `@<your-bot> you there?`, then continuing in the agent's
+thread. Select the bot from Slack's @mention suggestions so the message includes
+a real mention. **Done** finishes setup once webhook verification and required
+account linking are complete, whether or not a test message was sent. The
+separate strict connection-test API retains its conversation and delivery checks.
 
 ### Chat activity pagination and callback diagnostics
 
@@ -1198,6 +1235,102 @@ In Vite middleware mode, Paperclip gives HMR a dedicated HTTP server bound to th
 
 When a workspace service runs Paperclip for browser OAuth QA, configure its `expose.urlTemplate` with the canonical URL the browser can reach. Paperclip preserves explicit `PAPERCLIP_PUBLIC_URL` or `BETTER_AUTH_URL` settings; otherwise it uses a valid exposed HTTPS origin (or loopback HTTP) as the managed runtime fallback for Better Auth and `/api/tools/oauth/callback`. Internal service names such as `http://paperclip-dev:<port>` are rejected unless that hostname is genuinely the browser route. Use a unique origin per isolated worktree. See [Execution Workspaces And Runtime Services](../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#browser-reachable-origins-for-oauth-qa) for configuration and verification.
 
+## Heartbeat Service Extractions
+
+Keep relevant heartbeat extractions and their focused tests in `server/src/services/heartbeat/`.
+
+Task assignment Markdown is rendered by `server/src/services/heartbeat/task-markdown.ts`.
+`heartbeat.ts` calls the renderer and re-exports it for existing callers. Keep prompt
+formatting changes in the renderer and its tests, separate from run orchestration.
+
+Run-log formatting is in `server/src/services/heartbeat/run-log.ts`. It bounds
+stored event payloads, redacts and shortens log chunks, and caps stdout/stderr
+excerpts. `heartbeat.ts` keeps event writes, current-user redaction, and live
+event delivery. Existing public helpers remain available from `heartbeat.ts`.
+
+Workspace preparation is in `server/src/services/heartbeat/workspaces.ts`. It
+owns managed checkout materialization, workspace validation and reuse, referenced
+project resolution, and session/workspace configuration freshness. Its
+`createHeartbeatWorkspaceResolver(db)` factory binds the run workspace resolvers
+to a service's database. The checkout single-flight map stays at module scope so
+all service instances share in-flight materialization. Existing public helpers
+and the workspace validation error class remain available from `heartbeat.ts`.
+Keep workspace policy changes separate from scheduling and run execution changes.
+
+Run preparation is in `server/src/services/heartbeat/run-preparation.ts`. It owns
+issue and wake context, responsible-user resolution, routine environment snapshots,
+skill mentions, adapter environment configuration, and MCP/tool access setup.
+`createHeartbeatRunPreparation(db)` binds the context loaders to a service's database
+without doing database work during construction. `heartbeat.ts` composes queue
+dispatch with cancellation and execution, and re-exports the existing
+public helpers and configuration-incomplete error class. Keep preparation policy
+changes in this module and its tests.
+
+Run retrieval and session state are in `server/src/services/heartbeat/run-state.ts`.
+It owns bounded run projections, database encoding checks, task session reads and
+writes, explicit resumes, session compaction, and usage/billing helpers.
+`createHeartbeatRunState(db)` binds these operations without doing database work
+during construction. The encoding-check cache belongs to each factory instance.
+`heartbeat.ts` keeps run execution and re-exports the
+existing public helpers. Keep session policy changes separate from run
+orchestration changes.
+
+Retry scheduling is in `server/src/services/heartbeat/retries.ts`. It owns bounded
+retry schedules, connection and workspace contention deferrals, shared-workspace
+holder checks, due retry promotion, and retry-now requests. `createHeartbeatRetries`
+binds these operations to the service database and explicit lifecycle callbacks
+without doing work during construction. `heartbeat.ts` supplies status writes,
+run events, issue-lock release, plan-resume reporting, and worktree cutoffs. It
+re-exports the existing retry helpers and workspace-busy error class. Keep retry
+policy changes separate from this extraction.
+
+Restart recovery and lease cleanup are in `server/src/services/heartbeat/recovery.ts`.
+It owns hot-restart snapshots and adoption, native restart recovery, shutdown
+draining, orphaned-run reaping, and active/pending-cleanup lease sweeps.
+`createHeartbeatRecovery` binds the service database and explicit lifecycle
+callbacks without starting work. The service supplies its shutdown flag callback
+and shared execution sets so separate service instances keep the same ownership
+and shutdown barriers. Cleanup single-flight state stays at module scope.
+Keep recovery policy changes separate from retry scheduling and execution changes.
+
+Queue admission and wakeup dispatch are in `server/src/services/heartbeat/queue.ts`.
+It owns wake coalescing and batching, queued-run claims, daily heartbeat caps,
+concurrency and priority checks, timer admission, and native status wake intents.
+`createHeartbeatQueue` binds these operations without querying or starting work.
+The service supplies lifecycle effects, execution callbacks, worktree gates, and
+its process-wide execution and wakeup promise sets. Forwarding callbacks preserve
+construction order for retry and recovery services. Keep queue policy changes
+separate from this extraction and from adapter execution changes.
+
+Run lifecycle handling is in `server/src/services/heartbeat/run-lifecycle.ts`.
+It owns status transitions, run events and progress, liveness classification,
+completion handoffs, issue-comment finalization, and runtime/cost settlement.
+`createHeartbeatLifecycle` binds the database and explicit reporting, recovery,
+and wakeup callbacks without starting work. The service supplies terminal
+reporting and forwarding callbacks preserve construction order for the other
+heartbeat modules. Existing public helpers remain re-exported by `heartbeat.ts`.
+Keep lifecycle policy changes separate from this extraction and adapter execution.
+
+Run cancellation and cleanup are in `server/src/services/heartbeat/run-control.ts`.
+It owns Stop, agent and budget cancellation, environment lease release, and
+resumption of saved comments after execution stops. `createHeartbeatRunControl`
+binds the database, lifecycle and admission callbacks, and shared executor
+barriers without starting work. The service retains the process-wide execution
+and cancellation maps so scheduler and route instances observe the same owners.
+Forwarding callbacks preserve construction order for budget, retry, recovery,
+and queue services. Existing public helpers remain re-exported by `heartbeat.ts`.
+Keep cancellation policy changes separate from this extraction and execution.
+
+Scheduling is in `server/src/services/heartbeat/scheduling.ts`. It owns timer
+ticks, issue-monitor claims and dispatch, exhausted-monitor recovery, and
+session-goal recovery. `createHeartbeatScheduling` binds explicit dependencies
+without querying or starting timers. Queue admission, heartbeat policy parsing,
+and atomic timer claims stay in `queue.ts`; the service supplies those operations
+and the current scheduling-suppression and worktree-cutoff callbacks. Monitor
+claims remain database-scoped so separate scheduler instances cannot dispatch
+the same claim. The public heartbeat methods keep their existing signatures.
+Keep scheduling policy changes separate from this extraction and execution.
+
 ## Wake Context Delivery
 
 Built-in adapters deliver wake context through the run prompt, including structured
@@ -1345,6 +1478,14 @@ the updated sandbox image with the matching runner qualification changes.
 
 ### Native runner restart recovery
 
+Custom source-mode HTTP launchers should create their listener with
+`createPaperclipHttpServer` from `server/src/http/server.ts`, passing the selected
+API origin as `apiUrl`. This registers the native Runner WebSocket transport
+before execution is admitted. Plain Express `app.listen()` or Node
+`createServer(app)` alone does not initialize that transport and native runs
+fail with `runner_prp_websocket_server_not_configured`. Browser live events still
+use their separate authenticated setup.
+
 Project discovery through `list_projects` returns up to 50 compact summaries.
 It uses `GET /api/companies/:companyId/projects?view=summary&limit=50&cursor=...`;
 the cursor is optional. The database reads bounded summary projections. Agent
@@ -1373,6 +1514,14 @@ provider session identities across server restarts. A coordinated hot restart
 registers a correlated recovery request before it signals the dev supervisor.
 An uncoordinated server restart uses the same durable recovery classifier
 without trusting a handoff marker.
+
+Recovery retains each run's saved execution prompt, revision, and context
+digest across server upgrades. The shared parser validates the saved prompt's
+SHA-256 and aggregate context digest. The revision is non-empty metadata; it
+does not need to match the current release or a catalog of past prompts. New
+runs use the current prompt. Do not rewrite saved execution inputs to the latest
+prompt. Existing execution-schema, ownership, checkpoint, and permission checks
+still determine whether recovery can proceed.
 
 Startup binds the HTTP and PRP listener before it classifies native runs. Public
 health reports a startup state until every candidate is reattached, dispatched
@@ -1605,6 +1754,9 @@ Environment overrides:
 
 - `PAPERCLIP_DB_BACKUP_ENABLED=true|false`
 - `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
+- `PAPERCLIP_DB_BACKUP_IDLE_CHECKPOINT_ENABLED=1` enables verified final backups
+  for owned idle sleep, with restart catch-up. Off by default; see
+  [idle sleep safety](idle-sleep-safety.md) for the hosting and storage contract.
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
 - `PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS=<hours>` controls the `/api/health`

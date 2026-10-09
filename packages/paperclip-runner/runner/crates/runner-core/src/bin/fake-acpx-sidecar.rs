@@ -25,6 +25,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .find(|pair| pair[0] == "--profile-digest")
         .map(|pair| pair[1].as_str())
         .unwrap_or("sha256:1111111111111111111111111111111111111111111111111111111111111111");
+    let suspend_delay_ms = args
+        .windows(2)
+        .find(|pair| pair[0] == "--suspend-delay-ms")
+        .map(|pair| pair[1].parse::<u64>())
+        .transpose()?;
+    let mut opened_identity: Option<Value> = None;
+    let lifetime_fence_candidates = args
+        .windows(2)
+        .find(|pair| pair[0] == "--lifetime-fence-ports")
+        .map(|pair| {
+            pair[1]
+                .split(',')
+                .map(str::parse::<u16>)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_else(|| vec![60001, 60002, 60003]);
+    let lifetime_fence_candidates: [u16; 3] = lifetime_fence_candidates
+        .try_into()
+        .map_err(|_| "lifetime fence requires three ports")?;
     // Only the receiver-admission fixture writes this task-owned command journal.
     let mut admission_journal = if matches!(mode, "admission-tool" | "admission-tool-oversized") {
         let path = args
@@ -71,6 +91,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &request,
                     mode,
                     profile_digest,
+                    lifetime_fence_candidates,
                     &mut session_identity,
                 )
             };
@@ -136,6 +157,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &request,
                     mode,
                     profile_digest,
+                    lifetime_fence_candidates,
                     &mut session_identity,
                 ),
             )?;
@@ -207,7 +229,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "hasToken": std::env::var("PAPERCLIP_NATIVE_MCP_TOKEN").is_ok(),
                             "hasUnrelatedSecret": std::env::var("UNRELATED_EVAL_SECRET").is_ok(),
                             "credentialBinding": std::env::var("PAPERCLIP_ACPX_CREDENTIAL_BINDING").ok(),
-                            "credentialKeys": (["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
+                            "credentialKeys": (["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "MY_PI_SERVICE_KEY", "LD_API_KEY", "DYLD_API_KEY", "PAPERCLIP_PI_PROVIDERS", "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
                         }
                     }),
                 )?;
@@ -262,6 +284,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "bootstrap"
             | "goals"
+            | "bootstrap-wrong-pi-thinking"
+            | "bootstrap-missing-pi-thinking"
+            | "bootstrap-alias-pi-thinking"
             | "bootstrap-wrong-model"
             | "bootstrap-wrong-run"
             | "controls"
@@ -299,6 +324,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "resolutions-error-redaction"
             | "resolutions-projected-id"
             | "resolutions-wrong-ack"
+            | "resolutions-snapshot-wrong-session"
+            | "resolutions-snapshot-wrong-turn"
+            | "resolutions-snapshot-missing-callbacks"
             | "suspend"
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
@@ -318,17 +346,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
-                write_json(
-                    &mut stdout,
-                    &bootstrap_success(
-                        id,
-                        command,
-                        &request,
-                        mode,
-                        profile_digest,
-                        &mut session_identity,
-                    ),
-                )?;
+                let mut response = bootstrap_success(
+                    id,
+                    command,
+                    &request,
+                    mode,
+                    profile_digest,
+                    lifetime_fence_candidates,
+                    &mut session_identity,
+                );
+                if command == "session.open" {
+                    opened_identity = response.pointer("/result/identity").cloned();
+                }
+                if command == "session.suspend" {
+                    if let Some(delay_ms) = suspend_delay_ms {
+                        std::thread::sleep(Duration::from_millis(delay_ms));
+                        response["result"]["identity"] = opened_identity.clone().unwrap();
+                    }
+                }
+                write_json(&mut stdout, &response)?;
                 let params = request.get("params").unwrap_or(&Value::Null);
                 let turn_id = params
                     .get("turnId")
@@ -698,15 +734,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
-                if command == "turn.start"
-                    && matches!(
-                        mode,
-                        "resolutions"
-                            | "resolutions-error-redaction"
-                            | "resolutions-projected-id"
-                            | "resolutions-wrong-ack"
-                    )
-                {
+                if command == "turn.start" && mode.starts_with("resolutions") {
                     for (event_type, payload) in [
                         (
                             "runtime.tool_called",
@@ -777,6 +805,7 @@ fn bootstrap_success(
     request: &Value,
     mode: &str,
     profile_digest: &str,
+    lifetime_fence_candidates: [u16; 3],
     session_identity: &mut Value,
 ) -> Value {
     if command == "permission.resolve" {
@@ -827,7 +856,13 @@ fn bootstrap_success(
                     "effectiveModel": if mode == "bootstrap-wrong-model" { "wrong-model" } else { model },
                     "permissionMode": params.get("permissionMode"),
                     "mode": params.get("mode"),
-                    "providerLifetimeFenceCandidates": [60001, 60002, 60003],
+                    "piThinkingLevel": match mode {
+                        "bootstrap-wrong-pi-thinking" => json!("high"),
+                        "bootstrap-missing-pi-thinking" => Value::Null,
+                        "bootstrap-alias-pi-thinking" => json!("medium"),
+                        _ => params.get("piThinkingLevel").cloned().unwrap_or(Value::Null),
+                    },
+                    "providerLifetimeFenceCandidates": lifetime_fence_candidates,
                 },
                 "status": {},
                 "turnControls": {"steering": matches!(mode, "controls" | "controls-wrong-ack" | "controls-downgrade"), "queuedFollowUp":matches!(mode, "controls" | "controls-wrong-ack" | "controls-downgrade")},
@@ -849,6 +884,21 @@ fn bootstrap_success(
         }),
         "turn.cancel" => {
             json!({"cancelled":mode != "turns-wrong-cancel", "sessionClosed":matches!(mode, "turns-retired" | "turns-retired-terminal-first")})
+        }
+        "session.snapshot" => {
+            let mut identity = session_identity.clone();
+            if mode == "resolutions-snapshot-wrong-session" {
+                identity["acpxRecordId"] = json!("other-record");
+            }
+            json!({
+                "identity": identity,
+                "runId":"run-1",
+                "turnId":if mode == "resolutions-snapshot-wrong-turn" {"other-turn"} else {"turn-1"},
+                "pendingRuntimeRequests":if mode == "resolutions-snapshot-missing-callbacks" {Value::Null} else {
+                    json!([{"requestId":if mode == "resolutions-projected-id" {PROJECTED_INPUT_PROVIDER_ID} else {"input-1"},
+                        "type":"input","turnId":"turn-1"}])
+                }
+            })
         }
         "session.suspend" => {
             let mut identity = session_identity.clone();

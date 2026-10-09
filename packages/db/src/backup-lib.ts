@@ -6,6 +6,7 @@ import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
+import { randomUUID } from "node:crypto";
 
 export type BackupRetentionPolicy = {
   dailyDays: number;
@@ -28,6 +29,8 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /** Optional durability gate. A rejected archive must not prune history. */
+  verifyBeforePrune?: (backupFile: string) => Promise<void>;
 };
 
 export type RunDatabaseBackupResult = {
@@ -542,13 +545,17 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await sql.end();
   };
   mkdirSync(opts.backupDir, { recursive: true });
-  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
+  // Initial and final sleep checks can run within the same second. A failed
+  // second checkpoint must never overwrite the first verified recovery point.
+  const checkpointSuffix = opts.verifyBeforePrune ? `-${randomUUID()}` : "";
+  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}${checkpointSuffix}.sql`);
   const backupFile = `${sqlFile}.gz`;
   const writer = createBufferedTextFileWriter(sqlFile);
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
+      let dumped = false;
       try {
         await closeSql();
         await runPgDumpBackup({
@@ -556,14 +563,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           backupFile,
           connectTimeout,
         });
-        await writer.abort();
-        const sizeBytes = statSync(backupFile).size;
-        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
-        return {
-          backupFile,
-          sizeBytes,
-          prunedCount,
-        };
+        dumped = true;
       } catch (error) {
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
@@ -574,6 +574,16 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         effectiveBackupEngine = "javascript";
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
         sqlClosed = false;
+      }
+      if (dumped) {
+        // Only an engine failure can select the JavaScript fallback. Once
+        // pg_dump succeeds, archive verification or persistence failures
+        // must retain their original error and must not reuse a closed writer.
+        await writer.abort();
+        const sizeBytes = statSync(backupFile).size;
+        await opts.verifyBeforePrune?.(backupFile);
+        const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
+        return { backupFile, sizeBytes, prunedCount };
       }
     }
 
@@ -1056,6 +1066,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     unlinkSync(sqlFile);
 
     const sizeBytes = statSync(backupFile).size;
+    await opts.verifyBeforePrune?.(backupFile);
     const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
 
     return {

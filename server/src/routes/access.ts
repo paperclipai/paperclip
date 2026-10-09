@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import {
   createHash,
   generateKeyPairSync,
@@ -2640,6 +2641,7 @@ export function accessRoutes(
   const access = accessService(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
+  const agentsLifecycle = createAgentLifecycle(db);
   const routeInviteResolutionNetwork = opts.inviteResolutionNetwork
     ? { ...defaultInviteResolutionNetwork, ...opts.inviteResolutionNetwork }
     : inviteResolutionNetwork;
@@ -4268,7 +4270,7 @@ export function accessRoutes(
           }))
         );
 
-        const created = await agents.create(companyId, {
+        const created = await agentsLifecycle.requestHire(companyId, {
           name: agentName,
           role: "general",
           title: null,

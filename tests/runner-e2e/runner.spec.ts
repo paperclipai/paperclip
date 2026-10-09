@@ -1,3 +1,11 @@
+import type { RestartRunnerIdentity } from "./process-tree-owner.js";
+import { runNativeActiveStopFlow } from "./native-active-stop-flow.js";
+import { runPiControlsFlow } from "./pi-controls-flow.js";
+import { runCursorNativeFlow } from "./cursor-native-flow.js";
+import { createRemoteNativeBootstrap, createRemoteFixtureClient } from "./remote-native-bootstrap.js";
+import { runCopilotProtectionFlow } from "./copilot-protection-flow.js";
+import { runPiNativeFlow } from "./pi-native-flow.js";
+import { seedPiFile, collectPiFileEvidence } from "./pi-file-evidence.js";
 import { runPlanTaskFlow } from "./plan-task-flow.js";
 import { assertNativeCompletionSelection, NATIVE_COMPLETION_PREFLIGHT_ENV, verifyNativeCompletionPreflight } from "./native-completion-admission.js";
 import { assertNativeInstructionSelection, verifyNativeInstructionPreflight, NATIVE_INSTRUCTION_PREFLIGHT_ENV, NATIVE_INSTRUCTION_SUITE, NATIVE_INSTRUCTION_DEFAULT_SHA256 } from "./native-instruction-consolidation.js";
@@ -7,10 +15,7 @@ import { assertNativeBlockerReply } from "./native-blocker-visible.js";
 import { warmManagedFileEvidence } from "./warm-managed-files.js";
 import { gitFinalizationEvidence, gitStreamingEvidence, setupGitStreamingWorkspace } from "./daytona-git-streaming.js";
 import { runsCompletionUpdateProbe, completionQualityControls, completionQualityStatus, judgeCompletionQuality, reserveCompletionQuality, type CompletionQualityRecord } from "./completion-quality.js";
-import { runNativeActiveStopFlow } from "./native-active-stop-flow.js";
 import { runNativeProviderLossFlow } from "./native-provider-loss-flow.js";
-import { runCursorNativeFlow } from "./cursor-native-flow.js";
-import { createRemoteNativeBootstrap, createRemoteFixtureClient } from "./remote-native-bootstrap.js";
 import { mayAllocateRemoteResources, runCleanupWithObservers, verifyCleanupAssertions, type CleanupAssertion } from "./cleanup-verification.js";
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
@@ -236,6 +241,7 @@ async function restartIsolatedPaperclipServer(input: {
   api: RunnerApi;
   requestId: string;
   deadlineAt: number;
+  preserveRunner?: RestartRunnerIdentity;
 }): Promise<void> {
   const {
     controlDirectory,
@@ -246,7 +252,7 @@ async function restartIsolatedPaperclipServer(input: {
   const temporaryRequestPath = `${requestPath}.${process.pid}.${input.requestId}.tmp`;
   await writeFile(
     temporaryRequestPath,
-    JSON.stringify({ requestId: input.requestId }),
+    JSON.stringify({ requestId: input.requestId, ...(input.preserveRunner ? { preserveRunner: input.preserveRunner } : {}) }),
     { encoding: "utf8", mode: 0o600 },
   );
   await rename(temporaryRequestPath, requestPath);
@@ -584,7 +590,7 @@ for (const execution of executions) {
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
-    const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "cursor_native", "native_active_stop", "native_provider_loss", "public_mcp"].includes(execution.task.flow);
+    const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "public_mcp"].includes(execution.task.flow);
     const publicMcpUsage = execution.task.flow === "public_mcp" ? assistantUsage(execution.profile.provider === "claude" ? "anthropic" : "openai", execution.profile.model) : undefined;
     let publicMcpUserId = "";
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
@@ -601,6 +607,7 @@ for (const execution of executions) {
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
     let matcherResults: MatcherResult[] = [];
     let downloadedResponseProof: Awaited<ReturnType<typeof readResponseProof>> | undefined;
+    let piFileSeed: Awaited<ReturnType<typeof seedPiFile>> | undefined;
     const completionQuality: CompletionQualityRecord[] = [];
     const completionEvidence = async (name: string, data: unknown) => {
       await writeSanitizedJson(snapshotsDir, name, data, secrets);
@@ -877,6 +884,11 @@ for (const execution of executions) {
       });
       expect(experimental.enableNativeRunner).toBe(true);
 
+      if (execution.suite.id === "extended-harnesses" && execution.profile.qualificationCandidate === "pi" && execution.task.id === "file-edit-validate") {
+        piFileSeed = await seedPiFile(workspacePath, nonce);
+        await writeSanitizedJson(snapshotsDir, "pi-file-seed.json", piFileSeed, secrets);
+      }
+
       if (execution.suite.id === "daytona-git-streaming") {
         await setupGitStreamingWorkspace(workspacePath);
       }
@@ -903,7 +915,7 @@ for (const execution of executions) {
         nativeInitial = { issueIds: issues.map(value => value.id), agentIds: agents.map(value => value.id), workspaceDigest };
       }
       const remoteBootstrap = execution.environment.id === "daytona"
-        && ["cursor_native", "native_active_stop", "native_provider_loss"].includes(execution.task.flow)
+        && ["pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss"].includes(execution.task.flow)
         ? createRemoteNativeBootstrap({
           api, daytona: await createRemoteFixtureClient(credentials.DAYTONA_API_KEY ?? ""),
           companyId: fixtures.company.id, environmentId: fixtures.environment.id, agentId: fixtures.agent.id,
@@ -1012,6 +1024,15 @@ for (const execution of executions) {
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
         });
         issue = accounting.issue as IssueRecord; selectedRuns = accounting.runs as RunRecord[];
+      } else if (execution.task.flow === "pi_controls") {
+        const story = await runPiControlsFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerCleanupAssertion, registerBeforeEnvironmentTeardownAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `piControls.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "native_provider_loss") {
         const story = await runNativeProviderLossFlow({
           page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
@@ -1040,6 +1061,27 @@ for (const execution of executions) {
         });
         issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `cursorNative.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "pi_native") {
+        const story = await runPiNativeFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          restart: preserveRunner => restartIsolatedPaperclipServer({ api, requestId: `pi-native-${nonce}`, deadlineAt: startedAtMs + deadlineMs, preserveRunner }),
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerCleanupAssertion: remoteBootstrap ? registerBeforeEnvironmentTeardownAssertion : registerCleanupAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `piNative.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "copilot_protection") {
+        const story = await runCopilotProtectionFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerBeforeEnvironmentTeardownAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `copilotProtection.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "instruction_persistence") {
         const story = await runInstructionPersistenceFlow({
           page, api, fixtures, execution, nonce, secrets, deadlineAt: startedAtMs + deadlineMs,
@@ -2195,6 +2237,15 @@ for (const execution of executions) {
         const paging = gradeApiResponsePaging(runEventsByRun.flatMap(captured => captured.events), apiResponseSourceId ?? "");
         await writeSanitizedJson(snapshotsDir, "api-response-pagination.json", paging, secrets);
         if (!paging.passed) invariantFailures.push(`Bounded response paging was not proven: ${paging.failure}`);
+      }
+      if (piFileSeed) {
+        const proof = await collectPiFileEvidence({ page, api, nonce, companyId: fixtures.company.id,
+          issueId: issue.id, agentId: fixtures.agent.id, run: finalRun,
+          events: runEventsByRun.find(entry => entry.runId === finalRun.id)?.events ?? [],
+          seed: piFileSeed, workspace: workspacePath,
+          environment: execution.environment.id === "daytona" ? "daytona" : "local", environmentId: fixtures.environment.id,
+          evidence: data => writeSanitizedJson(snapshotsDir, "pi-file-observation.json", data, secrets) });
+        await writeSanitizedJson(snapshotsDir, "pi-file-evidence.json", proof, secrets);
       }
       if (execution.suite.id === "task-titles") {
         const titleEvidence = gradeTaskTitle({

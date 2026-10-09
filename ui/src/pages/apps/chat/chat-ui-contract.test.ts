@@ -1,3 +1,4 @@
+import { buildSlackAppManifest } from "@paperclipai/shared";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -53,8 +54,9 @@ describe("chat connector UI contract", () => {
       expect(detail).toContain(`"${tab}"`);
     }
     expect(detail).not.toContain('"overview"');
-    expect(detail).toContain("Open {providerNames[provider]}");
-    expect(detail).toContain("Open task");
+    expect(detail).toContain("row.externalUrl");
+    expect(detail).toContain("row.externalLabel");
+    expect(detail).toContain("row.issueTitle ?? row.issueIdentifier ?? \"View task\"");
     expect(detail.toLowerCase()).not.toContain("detach");
   });
 
@@ -81,8 +83,8 @@ describe("chat connector UI contract", () => {
     const setup = source("./ChatEndpointSetup.tsx");
     expect(detail).toContain("Allow direct messages");
     expect(detail).toContain("Allow group chats");
-    expect(detail).toContain("Their tasks run only with an isolated workspace");
-    expect(detail).toContain("otherwise Paperclip safely refuses the request");
+    expect(detail).toContain("People without linked accounts can start isolated tasks");
+    expect(detail).toContain("Requests are refused when isolation is unavailable");
     expect(setup).toContain("Link the account you’re testing");
     expect(setup).toContain("Paperclip does not replay the refused request");
     expect(setup).toContain("Review identity access");
@@ -247,28 +249,25 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain('type="password"');
     expect(setup).not.toContain("WebkitTextSecurity");
     expect(setup).toContain("Verify Slack connection");
-    expect(setup).toContain("member_joined_channel");
-    expect(setup).toContain("member_left_channel");
-    expect(setup).toContain("channel_left");
-    expect(setup).toContain("group_left");
-    expect(setup).toContain("group_archive");
-    expect(setup).toContain("group_unarchive");
-    expect(setup).toContain("group_rename");
-    expect(setup).toContain("app_uninstalled");
-    expect(setup).toContain("slackBotNameForAgent");
-    expect(setup).not.toContain("- im:write");
-    expect(setup).toContain("- reactions:write");
-    expect(setup).not.toContain("always_online");
-    expect(setup).toContain("- reactions:read");
-    expect(setup).toContain("- assistant:write");
-    expect(setup).toContain("agent_view:");
-    expect(setup).toContain("agent_session_stopped");
-    expect(setup).not.toContain("assistant_view:");
-    expect(setup).toContain("reaction_added");
-    expect(setup).toContain("reaction_removed");
-    expect(setup).toContain("home_tab_enabled: false");
-    expect(setup).toContain("messages_tab_enabled: true");
-    expect(setup).toContain("messages_tab_read_only_enabled: false");
+    expect(setup).toContain("buildSlackAppManifest");
+    expect(setup).toContain("defaultSlackAppConfiguration");
+    const manifest = buildSlackAppManifest({
+      app: { appName: "Maya", botName: "maya", command: "/maya" },
+      agentName: "Maya",
+      webhookUrl: "https://paperclip.example/api/chat-webhooks/test/slack",
+    });
+    expect(manifest.settings.event_subscriptions.bot_events).toEqual(expect.arrayContaining([
+      "member_joined_channel", "member_left_channel", "channel_left", "group_left",
+      "group_archive", "group_unarchive", "group_rename", "app_uninstalled",
+      "agent_session_stopped", "reaction_added", "reaction_removed",
+    ]));
+    expect(manifest.oauth_config.scopes.bot).toEqual(expect.arrayContaining(["reactions:write", "reactions:read", "assistant:write"]));
+    expect(manifest.features).toHaveProperty("agent_view");
+    expect(manifest.features).not.toHaveProperty("assistant_view");
+    expect(manifest.features.bot_user).not.toHaveProperty("always_online");
+    expect(manifest.features.app_home).toEqual({
+      home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false,
+    });
     expect(setup).not.toContain("No credentials");
     expect(setup).not.toContain("managed Microsoft app");
     expect(setup).toContain("endpoint.providerAccountId && !repairing");

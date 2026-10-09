@@ -1,4 +1,5 @@
 import { explicitlyRequestsFileOutput } from "../../server/src/services/native-runtime/native-deliverable-feedback.js";
+import { copilotProtectionTasks } from "./copilot-protection-tasks.js";
 import type { APIRequestContext, APIResponse } from "@playwright/test";
 import { afterEach, expect, it, vi } from "vitest";
 import { classifyFailure } from "./failure-classifier.js";
@@ -11,7 +12,7 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 function harness(timeoutMs = REMOTE_FIXTURE_MIN_SETUP_BUDGET_MS + 18_000) {
   const order: string[] = [];
   const issue = { id: "issue", companyId: "company", assigneeAgentId: "agent" };
-  const run = { id: "run", companyId: "company", agentId: "agent", status: "running", executionStage: "preparing" };
+  const run = { id: "run", companyId: "company", agentId: "agent", status: "running", executionStage: "preparing", runtimeMode: "native", nativePhase: "provider_running" };
   const leases = [{ id: "lease", heartbeatRunId: "run", issueId: "issue", status: "active", providerLeaseId: "sandbox" }];
   const api = { get: vi.fn(async (path: string) => path === "/api/issues/issue" ? issue : path === "/api/heartbeat-runs/run" ? run : leases) };
   const fixture = {
@@ -48,6 +49,19 @@ it("keeps negated bootstrap instructions out of the production file-delivery con
   expect(explicitlyRequestsFileOutput(`${prompt}\nCreate a downloadable report.txt file.`)).toBe(true);
 });
 
+it("keeps async completion immediate with a private sentinel and no delivery wait", () => {
+  const task = copilotProtectionTasks.find(task => task.id === "attached-async-settlement")!;
+  const action = task.buildPrompt("nonce");
+  expect(explicitlyRequestsFileOutput(action)).toBe(false);
+  expect(explicitlyRequestsFileOutput(`${harness().bootstrap.prompt("nonce")}\n${action}`)).toBe(false);
+  expect(action).toContain("attempt to finish immediately without calling read_bash or another waiting tool");
+  expect(action).toContain("Do not modify fixture code, manufacture its result, or start another command.");
+  expect(action).toContain("private diagnostic sentinel, not a requested file deliverable");
+  expect(action).toContain("Do not publish it. Do not attach it.");
+  expect(explicitlyRequestsFileOutput(`${action}\nAttach a downloadable report.txt file.`)).toBe(true);
+  expect(action).toContain("evidence [], verification []");
+  expect(action).not.toContain("register_deliverable");
+});
 
 it("keeps the complete readiness/install reserve when a lease arrives at the admission boundary", async () => {
   vi.useFakeTimers(); vi.setSystemTime(0);
@@ -104,6 +118,13 @@ it("waits through queued admission without publishing early", async () => {
   });
   await h.bootstrap.bindAndRelease(h.request);
   expect(count).toBe(2); expect(h.fixture.publishAction).toHaveBeenCalledTimes(1);
+});
+
+it.each(["provider_running", "observed"])("admits a native %s run while its legacy stage stays preparing", async nativePhase => {
+  const h = harness(); h.bootstrap.prompt("native-ready"); h.run.nativePhase = nativePhase;
+  await expect(h.bootstrap.bindAndRelease(h.request)).resolves.toBe(h.fixture);
+  expect(h.run.executionStage).toBe("preparing");
+  expect(h.bind).toHaveBeenCalledTimes(1); expect(h.fixture.publishAction).toHaveBeenCalledTimes(1);
 });
 
 it.each(["", "x".repeat(16385)])("rejects empty or over-bound action after closing only its observer", async action => {

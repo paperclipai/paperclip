@@ -782,6 +782,7 @@ export const pluginManifestV1Schema = z.object({
     "minimumPaperclipVersion must follow semver (e.g. 1.0.0)",
   ).optional(),
   capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
+  agentLifecycle: z.literal(true).optional(),
   aiConnectionRouter: z.object({ name: z.string().trim().min(1).max(100), description: z.string().trim().min(1).max(500) }).strict().optional(),
   entrypoints: z.object({
     worker: z.string().min(1),
@@ -806,6 +807,10 @@ export const pluginManifestV1Schema = z.object({
     launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   }).optional(),
 }).superRefine((manifest, ctx) => {
+  if (manifest.agentLifecycle && !manifest.capabilities.includes("agents.lifecycle.manage")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent lifecycle participation requires agents.lifecycle.manage", path: ["capabilities"] });
+  }
+
   // ── Entrypoint ↔ UI slot consistency ──────────────────────────────────
   // Plugins that declare UI slots must also declare a UI entrypoint so the
   // host knows where to load the bundle from (PLUGIN_SPEC.md §10.1).

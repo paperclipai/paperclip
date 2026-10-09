@@ -3,4 +3,5 @@ export {
   probeAcpxClaudeInstallation,
   probeAcpxGrokInstallation,
   probeAcpxCursorInstallation,
+  probeAcpxPiInstallation,
 } from "@paperclipai/paperclip-runner/live";

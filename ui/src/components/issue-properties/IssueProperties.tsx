@@ -47,6 +47,7 @@ import { getRecentProjectIds } from "../../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
+import { useExecutionPolicy } from "../../hooks/useExecutionPolicy";
 import {
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
@@ -246,6 +247,9 @@ export function IssueProperties({
   documentDeepLink,
   sidePanelContentOnly = false,
 }: IssuePropertiesProps) {
+  const policyResult = useExecutionPolicy(issue.executionPolicy);
+  const policyAvailable = policyResult.success;
+  const executionPolicy = policyResult.success ? policyResult.data : null;
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
@@ -392,9 +396,9 @@ export function IssueProperties({
   const [newLabelName, setNewLabelName] = useState("");
   // token-extraction: allowlisted — color-picker seed state, persisted into label-create payload; a var() string would break that payload.
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
-  const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
-  const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
-  const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
+  const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(executionPolicy?.monitor?.nextCheckAt));
+  const [monitorNotesInput, setMonitorNotesInput] = useState(executionPolicy?.monitor?.notes ?? "");
+  const [monitorServiceInput, setMonitorServiceInput] = useState(executionPolicy?.monitor?.serviceName ?? "");
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [unarchiveErrorMessage, setUnarchiveErrorMessage] = useState<string | null>(null);
@@ -999,6 +1003,7 @@ export function IssueProperties({
     applyAssignee(next, track);
   };
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
+    if (!policyAvailable) return;
     onUpdate({
       executionPolicy: buildExecutionPolicy({
         existingPolicy: issue.executionPolicy ?? null,
@@ -1073,13 +1078,13 @@ export function IssueProperties({
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
   useEffect(() => {
-    setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
-    setMonitorNotesInput(issue.executionPolicy?.monitor?.notes ?? "");
-    setMonitorServiceInput(issue.executionPolicy?.monitor?.serviceName ?? "");
+    setMonitorAtInput(toDateTimeLocalValue(executionPolicy?.monitor?.nextCheckAt));
+    setMonitorNotesInput(executionPolicy?.monitor?.notes ?? "");
+    setMonitorServiceInput(executionPolicy?.monitor?.serviceName ?? "");
   }, [
-    issue.executionPolicy?.monitor?.nextCheckAt,
-    issue.executionPolicy?.monitor?.notes,
-    issue.executionPolicy?.monitor?.serviceName,
+    executionPolicy?.monitor?.nextCheckAt,
+    executionPolicy?.monitor?.notes,
+    executionPolicy?.monitor?.serviceName,
   ]);
   // Re-sync watchdog editor inputs when the persisted watchdog changes (and reset on close).
   useEffect(() => {
@@ -1261,6 +1266,7 @@ export function IssueProperties({
       ? M | null
       : never
     : never) => {
+    if (!policyAvailable) return;
     const basePolicy = buildExecutionPolicy({
       existingPolicy: issue.executionPolicy ?? null,
       reviewerValues,
@@ -1270,8 +1276,10 @@ export function IssueProperties({
       onUpdate({ executionPolicy: null });
       return;
     }
+    const { monitor: _previousMonitor, ...policyWithoutMonitor } = basePolicy ?? {};
     onUpdate({
       executionPolicy: {
+        ...policyWithoutMonitor,
         mode: basePolicy?.mode ?? issue.executionPolicy?.mode ?? "normal",
         commentRequired: true,
         stages: basePolicy?.stages ?? [],
@@ -1299,11 +1307,11 @@ export function IssueProperties({
     setMonitorOpen(false);
   };
   const monitorState = issue.executionState?.monitor ?? null;
-  const monitorNextCheckAt = monitorState?.nextCheckAt ?? issue.monitorNextCheckAt ?? issue.executionPolicy?.monitor?.nextCheckAt ?? null;
+  const monitorNextCheckAt = monitorState?.nextCheckAt ?? issue.monitorNextCheckAt ?? executionPolicy?.monitor?.nextCheckAt ?? null;
   const monitorAttemptCount = issue.monitorAttemptCount ?? monitorState?.attemptCount ?? 0;
   const monitorLastTriggeredAt = issue.monitorLastTriggeredAt ?? monitorState?.lastTriggeredAt ?? null;
-  const monitorServiceName = issue.executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
-  const monitorNotes = issue.executionPolicy?.monitor?.notes ?? monitorState?.notes ?? null;
+  const monitorServiceName = executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
+  const monitorNotes = executionPolicy?.monitor?.notes ?? monitorState?.notes ?? null;
   const monitorNow = useMonitorCountdown(monitorNextCheckAt);
   const monitorRelative = monitorNextCheckAt ? formatMonitorEta(monitorNextCheckAt, monitorNow) : null;
   const monitorIsDueNow = monitorRelative === "due now";
@@ -1585,7 +1593,7 @@ export function IssueProperties({
           >
             Schedule
           </button>
-          {issue.executionPolicy?.monitor ? (
+          {executionPolicy?.monitor ? (
             <button
               type="button"
               className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
@@ -2621,6 +2629,11 @@ export function IssueProperties({
           </PropertyRow>
         ) : null}
 
+        {!policyAvailable ? (
+          <PropertyRow label="Execution policy" wrap>
+            <span role="status" className="text-sm text-muted-foreground">Execution policy unavailable. Refresh to try again.</span>
+          </PropertyRow>
+        ) : (<>
         <PropertyPicker
           inline={inline}
           label="Reviewers"
@@ -2658,6 +2671,7 @@ export function IssueProperties({
           )}
         </PropertyPicker>
         {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
+        </>)}
 
         {currentExecutionLabel && (
           <PropertyRow label="Execution">
@@ -2684,6 +2698,7 @@ export function IssueProperties({
           </PropertyPicker>
         ) : null}
 
+        {policyAvailable ? (
         <PropertyPicker
           inline={inline}
           label="Monitor"
@@ -2695,6 +2710,7 @@ export function IssueProperties({
         >
           {monitorContent}
         </PropertyPicker>
+        ) : null}
 
         <PropertyPicker
           inline={inline}

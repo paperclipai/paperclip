@@ -631,3 +631,96 @@ reads and server startup do not provision them. Normal backups preserve identity
 rows and need the matching secrets master key for recovery. Both development seed
 modes omit identity rows, including with live-work preservation, so copied agents
 get fresh identities. See [Agent cryptographic identity](AGENT-IDENTITY.md).
+
+### Slack app registration
+
+`chat_slack_registrations` stores one company-scoped app registration per chat
+endpoint. A composite foreign key binds `(company_id, endpoint_id)` to the
+endpoint's company. It contains the creation request ID, immutable manifest
+snapshot/hash, OAuth callback URI, app/client IDs, vault references, installation
+identity, status, safe failure code, creator, and timestamps. It contains no
+plaintext configuration token, OAuth code, signing/client secret, or bot token.
+
+Creation records `creating` before dispatch. An interrupted attempt becomes
+`uncertain`; a new request needs explicit confirmation that no app exists.
+`install` means the app exists. `credentials_saved` means the OAuth bot token is
+vaulted and connection checks can resume. `configured` means runtime credentials
+are durably bound; staged duplicates are cleaned and the client secret remains
+available for reauthorization. `removed` invalidates registration and keeps the
+safe app management link for provider-side cleanup.
+
+`chat_endpoints.setup.slackAvatar` records optional avatar provisioning as
+`pending`, `uploaded` with its confirmation timestamp, or `failed` with a fixed
+safe error code. It survives reloads and restarts. App credentials are durably
+bound before icon upload; an interrupted upload never triggers another app
+creation. This JSON state stores no token, image URL, or provider error payload.
+
+`chat_endpoints.setup.slackAccount` stores the OAuth installer’s Slack ID, the
+initiating Paperclip user ID, pending/linked status, durable welcome-DM and
+optional verification-DM status, and the returned DM channel ID. It stores no
+user OAuth token or provider payload.
+The account uses the existing company-scoped `chat_identity_links` table; it
+preserves conflicting/revoked links and does not change on reauthorization.
+Both message dispatches move pending → sending before network I/O, then sent/failed;
+a restart or ambiguous response moves sending → uncertain without replay.
+Signed Request URL verification can precede installation. Internal setup state
+retains a signing-secret fingerprint and observed URL so configuration preserves
+that evidence only for the same secret and callback. No plaintext secret is stored
+in setup state, and the fingerprint is excluded from endpoint responses.
+For automatically registered apps, `webhookVerifiedAt` also records successful
+delivery of an authenticated message/app-mention event to the current callback
+URL. The current signing secret, saved app/workspace/bot binding, active connection,
+and runtime generation are checked before recording it. This is Paperclip's
+connection evidence, not Slack's settings-page URL-verification flag. Activity
+identifies this evidence as `authenticated_event`; no message body is recorded.
+
+Slack install attempts use `tool_oauth_states` with the `slack-install.` namespace.
+They expire after ten minutes, bind the company/connection/endpoint, registration
+request ID, app ID, initiating actor/session, callback URI, and requested scopes,
+and are atomically deleted before code exchange. The `code_verifier` column holds
+this non-secret binding for this namespace; Slack bot installation does not use
+PKCE. Removal and manual recovery invalidate outstanding attempts under the same
+credential-mutation lease used by configuration.
+
+
+## Transaction-aware delivery work signals
+
+Five existing delivery queues use process-local work signals to avoid empty
+polling. Register work **before** writing a queue row, on that row's transaction:
+
+```ts
+await db.transaction(async tx => {
+  await signalDatabaseWork(tx, "queue-topic");
+  await tx.insert(existingQueueTable).values(row);
+});
+```
+
+`createDb` instruments transaction callbacks and nested savepoints. Subscribers
+receive intent immediately and settlement only after the outer transaction
+finishes. Caller-owned transactions therefore need no extra post-commit wrapper.
+Dedicated clients from `withDedicatedDbConnection` share the owner's signal
+scope. No schema changes, triggers, dedicated listener connection, or periodic
+queries are installed by this API.
+
+The first registered write in a transaction fetches `pg_current_xact_id()`.
+Awaiting registration is required: a failure at that point must prevent the
+queue write. Unrelated transactions add no queries. If the transaction rejects,
+the coordinator probes `pg_xact_status(xid)` through the root pool before scanning
+the queue. An in-progress transaction remains unresolved even when the queue
+currently looks empty. Committed/aborted results permit reconciliation; NULL
+means PostgreSQL has discarded an old, no-longer-active transaction's outcome.
+The existing durable queue supplies the work in either case. Probe failures
+retain the idle hold and schedule another attempt. Work signals never replay
+queries or convert a failed database operation into success.
+
+This uses PostgreSQL's transaction-information functions (this path requires
+PostgreSQL 14+; embedded PostgreSQL uses 18). See the
+[PostgreSQL transaction information documentation](https://www.postgresql.org/docs/18/functions-info.html#FUNCTIONS-PG-SNAPSHOT).
+The process-local intent survives coordinator replacement, but not process exit.
+Startup scans recover committed queue rows. Independent DB clients, other
+processes, late transactions from an old process, and database failover need an
+explicit ownership/wake protocol; these signals are not cross-process messaging.
+Use the same root client for in-process writers. New queue insertion paths must
+register before writing, or they can remain unseen until the next startup or
+another notification. Tests should verify both the producer and its outer
+transaction boundary.

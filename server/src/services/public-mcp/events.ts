@@ -49,14 +49,16 @@ const dotEventDefinition = {
 export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDispatch, options: { fetch?: EventFetch; now?: () => number; cloudOrigin?: string; enableDotPrototype?: boolean; enableDotRunner?: boolean; isBackgroundWorkEnabled?: () => boolean } = {}) {
   const fetcher = options.fetch ?? eventFetch;
   const now = options.now ?? Date.now;
-  const cloudOrigin = options.cloudOrigin ?? process.env.PAPERCLIP_CLOUD_API_ORIGIN;
+  // Dedicated tenant Dot grants are authenticated locally, including background
+  // deliveries. They never use the personal connection's Cloud broker proof.
+  const cloudOrigin = options.enableDotRunner ? undefined : options.cloudOrigin ?? process.env.PAPERCLIP_CLOUD_API_ORIGIN;
   if (cloudOrigin && (new URL(cloudOrigin).protocol !== "https:" || new URL(cloudOrigin).origin !== cloudOrigin)) throw new Error("MCP Events requires a fixed HTTPS Cloud origin.");
   const encrypt = async (value: Destination) => (await localEncryptedProvider.createSecret({ value: JSON.stringify(value) })).material;
   const decrypt = async (s: Subscription): Promise<Destination> => JSON.parse(await localEncryptedProvider.resolveVersion({ material: s.deliveryMaterial, externalRef: null, providerVersionRef: null }));
 
   async function authorize(principal: McpPrincipal, args: z.infer<typeof resourceFilters>) {
     if (args.bindingId) {
-      if (!options.enableDotRunner || cloudOrigin) throw new McpEventError(-32602, "Dot requires the direct self-hosted agent endpoint; the Cloud agent broker is not qualified.");
+      if (!options.enableDotRunner) throw new McpEventError(-32602, "Dot requires the dedicated agent endpoint.");
       await dotRunnerBroker(db).authorizeBinding(principal, args.companyId, args.bindingId); return;
     }
     if (args.companyId !== principal.grant.companyId || !principal.grant.scopes.includes("paperclip:read")) throw new McpEventError(-32602, "This task is outside the authorized company.");
@@ -212,7 +214,12 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
   async function enqueue(s: Subscription) {
     if (s.bindingId) {
       if (!options.enableDotRunner) return;
-      const [b] = await db.select().from(dotAgentBindings).where(and(eq(dotAgentBindings.id, s.bindingId), eq(dotAgentBindings.companyId, s.companyId), isNull(dotAgentBindings.revokedAt)));
+      const [binding] = await db.select().from(dotAgentBindings).where(and(eq(dotAgentBindings.id, s.bindingId), eq(dotAgentBindings.companyId, s.companyId), isNull(dotAgentBindings.revokedAt)));
+      if (!binding) return;
+      // SQL idempotency makes this safe across restarts, replicas and callback
+      // renewals. Reload before filtering delivery against the newly issued test.
+      await dotRunnerBroker(db).challenge(binding.companyId, binding.agentId, { automatic: true, bindingId: binding.id });
+      const [b] = await db.select().from(dotAgentBindings).where(and(eq(dotAgentBindings.id, binding.id), isNull(dotAgentBindings.revokedAt)));
       if (!b) return;
       // Materialize only references to newly recorded task input. This does not steer
       // an external provider or create execution authority; the current run reads its history.
@@ -235,7 +242,8 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
         .orderBy(asc(dotMailboxItems.id)).limit(100);
       for (const { item, assignment } of rows) {
         const wanted = item.kind === "readiness_challenge" ? !!b.challengeHash && !!b.challengeExpiresAt && b.challengeExpiresAt > new Date(now())
-          : item.kind === "authority_revoked" || !!assignment && ["offered", "accepted"].includes(assignment.status) && assignment.expiresAt > new Date(now());
+          : item.kind === "authority_revoked" || (item.kind !== "follow_up" || item.references.consumed !== true)
+            && !!assignment && ["offered", "accepted"].includes(assignment.status) && assignment.expiresAt > new Date(now());
         await db.insert(deliveries).values({ subscriptionId: s.id, mailboxItemId: item.id, nextAttemptAt: new Date(now()),
           event: wanted ? { eventId: "evt_dot_" + item.id + "_" + s.startsAt.getTime(), name: names[4], timestamp: new Date(now()).toISOString(),
             data: { companyId: b.companyId, bindingId: b.id, bindingGeneration: b.generation, mailboxItemId: item.id, kind: item.kind }, cursor: null } : {},

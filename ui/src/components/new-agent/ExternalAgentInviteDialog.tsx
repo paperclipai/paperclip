@@ -1,93 +1,134 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
+import { dotInvitationsApi, type DotInvitation, type DotPairing } from "@/api/dotInvitations";
+import { instanceSettingsApi } from "@/api/instanceSettings";
+import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { buildAgentOnboardingPrompt } from "@/lib/agent-onboarding-prompt";
-import { copyTextToClipboard } from "@/lib/clipboard";
-import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
-import { Button } from "../ui/button";
-import { Textarea } from "../ui/textarea";
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../ui/dialog";
+import { buildDotSetupPrompt } from "@/lib/dot-setup-prompt";
+import { AnimatedDialogContent } from "../AnimatedDialogContent";
+import { Dialog } from "../ui/dialog";
+import { ExternalAgentInviteContent, type DotConnectionState, type ExternalAgentPreset } from "./ExternalAgentInviteContent";
 
-/** Preserve the existing agent-only invitation path beside the setup wizard. */
+/** Pairing secrets live only in this mounted dialog. Reloads resume the agent, never duplicate it. */
 export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
   companyId: string;
   onClose: () => void;
   onBack: () => void;
 }) {
   const cache = useQueryClient();
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
-  }, []);
-  const [message, setMessage] = useState("");
-  const [result, setResult] = useState<{ prompt: string; copyStatus: "idle" | "copied" | "failed" } | null>(null);
-  const prompt = result?.prompt;
-  const createInvite = useMutation({
-    mutationFn: async () => {
-      const invite = await accessApi.createCompanyInvite(companyId, {
-        allowedJoinTypes: "agent",
-        humanRole: null,
-        agentMessage: message.trim() || null,
-      });
+  const { selectedCompany } = useCompany();
+  const [preset, setPreset] = useState<ExternalAgentPreset | null>(null);
+  const [invitation, setInvitation] = useState<DotInvitation | null>(null);
+  const [pairing, setPairing] = useState<DotPairing | null>(null);
+  const [expiredPairingBindingId, setExpiredPairingBindingId] = useState<string | null>(null);
+  const [genericPrompt, setGenericPrompt] = useState("");
+  const attemptedAutomaticPairing = useRef(false);
+  const experimental = useQuery({ queryKey: queryKeys.instance.experimentalSettings, queryFn: instanceSettingsApi.getExperimental });
+  const dotDisabledReason = experimental.isPending ? "Loading available agents…"
+    : experimental.error ? "Unable to load experimental settings. Try again after refreshing."
+    : !experimental.data?.enableOpenAiDot || !experimental.data.enablePublicMcp
+      ? "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings." : undefined;
+  const key = ["dot-binding", companyId, invitation?.agent.id];
+  const state = useQuery({ queryKey: key,
+    queryFn: ({ signal }) => dotInvitationsApi.connection(companyId, invitation!.agent.id, signal),
+    enabled: preset === "dot" && !!invitation,
+    retry: false,
+    staleTime: 0,
+    refetchInterval: query => query.state.error ? false : query.state.data?.agentLifecycleState === "ready" && query.state.data.canConfigureConnection
+      && query.state.data.binding?.status === "ready" && query.state.data.binding.subscriptionVerified ? false : 2500,
+  });
+  const generate = useMutation({
+    mutationFn: async (kind: ExternalAgentPreset) => {
+      if (kind === "dot") {
+        const result = await dotInvitationsApi.create(companyId);
+        setInvitation(result);
+        await cache.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+        return;
+      }
+      const invite = await accessApi.createCompanyInvite(companyId, { allowedJoinTypes: "agent", humanRole: null, agentMessage: null });
       void cache.invalidateQueries({ queryKey: queryKeys.access.invites(companyId, "all", 5) });
       const path = invite.onboardingTextUrl ?? invite.onboardingTextPath ?? `/api/invites/${invite.token}/onboarding.txt`;
-      const onboardingTextUrl = new URL(path, window.location.origin).href;
       const manifest = await accessApi.getInviteOnboarding(invite.token).catch(() => null);
-      return buildAgentOnboardingPrompt({
-        onboardingTextUrl,
+      setGenericPrompt(buildAgentOnboardingPrompt({ onboardingTextUrl: new URL(path, window.location.origin).href,
         connectionCandidates: manifest?.onboarding.connectivity?.connectionCandidates ?? null,
-        testResolutionUrl: manifest?.onboarding.connectivity?.testResolutionEndpoint?.url ?? null,
-      });
+        testResolutionUrl: manifest?.onboarding.connectivity?.testResolutionEndpoint?.url ?? null }));
     },
-    onSuccess: async (value) => {
-      if (!mounted.current) return;
-      // Keep the invitation readable while a browser clipboard request is pending.
-      setResult({ prompt: value, copyStatus: "idle" });
-      let copyStatus: "copied" | "failed" = "copied";
-      try {
-        await copyTextToClipboard(value);
-      } catch {
-        copyStatus = "failed";
-      }
-      if (mounted.current) setResult((current) => current?.copyStatus === "idle" ? { ...current, copyStatus } : current);
-    },
+    gcTime: 0,
   });
-  return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-    <DialogContent className="max-h-(--sz-calc-16) overflow-y-auto sm:max-w-2xl">
-      <DialogTitle>{prompt ? "Agent onboarding prompt" : "Invite an external agent"}</DialogTitle>
-      <DialogDescription>
-        {prompt ? "Send this one-time prompt to the agent that should join your organization."
-          : "Generate a one-time onboarding prompt for an external agent. An organization admin must approve its join request before it can claim an API key."}
-      </DialogDescription>
-      {prompt ? <>
-        <Textarea aria-label="Agent onboarding prompt" readOnly value={prompt} className="min-h-64 font-mono text-xs" />
-        {result?.copyStatus === "failed" && <p role="alert" className="text-sm text-muted-foreground">Clipboard unavailable. Copy the prompt manually from the field above, or use the button below to try again.</p>}
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <Button variant="ghost" onClick={onClose}>Done</Button>
-          <AgentSetupPrompt
-            prompt={prompt}
-            label="Copy onboarding prompt"
-            title="Invite your agent"
-            description="Paste this into your external agent to request access to your organization."
-            initialCopyStatus={result?.copyStatus}
-            onCopied={() => setResult((current) => current && { ...current, copyStatus: "copied" })}
-          />
-        </div>
-      </> : <>
-        <label className="space-y-2 text-sm">
-          <span>Optional message for the agent</span>
-          <Textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={4000} className="min-h-24" />
-        </label>
-        {createInvite.error && <p role="alert" className="text-sm text-destructive">{createInvite.error.message}</p>}
-        <div className="flex justify-between gap-4">
-          <Button variant="ghost" onClick={onBack}>Back</Button>
-          <Button disabled={createInvite.isPending} onClick={() => createInvite.mutate()}>
-            {createInvite.isPending ? "Generating…" : "Generate onboarding prompt"}
-          </Button>
-        </div>
-      </>}
-    </DialogContent>
+  const pair = useMutation({
+    mutationFn: async (replaceBindingId?: string) => {
+      const result = await dotInvitationsApi.pair(companyId, invitation!.agent.id, replaceBindingId);
+      setPairing(result);
+      setExpiredPairingBindingId(null);
+      // Do not retain a one-use code in React Query's mutation cache.
+    },
+    onSuccess: () => { void cache.invalidateQueries({ queryKey: key }); },
+    onError: () => { void state.refetch(); },
+    gcTime: 0,
+  });
+  const test = useMutation({ mutationFn: () => dotInvitationsApi.retry(companyId, invitation!.agent.id, state.data!.binding!.id),
+    onSuccess: () => { void cache.invalidateQueries({ queryKey: key }); } });
+  const binding = state.data?.binding;
+  const canPreparePairing = preset === "dot" && state.data?.enabled && !!state.data.resourceUrl
+    && state.data.canConfigureConnection
+    && (!binding || binding.status === "pairing");
+  const preparePairing = canPreparePairing && !pairing && !state.error && !pair.isError
+    && !attemptedAutomaticPairing.current
+    && (!expiredPairingBindingId || binding?.id === expiredPairingBindingId);
+  useEffect(() => {
+    // Revalidate cached connection state before rotating an unfinished capability.
+    // Attempt once per opening/expiry, so failed requests and other tabs cannot cause a renewal loop.
+    if (preparePairing && state.isFetchedAfterMount && !state.isFetching && !pair.isPending) {
+      attemptedAutomaticPairing.current = true;
+      pair.mutate(binding?.id);
+    }
+  }, [preparePairing, state.isFetchedAfterMount, state.isFetching, pair.isPending, pair.mutate, binding?.id]);
+  useEffect(() => {
+    if (!pairing) return;
+    const timer = window.setTimeout(() => {
+      attemptedAutomaticPairing.current = false;
+      setExpiredPairingBindingId(pairing.bindingId);
+      setPairing(null);
+    }, Math.max(0, Date.parse(pairing.expiresAt) - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [pairing]);
+  const checksReady = binding?.status === "ready" && binding.subscriptionVerified;
+  const agentReady = state.data?.agentLifecycleState === "ready" && state.data.canConfigureConnection;
+  const finishingSetup = ["preparing", "verifying"].includes(state.data?.agentLifecycleState ?? "")
+    && state.data?.canConfigureConnection;
+  const connection: DotConnectionState = {
+    phase: checksReady ? agentReady ? "ready" : finishingSetup ? "finishing" : "ready"
+      : binding?.hasPendingChallenge ? "testing" : binding?.subscriptionVerified ? "subscribed" : binding?.connected ? "connected" : "waiting",
+    problem: state.error ? "offline"
+      : checksReady && !agentReady && !finishingSetup ? "agent_unavailable"
+      : binding?.status === "pairing" && !preparePairing && !pair.isPending && !state.isFetching && !pair.isError && pairing?.bindingId !== binding.id ? "prompt_unavailable"
+      : binding?.challengeExpiresAt && !binding.hasPendingChallenge && binding.status !== "ready" ? "event_timeout" : undefined,
+  };
+  const pendingApproval = (state.data?.agentStatus ?? invitation?.agent.status) === "pending_approval";
+  const unavailable = state.data && !state.data.canConfigureConnection && !pendingApproval;
+  const prompt = preset === "dot" ? pairing && pairing.bindingId === binding?.id && state.data?.resourceUrl && invitation
+    ? buildDotSetupPrompt({ companyId, agentId: invitation.agent.id, resourceUrl: state.data.resourceUrl, ...pairing }) : "" : genericPrompt;
+  const error = (generate.variables === preset ? generate.error : null) ?? (preset === "dot" ? (binding?.connected ? null : pair.error) ?? test.error : null);
+  const busy = generate.isPending || pair.isPending || test.isPending || preparePairing
+    || (preset === "dot" && !!invitation && (state.isPending || (!prompt && state.isFetching)));
+  const retry = () => {
+    if (unavailable) { void state.refetch(); return; }
+    if (state.error) { void state.refetch(); return; }
+    if (generate.error || !invitation) { if (preset) generate.mutate(preset); return; }
+    if (pair.error && !binding?.connected) { pair.mutate(binding?.status === "pairing" ? binding.id : undefined); return; }
+    test.mutate();
+  };
+  return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
+    <AnimatedDialogContent className="sm:max-w-(--sz-560px)">
+      <ExternalAgentInviteContent preset={preset} prompt={prompt} companyName={selectedCompany?.name ?? "your organization"}
+        connection={connection} dotDisabledReason={dotDisabledReason} busy={busy}
+        error={error?.message ?? (unavailable ? state.data?.agentLifecycleState === "terminated" ? "This agent was terminated. Invite another agent to connect Dot." : "Resume this agent before connecting Dot." : undefined)}
+        approvalHref={pendingApproval && invitation?.approvalId ? `/approvals/${invitation.approvalId}` : undefined}
+        onSelect={kind => { setPreset(kind); if (kind === "dot" ? !invitation : !genericPrompt) generate.mutate(kind); }}
+        onBack={() => setPreset(null)} onClose={preset ? onClose : onBack} onCopied={() => { if (preset === "dot") void state.refetch(); }}
+        onRetry={retry} onNewPrompt={() => pair.mutate(binding?.id)} />
+    </AnimatedDialogContent>
   </Dialog>;
 }

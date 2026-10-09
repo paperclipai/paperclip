@@ -26,6 +26,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
         mode: None,
+        pi_thinking_level: None,
         permission_mode_pinned: true,
         provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
@@ -73,6 +74,20 @@ fn reaps_an_active_provider_generation_at_the_suspension_boundary() {
         .terminate_active_turn_for_suspension("turn-1")
         .unwrap();
     assert!(session.shutdown("already terminated").is_ok());
+}
+
+#[test]
+fn idle_suspension_cannot_retire_an_active_turn() {
+    let mut session = AcpxProviderSession::start(&config("suspend")).unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+    let error = session.terminate_idle_for_suspension().unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("settled turn and no pending requests"));
+    assert_eq!(session.state().active_turn_id(), Some("turn-1"));
+    session.shutdown("test complete").unwrap();
 }
 
 #[test]

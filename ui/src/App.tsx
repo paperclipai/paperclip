@@ -802,6 +802,7 @@ export function App() {
         <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
         <Route path="mcp-connect/:id" element={<McpConnectPage />} />
+        <Route path="dot-connect/:id" element={<McpConnectPage agentPairingOnly />} />
         <Route path="mcp-device" element={<McpDevicePage />} />
         <Route path="assistant-connections" element={<AssistantConnectionsPage />} />
         <Route path="cli-auth/:id" element={<CliAuthPage />} />

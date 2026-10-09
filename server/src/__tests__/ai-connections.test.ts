@@ -16,6 +16,7 @@ import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyM
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
+import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { syncConnectionCredentialBindings } from "../services/connection-credential-bindings.js";
 import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
@@ -60,6 +61,25 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("marks explicit AI selection rejections without changing their HTTP contract", async () => {
+    const owner = "selection-blocker-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const expectSelectionFailure = async (promise: Promise<unknown>, reason: string) => {
+      const error = await promise.catch((error: unknown) => error);
+      expect(error).toMatchObject({ status: 422, details: { code: reason } });
+      expect(readAiConnectionConfigurationFailure(error)).toBe(reason);
+    };
+    await expectSelectionFailure(service.select({ ...input, userId: null }), "ai_connection_responsible_user_missing");
+    await expectSelectionFailure(service.select({ ...input, userId: owner, adapterType: "codex_local" }), "ai_connection_incompatible");
+    await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_default_missing");
+    await expectSelectionFailure(service.select({ ...input, userId: owner, binding: {
+      ...binding, mode: "delegated", connectionId: randomUUID(), grantId: randomUUID(),
+    } }), "ai_connection_missing");
+    const account = await create(owner, "Selection blocker account");
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_unavailable");
+  });
+
   it("persists first-time recovery directories before consuming a single-use token", async () => {
     const owner = "quota-durable-path";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
@@ -1210,7 +1230,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   it("uses human access for every selection; an agent delegation cannot override Just me", async () => {
     const personal = await service.select({ ...input, userId: "alice" });
     const delegated = { ...binding, mode: "delegated" as const, connectionId: personal.connection.id, grantId: personal.grant.id };
-    await expect(service.select({ ...input, userId: "bob", binding: delegated })).rejects.toThrow("not shared");
+    const rejection = await service.select({ ...input, userId: "bob", binding: delegated }).catch(error => error);
+    expect(rejection).toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
+    expect(rejection.details).toBeUndefined();
+    expect(readAiConnectionConfigurationFailure(rejection)).toBe("ai_connection_credential_not_shared");
     // Existing delegation records no longer confer an independent AI permission.
     await db.insert(connectionGrantDelegations).values({ companyId, grantId: personal.grant.id, agentId, createdByUserId: "alice" });
     await expect(service.select({ ...input, userId: "bob", binding: delegated })).rejects.toThrow("not shared");
@@ -1223,7 +1246,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const sharedBinding = { ...binding, mode: "shared" as const, ...shared };
     const tools = toolAccessService(db);
     await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["alice"], { userId: "alice" });
-    await expect(service.select({ ...input, userId: "bob", binding: sharedBinding })).rejects.toThrow("not shared");
+    const rejection = await service.select({ ...input, userId: "bob", binding: sharedBinding }).catch(error => error);
+    expect(rejection).toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
+    expect(readAiConnectionConfigurationFailure(rejection)).toBe("ai_connection_credential_not_shared");
     expect((await service.list(companyId, "bob", agentId)).some(account => account.id === shared.connectionId)).toBe(false);
     await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["bob"], { userId: "alice" });
     expect((await service.select({ ...input, userId: "bob", binding: sharedBinding })).grant.id).toBe(shared.grantId);
@@ -1233,12 +1258,43 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     for (const userId of ["alice", "bob"]) {
       expect((await service.select({ ...input, userId, binding: sharedBinding })).grant.id).toBe(shared.grantId);
     }
-    await expect(service.select({ ...input, userId: null, binding: sharedBinding })).rejects.toThrow("not shared");
+    const missingIdentity = await service.select({ ...input, userId: null, binding: sharedBinding }).catch(error => error);
+    expect(missingIdentity).toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
+    expect(readAiConnectionConfigurationFailure(missingIdentity)).toBeNull();
+    const inactiveMember = await service.select({ ...input, userId: "inactive-user", binding: sharedBinding }).catch(error => error);
+    expect(inactiveMember).toMatchObject({ status: 403, message: "The responsible user is not an active company member" });
+    expect(readAiConnectionConfigurationFailure(inactiveMember)).toBeNull();
     // Human permission still cannot bypass the separate agent-access setting.
     await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, shared.connectionId));
-    await expect(service.select({ ...input, userId: "bob", binding: sharedBinding })).rejects.toThrow("not permitted for this agent");
+    const missingAgentPermission = await service.select({ ...input, userId: "bob", binding: sharedBinding }).catch(error => error);
+    expect(missingAgentPermission).toMatchObject({ status: 403 });
+    expect(missingAgentPermission.message).toContain("not permitted for this agent");
+    expect(readAiConnectionConfigurationFailure(missingAgentPermission)).toBeNull();
     expect(sharedBinding).toEqual({ ...binding, mode: "shared", ...shared });
   });
+  it.each(["inactive_owner", "wrong_binding_kind", "wrong_company_membership"] as const)(
+    "does not classify other credential authorization denials as sharing configuration: %s", async (cause) => {
+      const owner = `sharing-${cause}-owner`;
+      await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+      const account = await create(owner, "Sharing permission fixture");
+      const selected = { ...binding, mode: cause === "wrong_binding_kind" ? "shared" as const : "delegated" as const, ...account };
+      let userId = "bob";
+      if (cause === "inactive_owner") {
+        await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, owner)));
+      }
+      if (cause === "wrong_company_membership") {
+        userId = "other-company-sharing-user";
+        await db.insert(companyMemberships).values({ companyId: otherCompanyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      }
+      const error = await service.select({ ...input, userId, binding: selected }).catch(error => error);
+      expect(error).toMatchObject({ status: 403, message: cause === "inactive_owner"
+        ? "The account owner is no longer an active company member"
+        : cause === "wrong_binding_kind" ? "Select a company-shared account"
+        : "The responsible user is not an active company member" });
+      expect(readAiConnectionConfigurationFailure(error)).toBeNull();
+    },
+  );
+
   it("isolates concurrent homes and overrides ambient credentials without changing the model", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "ambient-never-use");
     const config = { model: "unchanged-model", env: { ANTHROPIC_API_KEY: "project-never-use" } };

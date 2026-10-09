@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import { Readable } from "node:stream";
 import { S3Client, PutObjectCommand, HeadObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
@@ -8,7 +8,7 @@ import path from "node:path";
 import express from "express";
 import type { Server } from "node:http";
 import sharp from "sharp";
-import { AGENT_PALETTE_IDS, appearanceForPalette } from "@paperclipai/shared";
+import { AGENT_PALETTE_IDS, appearanceForPalette, PAPERCLIP_DARK_AVATAR_BACKGROUND } from "@paperclipai/shared";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createAgentAvatarService, avatarCacheKey, type AgentAvatarRequest } from "../services/agent-avatars.js";
 import { createAgentAvatarPool } from "../services/agent-avatar-pool.js";
@@ -113,6 +113,37 @@ describe("on-demand agent avatars", () => {
     const pool = createAgentAvatarPool(1); cleanups.push(() => pool.close());
     const png = await pool.render(request);
     expect(await sharp(png).metadata()).toMatchObject({ width: 48, height: 48, format: "png", hasAlpha: true });
+  }, 20_000);
+  it("preserves transparent background pixels in ordinary 512px avatars", async () => {
+    const pool = createAgentAvatarPool(1); cleanups.push(() => pool.close());
+    const png = await pool.render({ ...request, size: 512, scale: 1 });
+    const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
+    expect(info).toMatchObject({ width: 512, height: 512, channels: 4 });
+    for (const [x, y] of [[0, 0], [511, 0], [0, 511], [511, 511]]) {
+      expect(data[(y * info.width + x) * info.channels + 3]).toBe(0);
+    }
+    expect(data[(256 * info.width + 256) * info.channels + 3]).toBe(255);
+  }, 20_000);
+  it("serves Slack exports on the Paperclip dark-mode color in a separate cache", async () => {
+    const css = await readFile(new URL("../../../ui/src/index.css", import.meta.url), "utf8");
+    const lightness = Number(css.match(/\.dark\s*\{\s*--background:\s*oklch\(([\d.]+) 0 0\)/)?.[1]);
+    // Neutral OKLCH converts to equal sRGB channels; PNG rounds to 8-bit color.
+    const linear = lightness ** 3;
+    const channel = Math.round((linear <= 0.0031308 ? 12.92 * linear : 1.055 * linear ** (1 / 2.4) - 0.055) * 255);
+    expect(PAPERCLIP_DARK_AVATAR_BACKGROUND).toBe(`#${channel.toString(16).padStart(2, "0").repeat(3)}`);
+    const service = createAgentAvatarService(await storage()); cleanups.push(() => service.close());
+    const url = await serve(service);
+    const clear = await fetch(url + "?size=512&scale=1");
+    const dark = await fetch(url + "?size=512&scale=1&background=paperclip-dark");
+    expect(dark.status).toBe(200);
+    expect(dark.headers.get("etag")).not.toBe(clear.headers.get("etag"));
+    const clearPixels = await sharp(Buffer.from(await clear.arrayBuffer())).ensureAlpha().raw().toBuffer();
+    const darkPixels = await sharp(Buffer.from(await dark.arrayBuffer())).ensureAlpha().raw().toBuffer();
+    expect(Array.from(clearPixels.subarray(0, 4))).toEqual([0, 0, 0, 0]);
+    expect(Array.from(darkPixels.subarray(0, 4))).toEqual([channel, channel, channel, 255]);
+    expect(avatarCacheKey({ ...request, background: "paperclip-dark" })).not.toBe(avatarCacheKey(request));
+    const invalid = await fetch(url + "?background=white");
+    expect(invalid.status).toBe(400); await invalid.text();
   }, 20_000);
   it("serves public images with content ETags and validates the finite request space", async () => {
     const render = vi.fn(async () => Buffer.from("png-bytes"));

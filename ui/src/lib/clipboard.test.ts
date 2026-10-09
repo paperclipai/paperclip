@@ -9,9 +9,11 @@ function installDocumentStub(execCommand: () => boolean) {
     focus: vi.fn(),
     select: vi.fn(),
     setSelectionRange: vi.fn(),
+    remove: vi.fn(),
   };
   const doc = {
     createElement: vi.fn(() => textarea),
+    querySelector: vi.fn(() => null),
     body: { appendChild: vi.fn(), removeChild: vi.fn() },
     activeElement: null,
     getSelection: vi.fn(() => null),

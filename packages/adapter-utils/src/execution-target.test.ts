@@ -431,7 +431,7 @@ describe("GitHub launcher lifecycle", () => {
       providerKey: "e2b", remoteCwd: "/remote/workspace", runner };
     await cleanupGitHubOperationLaunchers({ runId: "finished-run", target });
     expect(runner.execute).toHaveBeenCalledWith({ command: "sh",
-      args: ["-c", "rm -rf -- '/remote/workspace/.paperclip-runtime/github/finished-run'"],
+      args: ["-c", "rm -rf -- '/remote/workspace/.paperclip-runtime/paperclip-runner/github/finished-run'"],
       cwd: "/remote/workspace", timeoutMs: 5_000 });
     await expect(cleanupGitHubOperationLaunchers({ runId: "../other", target })).rejects.toThrow("Invalid GitHub launcher run ID");
     expect(runner.execute).toHaveBeenCalledTimes(1);
