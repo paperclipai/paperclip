@@ -8,6 +8,7 @@ import { Link } from "@/lib/router";
 import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 
 const providerNames: Record<ChatProvider, string> = {
+  speko: "Speko",
   slack: "Slack",
   github: "GitHub Code Review Bot",
   discord: "Discord",

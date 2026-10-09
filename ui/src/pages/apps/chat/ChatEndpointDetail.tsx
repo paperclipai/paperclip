@@ -67,6 +67,7 @@ const tabItems = tabs.map((value) => ({
   label: value[0].toUpperCase() + value.slice(1),
 }));
 const providerNames: Record<ChatProvider, string> = {
+  speko: "Speko",
   agentmail: "AgentMail",
   slack: "Slack",
   github: "GitHub",
@@ -80,6 +81,10 @@ const providerLifecycleGuidance: Record<
   ChatProvider,
   { reconnect: string; remove: string }
 > = {
+  speko: {
+    reconnect: "Reverify this voice persona and update its signed session tools. Existing task assignments stay attached to their history.",
+    remove: "Stop this connection from accepting voice requests. Accepted work and task history remain in Paperclip.",
+  },
   agentmail: { reconnect: "Reconnect the same email inbox.", remove: "Disconnect email and retain task history." },
   slack: {
     reconnect:
