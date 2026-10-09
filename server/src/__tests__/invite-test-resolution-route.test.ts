@@ -74,7 +74,7 @@ async function createApp(
   return app;
 }
 
-describe.sequential("GET /invites/:token/test-resolution", () => {
+describe("GET /invites/:token/test-resolution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -112,7 +112,7 @@ describe.sequential("GET /invites/:token/test-resolution", () => {
     }
   }, 20_000);
 
-  it.sequential("rejects hostnames that resolve to private addresses", async () => {
+  it("rejects hostnames that resolve to private addresses", async () => {
     const lookup = vi.fn().mockResolvedValue([{ address: "10.1.2.3", family: 4 }]);
     const requestHead = vi.fn();
     const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
@@ -129,7 +129,7 @@ describe.sequential("GET /invites/:token/test-resolution", () => {
     expect(requestHead).not.toHaveBeenCalled();
   });
 
-  it.sequential("rejects hostnames when any resolved address is private", async () => {
+  it("rejects hostnames when any resolved address is private", async () => {
     const lookup = vi.fn().mockResolvedValue([
       { address: "127.0.0.1", family: 4 },
       { address: "93.184.216.34", family: 4 },
@@ -145,7 +145,7 @@ describe.sequential("GET /invites/:token/test-resolution", () => {
     expect(requestHead).not.toHaveBeenCalled();
   });
 
-  it.sequential("allows public HTTPS targets through the resolved and pinned probe path", async () => {
+  it("allows public HTTPS targets through the resolved and pinned probe path", async () => {
     const lookup = vi.fn().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
     const requestHead = vi.fn().mockResolvedValue({ httpStatus: 204 });
     const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
@@ -174,7 +174,7 @@ describe.sequential("GET /invites/:token/test-resolution", () => {
     );
   });
 
-  it.sequential.each([
+  it.each([
     ["missing invite", []],
     ["revoked invite", [createInvite({ revokedAt: new Date("2026-03-07T00:05:00.000Z") })]],
     ["expired invite", [createInvite({ expiresAt: new Date("2020-03-07T00:10:00.000Z") })]],

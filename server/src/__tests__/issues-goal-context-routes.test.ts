@@ -12,8 +12,9 @@ const mockIssueService = vi.hoisted(() => ({
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
   listBlockerAttention: vi.fn(),
-  listProductivityReviews: vi.fn(),
+  listReviewAttention: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
+  getActiveInboxArchiveFields: vi.fn(),
   listAttachments: vi.fn(),
 }));
 
@@ -100,10 +101,13 @@ const mockDb = vi.hoisted(() => ({
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    getById: vi.fn(async () => ({ id: "company-1" })),
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  companySkillService: () => ({
+    completeTestRunForIssue: vi.fn(async () => null),
+  }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => mockDocumentsService,
   environmentService: () => mockEnvironmentService,
@@ -132,6 +136,7 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
+  STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
 }));
 
 function createApp() {
@@ -185,7 +190,7 @@ const projectGoal = {
   updatedAt: new Date("2026-03-20T00:00:00Z"),
 };
 
-describe.sequential("issue goal context routes", () => {
+describe("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue({
@@ -205,8 +210,9 @@ describe.sequential("issue goal context routes", () => {
     });
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
-    mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.getActiveInboxArchiveFields.mockResolvedValue({});
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
@@ -214,6 +220,7 @@ describe.sequential("issue goal context routes", () => {
     const emptyQuery: any = {};
     emptyQuery.from = vi.fn(() => emptyQuery);
     emptyQuery.innerJoin = vi.fn(() => emptyQuery);
+    emptyQuery.leftJoin = vi.fn(() => emptyQuery);
     emptyQuery.where = vi.fn(() => emptyQuery);
     emptyQuery.orderBy = vi.fn(() => emptyQuery);
     emptyQuery.limit = vi.fn(async () => []);
@@ -261,6 +268,24 @@ describe.sequential("issue goal context routes", () => {
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
   });
 
+  it.each(["", "/heartbeat-context"])("reads historical review tasks without computed productivity fields: %s", async (suffix) => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      originKind: "issue_productivity_review",
+      originId: "historical-source",
+    });
+    const res = await request(createApp()).get(`/api/issues/${legacyProjectLinkedIssue.id}${suffix}`);
+    expect(res.status).toBe(200);
+    const issue = suffix ? res.body.issue : res.body;
+    expect(issue).toMatchObject({
+      originKind: "issue_productivity_review",
+      originId: "historical-source",
+      assigneeAgentId: legacyProjectLinkedIssue.assigneeAgentId,
+      status: legacyProjectLinkedIssue.status,
+    });
+    expect(issue).not.toHaveProperty("productivityReview");
+  });
+
   it("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {
     const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
 
@@ -279,6 +304,148 @@ describe.sequential("issue goal context routes", () => {
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
   });
 
+  it("keeps GET /issues/:id project and workspace embeds compact for fast detail loads", async () => {
+    const workspaceId = "55555555-5555-4555-8555-555555555555";
+    const runtimeServiceBase = {
+      companyId: "company-1",
+      projectId: legacyProjectLinkedIssue.projectId,
+      projectWorkspaceId: "workspace-primary",
+      executionWorkspaceId: workspaceId,
+      issueId: legacyProjectLinkedIssue.id,
+      scopeType: "execution_workspace",
+      scopeId: workspaceId,
+      serviceName: "Dev server",
+      lifecycle: "shared",
+      reuseKey: "dev-server",
+      command: "pnpm dev",
+      cwd: "/tmp/company-1/project-1",
+      port: 3100,
+      url: "http://localhost:3100",
+      provider: "local_process",
+      providerRef: "pid:123",
+      ownerAgentId: null,
+      startedByRunId: null,
+      lastUsedAt: new Date("2026-03-24T12:00:00Z"),
+      startedAt: new Date("2026-03-24T12:00:00Z"),
+      stoppedAt: null,
+      healthStatus: "healthy",
+      configIndex: 0,
+      metadata: { huge: "runtime metadata should not be embedded" },
+    };
+    mockIssueService.getById.mockResolvedValueOnce({
+      ...legacyProjectLinkedIssue,
+      executionWorkspaceId: workspaceId,
+    });
+    mockProjectService.getById.mockResolvedValueOnce({
+      ...(await mockProjectService.getById()),
+      env: { API_KEY: { type: "plain", value: "should-not-ship" } },
+      workspaces: [
+        {
+          id: "workspace-primary",
+          companyId: "company-1",
+          projectId: legacyProjectLinkedIssue.projectId,
+          name: "Main",
+          sourceType: "local_path",
+          cwd: "/tmp/company-1/project-1",
+          repoUrl: null,
+          repoRef: "master",
+          defaultRef: "master",
+          visibility: "default",
+          setupCommand: null,
+          cleanupCommand: null,
+          remoteProvider: null,
+          remoteWorkspaceRef: null,
+          sharedWorkspaceKey: null,
+          metadata: { huge: "project workspace metadata should not be embedded" },
+          runtimeConfig: { services: [{ name: "Dev server", command: "pnpm dev" }] },
+          runtimeServices: [{ ...runtimeServiceBase, id: "project-service-stopped", status: "stopped" }],
+          isPrimary: true,
+          createdAt: new Date("2026-03-20T00:00:00Z"),
+          updatedAt: new Date("2026-03-20T00:00:00Z"),
+        },
+      ],
+      primaryWorkspace: {
+        id: "workspace-primary",
+        companyId: "company-1",
+        projectId: legacyProjectLinkedIssue.projectId,
+        name: "Main",
+        sourceType: "local_path",
+        cwd: "/tmp/company-1/project-1",
+        repoUrl: null,
+        repoRef: "master",
+        defaultRef: "master",
+        visibility: "default",
+        setupCommand: null,
+        cleanupCommand: null,
+        remoteProvider: null,
+        remoteWorkspaceRef: null,
+        sharedWorkspaceKey: null,
+        metadata: { huge: "primary workspace metadata should not be embedded" },
+        runtimeConfig: { services: [{ name: "Dev server", command: "pnpm dev" }] },
+        runtimeServices: [{ ...runtimeServiceBase, id: "primary-service-stopped", status: "stopped" }],
+        isPrimary: true,
+        createdAt: new Date("2026-03-20T00:00:00Z"),
+        updatedAt: new Date("2026-03-20T00:00:00Z"),
+      },
+    });
+    mockExecutionWorkspaceService.getById.mockResolvedValueOnce({
+      id: workspaceId,
+      companyId: "company-1",
+      projectId: legacyProjectLinkedIssue.projectId,
+      projectWorkspaceId: "workspace-primary",
+      sourceIssueId: legacyProjectLinkedIssue.id,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "PAP-581-workspace",
+      status: "active",
+      cwd: "/tmp/company-1/project-1",
+      repoUrl: null,
+      baseRef: "master",
+      branchName: "PAP-581-workspace",
+      providerType: "local",
+      providerRef: "/tmp/company-1/project-1",
+      derivedFromExecutionWorkspaceId: null,
+      lastUsedAt: new Date("2026-03-24T12:00:00Z"),
+      openedAt: new Date("2026-03-24T12:00:00Z"),
+      closedAt: null,
+      cleanupEligibleAt: null,
+      cleanupReason: null,
+      config: {
+        environmentId: "env-1",
+        provisionCommand: "bash setup.sh",
+        teardownCommand: null,
+        cleanupCommand: null,
+        workspaceRuntime: { services: [{ name: "Dev server", command: "pnpm dev" }] },
+        desiredState: null,
+        serviceStates: null,
+      },
+      metadata: { huge: "execution workspace metadata should not be embedded" },
+      runtimeServices: [
+        { ...runtimeServiceBase, id: "service-running", status: "running" },
+        { ...runtimeServiceBase, id: "service-stopped", status: "stopped" },
+      ],
+      createdAt: new Date("2026-03-24T12:00:00Z"),
+      updatedAt: new Date("2026-03-24T12:00:00Z"),
+    });
+
+    const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+
+    expect(res.status).toBe(200);
+    expect(res.body.project.env).toBeNull();
+    expect(res.body.project.workspaces[0]).not.toHaveProperty("metadata");
+    expect(res.body.project.workspaces[0]).not.toHaveProperty("runtimeServices");
+    expect(res.body.project.primaryWorkspace).not.toHaveProperty("metadata");
+    expect(res.body.project.primaryWorkspace).not.toHaveProperty("runtimeServices");
+    expect(res.body.currentExecutionWorkspace.metadata).toBeNull();
+    expect(res.body.currentExecutionWorkspace.runtimeServices).toHaveLength(1);
+    expect(res.body.currentExecutionWorkspace.runtimeServices[0]).toMatchObject({
+      id: "service-running",
+      status: "running",
+      url: "http://localhost:3100",
+    });
+    expect(res.body.currentExecutionWorkspace.runtimeServices[0]).not.toHaveProperty("metadata");
+  });
+
   it("surfaces the project goal from GET /issues/:id/heartbeat-context", async () => {
     const res = await request(createApp()).get(
       "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
@@ -295,6 +462,9 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+    expect(res.body.taskQuestionContext).toEqual({
+      questions: [], truncated: false, guidance: expect.stringContaining("Historical questions remain answerable"),
+    });
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {

@@ -64,3 +64,26 @@ export interface AttachmentArtifactWorkProductMetadata {
   downloadPath: string;
   originalFilename?: string | null;
 }
+
+export type PullRequestWorkProductState = "open" | "draft" | "merged" | "closed";
+
+export interface PullRequestWorkProductMetadata {
+  repo: string;
+  number: number;
+  baseRef: string;
+  headRef: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  state: PullRequestWorkProductState;
+  draft: boolean;
+}
+
+export interface CommitWorkProductMetadata {
+  repo: string;
+  sha: string;
+  branch: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+}

@@ -27,7 +27,7 @@ export function BudgetSidebarMarker({
     <span
       title={accessibleTitle}
       aria-label={accessibleTitle}
-      className={`ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full shadow-[0_0_0_1px_rgba(255,255,255,0.08)] ${levelClasses[level]}`}
+      className={`ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full shadow-(--shadow-extract-3) ${levelClasses[level]}`}
     >
       <DollarSign className="h-3 w-3" />
     </span>

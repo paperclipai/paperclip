@@ -73,7 +73,72 @@ type CapturePayload = {
   paperclipEnvKeys: string[];
 };
 
+async function createSkillDir(root: string, name: string): Promise<string> {
+  const skillDir = path.join(root, name);
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(path.join(skillDir, "SKILL.md"), `# ${name}\n`, "utf8");
+  return skillDir;
+}
+
 describe("gemini execute", () => {
+  it("injects runtime skills into the configured child HOME", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-configured-home-"));
+    const processHome = path.join(root, "process-home");
+    const configuredHome = path.join(root, "configured-home");
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "gemini");
+    const skillSource = await createSkillDir(path.join(root, "runtime-skills"), "paperclip");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeGeminiCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = processHome;
+
+    try {
+      const result = await execute({
+        runId: "run-configured-home",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Gemini Coder",
+          adapterType: "gemini_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: { HOME: configuredHome },
+          paperclipRuntimeSkills: [{
+            key: "paperclipai/paperclip/paperclip",
+            runtimeName: "paperclip",
+            source: skillSource,
+          }],
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const installedSkill = path.join(configuredHome, ".gemini", "skills", "paperclip");
+      expect((await fs.lstat(installedSkill)).isSymbolicLink()).toBe(true);
+      expect(await fs.realpath(installedSkill)).toBe(await fs.realpath(skillSource));
+      await expect(fs.lstat(path.join(processHome, ".gemini", "skills", "paperclip"))).rejects.toThrow();
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("passes prompt via --prompt and injects paperclip env vars", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-execute-"));
     const workspace = path.join(root, "workspace");
@@ -94,7 +159,7 @@ describe("gemini execute", () => {
           companyId: "company-1",
           name: "Gemini Coder",
           adapterType: "gemini_local",
-          adapterConfig: {},
+          adapterConfig: { engine: "cli" },
         },
         runtime: {
           sessionId: null,
@@ -103,6 +168,7 @@ describe("gemini execute", () => {
           taskKey: null,
         },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           model: "gemini-2.5-pro",
@@ -170,9 +236,10 @@ describe("gemini execute", () => {
     try {
       await execute({
         runId: "run-yolo",
-        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
@@ -221,9 +288,10 @@ describe("gemini execute", () => {
     try {
       const result = await execute({
         runId: "run-turn-limit",
-        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
         },
@@ -262,9 +330,10 @@ describe("gemini execute", () => {
     try {
       const result = await execute({
         runId: "run-exit-53",
-        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
         },
@@ -311,9 +380,10 @@ describe("gemini execute", () => {
     try {
       const result = await execute({
         runId: "run-turn-limit-text",
-        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: {} },
+        agent: { id: "a1", companyId: "c1", name: "G", adapterType: "gemini_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
         },
@@ -355,7 +425,7 @@ describe("gemini execute", () => {
           companyId: "company-1",
           name: "Gemini Coder",
           adapterType: "gemini_local",
-          adapterConfig: {},
+          adapterConfig: { engine: "cli" },
         },
         runtime: {
           sessionId: "gemini-session-1",
@@ -364,6 +434,7 @@ describe("gemini execute", () => {
           taskKey: null,
         },
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           model: "gemini-2.5-pro",

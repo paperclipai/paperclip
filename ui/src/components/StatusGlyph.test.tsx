@@ -6,24 +6,40 @@ import { StatusGlyph } from "./StatusGlyph";
 import { taskStatusIconVar } from "../lib/status-colors";
 
 /**
- * PAP-238 3b: the unified status glyph renders every status from ONE
- * `viewBox="0 0 24 24"` SVG at a `sm 14 / md 16 / lg 20` scale, coloured from
- * the AA-tuned `--status-task-icon-*` vars. These tests lock the geometry (the
- * rev-4 spec hexes/paths), the size scale, the colour wiring and `in_queue`.
+ * The unified status glyph renders every status from ONE Lucide icon per status
+ * (all on a shared `viewBox="0 0 24 24"`, at a `sm 14 / md 16 / lg 20` scale),
+ * coloured from the AA-tuned `--status-task-icon-*` vars. These tests lock the
+ * icon mapping, the size scale, the colour wiring and `in_queue`.
  */
+
+/** Status → the Lucide class token its icon renders (`lucide-<kebab-name>`). */
+const STATUS_ICON_CLASS: Record<string, string> = {
+  backlog: "lucide-circle-dashed",
+  todo: "lucide-circle",
+  in_progress: "lucide-task-progress-spinner",
+  in_review: "lucide-circle-dot",
+  done: "lucide-circle-check",
+  blocked: "lucide-circle-minus",
+  cancelled: "lucide-ban",
+  in_queue: "lucide-circle-minus",
+};
+
 describe("StatusGlyph", () => {
   it("renders one 24-unit viewBox for every status (proportional scaling)", () => {
     for (const status of Object.keys(taskStatusIconVar)) {
       const html = renderToStaticMarkup(<StatusGlyph status={status} />);
       expect(html).toContain('viewBox="0 0 24 24"');
+      expect(html).toContain('stroke-width="2"');
       expect(html).toContain("<svg");
     }
   });
 
   it("maps sm/md/lg to 14/16/20 px", () => {
-    expect(renderToStaticMarkup(<StatusGlyph status="todo" size="sm" />)).toContain('width="14"');
-    expect(renderToStaticMarkup(<StatusGlyph status="todo" size="md" />)).toContain('width="16"');
-    expect(renderToStaticMarkup(<StatusGlyph status="todo" size="lg" />)).toContain('width="20"');
+    for (const status of Object.keys(taskStatusIconVar)) {
+      expect(renderToStaticMarkup(<StatusGlyph status={status} size="sm" />)).toContain('width="14"');
+      expect(renderToStaticMarkup(<StatusGlyph status={status} size="md" />)).toContain('width="16"');
+      expect(renderToStaticMarkup(<StatusGlyph status={status} size="lg" />)).toContain('width="20"');
+    }
     // Default size is md.
     expect(renderToStaticMarkup(<StatusGlyph status="todo" />)).toContain('width="16"');
   });
@@ -35,59 +51,51 @@ describe("StatusGlyph", () => {
     }
   });
 
-  it("falls back to the backlog icon var for unknown statuses", () => {
+  it("falls back to the backlog icon + var for unknown statuses", () => {
     const html = renderToStaticMarkup(<StatusGlyph status="mystery" />);
     expect(html).toContain("var(--status-task-icon-backlog)");
+    expect(html).toContain("lucide-circle-dashed");
   });
 
-  it("gives backlog a uniform dashed ring (pathLength=100)", () => {
-    const html = renderToStaticMarkup(<StatusGlyph status="backlog" />);
-    expect(html).toContain('pathLength="100"');
-    expect(html).toContain('stroke-dasharray="6.25 6.25"');
+  it("maps each status to its Lucide icon", () => {
+    for (const [status, iconClass] of Object.entries(STATUS_ICON_CLASS)) {
+      const html = renderToStaticMarkup(<StatusGlyph status={status} />);
+      expect(html).toContain(iconClass);
+    }
   });
 
-  it("gives todo a bare open ring (no inner shape)", () => {
+  it("animates only in-progress task icons and respects reduced motion", () => {
+    for (const status of Object.keys(taskStatusIconVar)) {
+      const html = renderToStaticMarkup(<StatusGlyph status={status} />);
+      expect(html.includes("motion-safe:animate-spin")).toBe(status === "in_progress");
+    }
+  });
+
+  it("uses the same circle radius and stroke for the spinner as other task icons", () => {
+    for (const status of ["in_progress", "todo", "done", "blocked", "cancelled"]) {
+      const html = renderToStaticMarkup(<StatusGlyph status={status} />);
+      expect(html).toContain('<circle cx="12" cy="12" r="10"');
+      expect(html).toContain('stroke-width="2"');
+    }
+    const spinner = renderToStaticMarkup(<StatusGlyph status="in_progress" />);
+    expect(spinner).toContain('pathLength="100"');
+    expect(spinner).toContain('stroke-dasharray="80 20"');
+  });
+
+  it("gives todo the plain circle (not a compound circle icon)", () => {
     const html = renderToStaticMarkup(<StatusGlyph status="todo" />);
-    expect(html).toContain('r="8.5"');
-    expect(html).not.toContain("<path");
-    expect(html).not.toContain("<rect");
+    expect(html).toContain("lucide-circle");
+    for (const compound of ["circle-dashed", "circle-dot", "circle-check", "circle-minus"]) {
+      expect(html).not.toContain(compound);
+    }
   });
 
-  it("gives in_progress a half-filled ring (liveness)", () => {
-    const html = renderToStaticMarkup(<StatusGlyph status="in_progress" />);
-    expect(html).toContain("M12 3.5 A8.5 8.5 0 0 1 12 20.5 Z");
-  });
-
-  it("gives in_review a ring + centre dot", () => {
-    const html = renderToStaticMarkup(<StatusGlyph status="in_review" />);
-    expect(html).toContain('r="3.6"');
-  });
-
-  it("gives done a filled disc with a knocked-out check in the surface colour", () => {
-    const html = renderToStaticMarkup(<StatusGlyph status="done" />);
-    expect(html).toContain('r="9.5"');
-    expect(html).toContain("M7.5 12.2 10.6 15.2 16.5 8.8");
-    expect(html).toContain("stroke-background");
-  });
-
-  it("gives blocked a ring + bar", () => {
-    const html = renderToStaticMarkup(<StatusGlyph status="blocked" />);
-    expect(html).toContain("<rect");
-    expect(html).toContain('width="10"');
-  });
-
-  it("gives cancelled a ring + slash", () => {
-    const html = renderToStaticMarkup(<StatusGlyph status="cancelled" />);
-    expect(html).toContain("M6.5 17.5 17.5 6.5");
-  });
-
-  it("renders in_queue as the blocked shape recoloured blue (in_progress var)", () => {
+  it("renders in_queue as the blocked icon recoloured blue (in_queue var)", () => {
     const queue = renderToStaticMarkup(<StatusGlyph status="in_queue" />);
     const blocked = renderToStaticMarkup(<StatusGlyph status="blocked" />);
-    // Same geometry as blocked (ring + bar)…
-    expect(queue).toContain("<rect");
-    expect(queue).toContain('width="10"');
-    // …but coloured from the in_progress (blue) icon var, not blocked's red.
+    // Same icon as blocked (circle-minus)…
+    expect(queue).toContain("lucide-circle-minus");
+    // …but coloured from the in_queue (blue) icon var, not blocked's red.
     expect(queue).toContain("var(--status-task-icon-in_queue)");
     expect(queue).not.toContain("var(--status-task-icon-blocked)");
     expect(blocked).toContain("var(--status-task-icon-blocked)");

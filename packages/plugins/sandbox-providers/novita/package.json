@@ -54,8 +54,11 @@
     "novita-sandbox": "^1.0.3-b2"
   },
   "devDependencies": {
-    "@types/node": "^24.6.0",
+    "@types/node": "^24.0.0",
     "typescript": "^5.7.3",
     "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=24.11.0"
   }
 }

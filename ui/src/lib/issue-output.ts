@@ -73,6 +73,8 @@ const VIDEO_FILENAME_EXTENSIONS = [
   ".quicktime",
 ];
 
+const IMAGE_FILENAME_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".svg", ".ico"];
+
 const BINARY_OUTPUT_APPLICATION_TYPES = new Set([
   "application/wasm",
 ]);
@@ -224,6 +226,18 @@ export function isVideoLikeOutput(
 
 export function isImageContentType(contentType: string | null | undefined): boolean {
   return normalizeOutputContentType(contentType).startsWith("image/");
+}
+
+/** Recognize image uploads with missing or generic MIME types by filename. */
+export function isImageLikeOutput(
+  contentType: string | null | undefined,
+  originalFilename?: string | null,
+): boolean {
+  const type = normalizeOutputContentType(contentType);
+  if (isImageContentType(type)) return true;
+  if (type && !GENERIC_BINARY_CONTENT_TYPES.has(type)) return false;
+  const filename = (originalFilename ?? "").trim().toLowerCase();
+  return IMAGE_FILENAME_EXTENSIONS.some((extension) => filename.endsWith(extension));
 }
 
 /**

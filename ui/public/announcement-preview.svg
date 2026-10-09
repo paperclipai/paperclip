@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="704" height="272" viewBox="0 0 704 272">
+  <defs>
+    <linearGradient id="background" x2="1" y2="1"><stop stop-color="#e8e4dc"/><stop offset="1" stop-color="#d0dbd3"/></linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#677d72" stroke-opacity=".12"/></pattern>
+  </defs>
+  <path fill="url(#background)" d="M0 0h704v272H0z"/><path fill="url(#grid)" d="M0 0h704v272H0z"/>
+  <circle cx="610" cy="45" r="135" fill="none" stroke="#677d72" stroke-opacity=".18"/>
+  <circle cx="610" cy="45" r="90" fill="none" stroke="#677d72" stroke-opacity=".18"/>
+  <text x="40" y="140" font-family="Arial,sans-serif" font-size="56" font-weight="700" letter-spacing="-2" fill="#273b32">paperclip</text>
+  <text x="43" y="181" font-family="Arial,sans-serif" font-size="18" fill="#50665b">Ideas become work.</text>
+</svg>

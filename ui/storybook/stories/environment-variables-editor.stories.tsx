@@ -13,6 +13,9 @@ function secret(
   return {
     id,
     companyId: "company-storybook",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
     key: name.toLowerCase(),
     name,
     provider: "local_encrypted",

@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
+  projectAccessMembers,
   projectGoals,
   goals,
   issues,
@@ -18,6 +19,7 @@ import {
   normalizeProjectUrlKey,
   type BudgetWindowKind,
   type ProjectBudgetSummary,
+  type ProjectDiscoverySummary,
   type ProjectCodebase,
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
@@ -28,10 +30,12 @@ import {
   type PluginManagedProjectDeclaration,
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
+import { unprocessable } from "../errors.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { recordProjectLifecycleEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -55,6 +59,69 @@ type CreateWorkspaceInput = {
   isPrimary?: boolean;
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
+
+export async function ensureProjectAccessMember(
+  dbOrTx: any,
+  input: {
+    companyId: string;
+    projectId: string;
+    subjectType: "user" | "agent";
+    subjectId: string;
+  },
+) {
+  return dbOrTx
+    .insert(projectAccessMembers)
+    .values(input)
+    .onConflictDoNothing()
+    .returning()
+    .then((rows: Array<typeof projectAccessMembers.$inferSelect>) => rows[0] ?? null);
+}
+
+/**
+ * Concurrency-safe lazy creation for the per-user private parking project.
+ * The partial unique index is the final arbiter; the advisory lock avoids
+ * wasting project ids and keeps the membership insert in the same transaction.
+ */
+export async function ensurePersonalPrivateProject(dbOrTx: any, companyId: string, userId: string) {
+  const lockKey = `personal-private-project:${companyId}:${userId}`;
+  await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+  let project = await dbOrTx
+    .select()
+    .from(projects)
+    .where(and(eq(projects.companyId, companyId), eq(projects.personalOwnerUserId, userId)))
+    .limit(1)
+    .then((rows: ProjectRow[]) => rows[0] ?? null);
+  if (!project) {
+    project = await dbOrTx
+      .insert(projects)
+      .values({
+        companyId,
+        name: "My private tasks",
+        description: "Private tasks visible only to people and agents explicitly granted access.",
+        status: "in_progress",
+        visibility: "private",
+        personalOwnerUserId: userId,
+        privacyOwnerUserId: userId,
+      })
+      .onConflictDoNothing()
+      .returning()
+      .then((rows: ProjectRow[]) => rows[0] ?? null);
+    project ??= await dbOrTx
+      .select()
+      .from(projects)
+      .where(and(eq(projects.companyId, companyId), eq(projects.personalOwnerUserId, userId)))
+      .limit(1)
+      .then((rows: ProjectRow[]) => rows[0] ?? null);
+  }
+  if (!project) throw new Error("Failed to create personal private project");
+  await ensureProjectAccessMember(dbOrTx, {
+    companyId,
+    projectId: project.id,
+    subjectType: "user",
+    subjectId: userId,
+  });
+  return project;
+}
 
 interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
   urlKey: string;
@@ -368,7 +435,7 @@ async function attachListMetrics(
         count: sql<number>`count(*)::int`,
       })
       .from(issues)
-      .where(and(eq(issues.companyId, companyId), inArray(issues.projectId, projectIds)))
+      .where(and(eq(issues.companyId, companyId), inArray(issues.projectId, projectIds), isNull(issues.conversationAgentId)))
       .groupBy(issues.projectId),
     db
       .select({
@@ -401,6 +468,31 @@ async function attachListMetrics(
 }
 
 /** Sync the project_goals join table for a single project. */
+/**
+ * Every goal a project links to must exist and belong to the same company.
+ * Without this check a nonexistent id only dies at the projects.goal_id
+ * foreign key — an opaque 500 the caller retries (observed live
+ * 2026-09-03: four identical retries of one bad id) — and a goal from
+ * another company would link silently, because the foreign key proves
+ * existence, not ownership.
+ */
+async function assertGoalsBelongToCompany(db: Db, companyId: string, goalIds: string[]): Promise<void> {
+  if (goalIds.length === 0) return;
+  const unique = [...new Set(goalIds)];
+  const found = await db
+    .select({ id: goals.id })
+    .from(goals)
+    .where(and(eq(goals.companyId, companyId), inArray(goals.id, unique)));
+  const foundIds = new Set(found.map((row) => row.id));
+  const unknown = unique.filter((goalId) => !foundIds.has(goalId));
+  if (unknown.length > 0) {
+    throw unprocessable(
+      `Unknown goal id(s) for this company: ${unknown.join(", ")}`,
+      { unknownGoalIds: unknown },
+    );
+  }
+}
+
 async function syncGoalLinks(db: Db, projectId: string, companyId: string, goalIds: string[]) {
   // Delete existing links
   await db.delete(projectGoals).where(eq(projectGoals.projectId, projectId));
@@ -540,13 +632,14 @@ async function ensureSinglePrimaryWorkspace(
     );
 }
 
-export function projectService(db: Db) {
+export function projectService(db: Db, options: { captureWorkspaceUpdates?: boolean } = {}) {
   const createProject = async (
     companyId: string,
     data: Omit<typeof projects.$inferInsert, "companyId"> & { goalIds?: string[] },
   ): Promise<ProjectWithGoals> => {
     const { goalIds: inputGoalIds, ...projectData } = data;
     const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
+    if (ids && ids.length > 0) await assertGoalsBelongToCompany(db, companyId, ids);
 
     // Note: color is intentionally NOT auto-assigned. New projects default to
     // `color = null` (neutral gray) unless an explicit color is supplied. See PAP-68.
@@ -558,21 +651,27 @@ export function projectService(db: Db) {
     projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
 
     // Also write goalId to the legacy column (first goal or null)
-    const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
+    // The resolved set is canonical for persistence as well as validation:
+    // falling back to the raw legacy field here would write an id that
+    // skipped validation whenever `goalIds: []` and `goalId` arrive
+    // together (goalIds wins resolution, mirroring the update path).
+    const legacyGoalId = ids?.[0] ?? null;
 
-    const row = await db
-      .insert(projects)
-      .values({ ...projectData, goalId: legacyGoalId, companyId })
-      .returning()
-      .then((rows) => rows[0]);
-
-    if (ids && ids.length > 0) {
-      await syncGoalLinks(db, row.id, companyId, ids);
-    }
-
-    const [withGoals] = await attachGoals(db, [row]);
-    const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
-    return enriched!;
+    return db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const row = await tx
+        .insert(projects)
+        .values({ ...projectData, goalId: legacyGoalId, companyId })
+        .returning()
+        .then((rows) => rows[0]);
+      if (ids && ids.length > 0) {
+        await syncGoalLinks(txDb, row.id, companyId, ids);
+      }
+      await recordResourceCreationEvent(txDb, companyId, "project", row.id);
+      const [withGoals] = await attachGoals(txDb, [row]);
+      const [enriched] = withGoals ? await attachWorkspaces(txDb, [withGoals]) : [];
+      return enriched!;
+    });
   };
 
   const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {
@@ -589,8 +688,38 @@ export function projectService(db: Db) {
   };
 
   return {
-    list: async (companyId: string): Promise<ProjectWithGoals[]> => {
-      const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
+    // Project discovery never reads workspace JSON, goals, metrics, or full descriptions.
+    listSummaries: async (companyId: string, opts: { limit: number; cursor?: string; includeArchived: boolean; candidateIds: string[] | null }): Promise<ProjectDiscoverySummary[]> => {
+      return db.select({
+        id: projects.id,
+        name: sql<string>`left(${projects.name}, 500)`,
+        status: projects.status,
+        description: sql<string | null>`left(${projects.description}, 1000)`,
+        descriptionTruncated: sql<boolean>`coalesce(length(${projects.description}) > 1000, false)`,
+      }).from(projects).where(and(
+        eq(projects.companyId, companyId),
+        opts.includeArchived ? undefined : isNull(projects.archivedAt),
+        opts.cursor ? gt(projects.id, opts.cursor) : undefined,
+        opts.candidateIds === null ? undefined : or(
+          inArray(projects.id, opts.candidateIds),
+          // Project policy can add a root/project boundary to the actor scope.
+          // Keep these candidates for the authoritative per-project decision.
+          sql`${projects.executionWorkspacePolicy}->'authorizationPolicy' is not null`,
+        ),
+      )).orderBy(asc(projects.id)).limit(opts.limit);
+    },
+
+    list: async (companyId: string, opts: { includeArchived?: boolean } = {}): Promise<ProjectWithGoals[]> => {
+      // NOTE: this service default is intentionally the inverse of the HTTP route default.
+      // The route (`GET /companies/:companyId/projects`) defaults `includeArchived` to `false`
+      // (active-only) for its callers, but the service defaults to `true` so that existing
+      // server-internal callers that pass no opts keep their pre-existing "return everything,
+      // including archived" behaviour. Pass `{ includeArchived: false }` explicitly for active-only.
+      const includeArchived = opts.includeArchived ?? true;
+      const where = includeArchived
+        ? eq(projects.companyId, companyId)
+        : and(eq(projects.companyId, companyId), isNull(projects.archivedAt));
+      const rows = await db.select().from(projects).where(where);
       const withGoals = await attachGoals(db, rows);
       const withWorkspaces = await attachWorkspaces(db, withGoals);
       return attachListMetrics(db, companyId, withWorkspaces);
@@ -771,20 +900,71 @@ export function projectService(db: Db) {
       };
     },
 
+    createWithRepositories: async (companyId: string, data: Parameters<typeof createProject>[1], repositories: import("@paperclipai/shared").ProjectRepository[]): Promise<ProjectWithGoals> => {
+      return db.transaction(async (tx) => {
+        const service = projectService(tx as unknown as Db, { captureWorkspaceUpdates: false });
+        const project = await service.create(companyId, data);
+        for (const repo of repositories) {
+          await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id } });
+        }
+        return (await service.getById(project.id))!;
+      });
+    },
+
+    replaceRepositories: async (projectId: string, repositories: import("@paperclipai/shared").ProjectRepository[]): Promise<ProjectWithGoals | null> => {
+      return db.transaction(async (tx) => {
+        const [project] = await tx.select().from(projects).where(eq(projects.id, projectId)).for("update");
+        if (!project) return null;
+        const service = projectService(tx as unknown as Db, { captureWorkspaceUpdates: false });
+        const existing = await service.listWorkspaces(projectId);
+        const ids = new Set(repositories.map((repo) => repo.id));
+        for (const workspace of existing) {
+          const repoId = workspace.metadata?.githubRepositoryId;
+          if (typeof repoId === "string" && !ids.has(repoId)) {
+            // Keep local/runtime workspace configuration when detaching source.
+            if (workspace.cwd || workspace.remoteWorkspaceRef) {
+              const { githubRepositoryId: _id, ...metadata } = workspace.metadata!;
+              await service.updateWorkspace(projectId, workspace.id, { repoUrl: null, metadata });
+            } else await service.removeWorkspace(projectId, workspace.id);
+          }
+        }
+        for (const repo of repositories) {
+          const retained = existing.find((workspace) => workspace.metadata?.githubRepositoryId === repo.id);
+          if (retained) {
+            if (retained.repoUrl !== repo.url || retained.name !== repo.fullName) {
+              await service.updateWorkspace(projectId, retained.id, { name: repo.fullName, repoUrl: repo.url });
+            }
+            continue;
+          }
+          const legacy = existing.find((workspace) => !workspace.metadata?.githubRepositoryId && workspace.repoUrl?.replace(/\.git$/, "").replace(/\/$/, "").toLowerCase() === repo.url.toLowerCase());
+          if (legacy) {
+            await service.updateWorkspace(projectId, legacy.id, { metadata: { ...legacy.metadata, githubRepositoryId: repo.id } });
+          } else await service.createWorkspace(projectId, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id } });
+        }
+        await tx.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, projectId));
+        await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, projectId);
+        return service.getById(projectId);
+      });
+    },
+
     create: createProject,
 
     update: async (
       id: string,
       data: Partial<typeof projects.$inferInsert> & { goalIds?: string[] },
-    ): Promise<ProjectWithGoals | null> => {
+    ): Promise<ProjectWithGoals | null> => db.transaction(async tx => {
+      const db = tx as unknown as Db;
       const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
       const existingProject = await db
-        .select({ id: projects.id, companyId: projects.companyId, name: projects.name })
+        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt })
         .from(projects)
-        .where(eq(projects.id, id))
+        .where(eq(projects.id, id)).for("update")
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
+      if (ids && ids.length > 0) {
+        await assertGoalsBelongToCompany(db, existingProject.companyId, ids);
+      }
 
       if (projectData.name !== undefined) {
         const existingShortname = normalizeProjectUrlKey(existingProject.name);
@@ -809,22 +989,47 @@ export function projectService(db: Db) {
         updates.goalId = ids.length > 0 ? ids[0] : null;
       }
 
-      const row = await db
-        .update(projects)
-        .set(updates)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const row = await db.transaction(async (tx) => {
+        if (updates.visibility !== undefined) {
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existingProject.companyId}`}, 0))`);
+        }
+        const [updated] = await tx.update(projects).set(updates).where(eq(projects.id, id)).returning();
+        if (updated?.visibility === "private" && updates.visibility === "private") {
+          const protectedRows = await tx.execute(sql`with recursive protected_tasks as (
+            select i.id from issues i where i.project_id = ${id} and i.company_id = ${updated.companyId}
+            union
+            select i.id from issues i join protected_tasks p on i.parent_id = p.id or i.privacy_parent_issue_id = p.id
+              where i.company_id = ${updated.companyId}
+          ) update issues i set visibility = 'private', privacy_root_issue_id = coalesce(i.privacy_root_issue_id, i.id),
+              privacy_parent_issue_id = coalesce(i.privacy_parent_issue_id, i.parent_id), updated_at = now()
+            from protected_tasks p where i.id = p.id returning i.id`);
+          // Assignment access stays with the task after unassignment.
+          if (protectedRows.length) await tx.execute(sql`insert into issue_access_grants (issue_id, subject_type, subject_id, source)
+            select i.id, principal.kind, principal.id, 'assignment' from issues i
+            cross join lateral (values ('agent', i.assignee_agent_id::text), ('user', i.assignee_user_id)) principal(kind, id)
+            where i.id in (${sql.join(protectedRows.map(row => sql`${row.id}`), sql`, `)}) and principal.id is not null
+              and not exists (select 1 from issue_access_grants g where g.issue_id = i.id
+                and g.subject_type = principal.kind and g.subject_id = principal.id and g.revoked_at is null)`);
+        }
+        return updated ?? null;
+      });
       if (!row) return null;
 
       if (ids !== undefined) {
         await syncGoalLinks(db, id, row.companyId, ids);
       }
 
+      if (Object.entries(projectData).some(([key, value]) => value !== undefined && key !== "archivedAt" && key !== "updatedAt") || ids !== undefined || (existingProject.archivedAt && !row.archivedAt)) {
+        await recordProjectLifecycleEvent(db, row.companyId, id);
+      }
+      if (row.archivedAt && !existingProject.archivedAt) {
+        await recordProjectLifecycleEvent(db, row.companyId, id, "archive");
+      }
+
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
       return enriched ?? null;
-    },
+    }),
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
       const rows = await db
@@ -840,16 +1045,9 @@ export function projectService(db: Db) {
         const policy = parseProjectExecutionWorkspacePolicy(row.executionWorkspacePolicy);
         if (policy?.environmentId !== environmentId) continue;
 
-        await db
-          .update(projects)
-          .set({
-            executionWorkspacePolicy: {
-              ...policy,
-              environmentId: null,
-            },
-            updatedAt: new Date(),
-          })
-          .where(eq(projects.id, row.id));
+        await projectService(db).update(row.id, {
+          executionWorkspacePolicy: { ...policy, environmentId: null },
+        });
         cleared += 1;
       }
 
@@ -890,11 +1088,12 @@ export function projectService(db: Db) {
     createWorkspace: async (
       projectId: string,
       data: CreateWorkspaceInput,
-    ): Promise<ProjectWorkspace | null> => {
+    ): Promise<ProjectWorkspace | null> => db.transaction(async tx => {
+      const db = tx as unknown as Db;
       const project = await db
         .select()
         .from(projects)
-        .where(eq(projects.id, projectId))
+        .where(eq(projects.id, projectId)).for("update")
         .then((rows) => rows[0] ?? null);
       if (!project) return null;
 
@@ -965,14 +1164,19 @@ export function projectService(db: Db) {
         return row;
       });
 
+      if (created && options.captureWorkspaceUpdates !== false) {
+        await recordProjectLifecycleEvent(db, created.companyId, projectId);
+      }
       return created ? toWorkspace(created) : null;
-    },
+    }),
 
     updateWorkspace: async (
       projectId: string,
       workspaceId: string,
       data: UpdateWorkspaceInput,
-    ): Promise<ProjectWorkspace | null> => {
+    ): Promise<ProjectWorkspace | null> => db.transaction(async tx => {
+      const db = tx as unknown as Db;
+      await db.select({ id: projects.id }).from(projects).where(eq(projects.id, projectId)).for("update");
       const existing = await db
         .select()
         .from(projectWorkspaces)
@@ -1117,10 +1321,15 @@ export function projectService(db: Db) {
         return row;
       });
 
+      if (updated && options.captureWorkspaceUpdates !== false) {
+        await recordProjectLifecycleEvent(db, updated.companyId, projectId);
+      }
       return updated ? toWorkspace(updated) : null;
-    },
+    }),
 
-    removeWorkspace: async (projectId: string, workspaceId: string): Promise<ProjectWorkspace | null> => {
+    removeWorkspace: async (projectId: string, workspaceId: string): Promise<ProjectWorkspace | null> => db.transaction(async tx => {
+      const db = tx as unknown as Db;
+      await db.select({ id: projects.id }).from(projects).where(eq(projects.id, projectId)).for("update");
       const existing = await db
         .select()
         .from(projectWorkspaces)
@@ -1167,8 +1376,11 @@ export function projectService(db: Db) {
         return row;
       });
 
+      if (removed && options.captureWorkspaceUpdates !== false) {
+        await recordProjectLifecycleEvent(db, removed.companyId, projectId);
+      }
       return removed ? toWorkspace(removed) : null;
-    },
+    }),
 
     resolveByReference: async (companyId: string, reference: string) => {
       const raw = reference.trim();

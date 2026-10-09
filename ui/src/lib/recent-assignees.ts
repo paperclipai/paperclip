@@ -26,19 +26,21 @@ export function getRecentAssigneeIds(): string[] {
     .filter((id): id is string => Boolean(id));
 }
 
-export function getRecentAssigneeSelectionIds(): string[] {
-  return readRecentSelectionIds(STORAGE_KEY).map((id) => {
+export function getRecentAssigneeSelectionIds(companyId?: string): string[] {
+  return readRecentSelectionIds(companyId ? `${STORAGE_KEY}:${companyId}` : STORAGE_KEY).map((id) => {
     if (id.includes(":")) return id;
     return agentSelectionId(id);
   });
 }
 
-export function trackRecentAssignee(agentId: string): void {
+export function trackRecentAssignee(agentId: string, companyId?: string): void {
   trackRecentSelectionId(STORAGE_KEY, agentSelectionId(agentId));
+  if (companyId) trackRecentSelectionId(`${STORAGE_KEY}:${companyId}`, agentSelectionId(agentId));
 }
 
-export function trackRecentAssigneeUser(userId: string): void {
+export function trackRecentAssigneeUser(userId: string, companyId?: string): void {
   trackRecentSelectionId(STORAGE_KEY, userSelectionId(userId));
+  if (companyId) trackRecentSelectionId(`${STORAGE_KEY}:${companyId}`, userSelectionId(userId));
 }
 
 export function sortAgentsByRecency<T extends { id: string; name: string }>(

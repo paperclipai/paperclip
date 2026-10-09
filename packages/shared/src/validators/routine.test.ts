@@ -11,7 +11,7 @@ const triggerId = "33333333-3333-4333-8333-333333333333";
 const baseRevisionId = "44444444-4444-4444-8444-444444444444";
 
 describe("routine validators", () => {
-  it("accepts versioned routine revision snapshots with safe trigger metadata", () => {
+  it.each(["bearer", "app_webhook", "fireflies_hmac"])("accepts versioned routine revision snapshots with %s trigger metadata", (signingMode) => {
     const parsed = routineRevisionSnapshotV1Schema.parse({
       version: 1,
       routine: {
@@ -37,12 +37,14 @@ describe("routine validators", () => {
         cronExpression: null,
         timezone: null,
         publicId: "routine_webhook_123",
-        signingMode: "bearer",
+        signingMode,
         replayWindowSec: 300,
       }],
     });
 
     expect(parsed.triggers[0]?.publicId).toBe("routine_webhook_123");
+    expect(parsed.routine.activityGatePolicy).toBe("always");
+    expect(parsed.routine.activityGateScope).toBe("company");
   });
 
   it("rejects secret-bearing trigger fields in routine revision snapshots", () => {
@@ -83,6 +85,19 @@ describe("routine validators", () => {
       title: "Daily triage",
       baseRevisionId,
     }).baseRevisionId).toBe(baseRevisionId);
+  });
+
+  it("validates routine activity gate values", () => {
+    expect(updateRoutineSchema.parse({
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
+    })).toMatchObject({
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
+    });
+
+    expect(() => updateRoutineSchema.parse({ activityGatePolicy: "when_busy" })).toThrow();
+    expect(() => updateRoutineSchema.parse({ activityGateScope: "agent" })).toThrow();
   });
 
   it("accepts date variables with valid YYYY-MM-DD defaults", () => {

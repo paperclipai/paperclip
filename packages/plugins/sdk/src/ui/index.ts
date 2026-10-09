@@ -57,6 +57,8 @@ export {
   usePluginToast,
 } from "./hooks.js";
 
+export { copyTextToClipboard } from "./clipboard.js";
+
 export {
   MetricCard,
   StatusBadge,
@@ -150,6 +152,7 @@ export type {
   PluginWidgetProps,
   PluginDetailTabProps,
   PluginSidebarProps,
+  PluginOrganizationSwitcherProps,
   PluginRouteSidebarProps,
   PluginProjectSidebarItemProps,
   PluginCommentAnnotationProps,

@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { captureBrowserException } from "@/lib/sentry";
 
 type RouteErrorBoundaryInnerProps = {
   resetKey: string;
@@ -21,6 +22,7 @@ class RouteErrorBoundaryInner extends Component<RouteErrorBoundaryInnerProps, Ro
 
   override componentDidCatch(error: unknown, info: ErrorInfo): void {
     console.error("Page render failed", { error, componentStack: info.componentStack });
+    captureBrowserException(error, { boundary: "route", componentStack: info.componentStack });
   }
 
   override componentDidUpdate(prevProps: RouteErrorBoundaryInnerProps): void {

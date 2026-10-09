@@ -12,6 +12,7 @@ import {
   routines,
 } from "@paperclipai/db";
 import { notFound } from "../errors.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 
 export const PIPELINE_ATTENTION_DEFAULT_LIMIT = 50;
 export const PIPELINE_ATTENTION_MAX_LIMIT = 100;
@@ -569,7 +570,7 @@ export async function loadActiveWorkForCases(
       inArray(pipelineCaseIssueLinks.role, ["work", "automation"]),
       eq(issues.companyId, companyId),
       eq(issues.status, "in_progress"),
-      isNull(issues.hiddenAt),
+      visibleIssueCondition(),
     ))
     .orderBy(desc(issues.updatedAt));
   for (const row of rows) {
@@ -721,7 +722,7 @@ async function loadOpenWorkIssuesForCases(db: Db, companyId: string, caseIds: st
       eq(issues.companyId, companyId),
       ne(issues.status, "done"),
       ne(issues.status, "cancelled"),
-      isNull(issues.hiddenAt),
+      visibleIssueCondition(),
     ))
     .orderBy(desc(issues.updatedAt));
   for (const row of rows) {

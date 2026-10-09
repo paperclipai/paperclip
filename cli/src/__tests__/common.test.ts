@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeContext } from "../client/context.js";
 import { setStoredBoardCredential } from "../client/board-auth.js";
-import { inferContentTypeFromPath, resolveApiBase, resolveCommandContext } from "../commands/client/common.js";
+import { apiPath, inferContentTypeFromPath, resolveApiBase, resolveCommandContext } from "../commands/client/common.js";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -183,5 +183,19 @@ describe("inferContentTypeFromPath", () => {
     expect(inferContentTypeFromPath("/abs/Path/IMAGE.PNG")).toBe("image/png");
     expect(inferContentTypeFromPath("archive.unknownext")).toBeUndefined();
     expect(inferContentTypeFromPath("noextension")).toBeUndefined();
+  });
+});
+
+describe("apiPath", () => {
+  it("encodes dynamic path segments", () => {
+    expect(apiPath`/api/issues/${"PAP-1/child"}/comments/${"needs review?"}`)
+      .toBe("/api/issues/PAP-1%2Fchild/comments/needs%20review%3F");
+  });
+
+  it("rejects empty dynamic path segments", () => {
+    expect(() => apiPath`/api/issues/${""}`).toThrow("Cannot build API path with an empty path segment.");
+    expect(() => apiPath`/api/issues/${undefined}`).toThrow("Cannot build API path with an empty path segment.");
+    expect(() => apiPath`/api/issues/${null}`).toThrow("Cannot build API path with an empty path segment.");
+    expect(() => apiPath`/api/issues/${" "}`).toThrow("Cannot build API path with an empty path segment.");
   });
 });

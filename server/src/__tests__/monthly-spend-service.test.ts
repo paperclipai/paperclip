@@ -36,7 +36,6 @@ describe("monthly spend hydration", () => {
         budgetMonthlyCents: 5000,
         spentMonthlyCents: 999999,
         requireBoardApprovalForNewAgents: false,
-        brandColor: null,
         logoAssetId: null,
         createdAt: new Date(),
         updatedAt: new Date(),

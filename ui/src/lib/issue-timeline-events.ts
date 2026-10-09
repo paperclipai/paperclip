@@ -1,4 +1,5 @@
-import type { ActivityEvent } from "@paperclipai/shared";
+import type { ActivityEvent, IssueWorkMode } from "@paperclipai/shared";
+import { isIssueWorkMode } from "@/lib/work-mode-meta";
 
 export interface IssueTimelineAssignee {
   agentId: string | null;
@@ -93,6 +94,65 @@ function sortTimelineEvents<T extends { createdAt: Date | string; id: string }>(
     if (createdAtDiff !== 0) return createdAtDiff;
     return a.id.localeCompare(b.id);
   });
+}
+
+export interface IssueWorkModeChange {
+  id: string;
+  createdAt: Date | string;
+  from: string | null;
+  to: string | null;
+}
+
+/**
+ * Work-mode switch history for an issue, from `issue.updated` activity events
+ * (the PATCH route records changed fields plus their `_previous` values).
+ * Extracted separately from extractIssueTimelineEvents so mode switches don't
+ * become system messages in the thread — they only feed per-reply mode
+ * attribution in the task-chat redesign.
+ */
+export function extractIssueWorkModeChanges(
+  activity: ActivityEvent[] | null | undefined,
+): IssueWorkModeChange[] {
+  const changes: IssueWorkModeChange[] = [];
+  for (const event of activity ?? []) {
+    if (event.action !== "issue.updated") continue;
+    const details = asRecord(event.details);
+    if (!details || !hasOwn(details, "workMode")) continue;
+    // `_previous` only records fields whose value actually changed — a PATCH
+    // that resent the current mode has no `_previous.workMode` and is a no-op.
+    const previous = asRecord(details._previous);
+    if (!previous || !hasOwn(previous, "workMode")) continue;
+    changes.push({
+      id: event.id,
+      createdAt: event.createdAt,
+      from: nullableString(previous.workMode),
+      to: nullableString(details.workMode),
+    });
+  }
+  return sortTimelineEvents(changes);
+}
+
+/**
+ * The issue's work mode in effect at `atMs`, reconstructed from the (sorted)
+ * change history: the last change at-or-before `atMs` wins; before the first
+ * known change the mode is that change's `from`; with no usable history the
+ * `fallback` (the issue's current mode) applies.
+ */
+export function workModeInEffectAt(
+  changes: readonly IssueWorkModeChange[],
+  atMs: number,
+  fallback: IssueWorkMode,
+): IssueWorkMode {
+  let mode: IssueWorkMode | null = null;
+  for (const change of changes) {
+    if (toTimestamp(change.createdAt) <= atMs) {
+      if (isIssueWorkMode(change.to)) mode = change.to;
+    } else {
+      if (mode === null && isIssueWorkMode(change.from)) mode = change.from;
+      break;
+    }
+  }
+  return mode ?? fallback;
 }
 
 export function extractIssueTimelineEvents(activity: ActivityEvent[] | null | undefined): IssueTimelineEvent[] {

@@ -23,6 +23,10 @@ import {
 import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { detectGeminiAuthRequired, detectGeminiQuotaExhausted, parseGeminiJsonl } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
+import {
+  resolveGeminiExecutionEngineForRun,
+  testGeminiAcpEnvironment,
+} from "./acp.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -50,6 +54,26 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
+  const engineSelection = await resolveGeminiExecutionEngineForRun({
+    config: parseObject(ctx.config),
+    executionTarget: ctx.executionTarget,
+  });
+  if (engineSelection.unavailableReason) {
+    return {
+      adapterType: "gemini_local",
+      status: "fail",
+      checks: [{
+        code: "adapter_engine_unavailable",
+        level: "error",
+        message: engineSelection.unavailableReason,
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
+  if (engineSelection.engine === "acp") {
+    return testGeminiAcpEnvironment(ctx);
+  }
+
   const checks: AdapterEnvironmentCheck[] = [];
   const config = parseObject(ctx.config);
   const command = asString(config.command, "gemini");
@@ -168,7 +192,7 @@ export async function testEnvironment(
       });
     } else {
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
-      const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
+      const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, true) ? "yolo" : "default");
       const sandbox = asBoolean(config.sandbox, false);
       const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
       const extraArgs = (() => {

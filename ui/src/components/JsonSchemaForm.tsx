@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -7,7 +7,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { isUuidLike } from "@paperclipai/shared";
+import { isUuidLike, type EnvSecretRefBinding } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -107,6 +107,8 @@ export interface JsonSchemaFormProps {
   disabled?: boolean;
   /** Additional CSS class for the root container. */
   className?: string;
+  /** Label for the disclosure that hides advanced fields. Defaults to "Advanced options". */
+  advancedLabel?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +190,16 @@ export function validateField(
 
   // Skip further validation if empty and not required
   if (value === undefined || value === null || value === "") return null;
+
+  if (type === "secret-ref" && isSecretRefBinding(value)) {
+    return null;
+  }
+  if (type === "secret-ref" && typeof value === "object") {
+    return "Invalid secret reference";
+  }
+  if (type === "object" && (typeof value !== "object" || Array.isArray(value))) {
+    return "Enter a valid JSON object";
+  }
 
   if (type === "string" || type === "secret-ref") {
     const str = String(value);
@@ -363,12 +375,12 @@ const FieldWrapper = React.memo(({
       </div>
       {children}
       {description && (
-        <p className="text-[12px] text-muted-foreground leading-relaxed">
+        <p className="text-xs text-muted-foreground leading-relaxed">
           {description}
         </p>
       )}
       {error && (
-        <p className="text-[12px] font-medium text-destructive">{error}</p>
+        <p className="text-xs font-medium text-destructive">{error}</p>
       )}
     </div>
   );
@@ -446,6 +458,16 @@ BooleanField.displayName = "BooleanField";
  */
 const ENUM_UNSET_VALUE = "__paperclip_unset__";
 
+function isSecretRefBinding(value: unknown): value is EnvSecretRefBinding {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { type?: unknown }).type === "secret_ref" &&
+    typeof (value as { secretId?: unknown }).secretId === "string"
+  );
+}
+
 /**
  * Specialized field for enum (select) values.
  */
@@ -505,7 +527,7 @@ const EnumField = React.memo(({
         onValueChange={handleChange}
         disabled={disabled}
       >
-        <SelectTrigger className="w-full">
+        <SelectTrigger className="w-full" aria-label={label} aria-required={isRequired}>
           <SelectValue placeholder="Select an option" />
         </SelectTrigger>
         <SelectContent>
@@ -557,9 +579,11 @@ const SecretField = React.memo(({
   const [isVisible, setIsVisible] = useState(false);
   const isTextArea = maxLength != null && maxLength > TEXTAREA_THRESHOLD;
 
+  const secretRefValue = isSecretRefBinding(value) ? value : null;
   const stringValue = typeof value === "string" ? value : "";
   const trimmed = stringValue.trim();
-  const isBoundToSecret = trimmed.length > 0 && isUuidLike(trimmed);
+  const legacySecretId = trimmed.length > 0 && isUuidLike(trimmed) ? trimmed : null;
+  const isBoundToSecret = secretRefValue !== null || legacySecretId !== null;
   const hasRawValue = stringValue.length > 0 && !isBoundToSecret;
 
   const [showRawInput, setShowRawInput] = useState(hasRawValue);
@@ -572,14 +596,20 @@ const SecretField = React.memo(({
     if (hasRawValue) setShowRawInput(true);
   }, [hasRawValue]);
 
-  const bindingValue: SecretBindingValue | null = isBoundToSecret
-    ? { secretId: trimmed }
-    : null;
+  const bindingValue: SecretBindingValue | null = secretRefValue
+    ? { secretId: secretRefValue.secretId, version: secretRefValue.version }
+    : legacySecretId
+      ? { secretId: legacySecretId }
+      : null;
 
   const handlePickerChange = useCallback(
     (next: SecretBindingValue | null) => {
       if (next) {
-        onChange(next.secretId);
+        onChange({
+          type: "secret_ref",
+          secretId: next.secretId,
+          version: next.version ?? "latest",
+        });
         setShowRawInput(false);
         setIsVisible(false);
       } else {
@@ -593,15 +623,19 @@ const SecretField = React.memo(({
     <div className="relative">
       {isVisible ? (
         <Textarea
+          aria-label={label}
+          aria-required={isRequired}
           value={stringValue}
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="min-h-[140px] pr-10 font-mono text-xs"
+          className="min-h-(--sz-140px) pr-10 font-mono text-xs"
           aria-invalid={!!error}
         />
       ) : (
         <Textarea
+          aria-label={label}
+          aria-required={isRequired}
           // Render a placeholder summary instead of the secret content while
           // hidden. This avoids exposing multi-line secrets (e.g. SSH
           // private keys) on screen-shares; clicking the eye toggle reveals
@@ -614,7 +648,7 @@ const SecretField = React.memo(({
           readOnly
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="min-h-[140px] pr-10 font-mono text-xs italic text-muted-foreground"
+          className="min-h-(--sz-140px) pr-10 font-mono text-xs italic text-muted-foreground"
           aria-invalid={!!error}
         />
       )}
@@ -639,6 +673,8 @@ const SecretField = React.memo(({
   ) : (
     <div className="relative">
       <Input
+        aria-label={label}
+        aria-required={isRequired}
         type={isVisible ? "text" : "password"}
         value={stringValue}
         onChange={(e) => onChange(e.target.value)}
@@ -672,7 +708,7 @@ const SecretField = React.memo(({
       label={label}
       description={
         description ||
-        "Pick an existing company secret, or paste a raw value (Paperclip will store it as a secret on save)."
+        "Pick an existing organization secret, or paste a raw value (Paperclip will store it as a secret on save)."
       }
       required={isRequired}
       error={error}
@@ -695,7 +731,7 @@ const SecretField = React.memo(({
               {!hasRawValue ? (
                 <button
                   type="button"
-                  className="text-[11px] text-muted-foreground hover:text-foreground"
+                  className="text-(length:--text-micro) text-muted-foreground hover:text-foreground"
                   onClick={() => {
                     setShowRawInput(false);
                     setIsVisible(false);
@@ -709,7 +745,7 @@ const SecretField = React.memo(({
           ) : (
             <button
               type="button"
-              className="text-[11px] text-muted-foreground hover:text-foreground"
+              className="text-(length:--text-micro) text-muted-foreground hover:text-foreground"
               onClick={() => setShowRawInput(true)}
               disabled={disabled}
             >
@@ -768,6 +804,8 @@ const NumberField = React.memo(({
       disabled={disabled}
     >
       <Input
+        aria-label={label}
+        aria-required={isRequired}
         type="number"
         step={type === "integer" ? "1" : "any"}
         min={minimum}
@@ -833,15 +871,19 @@ const StringField = React.memo(({
     >
       {isTextArea ? (
         <Textarea
+          aria-label={label}
+          aria-required={isRequired}
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="min-h-[100px]"
+          className="min-h-(--sz-100px)"
           aria-invalid={!!error}
         />
       ) : (
         <Input
+          aria-label={label}
+          aria-required={isRequired}
           type="text"
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
@@ -972,6 +1014,34 @@ const ArrayField = React.memo(({
 
 ArrayField.displayName = "ArrayField";
 
+/** MCP execution tools often accept an arbitrary object rather than fixed fields. */
+function JsonObjectField({ value, onChange, disabled, label, error }: {
+  value: unknown; onChange: (value: unknown) => void; disabled: boolean; label: string; error?: string;
+}) {
+  const format = (next: unknown) => typeof next === "string" ? next : JSON.stringify(next ?? {}, null, 2);
+  const [text, setText] = useState(() => format(value));
+  const emitted = useRef(value);
+  useEffect(() => {
+    if (value !== emitted.current) setText(format(value));
+    emitted.current = value;
+  }, [value]);
+  const change = (text: string) => {
+    setText(text);
+    let next: unknown = text.trim() ? text : undefined;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) next = parsed;
+    } catch { /* Preserve invalid input so validation prevents submitting stale arguments. */ }
+    emitted.current = next;
+    onChange(next);
+  };
+  return <div className="space-y-2">
+    <Textarea aria-label={`${label} JSON`} aria-invalid={!!error} value={text} onChange={(event) => change(event.target.value)} disabled={disabled} rows={5} className="font-mono text-sm" />
+    <p className="text-xs text-muted-foreground">Enter a JSON object using the action's argument names.</p>
+    {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+  </div>;
+}
+
 /**
  * Specialized field for object values, handling recursive rendering of nested properties.
  */
@@ -1023,7 +1093,9 @@ const ObjectField = React.memo(({
 
       {!isCollapsed && (
         <div className="pt-2">
-          <JsonSchemaForm
+          {Object.keys(propSchema.properties ?? {}).length === 0 && propSchema.additionalProperties !== false
+            ? <JsonObjectField value={value} onChange={onChange} disabled={disabled} label={label} error={errors[path]} />
+            : <JsonSchemaForm
             schema={propSchema}
             values={(value as Record<string, unknown>) ?? {}}
             onChange={handleObjectChange}
@@ -1033,7 +1105,7 @@ const ObjectField = React.memo(({
                 .filter(([errPath]) => errPath.startsWith(`${path}/`))
                 .map(([errPath, err]) => [errPath.replace(path, ""), err]),
             )}
-          />
+          />}
         </div>
       )}
     </div>
@@ -1186,6 +1258,7 @@ export function JsonSchemaForm({
   errors = {},
   disabled,
   className,
+  advancedLabel = "Advanced options",
 }: JsonSchemaFormProps) {
   const type = resolveType(schema);
 
@@ -1331,7 +1404,7 @@ export function JsonSchemaForm({
             onClick={() => setIsAdvancedOpen((open) => !open)}
             aria-expanded={isAdvancedOpen}
           >
-            <span className="text-sm font-medium">Advanced options</span>
+            <span className="text-sm font-medium">{advancedLabel}</span>
             {isAdvancedOpen ? (
               <ChevronDown className="h-4 w-4 text-muted-foreground" />
             ) : (

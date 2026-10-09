@@ -1,9 +1,12 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { workspacePaths } from "./workspace-manifest.js";
+import { runWorkspaceGitProcess } from "./workspace-git-stream.js";
 import { afterEach, describe, expect, it } from "vitest";
+import { getWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep, withWorkspaceRestoreGitCommand } from "./workspace-restore-diagnostics.js";
 
 import {
   buildRemoteGitDeltaBundleScript,
@@ -11,12 +14,39 @@ import {
   createRemoteGitExportRef,
   deleteLocalGitRef,
   fetchGitBundleIntoLocalRef,
-  readGitWorkspaceSnapshot,
+  integrateImportedGitHead,
+  isMissingGitPrerequisiteError,
+  readGitWorkspaceSnapshot as readRawSnapshot,
+  disposeGitWorkspaceSnapshot,
+  type ExpensiveWorkspaceGitInput,
+  type GitWorkspaceSnapshot,
+  ReferencedSourceIgnoreScanLimitExceededError,
+  readReferencedSourceGitIgnoredPaths,
+  REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT,
+  REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES,
   runLocalGit,
+  resetLocalGitIndexToHead,
+  sanitizeGitRemoteUrl,
+  setExpensiveWorkspaceGitExecutor,
   withShallowGitWorkspaceClone,
 } from "./git-workspace-sync.js";
 
 const execFile = promisify(execFileCallback);
+
+const snapshots: GitWorkspaceSnapshot[] = [];
+async function readGitWorkspaceSnapshot(...args: Parameters<typeof readRawSnapshot>) {
+  const snapshot = await readRawSnapshot(...args);
+  if (!snapshot) return null;
+  snapshots.push(snapshot);
+  // Small fixture assertions use arrays; production consumes only iterators.
+  return { ...snapshot, overlayPaths: [...workspacePaths(snapshot.overlayPaths)].sort((a,b)=>a.localeCompare(b)),
+    deletedPaths: [...workspacePaths(snapshot.deletedPaths)], ignoredPaths: [...workspacePaths(snapshot.ignoredPaths)] };
+}
+function executeScan(input: ExpensiveWorkspaceGitInput) {
+  if (!input.onStdout) return runLocalGit(input.localDir, [...input.args], input);
+  return runWorkspaceGitProcess({ cwd: input.localDir, args: input.args, timeoutMs: input.timeout,
+    maxStdoutBytes: input.maxBuffer, maxStderrBytes: input.maxBuffer, onStdout: input.onStdout, signal: input.signal, env: input.env });
+}
 
 async function git(cwd: string, args: string[]): Promise<string> {
   return (await runLocalGit(cwd, args)).stdout.trim();
@@ -26,12 +56,156 @@ describe("git workspace sync", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    setExpensiveWorkspaceGitExecutor(null);
+    for (const snapshot of snapshots.splice(0)) await disposeGitWorkspaceSnapshot(snapshot);
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  }, 30_000); // The output-limit fixture removes 40,000 files on teardown.
+
+  it("delegates every host-side full-tree enumeration to the registered scheduler", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-scheduler-hook-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await writeFile(path.join(repo, "untracked.txt"), "untracked\n", "utf8");
+    const operations: string[] = [];
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      operations.push(input.operation);
+      return executeScan(input);
+    });
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+
+    expect(snapshot?.overlayPaths).toContain("untracked.txt");
+    expect(operations.sort()).toEqual([
+      "adapter_sync.deleted_files",
+      "adapter_sync.ignored_files",
+      "adapter_sync.overlay_diff",
+      "adapter_sync.untracked_files",
+    ]);
   });
+
+  it("keeps every filename byte for a padded name in each of the four anchor lanes", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-anchor-whitespace-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+
+    // Deleted lane: commit the file first (in isolation, before anything else
+    // is staged), then remove it from the work tree.
+    const deletedName = " deleted padded ";
+    await writeFile(path.join(repo, deletedName), "deleted\n", "utf8");
+    await git(repo, ["add", deletedName]);
+    await git(repo, ["commit", "-qm", "add deleted padded"]);
+    await rm(path.join(repo, deletedName));
+
+    // Overlay lane, staged-new half: `git diff --diff-filter=ACMRTUXB HEAD`
+    // reports a staged-but-uncommitted file as added.
+    const overlayName = " overlay padded ";
+    await writeFile(path.join(repo, overlayName), "overlay\n", "utf8");
+    await git(repo, ["add", overlayName]);
+
+    // Overlay lane, untracked half: `ls-files --others --exclude-standard`.
+    const untrackedName = " untracked padded ";
+    await writeFile(path.join(repo, untrackedName), "untracked\n", "utf8");
+
+    // Ignored lane: a double-wildcard pattern avoids the separate rule that
+    // Git trims an unescaped trailing space in a .gitignore PATTERN itself;
+    // the padding under test lives in the matched FILE name.
+    const ignoredName = " ignored padded ";
+    await writeFile(path.join(repo, ".gitignore"), "*ignored*padded*\n", "utf8");
+    await writeFile(path.join(repo, ignoredName), "ignored\n", "utf8");
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+
+    expect(snapshot?.overlayPaths).toContain(overlayName);
+    expect(snapshot?.overlayPaths).toContain(untrackedName);
+    expect(snapshot?.deletedPaths).toContain(deletedName);
+    expect(snapshot?.ignoredPaths).toContain(ignoredName);
+  });
+
+  it.each(["workspace_git_scan_timeout", "workspace_git_scan_saturated", "workspace_git_scan_output_limit", "workspace_git_scan_cancelled", "workspace_git_scan_failed"])("preserves %s instead of reporting a non-Git folder", async (code) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-scan-failure-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const failure = Object.assign(new Error("Git enumeration failed"), { code });
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      if (input.operation === "adapter_sync.ignored_files") throw failure;
+      return executeScan(input);
+    });
+    await expect(readGitWorkspaceSnapshot(repo, false)).rejects.toBe(failure);
+  });
+
+  it("lists ignored paths without traversing ignored directory contents", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-ignored-scan-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await writeFile(path.join(repo, ".gitignore"), "dependencies/\n*.secret\n");
+    await mkdir(path.join(repo, "dependencies", "nested"), { recursive: true });
+    await writeFile(path.join(repo, "dependencies", "nested", "private"), "private");
+    await writeFile(path.join(repo, "token.secret"), "private");
+    let ignoredArgs: readonly string[] = [];
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      if (input.operation === "adapter_sync.ignored_files") ignoredArgs = input.args;
+      return executeScan(input);
+    });
+    expect((await readGitWorkspaceSnapshot(repo))?.ignoredPaths).toEqual(["dependencies", "token.secret"]);
+    expect(ignoredArgs).toEqual(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
+  });
+
+  it("snapshots a generated directory with more than 1 MiB of filenames", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-large-untracked-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const generatedDir = path.join(repo, "storybook-output");
+    await mkdir(generatedDir);
+    const names = Array.from({ length: 5_000 }, (_, index) => `${"asset-".repeat(36)}${index}.js`);
+    for (let start = 0; start < names.length; start += 100) {
+      await Promise.all(names.slice(start, start + 100).map((name) => writeFile(path.join(generatedDir, name), "")));
+    }
+    const raw = await runLocalGit(repo, ["ls-files", "--others", "--exclude-standard", "-z"], {
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    expect(Buffer.byteLength(raw.stdout)).toBeGreaterThan(1024 * 1024);
+    setExpensiveWorkspaceGitExecutor(executeScan);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    expect(snapshot?.overlayPaths).toEqual(
+      names.map((name) => `storybook-output/${name}`).sort((left, right) => left.localeCompare(right)),
+    );
+
+    // A larger tree exceeds the old 8 MiB bound but fits the new 32 MiB bound.
+    for (let start = 5_000; start < 40_000; start += 100) {
+      await Promise.all(Array.from({ length: 100 }, (_, index) => writeFile(
+        path.join(generatedDir, `${"asset-".repeat(36)}${start + index}.js`), "",
+      )));
+    }
+    const largerRaw = await runLocalGit(repo, ["ls-files", "--others", "--exclude-standard", "-z"], {
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    expect(Buffer.byteLength(largerRaw.stdout)).toBeGreaterThan(8 * 1024 * 1024);
+    const largerSnapshot = await readGitWorkspaceSnapshot(repo);
+    expect(largerSnapshot?.overlayPaths).toEqual(
+      largerRaw.stdout.split("\0").filter(Boolean).sort((left, right) => left.localeCompare(right)),
+    );
+
+    // Reuse the files with longer parent paths to exceed 32 MiB without
+    // creating hundreds of thousands of files solely to test the bound.
+    const deepParent = path.join(repo, ...Array.from({ length: 4 }, () => "nested-".repeat(30)));
+    await mkdir(deepParent, { recursive: true });
+    await rename(generatedDir, path.join(deepParent, "storybook-output"));
+    expect(Buffer.byteLength(largerRaw.stdout) + 40_000 * (path.relative(repo, deepParent).length + 1))
+      .toBeGreaterThan(32 * 1024 * 1024);
+    const streamed = await readRawSnapshot(repo);
+    snapshots.push(streamed!);
+    let count = 0;
+    let bytes = 0;
+    for (const relative of workspacePaths(streamed!.overlayPaths)) { count++; bytes += Buffer.byteLength(relative) + 1; }
+    expect(count).toBe(40_000);
+    expect(bytes).toBeGreaterThan(32 * 1024 * 1024);
+    expect(JSON.stringify(streamed).length).toBeLessThan(4096);
+  }, 60_000);
 
   async function createRepo(rootDir: string): Promise<string> {
     const repo = path.join(rootDir, "repo");
@@ -45,6 +219,19 @@ describe("git workspace sync", () => {
     await git(repo, ["commit", "-m", "base"]);
     return repo;
   }
+
+  it("does not classify a selected repository subfolder as a cloneable repository root", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-selected-folder-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const selectedDir = path.join(repo, "project");
+    await mkdir(selectedDir);
+    await writeFile(path.join(selectedDir, "draft.md"), "selected work\n");
+
+    expect(await git(selectedDir, ["rev-parse", "--is-inside-work-tree"])).toBe("true");
+    expect(await readGitWorkspaceSnapshot(selectedDir)).toBeNull();
+    expect((await readGitWorkspaceSnapshot(repo))?.headCommit).toBe(await git(repo, ["rev-parse", "HEAD"]));
+  });
 
   it("creates a shallow standalone clone from the local HEAD snapshot", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-sync-"));
@@ -69,6 +256,138 @@ describe("git workspace sync", () => {
       expect(await git(cloneDir, ["rev-list", "--count", "HEAD"])).toBe("1");
       expect(await git(cloneDir, ["branch", "--show-current"])).toBe("main");
       await expect(readFile(path.join(cloneDir, "tracked.txt"), "utf8")).resolves.toBe("base\n");
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("preserves nested repository symlinks after the temporary clone is removed", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-nested-links-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const nested = await createRepo(path.join(repo, ".paperclip-repositories"));
+    await writeFile(path.join(repo, ".git/info/exclude"), ".paperclip-repositories/\n");
+    await mkdir(path.join(nested, "skills", "demo"), { recursive: true });
+    await mkdir(path.join(nested, ".claude", "skills"), { recursive: true });
+    await writeFile(path.join(nested, "skills", "demo", "SKILL.md"), "skill content\n");
+    const links = [
+      [".claude/skills/demo", "../../skills/demo"],
+      ["skill.md", "skills/demo/SKILL.md"],
+      ["skill-alias", ".claude/skills/demo"],
+      ["future", "future.txt"],
+    ] as const;
+    for (const [name, target] of links) await symlink(target, path.join(nested, name));
+    await git(nested, ["add", "."]);
+    await git(nested, ["commit", "-m", "add repository links"]);
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    expect(snapshot?.repositories).toHaveLength(1);
+
+    await withShallowGitWorkspaceClone({ localDir: repo, snapshot: snapshot! }, async (cloneDir) => {
+      // The nested clone's callback has already returned and deleted its temp
+      // directory. Relative links must keep their repository meaning here.
+      const copied = path.join(cloneDir, ".paperclip-repositories", "repo");
+      for (const [name, target] of links) {
+        expect((await lstat(path.join(copied, name))).isSymbolicLink()).toBe(true);
+        expect(await readlink(path.join(copied, name))).toBe(target);
+      }
+      expect(await readFile(path.join(copied, ".claude/skills/demo/SKILL.md"), "utf8")).toBe("skill content\n");
+      expect(await readFile(path.join(copied, "skill-alias/SKILL.md"), "utf8")).toBe("skill content\n");
+      await expect(stat(path.join(copied, "future"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await git(copied, ["status", "--porcelain"])).toBe("");
+    });
+    expect(await git(nested, ["status", "--porcelain"])).toBe("");
+  });
+
+  it("copies the workspace origin remote into the shallow clone", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-origin-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await git(repo, ["remote", "add", "origin", "https://github.com/example/repo.git"]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      expect(await git(cloneDir, ["remote", "get-url", "origin"])).toBe("https://github.com/example/repo.git");
+    });
+  });
+
+  it("scrubs credentials from the origin remote before copying it", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-origin-scrub-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await git(repo, ["remote", "add", "origin", "https://x-access-token:sekret@github.com/example/repo.git"]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      expect(await git(cloneDir, ["remote", "get-url", "origin"])).toBe("https://github.com/example/repo.git");
+    });
+  });
+
+  it("leaves the shallow clone remote-less when the workspace has no origin", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-no-origin-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      await expect(git(cloneDir, ["remote", "get-url", "origin"])).rejects.toThrow();
+    });
+  });
+
+  it("drops a filesystem-path origin instead of copying it into the shallow clone", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-path-origin-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await git(repo, ["remote", "add", "origin", path.join(rootDir, "elsewhere.git")]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      await expect(git(cloneDir, ["remote", "get-url", "origin"])).rejects.toThrow();
+    });
+  });
+
+  it("pushes new commits from the shallow clone to an origin that holds the base commit", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-shallow-push-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const upstream = path.join(rootDir, "upstream.git");
+    await mkdir(upstream, { recursive: true });
+    await git(upstream, ["init", "--bare"]);
+    await git(repo, ["remote", "add", "origin", upstream]);
+    await git(repo, ["push", "origin", "main"]);
+    const baseHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+    await withShallowGitWorkspaceClone({
+      localDir: repo,
+      snapshot: snapshot!,
+    }, async (cloneDir) => {
+      await git(cloneDir, ["config", "user.name", "Paperclip Sandbox"]);
+      await git(cloneDir, ["config", "user.email", "sandbox@paperclip.dev"]);
+      await writeFile(path.join(cloneDir, "change.txt"), "sandbox change\n", "utf8");
+      await git(cloneDir, ["add", "change.txt"]);
+      await git(cloneDir, ["commit", "-m", "sandbox change"]);
+      const cloneHead = await git(cloneDir, ["rev-parse", "HEAD"]);
+
+      // A filesystem-path origin is dropped by the allowlist, so configure the
+      // remote explicitly — the property under test is the push itself: the
+      // clone is shallow (single grafted commit), but the boundary commit
+      // already exists on the origin, so the push pack closes without full
+      // ancestry. That is what makes transported branches publishable.
+      await git(cloneDir, ["remote", "add", "origin", upstream]);
+      await git(cloneDir, ["push", "origin", "HEAD:refs/heads/sandbox-change"]);
+
+      expect(await git(upstream, ["rev-parse", "refs/heads/sandbox-change"])).toBe(cloneHead);
+      expect(await git(upstream, ["merge-base", "refs/heads/main", "refs/heads/sandbox-change"])).toBe(baseHead);
     });
   });
 
@@ -124,5 +443,879 @@ describe("git workspace sync", () => {
         await deleteLocalGitRef({ localDir: repo, ref: importedRef });
       }
     });
+  });
+
+  it("imports a diverged sandbox HEAD even when the host no longer holds baseSha", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-diverge-"));
+    cleanupDirs.push(rootDir);
+    // Host holds only the shared ancestor B (the eventual merge-base), not the
+    // recorded base H — the state a shared workspace lands in when it is reset
+    // between export and import.
+    const host = await createRepo(rootDir);
+    const mergeBase = await git(host, ["rev-parse", "HEAD"]);
+
+    // Sandbox holds B, an advanced commit H (the recorded baseSha), and a
+    // local-only commit S that forked from B and diverges from H.
+    const sandbox = path.join(rootDir, "sandbox");
+    await git(rootDir, ["clone", host, sandbox]);
+    await git(sandbox, ["config", "user.name", "Paperclip Remote"]);
+    await git(sandbox, ["config", "user.email", "remote@paperclip.dev"]);
+    await writeFile(path.join(sandbox, "advance.txt"), "advance\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "advance"]);
+    const baseSha = await git(sandbox, ["rev-parse", "HEAD"]);
+    await git(sandbox, ["reset", "--hard", mergeBase]);
+    await writeFile(path.join(sandbox, "local.txt"), "local\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "local-only"]);
+    const sandboxHead = await git(sandbox, ["rev-parse", "HEAD"]);
+
+    // The host genuinely lacks baseSha; the old thin bundle would name it as an
+    // unsatisfiable prerequisite.
+    await expect(git(host, ["cat-file", "-e", `${baseSha}^{commit}`])).rejects.toThrow();
+
+    const bundle = path.join(rootDir, "diverge.bundle");
+    const exportRef = createRemoteGitExportRef("test");
+    const importedRef = createImportedGitRef("test");
+    try {
+      await execFile("sh", ["-c", buildRemoteGitDeltaBundleScript({
+        remoteDir: sandbox,
+        baseSha,
+        exportRef,
+        bundlePath: bundle,
+      })]);
+      expect((await stat(bundle)).size).toBeGreaterThan(0);
+
+      const importedHead = await fetchGitBundleIntoLocalRef({
+        localDir: host,
+        bundlePath: bundle,
+        exportRef,
+        importedRef,
+        baseSha,
+      });
+      expect(importedHead).toBe(sandboxHead);
+      // The host received the local-only commit and its parent (the merge-base).
+      expect(await git(host, ["cat-file", "-e", `${sandboxHead}^{commit}`])).toBe("");
+    } finally {
+      await deleteLocalGitRef({ localDir: host, ref: importedRef });
+    }
+  });
+
+  it("re-exports a full bundle that imports when the host holds neither baseSha nor the merge-base", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-ancestor-"));
+    cleanupDirs.push(rootDir);
+    // Host was reset to a strict ancestor of the eventual merge-base: it holds
+    // only the very first commit, not baseSha and not the fork point.
+    const host = await createRepo(rootDir);
+    const ancestor = await git(host, ["rev-parse", "HEAD"]);
+
+    const sandbox = path.join(rootDir, "sandbox");
+    await git(rootDir, ["clone", host, sandbox]);
+    await git(sandbox, ["config", "user.name", "Paperclip Remote"]);
+    await git(sandbox, ["config", "user.email", "remote@paperclip.dev"]);
+    // Advance the merge-base past the host, then baseSha past that, then a
+    // divergent local commit — so merge-base(baseSha, HEAD) is itself a commit
+    // the host does not hold.
+    await writeFile(path.join(sandbox, "fork.txt"), "fork\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "fork point"]);
+    const forkPoint = await git(sandbox, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(sandbox, "advance.txt"), "advance\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "advance"]);
+    const baseSha = await git(sandbox, ["rev-parse", "HEAD"]);
+    await git(sandbox, ["reset", "--hard", forkPoint]);
+    await writeFile(path.join(sandbox, "local.txt"), "local\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "local-only"]);
+    const sandboxHead = await git(sandbox, ["rev-parse", "HEAD"]);
+
+    // Host holds only the initial commit; it lacks both baseSha and the fork point.
+    expect(await git(host, ["rev-parse", "HEAD"])).toBe(ancestor);
+    await expect(git(host, ["cat-file", "-e", `${forkPoint}^{commit}`])).rejects.toThrow();
+
+    const exportRef = createRemoteGitExportRef("test");
+    const importedRef = createImportedGitRef("test");
+
+    // The delta bundle (relative to the merge-base = fork point) names a
+    // prerequisite the host lacks, so its import fails and is detected.
+    const deltaBundle = path.join(rootDir, "delta.bundle");
+    await execFile("sh", ["-c", buildRemoteGitDeltaBundleScript({
+      remoteDir: sandbox,
+      baseSha,
+      exportRef,
+      bundlePath: deltaBundle,
+    })]);
+    let deltaError: unknown;
+    try {
+      await fetchGitBundleIntoLocalRef({ localDir: host, bundlePath: deltaBundle, exportRef, importedRef, baseSha });
+    } catch (error) {
+      deltaError = error;
+    }
+    expect(deltaError).toBeDefined();
+    expect(isMissingGitPrerequisiteError(deltaError)).toBe(true);
+
+    // The forced full bundle is self-contained and imports into the same host.
+    const fullBundle = path.join(rootDir, "full.bundle");
+    try {
+      await execFile("sh", ["-c", buildRemoteGitDeltaBundleScript({
+        remoteDir: sandbox,
+        baseSha,
+        exportRef,
+        bundlePath: fullBundle,
+        forceFullBundle: true,
+      })]);
+      const importedHead = await fetchGitBundleIntoLocalRef({
+        localDir: host,
+        bundlePath: fullBundle,
+        exportRef,
+        importedRef,
+        baseSha,
+      });
+      expect(importedHead).toBe(sandboxHead);
+    } finally {
+      await deleteLocalGitRef({ localDir: host, ref: importedRef });
+    }
+  });
+
+  it("falls back to a full self-contained bundle when the sandbox lacks baseSha", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-full-"));
+    cleanupDirs.push(rootDir);
+    const sandbox = await createRepo(rootDir);
+    await writeFile(path.join(sandbox, "more.txt"), "more\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "more"]);
+    const sandboxHead = await git(sandbox, ["rev-parse", "HEAD"]);
+
+    // A fresh, unrelated host that shares no history with the sandbox.
+    const host = path.join(rootDir, "fresh-host");
+    await mkdir(host, { recursive: true });
+    await git(host, ["init"]);
+
+    const bundle = path.join(rootDir, "full.bundle");
+    const exportRef = createRemoteGitExportRef("test");
+    const importedRef = createImportedGitRef("test");
+    try {
+      await execFile("sh", ["-c", buildRemoteGitDeltaBundleScript({
+        remoteDir: sandbox,
+        // A base the sandbox does not have forces the full-bundle fallback.
+        baseSha: "0000000000000000000000000000000000000000",
+        exportRef,
+        bundlePath: bundle,
+      })]);
+      expect((await stat(bundle)).size).toBeGreaterThan(0);
+
+      const importedHead = await fetchGitBundleIntoLocalRef({
+        localDir: host,
+        bundlePath: bundle,
+        exportRef,
+        importedRef,
+        baseSha: "0000000000000000000000000000000000000000",
+      });
+      expect(importedHead).toBe(sandboxHead);
+    } finally {
+      await deleteLocalGitRef({ localDir: host, ref: importedRef });
+    }
+  });
+
+  it("creates the concurrent-history merge commit with a deterministic identity", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-merge-identity-"));
+    cleanupDirs.push(rootDir);
+    // No repo-local user.name/user.email on purpose: execution hosts are
+    // containers without git config, where commit-tree cannot auto-detect an
+    // identity. Setup commits pass their identity inline so only the merge
+    // commit under test depends on the sync-supplied identity.
+    const setupIdentity = ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev"];
+    const repo = path.join(rootDir, "repo");
+    await mkdir(repo, { recursive: true });
+    await git(repo, ["init"]);
+    await git(repo, ["checkout", "-b", "main"]);
+    await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+    await git(repo, ["add", "tracked.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "base"]);
+    const baseHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    await writeFile(path.join(repo, "local.txt"), "local\n", "utf8");
+    await git(repo, ["add", "local.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "local advance"]);
+    const currentHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    await git(repo, ["checkout", "-b", "imported", baseHead]);
+    await writeFile(path.join(repo, "imported.txt"), "imported\n", "utf8");
+    await git(repo, ["add", "imported.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "sandbox change"]);
+    const importedHead = await git(repo, ["rev-parse", "HEAD"]);
+    await git(repo, ["checkout", "main"]);
+
+    // Ambient identity env vars would override the `-c` flags and make the
+    // assertion machine-dependent, so clear them for the call under test.
+    const identityEnvKeys = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"];
+    const savedEnv = new Map(identityEnvKeys.map((key) => [key, process.env[key]]));
+    for (const key of identityEnvKeys) delete process.env[key];
+    try {
+      await integrateImportedGitHead({
+        localDir: repo, importedHead, baseline: { headCommit: baseHead, branchName: "main" },
+      });
+    } finally {
+      for (const [key, value] of savedEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+
+    const parents = (await git(repo, ["rev-list", "--parents", "-1", "HEAD"])).split(" ");
+    expect(parents.slice(1)).toEqual([currentHead, importedHead]);
+    expect(await git(repo, ["log", "-1", "--format=%an|%ae|%cn|%ce"]))
+      .toBe("Paperclip|noreply@paperclip.ing|Paperclip|noreply@paperclip.ing");
+    expect(await git(repo, ["log", "-1", "--format=%s"]))
+      .toBe(`Paperclip remote git sync merge ${importedHead.slice(0, 12)}`);
+    const mergedTree = await git(repo, ["ls-tree", "--name-only", "HEAD"]);
+    expect(mergedTree).toContain("local.txt");
+    expect(mergedTree).toContain("imported.txt");
+  });
+
+  describe("sandbox history rewrites", () => {
+    async function rewrittenHistory() {
+      const repo = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-rewrite-"));
+      cleanupDirs.push(repo);
+      await git(repo, ["init"]);
+      await git(repo, ["checkout", "-b", "host"]);
+      await git(repo, ["config", "user.name", "Paperclip Test"]);
+      await git(repo, ["config", "user.email", "test@paperclip.dev"]);
+      await writeFile(path.join(repo, "tracked.txt"), "base\n");
+      await git(repo, ["add", "."]);
+      await git(repo, ["commit", "-m", "base"]);
+      const ancestor = await git(repo, ["rev-parse", "HEAD"]);
+      await writeFile(path.join(repo, "tracked.txt"), "original change\n");
+      await git(repo, ["commit", "-am", "original change"]);
+      const baseline = { headCommit: await git(repo, ["rev-parse", "HEAD"]), branchName: "host" };
+      await git(repo, ["checkout", "-b", "sandbox"]);
+      await writeFile(path.join(repo, "tracked.txt"), "rewritten change\n");
+      await git(repo, ["commit", "-am", "rewritten change", "--amend"]);
+      const importedHead = await git(repo, ["rev-parse", "HEAD"]);
+      await git(repo, ["checkout", "host"]);
+      return { repo, ancestor, baseline, importedHead };
+    }
+
+    it("accepts rewritten history when the host still matches the starting snapshot", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      // The old integration path attempts this conflicting merge even though
+      // the host has not changed since the run started.
+      await expect(git(repo, ["merge-tree", "--write-tree", baseline.headCommit, importedHead]))
+        .rejects.toMatchObject({ code: 1 });
+      await writeFile(path.join(repo, "local.txt"), "local work\n");
+      await git(repo, ["add", "local.txt"]);
+      const indexBefore = await git(repo, ["write-tree"]);
+
+      await integrateImportedGitHead({ localDir: repo, importedHead, baseline });
+
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(importedHead);
+      expect(await git(repo, ["symbolic-ref", "--short", "HEAD"])).toBe("host");
+      expect(await git(repo, ["write-tree"])).toBe(indexBefore);
+      expect(await readFile(path.join(repo, "local.txt"), "utf8")).toBe("local work\n");
+    });
+
+    it("restores an intentional reset to an ancestor when the host has not changed", async () => {
+      const { repo, ancestor, baseline } = await rewrittenHistory();
+      await integrateImportedGitHead({ localDir: repo, importedHead: ancestor, baseline });
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(ancestor);
+    });
+
+    it("does not replace host commits made after the starting snapshot", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      await writeFile(path.join(repo, "local.txt"), "concurrent work\n");
+      await git(repo, ["add", "local.txt"]);
+      await git(repo, ["commit", "-m", "host advanced"]);
+      const hostHead = await git(repo, ["rev-parse", "HEAD"]);
+
+      await expect(integrateImportedGitHead({ localDir: repo, importedHead, baseline }))
+        .rejects.toThrow("Failed to merge concurrent remote git histories");
+
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(hostHead);
+      expect(await readFile(path.join(repo, "local.txt"), "utf8")).toBe("concurrent work\n");
+    });
+
+    it("does not replace a different host branch at the same starting commit", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      const tree = await git(repo, ["rev-parse", `${importedHead}^{tree}`]);
+      const fastForwardHead = await git(repo, ["commit-tree", tree, "-p", baseline.headCommit, "-m", "sandbox advance"]);
+      await git(repo, ["checkout", "-b", "other"]);
+      await expect(integrateImportedGitHead({ localDir: repo, importedHead: fastForwardHead, baseline }))
+        .rejects.toThrow("branch changed");
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(baseline.headCommit);
+      expect(await git(repo, ["rev-parse", "host"])).toBe(baseline.headCommit);
+    });
+
+    it("keeps the conservative merge behavior without a starting snapshot", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      await expect(integrateImportedGitHead({ localDir: repo, importedHead }))
+        .rejects.toThrow("Failed to merge concurrent remote git histories");
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(baseline.headCommit);
+    });
+
+    it("refuses unrelated rewritten history after a concurrent host commit", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      const tree = await git(repo, ["rev-parse", `${importedHead}^{tree}`]);
+      const unrelated = await git(repo, ["commit-tree", tree, "-m", "shallow rewrite"]);
+      await writeFile(path.join(repo, "local.txt"), "concurrent work\n");
+      await git(repo, ["add", "local.txt"]);
+      await git(repo, ["commit", "-m", "host advanced"]);
+      const hostHead = await git(repo, ["rev-parse", "HEAD"]);
+      await expect(integrateImportedGitHead({ localDir: repo, importedHead: unrelated, baseline }))
+        .rejects.toThrow("Cannot restore unrelated remote history after the host advanced");
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(hostHead);
+    });
+
+    it("accepts a rewrite of an unchanged detached host without attaching a branch", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      await git(repo, ["checkout", "--detach"]);
+      await integrateImportedGitHead({ localDir: repo, importedHead, baseline: { ...baseline, branchName: null } });
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(importedHead);
+      await expect(git(repo, ["symbolic-ref", "--quiet", "HEAD"])).rejects.toMatchObject({ code: 1 });
+    });
+
+    it.each([false, true])("rejects a checkout during integration (initially detached: %s)", async (detached) => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      if (detached) await git(repo, ["checkout", "--detach"]);
+      const realGit = (await execFile("sh", ["-c", "command -v git"])).stdout.trim();
+      const bin = path.join(repo, "test-bin");
+      await mkdir(bin);
+      const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+      // Switch branches after the initial identity read, at the merge-base
+      // subprocess boundary. Both refs still point to the expected old OID.
+      await writeFile(path.join(bin, "git"), `#!/bin/sh
+if [ "$3" = merge-base ]; then
+  ${quote(realGit)} -C "$2" checkout -B other ${baseline.headCommit} >/dev/null 2>&1 || exit 1
+fi
+exec ${quote(realGit)} "$@"
+`, { mode: 0o755 });
+      const priorPath = process.env.PATH;
+      process.env.PATH = `${bin}${path.delimiter}${priorPath ?? ""}`;
+      try {
+        await expect(integrateImportedGitHead({
+          localDir: repo, importedHead, baseline: { ...baseline, branchName: detached ? null : "host" },
+        })).rejects.toThrow("branch changed");
+      } finally {
+        if (priorPath === undefined) delete process.env.PATH;
+        else process.env.PATH = priorPath;
+      }
+      expect(await git(repo, ["symbolic-ref", "--short", "HEAD"])).toBe("other");
+      expect(await git(repo, ["rev-parse", "host"])).toBe(baseline.headCommit);
+      expect(await git(repo, ["rev-parse", "other"])).toBe(baseline.headCommit);
+      expect(await stat(path.join(repo, ".git", "HEAD.lock")).catch(() => null)).toBeNull();
+    });
+
+    it.each([false, true])("holds the HEAD lock through commit (initially detached: %s)", async (detached) => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      await git(repo, ["branch", "other"]);
+      if (detached) await git(repo, ["checkout", "--detach"]);
+      await writeFile(path.join(repo, ".git", "hooks", "reference-transaction"), `#!/bin/sh
+if [ "$1" = prepared ]; then
+  if git symbolic-ref HEAD refs/heads/other 2>/dev/null; then exit 1; fi
+  printf blocked > checkout-attempt.txt
+fi
+exit 0
+`, { mode: 0o755 });
+      await integrateImportedGitHead({
+        localDir: repo, importedHead, baseline: { ...baseline, branchName: detached ? null : "host" },
+      });
+      expect(await readFile(path.join(repo, "checkout-attempt.txt"), "utf8")).toBe("blocked");
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(importedHead);
+      expect(await git(repo, ["rev-parse", "other"])).toBe(baseline.headCommit);
+      if (detached) await expect(git(repo, ["symbolic-ref", "--quiet", "HEAD"])).rejects.toMatchObject({ code: 1 });
+      else expect(await git(repo, ["symbolic-ref", "--short", "HEAD"])).toBe("host");
+      expect(await stat(path.join(repo, ".git", "HEAD.lock")).catch(() => null)).toBeNull();
+    });
+  });
+
+  it.each([false, true])("grafts an unrelated imported head with an unchanged host (baseline supplied: %s)", async (withBaseline) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-graft-"));
+    cleanupDirs.push(rootDir);
+    const setupIdentity = ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev"];
+    const repo = path.join(rootDir, "repo");
+    await mkdir(repo, { recursive: true });
+    await git(repo, ["init"]);
+    await git(repo, ["checkout", "-b", "main"]);
+    await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+    await git(repo, ["add", "tracked.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "base"]);
+    const baseHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    await writeFile(path.join(repo, "local.txt"), "local\n", "utf8");
+    await git(repo, ["add", "local.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "local advance"]);
+    const currentHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    // The shape a depth-1 shallow clone produces after `git commit --amend`:
+    // a parentless root commit that shares no ancestor with the host history.
+    const importedTree = await git(repo, ["rev-parse", `${baseHead}^{tree}`]);
+    const importedHead = await git(repo, [...setupIdentity, "commit-tree", importedTree, "-m", "sandbox rewrite"]);
+
+    await integrateImportedGitHead({
+      localDir: repo, importedHead,
+      baseline: withBaseline ? { headCommit: currentHead, branchName: "main" } : undefined,
+    });
+
+    const parents = (await git(repo, ["rev-list", "--parents", "-1", "HEAD"])).split(" ");
+    expect(parents.slice(1)).toEqual([currentHead]);
+    // The imported tree is taken wholesale: no base exists to merge against.
+    expect(await git(repo, ["rev-parse", "HEAD^{tree}"])).toBe(importedTree);
+    expect(await git(repo, ["log", "-1", "--format=%s"])).toBe("sandbox rewrite");
+    const body = await git(repo, ["log", "-1", "--format=%B"]);
+    expect(body).toContain(`Paperclip remote git sync graft ${importedHead.slice(0, 12)}`);
+    expect(body).toContain("shares no ancestor");
+  });
+
+  it.each([false, true])("does not graft on a merge-base error other than missing ancestry (baseline supplied: %s)", async (withBaseline) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-no-graft-"));
+    cleanupDirs.push(rootDir);
+    const setupIdentity = ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev"];
+    const repo = path.join(rootDir, "repo");
+    await mkdir(repo, { recursive: true });
+    await git(repo, ["init"]);
+    await git(repo, ["checkout", "-b", "main"]);
+    await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+    await git(repo, ["add", "tracked.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "base"]);
+    const currentHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    // A well-formed sha the repository does not hold: merge-base fails with an
+    // object error (exit 128), not the no-ancestor signal (exit 1). The graft
+    // must not fire, and the integration keeps its loud failure.
+    const missingHead = "0123456789abcdef0123456789abcdef01234567";
+    const expectedExit = await runLocalGit(repo, ["merge-tree", "--write-tree", currentHead, missingHead])
+      .catch((error: { code: number }) => error.code);
+    const error = await withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("git_integration", () =>
+      integrateImportedGitHead({
+        localDir: repo, importedHead: missingHead,
+        baseline: withBaseline ? { headCommit: currentHead, branchName: "main" } : undefined,
+      }))).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/Failed to merge concurrent remote git histories/);
+    expect(error).not.toHaveProperty("cause");
+    expect(getWorkspaceRestoreDiagnostic(error)).toEqual({ phase: "workspace", step: "git_integration", errorCode: "unknown", exitCode: expectedExit,
+      gitCommand: "merge_tree", gitFailureKind: "invalid_object" });
+    expect(await git(repo, ["rev-parse", "HEAD"])).toBe(currentHead);
+  });
+
+  it("identifies a real merge conflict without changing the host tip or copying Git output", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-conflict-diagnostic-"));
+    cleanupDirs.push(repo);
+    await git(repo, ["init", "-b", "host"]);
+    await git(repo, ["config", "user.name", "Test"]);
+    await git(repo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(repo, "private-filename.txt"), "base\n");
+    await git(repo, ["add", "."]);
+    await git(repo, ["commit", "-m", "base"]);
+    const base = await git(repo, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(repo, "private-filename.txt"), "host change\n");
+    await git(repo, ["commit", "-am", "host"]);
+    const currentHead = await git(repo, ["rev-parse", "HEAD"]);
+    await git(repo, ["checkout", "-b", "imported", base]);
+    await writeFile(path.join(repo, "private-filename.txt"), "remote change\n");
+    await git(repo, ["commit", "-am", "remote"]);
+    const importedHead = await git(repo, ["rev-parse", "HEAD"]);
+    await git(repo, ["checkout", "host"]);
+    const logs: string[] = [];
+    const error = await withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("directory_merge", () =>
+      withWorkspaceRestoreStep("git_integration", () => integrateImportedGitHead({ localDir: repo, importedHead }))),
+    async (line) => { logs.push(line); }).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain("Failed to merge concurrent remote git histories");
+    expect(error).not.toHaveProperty("cause");
+    expect(getWorkspaceRestoreDiagnostic(error)).toEqual({ phase: "workspace", step: "git_integration", errorCode: "unknown",
+      exitCode: 1, gitCommand: "merge_tree", gitFailureKind: "merge_conflict" });
+    expect(await git(repo, ["rev-parse", "HEAD"])).toBe(currentHead);
+    expect(await readFile(path.join(repo, "private-filename.txt"), "utf8")).toBe("host change\n");
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).not.toMatch(/private-filename|host change|remote change/);
+    for (const privateValue of [repo, currentHead, importedHead]) expect(logs[0]).not.toContain(privateValue);
+  });
+
+  it("labels a failed locked ref transaction without changing its branch or tip", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-transaction-diagnostic-"));
+    cleanupDirs.push(repo);
+    await git(repo, ["init", "-b", "private-branch"]);
+    await git(repo, ["config", "user.name", "Test"]);
+    await git(repo, ["config", "user.email", "test@paperclip.dev"]);
+    await git(repo, ["commit", "--allow-empty", "-m", "base"]);
+    const base = await git(repo, ["rev-parse", "HEAD"]);
+    await git(repo, ["commit", "--allow-empty", "-m", "advance"]);
+    const importedHead = await git(repo, ["rev-parse", "HEAD"]);
+    await git(repo, ["reset", "--hard", base]);
+    // Git owns this lock. A failed restore must leave it alone and keep its
+    // existing failure behavior; diagnostic collection grants no cleanup rights.
+    await writeFile(path.join(repo, ".git", "HEAD.lock"), "private-lock");
+    const error = await withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("git_integration", () =>
+      integrateImportedGitHead({ localDir: repo, importedHead, baseline: { headCommit: base, branchName: "private-branch" } })))
+      .catch(error => error);
+    expect(error).toMatchObject({ code: 128 });
+    const diagnostic = getWorkspaceRestoreDiagnostic(error);
+    expect(diagnostic).toEqual({ phase: "workspace", step: "git_integration", errorCode: "unknown", exitCode: 128,
+      gitCommand: "update_ref", gitFailureKind: "unknown" });
+    expect(await git(repo, ["rev-parse", "HEAD"])).toBe(base);
+    expect(await git(repo, ["symbolic-ref", "--short", "HEAD"])).toBe("private-branch");
+    expect(await readFile(path.join(repo, ".git", "HEAD.lock"), "utf8")).toBe("private-lock");
+    for (const privateValue of [repo, base, importedHead, "private-branch"]) expect(JSON.stringify(diagnostic)).not.toContain(privateValue);
+  });
+
+  it("recognizes a real expected-old ref mismatch without copying the ref or commit IDs", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-ref-diagnostic-"));
+    cleanupDirs.push(repo);
+    await git(repo, ["init", "-b", "private-branch"]);
+    await git(repo, ["config", "user.name", "Test"]);
+    await git(repo, ["config", "user.email", "test@paperclip.dev"]);
+    await git(repo, ["commit", "--allow-empty", "-m", "base"]);
+    const base = await git(repo, ["rev-parse", "HEAD"]);
+    await git(repo, ["commit", "--allow-empty", "-m", "advance"]);
+    const current = await git(repo, ["rev-parse", "HEAD"]);
+    const error = await withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("git_integration", () =>
+      withWorkspaceRestoreGitCommand("update_ref", () => runLocalGit(repo, ["update-ref", "refs/heads/private-branch", base, base]))))
+      .catch(error => error);
+    expect(error).toMatchObject({ code: 128 });
+    const diagnostic = getWorkspaceRestoreDiagnostic(error);
+    expect(diagnostic).toEqual({ phase: "workspace", step: "git_integration", errorCode: "unknown", exitCode: 128,
+      gitCommand: "update_ref", gitFailureKind: "ref_conflict" });
+    expect(await git(repo, ["rev-parse", "HEAD"])).toBe(current);
+    for (const privateValue of [repo, base, current, "private-branch"]) expect(JSON.stringify(diagnostic)).not.toContain(privateValue);
+  });
+
+  it("preserves the real Git index reset exit code without attaching its raw error", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-reset-diagnostic-"));
+    cleanupDirs.push(repo);
+    await git(repo, ["init"]);
+    await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+    await git(repo, ["add", "tracked.txt"]);
+    await git(repo, ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev", "commit", "-m", "base"]);
+    await writeFile(path.join(repo, ".git", "index.lock"), "fixture lock\n", "utf8");
+    const error = await withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("index_reset", () =>
+      resetLocalGitIndexToHead({ localDir: repo }))).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("Failed to reset local git index");
+    expect(error).not.toHaveProperty("cause");
+    expect(getWorkspaceRestoreDiagnostic(error)).toEqual({ phase: "workspace", step: "index_reset", errorCode: "unknown", exitCode: 128 });
+  });
+
+  describe("readReferencedSourceGitIgnoredPaths", () => {
+    it("returns null for a directory that is not a Git work tree", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-nogit-"));
+      cleanupDirs.push(rootDir);
+      const plainDir = path.join(rootDir, "plain");
+      await mkdir(plainDir, { recursive: true });
+      await writeFile(path.join(plainDir, "file.txt"), "body\n", "utf8");
+
+      await expect(readReferencedSourceGitIgnoredPaths(plainDir)).resolves.toBeNull();
+    });
+
+    it.each([
+      { code: "workspace_git_scan_failed", exitCode: 128, signal: null, nonGit: true },
+      { code: "workspace_git_scan_timeout", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_cancelled", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_output_limit", exitCode: 128, signal: null, nonGit: false },
+      { code: "workspace_git_scan_failed", exitCode: null, signal: "SIGTERM", nonGit: false },
+    ])("classifies scheduled non-repository failures without swallowing $code/$signal", async ({ code, exitCode, signal, nonGit }) => {
+      const error = Object.assign(new Error("Workspace Git scan failed"), {
+        code,
+        details: { exitCode, signal, stderr: "fatal: not a git repository (or any of the parent directories): .git" },
+      });
+      setExpensiveWorkspaceGitExecutor(async () => { throw error; });
+      try {
+        const result = readReferencedSourceGitIgnoredPaths("/plain-workspace");
+        if (nonGit) await expect(result).resolves.toBeNull();
+        else await expect(result).rejects.toBe(error);
+      } finally {
+        setExpensiveWorkspaceGitExecutor(null);
+      }
+    });
+
+    it("reads the repository top level and the ignored paths of a Git work tree", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-git-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      await writeFile(path.join(repo, ".gitignore"), "secret.env\nbuild/\n", "utf8");
+      await writeFile(path.join(repo, "secret.env"), "TOKEN=abc\n", "utf8");
+      await mkdir(path.join(repo, "build"), { recursive: true });
+      await writeFile(path.join(repo, "build", "out.js"), "artifact\n", "utf8");
+
+      const scan = await readReferencedSourceGitIgnoredPaths(repo);
+      expect(scan?.toplevel).toBe(await git(repo, ["rev-parse", "--show-toplevel"]));
+      expect(scan?.ignoredPaths).toEqual(["build", "secret.env"]);
+    });
+
+    it("preserves trailing whitespace in an ignored path entry", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-trailing-ws-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      // A wildcard pattern avoids the separate rule that git trims an
+      // unescaped trailing space in a .gitignore pattern itself; the trailing
+      // space under test lives in the matched FILE name, not the pattern.
+      const paddedName = "secret.env ";
+      await writeFile(path.join(repo, ".gitignore"), "secret.env*\n", "utf8");
+      await writeFile(path.join(repo, paddedName), "TOKEN=abc\n", "utf8");
+
+      const scan = await readReferencedSourceGitIgnoredPaths(repo);
+      expect(scan?.ignoredPaths).toEqual([paddedName]);
+    });
+
+    it("fails closed when the parsed ignored-entry count exceeds the bound", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-bound-count-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      // Synthesize the `git ls-files --others --ignored -z` output directly,
+      // rather than creating ten thousand real files, by intercepting the
+      // scan at the executor seam. The parser must reject this before it
+      // sorts or re-relativizes the list.
+      const overLimitCount = REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT + 1;
+      const syntheticIgnored = `${Array.from({ length: overLimitCount }, (_, index) => `entry-${index}`).join("\0")}\0`;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          return { stdout: syntheticIgnored, stderr: "" };
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await expect(readReferencedSourceGitIgnoredPaths(repo)).rejects.toBeInstanceOf(
+        ReferencedSourceIgnoreScanLimitExceededError,
+      );
+    });
+
+    it("fails closed when the summed UTF-8 byte size of ignored paths exceeds the bound", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-bound-bytes-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      // One entry alone exceeds the byte bound, well under the entry-count bound.
+      const hugeEntry = "a".repeat(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES + 1);
+      const syntheticIgnored = `${hugeEntry}\0`;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          return { stdout: syntheticIgnored, stderr: "" };
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await expect(readReferencedSourceGitIgnoredPaths(repo)).rejects.toBeInstanceOf(
+        ReferencedSourceIgnoreScanLimitExceededError,
+      );
+    });
+
+    it("fails closed on the byte bound while it is still accumulating, before it would ever reach a later entry-count breach", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-bound-order-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      // Three entries alone cross the byte bound. Many more small entries
+      // follow, so the FULL response also carries more than the entry-count
+      // bound. A parser that fully builds the list before checking either
+      // bound (post-parse) would report the entry-count breach, because it
+      // checks that bound first against the whole materialized list. A
+      // parser that checks both bounds while the list accumulates rejects on
+      // the byte bound instead, the moment the third entry crosses it, well
+      // before the count bound is ever reached.
+      const oversizedEntry = "a".repeat(Math.ceil(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES / 2) + 1);
+      const bigEntries = Array.from({ length: 3 }, (_, index) => `${oversizedEntry}-${index}`);
+      const trailingEntries = Array.from(
+        { length: REFERENCED_SOURCE_IGNORE_MAX_ENTRY_COUNT + 10 },
+        (_, index) => `trailing-${index}`,
+      );
+      const syntheticIgnored = `${[...bigEntries, ...trailingEntries].join("\0")}\0`;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          return { stdout: syntheticIgnored, stderr: "" };
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await expect(readReferencedSourceGitIgnoredPaths(repo)).rejects.toThrow(/UTF-8 bytes/);
+    });
+
+    it("bounds the raw command-output allowance to the ignore-scan limits, not the general-purpose full-tree ceiling", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-raw-buffer-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      let observedMaxBuffer: number | undefined;
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        if (input.operation === "referenced_source.ignored_files") {
+          observedMaxBuffer = input.maxBuffer;
+        }
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      await readReferencedSourceGitIgnoredPaths(repo);
+
+      // Enough headroom for a scan within bounds to complete, but a small
+      // multiple of the byte bound — not the far larger allowance the
+      // anchor workspace's general-purpose full-tree reads use.
+      expect(observedMaxBuffer).toBeGreaterThan(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES);
+      expect(observedMaxBuffer).toBeLessThan(16 * 1024 * 1024);
+    });
+
+    it("does not fail closed on a huge amount of unrelated tracked-change and untracked noise, when the ignored set itself stays in bounds", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-mixed-status-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      await writeFile(path.join(repo, ".gitignore"), "secret.env\n", "utf8");
+      await writeFile(path.join(repo, "secret.env"), "TOKEN=abc\n", "utf8");
+
+      // Many long-named, untracked, NOT-ignored files at the repository root.
+      // `git status` reports one record per file (root-level files are never
+      // collapsed the way an entirely untracked directory is), so this alone
+      // makes the raw `git status --ignored` response exceed the raw buffer
+      // bound this scan used to apply to the WHOLE response, well before the
+      // parser ever got to discard these non-ignored records. The ignored set
+      // above stays a single small entry throughout.
+      const noiseNameLength = 220;
+      const noiseFileCount = 30_000;
+      const noiseNames = Array.from(
+        { length: noiseFileCount },
+        (_, index) => `${"n".repeat(noiseNameLength - 6)}${String(index).padStart(6, "0")}`,
+      );
+      const writeConcurrency = 200;
+      for (let start = 0; start < noiseNames.length; start += writeConcurrency) {
+        const batch = noiseNames.slice(start, start + writeConcurrency);
+        await Promise.all(batch.map((name) => writeFile(path.join(repo, name), "", "utf8")));
+      }
+
+      // Confirm this test actually reproduces the reported defect precondition:
+      // the raw `git status --ignored` response for this repository state is
+      // larger than the 4 MiB raw buffer bound the scan used to apply to the
+      // whole response, not just to the declared ignored-set limits. A large
+      // explicit maxBuffer is required here only to observe that raw size;
+      // the scan under test never issues this command.
+      const rawStatusResult = await runLocalGit(
+        repo,
+        ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"],
+        { maxBuffer: 16 * 1024 * 1024 },
+      );
+      expect(Buffer.byteLength(rawStatusResult.stdout, "utf8")).toBeGreaterThan(REFERENCED_SOURCE_IGNORE_MAX_TOTAL_BYTES * 2);
+
+      const scan = await readReferencedSourceGitIgnoredPaths(repo);
+
+      expect(scan?.ignoredPaths).toEqual(["secret.env"]);
+    });
+
+    it("routes both scan commands through the registered scheduler instead of spawning git directly", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-scheduler-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      await writeFile(path.join(repo, ".gitignore"), "build/\n", "utf8");
+      await mkdir(path.join(repo, "build"), { recursive: true });
+      await writeFile(path.join(repo, "build", "out.js"), "artifact\n", "utf8");
+
+      const operations: string[] = [];
+      setExpensiveWorkspaceGitExecutor(async (input) => {
+        operations.push(input.operation);
+        return await runLocalGit(input.localDir, [...input.args], {
+          timeout: input.timeout,
+          maxBuffer: input.maxBuffer,
+          env: input.env,
+        });
+      });
+
+      const scan = await readReferencedSourceGitIgnoredPaths(repo);
+
+      expect(scan?.ignoredPaths).toEqual(["build"]);
+      // Both the toplevel probe and the ignored-paths read go through the SAME
+      // process-wide admission seam the anchor workspace's expensive reads
+      // use. A host process that bounds concurrent scans there also bounds
+      // referenced-project scans, so a run with many referenced projects
+      // cannot spawn one unbounded Git process per project.
+      expect(operations.sort()).toEqual(["referenced_source.ignored_files", "referenced_source.toplevel"]);
+    });
+
+    it("carries the hardened arguments and does not inherit a poisoned GIT_CONFIG_GLOBAL", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-hardened-env-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      const badGlobalConfig = path.join(rootDir, "bad-global-gitconfig");
+      await writeFile(badGlobalConfig, "this is not valid git config syntax [[[\n", "utf8");
+
+      const priorGlobal = process.env.GIT_CONFIG_GLOBAL;
+      process.env.GIT_CONFIG_GLOBAL = badGlobalConfig;
+      try {
+        // A plain invocation inherits the poisoned global config and fails to parse it.
+        await expect(execFile("git", ["-C", repo, "status", "--porcelain"])).rejects.toThrow();
+        // The hardened helper does not inherit GIT_CONFIG_GLOBAL from this process's
+        // environment, so it succeeds regardless.
+        await expect(readReferencedSourceGitIgnoredPaths(repo)).resolves.toMatchObject({ ignoredPaths: [] });
+      } finally {
+        if (priorGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+        else process.env.GIT_CONFIG_GLOBAL = priorGlobal;
+      }
+    });
+
+    it("neutralizes a repository-local core.fsmonitor hook", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-referenced-fsmonitor-"));
+      cleanupDirs.push(rootDir);
+      const repo = await createRepo(rootDir);
+      const markerPath = path.join(rootDir, "pwned.txt");
+      // A malicious repository-local config: a non-boolean `core.fsmonitor` value
+      // is a hook COMMAND Git runs on every status-like read. `--no-optional-locks`
+      // alone does not stop this; only the command-line `-c core.fsmonitor=false`
+      // override does, because command-line config wins over repository config.
+      await git(repo, ["config", "core.fsmonitor", `sh -c 'touch ${markerPath}; printf 1'`]);
+
+      await readReferencedSourceGitIgnoredPaths(repo);
+
+      await expect(stat(markerPath)).rejects.toThrow();
+    });
+  });
+});
+
+describe("sanitizeGitRemoteUrl", () => {
+  it("strips userinfo, query, and fragment from http(s) URLs", () => {
+    expect(sanitizeGitRemoteUrl("https://x-access-token:sekret@github.com/example/repo.git"))
+      .toBe("https://github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("https://sekret-token@github.com/example/repo.git"))
+      .toBe("https://github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("http://user:pass@git.internal/example/repo.git"))
+      .toBe("http://git.internal/example/repo.git");
+    expect(sanitizeGitRemoteUrl("https://github.com/example/repo.git?private_token=sekret#fragment"))
+      .toBe("https://github.com/example/repo.git");
+  });
+
+  it("strips password and query from ssh-scheme URLs but keeps the username", () => {
+    expect(sanitizeGitRemoteUrl("ssh://git@github.com/example/repo.git"))
+      .toBe("ssh://git@github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("ssh://git:sekret@github.com/example/repo.git"))
+      .toBe("ssh://git@github.com/example/repo.git");
+    expect(sanitizeGitRemoteUrl("git+ssh://git@github.com/example/repo.git?key=sekret"))
+      .toBe("git+ssh://git@github.com/example/repo.git");
+  });
+
+  it("keeps credential-free scp-like remotes unchanged", () => {
+    expect(sanitizeGitRemoteUrl("git@github.com:example/repo.git"))
+      .toBe("git@github.com:example/repo.git");
+    expect(sanitizeGitRemoteUrl("https://github.com/example/repo.git"))
+      .toBe("https://github.com/example/repo.git");
+  });
+
+  it("drops every shape whose credential surface is unknown", () => {
+    // Filesystem paths are useless on the execution host and could leak
+    // host-layout details; unknown schemes and malformed userinfo could carry
+    // embedded secrets the sanitizer cannot recognize. All fail closed.
+    expect(sanitizeGitRemoteUrl("/tmp/local/upstream.git")).toBeNull();
+    expect(sanitizeGitRemoteUrl("ftp://user:pass@host/repo.git")).toBeNull();
+    expect(sanitizeGitRemoteUrl("user:pass@host:path/repo.git")).toBeNull();
+    expect(sanitizeGitRemoteUrl("host.example:path/repo.git")).toBeNull();
+  });
+
+  it("returns null for empty input", () => {
+    expect(sanitizeGitRemoteUrl("")).toBeNull();
+    expect(sanitizeGitRemoteUrl("   ")).toBeNull();
   });
 });

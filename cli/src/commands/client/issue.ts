@@ -80,6 +80,7 @@ interface IssueUpdateOptions extends BaseClientOptions {
 
 interface IssueCommentOptions extends BaseClientOptions {
   body: string;
+  attachmentId?: string[];
   reopen?: boolean;
   resume?: boolean;
 }
@@ -361,6 +362,10 @@ export function registerIssueCommands(program: Command): void {
       .description("Add comment to issue")
       .argument("<issueId>", "Issue ID")
       .requiredOption("--body <text>", "Comment body")
+      .option(
+        "--attachment-id <id...>",
+        "Bind uploaded issue attachments to this comment",
+      )
       .option("--reopen", "Reopen if issue is done/cancelled")
       .option("--resume", "Request explicit follow-up and wake the assignee when resumable")
       .action(async (issueId: string, opts: IssueCommentOptions) => {
@@ -368,6 +373,7 @@ export function registerIssueCommands(program: Command): void {
           const ctx = resolveCommandContext(opts);
           const payload = addIssueCommentSchema.parse({
             body: opts.body,
+            attachmentIds: opts.attachmentId,
             reopen: opts.reopen,
             resume: opts.resume,
           });
@@ -1308,7 +1314,7 @@ export function registerIssueCommands(program: Command): void {
   addCommonClientOptions(
     issue
       .command("release")
-      .description("Release issue back to todo and clear assignee")
+      .description("Release issue execution locks; clear the assignee only for unfinished issues")
       .argument("<issueId>", "Issue ID")
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {

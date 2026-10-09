@@ -1,0 +1,66 @@
+diff --git a/dist/acp-agent.js b/dist/acp-agent.js
+index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef14627011e02b30 100644
+--- a/dist/acp-agent.js
++++ b/dist/acp-agent.js
+@@ -2922,9 +2922,19 @@ export class ClaudeAcpAgent {
+                                             amount: message.total_cost_usd,
+                                             currency: "USD",
+                                         },
+-                                        ...(message.origin && {
+-                                            _meta: { "_claude/origin": message.origin },
+-                                        }),
++                                        _meta: {
++                                            ...(message.origin && { "_claude/origin": message.origin }),
++                                            // ACP's core Usage shape exposes context occupancy and
++                                            // cost, but not the billable input/output split. Keep the
++                                            // SDK's bounded aggregate in extension metadata so ACPX can
++                                            // normalize it without persisting a raw provider message.
++                                            usage: {
++                                                input_tokens: message.usage.input_tokens,
++                                                output_tokens: message.usage.output_tokens,
++                                                cache_read_input_tokens: message.usage.cache_read_input_tokens,
++                                                cache_creation_input_tokens: message.usage.cache_creation_input_tokens,
++                                            },
++                                        },
+                                     },
+                                 });
+                             }
+@@ -5311,6 +5321,10 @@ export class ClaudeAcpAgent {
+             settingSources: ["user", "project", "local"],
+             ...(thinking !== undefined && { thinking }),
+             ...userProvidedOptions,
++            // Paperclip Runner owns the complete session context. Its isolated
++            // user root contains only assigned skills; project/local settings
++            // would reintroduce host prompts, plugins, skills, and MCP servers.
++            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && { settingSources: ["user"] }),
+             ...(settings && { settings }),
+             env,
+             // Override certain fields that must be controlled by ACP
+@@ -5318,7 +5332,9 @@ export class ClaudeAcpAgent {
+             includePartialMessages: true,
+             forwardSubagentText,
+             mcpServers: {
+-                ...(userProvidedOptions?.mcpServers || {}),
++                ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1"
++                    ? {}
++                    : (userProvidedOptions?.mcpServers || {})),
+                 ...mcpServers,
+                 ...(fileChangeAuditSupport
+                     ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
+@@ -5329,6 +5345,16 @@ export class ClaudeAcpAgent {
+             allowDangerouslySkipPermissions: ALLOW_BYPASS,
+             permissionMode: initialPermissionMode,
+             canUseTool: this.canUseTool(sessionId),
++            // The runner pins this actual MCP endpoint before provider launch.
++            // Exempt only task delivery/control tools at the SDK dispatch boundary,
++            // not arbitrary provider permission metadata or MCP name prefixes.
++            ...(process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && {
++                allowedTools: mcpServers.paperclip?.type === "http"
++                    && mcpServers.paperclip.url === process.env.PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL
++                    ? ["paperclip_finish", "paperclip_block", "read_current_wake_comments", "request_human_input"]
++                        .map((tool) => `mcp__paperclip__${tool}`)
++                    : [],
++            }),
+             // Forward MCP elicitation requests onto ACP elicitation. Only attached
+             // when the client advertised support, so non-supporting clients keep the
+             // SDK's default (auto-decline) behavior. (AskUserQuestion is handled in

@@ -21,7 +21,7 @@ function crc32(bytes: Uint8Array) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-export function createStoredZipArchive(files: Record<string, string>, rootPath: string) {
+export function createStoredZipArchive(files: Record<string, string | Uint8Array>, rootPath: string) {
   const encoder = new TextEncoder();
   const localChunks: Uint8Array[] = [];
   const centralChunks: Uint8Array[] = [];
@@ -30,7 +30,7 @@ export function createStoredZipArchive(files: Record<string, string>, rootPath: 
 
   for (const [relativePath, content] of Object.entries(files).sort(([left], [right]) => left.localeCompare(right))) {
     const fileName = encoder.encode(`${rootPath}/${relativePath}`);
-    const body = encoder.encode(content);
+    const body = typeof content === "string" ? encoder.encode(content) : content;
     const checksum = crc32(body);
 
     const localHeader = new Uint8Array(30 + fileName.length);

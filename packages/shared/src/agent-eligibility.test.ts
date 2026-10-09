@@ -156,3 +156,69 @@ describe("agent work eligibility", () => {
     expect(eligibility.invokabilityReason).toBe("invalid_org_chain");
   });
 });
+
+describe("paused escalation path warning", () => {
+  it("warns when an active agent's manager is paused", () => {
+    const manager = agent({ id: "manager-1", name: "CTO", status: "paused", reportsTo: null });
+    const coder = agent({ id: "agent-1", name: "Coder", status: "active", reportsTo: "manager-1" });
+    const result = getAgentWorkEligibility({ agent: coder, agents: [coder, manager] });
+
+    expect(result.invokable).toBe(true);
+    expect(result.orgChainHealth.status).toBe("healthy");
+    expect(result.orgChainHealth.pausedAncestors).toEqual([
+      { id: "manager-1", name: "CTO", status: "paused" },
+    ]);
+    expect(result.orgChainHealth.escalationWarning).toContain("route to paused agent CTO");
+    expect(result.orgChainHealth.escalationWarning).toContain("never runs");
+  });
+
+  it("warns about a paused grandparent through a healthy manager", () => {
+    const executive = agent({ id: "exec-1", name: "CEO", status: "paused", reportsTo: null });
+    const manager = agent({ id: "manager-1", name: "CTO", status: "active", reportsTo: "exec-1" });
+    const coder = agent({ id: "agent-1", name: "Coder", status: "active", reportsTo: "manager-1" });
+    const result = getAgentWorkEligibility({ agent: coder, agents: [coder, manager, executive] });
+
+    expect(result.orgChainHealth.pausedAncestors).toEqual([
+      { id: "exec-1", name: "CEO", status: "paused" },
+    ]);
+    expect(result.orgChainHealth.escalationWarning).toContain("CEO");
+  });
+
+  it("does not warn when the agent itself is paused", () => {
+    const manager = agent({ id: "manager-1", name: "CTO", status: "paused", reportsTo: null });
+    const coder = agent({ id: "agent-1", name: "Coder", status: "paused", reportsTo: "manager-1" });
+    const result = getAgentWorkEligibility({ agent: coder, agents: [coder, manager] });
+
+    expect(result.orgChainHealth.escalationWarning).toBeNull();
+    expect(result.orgChainHealth.pausedAncestors).toEqual([
+      { id: "manager-1", name: "CTO", status: "paused" },
+    ]);
+  });
+
+  it("does not warn for agents with unknown statuses", () => {
+    const manager = agent({ id: "manager-1", name: "CTO", status: "paused", reportsTo: null });
+    const coder = agent({ id: "agent-1", name: "Coder", status: "mystery", reportsTo: "manager-1" });
+    const result = getAgentWorkEligibility({ agent: coder, agents: [coder, manager] });
+
+    expect(result.invokable).toBe(false);
+    expect(result.orgChainHealth.escalationWarning).toBeNull();
+  });
+
+  it("does not warn on a fully active chain", () => {
+    const manager = agent({ id: "manager-1", name: "CTO", status: "active", reportsTo: null });
+    const coder = agent({ id: "agent-1", name: "Coder", status: "active", reportsTo: "manager-1" });
+    const result = getAgentWorkEligibility({ agent: coder, agents: [coder, manager] });
+
+    expect(result.orgChainHealth.escalationWarning).toBeNull();
+    expect(result.orgChainHealth.pausedAncestors).toEqual([]);
+  });
+
+  it("keeps invalid-chain classification for terminated ancestors, without duplicating them as paused", () => {
+    const manager = agent({ id: "manager-1", name: "CTO", status: "terminated", reportsTo: null });
+    const coder = agent({ id: "agent-1", name: "Coder", status: "active", reportsTo: "manager-1" });
+    const result = getAgentWorkEligibility({ agent: coder, agents: [coder, manager] });
+
+    expect(result.orgChainHealth.status).toBe("invalid_org_chain");
+    expect(result.orgChainHealth.pausedAncestors).toEqual([]);
+  });
+});

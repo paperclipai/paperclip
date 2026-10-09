@@ -110,7 +110,7 @@ function hasWelcome(container: HTMLElement) {
 }
 
 function hasChips(container: HTMLElement) {
-  return (container.textContent ?? "").includes("Draft a Company Brief");
+  return (container.textContent ?? "").includes("Draft an Organization Brief");
 }
 
 describe("BoardChat staged typing intro", () => {

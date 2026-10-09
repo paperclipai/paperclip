@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "slug": "box",
+  "name": "Box",
+  "description": "Connect Box's provider-hosted MCP server.",
+  "categories": [
+    "content"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/box.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.box.com/*"
+  ],
+  "docsUrl": "https://support.box.com/hc/en-us/articles/43847256139923-Managing-Box-MCP-Servers",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-own-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Register an OAuth app with Box, then enter its client ID and secret.",
+      "defaults": {
+        "serverUrl": "https://mcp.box.com"
+      },
+      "guidanceMd": "Connect Box in the browser. A Box administrator creates the OAuth integration and enables AI access.",
+      "riskTier": "S3",
+      "label": "Use your own OAuth app",
+      "consoleLinks": {
+        "register": "https://support.box.com/hc/en-us/articles/43847256139923-Managing-Box-MCP-Servers",
+        "docs": "https://support.box.com/hc/en-us/articles/43847256139923-Managing-Box-MCP-Servers"
+      },
+      "warnings": [
+        "A Box administrator creates the OAuth integration and enables AI access."
+      ]
+    }
+  ]
+}

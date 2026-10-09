@@ -1,5 +1,3 @@
-import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
-
 export const type = "cursor";
 export const label = "Cursor";
 
@@ -16,6 +14,18 @@ export const DEFAULT_CURSOR_LOCAL_MODEL = "auto";
 
 const CURSOR_FALLBACK_MODEL_IDS = [
   "auto",
+  "composer-2.5",
+  "claude-opus-5-5",
+  "claude-fable-5-1",
+  "claude-sonnet-5",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gemini-3.8-flash",
+  "muse-spark-1.3",
+  "grok-4.7",
+  "grok-4.6",
+  "grok-4.5",
   "composer-1.5",
   "composer-1",
   "gpt-5.3-codex-low",
@@ -57,18 +67,6 @@ const CURSOR_FALLBACK_MODEL_IDS = [
 ];
 
 export const models = CURSOR_FALLBACK_MODEL_IDS.map((id) => ({ id, label: id }));
-
-export const modelProfiles: AdapterModelProfileDefinition[] = [
-  {
-    key: "cheap",
-    label: "Cheap",
-    description: "Use Cursor's known Codex mini model as the budget lane instead of assuming auto is cheap.",
-    adapterConfig: {
-      model: "gpt-5.1-codex-mini",
-    },
-    source: "adapter_default",
-  },
-];
 
 export const agentConfigurationDoc = `# cursor agent configuration
 

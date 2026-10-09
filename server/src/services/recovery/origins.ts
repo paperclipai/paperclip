@@ -1,5 +1,6 @@
 export const RECOVERY_ORIGIN_KINDS = {
   issueGraphLivenessEscalation: "harness_liveness_escalation",
+  // Historical tasks retain their origin and recovery-recursion exclusion.
   issueProductivityReview: "issue_productivity_review",
   strandedIssueRecovery: "stranded_issue_recovery",
   staleActiveRunEvaluation: "stale_active_run_evaluation",

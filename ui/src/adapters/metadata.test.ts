@@ -37,9 +37,9 @@ describe("adapter metadata", () => {
     expect(isEnabledAdapterType("http")).toBe(false);
   });
 
-  it("keeps ACPX selectable from explicit configuration but out of visual pickers", () => {
-    expect(isEnabledAdapterType("acpx_local")).toBe(true);
-    expect(isValidAdapterType("acpx_local")).toBe(true);
+  it("marks the retired ACPX adapter as unavailable for new selections", () => {
+    expect(isEnabledAdapterType("acpx_local")).toBe(false);
+    expect(isValidAdapterType("acpx_local")).toBe(false);
     expect(isVisualAdapterChoice("acpx_local")).toBe(false);
 
     expect(
@@ -53,9 +53,9 @@ describe("adapter metadata", () => {
       {
         value: "acpx_local",
         label: "acpx_local",
-        comingSoon: false,
+        comingSoon: true,
         hidden: false,
-        experimental: true,
+        experimental: false,
       },
     ]);
   });

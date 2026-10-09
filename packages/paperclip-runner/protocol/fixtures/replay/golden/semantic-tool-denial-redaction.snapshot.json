@@ -1,0 +1,137 @@
+{
+  "schema": "paperclip.prp.session-snapshot.v1",
+  "fixtureName": "Semantic tool denial and redaction",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_semantic_denied",
+    "issueId": "issue_semantic_denied",
+    "runId": "run_semantic_denied",
+    "environmentLeaseId": "lease_semantic_denied",
+    "runnerInstanceId": "runner_semantic_denied",
+    "normalizedSessionId": "session_semantic_denied",
+    "driverSessionId": "driver_semantic_denied"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "new_per_run",
+    "driver": {
+      "kind": "provider-neutral",
+      "version": "1.0.0"
+    },
+    "steer": false,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": true,
+    "structuredResult": true,
+    "typedEvents": true,
+    "semanticTools": {
+      "schema": "paperclip.prp.semantic_tools.v1",
+      "schemaVersion": 1,
+      "operations": [
+        {
+          "operationId": "decide_approval",
+          "version": 1,
+          "availability": "denied",
+          "redactionDisposition": "digest_only",
+          "requiredClaims": [
+            "governance:approvals:decide"
+          ],
+          "reasonCode": "required_claim_missing"
+        }
+      ]
+    },
+    "unsupported": []
+  },
+  "runPhase": "terminal",
+  "sessionState": "not_started",
+  "turnState": "not_started",
+  "activeTurnId": null,
+  "items": [],
+  "requests": [],
+  "proposedResult": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "needs_review",
+    "summary": "The governed action was denied without fallback.",
+    "completionClaim": {
+      "contractRevision": "semantic-receipts-v1",
+      "objectiveSatisfied": false,
+      "criteria": [],
+      "remainingWork": [
+        {
+          "description": "An authorized approver must decide.",
+          "blocksCompletion": true
+        }
+      ]
+    },
+    "evidence": [
+      {
+        "receiptId": "receipt_semantic_denied"
+      }
+    ],
+    "verification": [
+      {
+        "commandOrCheck": "no fallback semantic call",
+        "status": "passed"
+      }
+    ],
+    "attentionRequests": [],
+    "artifacts": []
+  },
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "turnTerminalState": "completed",
+    "runTerminalState": "succeeded",
+    "reportedWorkDisposition": "needs_review",
+    "workAssessmentId": "assessment_semantic_denied",
+    "statusDecisionId": "decision_semantic_denied"
+  },
+  "timeline": [
+    {
+      "position": 1,
+      "sourceEventId": "semantic_denied_01",
+      "sourceSeq": 1,
+      "eventType": "mcp_app.tool_input",
+      "emittedAt": "2026-08-11T10:10:00.000Z",
+      "itemId": "item_semantic_denied",
+      "summary": "mcp_app tool_input"
+    },
+    {
+      "position": 2,
+      "sourceEventId": "semantic_denied_02",
+      "sourceSeq": 2,
+      "eventType": "mcp_app.tool_result",
+      "emittedAt": "2026-08-11T10:10:00.010Z",
+      "itemId": "item_semantic_denied",
+      "summary": "mcp_app tool_result"
+    },
+    {
+      "position": 3,
+      "sourceEventId": "semantic_denied_03",
+      "sourceSeq": 3,
+      "eventType": "run.result.proposed",
+      "emittedAt": "2026-08-11T10:10:00.020Z",
+      "summary": "The governed action was denied without fallback."
+    },
+    {
+      "position": 4,
+      "sourceEventId": "semantic_denied_04",
+      "sourceSeq": 4,
+      "eventType": "run.terminal",
+      "emittedAt": "2026-08-11T10:10:00.030Z",
+      "summary": "Run succeeded"
+    }
+  ],
+  "sourceCursors": {
+    "runner:runner_semantic_denied": 4
+  },
+  "processedEventIds": [
+    "semantic_denied_01",
+    "semantic_denied_02",
+    "semantic_denied_03",
+    "semantic_denied_04"
+  ],
+  "duplicateEventIds": [],
+  "outOfOrderEventIds": [],
+  "gaps": [],
+  "integrity": "complete"
+}

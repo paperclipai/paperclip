@@ -1,0 +1,83 @@
+{
+  "schema": "paperclip.fake_harness.script.v1",
+  "name": "permission-input",
+  "steps": [
+    {
+      "kind": "request",
+      "request": {
+        "schema": "paperclip.runtime_request.v1",
+        "requestKind": "runtime",
+        "requestId": "request_local_runner_permission",
+        "type": "permission",
+        "status": "pending",
+        "prompt": "Allow the fake driver to write its local fixture?",
+        "choices": [
+          { "key": "allow", "label": "Allow" },
+          { "key": "deny", "label": "Deny" }
+        ]
+      }
+    },
+    { "kind": "await_resolution", "request_id": "request_local_runner_permission" },
+    {
+      "kind": "request",
+      "request": {
+        "schema": "paperclip.runtime_request.v1",
+        "requestKind": "runtime",
+        "requestId": "request_local_runner_input",
+        "type": "input",
+        "status": "pending",
+        "prompt": "Name the local trace.",
+        "choices": []
+      }
+    },
+    { "kind": "await_resolution", "request_id": "request_local_runner_input" },
+    {
+      "kind": "event",
+      "event_type": "item.started",
+      "item_id": "item_local_runner_permission",
+      "payload": { "kind": "assistant_message", "text": "" }
+    },
+    { "kind": "delay", "milliseconds": 10 },
+    {
+      "kind": "event",
+      "event_type": "item.completed",
+      "item_id": "item_local_runner_permission",
+      "payload": {
+        "kind": "assistant_message",
+        "text": "Permission and input were resolved through the local protocol."
+      }
+    },
+    {
+      "kind": "result",
+      "payload": {
+        "schema": "paperclip.run_result.v1",
+        "reportedWorkDisposition": "done",
+        "summary": "The permission and input flow completed.",
+        "completionClaim": {
+          "contractRevision": "local_runner-contract-v1",
+          "objectiveSatisfied": true,
+          "criteria": [],
+          "remainingWork": []
+        },
+        "evidence": [],
+        "verification": [
+          { "commandOrCheck": "permission and input round trip", "status": "passed" }
+        ],
+        "attentionRequests": [],
+        "artifacts": []
+      }
+    },
+    { "kind": "event", "event_type": "turn.completed", "payload": {} },
+    { "kind": "event", "event_type": "session.closed", "payload": {} },
+    {
+      "kind": "terminal",
+      "payload": {
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": "completed",
+        "runTerminalState": "succeeded",
+        "reportedWorkDisposition": "done"
+      }
+    },
+    { "kind": "exit", "code": 0 }
+  ]
+}

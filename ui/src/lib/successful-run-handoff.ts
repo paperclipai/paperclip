@@ -6,7 +6,7 @@ export const SUCCESSFUL_RUN_HANDOFF_ESCALATED_ACTION = "issue.successful_run_han
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
-  "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.";
+  "Paperclip could not resolve this issue's missing disposition automatically. The source assignment is unchanged and a board decision is required.";
 
 export function isSuccessfulRunHandoffActivity(action: string) {
   return action === SUCCESSFUL_RUN_HANDOFF_REQUIRED_ACTION
@@ -14,8 +14,17 @@ export function isSuccessfulRunHandoffActivity(action: string) {
     || action === SUCCESSFUL_RUN_HANDOFF_ESCALATED_ACTION;
 }
 
-export function isSuccessfulRunHandoffRequired(issue: Pick<Issue, "successfulRunHandoff">) {
-  return issue.successfulRunHandoff?.required === true;
+export function isSuccessfulRunHandoffRequired(
+  issue: Pick<Issue, "successfulRunHandoff"> & Partial<Pick<Issue, "scheduledRetry">>,
+) {
+  const handoff = issue.successfulRunHandoff;
+  if (handoff?.required !== true) return false;
+  // A live continuation (running/queued run or queued wake) means an agent is
+  // already on the issue — only complain when nothing is moving. The one
+  // carve-out is a not-yet-promoted scheduled retry: the notice stays visible
+  // there so the "Retry now" control remains reachable.
+  if (!handoff.hasLiveContinuation) return true;
+  return issue.scheduledRetry?.status === "scheduled_retry";
 }
 
 function readString(value: unknown) {
@@ -34,6 +43,7 @@ export function successfulRunHandoffFromActivity(event: ActivityEvent): Successf
   return {
     state,
     required: state === "required",
+    hasLiveContinuation: false,
     sourceRunId:
       readString(details.sourceRunId)
       ?? readString(details.source_run_id)

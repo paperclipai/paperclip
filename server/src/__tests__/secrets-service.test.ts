@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
+import { mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import type { MockInstance } from "vitest";
+import { and, eq, sql } from "drizzle-orm";
+import { resolveCodexAuthCacheDir, withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import {
+  activityLog,
   agents,
   companies,
   companyMemberships,
@@ -13,8 +17,12 @@ import {
   companySecretVersions,
   companySecrets,
   createDb,
+  heartbeatRuns,
   secretAccessEvents,
+  userSecretDeclarations,
+  userSecretDefinitions,
 } from "@paperclipai/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
@@ -28,6 +36,112 @@ if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping secrets service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
+}
+
+// A deferred promise: a concurrency test resolves `resolve` from inside a
+// mocked call, then a waiter `await`s `promise`. This proves the waiter's
+// side reached a state, instead of guessing how long that state takes to
+// reach.
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+// Waits for the given entry signal, but not blindly: if the operation
+// itself settles first, the entry signal can never resolve, because the
+// call never reached its mocked provider method. A plain `await` on the
+// signal alone would then hang until the test's own timeout and hide the
+// real error. Race the signal against the operation instead, so a create,
+// rotate, or cleanup failure at setup surfaces immediately, at its own
+// throw site.
+async function awaitEntryOrOperationFailure(
+  entered: Promise<void>,
+  operation: Promise<unknown>,
+  label: string,
+): Promise<void> {
+  const failIfOperationSettlesFirst = operation.then(() => {
+    throw new Error(`${label}: the operation settled before it entered its mocked provider method`);
+  });
+  // Attach a no-op handler so a later rejection here, once `entered` has
+  // already won the race below, never surfaces as an unhandled rejection.
+  failIfOperationSettlesFirst.catch(() => {});
+  await Promise.race([entered, failIfOperationSettlesFirst]);
+}
+
+// A wait built from a measured "uncontended entry" duration needs margin
+// over that duration to absorb normal timing jitter, while it must still
+// finish long before an unexcluded second operation could reach its own
+// provider write. This multiple gives that margin.
+const ENTRY_DETECTION_SAFETY_MULTIPLIER = 10;
+
+// The number of uncontended baseline calls to measure. One sample can be
+// unusually fast by chance, which would understate real timing variance and
+// let a broken lock slip past a too-short wait. The slowest of several
+// samples gives a sturdier upper bound than any single sample alone.
+const ENTRY_DETECTION_BASELINE_SAMPLE_COUNT = 3;
+
+// An absolute ceiling on the detection wait, independent of the measured
+// baseline. A noisy baseline sample must never let this wait grow large
+// enough to consume the test's own timeout.
+const ENTRY_DETECTION_MAX_WAIT_MS = 3000;
+
+// Measures how long an uncontended call takes to reach a mocked provider
+// method, by recording the time the mock is entered relative to the time
+// the caller started. Repeats the measurement and keeps the slowest result,
+// so the returned duration is a real, per-run upper bound, not a single
+// possibly-lucky sample, and stays valid at any machine speed.
+//
+// Each baseline call must actually enter the mocked provider method. When
+// one does not, that sample is meaningless, and a wait built from it would
+// silently collapse toward its own one-millisecond floor instead of a real
+// window. Throw here instead, so a broken baseline call fails loudly.
+async function measureUncontendedEntryDurationMs<TArgs extends unknown[], TReturn>(
+  spy: MockInstance<(...args: TArgs) => Promise<TReturn>>,
+  original: (...args: TArgs) => Promise<TReturn>,
+  triggerUncontendedCall: () => Promise<unknown>,
+): Promise<number> {
+  let worstDurationMs = 0;
+  for (let sample = 0; sample < ENTRY_DETECTION_BASELINE_SAMPLE_COUNT; sample += 1) {
+    const startedAt = performance.now();
+    let entered = false;
+    let enteredAt = startedAt;
+    spy.mockImplementationOnce(async (...args: TArgs) => {
+      entered = true;
+      enteredAt = performance.now();
+      return original(...args);
+    });
+    await triggerUncontendedCall();
+    if (!entered) {
+      throw new Error(
+        "measureUncontendedEntryDurationMs: a baseline call never entered the mocked provider method, so it produced no valid measurement",
+      );
+    }
+    worstDurationMs = Math.max(worstDurationMs, enteredAt - startedAt);
+  }
+  return worstDurationMs;
+}
+
+// Waits long enough that a second operation, still queued behind a
+// correctly excluding lock, cannot yet have reached its provider write —
+// unless `violationSignal` resolves first. An unexcluded second operation
+// resolves `violationSignal` itself, from inside its own mocked provider
+// method, the instant it gets there, however long that takes: this ties the
+// wait to the second operation's own confirmed progress, not to a blind
+// sleep-then-check against a single guessed duration. The measured window
+// below is only a ceiling on how long a correctly excluding lock is given
+// to prove the second operation stayed queued.
+function waitEntryDetectionWindow(uncontendedEntryDurationMs: number, violationSignal: Promise<void>): Promise<void> {
+  const waitMs = Math.min(
+    Math.max(uncontendedEntryDurationMs, 1) * ENTRY_DETECTION_SAFETY_MULTIPLIER,
+    ENTRY_DETECTION_MAX_WAIT_MS,
+  );
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+  return Promise.race([timeout, violationSignal]);
 }
 
 describeEmbeddedPostgres("secretService", () => {
@@ -46,12 +160,16 @@ describeEmbeddedPostgres("secretService", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    await db.delete(activityLog);
     await db.delete(secretAccessEvents);
+    await db.delete(userSecretDeclarations);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(userSecretDefinitions);
     await db.delete(companySecretProviderConfigs);
     await db.delete(companyMemberships);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -79,6 +197,16 @@ describeEmbeddedPostgres("secretService", () => {
     return companyId;
   }
 
+  // Creates a real directory under this company's Codex account-home cache
+  // root, so a test can prove the write-time directory-validity check reads
+  // an actual filesystem entry, the same way the production cleanup and the
+  // production secret write do.
+  async function makeAccountHomeDir(companyId: string, accountHandle: string): Promise<string> {
+    const accountHomeDir = path.join(resolveCodexAuthCacheDir(undefined, companyId), accountHandle);
+    await mkdir(accountHomeDir, { recursive: true });
+    return accountHomeDir;
+  }
+
   async function seedCompanyMember(
     companyId: string,
     userId: string,
@@ -93,6 +221,33 @@ describeEmbeddedPostgres("secretService", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+  }
+
+  async function seedAgentRun(companyId: string, permissions: Record<string, unknown> = {}) {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Secret reader",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions,
+      status: "idle",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const heartbeatRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: heartbeatRunId,
+      companyId,
+      agentId,
+      status: "running",
+      startedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return { agentId, heartbeatRunId };
   }
 
   it("rejects cross-company secret references during env normalization", async () => {
@@ -110,6 +265,185 @@ describeEmbeddedPostgres("secretService", () => {
         API_KEY: { type: "secret_ref", secretId: foreignSecret.id, version: "latest" },
       }),
     ).rejects.toThrow(/same company/i);
+  });
+
+  it("replaceSecretRefsForInstanceTarget moves the binding to the referenced secret's company", async () => {
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: `provider-key-a-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: `provider-key-b-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "b",
+    });
+    const envSecretA = await svc.create(companyA, {
+      name: `env-var-a-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "env",
+    });
+    const environmentId = randomUUID();
+    await svc.createBinding({
+      companyId: companyA,
+      secretId: secretA.id,
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+    });
+    // A company-scoped env-var binding on the same environment target must
+    // survive config-ref replacement untouched.
+    await db.insert(companySecretBindings).values({
+      companyId: companyA,
+      secretId: envSecretA.id,
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "env.EXTRA",
+      versionSelector: "latest",
+      required: true,
+      projectionClass: "unclassified",
+    });
+
+    await svc.replaceSecretRefsForInstanceTarget(
+      { targetType: "environment", targetId: environmentId },
+      [{ secretId: secretB.id, configPath: "apiKey" }],
+    );
+
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.targetType, "environment"),
+          eq(companySecretBindings.targetId, environmentId),
+        ),
+      );
+    const configRows = rows.filter((row) => row.configPath === "apiKey");
+    expect(configRows).toHaveLength(1);
+    expect(configRows[0]?.companyId).toBe(companyB);
+    expect(configRows[0]?.secretId).toBe(secretB.id);
+    expect(rows.filter((row) => row.configPath === "env.EXTRA")).toHaveLength(1);
+  });
+
+  it("replaceSecretRefsForInstanceTarget writes each binding under its own secret's company", async () => {
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: `api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: `ssh-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "b",
+    });
+    const environmentId = randomUUID();
+
+    const refs = await svc.replaceSecretRefsForInstanceTarget(
+      { targetType: "environment", targetId: environmentId },
+      [
+        { secretId: secretA.id, configPath: "apiKey" },
+        { secretId: secretB.id, configPath: "privateKeySecretRef" },
+      ],
+    );
+
+    expect(refs.map((ref) => ref.companyId).sort()).toEqual([companyA, companyB].sort());
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.targetType, "environment"),
+          eq(companySecretBindings.targetId, environmentId),
+        ),
+      );
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.configPath === "apiKey")?.companyId).toBe(companyA);
+    expect(rows.find((row) => row.configPath === "privateKeySecretRef")?.companyId).toBe(companyB);
+  });
+
+  it("replaceSecretRefsForInstanceTarget rejects unknown secrets without touching existing bindings", async () => {
+    const companyA = await seedCompany("A");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: `provider-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const environmentId = randomUUID();
+    await svc.createBinding({
+      companyId: companyA,
+      secretId: secretA.id,
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+    });
+
+    await expect(
+      svc.replaceSecretRefsForInstanceTarget(
+        { targetType: "environment", targetId: environmentId },
+        [{ secretId: randomUUID(), configPath: "apiKey" }],
+      ),
+    ).rejects.toThrow(/was not found/i);
+
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.targetType, "environment"),
+          eq(companySecretBindings.targetId, environmentId),
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.secretId).toBe(secretA.id);
+    expect(rows[0]?.companyId).toBe(companyA);
+  });
+
+  it("describeSecretRefs names secrets across companies and omits unknown ids", async () => {
+    const companyA = await seedCompany("Alpha");
+    const companyB = await seedCompany("Beta");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: "PROVIDER_KEY_A",
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: "PROVIDER_KEY_B",
+      provider: "local_encrypted",
+      value: "b",
+    });
+
+    const described = await svc.describeSecretRefs([
+      { secretId: secretA.id, configPath: "apiKey" },
+      { secretId: secretB.id, configPath: "privateKeySecretRef" },
+      { secretId: randomUUID(), configPath: "token" },
+    ]);
+
+    expect(described).toEqual([
+      {
+        configPath: "apiKey",
+        secretId: secretA.id,
+        name: "PROVIDER_KEY_A",
+        status: "active",
+        companyId: companyA,
+        companyName: "Alpha",
+      },
+      {
+        configPath: "privateKeySecretRef",
+        secretId: secretB.id,
+        name: "PROVIDER_KEY_B",
+        status: "active",
+        companyId: companyB,
+        companyName: "Beta",
+      },
+    ]);
   });
 
   it("prevents duplicate bindings for a target config path", async () => {
@@ -143,6 +477,920 @@ describeEmbeddedPostgres("secretService", () => {
         configPath: "env.API_KEY",
       }),
     ).rejects.toThrow(/already exists/i);
+  });
+
+  it("serializes two local_encrypted secret creates in the same company so their writes never overlap", async () => {
+    // An account-home cleanup's claimant scan and a `local_encrypted` secret
+    // write share one lock (`withAccountHomeSecretMutationLock`), so a write
+    // can never commit inside the exact window the scan already used to
+    // decide no secret claims a directory it is about to delete. This proves
+    // the lock itself enforces that: two `local_encrypted` creates in the
+    // SAME company never run their provider write at the same time,
+    // whichever caller goes first.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
+    const createSecretSpy = vi.spyOn(localEncryptedProvider, "createSecret");
+
+    // An uncontended create still crosses several asynchronous steps
+    // (directory checks, lock-root setup, database round trips) before it
+    // reaches its provider write. Measure that duration here, so the wait
+    // below can use a real measured value instead of a guessed sleep.
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createSecretSpy,
+      originalCreateSecret,
+      () =>
+        svc.create(companyId, {
+          name: `baseline-${randomUUID()}`,
+          provider: "local_encrypted",
+          value: "/company/codex-home/acct-baseline",
+        }),
+    );
+
+    const events: string[] = [];
+    const firstEntered = deferred<void>();
+    const secondEntered = deferred<void>();
+    let releaseFirstWrite!: () => void;
+    const firstWriteGate = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    createSecretSpy
+      .mockImplementationOnce(async (input) => {
+        events.push("first-provider-enter");
+        firstEntered.resolve();
+        await firstWriteGate;
+        events.push("first-provider-exit");
+        return originalCreateSecret(input);
+      })
+      .mockImplementationOnce(async (input) => {
+        events.push("second-provider-enter");
+        secondEntered.resolve();
+        return originalCreateSecret(input);
+      });
+
+    const firstCreate = svc.create(companyId, {
+      name: `account-home-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/company/codex-home/acct-a",
+    });
+    let secondCreate: ReturnType<typeof svc.create> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the first call now holds the
+      // lock and sits inside its provider write. The lock stays held until
+      // we release it below, so the second call, once we start it, must
+      // contend for the same lock while the first call still holds it. Race
+      // against the call's own promise, so a setup failure that happens
+      // before the call ever reaches the lock surfaces immediately, at its
+      // own throw site, instead of hanging this wait until the test
+      // timeout.
+      await awaitEntryOrOperationFailure(firstEntered.promise, firstCreate, "firstCreate");
+      secondCreate = svc.create(companyId, {
+        name: `hand-named-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "/company/codex-home/acct-a",
+      });
+      // Wait a safety multiple of the measured uncontended entry duration,
+      // or until the second call itself confirms it reached its provider
+      // write, whichever comes first. A correctly excluding lock keeps the
+      // second call queued for the whole wait, so this cannot produce a
+      // false failure. A broken lock resolves `secondEntered` on its own,
+      // from inside the second call's mocked provider method, the instant
+      // it gets there.
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs, secondEntered.promise);
+      // The lock is still held (we have not released it yet), so the second
+      // call must still be queued behind it and must not have entered its
+      // provider write.
+      expect(events).toEqual(["first-provider-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseFirstWrite();
+      outcomes = await Promise.allSettled([firstCreate, secondCreate]);
+    }
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") throw outcome.reason;
+    }
+    // The lock enforces this order: the second call cannot start its
+    // provider write until the first call's whole locked operation
+    // completes. This final order is proof of mutual exclusion, not a
+    // timing guess.
+    expect(events).toEqual(["first-provider-enter", "first-provider-exit", "second-provider-enter"]);
+  });
+
+  it("serializes a local_encrypted secret rotate against a concurrent create of a different secret in the same company", async () => {
+    // Same lock, the other write path: a rotate that writes a new
+    // `local_encrypted` value must serialize against a concurrent create the
+    // same way a create serializes against another create.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const existing = await svc.create(companyId, {
+      name: `existing-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/company/codex-home/acct-b",
+    });
+    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
+    const createSecretSpy = vi.spyOn(localEncryptedProvider, "createSecret");
+
+    // The contended call below is a create, so measure how long an
+    // uncontended create takes to reach its own provider write. The wait
+    // later in this test uses that measured duration, not a guessed sleep.
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createSecretSpy,
+      originalCreateSecret,
+      () =>
+        svc.create(companyId, {
+          name: `baseline-${randomUUID()}`,
+          provider: "local_encrypted",
+          value: "/company/codex-home/acct-baseline",
+        }),
+    );
+
+    const events: string[] = [];
+    const rotateEntered = deferred<void>();
+    const createEntered = deferred<void>();
+    let releaseRotateWrite!: () => void;
+    const rotateWriteGate = new Promise<void>((resolve) => {
+      releaseRotateWrite = resolve;
+    });
+    const originalCreateVersion = localEncryptedProvider.createVersion.bind(localEncryptedProvider);
+    vi.spyOn(localEncryptedProvider, "createVersion").mockImplementationOnce(async (input) => {
+      events.push("rotate-provider-enter");
+      rotateEntered.resolve();
+      await rotateWriteGate;
+      events.push("rotate-provider-exit");
+      return originalCreateVersion(input);
+    });
+    createSecretSpy.mockImplementationOnce(async (input) => {
+      events.push("create-provider-enter");
+      createEntered.resolve();
+      return originalCreateSecret(input);
+    });
+
+    const rotateCall = svc.rotate(existing.id, { value: "/company/codex-home/acct-b-rotated" });
+    let createCall: ReturnType<typeof svc.create> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the rotate now holds the lock
+      // and sits inside its provider write. The lock stays held until we
+      // release it below, so the create call, once we start it, must
+      // contend for the same lock while the rotate still holds it. Race
+      // against the call's own promise, so a setup failure that happens
+      // before the call ever reaches the lock surfaces immediately, at its
+      // own throw site, instead of hanging this wait until the test
+      // timeout.
+      await awaitEntryOrOperationFailure(rotateEntered.promise, rotateCall, "rotateCall");
+      createCall = svc.create(companyId, {
+        name: `hand-named-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: "/company/codex-home/acct-b",
+      });
+      // Wait a safety multiple of the measured uncontended entry duration,
+      // or until the create call itself confirms it reached its provider
+      // write, whichever comes first. A correctly excluding lock keeps the
+      // create call queued for the whole wait, so this cannot produce a
+      // false failure. A broken lock resolves `createEntered` on its own,
+      // from inside the create call's mocked provider method, the instant
+      // it gets there.
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs, createEntered.promise);
+      // The lock is still held (we have not released it yet), so the create
+      // call must still be queued behind it and must not have entered its
+      // provider write.
+      expect(events).toEqual(["rotate-provider-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseRotateWrite();
+      outcomes = await Promise.allSettled([rotateCall, createCall]);
+    }
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") throw outcome.reason;
+    }
+    // The lock enforces this order: the create call cannot start its
+    // provider write until the rotate's whole locked operation completes.
+    // This final order is proof of mutual exclusion, not a timing guess.
+    expect(events).toEqual(["rotate-provider-enter", "rotate-provider-exit", "create-provider-enter"]);
+  });
+
+  it("locks the parent secret row before its version rows during rotate, so a concurrent credential write-back cannot deadlock with it", async () => {
+    // Inserting the rotate's new version row needs a read lock on the
+    // parent secret row to satisfy the version table's foreign key, so a
+    // holder that locks the parent row first would block that insert and
+    // never reach the statements this test distinguishes. Lock the secret's
+    // existing version row instead: that does not touch the parent row, so
+    // the rotate call's insert proceeds and the call reaches its final
+    // transaction, where it then queues behind this same held row for its
+    // "mark the old version previous" update.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `lock-order-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "original-value",
+    });
+
+    const holderPidReady = deferred<number>();
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    const holder = db.transaction(async (tx) => {
+      await tx
+        .select({ id: companySecretVersions.id })
+        .from(companySecretVersions)
+        .where(and(eq(companySecretVersions.secretId, secret.id), eq(companySecretVersions.version, 1)))
+        .for("update");
+      const [backend] = (await tx.execute(sql`select pg_backend_pid() as pid`)) as unknown as Array<{ pid: number }>;
+      holderPidReady.resolve(backend.pid);
+      await holderReleased;
+    });
+    const holderPid = await holderPidReady.promise;
+
+    const rotateCall = svc.rotate(secret.id, { value: "rotated-value" });
+
+    // Poll until Postgres reports the rotate call's own backend blocked
+    // behind the lock holder above, instead of guessing how long that
+    // takes.
+    let rotateBlocked = false;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const rows = (await db.execute(
+        sql`select 1 from pg_stat_activity where ${holderPid} = any(pg_blocking_pids(pid))`,
+      )) as unknown as Array<unknown>;
+      if (rows[0]) {
+        rotateBlocked = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    try {
+      expect(rotateBlocked).toBe(true);
+      // The rotate call is confirmed blocked on the existing version row.
+      // If it had updated that row before the parent secret row — the
+      // opposite order this fix removes — the parent row would still be
+      // free here. A `nowait` probe from a third transaction settles which
+      // is true: it fails the instant the parent row already carries an
+      // uncommitted write from the blocked rotate call, and this fix makes
+      // that write happen first.
+      const probe = await db
+        .transaction(async (tx) => {
+          await tx.execute(sql`select 1 from company_secrets where id = ${secret.id} for update nowait`);
+        })
+        .then(() => null)
+        .catch((error: unknown) => error);
+      expect(String((probe as { cause?: unknown })?.cause ?? probe)).toMatch(/could not obtain lock/i);
+    } finally {
+      releaseHolder();
+    }
+    await holder;
+    await expect(rotateCall).resolves.toMatchObject({ latestVersion: 2 });
+  });
+
+  it("fails a queued local_encrypted create when an account-home cleanup removes its directory first", async () => {
+    // The mutation lock alone stops a write and an account-home cleanup's
+    // check-and-delete from interleaving; it does not stop them from running
+    // in either order. When the cleanup wins the lock first, deletes the
+    // directory, and releases the lock, a create that was only queued behind
+    // it must not go on to commit that now-deleted directory as a secret
+    // value. It must fail instead.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const accountHomeDir = await makeAccountHomeDir(companyId, "acct-queued-create");
+    const originalCreateSecret = localEncryptedProvider.createSecret.bind(localEncryptedProvider);
+    const createSecretSpy = vi.spyOn(localEncryptedProvider, "createSecret");
+
+    // The contended call below is a create, so measure how long an
+    // uncontended create takes to reach its own provider write. The wait
+    // later in this test uses that measured duration, not a guessed sleep.
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createSecretSpy,
+      originalCreateSecret,
+      () =>
+        svc.create(companyId, {
+          name: `baseline-${randomUUID()}`,
+          provider: "local_encrypted",
+          value: "/company/codex-home/acct-baseline",
+        }),
+    );
+
+    const events: string[] = [];
+    const cleanupEntered = deferred<void>();
+    const createEntered = deferred<void>();
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      events.push("cleanup-enter");
+      cleanupEntered.resolve();
+      await cleanupGate;
+      await rm(accountHomeDir, { recursive: true, force: true });
+      events.push("cleanup-exit");
+    });
+    createSecretSpy.mockImplementationOnce(async (input) => {
+      events.push("create-provider-enter");
+      createEntered.resolve();
+      return originalCreateSecret(input);
+    });
+    let createCall: ReturnType<typeof svc.create> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the cleanup now holds the lock.
+      // The lock stays held until we release it below, so the create call,
+      // once we start it, must queue behind the cleanup. Race against the
+      // cleanup's own promise, so a setup failure that happens before the
+      // cleanup ever reaches the lock surfaces immediately, at its own
+      // throw site, instead of hanging this wait until the test timeout.
+      await awaitEntryOrOperationFailure(cleanupEntered.promise, cleanupCall, "cleanupCall");
+      createCall = svc.create(companyId, {
+        name: `account-home-${randomUUID()}`,
+        provider: "local_encrypted",
+        value: accountHomeDir,
+      });
+      // Wait a safety multiple of the measured uncontended entry duration,
+      // or until the create call itself confirms it reached its provider
+      // write, whichever comes first. A correctly excluding lock keeps the
+      // create call queued behind the cleanup's still-held lock for the
+      // whole wait, so this cannot produce a false failure. A broken lock
+      // resolves `createEntered` on its own, from inside the create call's
+      // mocked provider method, the instant it clears the directory check
+      // and gets there — the directory still exists until the cleanup
+      // (still paused on its own gate) actually removes it.
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs, createEntered.promise);
+      // The lock is still held (we have not released it yet), so the create
+      // call must still be queued behind it and must not have entered its
+      // provider write.
+      expect(events).toEqual(["cleanup-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseCleanup();
+      outcomes = await Promise.allSettled([cleanupCall, createCall]);
+    }
+    if (outcomes[0]?.status === "rejected") throw outcomes[0].reason;
+    await expect(createCall).rejects.toThrow(/no longer exists/);
+  });
+
+  it("fails a queued local_encrypted rotate when an account-home cleanup removes its directory first", async () => {
+    // Same race, the other write path: a rotate that would commit a
+    // now-deleted account-home directory must fail the same way a create
+    // does.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const existing = await svc.create(companyId, {
+      name: `hand-named-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/some/unrelated/placeholder/value",
+    });
+    const accountHomeDir = await makeAccountHomeDir(companyId, "acct-queued-rotate");
+    const originalCreateVersion = localEncryptedProvider.createVersion.bind(localEncryptedProvider);
+    const createVersionSpy = vi.spyOn(localEncryptedProvider, "createVersion");
+
+    // The contended call below is a rotate, so measure how long an
+    // uncontended rotate takes to reach its own provider write. The wait
+    // later in this test uses that measured duration, not a guessed sleep.
+    const baselineSecret = await svc.create(companyId, {
+      name: `baseline-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/some/unrelated/placeholder/baseline",
+    });
+    const uncontendedEntryDurationMs = await measureUncontendedEntryDurationMs(
+      createVersionSpy,
+      originalCreateVersion,
+      () => svc.rotate(baselineSecret.id, { value: "/some/unrelated/placeholder/baseline-rotated" }),
+    );
+
+    const events: string[] = [];
+    const cleanupEntered = deferred<void>();
+    const rotateEntered = deferred<void>();
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      events.push("cleanup-enter");
+      cleanupEntered.resolve();
+      await cleanupGate;
+      await rm(accountHomeDir, { recursive: true, force: true });
+      events.push("cleanup-exit");
+    });
+    createVersionSpy.mockImplementationOnce(async (input) => {
+      events.push("rotate-provider-enter");
+      rotateEntered.resolve();
+      return originalCreateVersion(input);
+    });
+    let rotateCall: ReturnType<typeof svc.rotate> | undefined;
+    let outcomes: PromiseSettledResult<unknown>[] = [];
+    try {
+      // Wait for the confirmed signal that the cleanup now holds the lock.
+      // The lock stays held until we release it below, so the rotate call,
+      // once we start it, must queue behind the cleanup. Race against the
+      // cleanup's own promise, so a setup failure that happens before the
+      // cleanup ever reaches the lock surfaces immediately, at its own
+      // throw site, instead of hanging this wait until the test timeout.
+      await awaitEntryOrOperationFailure(cleanupEntered.promise, cleanupCall, "cleanupCall");
+      rotateCall = svc.rotate(existing.id, { value: accountHomeDir });
+      // Wait a safety multiple of the measured uncontended entry duration,
+      // or until the rotate call itself confirms it reached its provider
+      // write, whichever comes first. A correctly excluding lock keeps the
+      // rotate call queued behind the cleanup's still-held lock for the
+      // whole wait, so this cannot produce a false failure. A broken lock
+      // resolves `rotateEntered` on its own, from inside the rotate call's
+      // mocked provider method, the instant it clears the directory check
+      // and gets there — the directory still exists until the cleanup
+      // (still paused on its own gate) actually removes it.
+      await waitEntryDetectionWindow(uncontendedEntryDurationMs, rotateEntered.promise);
+      // The lock is still held (we have not released it yet), so the
+      // rotate call must still be queued behind it and must not have
+      // entered its provider write.
+      expect(events).toEqual(["cleanup-enter"]);
+    } finally {
+      // Release and settle both calls even when the check above fails, so
+      // neither call stays parked inside the lock past this test and
+      // corrupts teardown.
+      releaseCleanup();
+      outcomes = await Promise.allSettled([cleanupCall, rotateCall]);
+    }
+    if (outcomes[0]?.status === "rejected") throw outcomes[0].reason;
+    await expect(rotateCall).rejects.toThrow(/no longer exists/);
+  });
+
+  it("serializes an aws_secrets_manager secret create against a concurrent account-home mutation lock holder", async () => {
+    // A plain string value can equal a Codex account-home path regardless of
+    // which provider stores it. Prove a non-local (`aws_secrets_manager`)
+    // create now takes the SAME `withAccountHomeSecretMutationLock` a
+    // `local_encrypted` create takes, not only when the create's own
+    // provider is `local_encrypted`.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret",
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret",
+      providerVersionRef: "aws-version-1",
+    });
+
+    const events: string[] = [];
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      events.push("cleanup-enter");
+      await cleanupGate;
+      events.push("cleanup-exit");
+    });
+    // Give the cleanup a chance to acquire the lock before the AWS create
+    // starts racing for the same lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const createCall = svc.create(companyId, {
+      name: `aws-secret-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      value: "runtime-secret",
+    });
+    // The AWS create must stay queued behind the held lock, the same way a
+    // `local_encrypted` create does.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(["cleanup-enter"]);
+
+    releaseCleanup();
+    await cleanupCall;
+    const created = await createCall;
+    expect(events).toEqual(["cleanup-enter", "cleanup-exit"]);
+    expect(created.status).toBe("active");
+  });
+
+  it("serializes an aws_secrets_manager secret rotate against a concurrent account-home mutation lock holder", async () => {
+    // Same reasoning as the create test above, the other write path: a
+    // non-local rotate must also take the lock, not only a
+    // `local_encrypted` rotate.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
+      providerVersionRef: "aws-version-1",
+    });
+    vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
+        versionId: "aws-version-2",
+        source: "managed",
+      },
+      valueSha256: "value-sha-2",
+      fingerprintSha256: "fingerprint-sha-2",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/aws-secret-rotate",
+      providerVersionRef: "aws-version-2",
+    });
+    const existing = await svc.create(companyId, {
+      name: `aws-secret-rotate-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      value: "runtime-secret",
+    });
+
+    const events: string[] = [];
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      events.push("cleanup-enter");
+      await cleanupGate;
+      events.push("cleanup-exit");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const rotateCall = svc.rotate(existing.id, { value: "rotated-runtime-secret" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(["cleanup-enter"]);
+
+    releaseCleanup();
+    await cleanupCall;
+    const rotated = await rotateCall;
+    expect(events).toEqual(["cleanup-enter", "cleanup-exit"]);
+    expect(rotated.latestVersion).toBe(2);
+  });
+
+  it("serializes a rename, archive, or disable update against a concurrent account-home mutation lock holder", async () => {
+    // A rename or a status change to `archived` or `disabled` can stop the
+    // generated account-home secret from resolving to the value a
+    // device-login promotion already validated. Prove `update` now holds
+    // the SAME lock a cleanup (or a promotion's terminal-commit re-check)
+    // holds for its whole critical section, so an update can never land
+    // inside that section.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `CODEX_HOME_update-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/company/codex-home/acct-update",
+    });
+
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      await cleanupGate;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    let updateResolved = false;
+    const updateCall = svc.update(secret.id, { status: "archived" }).then((result) => {
+      updateResolved = true;
+      return result;
+    });
+    // The update must stay queued behind the held lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(updateResolved).toBe(false);
+
+    releaseCleanup();
+    await cleanupCall;
+    const updated = await updateCall;
+    expect(updateResolved).toBe(true);
+    expect(updated?.status).toBe("archived");
+  });
+
+  it("serializes a secret delete against a concurrent account-home mutation lock holder", async () => {
+    // Same reasoning as the update test above: a delete must also take the
+    // lock, so it can never land inside a cleanup's, or a promotion's
+    // terminal-commit re-check's, critical section.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `CODEX_HOME_delete-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "/company/codex-home/acct-delete",
+    });
+
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      await cleanupGate;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    let removeResolved = false;
+    const removeCall = svc.remove(secret.id).then((result) => {
+      removeResolved = true;
+      return result;
+    });
+    // The delete must stay queued behind the held lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(removeResolved).toBe(false);
+
+    releaseCleanup();
+    await cleanupCall;
+    await removeCall;
+    expect(removeResolved).toBe(true);
+    const remaining = await svc.getById(secret.id);
+    expect(remaining).toBeNull();
+  });
+
+  it("commits a local_encrypted secret naming an account-home directory that still exists", async () => {
+    // A regression guard for the check above: a create whose value names a
+    // directory that is still present must keep succeeding, unblocked.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const accountHomeDir = await makeAccountHomeDir(companyId, "acct-still-present");
+
+    const created = await svc.create(companyId, {
+      name: `account-home-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: accountHomeDir,
+    });
+    expect(created.status).toBe("active");
+  });
+
+  it("fails a queued adapter-schema-secret create when an account-home cleanup removes its directory first", async () => {
+    // `normalizeAdapterConfigForPersistence` creates an adapter config secret
+    // through a separate managed-create path (`createManagedLocalSecret`),
+    // not `svc.create`. It must run the same queued-behind-the-lock
+    // directory check as `svc.create` and `svc.rotate`, so an adapter
+    // schema secret can never commit an account-home directory a cleanup
+    // already removed while this call waited for the lock.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const accountHomeDir = await makeAccountHomeDir(companyId, "acct-queued-adapter-secret");
+
+    const events: string[] = [];
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const cleanupCall = withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      events.push("cleanup-enter");
+      await cleanupGate;
+      await rm(accountHomeDir, { recursive: true, force: true });
+      events.push("cleanup-exit");
+    });
+    // Give the cleanup a chance to acquire the lock before the adapter
+    // config normalization starts racing for the same lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const normalizeCall = svc.normalizeAdapterConfigForPersistence(
+      companyId,
+      { apiKey: accountHomeDir },
+      { adapterType: "hermes_gateway" },
+    );
+    // The queued create must stay blocked behind the held lock.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(events).toEqual(["cleanup-enter"]);
+
+    releaseCleanup();
+    await cleanupCall;
+    await expect(normalizeCall).rejects.toThrow(/no longer exists/);
+  });
+
+  it("keeps an adapter-schema-secret create working for a value outside the account-home cache root", async () => {
+    // A regression guard for the check above: an adapter schema secret whose
+    // value is not an account-home directory (an ordinary API key, for
+    // example) must keep succeeding, unblocked.
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    const normalized = await svc.normalizeAdapterConfigForPersistence(
+      companyId,
+      { apiKey: `plain-api-key-${randomUUID()}` },
+      { adapterType: "hermes_gateway" },
+    );
+    const apiKeyBinding = (normalized as Record<string, unknown>).apiKey as { type: string; secretId: string };
+    expect(apiKeyBinding.type).toBe("secret_ref");
+    const secret = await svc.getById(apiKeyBinding.secretId);
+    expect(secret?.status).toBe("active");
+  });
+
+  it("validates the access namespace as agent-only with env-style aliases", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `access-validation-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    await expect(svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "project",
+      targetId: randomUUID(),
+      configPath: "access.API_KEY",
+    })).rejects.toThrow(/must target an agent/i);
+
+    await expect(svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: randomUUID(),
+      configPath: "access.invalid-alias",
+    })).rejects.toThrow(/invalid agent secret access alias/i);
+  });
+
+  it("resolves env and access bindings through the run-bound agent resolver with dual audit", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const { agentId, heartbeatRunId } = await seedAgentRun(companyId);
+    const secret = await svc.create(companyId, {
+      name: `agent-read-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "access.API_KEY",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "env.API_KEY",
+    });
+    const redactedValues: string[] = [];
+
+    for (const configPath of ["access.API_KEY", "env.API_KEY"]) {
+      await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+        agentId,
+        configPath,
+        actorSource: "agent_jwt",
+        heartbeatRunId,
+        registerForRedaction: (value) => redactedValues.push(value),
+      })).resolves.toEqual({ value: "runtime-secret", version: 1 });
+    }
+
+    expect(redactedValues).toEqual(["runtime-secret", "runtime-secret"]);
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events).toHaveLength(2);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        consumerType: "agent_api",
+        consumerId: agentId,
+        configPath: "access.API_KEY",
+        actorType: "agent",
+        actorId: agentId,
+        heartbeatRunId,
+        outcome: "success",
+      }),
+      expect.objectContaining({
+        consumerType: "agent_api",
+        consumerId: agentId,
+        configPath: "env.API_KEY",
+        outcome: "success",
+      }),
+    ]));
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, secret.id));
+    expect(activities).toHaveLength(2);
+    expect(activities.every((entry) => entry.action === "secret.value.read")).toBe(true);
+    expect(activities.every((entry) => entry.runId === heartbeatRunId)).toBe(true);
+    expect(JSON.stringify([...events, ...activities])).not.toContain("runtime-secret");
+  });
+
+  it("rejects long-lived, mismatched-run, and unbound agent secret reads", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const { agentId, heartbeatRunId } = await seedAgentRun(companyId);
+    const secret = await svc.create(companyId, {
+      name: `agent-read-denied-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "access.GRANTED",
+    });
+    const registerForRedaction = vi.fn();
+
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.API_KEY",
+      actorSource: "agent_key",
+      heartbeatRunId,
+      registerForRedaction,
+    })).rejects.toThrow(/run-bound agent token/i);
+
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.GRANTED",
+      actorSource: "agent_jwt",
+      keyScope: { kind: "skill_test", issueId: randomUUID() },
+      heartbeatRunId,
+      registerForRedaction,
+    })).rejects.toThrow(/skill-test.*secret/i);
+
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.API_KEY",
+      actorSource: "agent_jwt",
+      heartbeatRunId: randomUUID(),
+      registerForRedaction,
+    })).rejects.toThrow(/verified heartbeat run/i);
+
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.API_KEY",
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+      registerForRedaction,
+    })).rejects.toThrow(/not granted/i);
+
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, heartbeatRunId));
+    await expect(svc.listAgentSecretAccess(companyId, {
+      agentId,
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+    })).rejects.toThrow(/verified heartbeat run/i);
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.GRANTED",
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+      registerForRedaction,
+    })).rejects.toThrow(/verified heartbeat run/i);
+
+    expect(registerForRedaction).not.toHaveBeenCalled();
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events).toEqual([
+      expect.objectContaining({
+        consumerType: "agent_api",
+        consumerId: agentId,
+        configPath: "access.API_KEY",
+        outcome: "failure",
+        errorCode: "binding_missing",
+      }),
+    ]);
+  });
+
+  it("preserves low-trust authorization denial for agent secret reads", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const { agentId, heartbeatRunId } = await seedAgentRun(companyId, {
+      trustPreset: LOW_TRUST_REVIEW_PRESET,
+      authorizationPolicy: {
+        trustBoundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          projectIds: [randomUUID()],
+        },
+      },
+    });
+    const secret = await svc.create(companyId, {
+      name: `low-trust-agent-read-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "access.API_KEY",
+    });
+
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.API_KEY",
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+      registerForRedaction: vi.fn(),
+    })).rejects.toThrow(/low[_-]trust.*secrets:read/i);
+
+    expect(await svc.listAccessEvents(companyId, secret.id)).toEqual([]);
   });
 
   it("syncs top-level secret refs idempotently", async () => {
@@ -342,6 +1590,97 @@ describeEmbeddedPostgres("secretService", () => {
     expect(resolved.manifest[0]?.bindingId).toBe(binding!.id);
   });
 
+  it("fails closed at runtime for class-3 env lease rows outside the allowlist", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `runtime-class3-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    const env = {
+      GITHUB_TOKEN: {
+        type: "secret_ref" as const,
+        secretId: secret.id,
+        version: "latest" as const,
+        projectionClass: "class_3_static_lease" as const,
+        projectionAllowlistKey: "github.token",
+      },
+    };
+
+    await db.insert(companySecretBindings).values({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: "agent-1",
+      configPath: "env.GITHUB_TOKEN",
+      projectionClass: "class_3_static_lease",
+      projectionAllowlistKey: "github.token",
+    });
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        actorType: "agent",
+        actorId: "agent-1",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "class_3_static_lease_not_allowed" },
+    });
+  });
+
+  it("denies user secret resolution outside the low-trust declaration allowlist", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    const env = {
+      GITHUB_TOKEN: { type: "user_secret_ref" as const, key: "github_token", version: "latest" as const },
+    };
+
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: "agent-1" }, env);
+    await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionKey: "github_token",
+      value: "user-one-secret",
+    });
+    const [declaration] = await db
+      .select()
+      .from(userSecretDeclarations)
+      .where(eq(userSecretDeclarations.userSecretDefinitionId, definition.id));
+    expect(declaration?.id).toBeTruthy();
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        responsibleUserId: "user-1",
+        allowedBindingIds: ["11111111-1111-4111-8111-111111111111"],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "binding_not_allowed" },
+    });
+
+    const resolved = await svc.resolveEnvBindings(companyId, env, {
+      consumerType: "agent",
+      consumerId: "agent-1",
+      actorType: "agent",
+      actorId: "agent-1",
+      responsibleUserId: "user-1",
+      allowedBindingIds: [declaration!.id],
+    });
+    expect(resolved.env.GITHUB_TOKEN).toBe("user-one-secret");
+    expect(resolved.manifest[0]?.bindingId).toBe(declaration!.id);
+  });
+
   it("resolves routine env secret refs through routine bindings and records value-free access metadata", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -385,6 +1724,762 @@ describeEmbeddedPostgres("secretService", () => {
       outcome: "success",
     });
     expect(JSON.stringify(events)).not.toContain("routine-super-secret");
+  });
+
+  it("resolves user secret refs through responsible-user values and records owner metadata", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    await seedCompanyMember(companyId, "user-2", "member");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    const env = {
+      GITHUB_TOKEN: { type: "user_secret_ref" as const, key: "github_token", version: "latest" as const },
+    };
+
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: "agent-1" }, env);
+    const userOneSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionKey: "github_token",
+      value: "user-one-secret",
+    });
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        responsibleUserId: "user-2",
+      }),
+    ).rejects.toThrow(/not configured/i);
+    await expect(
+      svc.collectMissingRuntimeBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        bindingType: "user_secret_ref",
+        configPath: "env.GITHUB_TOKEN",
+        envKey: "GITHUB_TOKEN",
+        userSecretDefinitionId: definition.id,
+        userSecretDefinitionKey: "github_token",
+        responsibleUserId: "user-2",
+        errorCode: "user_secret_missing",
+      }),
+    ]);
+
+    const optionalEnv = {
+      OPTIONAL_GITHUB_TOKEN: {
+        type: "user_secret_ref" as const,
+        key: "github_token",
+        version: "latest" as const,
+        required: false,
+      },
+    };
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: "agent-optional" }, optionalEnv);
+    await expect(
+      svc.collectMissingRuntimeBindings(companyId, optionalEnv, {
+        consumerType: "agent",
+        consumerId: "agent-optional",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      svc.resolveEnvBindings(companyId, optionalEnv, {
+        consumerType: "agent",
+        consumerId: "agent-optional",
+        actorType: "agent",
+        actorId: "agent-optional",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toMatchObject({
+      env: {},
+      manifest: [],
+    });
+
+    await db
+      .update(userSecretDefinitions)
+      .set({ status: "disabled" })
+      .where(eq(userSecretDefinitions.id, definition.id));
+    await expect(
+      svc.collectMissingRuntimeBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        bindingType: "user_secret_ref",
+        configPath: "env.GITHUB_TOKEN",
+        envKey: "GITHUB_TOKEN",
+        userSecretDefinitionId: definition.id,
+        userSecretDefinitionKey: "github_token",
+        userSecretDefinitionName: "GitHub token",
+        responsibleUserId: "user-2",
+        errorCode: "user_secret_definition_inactive",
+      }),
+    ]);
+    await expect(
+      svc.resolveEnvBindings(companyId, optionalEnv, {
+        consumerType: "agent",
+        consumerId: "agent-optional",
+        actorType: "agent",
+        actorId: "agent-optional",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toMatchObject({
+      env: {},
+      manifest: [],
+    });
+    await db
+      .update(userSecretDefinitions)
+      .set({ status: "deleted", deletedAt: new Date() })
+      .where(eq(userSecretDefinitions.id, definition.id));
+    await expect(
+      svc.resolveEnvBindings(companyId, optionalEnv, {
+        consumerType: "agent",
+        consumerId: "agent-optional",
+        actorType: "agent",
+        actorId: "agent-optional",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toMatchObject({
+      env: {},
+      manifest: [],
+    });
+    await db
+      .update(userSecretDefinitions)
+      .set({ status: "active", deletedAt: null })
+      .where(eq(userSecretDefinitions.id, definition.id));
+
+    const resolved = await svc.resolveEnvBindings(companyId, env, {
+      consumerType: "agent",
+      consumerId: "agent-1",
+      actorType: "agent",
+      actorId: "agent-1",
+      responsibleUserId: "user-1",
+    });
+
+    expect(resolved.env.GITHUB_TOKEN).toBe("user-one-secret");
+    expect(resolved.manifest[0]).toMatchObject({
+      configPath: "env.GITHUB_TOKEN",
+      envKey: "GITHUB_TOKEN",
+      secretId: userOneSecret.id,
+      secretKey: userOneSecret.key,
+      outcome: "success",
+    });
+    expect((await svc.list(companyId)).map((secret) => secret.id)).not.toContain(userOneSecret.id);
+    await expect(
+      svc.resolveSecretValue(companyId, userOneSecret.id, "latest", {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        configPath: "env.GITHUB_TOKEN",
+      }),
+    ).rejects.toThrow(/User-scoped secrets/i);
+
+    const events = await db
+      .select()
+      .from(secretAccessEvents)
+      .where(eq(secretAccessEvents.secretId, userOneSecret.id));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      secretId: userOneSecret.id,
+      userSecretDefinitionId: definition.id,
+      secretScope: "user",
+      responsibleUserId: "user-1",
+      credentialOwnerUserId: "user-1",
+      credentialSubjectType: "user",
+      credentialSubjectId: "user-1",
+      outcome: "success",
+    });
+    expect(JSON.stringify(events)).not.toContain("user-one-secret");
+  });
+
+  it("can skip user-secret refs while resolving adapter config for non-runtime skill discovery", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    const companySecret = await svc.create(companyId, {
+      name: `company-token-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "company-secret-value",
+    });
+    const adapterConfig = {
+      apiBaseUrl: "http://127.0.0.1:9119/api",
+      apiKey: {
+        type: "user_secret_ref" as const,
+        key: "github_token",
+        version: "latest" as const,
+        required: true,
+      },
+      env: {
+        HOME: "/home/agent",
+        COMPANY_TOKEN: {
+          type: "secret_ref" as const,
+          secretId: companySecret.id,
+          version: "latest" as const,
+        },
+        GH_TOKEN: {
+          type: "user_secret_ref" as const,
+          key: "github_token",
+          version: "latest" as const,
+          required: true,
+        },
+      },
+    };
+
+    await expect(
+      svc.resolveAdapterConfigForRuntime(companyId, adapterConfig, undefined, { adapterType: "hermes_gateway" }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "responsible_user_missing" },
+    });
+
+    const resolved = await svc.resolveAdapterConfigForRuntime(
+      companyId,
+      adapterConfig,
+      undefined,
+      { adapterType: "hermes_gateway", skipUserSecrets: true },
+    );
+
+    expect(resolved.config).not.toHaveProperty("apiKey");
+    expect(resolved.config.env).toEqual({
+      HOME: "/home/agent",
+      COMPANY_TOKEN: "company-secret-value",
+    });
+    expect(resolved.secretKeys).toEqual(new Set(["COMPANY_TOKEN"]));
+    expect(resolved.manifest).toEqual([
+      expect.objectContaining({
+        secretId: companySecret.id,
+        outcome: "success",
+      }),
+    ]);
+  });
+
+  it("returns conflict when concurrent user secret value creation races the unique index", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+
+    const results = await Promise.allSettled([
+      svc.createCurrentUserSecretValue(companyId, "user-1", {
+        definitionId: definition.id,
+        value: "first-secret",
+      }),
+      svc.createCurrentUserSecretValue(companyId, "user-1", {
+        definitionId: definition.id,
+        value: "second-secret",
+      }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toBeTruthy();
+    if (rejected?.status === "rejected") {
+      expect(rejected.reason).toMatchObject({
+        status: 409,
+        message: "User secret value already exists",
+      });
+    }
+
+    const rows = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.userSecretDefinitionId, definition.id));
+    expect(rows.filter((row) => row.ownerUserId === "user-1" && row.status === "active")).toHaveLength(1);
+  });
+
+  it("reports current-user secret rollback failures when AWS create cleanup cannot remove the reserved row", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+    });
+
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockRejectedValueOnce(
+      new SecretProviderClientError({
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "createSecret",
+        message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        rawMessage:
+          "AccessDeniedException: arn:aws:sts::123456789012:assumed-role/prod/Paperclip cannot create secret",
+      }),
+    );
+    vi.spyOn(db, "delete").mockImplementationOnce(() => {
+      throw new Error("reserved row delete failed");
+    });
+
+    await expect(
+      svc.createCurrentUserSecretValue(companyId, "user-1", {
+        definitionId: definition.id,
+        value: "runtime-secret",
+      }),
+    ).rejects.toMatchObject({
+      status: 500,
+      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      details: {
+        code: "secret_create_rollback_failed",
+        provider: "aws_secrets_manager",
+        operation: "secret.create",
+        providerConfigId: awsVault.id,
+        providerError: {
+          status: 403,
+          message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+          details: {
+            code: "access_denied",
+            requiredCapability: "secretsmanager:CreateSecret",
+          },
+        },
+      },
+    });
+
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, companyId));
+    expect(persisted).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain("runtime-secret");
+  });
+
+  it("reports current-user secret persistence rollback failures when local cleanup cannot remove the reserved row", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+    });
+    const externalRef =
+      "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/user/github-token";
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef,
+      providerVersionRef: "aws-version-1",
+    });
+    vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db activate failed"));
+    vi.spyOn(db, "delete").mockImplementationOnce(() => {
+      throw new Error("reserved row delete failed");
+    });
+
+    await expect(
+      svc.createCurrentUserSecretValue(companyId, "user-1", {
+        definitionId: definition.id,
+        value: "runtime-secret",
+      }),
+    ).rejects.toMatchObject({
+      status: 500,
+      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      details: {
+        code: "secret_create_rollback_failed",
+        provider: "aws_secrets_manager",
+        operation: "user_secret_value.create_rollback",
+        providerConfigId: awsVault.id,
+      },
+    });
+
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, companyId));
+    expect(persisted).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain("runtime-secret");
+  });
+
+  it("returns conflict when concurrent user secret definition creation races the unique index", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    const results = await Promise.allSettled([
+      svc.createUserSecretDefinition(companyId, {
+        key: "github_token",
+        name: "GitHub token",
+        provider: "local_encrypted",
+      }),
+      svc.createUserSecretDefinition(companyId, {
+        key: "github_token",
+        name: "GitHub token duplicate",
+        provider: "local_encrypted",
+      }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toBeTruthy();
+    if (rejected?.status === "rejected") {
+      expect(rejected.reason).toMatchObject({
+        status: 409,
+        message: "User secret definition already exists: github_token",
+      });
+    }
+
+    const rows = await db
+      .select()
+      .from(userSecretDefinitions)
+      .where(eq(userSecretDefinitions.companyId, companyId));
+    expect(rows.filter((row) => row.key === "github_token" && row.deletedAt === null)).toHaveLength(1);
+  });
+
+  it("removes user secret values and provider material when deleting a definition", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    await seedCompanyMember(companyId, "user-2", "member");
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+    });
+    let nextVersion = 0;
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockImplementation(async (input) => {
+      nextVersion += 1;
+      const externalRef =
+        `arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/${input.context.secretKey}`;
+      return {
+        material: {
+          scheme: "aws_secrets_manager_v1",
+          secretId: externalRef,
+          versionId: `aws-version-${nextVersion}`,
+          source: "managed",
+        },
+        valueSha256: `value-sha-${nextVersion}`,
+        fingerprintSha256: `fingerprint-sha-${nextVersion}`,
+        externalRef,
+        providerVersionRef: `aws-version-${nextVersion}`,
+      };
+    });
+    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    const userOneSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionId: definition.id,
+      value: "user-one-secret",
+    });
+    const userTwoSecret = await svc.createCurrentUserSecretValue(companyId, "user-2", {
+      definitionId: definition.id,
+      value: "user-two-secret",
+    });
+
+    const removed = await svc.removeUserSecretDefinition(companyId, definition.id, { userId: "admin-user" });
+    const remainingValues = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.userSecretDefinitionId, definition.id));
+
+    expect(removed).toMatchObject({
+      id: definition.id,
+      key: `github_token__deleted__${definition.id}`,
+      status: "deleted",
+      updatedByUserId: "admin-user",
+    });
+    expect(remainingValues).toHaveLength(0);
+    expect(deleteSpy).toHaveBeenCalledTimes(2);
+    expect(deleteSpy).toHaveBeenCalledWith(expect.objectContaining({
+      externalRef: userOneSecret.externalRef,
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      context: {
+        companyId,
+        secretKey: userOneSecret.key,
+        secretName: userOneSecret.name,
+        version: 1,
+      },
+      mode: "delete",
+    }));
+    expect(deleteSpy).toHaveBeenCalledWith(expect.objectContaining({
+      externalRef: userTwoSecret.externalRef,
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      context: {
+        companyId,
+        secretKey: userTwoSecret.key,
+        secretName: userTwoSecret.name,
+        version: 1,
+      },
+      mode: "delete",
+    }));
+  });
+
+  it("removes user secret values and provider material when update deletes a definition", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+    });
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/user-secret",
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/user-secret",
+      providerVersionRef: "aws-version-1",
+    });
+    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    const userSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionId: definition.id,
+      value: "user-one-secret",
+    });
+
+    const removed = await svc.updateUserSecretDefinition(
+      companyId,
+      definition.id,
+      { status: "deleted" },
+      { userId: "admin-user" },
+    );
+    const remainingValues = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.userSecretDefinitionId, definition.id));
+
+    expect(removed).toMatchObject({
+      id: definition.id,
+      key: `github_token__deleted__${definition.id}`,
+      status: "deleted",
+      updatedByUserId: "admin-user",
+    });
+    expect(remainingValues).toHaveLength(0);
+    expect(deleteSpy).toHaveBeenCalledWith(expect.objectContaining({
+      externalRef: userSecret.externalRef,
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      context: {
+        companyId,
+        secretKey: userSecret.key,
+        secretName: userSecret.name,
+        version: 1,
+      },
+      mode: "delete",
+    }));
+  });
+
+  it("treats nullable user-secret value patches as non-rotation updates", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    const secret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionKey: "github_token",
+      value: "user-one-secret",
+    });
+
+    const updated = await svc.updateCurrentUserSecretValue(companyId, "user-1", secret.id, {
+      value: null,
+      externalRef: null,
+      providerVersionRef: null,
+      providerConfigId: null,
+    });
+
+    expect(updated.latestVersion).toBe(secret.latestVersion);
+    expect(updated.status).toBe(secret.status);
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, secret.id));
+    expect(versions).toHaveLength(1);
+    expect(versions[0]).toMatchObject({ version: secret.latestVersion, status: "current" });
+    expect(versions[0]?.material).toBeTruthy();
+  });
+
+  it("reports missing adapter-config user secret refs before runtime resolution", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "hermes_api_key",
+      name: "Hermes API key",
+      provider: "local_encrypted",
+    });
+    const adapterConfig = {
+      apiBaseUrl: "http://127.0.0.1:9119/api",
+      apiKey: { type: "user_secret_ref" as const, key: "hermes_api_key", version: "latest" as const },
+    };
+    await svc.syncUserSecretDeclarationsForTarget(companyId, {
+      targetType: "agent",
+      targetId: "agent-1",
+    }, [
+      {
+        definitionKey: "hermes_api_key",
+        configPath: "apiKey",
+        envKey: "apiKey",
+      },
+    ]);
+
+    await expect(
+      svc.collectMissingAdapterConfigRuntimeBindings(
+        companyId,
+        adapterConfig,
+        "hermes_gateway",
+        {
+          consumerType: "agent",
+          consumerId: "agent-1",
+          responsibleUserId: "user-1",
+        },
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        bindingType: "user_secret_ref",
+        configPath: "apiKey",
+        envKey: "apiKey",
+        userSecretDefinitionId: definition.id,
+        userSecretDefinitionKey: "hermes_api_key",
+        responsibleUserId: "user-1",
+        errorCode: "user_secret_missing",
+      }),
+    ]);
+
+    await expect(
+      svc.collectMissingAdapterConfigRuntimeBindings(
+        companyId,
+        {
+          ...adapterConfig,
+          apiKey: {
+            type: "user_secret_ref" as const,
+            key: "hermes_api_key",
+            version: "latest" as const,
+            required: false,
+          },
+        },
+        "hermes_gateway",
+        {
+          consumerType: "agent",
+          consumerId: "agent-1",
+          responsibleUserId: "user-1",
+        },
+      ),
+    ).resolves.toEqual([]);
+
+    await db
+      .update(userSecretDefinitions)
+      .set({ status: "archived" })
+      .where(eq(userSecretDefinitions.id, definition.id));
+    await expect(
+      svc.collectMissingAdapterConfigRuntimeBindings(
+        companyId,
+        adapterConfig,
+        "hermes_gateway",
+        {
+          consumerType: "agent",
+          consumerId: "agent-1",
+          responsibleUserId: "user-1",
+        },
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        bindingType: "user_secret_ref",
+        configPath: "apiKey",
+        envKey: "apiKey",
+        userSecretDefinitionId: definition.id,
+        userSecretDefinitionKey: "hermes_api_key",
+        userSecretDefinitionName: "Hermes API key",
+        responsibleUserId: "user-1",
+        errorCode: "user_secret_definition_inactive",
+      }),
+    ]);
+  });
+
+  it("skips optional user secret refs when the declaration is missing at runtime", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_api_token",
+      name: "GitHub API token",
+      provider: "local_encrypted",
+    });
+    await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionId: definition.id,
+      value: "ghp_secret",
+    });
+
+    await expect(
+      svc.resolveUserSecretValue(
+        companyId,
+        {
+          definitionKey: "github_api_token",
+          responsibleUserId: "user-1",
+          required: false,
+        },
+        {
+          consumerType: "agent",
+          consumerId: "agent-with-stale-config",
+          configPath: "env.GITHUB_TOKEN",
+        },
+      ),
+    ).resolves.toBeNull();
+
+    await expect(
+      svc.resolveUserSecretValue(
+        companyId,
+        {
+          definitionKey: "github_api_token",
+          responsibleUserId: "user-1",
+        },
+        {
+          consumerType: "agent",
+          consumerId: "agent-with-stale-config",
+          configPath: "env.GITHUB_TOKEN",
+        },
+      ),
+    ).rejects.toMatchObject({
+      details: { code: "binding_missing" },
+    });
   });
 
   it("records stable redacted failure codes for routine env secret resolution", async () => {
@@ -1041,7 +3136,17 @@ describeEmbeddedPostgres("secretService", () => {
         providerConfigId: awsVault.id,
         value: "runtime-secret",
       }),
-    ).rejects.toThrow("db activate failed");
+    ).rejects.toMatchObject({
+      status: 500,
+      message: "Secret create failed and Paperclip could not clean up the remote provider secret.",
+      details: {
+        code: "secret_create_provider_cleanup_failed",
+        provider: "aws_secrets_manager",
+        operation: "create.rollback",
+        providerConfigId: awsVault.id,
+        localCleanupHandle: true,
+      },
+    });
 
     const persisted = await svc.getByName(companyId, "Create Cleanup Handle");
     expect(persisted).toMatchObject({
@@ -1061,6 +3166,62 @@ describeEmbeddedPostgres("secretService", () => {
       status: "disabled",
       material: prepared.material,
     });
+  });
+
+  it("reports managed secret persistence rollback failures when local cleanup cannot remove the reserved row", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const prepared = {
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId:
+          "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-local-cleanup",
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef:
+        "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company/create-local-cleanup",
+      providerVersionRef: "aws-version-1",
+    };
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue(prepared);
+    vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db activate failed"));
+    vi.spyOn(db, "delete").mockImplementationOnce(() => {
+      throw new Error("reserved row delete failed");
+    });
+
+    await expect(
+      svc.create(companyId, {
+        name: "Create Local Cleanup",
+        key: "create-local-cleanup",
+        provider: "aws_secrets_manager",
+        providerConfigId: awsVault.id,
+        value: "runtime-secret",
+      }),
+    ).rejects.toMatchObject({
+      status: 500,
+      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      details: {
+        code: "secret_create_rollback_failed",
+        provider: "aws_secrets_manager",
+        operation: "create.rollback",
+        providerConfigId: awsVault.id,
+      },
+    });
+
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, companyId));
+    expect(persisted).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain("runtime-secret");
   });
 
   it("archives managed provider versions when rotate persistence fails", async () => {
@@ -1378,6 +3539,123 @@ describeEmbeddedPostgres("secretService", () => {
     expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
   });
 
+  it("sanitizes AWS managed secret create failures and removes the reserved row", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const rawProviderMessage =
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized to perform secretsmanager:CreateSecret on arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1";
+
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockRejectedValueOnce(
+      new SecretProviderClientError({
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "createSecret",
+        message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        rawMessage: rawProviderMessage,
+      }),
+    );
+
+    let thrown: unknown;
+    try {
+      await svc.create(companyId, {
+        name: "Vercel token",
+        key: "vercel_token",
+        provider: "aws_secrets_manager",
+        providerConfigId: awsVault.id,
+        managedMode: "paperclip_managed",
+        value: "vcp_test",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      status: 403,
+      message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+      details: {
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "secret.create",
+        providerConfigId: awsVault.id,
+        region: "us-east-1",
+        requiredCapability: "secretsmanager:CreateSecret",
+      },
+    });
+    expect(JSON.stringify(thrown)).not.toContain("arn:aws");
+    expect(JSON.stringify(thrown)).not.toContain("123456789012");
+    expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
+
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, companyId));
+    expect(persisted).toHaveLength(0);
+  });
+
+  it("reports rollback failures when AWS managed secret create cleanup cannot remove the reserved row", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+
+    vi.spyOn(awsSecretsManagerProvider, "createSecret").mockRejectedValueOnce(
+      new SecretProviderClientError({
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "createSecret",
+        message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        rawMessage:
+          "AccessDeniedException: arn:aws:sts::123456789012:assumed-role/prod/Paperclip cannot create secret",
+      }),
+    );
+    vi.spyOn(db, "delete").mockImplementationOnce(() => {
+      throw new Error("reserved row delete failed");
+    });
+
+    await expect(
+      svc.create(companyId, {
+        name: "Vercel token",
+        key: "vercel_token",
+        provider: "aws_secrets_manager",
+        providerConfigId: awsVault.id,
+        managedMode: "paperclip_managed",
+        value: "vcp_test",
+      }),
+    ).rejects.toMatchObject({
+      status: 500,
+      message: "Secret create failed and Paperclip could not roll back the local secret reservation.",
+      details: {
+        code: "secret_create_rollback_failed",
+        provider: "aws_secrets_manager",
+        operation: "secret.create",
+        providerConfigId: awsVault.id,
+        providerError: {
+          status: 403,
+          message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+          details: {
+            code: "access_denied",
+            requiredCapability: "secretsmanager:CreateSecret",
+          },
+        },
+      },
+    });
+
+    const persisted = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.companyId, companyId));
+    expect(persisted).toHaveLength(1);
+    expect(JSON.stringify(persisted)).not.toContain("vcp_test");
+  });
+
   it("previews AWS provider vault discovery from draft config without persisting a provider vault", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -1494,6 +3772,156 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(thrown)).not.toContain("arn:aws");
     expect(JSON.stringify(thrown)).not.toContain("123456789012");
     expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
+  });
+
+  it("writes external reference rotations through the provider when a value is given", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/neon-admin";
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef,
+    });
+
+    const writeSpy = vi
+      .spyOn(awsSecretsManagerProvider, "updateExternalSecretValue")
+      .mockResolvedValueOnce({
+        material: {
+          scheme: "aws_secrets_manager_v1",
+          secretId: externalRef,
+          versionId: null,
+          source: "external_reference",
+          lastWrittenVersionId: "aws-version-2",
+        },
+        valueSha256: "a".repeat(64),
+        fingerprintSha256: "a".repeat(64),
+        externalRef,
+        providerVersionRef: null,
+      });
+    const linkSpy = vi.spyOn(awsSecretsManagerProvider, "linkExternalSecret");
+
+    const rotated = await svc.rotate(secret.id, { value: "new-admin-key" }, { userId: "user-1" });
+
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(writeSpy.mock.calls[0]?.[0]).toMatchObject({
+      externalRef,
+      value: "new-admin-key",
+    });
+    expect(linkSpy).not.toHaveBeenCalled();
+    expect(rotated.latestVersion).toBe(2);
+    expect(rotated.externalRef).toBe(externalRef);
+
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, secret.id));
+    const current = versions.find((row) => row.status === "current");
+    expect(current?.version).toBe(2);
+    expect(current?.providerVersionRef).toBeNull();
+    expect(JSON.stringify(current)).not.toContain("new-admin-key");
+  });
+
+  it("restores the provider current version when external value rotation persistence fails", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/rollback";
+    const secret = await svc.create(companyId, {
+      name: "External rollback",
+      key: "external-rollback",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef,
+    });
+    const prepared = {
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: null,
+        source: "external_reference",
+        lastWrittenVersionId: "aws-version-2",
+        previousCurrentVersionId: "aws-version-1",
+      },
+      valueSha256: "a".repeat(64),
+      fingerprintSha256: "a".repeat(64),
+      externalRef,
+      providerVersionRef: null,
+    };
+    vi.spyOn(awsSecretsManagerProvider, "updateExternalSecretValue").mockResolvedValueOnce(prepared);
+    const rollbackSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db rotate failed"));
+
+    await expect(svc.rotate(secret.id, { value: "new-value" })).rejects.toThrow(
+      "db rotate failed",
+    );
+
+    expect(rollbackSpy).toHaveBeenCalledWith(expect.objectContaining({
+      material: prepared.material,
+      externalRef,
+      mode: "archive",
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      context: {
+        companyId,
+        secretKey: "external-rollback",
+        secretName: "External rollback",
+        version: 2,
+      },
+    }));
+  });
+
+  it("rejects external value rotations that also retarget or pin versions", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/neon-admin",
+    });
+
+    await expect(
+      svc.rotate(secret.id, {
+        value: "new-admin-key",
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/other",
+      }),
+    ).rejects.toThrow(/not both/);
+    await expect(
+      svc.rotate(secret.id, { value: "new-admin-key", providerVersionRef: "pinned-1" }),
+    ).rejects.toThrow(/cannot pin/i);
+  });
+
+  it("rejects external value rotations when the provider cannot write values", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "vault",
+      managedMode: "external_reference",
+      externalRef: "kv/data/shared/neon-admin",
+    });
+
+    await expect(svc.rotate(secret.id, { value: "new-admin-key" })).rejects.toThrow(
+      /does not support writing values/,
+    );
   });
 
   it("imports AWS remote references row-by-row without fetching plaintext", async () => {

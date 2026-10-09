@@ -53,6 +53,7 @@ function SiblingLink({
 
   return (
     <Link
+      // design-allow(card-pattern): navigation <Link> card; Card renders a div and would break anchor semantics (C5a Run 3)
       to={createIssueDetailPath(issuePathId)}
       state={withIssueDetailHeaderSeed(linkState, issue)}
       issuePrefetch={issue}
@@ -60,7 +61,7 @@ function SiblingLink({
       issueQuicklookAlign={direction === "previous" ? "start" : "end"}
       aria-label={`${ariaDirection}: ${identifier} - ${issue.title}`}
       className={cn(
-        "group min-w-0 rounded-lg border border-border bg-card px-3 py-2.5 text-left no-underline transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+        "group min-w-0 rounded-lg border border-border bg-card px-3 py-2.5 text-left no-underline transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring",
         direction === "next" && "sm:text-right",
         className,
       )}
@@ -78,7 +79,7 @@ function SiblingLink({
           "flex min-w-0 items-center gap-1.5 text-xs font-mono text-muted-foreground transition-colors group-hover:text-foreground",
           direction === "next" && "sm:justify-end",
         )}>
-          <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
+          <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={issue.blockerAttention} />
           <span className="shrink-0">{identifier}</span>
         </div>
         <div className="truncate text-sm text-foreground">

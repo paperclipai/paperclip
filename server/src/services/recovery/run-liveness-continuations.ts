@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
 import type { RunLivenessState } from "@paperclipai/shared";
-import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
+import { withRecoveryContext } from "./status-only-context.js";
 import { RECOVERY_REASON_KINDS } from "./origins.js";
 
 export const RUN_LIVENESS_CONTINUATION_REASON = RECOVERY_REASON_KINDS.runLivenessContinuation;
@@ -156,7 +156,7 @@ export function decideRunLivenessContinuation(input: {
     return { kind: "skip", reason: "continuation wake already exists for this source run and attempt" };
   }
 
-  const payload = withRecoveryModelProfileHint({
+  const payload = withRecoveryContext({
     issueId: issue.id,
     sourceRunId: run.id,
     livenessState,
@@ -173,7 +173,7 @@ export function decideRunLivenessContinuation(input: {
     nextAttempt,
     idempotencyKey,
     payload,
-    contextSnapshot: withRecoveryModelProfileHint({
+    contextSnapshot: withRecoveryContext({
       issueId: issue.id,
       taskId: issue.id,
       taskKey: issue.id,

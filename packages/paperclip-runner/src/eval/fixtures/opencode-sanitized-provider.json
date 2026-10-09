@@ -1,0 +1,19 @@
+{
+  "schema": "paperclip.runner.sanitized-provider-fixture.v1",
+  "provider": "opencode",
+  "parts": [
+    {
+      "id": "fixture-search",
+      "type": "websearch",
+      "query": "sanitized protocol query",
+      "state": { "status": "completed" }
+    },
+    {
+      "id": "fixture-tool",
+      "type": "tool",
+      "tool": "node_test",
+      "callID": "functions.node_test:0",
+      "state": { "status": "completed", "output": "1 test passed", "exit": 0 }
+    }
+  ]
+}

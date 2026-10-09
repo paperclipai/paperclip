@@ -3,13 +3,17 @@ import type { Readable } from "node:stream";
 
 export interface PutObjectInput {
   objectKey: string;
-  body: Buffer;
+  // Readable bodies stream straight to the backend (contentLength must be the
+  // exact byte size); Buffer stays supported for small payloads.
+  body: Buffer | Readable;
   contentType: string;
   contentLength: number;
 }
 
 export interface GetObjectInput {
   objectKey: string;
+  // S3 reads cancel pending requests and their response streams.
+  signal?: AbortSignal;
   range?: {
     start: number;
     end: number;
@@ -40,13 +44,14 @@ export interface StorageProvider {
   deleteObject(input: GetObjectInput): Promise<void>;
 }
 
-export interface PutFileInput {
+export type PutFileInput = {
+  /** Server-allocated, company-prefixed key for durable idempotent uploads. Never accept from client input. */
+  objectKey?: string;
   companyId: string;
   namespace: string;
   originalFilename: string | null;
   contentType: string;
-  body: Buffer;
-}
+} & ({ body: Buffer } | { body: Readable; byteSize: number; sha256: string });
 
 export interface PutFileResult {
   provider: StorageProviderId;

@@ -19,24 +19,30 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # Adjust the node user's UID/GID if they differ from the runtime request
-# and fix volume ownership only when a remap is needed
-changed=0
-
 if [ "$(id -u node)" -ne "$PUID" ]; then
     echo "Updating node UID to $PUID"
     usermod -o -u "$PUID" node
-    changed=1
 fi
 
 if [ "$(id -g node)" -ne "$PGID" ]; then
     echo "Updating node GID to $PGID"
     groupmod -o -g "$PGID" node
     usermod -g "$PGID" node
-    changed=1
 fi
 
-if [ "$changed" = "1" ]; then
-    chown -R node:node /paperclip
+# Ensure the app home is owned by the runtime user BEFORE dropping
+# privileges -- not only after a UID/GID remap. A freshly mounted volume
+# (Docker named volume, Railway volume, Kubernetes PV) arrives root-owned
+# and shadows the image's build-time chown, so with the default UID the old
+# remap-only condition dropped privileges onto an unwritable home and the
+# server crashed on its first mkdir. The probe is a first-mismatch find
+# over the WHOLE tree (uid and gid): a root-owned mount or descendant
+# (init containers, backup restores, files written before a remap) is
+# found immediately and repaired recursively, a GID-only remap is caught,
+# and a fully-correct tree costs one metadata-only walk with no chown.
+home_dir="${PAPERCLIP_HOME:-/paperclip}"
+if [ -d "$home_dir" ] && [ -n "$(find "$home_dir" \( ! -user node -o ! -group node \) -print -quit 2>/dev/null)" ]; then
+    chown -R node:node "$home_dir"
 fi
 
 exec gosu node "$@"

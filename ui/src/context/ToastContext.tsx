@@ -13,7 +13,10 @@ export type ToastTone = "info" | "success" | "warn" | "error";
 
 export interface ToastAction {
   label: string;
-  href: string;
+  /** Navigate on click (mutually exclusive with `onClick`). */
+  href?: string;
+  /** Run a callback on click, e.g. an undo (mutually exclusive with `href`). */
+  onClick?: () => void;
 }
 
 export interface ToastInput {
@@ -188,6 +191,10 @@ export function useToastActions() {
 
 export function useOptionalToastActions() {
   return useContext(ToastActionsContext);
+}
+
+export function useOptionalToastState() {
+  return useContext(ToastStateContext);
 }
 
 export function useToast() {

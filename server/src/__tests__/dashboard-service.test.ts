@@ -6,6 +6,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { dashboardService, getUtcMonthStart } from "../services/dashboard.ts";
+import { selectDashboardRunIds } from "../services/dashboard-run-selection.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -54,6 +55,42 @@ describeEmbeddedPostgres("dashboard service", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("selects distinct task cards before limiting and keeps taskless runs separate", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const repeatedIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+    const activeRunId = randomUUID();
+    const otherTaskRunId = randomUUID();
+    const tasklessRunId = randomUUID();
+
+    await db.insert(companies).values([
+      { id: companyId, name: "Dashboard cards", issuePrefix: "CARDS" },
+      { id: otherCompanyId, name: "Other company", issuePrefix: "OTHER" },
+    ]);
+    await db.insert(agents).values([
+      { id: agentId, companyId, name: "Builder", role: "engineer", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: otherAgentId, companyId: otherCompanyId, name: "Other", role: "engineer", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      ...Array.from({ length: 6 }, (_, index) => ({
+        id: randomUUID(), companyId, agentId, status: "succeeded",
+        contextSnapshot: { issueId: repeatedIssueId },
+        createdAt: new Date(`2026-04-10T10:0${index}:00.000Z`),
+      })),
+      { id: activeRunId, companyId, agentId, status: "running", contextSnapshot: { issueId: repeatedIssueId }, createdAt: new Date("2026-04-10T08:00:00.000Z") },
+      { id: otherTaskRunId, companyId, agentId, status: "succeeded", contextSnapshot: { issueId: otherIssueId }, createdAt: new Date("2026-04-10T09:04:00.000Z") },
+      { id: tasklessRunId, companyId, agentId, status: "succeeded", createdAt: new Date("2026-04-10T09:03:00.000Z") },
+      { id: randomUUID(), companyId: otherCompanyId, agentId: otherAgentId, status: "running", contextSnapshot: { issueId: otherIssueId }, createdAt: new Date("2026-04-10T11:00:00.000Z") },
+    ]);
+
+    expect(await selectDashboardRunIds(db, companyId, 3)).toEqual([
+      activeRunId, otherTaskRunId, tasklessRunId,
+    ]);
   });
 
   it("aggregates the full 14-day run activity window without recent-run truncation", async () => {
@@ -156,14 +193,85 @@ describeEmbeddedPostgres("dashboard service", () => {
     expect(todayBucket).toMatchObject({
       succeeded: 105,
       failed: 0,
+      recovered: 0,
       other: 0,
       total: 105,
+      failedByErrorCode: {},
     });
     expect(weekAgoBucket).toMatchObject({
       succeeded: 0,
       failed: 2,
+      recovered: 0,
       other: 1,
       total: 3,
+      // failed + timed_out with no error code both bucket under "unknown"
+      failedByErrorCode: { unknown: 2 },
     });
+  });
+
+  it("separates recovered restart kills from true failures and breaks failures down by error code", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const day = utcDay(-2);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const base = {
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      createdAt: day,
+    };
+
+    // Direct recovery: a process-loss kill whose retry succeeded.
+    const original = randomUUID();
+    const retry = randomUUID();
+    // Chained recovery: kill -> failed retry -> succeeded retry (both kills recovered).
+    const chainedOriginal = randomUUID();
+    const chainedRetry = randomUUID();
+    const chainedRetrySuccess = randomUUID();
+    // A genuine, unrecovered failure that should remain in the failed count.
+    const trueFailure = randomUUID();
+
+    await db.insert(heartbeatRuns).values([
+      { ...base, id: original, status: "failed", errorCode: "process_lost" },
+      { ...base, id: retry, status: "succeeded", retryOfRunId: original },
+      { ...base, id: chainedOriginal, status: "failed", errorCode: "process_lost" },
+      { ...base, id: chainedRetry, status: "failed", errorCode: "process_lost", retryOfRunId: chainedOriginal },
+      { ...base, id: chainedRetrySuccess, status: "succeeded", retryOfRunId: chainedRetry },
+      { ...base, id: trueFailure, status: "failed", errorCode: "provider_quota" },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+    const bucket = summary.runActivity.find((b) => b.date === utcDateKey(day));
+
+    expect(bucket).toMatchObject({
+      succeeded: 2,
+      // original + chainedOriginal + chainedRetry all recovered via a later success
+      recovered: 3,
+      failed: 1,
+      other: 0,
+      total: 6,
+      failedByErrorCode: { provider_quota: 1 },
+    });
+    // process_lost kills that recovered must not leak into the failed breakdown.
+    expect(bucket?.failedByErrorCode.process_lost).toBeUndefined();
   });
 });

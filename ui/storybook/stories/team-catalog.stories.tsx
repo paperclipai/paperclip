@@ -265,6 +265,7 @@ export const InstallPreview: Story = {
           nameOverrides={names}
           onRename={(slug, name) => setNames((c) => ({ ...c, [slug]: name }))}
           adapterOverrides={adapters}
+          selectableAdapterTypes={["claude_local", "codex_local"]}
           onAdapterChange={(slug, t) => setAdapters((c) => ({ ...c, [slug]: t }))}
           onRetry={noop}
         />
@@ -286,6 +287,7 @@ export const InstallPreviewBlocked: Story = {
         nameOverrides={{}}
         onRename={noop}
         adapterOverrides={{}}
+        selectableAdapterTypes={["claude_local", "codex_local"]}
         onAdapterChange={noop}
         onRetry={noop}
       />
@@ -352,7 +354,9 @@ export const InstallSuccess: Story = {
               { slug: "cto", id: "a2", action: "created", name: "CTO", reason: null },
               { slug: "cmo", id: "a3", action: "created", name: "CMO (from Core Exec Team)", reason: null },
             ],
+            skills: [],
             projects: [{ slug: "launch", id: "p1", action: "created", name: "Launch", reason: null }],
+            routines: [],
             envInputs: [],
             warnings: [],
           },

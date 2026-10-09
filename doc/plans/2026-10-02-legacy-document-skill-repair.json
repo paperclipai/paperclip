@@ -1,0 +1,1187 @@
+{
+  "schema": "paperclip.legacy-document-skill-repair.safe-comparison/v1",
+  "asOf": "2026-10-02T21:22:00Z",
+  "partial": false,
+  "expectedCellsPerVariant": 4,
+  "expectedProviderTurnsPerVariant": 4,
+  "candidateSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+  "baselineSha": "bc83fe030234439ac51279502a28803958963e2e",
+  "originalMachinePairedDelta": {
+    "newFailures": 0,
+    "newPasses": 1,
+    "unchangedPasses": 1,
+    "unchangedFailures": 2,
+    "pending": 0
+  },
+  "observedBehavioralDeteriorations": [
+    "OpenCode explicit case: candidate lacks a clickable link, while baseline provided a clickable API document URL. Both fail original UI-only oracle; equal machine verdicts hide this presentation deterioration."
+  ],
+  "baseline": [
+    {
+      "executionId": "stock-harness.legacy-claude.local.assigned-skill-explicit-invocation",
+      "profileId": "legacy-claude",
+      "caseId": "assigned-skill-explicit-invocation",
+      "status": "failed",
+      "model": "claude-sonnet-4-6",
+      "durationMs": 34592,
+      "cleanup": "passed",
+      "billing": {
+        "llm": {
+          "runCount": 1,
+          "runsWithTokenUsage": 1,
+          "runsWithReportedCost": 1,
+          "inputTokens": 28439,
+          "outputTokens": 1137,
+          "cachedInputTokens": 143829,
+          "totalTokens": 173405,
+          "reportedCostUsd": 0.16683944999999997,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 23032,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.16683944999999997,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.16683944999999997,
+        "complete": true
+      },
+      "sourceSha": "bc83fe030234439ac51279502a28803958963e2e",
+      "providerDurationMs": 23032,
+      "resultSha256": "67bcbe152852280b58fec97754601c57c416c2cb7965de55557240b8448dca63",
+      "contextEvidenceSha256": "9bc59db9678a3f5cfc207d1aeeec1f868f94429a7a10d8d214621f286532a1b7",
+      "failedBehaviorChecks": [
+        "single-durable-output"
+      ],
+      "publicDocumentCount": 0,
+      "savedRevisionEvidence": false,
+      "runPurposes": [
+        "assignment"
+      ],
+      "prerequisites": {
+        "passed": true,
+        "sourceSha": "bc83fe030234439ac51279502a28803958963e2e",
+        "sourceFingerprint": "27fbbc1792dca136c9c72dd492ff16c18bce0638ce4979985d798cde85175201",
+        "providerCallsBeforeAdmission": 0,
+        "executedChecks": 571
+      }
+    },
+    {
+      "executionId": "stock-harness.legacy-claude.local.assigned-skill-paperclip-document",
+      "profileId": "legacy-claude",
+      "caseId": "assigned-skill-paperclip-document",
+      "status": "passed",
+      "model": "claude-sonnet-4-6",
+      "durationMs": 50778,
+      "cleanup": "passed",
+      "billing": {
+        "llm": {
+          "runCount": 1,
+          "runsWithTokenUsage": 1,
+          "runsWithReportedCost": 1,
+          "inputTokens": 27675,
+          "outputTokens": 2062,
+          "cachedInputTokens": 216852,
+          "totalTokens": 246589,
+          "reportedCostUsd": 0.19975709999999997,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 34999,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.19975709999999997,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.19975709999999997,
+        "complete": true
+      },
+      "sourceSha": "bc83fe030234439ac51279502a28803958963e2e",
+      "providerDurationMs": 34999,
+      "resultSha256": "bca45a760fc5ec30ae8f154d9ec52ab4073b3ce2375256b8718f91200cb79d4e",
+      "contextEvidenceSha256": "473f3b417e71ee823ae9aad2596c7f1379b3fd5cf8d8fd540c30a4f3a2e10e21",
+      "failedBehaviorChecks": [],
+      "publicDocumentCount": 1,
+      "savedRevisionEvidence": true,
+      "runPurposes": [
+        "assignment"
+      ],
+      "prerequisites": {
+        "passed": true,
+        "sourceSha": "bc83fe030234439ac51279502a28803958963e2e",
+        "sourceFingerprint": "27fbbc1792dca136c9c72dd492ff16c18bce0638ce4979985d798cde85175201",
+        "providerCallsBeforeAdmission": 0,
+        "executedChecks": 571
+      }
+    },
+    {
+      "executionId": "stock-harness.legacy-opencode.local.assigned-skill-explicit-invocation",
+      "profileId": "legacy-opencode",
+      "caseId": "assigned-skill-explicit-invocation",
+      "status": "failed",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "durationMs": 47625,
+      "cleanup": "passed",
+      "billing": {
+        "llm": {
+          "runCount": 1,
+          "runsWithTokenUsage": 1,
+          "runsWithReportedCost": 1,
+          "inputTokens": 24068,
+          "outputTokens": 1960,
+          "cachedInputTokens": 149248,
+          "totalTokens": 175276,
+          "reportedCostUsd": 0.0033927116000000003,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 36770,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.0033927116000000003,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.0033927116000000003,
+        "complete": true
+      },
+      "sourceSha": "bc83fe030234439ac51279502a28803958963e2e",
+      "providerDurationMs": 36770,
+      "resultSha256": "a322e292fd7688c714cc8e57e7f64ca70c19f0784dc242b3e809a6e4b0be224e",
+      "contextEvidenceSha256": "3e295ec42b9c7208a7e4b17bf8329d9e1f01ba984c4a586539d7a703ffd59bf6",
+      "failedBehaviorChecks": [
+        "single-durable-output"
+      ],
+      "publicDocumentCount": 0,
+      "savedRevisionEvidence": false,
+      "runPurposes": [
+        "assignment"
+      ],
+      "prerequisites": {
+        "passed": true,
+        "sourceSha": "bc83fe030234439ac51279502a28803958963e2e",
+        "sourceFingerprint": "27fbbc1792dca136c9c72dd492ff16c18bce0638ce4979985d798cde85175201",
+        "providerCallsBeforeAdmission": 0,
+        "executedChecks": 571
+      }
+    },
+    {
+      "executionId": "stock-harness.legacy-opencode.local.assigned-skill-paperclip-document",
+      "profileId": "legacy-opencode",
+      "caseId": "assigned-skill-paperclip-document",
+      "status": "failed",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "durationMs": 217620,
+      "cleanup": "passed",
+      "billing": {
+        "llm": {
+          "runCount": 1,
+          "runsWithTokenUsage": 1,
+          "runsWithReportedCost": 1,
+          "inputTokens": 78795,
+          "outputTokens": 4331,
+          "cachedInputTokens": 846848,
+          "totalTokens": 929974,
+          "reportedCostUsd": 0.0102644593,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 206191,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.0102644593,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.0102644593,
+        "complete": true
+      },
+      "sourceSha": "bc83fe030234439ac51279502a28803958963e2e",
+      "providerDurationMs": 206191,
+      "resultSha256": "60dfb068ea80d0155d93fdace77a29fd19d64bdb0740e6e6b63f7e83ccfb5ded",
+      "contextEvidenceSha256": "23eed2766b5e8db9cea0ba5c76da235cf2d4222fa5718420cc60d6e13c86fa06",
+      "failedBehaviorChecks": [
+        "saved-document-link"
+      ],
+      "publicDocumentCount": 1,
+      "savedRevisionEvidence": true,
+      "runPurposes": [
+        "assignment"
+      ],
+      "prerequisites": {
+        "passed": true,
+        "sourceSha": "bc83fe030234439ac51279502a28803958963e2e",
+        "sourceFingerprint": "27fbbc1792dca136c9c72dd492ff16c18bce0638ce4979985d798cde85175201",
+        "providerCallsBeforeAdmission": 0,
+        "executedChecks": 571
+      },
+      "observedHandoff": "clickable API document URL; rejected by UI-only link oracle"
+    }
+  ],
+  "candidate": [
+    {
+      "executionId": "stock-harness.legacy-claude.local.assigned-skill-explicit-invocation",
+      "profileId": "legacy-claude",
+      "caseId": "assigned-skill-explicit-invocation",
+      "status": "passed",
+      "model": "claude-sonnet-4-6",
+      "durationMs": 46702,
+      "cleanup": "passed",
+      "billing": {
+        "llm": {
+          "runCount": 1,
+          "runsWithTokenUsage": 1,
+          "runsWithReportedCost": 1,
+          "inputTokens": 40330,
+          "outputTokens": 1336,
+          "cachedInputTokens": 185090,
+          "totalTokens": 226756,
+          "reportedCostUsd": 0.22679475,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 27702,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.22679475,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.22679475,
+        "complete": true
+      },
+      "sourceSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+      "providerDurationMs": 27702,
+      "resultSha256": "2f66f62dc2f16756400a0f5b0b0d55e5c9f5f7cb2590d84ba05f3d4ee6b4ad66",
+      "contextEvidenceSha256": "c5619df489213873db64d35424b08f9852b0099bab07e92d3a71f993008de389",
+      "failedBehaviorChecks": [],
+      "publicDocumentCount": 1,
+      "savedRevisionEvidence": true,
+      "runPurposes": [
+        "assignment"
+      ],
+      "prerequisites": {
+        "passed": true,
+        "sourceSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+        "sourceFingerprint": "441999ae2618f1f1e9f430c099bbef63d2948495599f0d8b342d8e5f027a7f4c",
+        "providerCallsBeforeAdmission": 0,
+        "executedChecks": 571
+      }
+    },
+    {
+      "executionId": "stock-harness.legacy-claude.local.assigned-skill-paperclip-document",
+      "profileId": "legacy-claude",
+      "caseId": "assigned-skill-paperclip-document",
+      "status": "passed",
+      "model": "claude-sonnet-4-6",
+      "durationMs": 56928,
+      "cleanup": "passed",
+      "billing": {
+        "llm": {
+          "runCount": 1,
+          "runsWithTokenUsage": 1,
+          "runsWithReportedCost": 1,
+          "inputTokens": 42017,
+          "outputTokens": 2468,
+          "cachedInputTokens": 205226,
+          "totalTokens": 249711,
+          "reportedCostUsd": 0.25614254999999997,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 40513,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.25614254999999997,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.25614254999999997,
+        "complete": true
+      },
+      "sourceSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+      "providerDurationMs": 40513,
+      "resultSha256": "8a0ef693477a03925d8166d1872b5db4f5547ae48eb9df934beabcce9eccf147",
+      "contextEvidenceSha256": "f7aba5c9653567a0c3ee252d01fbcee20c81c432b4402d76c7e00221b6917f2e",
+      "failedBehaviorChecks": [],
+      "publicDocumentCount": 1,
+      "savedRevisionEvidence": true,
+      "runPurposes": [
+        "assignment"
+      ],
+      "prerequisites": {
+        "passed": true,
+        "sourceSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+        "sourceFingerprint": "441999ae2618f1f1e9f430c099bbef63d2948495599f0d8b342d8e5f027a7f4c",
+        "providerCallsBeforeAdmission": 0,
+        "executedChecks": 571
+      }
+    },
+    {
+      "executionId": "stock-harness.legacy-opencode.local.assigned-skill-explicit-invocation",
+      "profileId": "legacy-opencode",
+      "caseId": "assigned-skill-explicit-invocation",
+      "status": "failed",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "durationMs": 79578,
+      "cleanup": "passed",
+      "billing": {
+        "llm": {
+          "runCount": 2,
+          "runsWithTokenUsage": 2,
+          "runsWithReportedCost": 2,
+          "inputTokens": 54946,
+          "outputTokens": 2264,
+          "cachedInputTokens": 169472,
+          "totalTokens": 226682,
+          "reportedCostUsd": 0.0047148437000000005,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 68032,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.0047148437000000005,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.0047148437000000005,
+        "complete": true
+      },
+      "sourceSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+      "providerDurationMs": 68032,
+      "resultSha256": "f807c235250d8675d29aa34fc97d0e89be2c7ea885edfc2f3845627037552c0b",
+      "contextEvidenceSha256": "0dc98ad8ef1f22d69c3a3d7344082a6d5a0effc8d9c73c5d4c1267c92800b57a",
+      "failedBehaviorChecks": [
+        "single-durable-output"
+      ],
+      "publicDocumentCount": 0,
+      "savedRevisionEvidence": false,
+      "runPurposes": [
+        "assignment",
+        "issue_disposition_repair"
+      ],
+      "prerequisites": {
+        "passed": true,
+        "sourceSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+        "sourceFingerprint": "441999ae2618f1f1e9f430c099bbef63d2948495599f0d8b342d8e5f027a7f4c",
+        "providerCallsBeforeAdmission": 0,
+        "executedChecks": 571
+      }
+    },
+    {
+      "executionId": "stock-harness.legacy-opencode.local.assigned-skill-paperclip-document",
+      "profileId": "legacy-opencode",
+      "caseId": "assigned-skill-paperclip-document",
+      "status": "failed",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+      "durationMs": 59941,
+      "cleanup": "passed",
+      "billing": {
+        "llm": {
+          "runCount": 1,
+          "runsWithTokenUsage": 1,
+          "runsWithReportedCost": 1,
+          "inputTokens": 33724,
+          "outputTokens": 2597,
+          "cachedInputTokens": 147200,
+          "totalTokens": 183521,
+          "reportedCostUsd": 0.0042468724,
+          "costStatus": "reported"
+        },
+        "runtime": {
+          "provider": "local",
+          "agentRunDurationMs": 46300,
+          "leaseDurationMs": null,
+          "leaseCount": 0,
+          "costStatus": "not_metered",
+          "costSource": "local_not_metered"
+        },
+        "reportedCostUsd": 0.0042468724,
+        "estimatedRuntimeCostUsd": 0,
+        "observedAndEstimatedCostUsd": 0.0042468724,
+        "complete": true
+      },
+      "sourceSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+      "providerDurationMs": 46300,
+      "resultSha256": "cff6e5bf4b6b646ae6f9b5a6a2934c444c37a14f50b591f5226ccac0e4de1dda",
+      "contextEvidenceSha256": "6c943d78291c1e493cb29ca3a52dcb96d186fd18ed51e4cfb17055649162f6f2",
+      "failedBehaviorChecks": [
+        "saved-document-link"
+      ],
+      "publicDocumentCount": 1,
+      "savedRevisionEvidence": true,
+      "runPurposes": [
+        "assignment"
+      ],
+      "prerequisites": {
+        "passed": true,
+        "sourceSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+        "sourceFingerprint": "441999ae2618f1f1e9f430c099bbef63d2948495599f0d8b342d8e5f027a7f4c",
+        "providerCallsBeforeAdmission": 0,
+        "executedChecks": 571
+      },
+      "observedHandoff": "code-formatted prefix-less UI document path; no clickable anchor"
+    }
+  ],
+  "matchedProfileProof": {
+    "schema": "paperclip.legacy-document-skill-repair.fixture-match-proof/v1",
+    "cells": [
+      {
+        "executionId": "stock-harness.legacy-claude.local.assigned-skill-explicit-invocation",
+        "fixtureConfigSha256": "6c21be9bb3fcec6274372fc586d88e42d82bc0d438e26a69ef614f8e6fcb8519",
+        "model": "claude-sonnet-4-6"
+      },
+      {
+        "executionId": "stock-harness.legacy-claude.local.assigned-skill-paperclip-document",
+        "fixtureConfigSha256": "ea1cd67b0f68ef3830c011768d1a1133b5828c602d5ae3e021889dcd72708344",
+        "model": "claude-sonnet-4-6"
+      },
+      {
+        "executionId": "stock-harness.legacy-opencode.local.assigned-skill-explicit-invocation",
+        "fixtureConfigSha256": "dd673f469cab583d26bc2e4b484f18b27884ec14a59542177026389181e2da2c",
+        "model": "openrouter/deepseek/deepseek-v4-flash-0731"
+      },
+      {
+        "executionId": "stock-harness.legacy-opencode.local.assigned-skill-paperclip-document",
+        "fixtureConfigSha256": "b5173358d664ab6b3daa67d8758f18d59ec99cb9c485c02ccf953a9f8375e01e",
+        "model": "openrouter/deepseek/deepseek-v4-flash-0731"
+      }
+    ]
+  },
+  "identicalSourceCount": 203,
+  "skillSources": [
+    {
+      "path": "skills/paperclip/SKILL.md",
+      "candidate": {
+        "present": true,
+        "sha256": "65e379cab319bfef5911c0f6c9423cb262c9b8f1fef3fd08d45c1e4f32f8971a"
+      },
+      "baseline": {
+        "present": true,
+        "sha256": "77aafc0c7b16a82254af642f0ebff723dcef7d7fbb6d3354efc0c11032e0344d"
+      }
+    },
+    {
+      "path": "skills/paperclip/references/issue-documents.md",
+      "candidate": {
+        "present": true,
+        "sha256": "353845a406b1b4948487c348c86eb7b8c89a55ae67afe203100eee10aee46336"
+      },
+      "baseline": {
+        "present": false,
+        "sha256": null
+      }
+    }
+  ],
+  "toolDeliveryAudit": {
+    "schema": "paperclip.legacy-document-repair.tool-audit/v1",
+    "rows": [
+      {
+        "variant": "candidate",
+        "case": "assigned-skill-paperclip-document",
+        "sourceSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+        "runOrdinal": 1,
+        "runPurpose": "assignment",
+        "startedAt": "2026-10-02T20:37:40.215Z",
+        "contextEvidenceSha256": "6c943d78291c1e493cb29ca3a52dcb96d186fd18ed51e4cfb17055649162f6f2",
+        "toolCalls": [
+          {
+            "tool": "skill",
+            "skill": "context-integrity-output-7b55f897b3b41",
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "skill",
+            "skill": "paperclip",
+            "operationalSkillLoad": true,
+            "earlyRecipeVisible": true,
+            "newReferencePointerVisible": true,
+            "newReferenceRead": false,
+            "outputTruncated": true,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "read",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": true,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": true,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": true
+          }
+        ]
+      },
+      {
+        "variant": "candidate",
+        "case": "assigned-skill-explicit-invocation",
+        "sourceSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+        "runOrdinal": 1,
+        "runPurpose": "assignment",
+        "startedAt": "2026-10-02T20:37:37.587Z",
+        "contextEvidenceSha256": "0dc98ad8ef1f22d69c3a3d7344082a6d5a0effc8d9c73c5d4c1267c92800b57a",
+        "toolCalls": [
+          {
+            "tool": "skill",
+            "skill": "context-integrity-output-60e03959432b1",
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "write",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": true,
+            "documentApiCall": false,
+            "statusApiCall": false
+          }
+        ]
+      },
+      {
+        "variant": "candidate",
+        "case": "assigned-skill-explicit-invocation",
+        "sourceSha": "abd0b628ca642c09a54a4edc56a5227402f6686e",
+        "runOrdinal": 2,
+        "runPurpose": "issue_disposition_repair",
+        "startedAt": "2026-10-02T20:37:52.592Z",
+        "contextEvidenceSha256": "0dc98ad8ef1f22d69c3a3d7344082a6d5a0effc8d9c73c5d4c1267c92800b57a",
+        "toolCalls": [
+          {
+            "tool": "skill",
+            "skill": "paperclip",
+            "operationalSkillLoad": true,
+            "earlyRecipeVisible": true,
+            "newReferencePointerVisible": true,
+            "newReferenceRead": false,
+            "outputTruncated": true,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": true
+          }
+        ]
+      },
+      {
+        "variant": "baseline",
+        "case": "assigned-skill-explicit-invocation",
+        "sourceSha": "bc83fe030234439ac51279502a28803958963e2e",
+        "runOrdinal": 1,
+        "runPurpose": "assignment",
+        "startedAt": "2026-10-02T20:37:57.110Z",
+        "contextEvidenceSha256": "3e295ec42b9c7208a7e4b17bf8329d9e1f01ba984c4a586539d7a703ffd59bf6",
+        "toolCalls": [
+          {
+            "tool": "skill",
+            "skill": "context-integrity-output-816e6b4cdd6a1",
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "write",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": true,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "skill",
+            "skill": "paperclip",
+            "operationalSkillLoad": true,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": true,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": true
+          },
+          {
+            "tool": "write",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": true
+          }
+        ]
+      },
+      {
+        "variant": "baseline",
+        "case": "assigned-skill-paperclip-document",
+        "sourceSha": "bc83fe030234439ac51279502a28803958963e2e",
+        "runOrdinal": 1,
+        "runPurpose": "assignment",
+        "startedAt": "2026-10-02T20:38:02.031Z",
+        "contextEvidenceSha256": "23eed2766b5e8db9cea0ba5c76da235cf2d4222fa5718420cc60d6e13c86fa06",
+        "toolCalls": [
+          {
+            "tool": "skill",
+            "skill": "context-integrity-output-06ce9804653e1",
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "skill",
+            "skill": "paperclip",
+            "operationalSkillLoad": true,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": true,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "read",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": true,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "read",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": true,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "read",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": true,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": true,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": false,
+            "statusApiCall": false
+          },
+          {
+            "tool": "bash",
+            "skill": null,
+            "operationalSkillLoad": false,
+            "earlyRecipeVisible": false,
+            "newReferencePointerVisible": false,
+            "newReferenceRead": false,
+            "outputTruncated": false,
+            "localDocumentWrite": false,
+            "documentApiCall": true,
+            "statusApiCall": true
+          }
+        ]
+      }
+    ]
+  },
+  "limitations": [
+    "Tiny manual/shared prompts and merged native Codex base fix remain fixed; only the two operational skill sources differ.",
+    "Original task-document wording is storage-ambiguous; explicit case requests a usable link but its oracle requires the canonical UI route, so the baseline API-link failure has an oracle/request ambiguity.",
+    "Provider-free source review confirms a board-readable GET document endpoint and an unprefixed UI redirect preserving the hash; actual authenticated browser navigation in the cleaned-up measured instance was not replayed.",
+    "One paired trial cannot establish broad performance, causality, timing or spending improvement.",
+    "Candidate OpenCode original has an additional automatic disposition-repair run; all nine actual runs and costs are retained.",
+    "Local runtime is unmetered; reported LLM cost is not a statement of actual external billing.",
+    "Subsequent generated capability metadata and pre-provider drift checks are derived maintenance after these measured frozen revisions, not a new provider qualification."
+  ]
+}

@@ -9,6 +9,5 @@
       "@paperclipai/plugin-sdk": ["../../sdk/dist/index.d.ts"]
     }
   },
-  "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  "include": ["src"]
 }

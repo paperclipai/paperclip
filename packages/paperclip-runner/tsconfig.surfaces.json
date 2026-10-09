@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": [
+    "src/browser/**/*.ts",
+    "src/devtools/**/*.ts",
+    "src/issue-thread/**/*.ts",
+    "src/react/**/*.ts",
+    "src/react/**/*.tsx",
+    "src/scenarios/**/*.ts",
+    "src/standalone/**/*.ts"
+  ],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+}

@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
@@ -55,12 +55,28 @@ function registerModuleMocks() {
   vi.doMock("node:child_process", async () => vi.importActual("node:child_process"));
   vi.doMock("../adapters/plugin-loader.js", () => mockPluginLoader);
   vi.doMock("../services/adapter-plugin-store.js", () => mockAdapterPluginStore);
-  vi.doMock("../routes/adapters.js", async () => vi.importActual("../routes/adapters.js"));
-  vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
-  vi.doMock("../middleware/index.js", async () => vi.importActual("../middleware/index.js"));
 }
 
-function createApp(actorOverrides: Partial<Express.Request["actor"]> = {}) {
+function resetAdapterMocks() {
+  vi.resetAllMocks();
+  mockAdapterPluginStore.listAdapterPlugins.mockReturnValue([]);
+  mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
+  mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
+  mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
+  mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-routes-test");
+  mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
+  mockAdapterPluginStore.setAdapterDisabled.mockReturnValue(false);
+  mockPluginLoader.buildExternalAdapters.mockResolvedValue([]);
+  mockPluginLoader.loadExternalAdapterPackage.mockResolvedValue(null);
+  mockPluginLoader.getUiParserSource.mockResolvedValue(null);
+  mockPluginLoader.getOrExtractUiParserSource.mockResolvedValue(null);
+  mockPluginLoader.reloadExternalAdapter.mockResolvedValue(null);
+}
+
+function createApp(
+  actorOverrides: Partial<Express.Request["actor"]> = {},
+  options: Parameters<typeof adapterRoutes>[0] = {},
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -74,39 +90,20 @@ function createApp(actorOverrides: Partial<Express.Request["actor"]> = {}) {
     };
     next();
   });
-  app.use("/api", adapterRoutes());
+  app.use("/api", adapterRoutes(options));
   app.use(errorHandler);
   return app;
 }
 
 describe("adapter routes", () => {
-  beforeEach(async () => {
-    vi.resetModules();
-    vi.doUnmock("node:child_process");
-    vi.doUnmock("../adapters/registry.js");
-    vi.doUnmock("../adapters/plugin-loader.js");
-    vi.doUnmock("../services/adapter-plugin-store.js");
-    vi.doUnmock("../routes/adapters.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
+  // Keep the route and middleware on one module graph so HttpError retains
+  // its identity. Reset mock state and adapter overrides between tests.
+  beforeAll(async () => {
     registerModuleMocks();
-    mockAdapterPluginStore.listAdapterPlugins.mockReturnValue([]);
-    mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
-    mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
-    mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
-    mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-routes-test");
-    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
-    mockAdapterPluginStore.setAdapterDisabled.mockReturnValue(false);
-    mockPluginLoader.buildExternalAdapters.mockResolvedValue([]);
-    mockPluginLoader.loadExternalAdapterPackage.mockResolvedValue(null);
-    mockPluginLoader.getUiParserSource.mockResolvedValue(null);
-    mockPluginLoader.getOrExtractUiParserSource.mockResolvedValue(null);
-    mockPluginLoader.reloadExternalAdapter.mockResolvedValue(null);
-    const [registry, routes, middleware] = await Promise.all([
-      vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
-      import("../routes/adapters.js"),
-      import("../middleware/index.js"),
-    ]);
+    resetAdapterMocks();
+    const registry = await import("../adapters/registry.js");
+    const routes = await import("../routes/adapters.js");
+    const middleware = await import("../middleware/index.js");
     registerServerAdapter = registry.registerServerAdapter;
     unregisterServerAdapter = registry.unregisterServerAdapter;
     findServerAdapter = registry.findServerAdapter;
@@ -114,6 +111,10 @@ describe("adapter routes", () => {
     setOverridePaused = registry.setOverridePaused;
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;
+  });
+
+  beforeEach(() => {
+    resetAdapterMocks();
     setOverridePaused("claude_local", false);
     unregisterServerAdapter("hermes_local");
     unregisterServerAdapter("claude_local");
@@ -142,7 +143,36 @@ describe("adapter routes", () => {
       expect(typeof adapter.capabilities.supportsSkills).toBe("boolean");
       expect(typeof adapter.capabilities.supportsLocalAgentJwt).toBe("boolean");
       expect(typeof adapter.capabilities.requiresMaterializedRuntimeSkills).toBe("boolean");
+      expect(typeof adapter.capabilities.supportsAcp).toBe("boolean");
     }
+  });
+
+  it("keeps paperclip_runner hidden from selection unless the rollout flag is enabled", async () => {
+    const disabledResponse = await request(createApp()).get("/api/adapters");
+    expect(disabledResponse.status).toBe(200);
+    expect(disabledResponse.body.find((adapter: any) => adapter.type === "paperclip_runner"))
+      .toMatchObject({ disabled: true });
+
+    const enabledResponse = await request(createApp({}, {
+      getNativeRunnerEnabled: async () => true,
+    })).get("/api/adapters");
+    expect(enabledResponse.status).toBe(200);
+    expect(enabledResponse.body.find((adapter: any) => adapter.type === "paperclip_runner"))
+      .toMatchObject({
+        disabled: false,
+        capabilities: {
+          supportsInstructionsBundle: true,
+        },
+      });
+  });
+
+  it("keeps the shared implementation available for Dot independently, while honoring adapter-admin disabling", async () => {
+    const options = { getNativeRunnerEnabled: async () => false, getOpenAiDotEnabled: async () => true };
+    const enabled = await request(createApp({}, options)).get("/api/adapters");
+    expect(enabled.body.find((adapter: any) => adapter.type === "paperclip_runner")).toMatchObject({ disabled: false });
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["paperclip_runner"]);
+    const disabled = await request(createApp({}, options)).get("/api/adapters");
+    expect(disabled.body.find((adapter: any) => adapter.type === "paperclip_runner")).toMatchObject({ disabled: true });
   });
 
   it("GET /api/adapters returns correct capabilities for built-in adapters", async () => {
@@ -160,6 +190,15 @@ describe("adapter routes", () => {
       supportsSkills: true,
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
+      supportsAcp: true,
+    });
+    expect(codexLocal.acp).toMatchObject({
+      agentId: "codex",
+      skillsMode: "ephemeral",
+      prerequisites: {
+        nodeRange: ">=24.11.0",
+        packages: ["@agentclientprotocol/codex-acp"],
+      },
     });
 
     // process adapter should have no local capabilities
@@ -168,8 +207,9 @@ describe("adapter routes", () => {
     expect(processAdapter.capabilities).toMatchObject({
       supportsInstructionsBundle: false,
       supportsSkills: false,
-      supportsLocalAgentJwt: false,
+      supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
+      supportsAcp: false,
     });
 
     // cursor adapter should require materialized runtime skills
@@ -177,6 +217,25 @@ describe("adapter routes", () => {
     expect(cursorAdapter).toBeDefined();
     expect(cursorAdapter.capabilities.requiresMaterializedRuntimeSkills).toBe(true);
     expect(cursorAdapter.capabilities.supportsInstructionsBundle).toBe(true);
+    expect(cursorAdapter.capabilities.supportsAcp).toBe(false);
+
+    const geminiAdapter = res.body.find((a: any) => a.type === "gemini_local");
+    expect(geminiAdapter).toBeDefined();
+    expect(geminiAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: true,
+      supportsAcp: true,
+    });
+    expect(geminiAdapter.acp).toMatchObject({
+      agentId: "gemini",
+      skillsMode: "ephemeral",
+      prerequisites: {
+        nodeRange: ">=24.11.0",
+        packages: ["@google/gemini-cli"],
+      },
+    });
 
     const grokAdapter = res.body.find((a: any) => a.type === "grok_local");
     expect(grokAdapter).toBeDefined();
@@ -185,6 +244,25 @@ describe("adapter routes", () => {
       supportsSkills: true,
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: true,
+      supportsAcp: false,
+    });
+
+    const kimiAdapter = res.body.find((a: any) => a.type === "kimi_local");
+    expect(kimiAdapter).toBeDefined();
+    expect(kimiAdapter.capabilities).toMatchObject({
+      supportsInstructionsBundle: true,
+      supportsSkills: true,
+      supportsLocalAgentJwt: true,
+      requiresMaterializedRuntimeSkills: true,
+      supportsAcp: true,
+    });
+    expect(kimiAdapter.acp).toMatchObject({
+      agentId: "kimi",
+      skillsMode: "ephemeral",
+      prerequisites: {
+        nodeRange: ">=20.0.0",
+        packages: ["@moonshot-ai/kimi-code"],
+      },
     });
 
     const hermesLocal = res.body.find((a: any) => a.type === "hermes_local");
@@ -195,6 +273,7 @@ describe("adapter routes", () => {
       supportsSkills: true,
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
+      supportsAcp: false,
     });
 
     const hermesGateway = res.body.find((a: any) => a.type === "hermes_gateway");
@@ -205,6 +284,7 @@ describe("adapter routes", () => {
       supportsSkills: false,
       supportsLocalAgentJwt: false,
       requiresMaterializedRuntimeSkills: false,
+      supportsAcp: false,
     });
   });
 
@@ -224,10 +304,10 @@ describe("adapter routes", () => {
     expect(codexLocal).toBeDefined();
     expect(codexLocal.capabilities.supportsSkills).toBe(true);
 
-    // acpx_local exposes runtime-aware skill snapshots for Claude/Codex/custom ACP agents
+    // acpx_local remains registered only as a tombstone for legacy rows.
     const acpxLocal = res.body.find((a: any) => a.type === "acpx_local");
     expect(acpxLocal).toBeDefined();
-    expect(acpxLocal.capabilities.supportsSkills).toBe(true);
+    expect(acpxLocal.capabilities.supportsSkills).toBe(false);
   });
 
   it("uses the active adapter when resolving config schema for a paused builtin override", async () => {
@@ -251,27 +331,94 @@ describe("adapter routes", () => {
     });
   });
 
-  it("serves the built-in acpx_local config schema", async () => {
+  it("serves an empty tombstone config schema for retired acpx_local", async () => {
     const app = createApp();
 
     const res = await request(app).get("/api/adapters/acpx_local/config-schema");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.fields).toEqual([]);
+  });
+
+  it("serves provider-scoped Paperclip Runner configuration fields", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters/paperclip_runner/config-schema");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: "provider",
+        options: expect.arrayContaining([
+          expect.objectContaining({ value: "codex" }),
+          expect.objectContaining({ value: "opencode" }),
+          expect.objectContaining({ value: "claude_managed" }),
+          expect.objectContaining({ value: "aws_agentcore" }),
+          expect.objectContaining({ value: "acpx" }),
+        ]),
+      }),
+      expect.objectContaining({
+        key: "codexPermissionMode",
+        default: "never",
+        meta: { visibleWhen: { key: "provider", value: "codex" } },
+      }),
+      expect.objectContaining({
+        key: "opencodePermissionMode",
+        default: "allow",
+        meta: { visibleWhen: { key: "provider", value: "opencode" } },
+      }),
+      expect.objectContaining({
+        key: "acpxPermissionMode",
+        default: "approve-all",
+        meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      }),
+      expect.objectContaining({
+        key: "model",
+        meta: { visibleWhen: { key: "provider", value: "opencode" } },
+      }),
+      expect.objectContaining({
+        key: "idleTimeoutMs",
+        meta: { visibleWhen: { key: "lifecycleMode", value: "warm" } },
+      }),
+    ]));
+    const acpxAgent = res.body.fields.find((field: { key?: string }) => field.key === "acpxAgent");
+    expect(acpxAgent).toMatchObject({
+      type: "select",
+      default: "claude",
+      meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      options: [
+        { value: "claude", label: "Claude" },
+        { value: "grok", label: "Grok Build" },
+      ],
+    });
+    expect(JSON.stringify(res.body)).not.toContain("Codex via ACPX");
+  });
+
+  it("serves the built-in claude_local ACP engine config schema", async () => {
+    const app = createApp();
+
+    const paused = await request(app)
+      .patch("/api/adapters/claude_local/override")
+      .send({ paused: true });
+    expect(paused.status, JSON.stringify(paused.body)).toBe(200);
+
+    const res = await request(app).get("/api/adapters/claude_local/config-schema");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.fields).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          key: "agent",
-          default: "claude",
+          key: "engine",
+          default: "auto",
           options: expect.arrayContaining([
-            expect.objectContaining({ value: "claude" }),
-            expect.objectContaining({ value: "codex" }),
-            expect.objectContaining({ value: "custom" }),
+            expect.objectContaining({ value: "auto" }),
+            expect.objectContaining({ value: "cli" }),
+            expect.objectContaining({ value: "acp" }),
           ]),
         }),
         expect.objectContaining({
-          key: "fastMode",
-          default: false,
-          meta: { visibleWhen: { key: "agent", values: ["codex"] } },
+          key: "agentCommand",
+          meta: { visibleWhen: { key: "engine", values: ["acp"] } },
         }),
         expect.objectContaining({
           key: "warmHandleIdleMs",
@@ -279,12 +426,64 @@ describe("adapter routes", () => {
         }),
       ]),
     );
-    const keys = res.body.fields.map((field: { key: string }) => field.key);
-    expect(keys).not.toContain("mode");
-    expect(keys).not.toContain("permissionMode");
-    expect(keys).not.toContain("instructionsFilePath");
-    expect(keys).not.toContain("promptTemplate");
-    expect(keys).not.toContain("bootstrapPromptTemplate");
+  });
+
+  it("serves the built-in codex_local ACP engine config schema", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters/codex_local/config-schema");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "engine",
+          default: "auto",
+          options: expect.arrayContaining([
+            expect.objectContaining({ value: "auto" }),
+            expect.objectContaining({ value: "cli" }),
+            expect.objectContaining({ value: "acp" }),
+          ]),
+        }),
+        expect.objectContaining({
+          key: "agentCommand",
+          meta: { visibleWhen: { key: "engine", values: ["acp"] } },
+        }),
+        expect.objectContaining({
+          key: "warmHandleIdleMs",
+          default: 0,
+        }),
+      ]),
+    );
+  });
+
+  it("serves the built-in gemini_local ACP engine config schema", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters/gemini_local/config-schema");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "engine",
+          default: "auto",
+          options: expect.arrayContaining([
+            expect.objectContaining({ value: "auto" }),
+            expect.objectContaining({ value: "cli" }),
+            expect.objectContaining({ value: "acp" }),
+          ]),
+        }),
+        expect.objectContaining({
+          key: "agentCommand",
+          meta: { visibleWhen: { key: "engine", values: ["acp"] } },
+        }),
+        expect.objectContaining({
+          key: "warmHandleIdleMs",
+          default: 0,
+        }),
+      ]),
+    );
   });
 
   it("serves built-in Hermes config schemas", async () => {
@@ -309,7 +508,7 @@ describe("adapter routes", () => {
     );
   });
 
-  it("GET /api/adapters includes ACPX model availability", async () => {
+  it("GET /api/adapters lists acpx_local only as a model-less tombstone", async () => {
     const app = createApp();
 
     const res = await request(app).get("/api/adapters");
@@ -317,7 +516,7 @@ describe("adapter routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const acpxLocal = res.body.find((a: any) => a.type === "acpx_local");
     expect(acpxLocal).toBeDefined();
-    expect(acpxLocal.modelsCount).toBeGreaterThan(0);
+    expect(acpxLocal.modelsCount).toBe(0);
   });
 
   it("rejects signed-in users without org access", async () => {

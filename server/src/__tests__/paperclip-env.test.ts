@@ -29,9 +29,20 @@ afterEach(() => {
 });
 
 describe("buildPaperclipEnv", () => {
-  it("prefers an explicit PAPERCLIP_RUNTIME_API_URL", () => {
+  it("prefers an explicit PAPERCLIP_API_URL override over the derived runtime URL", () => {
     process.env.PAPERCLIP_RUNTIME_API_URL = "http://203.0.113.42:3102";
     process.env.PAPERCLIP_API_URL = "http://localhost:4100";
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "3101";
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://localhost:4100");
+  });
+
+  it("falls back to PAPERCLIP_RUNTIME_API_URL when no explicit override is set", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://203.0.113.42:3102";
+    delete process.env.PAPERCLIP_API_URL;
     process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
     process.env.PAPERCLIP_LISTEN_PORT = "3101";
 

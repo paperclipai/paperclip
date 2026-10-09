@@ -99,9 +99,8 @@ export function PluginManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Plugins" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
@@ -190,7 +189,7 @@ export function PluginManager() {
   if (error) return <div className="p-4 text-sm text-destructive">Failed to load plugins.</div>;
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="max-w-6xl space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
@@ -269,7 +268,8 @@ export function PluginManager() {
             No bundled plugins were found in this checkout.
           </div>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <Card className="block py-0">
+          <ul className="divide-y">
             {bundledPlugins.map((bundledPlugin) => {
               const installedPlugin = installedByPackageName.get(bundledPlugin.packageName);
               const installPending =
@@ -347,6 +347,7 @@ export function PluginManager() {
               );
             })}
           </ul>
+          </Card>
         )}
       </section>
 
@@ -367,7 +368,8 @@ export function PluginManager() {
             </CardContent>
           </Card>
         ) : (
-          <ul className="divide-y rounded-md border bg-card">
+          <Card className="block py-0">
+          <ul className="divide-y">
             {installedPlugins.map((plugin) => (
               <li key={plugin.id}>
                 <div className="flex items-start gap-4 px-4 py-3">
@@ -489,6 +491,7 @@ export function PluginManager() {
               </li>
             ))}
           </ul>
+          </Card>
         )}
       </section>
 
@@ -549,7 +552,7 @@ export function PluginManager() {
             </div>
             <div className="space-y-2">
               <p className="text-sm font-medium">Full error output</p>
-              <pre className="max-h-[50vh] overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
+              <pre className="max-h-(--sz-50vh) overflow-auto rounded-md border bg-muted/40 p-3 text-xs leading-5 whitespace-pre-wrap break-words">
                 {errorDetailsPlugin?.lastError ?? "No stored error message."}
               </pre>
             </div>

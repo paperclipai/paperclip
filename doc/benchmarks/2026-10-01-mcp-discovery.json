@@ -1,0 +1,476 @@
+{
+  "date": "2026-10-01",
+  "node": "26.4.0",
+  "baseline": "f2e0f196308629ef05c7f65782243e1713b208f0",
+  "samplingIntervalMs": 2,
+  "series": {
+    "before": [
+      {
+        "tools": 50,
+        "parallel": 1,
+        "iteration": 1,
+        "visible": 55,
+        "queries": 722,
+        "elapsedMs": 146,
+        "peakHeapIncreaseMiB": 82,
+        "peakRssMiB": 727,
+        "retainedHeapIncreaseMiB": 2,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 50,
+        "parallel": 1,
+        "iteration": 2,
+        "visible": 55,
+        "queries": 722,
+        "elapsedMs": 151,
+        "peakHeapIncreaseMiB": 82,
+        "peakRssMiB": 728,
+        "retainedHeapIncreaseMiB": 0,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 300,
+        "parallel": 1,
+        "iteration": 1,
+        "visible": 305,
+        "queries": 3889,
+        "elapsedMs": 855,
+        "peakHeapIncreaseMiB": 424,
+        "peakRssMiB": 1155,
+        "retainedHeapIncreaseMiB": 9,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 300,
+        "parallel": 1,
+        "iteration": 2,
+        "visible": 305,
+        "queries": 3889,
+        "elapsedMs": 875,
+        "peakHeapIncreaseMiB": 409,
+        "peakRssMiB": 1159,
+        "retainedHeapIncreaseMiB": -8,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 900,
+        "parallel": 1,
+        "iteration": 1,
+        "visible": 905,
+        "queries": 11489,
+        "elapsedMs": 3631,
+        "peakHeapIncreaseMiB": 1698,
+        "peakRssMiB": 2495,
+        "retainedHeapIncreaseMiB": 22,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 900,
+        "parallel": 1,
+        "iteration": 2,
+        "visible": 905,
+        "queries": 11489,
+        "elapsedMs": 3540,
+        "peakHeapIncreaseMiB": 1680,
+        "peakRssMiB": 2508,
+        "retainedHeapIncreaseMiB": 0,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      }
+    ],
+    "after": [
+      {
+        "tools": 50,
+        "parallel": 1,
+        "iteration": 1,
+        "visible": 55,
+        "queries": 36,
+        "elapsedMs": 55,
+        "peakHeapIncreaseMiB": 20,
+        "peakRssMiB": 563,
+        "retainedHeapIncreaseMiB": 0,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 50,
+        "parallel": 1,
+        "iteration": 2,
+        "visible": 55,
+        "queries": 36,
+        "elapsedMs": 24,
+        "peakHeapIncreaseMiB": 19,
+        "peakRssMiB": 563,
+        "retainedHeapIncreaseMiB": 0,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 50,
+        "parallel": 1,
+        "iteration": 3,
+        "visible": 55,
+        "queries": 36,
+        "elapsedMs": 24,
+        "peakHeapIncreaseMiB": 19,
+        "peakRssMiB": 563,
+        "retainedHeapIncreaseMiB": 0,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 50,
+        "parallel": 16,
+        "iteration": 1,
+        "visible": 55,
+        "queries": 576,
+        "elapsedMs": 264,
+        "peakHeapIncreaseMiB": 50,
+        "peakRssMiB": 564,
+        "retainedHeapIncreaseMiB": 7,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 50,
+        "parallel": 16,
+        "iteration": 2,
+        "visible": 55,
+        "queries": 576,
+        "elapsedMs": 242,
+        "peakHeapIncreaseMiB": 45,
+        "peakRssMiB": 567,
+        "retainedHeapIncreaseMiB": 1,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 50,
+        "parallel": 16,
+        "iteration": 3,
+        "visible": 55,
+        "queries": 576,
+        "elapsedMs": 268,
+        "peakHeapIncreaseMiB": 49,
+        "peakRssMiB": 569,
+        "retainedHeapIncreaseMiB": 0,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 300,
+        "parallel": 1,
+        "iteration": 1,
+        "visible": 305,
+        "queries": 36,
+        "elapsedMs": 76,
+        "peakHeapIncreaseMiB": 29,
+        "peakRssMiB": 570,
+        "retainedHeapIncreaseMiB": -3,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 300,
+        "parallel": 1,
+        "iteration": 2,
+        "visible": 305,
+        "queries": 36,
+        "elapsedMs": 77,
+        "peakHeapIncreaseMiB": 30,
+        "peakRssMiB": 570,
+        "retainedHeapIncreaseMiB": 2,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 300,
+        "parallel": 1,
+        "iteration": 3,
+        "visible": 305,
+        "queries": 36,
+        "elapsedMs": 76,
+        "peakHeapIncreaseMiB": 29,
+        "peakRssMiB": 570,
+        "retainedHeapIncreaseMiB": 2,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 300,
+        "parallel": 16,
+        "iteration": 1,
+        "visible": 305,
+        "queries": 576,
+        "elapsedMs": 1051,
+        "peakHeapIncreaseMiB": 108,
+        "peakRssMiB": 660,
+        "retainedHeapIncreaseMiB": 23,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 300,
+        "parallel": 16,
+        "iteration": 2,
+        "visible": 305,
+        "queries": 576,
+        "elapsedMs": 1038,
+        "peakHeapIncreaseMiB": 85,
+        "peakRssMiB": 661,
+        "retainedHeapIncreaseMiB": 0,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 300,
+        "parallel": 16,
+        "iteration": 3,
+        "visible": 305,
+        "queries": 576,
+        "elapsedMs": 1048,
+        "peakHeapIncreaseMiB": 118,
+        "peakRssMiB": 706,
+        "retainedHeapIncreaseMiB": 5,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 900,
+        "parallel": 1,
+        "iteration": 1,
+        "visible": 905,
+        "queries": 36,
+        "elapsedMs": 236,
+        "peakHeapIncreaseMiB": 37,
+        "peakRssMiB": 707,
+        "retainedHeapIncreaseMiB": -16,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 900,
+        "parallel": 1,
+        "iteration": 2,
+        "visible": 905,
+        "queries": 36,
+        "elapsedMs": 236,
+        "peakHeapIncreaseMiB": 37,
+        "peakRssMiB": 706,
+        "retainedHeapIncreaseMiB": 4,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 900,
+        "parallel": 1,
+        "iteration": 3,
+        "visible": 905,
+        "queries": 36,
+        "elapsedMs": 238,
+        "peakHeapIncreaseMiB": 37,
+        "peakRssMiB": 706,
+        "retainedHeapIncreaseMiB": 4,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 900,
+        "parallel": 16,
+        "iteration": 1,
+        "visible": 905,
+        "queries": 576,
+        "elapsedMs": 3636,
+        "peakHeapIncreaseMiB": 169,
+        "peakRssMiB": 727,
+        "retainedHeapIncreaseMiB": 54,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 900,
+        "parallel": 16,
+        "iteration": 2,
+        "visible": 905,
+        "queries": 576,
+        "elapsedMs": 3627,
+        "peakHeapIncreaseMiB": 184,
+        "peakRssMiB": 767,
+        "retainedHeapIncreaseMiB": -1,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 900,
+        "parallel": 16,
+        "iteration": 3,
+        "visible": 905,
+        "queries": 576,
+        "elapsedMs": 3645,
+        "peakHeapIncreaseMiB": 187,
+        "peakRssMiB": 846,
+        "retainedHeapIncreaseMiB": 4,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      }
+    ],
+    "fourConnections": [
+      {
+        "tools": 900,
+        "connections": 4,
+        "parallel": 16,
+        "iteration": 1,
+        "visible": 905,
+        "queries": 624,
+        "elapsedMs": 3721,
+        "peakHeapIncreaseMiB": 146,
+        "peakRssMiB": 686,
+        "retainedHeapIncreaseMiB": 83,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 900,
+        "connections": 4,
+        "parallel": 16,
+        "iteration": 2,
+        "visible": 905,
+        "queries": 624,
+        "elapsedMs": 3720,
+        "peakHeapIncreaseMiB": 174,
+        "peakRssMiB": 807,
+        "retainedHeapIncreaseMiB": -4,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      },
+      {
+        "tools": 900,
+        "connections": 4,
+        "parallel": 16,
+        "iteration": 3,
+        "visible": 905,
+        "queries": 624,
+        "elapsedMs": 3688,
+        "peakHeapIncreaseMiB": 171,
+        "peakRssMiB": 889,
+        "retainedHeapIncreaseMiB": 1,
+        "forcedGc": true,
+        "fixture": {
+          "snapshotBytes": 400000,
+          "schemaBytes": 5000,
+          "policyCount": 373
+        }
+      }
+    ]
+  }
+}

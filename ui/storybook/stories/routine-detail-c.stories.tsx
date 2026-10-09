@@ -78,6 +78,7 @@ const routine: RoutineDetailType = {
   projectId: storybookProjects[0]?.id ?? null,
   goalId: null,
   parentIssueId: null,
+  responsibleUserId: null,
   title: "Send the weekly digest to {{customer_name}}",
   description:
     "Compile last week's shipped work and email a digest to {{customer_name}} by {{deadline}}.\n\nKeep it to five bullets.",
@@ -86,6 +87,8 @@ const routine: RoutineDetailType = {
   status: "active",
   concurrencyPolicy: "coalesce_if_active",
   catchUpPolicy: "skip_missed",
+  activityGatePolicy: "always",
+  activityGateScope: "company",
   variables,
   env: { DATABASE_URL: { type: "secret_ref", secretId: "secret-prod-db", version: "latest" } } as never,
   latestRevisionId: "rev-17",
@@ -249,6 +252,8 @@ function makeContext(
     priority: routineDetail.priority,
     concurrencyPolicy: routineDetail.concurrencyPolicy,
     catchUpPolicy: routineDetail.catchUpPolicy,
+    activityGatePolicy: "always",
+    activityGateScope: "company",
     variables: routineDetail.variables,
     env: routineDetail.env ?? null,
   };

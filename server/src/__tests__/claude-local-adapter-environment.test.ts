@@ -108,6 +108,7 @@ describe("claude_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
+        engine: "cli",
         command: process.execPath,
         cwd: process.cwd(),
       },
@@ -124,7 +125,7 @@ describe("claude_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.level === "error")).toBe(false);
   });
 
-  it("returns a warning (not an error) when ANTHROPIC_API_KEY is set in adapter env", async () => {
+  it("reports an explicitly configured API key as normal authentication", async () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
@@ -133,6 +134,7 @@ describe("claude_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
+        engine: "cli",
         command: process.execPath,
         cwd: process.cwd(),
         env: {
@@ -141,12 +143,12 @@ describe("claude_local environment diagnostics", () => {
       },
     });
 
-    expect(result.status).toBe("warn");
+    expect(result.status).toBe("pass");
     expect(
       result.checks.some(
         (check) =>
           check.code === "claude_anthropic_api_key_overrides_subscription" &&
-          check.level === "warn",
+          check.level === "info",
       ),
     ).toBe(true);
     expect(result.checks.some((check) => check.level === "error")).toBe(false);
@@ -160,6 +162,7 @@ describe("claude_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
+        engine: "cli",
         command: process.execPath,
         cwd: process.cwd(),
       },
@@ -187,6 +190,7 @@ describe("claude_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
+        engine: "cli",
         command: process.execPath,
         cwd: process.cwd(),
         env: {
@@ -217,6 +221,7 @@ describe("claude_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
+        engine: "cli",
         command: process.execPath,
         cwd: process.cwd(),
       },
@@ -241,6 +246,7 @@ describe("claude_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
+        engine: "cli",
         command: process.execPath,
         cwd,
       },
@@ -258,6 +264,7 @@ describe("claude_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
+        engine: "cli",
         command: process.execPath,
       },
       executionTarget: {
@@ -291,13 +298,14 @@ describe("claude_local environment diagnostics", () => {
     expect(result.checks.some((check) => check.code === "claude_cwd_invalid")).toBe(false);
   });
 
-  it("uses --allowedTools instead of --dangerously-skip-permissions for sandbox hello probes", async () => {
-    const executeCalls: Array<{ command: string; args?: string[] }> = [];
+  it("uses full permission bypass for sandbox hello probes", async () => {
+    const executeCalls: Array<{ command: string; args?: string[]; env?: Record<string, string> }> = [];
 
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
       config: {
+        engine: "cli",
         command: "claude",
       },
       executionTarget: {
@@ -307,7 +315,7 @@ describe("claude_local environment diagnostics", () => {
         remoteCwd: "/workspace/paperclip",
         runner: {
           execute: async (input) => {
-            executeCalls.push({ command: input.command, args: input.args });
+            executeCalls.push({ command: input.command, args: input.args, env: input.env });
             if (input.command === "claude") {
               return {
                 exitCode: 0,
@@ -343,12 +351,10 @@ describe("claude_local environment diagnostics", () => {
 
     expect(result.checks.some((check) => check.code === "claude_hello_probe_passed")).toBe(true);
     const probeCall = executeCalls.find((call) => call.command === "claude");
-    expect(probeCall?.args).not.toContain("--dangerously-skip-permissions");
+    expect(probeCall?.args).toContain("--dangerously-skip-permissions");
     expect(probeCall?.args).not.toContain("--permission-mode");
-    // Sandbox probes pass `--allowedTools` so any tool invocation triggered
-    // by the probe prompt cannot stall waiting for an interactive permission
-    // approval that no human is present to answer.
-    expect(probeCall?.args).toContain("--allowedTools");
+    expect(probeCall?.args).not.toContain("--allowedTools");
+    expect(probeCall?.env?.IS_SANDBOX).toBe("1");
   });
 
   it("uses the managed Claude config seed for sandbox hello probes", async () => {
@@ -408,6 +414,7 @@ console.log(JSON.stringify({ type: "result", result: "hello", usage: { input_tok
         companyId: "company-1",
         adapterType: "claude_local",
         config: {
+          engine: "cli",
           command: commandPath,
           env: { HOME: remoteHome },
         },
@@ -443,6 +450,7 @@ console.log(JSON.stringify({ type: "result", result: "hello", usage: { input_tok
         companyId: "company-1",
         adapterType: "claude_local",
         config: {
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           effort: "low",

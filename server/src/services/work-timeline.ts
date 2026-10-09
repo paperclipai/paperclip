@@ -1,3 +1,4 @@
+import { withAgentAppearance } from "@paperclipai/shared";
 import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -11,6 +12,7 @@ import {
   issues,
   issueThreadInteractions,
 } from "@paperclipai/db";
+import { executionIssueCondition } from "./issue-visibility.js";
 
 // DTO types are shared with the UI via @paperclipai/shared so both sides consume
 // one contract. Re-exported here for back-compat with existing server imports.
@@ -73,6 +75,8 @@ type IssueRow = {
   createdAt: Date;
 };
 
+type RunUsage = NonNullable<WorkTimelineSpan["usage"]>;
+
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 500;
 const MAX_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
@@ -117,6 +121,39 @@ function dateIso(value: Date | null | undefined) {
 
 function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function readUsageToken(source: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = readNumber(source[key]);
+    if (value != null) return Math.max(0, Math.floor(value));
+  }
+  return 0;
+}
+
+function normalizeRunUsage(usageJson: unknown): RunUsage | null {
+  if (!usageJson || typeof usageJson !== "object" || Array.isArray(usageJson)) return null;
+  const source = usageJson as Record<string, unknown>;
+  const inputTokens = readUsageToken(source, "inputTokens", "input_tokens", "rawInputTokens", "raw_input_tokens");
+  const cachedInputTokens = readUsageToken(
+    source,
+    "cachedInputTokens",
+    "cached_input_tokens",
+    "cacheReadInputTokens",
+    "cache_read_input_tokens",
+  );
+  const outputTokens = readUsageToken(source, "outputTokens", "output_tokens", "rawOutputTokens", "raw_output_tokens");
+  const totalTokens = inputTokens + cachedInputTokens + outputTokens;
+  return totalTokens > 0 ? { inputTokens, cachedInputTokens, outputTokens, totalTokens } : null;
 }
 
 function maybeUuidList(ids: Iterable<string>) {
@@ -170,7 +207,7 @@ export function workTimelineService(db: Db) {
 
     const filterConditions = [
       eq(issues.companyId, input.companyId),
-      isNull(issues.hiddenAt),
+      executionIssueCondition(),
       input.goalId ? eq(issues.goalId, input.goalId) : undefined,
       input.projectId ? eq(issues.projectId, input.projectId) : undefined,
       input.issueId ? eq(issues.id, input.issueId) : undefined,
@@ -296,7 +333,7 @@ export function workTimelineService(db: Db) {
       .where(
         and(
           eq(issues.companyId, input.companyId),
-          isNull(issues.hiddenAt),
+          executionIssueCondition(),
           inArray(issues.id, issueIds),
           input.goalId ? eq(issues.goalId, input.goalId) : undefined,
           input.projectId ? eq(issues.projectId, input.projectId) : undefined,
@@ -394,7 +431,7 @@ export function workTimelineService(db: Db) {
     const [agentRows, userRows] = await Promise.all([
       agentIds.length > 0
         ? db
-          .select({ id: agents.id, name: agents.name, icon: agents.icon })
+          .select({ id: agents.id, name: agents.name, icon: agents.icon, appearance: agents.appearance })
           .from(agents)
           .where(and(eq(agents.companyId, companyId), inArray(agents.id, maybeUuidList(agentIds))))
         : [],
@@ -435,8 +472,8 @@ export function workTimelineService(db: Db) {
     const accessibleIssues = await filterReadableIssues(userScopedIssues, input.canReadIssue);
     const sortedIssues = accessibleIssues.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
     const pagedIssues = sortedIssues.slice(offset, offset + limit);
-    const issueById = new Map(pagedIssues.map((issue) => [issue.id, issue]));
-    const readableIssueIds = Array.from(issueById.keys());
+    const issueById = new Map(sortedIssues.map((issue) => [issue.id, issue]));
+    const readableIssueIds = pagedIssues.map((issue) => issue.id);
 
     if (readableIssueIds.length === 0) {
       return {
@@ -508,6 +545,7 @@ export function workTimelineService(db: Db) {
           retryOfRunId: heartbeatRuns.retryOfRunId,
           continuationAttempt: heartbeatRuns.continuationAttempt,
           invocationSource: heartbeatRuns.invocationSource,
+          usageJson: heartbeatRuns.usageJson,
         })
         .from(heartbeatRuns)
         .where(
@@ -529,6 +567,7 @@ export function workTimelineService(db: Db) {
           retryOfRunId: heartbeatRuns.retryOfRunId,
           continuationAttempt: heartbeatRuns.continuationAttempt,
           invocationSource: heartbeatRuns.invocationSource,
+          usageJson: heartbeatRuns.usageJson,
         })
         .from(activityLog)
         .innerJoin(heartbeatRuns, eq(activityLog.runId, heartbeatRuns.id))
@@ -639,6 +678,7 @@ export function workTimelineService(db: Db) {
         retryOfRunId: row.retryOfRunId ?? null,
         continuationAttempt: row.continuationAttempt,
         invocationSource: row.invocationSource ?? null,
+        usage: normalizeRunUsage(row.usageJson),
       });
     }
 
@@ -724,7 +764,8 @@ export function workTimelineService(db: Db) {
       const [type, rawId] = id.split(":", 2) as [TimelineActorType, string];
       if (type === "agent") {
         const agent = actorMaps.agents.get(rawId);
-        return { id, type, name: agent?.name ?? "Unknown agent", avatar: agent?.icon ?? null };
+        const identity = withAgentAppearance(agent ?? { id: rawId });
+        return { id, type, name: agent?.name ?? "Unknown agent", avatar: identity.avatarUrl, appearance: identity.appearance, avatarUrl: identity.avatarUrl };
       }
       if (type === "user") {
         const user = actorMaps.users.get(rawId);

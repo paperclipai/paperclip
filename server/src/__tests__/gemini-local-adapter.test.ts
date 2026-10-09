@@ -34,7 +34,7 @@ describe("gemini_local parser", () => {
     expect(parsed.sessionId).toBe("gemini-session-1");
     expect(parsed.summary).toBe("hello");
     expect(parsed.usage).toEqual({
-      inputTokens: 12,
+      inputTokens: 9,
       cachedInputTokens: 3,
       outputTokens: 7,
     });

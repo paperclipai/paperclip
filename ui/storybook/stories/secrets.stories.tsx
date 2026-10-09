@@ -2,7 +2,12 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, KeyRound } from "lucide-react";
-import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
+import type {
+  CompanySecret,
+  EnvBinding,
+  UserSecretCoverageSummary,
+  UserSecretDefinition,
+} from "@paperclipai/shared";
 import { Secrets } from "@/pages/Secrets";
 import { SecretBindingPicker, type SecretBindingValue } from "@/components/SecretBindingPicker";
 import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
@@ -14,6 +19,64 @@ import { storybookCompanies, storybookSecrets } from "../fixtures/paperclipData"
 
 const COMPANY_ID = "company-storybook";
 
+const storybookUserSecretDefinitions: UserSecretDefinition[] = [
+  {
+    id: "def-storybook-github",
+    companyId: COMPANY_ID,
+    key: "PERSONAL_GH_TOKEN",
+    name: "Personal GitHub token",
+    description: "Used when the responsible user's own repos must be reached.",
+    status: "active",
+    provider: "local_encrypted",
+    managedMode: "paperclip_managed",
+    providerConfigId: null,
+    providerMetadata: null,
+    usageGuidance: "Create a fine-grained PAT with repo read access.",
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    updatedByAgentId: null,
+    updatedByUserId: "user-board",
+    deletedAt: null,
+    createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-06-02T00:00:00.000Z"),
+  },
+  {
+    id: "def-storybook-openai",
+    companyId: COMPANY_ID,
+    key: "USER_OPENAI_API_KEY",
+    name: "User OpenAI API key",
+    description: "Each member bills agent experiments to their own account.",
+    status: "active",
+    provider: "local_encrypted",
+    managedMode: "paperclip_managed",
+    providerConfigId: null,
+    providerMetadata: null,
+    usageGuidance: "Create a project-scoped OpenAI key.",
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    updatedByAgentId: null,
+    updatedByUserId: "user-board",
+    deletedAt: null,
+    createdAt: new Date("2026-06-03T00:00:00.000Z"),
+    updatedAt: new Date("2026-06-04T00:00:00.000Z"),
+  },
+];
+
+const storybookUserSecretCoverage: Record<string, UserSecretCoverageSummary> = {
+  "def-storybook-github": {
+    definitionId: "def-storybook-github",
+    configuredCount: 5,
+    missingCount: 2,
+    inactiveCount: 0,
+  },
+  "def-storybook-openai": {
+    definitionId: "def-storybook-openai",
+    configuredCount: 7,
+    missingCount: 0,
+    inactiveCount: 0,
+  },
+};
+
 // Seed localStorage before CompanyContext mounts so its `useState` initializer reads the right id.
 if (typeof window !== "undefined") {
   window.localStorage.setItem("paperclip.selectedCompanyId", COMPANY_ID);
@@ -23,6 +86,20 @@ function StorybookSecretsFixtures({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   // Seed query caches synchronously so children hydrate from cache on first render.
   queryClient.setQueryData(queryKeys.secrets.list(COMPANY_ID), storybookSecrets);
+  queryClient.setQueryData(
+    queryKeys.secrets.userDefinitions(COMPANY_ID),
+    storybookUserSecretDefinitions,
+  );
+  queryClient.setQueryData(
+    queryKeys.secrets.myUserSecrets(COMPANY_ID),
+    storybookUserSecretDefinitions.map((definition) => ({ definition, secret: null })),
+  );
+  for (const [definitionId, summary] of Object.entries(storybookUserSecretCoverage)) {
+    queryClient.setQueryData(
+      queryKeys.secrets.userDefinitionCoverage(COMPANY_ID, definitionId),
+      summary,
+    );
+  }
 
   const { selectedCompanyId, setSelectedCompanyId } = useCompany();
   useEffect(() => {

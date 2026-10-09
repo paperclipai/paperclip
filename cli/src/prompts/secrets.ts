@@ -71,7 +71,9 @@ export async function promptSecrets(current?: SecretsConfig): Promise<SecretsCon
       defaultValue: keyFilePath,
       placeholder: fallbackDefault,
       validate: (value) => {
-        if (!value || value.trim().length === 0) return "Key file path is required";
+        // Clack validates the raw input before applying defaultValue —
+        // validate the value that will actually be submitted.
+        if ((value || keyFilePath).trim().length === 0) return "Key file path is required";
       },
     });
 

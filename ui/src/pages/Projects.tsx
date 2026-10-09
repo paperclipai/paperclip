@@ -10,10 +10,12 @@ import { EntityRow } from "../components/EntityRow";
 import { ProjectTile } from "../components/ProjectTile";
 import { StatusBadge } from "../components/StatusBadge";
 import { MembershipAction } from "../components/MembershipAction";
+import { StarToggle } from "../components/StarToggle";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { formatDate, formatNumber, formatProjectBudget, projectUrl } from "../lib/utils";
 import {
+  isStarred,
   resourceMembershipState,
   useResourceMembershipMutation,
   useResourceMemberships,
@@ -21,6 +23,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ArrowUpDown, Check, Hexagon, Plus } from "lucide-react";
+import { Lock } from "lucide-react";
+import { Card } from "@/components/ui/card";
 
 type ProjectSortField = "name" | "updated" | "created" | "targetDate";
 type ProjectSortDir = "asc" | "desc";
@@ -92,7 +96,7 @@ export function Projects() {
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
   const projects = useMemo(
-    () => (allProjects ?? []).filter((p) => !p.archivedAt),
+    () => allProjects ?? [],
     [allProjects],
   );
   const sortedProjects = useMemo(
@@ -116,7 +120,7 @@ export function Projects() {
   const sortLabel = PROJECT_SORT_OPTIONS.find((option) => option.field === sortField)?.label ?? "Name";
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
+    return <EmptyState icon={Hexagon} message="Select an organization to view projects." />;
   }
 
   if (isLoading) {
@@ -198,12 +202,15 @@ export function Projects() {
                     {sectionProjects.length} project{sectionProjects.length === 1 ? "" : "s"}
                   </span>
                 </div>
-                <div className="border border-border">
+                <Card className="block py-0 overflow-hidden divide-y divide-border">
                   {sectionProjects.map((project) => {
                     const state = resourceMembershipState(membershipsQuery.data, "project", project.id);
                     const pending = membershipMutation.isPending &&
                       membershipMutation.variables?.resourceType === "project" &&
                       membershipMutation.variables.resourceId === project.id;
+                    const starPending = pending && membershipMutation.variables?.starred !== undefined;
+                    const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
+                    const starred = isStarred(membershipsQuery.data, "project", project.id);
                     return (
                       <EntityRow
                         key={project.id}
@@ -215,6 +222,7 @@ export function Projects() {
                         className={state === "left" ? "group text-foreground/55" : "group"}
                         trailing={
                           <div className="flex items-center gap-3">
+                            {project.visibility === "private" ? <Lock className="size-4 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
                             <span
                               className="hidden text-xs text-muted-foreground tabular-nums sm:inline"
                               title={`${formatNumber(project.taskCount ?? 0)} task${(project.taskCount ?? 0) === 1 ? "" : "s"}`}
@@ -234,8 +242,8 @@ export function Projects() {
                             <StatusBadge status={project.status} />
                             <MembershipAction
                               state={state}
-                              pending={pending}
-                              pendingState={pending ? membershipMutation.variables?.state : null}
+                              pending={joinLeavePending}
+                              pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
                               resourceName={project.name}
                               onJoin={() => membershipMutation.mutate({
                                 resourceType: "project",
@@ -250,12 +258,24 @@ export function Projects() {
                                 state: "left",
                               })}
                             />
+                            <StarToggle
+                              size="row"
+                              starred={starred}
+                              pending={starPending}
+                              resourceName={project.name}
+                              onToggle={(next) => membershipMutation.mutate({
+                                resourceType: "project",
+                                resourceId: project.id,
+                                resourceName: project.name,
+                                starred: next,
+                              })}
+                            />
                           </div>
                         }
                       />
                     );
                   })}
-                </div>
+                </Card>
               </section>
             );
           })}

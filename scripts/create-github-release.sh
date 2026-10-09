@@ -7,15 +7,17 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 dry_run=false
 version=""
+notes_file_override=""
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/create-github-release.sh <version> [--dry-run]
+  ./scripts/create-github-release.sh <version> [--dry-run] [--notes-file PATH]
 
 Examples:
   ./scripts/create-github-release.sh 2026.318.0
   ./scripts/create-github-release.sh 2026.318.0 --dry-run
+  ./scripts/create-github-release.sh 2026.318.0 --notes-file /tmp/stable-notes.md
 
 Notes:
   - Run this after pushing the stable tag.
@@ -28,6 +30,14 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=true ;;
+    --notes-file)
+      shift
+      if [ $# -eq 0 ]; then
+        echo "Error: --notes-file requires a path." >&2
+        exit 1
+      fi
+      notes_file_override="$1"
+      ;;
     -h|--help)
       usage
       exit 0
@@ -55,6 +65,9 @@ fi
 
 tag="v$version"
 notes_file="$REPO_ROOT/releases/${tag}.md"
+if [ -n "$notes_file_override" ]; then
+  notes_file="$notes_file_override"
+fi
 if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -z "${PUBLISH_REMOTE:-}" ] && git_remote_exists origin; then
   PUBLISH_REMOTE=origin
 fi
@@ -80,8 +93,30 @@ if ! git -C "$REPO_ROOT" rev-parse "$tag" >/dev/null 2>&1; then
   exit 1
 fi
 
+# The catalog is derived from the checked-out sources, so it must be generated
+# from the exact commit the release tag points at, with no local edits.
+tag_commit="$(git -C "$REPO_ROOT" rev-parse "$tag^{commit}")"
+head_commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+if [ "$head_commit" != "$tag_commit" ]; then
+  echo "Error: HEAD ($head_commit) does not match tag $tag ($tag_commit). Check out the release tag before generating the feature catalog." >&2
+  exit 1
+fi
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]; then
+  echo "Error: working tree has uncommitted changes. The feature catalog must be generated from the pristine release commit." >&2
+  exit 1
+fi
+
+catalog_dir="$(mktemp -d)"
+trap 'rm -rf "$catalog_dir"' EXIT
+catalog_file="$catalog_dir/feature-catalog.json"
+node "$REPO_ROOT/cli/node_modules/tsx/dist/cli.mjs" \
+  "$REPO_ROOT/scripts/generate-feature-catalog.ts" \
+  --version "$version" \
+  --out "$catalog_file"
+
 if [ "$dry_run" = true ]; then
   echo "[dry-run] gh release create $tag -R $GITHUB_REPO --title $tag --notes-file $notes_file"
+  echo "[dry-run] gh release upload $tag -R $GITHUB_REPO --clobber $catalog_file"
   exit 0
 fi
 
@@ -97,3 +132,6 @@ else
   gh release create "$tag" -R "$GITHUB_REPO" --title "$tag" --notes-file "$notes_file"
   echo "Created GitHub Release $tag"
 fi
+
+gh release upload "$tag" -R "$GITHUB_REPO" --clobber "$catalog_file"
+echo "Uploaded feature-catalog.json to GitHub Release $tag"

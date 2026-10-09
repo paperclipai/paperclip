@@ -1,4 +1,14 @@
 /**
+ * Strip ANSI escape sequences (CSI, OSC) from terminal text.
+ * Same pattern used in claude-local adapter quota.ts.
+ */
+function stripAnsi(text: string): string {
+  return text
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+}
+
+/**
  * Parse Hermes Agent stdout into TranscriptEntry objects for the Paperclip UI.
  *
  * Hermes CLI quiet-mode output patterns:
@@ -184,7 +194,7 @@ export function parseHermesStdoutLine(
   line: string,
   ts: string,
 ): TranscriptEntry[] {
-  const trimmed = line.trim();
+  const trimmed = stripAnsi(line).trim();
   if (!trimmed) return [];
 
   // ── System/adapter messages ────────────────────────────────────────────

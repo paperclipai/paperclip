@@ -1,0 +1,55 @@
+{
+  "commandDigest": "sha256:f4c7af914738149cf868d071e53ac4917658fb055224715a2c89d3f59b335503",
+  "declaration": {
+    "schema": "paperclip.acpx_profile_declaration.v1",
+    "agent": "cursor",
+    "agentProfileVersion": 7,
+    "acpxVersion": "0.13.1",
+    "agentServerVersion": "2026.09.26-dd393fe",
+    "patchVersion": "paperclip-cursor-instructions-v2",
+    "distribution": {
+      "schema": "paperclip.cursor_distribution.v1",
+      "version": "2026.09.26-dd393fe",
+      "platforms": {
+        "darwin-arm64": {
+          "url": "https://downloads.cursor.com/lab/2026.09.26-dd393fe/darwin/arm64/agent-cli-package.tar.gz",
+          "archiveSha256": "538827d96a779bab854a865c8e42859e8e87db34b5f69770261b90fc8cfff191",
+          "closureSha256": "912a37edb67fd7737809c24049dce2db20b1330f98b15a6e43809f0e0943cb6c",
+          "executable": "node",
+          "entrypoint": "index.js",
+          "vendorClosureSha256": "77394184a89b0e7384971181da19c3c82d83a399b04e7944b3f94fe3d7e62b25"
+        },
+        "darwin-x64": {
+          "url": "https://downloads.cursor.com/lab/2026.09.26-dd393fe/darwin/x64/agent-cli-package.tar.gz",
+          "archiveSha256": "ed1771c44cbf0f8059c67cac0d939e6a60eb730bd066d7dc4cbb14de314cfb6e",
+          "closureSha256": "322f54c7bd533b202a311ce8e2c8916bfe0202790ef8a40fbb36bb89cbd506cb",
+          "executable": "node",
+          "entrypoint": "index.js",
+          "vendorClosureSha256": "7c8775160af74e5fb8d25a30e8412c1a6476b0661529078a686e5118fd1c5e5f"
+        },
+        "linux-x64": {
+          "url": "https://downloads.cursor.com/lab/2026.09.26-dd393fe/linux/x64/agent-cli-package.tar.gz",
+          "archiveSha256": "8085fd120f5c71f4eae7fea26a043718e5644e3071e4fab3220a0e58c51f9593",
+          "closureSha256": "a375fc771dfe86b9b24532f95956ec4b02c5f4f24d80f5db06565160eb3b672c",
+          "executable": "node",
+          "entrypoint": "index.js",
+          "vendorClosureSha256": "bf04ef8ea6a63191067a6b3e15139aa2c793d8419daab246aa3f0a012e1bbcd9"
+        }
+      },
+      "patchVersion": "paperclip-cursor-instructions-v2"
+    },
+    "agentFilesBinding": "registered-runtime-context-v1",
+    "instructionBinding": "native-global-rules-v1",
+    "instructionAdmission": "synchronous-protocol-guard-v1",
+    "acpxPatchSha256": "79aad2d688b03362e8cfcbf7a08f78a8383869f6882a9c9ed66f1d18efb94f2b",
+    "sessionModeAdmission": "native-config-ack-recovery-bound-v1",
+    "sessionModes": [
+      "agent",
+      "plan",
+      "ask"
+    ],
+    "defaultSessionMode": "agent",
+    "sharedRuntimeContract": "paperclip.acpx-runtime-contract.v1",
+    "nativePlanToolIdentity": "request-item-id-bound-lifecycle-v1"
+  }
+}

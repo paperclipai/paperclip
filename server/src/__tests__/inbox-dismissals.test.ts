@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   approvals,
   companies,
@@ -14,7 +17,10 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { errorHandler } from "../middleware/index.js";
+import { inboxDismissalRoutes } from "../routes/inbox-dismissals.js";
 import { inboxDismissalService } from "../services/inbox-dismissals.ts";
+import { sidebarBadgeRoutes } from "../routes/sidebar-badges.js";
 import { sidebarBadgeService } from "../services/sidebar-badges.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -43,6 +49,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     await db.delete(inboxDismissals);
     await db.delete(joinRequests);
     await db.delete(invites);
+    await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(approvals);
     await db.delete(agents);
@@ -51,6 +58,46 @@ describeEmbeddedPostgres("inbox dismissals", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it.each([
+    { userId: "user-1", expected: 1 },
+    { userId: "user-2", expected: 1 },
+    { userId: "uninvolved-user", expected: 0 },
+    { userId: "local-board", expected: 1 },
+    { userId: "user-1", actorType: "agent", expected: 1 },
+    { userId: null, actorType: "agent", expected: 0 },
+  ])("scopes failed-run badges to $userId (actor=$actorType)", async ({ userId, actorType, expected }) => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "PAP" });
+    for (const responsibleUserId of ["user-1", "user-2", null]) {
+      const agentId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId, name: "Agent", role: "engineer", status: "error" });
+      await db.insert(heartbeatRuns).values({
+        companyId, agentId, responsibleUserId, invocationSource: "manual",
+        status: responsibleUserId === "user-2" ? "timed_out" : "failed",
+      });
+    }
+    // Pick the latest run before filtering by user, so a shared agent cannot
+    // resurrect this user's older failure after somebody else's success.
+    const sharedAgentId = randomUUID();
+    await db.insert(agents).values({ id: sharedAgentId, companyId, name: "Shared", role: "engineer" });
+    await db.insert(heartbeatRuns).values([
+      { companyId, agentId: sharedAgentId, responsibleUserId: "user-1", invocationSource: "manual", status: "failed", createdAt: new Date("2026-03-11T01:00:00Z") },
+      { companyId, agentId: sharedAgentId, responsibleUserId: "user-2", invocationSource: "manual", status: "succeeded", createdAt: new Date("2026-03-11T02:00:00Z") },
+    ]);
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = actorType === "agent"
+        ? { type: "agent", source: "agent_jwt", agentId: sharedAgentId, companyId, onBehalfOfUserId: userId, onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }] }
+        : { type: "board", source: userId === "local-board" ? "local_implicit" : "session", userId: userId!, companyIds: [companyId], isInstanceAdmin: true };
+      next();
+    });
+    app.use("/api", sidebarBadgeRoutes(db));
+    app.use(errorHandler);
+    const response = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
+    expect(response.body.failedRuns).toBe(expected);
+    expect(response.body.inbox).toBe(expected);
   });
 
   it("upserts a single dismissal record per user and inbox item key", async () => {
@@ -73,7 +120,61 @@ describeEmbeddedPostgres("inbox dismissals", () => {
 
     expect(dismissals).toHaveLength(1);
     expect(dismissals[0]?.itemKey).toBe("approval:approval-1");
+    expect(dismissals[0]?.kind).toBe("dismiss");
+    expect(dismissals[0]?.snoozedUntil).toBeNull();
     expect(new Date(dismissals[0]?.dismissedAt ?? 0).toISOString()).toBe(secondDismissedAt.toISOString());
+  });
+
+  it("snoozes and restores dismissal records through the route", async () => {
+    const companyId = randomUUID();
+    const userId = "board-user";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = {
+        type: "board",
+        source: "local_implicit",
+        userId,
+        companyIds: [companyId],
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", inboxDismissalRoutes(db));
+    app.use(errorHandler);
+
+    await request(app)
+      .post(`/api/companies/${companyId}/inbox-dismissals`)
+      .send({ itemKey: "attention:approval:old", kind: "snooze", snoozedUntil: "2020-01-01T00:00:00.000Z" })
+      .expect(400);
+
+    const snoozedUntil = "2099-01-01T00:00:00.000Z";
+    const createRes = await request(app)
+      .post(`/api/companies/${companyId}/inbox-dismissals`)
+      .send({ itemKey: "attention:approval:approval-1", kind: "snooze", snoozedUntil })
+      .expect(201);
+
+    expect(createRes.body).toMatchObject({
+      companyId,
+      userId,
+      itemKey: "attention:approval:approval-1",
+      kind: "snooze",
+      snoozedUntil,
+    });
+
+    await request(app)
+      .delete(`/api/companies/${companyId}/inbox-dismissals/${encodeURIComponent("attention:approval:approval-1")}`)
+      .expect(204);
+
+    await expect(dismissalsSvc.list(companyId, userId)).resolves.toEqual([]);
   });
 
   it("honors dismissal timestamps and resurfaces approvals with newer activity", async () => {

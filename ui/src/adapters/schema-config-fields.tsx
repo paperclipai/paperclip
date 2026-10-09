@@ -1,3 +1,4 @@
+import { schemaFieldSection } from "./config-sections";
 import { useState, useEffect, useRef, useCallback } from "react";
 
 import type { AdapterConfigSchema, ConfigFieldSchema, CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -246,22 +247,22 @@ export function invalidateConfigSchemaCache(adapterType: string): void {
 // Hook
 // ---------------------------------------------------------------------------
 
-function useConfigSchema(adapterType: string): AdapterConfigSchema | null {
-  const [schema, setSchema] = useState<AdapterConfigSchema | null>(
-    schemaCache.get(adapterType) ?? null,
+export function useConfigSchema(adapterType: string): AdapterConfigSchema | null {
+  const [loaded, setLoaded] = useState<{ adapterType: string; schema: AdapterConfigSchema | null }>(
+    () => ({ adapterType, schema: schemaCache.get(adapterType) ?? null }),
   );
 
   useEffect(() => {
     let cancelled = false;
     fetchConfigSchema(adapterType).then((s) => {
-      if (!cancelled) setSchema(s);
+      if (!cancelled) setLoaded({ adapterType, schema: s });
     });
     return () => {
       cancelled = true;
     };
   }, [adapterType]);
 
-  return schema;
+  return loaded.adapterType === adapterType ? loaded.schema : schemaCache.get(adapterType) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +321,8 @@ export function fieldMatchesVisibleWhen(
 // ---------------------------------------------------------------------------
 
 export function SchemaConfigFields({
+  section,
+  hideModel,
   adapterType,
   isCreate,
   values,
@@ -330,9 +333,15 @@ export function SchemaConfigFields({
 }: AdapterConfigFieldsProps) {
   const schema = useConfigSchema(adapterType);
 
-  const [defaultsApplied, setDefaultsApplied] = useState(false);
+  const defaultsApplied = useRef({ adapterType, applied: false });
   useEffect(() => {
-    if (!schema || !isCreate || defaultsApplied) return;
+    // Reset on the selection change even while the next schema is loading.
+    // A -> B -> A must initialize A again after the form clears its values.
+    if (defaultsApplied.current.adapterType !== adapterType) {
+      defaultsApplied.current = { adapterType, applied: false };
+    }
+    if (!schema || !isCreate || defaultsApplied.current.applied || (section && section !== "configuration")) return;
+    defaultsApplied.current.applied = true;
     const defaults: Record<string, unknown> = {};
     for (const field of schema.fields) {
       const def = getDefaultValue(field);
@@ -342,11 +351,10 @@ export function SchemaConfigFields({
     }
     if (Object.keys(defaults).length > 0) {
       set?.({
-        adapterSchemaValues: { ...values?.adapterSchemaValues, ...defaults },
+        adapterSchemaValues: { ...defaults, ...values?.adapterSchemaValues },
       });
     }
-    setDefaultsApplied(true);
-  }, [schema, isCreate, defaultsApplied, set, values?.adapterSchemaValues]);
+  }, [schema, adapterType, isCreate, set, values?.adapterSchemaValues, section]);
 
   if (!schema || schema.fields.length === 0) return null;
 
@@ -402,6 +410,9 @@ export function SchemaConfigFields({
   return (
     <>
       {schema.fields
+        .filter((field) => !hideModel || field.key !== "model")
+        .filter((field) => !section || schemaFieldSection(field.key) === section)
+        .filter((field) => !(field.type === "select" && /permissionMode/i.test(field.key) && (field.options?.length ?? 0) <= 1))
         .filter((field) => fieldMatchesVisibleWhen(field, readValue, schema))
         .map((field) => {
           switch (field.type) {

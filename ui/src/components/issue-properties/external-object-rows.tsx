@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import {
-  externalObjectCategoryLabel,
+  externalObjectDisplayStatusLabel,
   externalObjectDisplayLabel,
   externalObjectIconForKey,
   externalObjectProviderLabel,
@@ -32,7 +32,7 @@ function externalObjectRowDisplayKey(group: IssueExternalObjectGroup): string {
   const displayKey = pill.displayKey?.trim();
   if (displayKey) return displayKey;
   if (pill.providerKey === "github") {
-    if (pill.objectType === "pull_request") return "Github Pull Request";
+    if (pill.objectType === "pull_request") return "Github PR";
     if (pill.objectType === "issue") return "Github Issue";
   }
   return externalObjectDisplayLabel(pill.providerKey, pill.objectType);
@@ -66,7 +66,7 @@ function githubObjectPropertyValue(url: string | null | undefined): string | nul
 }
 
 function externalObjectPropertyStatusLabel(group: IssueExternalObjectGroup): string {
-  return group.pill.statusLabel ?? externalObjectCategoryLabel(group.pill.statusCategory);
+  return externalObjectDisplayStatusLabel(group.pill);
 }
 
 function externalObjectPropertyValue(group: IssueExternalObjectGroup): string {
@@ -101,7 +101,7 @@ function externalObjectPropertyTitle(group: IssueExternalObjectGroup): string {
 }
 
 function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGroup }) {
-  const { pill, mentionCount } = group;
+  const { pill } = group;
   const statusLabel = externalObjectPropertyStatusLabel(group);
   const providerLabel = externalObjectProviderLabel(pill.providerKey);
   const typeLabel = externalObjectTypeLabel(pill.objectType);
@@ -116,15 +116,12 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
         label={`${providerLabel}: ${statusLabel}`}
       />
       <span className="min-w-0 truncate">{value}</span>
-      {mentionCount > 1 ? (
-        <span className="tabular-nums text-xs text-muted-foreground">×{mentionCount}</span>
-      ) : null}
     </>
   );
   const className = cn(
     "inline-flex min-w-0 max-w-full items-center gap-1.5 text-sm no-underline",
     externalObjectPropertyTone(group),
-    pill.url ? "hover:underline focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring" : "",
+    pill.url ? "hover:underline focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring" : "",
   );
 
   if (pill.url) {

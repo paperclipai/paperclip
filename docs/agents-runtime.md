@@ -66,7 +66,7 @@ In agent runtime settings, configure heartbeat policy:
 For local adapters, set:
 
 - `cwd` (working directory)
-- `timeoutSec` (max runtime per heartbeat)
+- `timeoutSec` (max runtime per heartbeat; `0` uses the target default — no adapter timeout on local/SSH, a 4-hour backstop on sandbox targets — and a negative value disables the adapter timeout everywhere, including sandboxes)
 - `graceSec` (time before force-kill after timeout/cancel)
 - optional env vars and extra CLI args
 - use **Test environment** in agent configuration to run adapter-specific diagnostics before saving

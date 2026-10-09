@@ -1,6 +1,6 @@
 ---
 name: wireframe
-description: Produce low-fidelity black-and-white UI wireframes as standalone SVG files, optionally bundled into a single-page HTML viewer and published via the here-now skill. Use when the user asks to "wireframe X", "sketch a screen for", "draft a layout", "low-fi mockup", "rough mock", "make a page to view the wireframes", "build a viewer for these screens", or to "deploy / publish / host the wireframes". Do NOT use when the user wants production UI code, branded designs, hi-fi mockups, or animated/interactive prototypes — use frontend-design or similar instead.
+description: Produce low-fidelity black-and-white UI wireframes as SVGs or viewer pages. Use when asked to wireframe, sketch a screen, draft a layout, make a low-fi mockup, or publish wireframes.
 key: paperclipai/bundled/product/wireframe
 recommendedForRoles:
   - designer

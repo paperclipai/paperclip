@@ -1,6 +1,6 @@
-import type { CompanySecret, EnvBinding, SecretVersionSelector } from "@paperclipai/shared";
+import type { CompanySecret, EnvBinding, SecretVersionSelector, UserSecretDefinition } from "@paperclipai/shared";
 
-export type RowSource = "text" | "secret";
+export type RowSource = "text" | "secret" | "user_secret";
 
 /** Local, per-row UI state. Only a subset is emitted upward (see {@link valueFromRows}). */
 export interface EnvRow {
@@ -10,6 +10,8 @@ export interface EnvRow {
   source: RowSource;
   textValue: string;
   secretId: string;
+  userSecretKey: string;
+  required: boolean;
   version: SecretVersionSelector;
   /** Session-local dismissal of the sensitive-value suggestion (§6.6). */
   sensitiveDismissed?: boolean;
@@ -22,7 +24,16 @@ export function nextRowId(): string {
 }
 
 export function emptyRow(source: RowSource = "text"): EnvRow {
-  return { id: nextRowId(), name: "", source, textValue: "", secretId: "", version: "latest" };
+  return {
+    id: nextRowId(),
+    name: "",
+    source,
+    textValue: "",
+    secretId: "",
+    userSecretKey: "",
+    required: true,
+    version: "latest",
+  };
 }
 
 function isSecretRef(binding: unknown): binding is { type: "secret_ref"; secretId?: unknown; version?: unknown } {
@@ -43,35 +54,54 @@ function isPlainObj(binding: unknown): binding is { type: "plain"; value?: unkno
   );
 }
 
+function isUserSecretRef(
+  binding: unknown,
+): binding is { type: "user_secret_ref"; key?: unknown; version?: unknown; required?: unknown } {
+  return (
+    typeof binding === "object" &&
+    binding !== null &&
+    "type" in binding &&
+    (binding as { type?: unknown }).type === "user_secret_ref"
+  );
+}
+
 /** Build editor rows from the controlled value. No implicit trailing ghost row. */
 export function rowsFromValue(value: Record<string, EnvBinding> | null | undefined): EnvRow[] {
   if (!value || typeof value !== "object") return [];
   return Object.entries(value).map(([name, binding]) => {
     if (typeof binding === "string") {
-      return { id: nextRowId(), name, source: "text" as const, textValue: binding, secretId: "", version: "latest" as const };
+      return { ...emptyRow(), name, textValue: binding };
     }
     if (isSecretRef(binding)) {
       const version: SecretVersionSelector = typeof binding.version === "number" ? binding.version : "latest";
       return {
-        id: nextRowId(),
+        ...emptyRow(),
         name,
         source: "secret" as const,
-        textValue: "",
         secretId: typeof binding.secretId === "string" ? binding.secretId : "",
+        version,
+      };
+    }
+    if (isUserSecretRef(binding)) {
+      const version: SecretVersionSelector = typeof binding.version === "number" ? binding.version : "latest";
+      return {
+        ...emptyRow(),
+        name,
+        source: "user_secret" as const,
+        userSecretKey: typeof binding.key === "string" ? binding.key : "",
+        required: binding.required !== false,
         version,
       };
     }
     if (isPlainObj(binding)) {
       return {
-        id: nextRowId(),
+        ...emptyRow(),
         name,
         source: "text" as const,
         textValue: typeof binding.value === "string" ? binding.value : "",
-        secretId: "",
-        version: "latest" as const,
       };
     }
-    return { id: nextRowId(), name, source: "text" as const, textValue: "", secretId: "", version: "latest" as const };
+    return { ...emptyRow(), name };
   });
 }
 
@@ -88,12 +118,48 @@ export function valueFromRows(rows: EnvRow[]): Record<string, EnvBinding> | unde
     if (row.source === "secret") {
       if (!row.secretId) continue; // incomplete ref — not emitted
       record[name] = { type: "secret_ref", secretId: row.secretId, version: row.version };
+    } else if (row.source === "user_secret") {
+      const key = row.userSecretKey.trim();
+      if (!key) continue;
+      record[name] = {
+        type: "user_secret_ref",
+        key,
+        version: row.version,
+        required: row.required,
+      };
     } else {
       record[name] = { type: "plain", value: row.textValue };
     }
   }
   return Object.keys(record).length > 0 ? record : undefined;
 }
+
+// The fixed environment variable name for the Claude subscription OAuth token.
+// A subscription login stores the token as a user secret under this key. The
+// adapter reads the variable at run start.
+export const CLAUDE_OAUTH_TOKEN_ENV_KEY = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/**
+ * Build the fixed `CLAUDE_CODE_OAUTH_TOKEN` binding. The binding is a
+ * `user_secret_ref`, so the adapter config holds a reference to the user secret,
+ * never the token value. This reuses the editor `user_secret_ref` builder in
+ * {@link valueFromRows}, so the fixed binding keeps the same shape as an
+ * operator-authored user-secret row.
+ */
+export function buildFixedClaudeOAuthBinding(): Record<string, EnvBinding> {
+  return (
+    valueFromRows([
+      {
+        ...emptyRow("user_secret"),
+        name: CLAUDE_OAUTH_TOKEN_ENV_KEY,
+        userSecretKey: CLAUDE_OAUTH_TOKEN_ENV_KEY,
+        required: true,
+        version: "latest",
+      },
+    ]) ?? {}
+  );
+}
+
 
 export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -190,6 +256,30 @@ export function computeRowHealth(row: EnvRow, secrets: readonly CompanySecret[])
       level: "warn",
       kind: "disabled",
       message: "Runs will fail until re-enabled or rebound.",
+    };
+  }
+  return null;
+}
+
+/** Per-row user-secret health. Null when healthy or not a bound user-secret ref. */
+export function computeUserSecretRowHealth(
+  row: EnvRow,
+  definitions: readonly UserSecretDefinition[] | undefined,
+): SecretHealth | null {
+  if (row.source !== "user_secret" || !row.userSecretKey || !definitions?.length) return null;
+  const definition = definitions.find((candidate) => candidate.key === row.userSecretKey);
+  if (!definition) {
+    return {
+      level: "error",
+      kind: "missing",
+      message: "This user secret definition no longer exists — runs will fail until you rebind.",
+    };
+  }
+  if (definition.status !== "active") {
+    return {
+      level: "warn",
+      kind: "disabled",
+      message: "Runs will fail until this user secret definition is re-enabled or rebound.",
     };
   }
   return null;

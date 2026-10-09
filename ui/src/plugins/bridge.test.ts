@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import * as React from "react";
 import * as ReactDOM from "react-dom";
+import * as ReactJsxRuntime from "react/jsx-runtime";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   FileTree as SdkFileTree,
   ManagedRoutinesList as SdkManagedRoutinesList,
@@ -254,6 +255,7 @@ describe("plugin SDK FileTree bridge", () => {
   it("throws a clear error when the host FileTree implementation is missing", () => {
     globalThis.__paperclipPluginBridge__ = {
       react: React,
+      reactJsxRuntime: ReactJsxRuntime,
       reactDom: ReactDOM,
       sdkUi: {},
     };
@@ -287,6 +289,7 @@ describe("plugin SDK markdown component bridge", () => {
   it("renders plugin-provided markdown components when registered by the host", () => {
     globalThis.__paperclipPluginBridge__ = {
       react: React,
+      reactJsxRuntime: ReactJsxRuntime,
       reactDom: ReactDOM,
       sdkUi: {
         MarkdownBlock: ({ content, enableWikiLinks, wikiLinkRoot }: { content: string; enableWikiLinks?: boolean; wikiLinkRoot?: string }) =>
@@ -331,5 +334,44 @@ describe("plugin React shim", () => {
     expect(source).toContain("export const useId = R.useId;");
     expect(source).toContain("export const useSyncExternalStore = R.useSyncExternalStore;");
     expect(source).toContain("export const startTransition = R.startTransition;");
+  });
+});
+
+describe("plugin jsx runtime bridge", () => {
+  it("exposes the host jsx runtime on the bridge registry", () => {
+    initPluginBridge(React, ReactDOM);
+
+    const runtime = globalThis.__paperclipPluginBridge__?.reactJsxRuntime as typeof ReactJsxRuntime;
+    expect(runtime.jsx).toBeTypeOf("function");
+    expect(runtime.jsxs).toBeTypeOf("function");
+    expect(runtime.Fragment).toBe(ReactJsxRuntime.Fragment);
+  });
+
+  it("renders unkeyed static children through the bridged runtime without key warnings", () => {
+    initPluginBridge(React, ReactDOM);
+    const runtime = globalThis.__paperclipPluginBridge__?.reactJsxRuntime as typeof ReactJsxRuntime;
+
+    // Mirror what a compiled plugin bundle emits for static multi-child JSX:
+    // jsxs() with an unkeyed children array. The previous shim rebuilt this
+    // via createElement(type, { children }), which made dev React demand a
+    // key on every static child (LOOA-1547 Panel/ProjectKnowledgeTab noise).
+    const warnings: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    });
+    try {
+      renderToStaticMarkup(
+        runtime.jsxs("section", {
+          children: [
+            runtime.jsx("header", { children: "static child one" }),
+            runtime.jsx("div", { children: "static child two" }),
+          ],
+        }) as React.ReactElement,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(warnings.filter((message) => message.includes("key"))).toEqual([]);
   });
 });

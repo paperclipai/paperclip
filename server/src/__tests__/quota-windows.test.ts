@@ -137,7 +137,7 @@ describe("WHAM used_percent normalization via fetchCodexQuota", () => {
     expect(windows[0]!.usedPercent).toBe(50);
   });
 
-  it("treats values < 1 as fraction and multiplies by 100 (0.5 → 50%)", async () => {
+  it("preserves fractional percentage points (0.5 → 0.5%)", async () => {
     mockFetch({
       rate_limit: {
         primary_window: {
@@ -148,11 +148,10 @@ describe("WHAM used_percent normalization via fetchCodexQuota", () => {
       },
     });
     const windows = await fetchCodexQuota("token", null);
-    expect(windows[0]!.usedPercent).toBe(50);
+    expect(windows[0]!.usedPercent).toBe(0.5);
   });
 
-  it("treats value exactly 1.0 as 1% (not 100%) — the < 1 heuristic boundary", async () => {
-    // 1.0 is NOT < 1, so it is treated as already-percentage → 1%
+  it("treats value exactly 1.0 as 1%", async () => {
     mockFetch({
       rate_limit: {
         primary_window: {
@@ -164,6 +163,16 @@ describe("WHAM used_percent normalization via fetchCodexQuota", () => {
     });
     const windows = await fetchCodexQuota("token", null);
     expect(windows[0]!.usedPercent).toBe(1);
+  });
+
+  it.each([
+    [0.01, 0.01], [0.99, 0.99], [1.01, 1.01], [-1, 0],
+    [Number.NaN, null], [Number.POSITIVE_INFINITY, null], [undefined, null],
+  ])("handles percentage boundary %s consistently in RPC and WHAM", async (raw, expected) => {
+    mockFetch({ rate_limit: { primary_window: { used_percent: raw } } });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows[0].usedPercent).toBe(expected);
+    expect(mapCodexRpcQuota({ rateLimits: { primary: { usedPercent: raw } } }).windows[0].usedPercent).toBe(expected);
   });
 
   it("treats value 0 as 0%", async () => {
@@ -511,6 +520,7 @@ describe("fetchClaudeQuota", () => {
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok,
       status,
+      text: async () => JSON.stringify(body),
       json: async () => body,
     } as Response);
   }
@@ -651,6 +661,7 @@ describe("fetchCodexQuota", () => {
     (fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok,
       status,
+      text: async () => JSON.stringify(body),
       json: async () => body,
     } as Response);
   }
@@ -817,6 +828,29 @@ describe("mapCodexRpcQuota", () => {
 // ---------------------------------------------------------------------------
 // fetchWithTimeout — abort on timeout
 // ---------------------------------------------------------------------------
+
+describe("managed quota cancellation", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    ["Claude", (signal: AbortSignal) => fetchClaudeQuota("token", signal)],
+    ["Codex", (signal: AbortSignal) => fetchCodexQuota("token", "account", signal)],
+  ] as const)("forwards cancellation to the %s provider", async (_provider, read) => {
+    const controller = new AbortController();
+    let requestSignal!: AbortSignal;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      requestSignal = init.signal!;
+      return new Promise<Response>((_resolve, reject) => {
+        requestSignal.addEventListener("abort", () => reject(requestSignal.reason), { once: true });
+      });
+    }));
+    const pending = read(controller.signal);
+    const rejected = expect(pending).rejects.toThrow("account deadline");
+    controller.abort(new Error("account deadline"));
+    await rejected;
+    expect(requestSignal.aborted).toBe(true);
+  });
+});
 
 describe("fetchWithTimeout", () => {
   afterEach(() => {

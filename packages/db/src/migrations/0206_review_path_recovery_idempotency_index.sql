@@ -1,0 +1,2 @@
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: Drizzle migrations run transactionally, so CONCURRENTLY is unavailable because this partial index covers the new review-recovery key namespace and is required for atomic at-most-once recovery.
+CREATE UNIQUE INDEX "agent_wakeup_requests_review_path_recovery_idempotency_uq" ON "agent_wakeup_requests" USING btree ("company_id","idempotency_key") WHERE "agent_wakeup_requests"."idempotency_key" LIKE 'issue_review_path_lost:%' AND "agent_wakeup_requests"."status" <> 'skipped';

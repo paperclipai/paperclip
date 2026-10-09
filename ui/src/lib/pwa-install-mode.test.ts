@@ -17,4 +17,14 @@ describe("PWA install mode", () => {
     expect(html).not.toContain('name="apple-mobile-web-app-capable"');
     expect(html).not.toContain('name="apple-mobile-web-app-status-bar-style"');
   });
+
+  it("fetches the manifest with credentials so authenticating proxies can serve it", () => {
+    const html = readFileSync(resolve(uiRoot, "index.html"), "utf8");
+
+    // Browsers fetch <link rel="manifest"> in "omit credentials" mode unless
+    // the link opts in. Behind an authenticating reverse proxy (e.g. a
+    // managed-hosting front door), the cookie-less request is rejected on
+    // every page load.
+    expect(html).toContain('rel="manifest" href="/site.webmanifest" crossorigin="use-credentials"');
+  });
 });

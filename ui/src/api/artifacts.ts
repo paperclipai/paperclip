@@ -34,6 +34,8 @@ export type ArtifactKindFilter = Exclude<CompanyArtifactMediaKind, "empty"> | "a
 export interface ListArtifactsParams {
   kind?: ArtifactKindFilter;
   projectId?: string;
+  /** Only artifacts attributed to this agent. */
+  agentId?: string;
   q?: string;
   /** Grouping mode. `none` (default) returns the flat artifact grid. */
   groupBy?: CompanyArtifactGroupBy;
@@ -47,6 +49,7 @@ function buildArtifactsQuery(params?: ListArtifactsParams): string {
   const search = new URLSearchParams();
   if (params?.kind && params.kind !== "all") search.set("kind", params.kind);
   if (params?.projectId) search.set("projectId", params.projectId);
+  if (params?.agentId) search.set("agentId", params.agentId);
   if (params?.q) search.set("q", params.q);
   if (params?.groupBy && params.groupBy !== "none") search.set("groupBy", params.groupBy);
   if (params?.groupIssueId) search.set("groupIssueId", params.groupIssueId);

@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import { printAcpxStreamEvent } from "@paperclipai/adapter-utils/acpx-engine/cli";
 
 function asErrorText(value: unknown): string {
   if (typeof value === "string") return value;
@@ -51,6 +52,10 @@ export function printClaudeStreamEvent(raw: string, debug: boolean): void {
   }
 
   const type = typeof parsed.type === "string" ? parsed.type : "";
+  if (type.startsWith("acpx.")) {
+    printAcpxStreamEvent(line, debug);
+    return;
+  }
 
   if (type === "system" && parsed.subtype === "init") {
     const model = typeof parsed.model === "string" ? parsed.model : "unknown";

@@ -1,0 +1,20 @@
+{
+  "runId": "run_replay_gap",
+  "integrity": "gap_detected",
+  "timelineCount": 5,
+  "duplicateEventIds": [],
+  "gaps": [
+    {
+      "sourceKey": "runner:runner_replay",
+      "expected": 3,
+      "received": 4,
+      "missingCount": 1,
+      "missing": [
+        3
+      ],
+      "truncated": false
+    }
+  ],
+  "turnTerminalState": "completed",
+  "runTerminalState": "succeeded"
+}

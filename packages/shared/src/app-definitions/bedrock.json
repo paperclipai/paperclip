@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "slug": "bedrock",
+  "name": "Amazon Bedrock",
+  "description": "Use Claude through Amazon Bedrock with a Bedrock API key and AWS region.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/bedrock.svg"
+  },
+  "urlPatterns": [],
+  "methods": [
+    {
+      "key": "ai-api_key",
+      "label": "Amazon Bedrock API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "anthropic",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use Claude through Amazon Bedrock with a Bedrock API key and AWS region.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "AWS_BEARER_TOKEN_BEDROCK"
+      }
+    }
+  ],
+  "tags": [
+    "model-provider"
+  ]
+}

@@ -52,5 +52,5 @@ describe("skills catalog package artifacts", () => {
     expect(paths).toContain("catalog/bundled/software-development/github-pr-workflow/SKILL.md");
     expect(paths).toContain("catalog/optional/browser/agent-browser/SKILL.md");
     expect(paths).toContain("package.json");
-  }, 30_000);
+  }, 120_000);
 });

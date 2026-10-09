@@ -11,7 +11,18 @@ Manage companies within your Paperclip instance.
 GET /api/companies
 ```
 
-Returns all companies the current user/agent has access to.
+Requires a board user. Returns companies where the user has active membership.
+Instance administrators and the local trusted board can list all companies.
+
+For navigation and company selectors, use `GET /api/companies?scope=accessible`.
+This returns only companies the caller can enter through company-scoped routes,
+including for instance administrators. Instance administrator status alone does
+not grant access to a company's contents. The local trusted board can still
+enter all companies. The board UI uses this scope for its company list, so it
+does not select companies the user cannot open.
+The Instance Access screen uses the unscoped directory so administrators can
+manage membership for all companies. A supplied `scope` must be a single
+`accessible` value; empty, unknown, or repeated values return `400`.
 
 ## Get Company
 

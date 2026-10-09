@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- 01 · Issue page top — monitor banner. Desktop 1280×800 -->
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- top bar -->
+  <line x1="0" y1="56" x2="1280" y2="56" />
+  <text x="24" y="36" font-size="14" stroke="none" fill="#666">Issues /</text>
+  <text x="88" y="36" font-size="14" font-weight="600" stroke="none" fill="#000">PAP-14557</text>
+  <circle cx="1240" cy="28" r="12" fill="#e6e6e6" />
+
+  <!-- properties rail divider -->
+  <line x1="880" y1="56" x2="880" y2="800" />
+
+  <!-- title + status pill -->
+  <text x="48" y="112" font-size="28" font-weight="700" stroke="none" fill="#000">Nightly model comparison sweep</text>
+  <g transform="translate(48,128)">
+    <rect width="104" height="24" rx="12" />
+    <text x="52" y="16" font-size="12" text-anchor="middle" stroke="none" fill="#000">In Progress</text>
+  </g>
+
+  <!-- NEW: monitor banner -->
+  <g transform="translate(48,168)">
+    <rect width="784" height="88" rx="8" />
+    <!-- clock glyph -->
+    <circle cx="40" cy="44" r="14" />
+    <line x1="40" y1="44" x2="40" y2="35" />
+    <line x1="40" y1="44" x2="47" y2="44" />
+    <text x="72" y="40" font-size="14" font-weight="600" stroke="none" fill="#000">Waiting on monitor — resumes in 2h 12m</text>
+    <text x="72" y="62" font-size="12" stroke="none" fill="#666">Thu Jul 17, 4:08 PM (your time)  ·  Attempt 1  ·  Watching: vercel-deploy</text>
+    <g transform="translate(568,28)">
+      <rect width="104" height="32" rx="4" />
+      <text x="52" y="21" font-size="14" text-anchor="middle" stroke="none" fill="#000">Check now</text>
+    </g>
+    <g transform="translate(688,28)">
+      <rect width="72" height="32" rx="4" />
+      <text x="36" y="21" font-size="14" text-anchor="middle" stroke="none" fill="#000">Edit</text>
+    </g>
+  </g>
+
+  <!-- description placeholder -->
+  <g transform="translate(48,288)">
+    <line x1="0" y1="8" x2="784" y2="8" stroke="#666" />
+    <line x1="0" y1="24" x2="784" y2="24" stroke="#666" />
+    <line x1="0" y1="40" x2="520" y2="40" stroke="#666" />
+  </g>
+
+  <line x1="48" y1="360" x2="832" y2="360" />
+  <text x="48" y="392" font-size="14" font-weight="600" stroke="none" fill="#000">Activity</text>
+
+  <!-- first comment card -->
+  <g transform="translate(48,408)">
+    <rect width="784" height="136" rx="8" />
+    <circle cx="32" cy="32" r="16" fill="#e6e6e6" />
+    <text x="56" y="28" font-size="14" font-weight="600" stroke="none" fill="#000">Senior Engineer Fable</text>
+    <text x="720" y="28" font-size="12" stroke="none" fill="#666">15m ago</text>
+    <line x1="56" y1="56" x2="744" y2="56" stroke="#666" />
+    <line x1="56" y1="72" x2="744" y2="72" stroke="#666" />
+    <line x1="56" y1="88" x2="744" y2="88" stroke="#666" />
+    <line x1="56" y1="104" x2="480" y2="104" stroke="#666" />
+  </g>
+  <text x="440" y="584" font-size="12" text-anchor="middle" stroke="none" fill="#666">⌄  thread continues — see screen 02 for the composer</text>
+
+  <!-- properties rail -->
+  <text x="904" y="96" font-size="12" stroke="none" fill="#666">PROPERTIES</text>
+  <text x="904" y="136" font-size="12" stroke="none" fill="#666">Status</text>
+  <text x="1032" y="136" font-size="14" stroke="none" fill="#000">In Progress</text>
+  <text x="904" y="176" font-size="12" stroke="none" fill="#666">Priority</text>
+  <text x="1032" y="176" font-size="14" stroke="none" fill="#000">Medium</text>
+  <text x="904" y="216" font-size="12" stroke="none" fill="#666">Assignee</text>
+  <circle cx="1040" cy="212" r="8" fill="#e6e6e6" />
+  <text x="1056" y="216" font-size="14" stroke="none" fill="#000">Fable</text>
+  <text x="904" y="256" font-size="12" stroke="none" fill="#666">Approvers</text>
+  <text x="1032" y="256" font-size="14" stroke="none" fill="#666">None</text>
+
+  <!-- NEW: two-line monitor row -->
+  <text x="904" y="304" font-size="12" stroke="none" fill="#666">Monitor</text>
+  <circle cx="1040" cy="300" r="7" />
+  <line x1="1040" y1="300" x2="1040" y2="295" />
+  <line x1="1040" y1="300" x2="1044" y2="300" />
+  <text x="1056" y="304" font-size="14" font-weight="600" stroke="none" fill="#000">In 2h 12m</text>
+  <text x="1056" y="324" font-size="12" stroke="none" fill="#666">Jul 17, 4:08 PM · Attempt 1</text>
+
+  <text x="904" y="376" font-size="12" stroke="none" fill="#666">Watchdog</text>
+  <text x="1032" y="376" font-size="14" stroke="none" fill="#666">None</text>
+
+  <!-- annotations -->
+  <g data-region="annotations">
+    <rect x="40" y="160" width="800" height="104" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(32,152)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <rect x="896" y="284" width="376" height="48" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(888,276)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+  </g>
+</svg>

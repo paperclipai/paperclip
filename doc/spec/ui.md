@@ -40,7 +40,8 @@ Priority indicators:
 
 ### Typography
 
-- **Font:** System font stack (Inter if loaded, else `-apple-system, BlinkMacSystemFont, 'Segoe UI'`)
+- **Font:** Bundled Inter v4.1 variable WOFF2 for sans text, loaded from `/fonts/InterVariable.woff2` and `/fonts/InterVariable-Italic.woff2`, with `Inter`, `ui-sans-serif`, `system-ui`, `-apple-system`, `BlinkMacSystemFont`, and `'Segoe UI'` fallbacks.
+- **Mono:** System monospace stack via the `font-mono` token (`ui-monospace`, `SFMono-Regular`, `Menlo`, `Monaco`, `Consolas`, `Liberation Mono`, `Courier New`, `monospace`).
 - **Body:** 13px / 1.5 line-height
 - **Labels/metadata:** 11px / uppercase tracking
 - **Headings:** 14-18px / semi-bold, never all-caps

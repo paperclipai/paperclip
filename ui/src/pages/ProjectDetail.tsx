@@ -24,11 +24,14 @@ import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
+import { SummarySlotCard } from "../components/SummarySlotCard";
 import { MembershipAction } from "../components/MembershipAction";
+import { StarToggle } from "../components/StarToggle";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
 import { PROJECT_ICONS } from "../lib/project-icons";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -37,6 +40,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import {
+  isStarred,
   resourceMembershipState,
   useResourceMembershipMutation,
   useResourceMemberships,
@@ -44,7 +48,7 @@ import {
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -57,55 +61,13 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   const projectsIdx = segments.indexOf("projects");
   if (projectsIdx === -1 || segments[projectsIdx + 1] !== projectId) return null;
   const tab = segments[projectsIdx + 2];
-  if (tab === "overview") return "overview";
+  if (tab === "overview") return "configuration";
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
   if (tab === "plugin-operations") return "plugin-operations";
   if (tab === "workspaces") return "workspaces";
   return null;
-}
-
-/* ── Overview tab content ── */
-
-function OverviewContent({
-  project,
-  onUpdate,
-  imageUploadHandler,
-}: {
-  project: { description: string | null; status: string; targetDate: string | null };
-  onUpdate: (data: Record<string, unknown>) => void;
-  imageUploadHandler?: (file: File) => Promise<string>;
-}) {
-  return (
-    <div className="space-y-6">
-      <InlineEditor
-        value={project.description ?? ""}
-        onSave={(description) => onUpdate({ description })}
-        nullable
-        as="p"
-        className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
-        multiline
-        imageUploadHandler={imageUploadHandler}
-      />
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-        <div>
-          <span className="text-muted-foreground">Status</span>
-          <div className="mt-1">
-            <StatusBadge status={project.status} />
-          </div>
-        </div>
-        {project.targetDate && (
-          <div>
-            <span className="text-muted-foreground">Target Date</span>
-            <p>{project.targetDate}</p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
 }
 
 /* ── Combined icon + color picker popover (PAP-72 / PAP-68 part 4) ── */
@@ -146,7 +108,7 @@ function ProjectTilePicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
+          className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-(--tp-box-shadow)"
           aria-label="Change project icon and color"
         >
           <ProjectTile color={color} icon={icon} size="md" />
@@ -190,7 +152,7 @@ function ProjectTilePicker({
             <button
               type="button"
               onClick={() => onSelectColor(null)}
-              className={`h-6 w-6 cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
+              className={`h-6 w-6 cursor-pointer transition-(--tp-transform-box-shadow) duration-150 hover:scale-110 ${
                 color === null
                   ? "ring-2 ring-foreground ring-offset-1 ring-offset-background rounded-md"
                   : ""
@@ -205,7 +167,7 @@ function ProjectTilePicker({
                 key={swatch}
                 type="button"
                 onClick={() => onSelectColor(swatch)}
-                className={`h-6 w-6 rounded-md cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
+                className={`h-6 w-6 rounded-md cursor-pointer transition-(--tp-transform-box-shadow) duration-150 hover:scale-110 ${
                   swatch === color
                     ? "ring-2 ring-foreground ring-offset-1 ring-offset-background"
                     : "hover:ring-2 hover:ring-foreground/30"
@@ -232,25 +194,35 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
   });
 
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(companyId),
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+  const liveRunsQueryKey = queryKeys.liveRuns(companyId);
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
     enabled: !!companyId,
-    refetchInterval: 5000,
+    // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
+    refetchInterval: false,
+    leaderOnly: true,
   });
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
+  });
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const { data: projects } = useQuery({
     queryKey: queryKeys.projects.list(companyId),
     queryFn: () => projectsApi.list(companyId),
     enabled: !!companyId,
   });
 
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listByProject(companyId, projectId),
     queryFn: () => issuesApi.list(companyId, { projectId }),
     enabled: !!companyId,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -298,19 +270,29 @@ function ProjectPluginOperationsList({
     queryFn: () => projectsApi.list(companyId),
     enabled: !!companyId,
   });
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(companyId),
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+  const liveRunsQueryKey = queryKeys.liveRuns(companyId);
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
     enabled: !!companyId,
-    refetchInterval: 5000,
+    // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
+    refetchInterval: false,
+    leaderOnly: true,
   });
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId),
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
+  });
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
     queryFn: () => issuesApi.list(companyId, { projectId, originKindPrefix }),
     enabled: !!companyId && !!projectId,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -375,6 +357,13 @@ export function ProjectDetail() {
     queryKey: [...queryKeys.projects.detail(routeProjectRef), lookupCompanyId ?? null],
     queryFn: () => projectsApi.get(routeProjectRef, lookupCompanyId),
     enabled: canFetchProject,
+    // Canonicalizing the same project's URL must not unmount its edit form
+    // while the alias query loads. Never carry data into another company or project.
+    placeholderData: (previous) => previous &&
+      previous.companyId === lookupCompanyId &&
+      (previous.id === routeProjectRef || projectRouteRef(previous) === routeProjectRef)
+      ? previous
+      : undefined,
   });
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
@@ -406,6 +395,10 @@ export function ProjectDetail() {
     [pluginDetailSlots],
   );
   const activePluginTab = pluginTabItems.find((item) => item.value === activeTab) ?? null;
+  // The slots query is disabled until the project's company resolves, and a
+  // disabled query reports isLoading=false — so "not loading" alone cannot
+  // distinguish "contribution unavailable" from "not asked yet" on cold loads.
+  const pluginTabDecisionLoaded = Boolean(resolvedCompanyId) && !pluginDetailSlotsLoading;
   const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
   const workspaceTabProjectId = project?.id ?? null;
   const { data: workspaceTabIssues = [], isLoading: isWorkspaceTabIssuesLoading, error: workspaceTabIssuesError } = useQuery({
@@ -449,14 +442,17 @@ export function ProjectDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
     if (resolvedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
     }
   };
 
   const updateProject = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId),
-    onSuccess: invalidateProject,
+    onSuccess: (_project, data) => {
+      invalidateProject();
+      if (data.visibility !== undefined) queryClient.invalidateQueries({ queryKey: ["issues"] });
+    },
   });
 
   const archiveProject = useMutation({
@@ -486,7 +482,7 @@ export function ProjectDetail() {
 
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
-      if (!resolvedCompanyId) throw new Error("No company selected");
+      if (!resolvedCompanyId) throw new Error("No organization selected");
       return assetsApi.uploadImage(resolvedCompanyId, file, `projects/${projectLookupRef || "draft"}`);
     },
   });
@@ -508,13 +504,9 @@ export function ProjectDetail() {
 
   useEffect(() => {
     if (!project) return;
-    if (routeProjectRef === canonicalProjectRef) return;
+    if (routeProjectRef === canonicalProjectRef && !location.pathname.endsWith("/overview")) return;
     if (isProjectPluginTab(activeTab)) {
       navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(activeTab)}`, { replace: true });
-      return;
-    }
-    if (activeTab === "overview") {
-      navigate(`/projects/${canonicalProjectRef}/overview`, { replace: true });
       return;
     }
     if (activeTab === "configuration") {
@@ -542,7 +534,7 @@ export function ProjectDetail() {
       return;
     }
     navigate(`/projects/${canonicalProjectRef}`, { replace: true });
-  }, [project, routeProjectRef, canonicalProjectRef, activeTab, filter, navigate]);
+  }, [project, routeProjectRef, canonicalProjectRef, activeTab, filter, navigate, location.pathname]);
 
   useEffect(() => {
     closePanel();
@@ -591,6 +583,7 @@ export function ProjectDetail() {
     try {
       await projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId);
       invalidateProject();
+      if (data.visibility !== undefined) queryClient.invalidateQueries({ queryKey: ["issues"] });
       if (fieldSaveRequestIds.current[field] !== requestId) return;
       setFieldState(field, "saved");
       scheduleFieldReset(field, 1800);
@@ -600,7 +593,7 @@ export function ProjectDetail() {
       scheduleFieldReset(field, 3000);
       throw error;
     }
-  }, [invalidateProject, lookupCompanyId, projectLookupRef, resolvedCompanyId, scheduleFieldReset, setFieldState]);
+  }, [invalidateProject, lookupCompanyId, projectLookupRef, queryClient, resolvedCompanyId, scheduleFieldReset, setFieldState]);
 
   const projectBudgetSummary = useMemo(() => {
     const matched = budgetOverview?.policies.find(
@@ -616,6 +609,8 @@ export function ProjectDetail() {
       metric: "billed_cents",
       windowKind: "lifetime",
       amount: 0,
+      unpricedEventCount: 0, pendingRunCount: 0,
+      unpricedUsagePolicy: "block",
       observedAmount: 0,
       remainingAmount: 0,
       utilizationPercent: 0,
@@ -644,12 +639,15 @@ export function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
     },
   });
 
-  if (pluginTabFromSearch && !pluginDetailSlotsLoading && !activePluginTab) {
+  if (pluginTabFromSearch && !activePluginTab && !error) {
+    if (!pluginTabDecisionLoaded) {
+      return <PageSkeleton variant="detail" />;
+    }
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
@@ -664,7 +662,7 @@ export function ProjectDetail() {
       try { cachedTab = localStorage.getItem(`paperclip:project-tab:${project.id}`); } catch {}
     }
     if (cachedTab === "overview") {
-      return <Navigate to={`/projects/${canonicalProjectRef}/overview`} replace />;
+      return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
     }
     if (cachedTab === "configuration") {
       return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
@@ -696,6 +694,9 @@ export function ProjectDetail() {
     membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "project" &&
     membershipMutation.variables.resourceId === project.id;
+  const projectStarred = isStarred(membershipsQuery.data, "project", project.id);
+  const projectStarPending = projectMembershipPending && membershipMutation.variables?.starred !== undefined;
+  const projectJoinLeavePending = projectMembershipPending && membershipMutation.variables?.starred === undefined;
 
   const handleTabChange = (tab: ProjectTab) => {
     // Cache the active tab per project
@@ -706,9 +707,7 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(tab)}`);
       return;
     }
-    if (tab === "overview") {
-      navigate(`/projects/${canonicalProjectRef}/overview`);
-    } else if (tab === "workspaces") {
+    if (tab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
@@ -724,15 +723,15 @@ export function ProjectDetail() {
   return (
     <div className="space-y-6">
       {showLeftProjectNotice ? (
-        <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-100">
+        <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
           <p className="min-w-0 flex-1">
             You left this project. It no longer appears in your sidebar.
           </p>
           <MembershipAction
             compact
             state="left"
-            pending={projectMembershipPending}
-            pendingState={projectMembershipPending ? membershipMutation.variables?.state : null}
+            pending={projectJoinLeavePending}
+            pendingState={projectJoinLeavePending ? membershipMutation.variables?.state : null}
             resourceName={project.name}
             onJoin={() => membershipMutation.mutate({
               resourceType: "project",
@@ -749,7 +748,7 @@ export function ProjectDetail() {
           />
           <button
             type="button"
-            className="h-6 w-6 shrink-0 text-yellow-100/70 hover:text-yellow-100"
+            className="h-6 w-6 shrink-0 text-yellow-900/70 hover:text-yellow-900 dark:text-yellow-100/70 dark:hover:text-yellow-100"
             aria-label="Dismiss project membership notice"
             onClick={() => setDismissedLeftProjectIds((current) => new Set(current).add(project.id))}
           >
@@ -774,19 +773,41 @@ export function ProjectDetail() {
             className="text-xl font-bold"
           />
           {project.pauseReason === "budget" ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-red-200">
+            <div className="inline-flex items-center gap-2 rounded-full border border-red-500/30 bg-red-500/10 px-3 py-1 text-(length:--text-micro) font-medium uppercase tracking-(--tracking-caps) text-red-800 dark:text-red-200">
               <span className="h-2 w-2 rounded-full bg-red-400" />
               Paused by budget hard stop
             </div>
           ) : null}
           {project.managedByPlugin ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-[11px] font-medium text-muted-foreground">
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "#6366f1" }} />
+            <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-(length:--text-micro) font-medium text-muted-foreground">
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "var(--project-seed)" }} />
               Managed by {project.managedByPlugin.pluginDisplayName}
             </div>
           ) : null}
         </div>
+        <div className="ml-auto flex items-center gap-2">
+          <StarToggle
+            size="button"
+            starred={projectStarred}
+            pending={projectStarPending}
+            resourceName={project.name}
+            onToggle={(next) => membershipMutation.mutate({
+              resourceType: "project",
+              resourceId: project.id,
+              resourceName: project.name,
+              starred: next,
+            })}
+          />
+        </div>
       </div>
+
+      <SummarySlotCard
+        companyId={resolvedCompanyId}
+        scopeKind="project"
+        scopeId={project.id}
+        title="Project summary"
+        description="Summarizer keeps the latest project status, next step, and operator-needed items here."
+      />
 
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}
@@ -823,7 +844,7 @@ export function ProjectDetail() {
         <PageTabBar
           items={[
             { value: "list", label: "Tasks" },
-            { value: "overview", label: "Overview" },
+
             ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
@@ -839,16 +860,7 @@ export function ProjectDetail() {
         />
       </Tabs>
 
-      {activeTab === "overview" && (
-        <OverviewContent
-          project={project}
-          onUpdate={(data) => updateProject.mutate(data)}
-          imageUploadHandler={async (file) => {
-            const asset = await uploadImage.mutateAsync(file);
-            return asset.contentPath;
-          }}
-        />
-      )}
+
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
