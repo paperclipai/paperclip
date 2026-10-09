@@ -6450,11 +6450,11 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
 it("reopens Pi after a completed turn within its cold admission budget during warm attachment", async () => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-pi-warm-admission-"));
   const cliRoot = join(root, "dist/cli");
-  await mkdir(cliRoot, { recursive: true });
+  await mkdir(cliRoot, { recursive: true, mode: 0o700 });
   const sidecarPath = join(cliRoot, "acpx-runtime-sidecar.cjs");
   const journal = join(root, "commands.ndjson");
   const fixture = await readFile(fileURLToPath(new URL("./fixtures/fake-pi-warm-sidecar.cjs", import.meta.url)), "utf8");
-  await writeFile(sidecarPath, fixture.replace("/* fixture-config */ null", JSON.stringify({ journal, resumeDelayMs: 32_000, commandDigest: QUALIFIED_ACPX_PROFILES.pi.commandDigest })));
+  await writeFile(sidecarPath, fixture.replace("/* fixture-config */ null", JSON.stringify({ journal, resumeDelayMs: 32_000, commandDigest: QUALIFIED_ACPX_PROFILES.pi.commandDigest })), { mode: 0o600 });
   const digest = (path: string) => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
   const bundle = createCapabilityRunnerdCodexTransport({
     provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", acpxPermissionMode: "deny-all",
