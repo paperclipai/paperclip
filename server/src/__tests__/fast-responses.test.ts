@@ -34,6 +34,7 @@ import {
   type FastResponseOutcome,
 } from "../services/fast-response-provider.js";
 import { settleConversationTurn } from "../services/agent-conversations.js";
+import { buildLowTrustSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>,
   db: ReturnType<typeof createDb>,
   home: string;
@@ -159,6 +160,25 @@ async function fixture() {
   };
 }
 describe("fast response accepted turns", () => {
+  it.each(["recent", "source"] as const)("keeps quarantined %s text out of the acknowledgement prompt", async location => {
+    const f = await fixture();
+    const untrusted = "QUARANTINED_PRIVATE_FINDING_DO_NOT_PROMOTE";
+    const sourceTrust = buildLowTrustSourceTrust({ issueId: f.issueId, agentId: f.agentId });
+    if (location === "source") {
+      await db.update(issueComments).set({ body: untrusted, sourceTrust }).where(eq(issueComments.id, f.comment.id));
+    } else {
+      await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: f.agentId,
+        body: untrusted, sourceTrust, createdAt: new Date(f.source.acceptedAt.getTime() - 1) });
+    }
+    await f.service.process(await f.enqueue());
+    expect(f.provider).toHaveBeenCalledTimes(1);
+    const prompt = f.provider.mock.calls[0][0].prompt as string;
+    expect(prompt).not.toContain(untrusted);
+    expect(prompt).toContain(LOW_TRUST_QUARANTINED_BODY);
+    const [receipt] = await db.select().from(issueComments).where(and(eq(issueComments.issueId, f.issueId), eq(issueComments.origin, "fast_response")));
+    expect(receipt.body).not.toContain(untrusted);
+    expect(receipt.sourceTrust).toEqual(location === "source" ? sourceTrust : null);
+  });
   it("distinguishes the current turn's running agent from older or queued work", async () => {
     const f = await fixture();
     expect(await fastResponseTurnQueued(db, f.source)).toBe(false);

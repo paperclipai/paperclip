@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import {
   and,
   desc,
@@ -698,7 +699,7 @@ export function fastResponseService(
               )
           : [];
         const recent = await db
-          .select({ body: issueComments.body })
+          .select({ body: issueComments.body, sourceTrust: issueComments.sourceTrust })
           .from(issueComments)
           .where(
             and(
@@ -740,12 +741,12 @@ export function fastResponseService(
           attachments: attachments.map((a) => `${a.name} (${a.type})`),
           agentName: agent?.name ?? "Board assistant",
           message:
-            source?.body ??
+            (source ? sanitizeQuarantinedCommentForHigherTrust(source).body : undefined) ??
             selected.issue?.description ??
             selected.issue?.title ??
             "",
           title: selected.issue?.title,
-          recent: recent.reverse().map((c) => c.body),
+          recent: recent.reverse().map((c) => sanitizeQuarantinedCommentForHigherTrust(c).body),
           queued: await fastResponseTurnQueued(db, request),
         });
       } else
