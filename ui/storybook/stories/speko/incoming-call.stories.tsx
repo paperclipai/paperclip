@@ -52,5 +52,6 @@ export const TaskListFailureAndRecovery: Story = {
     await userEvent.keyboard("{Enter}");
     await expect(await canvas.findByRole("option", {name: "PAP-42 · Ready existing conversation"})).toBeVisible();
     await waitFor(() => expect(canvas.queryByRole("alert")).not.toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByRole("combobox", {name: "Conversation task"})).toHaveFocus());
   },
 };
