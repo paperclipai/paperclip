@@ -371,7 +371,7 @@ export function AgentActionButtons({
 
   const isPendingApproval = agent.status === "pending_approval";
   const disabled = actionsDisabled || agentAction.isPending || providerTraceAction.isPending;
-  const assignAndRunDisabled = disabled || isPendingApproval || workActionsDisabled;
+  const assignAndRunDisabled = disabled || isPendingApproval || workActionsDisabled || agent.status === "terminated";
   const pauseResumeDisabled = disabled || isPendingApproval || (isPaused && workActionsDisabled)
     || Boolean(agent.lifecycleState && ["pausing", "terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState));
   const clearErrorDisabled = disabled;

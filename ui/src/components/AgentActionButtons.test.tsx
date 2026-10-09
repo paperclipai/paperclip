@@ -147,9 +147,14 @@ describe("AgentActionButtons", () => {
   });
 
   it.each(["pausing", "terminating", "cleaning_up", "terminated", "rejected"] as const)("disables pause and resume during %s", async lifecycleState => {
-    render(makeAgent({ status: "paused", lifecycleState }));
+    render(makeAgent({ status: lifecycleState === "pausing" ? "paused" : "terminated", lifecycleState }));
     await flushReact();
-    expect(Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Pause")!.disabled).toBe(true);
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons.find(button => button.textContent === "Pause")!.disabled).toBe(true);
+    if (lifecycleState !== "pausing") {
+      expect(buttons.find(button => button.textContent === "Run Heartbeat")!.disabled).toBe(true);
+      expect(buttons.find(button => button.textContent === "Assign Task")!.disabled).toBe(true);
+    }
   });
 
   it("replaces the pause slot with Clear error for error agents", async () => {
