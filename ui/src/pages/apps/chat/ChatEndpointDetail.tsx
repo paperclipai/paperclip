@@ -1005,7 +1005,7 @@ function Activity({
   const activityEntries = [
     ...(!query.isError ? rows.map(item => ({ kind: "connection" as const, id: `connection:${item.id}`, createdAt: item.createdAt, item })) : []),
     ...(!cursor && !calls.error ? calls.entries.map(entry => ({ kind: "call" as const, id: `call:${entry.session.id}`, createdAt: entry.session.createdAt, entry })) : []),
-    ...(!cursor && !calls.error ? calls.unapprovedCalls.map(call => ({ kind: "unapproved_call" as const, id: `unapproved:${call.id}`, createdAt: call.createdAt, call })) : []),
+    ...(!cursor && !calls.incomingError ? calls.unapprovedCalls.map(call => ({ kind: "unapproved_call" as const, id: `unapproved:${call.id}`, createdAt: call.createdAt, call })) : []),
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
 
   const { status } = endpoint;
@@ -1201,7 +1201,11 @@ function Activity({
               </Button>
             </div>
           )}
-          {calls.error && endpoint.provider === "speko" && !cursor && <div className="flex flex-wrap items-center justify-between gap-3 py-4"><p role="alert" className="text-sm text-destructive">Call activity could not be loaded. {calls.error}</p><Button size="sm" variant="outline" onClick={calls.onRetry}>Retry calls</Button></div>}
+          {endpoint.provider === "speko" && !cursor && [
+            calls.error && `Call activity could not be loaded. ${calls.error}`,
+            calls.incomingError && `Unapproved calls could not be loaded. ${calls.incomingError}`,
+            calls.endError && `The call could not be ended. ${calls.endError}`,
+          ].filter(Boolean).map((message) => <div key={String(message)} className="flex flex-wrap items-center justify-between gap-3 py-4"><p role="alert" className="text-sm text-destructive">{message}</p><Button size="sm" variant="outline" onClick={calls.onRetry}>Retry calls</Button></div>)}
           {activityEntries.map(entry => {
             if (entry.kind === "call") return <SpekoCallActivityItem key={entry.id} entry={entry.entry} presentation="activity" onEnd={calls.onEnd} ending={calls.endingSessionId === entry.entry.session.id} />;
             if (entry.kind === "unapproved_call") return <SpekoUnapprovedCallActivityItem key={entry.id} call={entry.call} presentation="activity" />;
@@ -1267,7 +1271,7 @@ function Activity({
               </div>
             );
           })}
-          {!query.isLoading && !query.isError && !calls.loading && !calls.error && activityEntries.length === 0 && (
+          {!query.isLoading && !query.isError && !calls.loading && !calls.error && !calls.incomingError && activityEntries.length === 0 && (
             <p className="py-5 text-sm text-muted-foreground">
               No connection activity yet.
             </p>

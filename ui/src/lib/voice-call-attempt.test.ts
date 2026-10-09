@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { voiceSessionsApi } from "@/api/voiceSessions";
 import type { VoiceSession, VoiceSessionMedia } from "@paperclipai/shared";
 import { createVoiceCallAttempt, voiceCallJournal } from "./voice-call-attempt";
 import { ApiError } from "@/api/client";
@@ -9,7 +10,7 @@ function fixture() {
   const storage = { getItem: (key: string) => rows.get(key) ?? null, setItem: (key: string, value: string) => { rows.set(key, value); }, removeItem: (key: string) => { rows.delete(key); } };
   const session = { id: "session", state: "active" } as VoiceSession;
   const media = { sessionId: "session", generation: 1, transportToken: "must-never-be-saved", transportUrl: "wss://test.invalid" } satisfies VoiceSessionMedia;
-  const client = { start: vi.fn(async () => ({ session, media })), end: vi.fn(async () => ({ ...session, state: "ended" as const })), get: vi.fn(async () => session), notification: vi.fn(async () => null) };
+  const client = { start: vi.fn(async (..._args: Parameters<typeof voiceSessionsApi.start>) => ({ session, media })), end: vi.fn(async () => ({ ...session, state: "ended" as const })), get: vi.fn(async () => session), notification: vi.fn(async () => null) };
   const journal = voiceCallJournal(storage, "company", "operator");
   return { rows, storage, client, journal };
 }
