@@ -20,6 +20,7 @@ import {
   chatActions,
   chatConversations,
   chatEndpoints,
+  chatGitHubConfigurations,
   chatGitHubReviews,
   chatMessageLinks,
   chatPublications,
@@ -48,6 +49,16 @@ const OWNERSHIP_ATTENTION_CODES = [
 ] as const;
 
 export { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON };
+
+// Only upgraded GitHub bots have the task-scoped response tools. Legacy
+// connections retain automatic progress and final-answer publication.
+function allowsAutomaticRunPublication() {
+  return or(ne(chatEndpoints.provider, "github"), notExists(
+    sql`select 1 from ${chatGitHubConfigurations}
+      where ${chatGitHubConfigurations.companyId} = ${chatEndpoints.companyId}
+        and ${chatGitHubConfigurations.endpointId} = ${chatEndpoints.id}`,
+  ));
+}
 
 /**
  * Heartbeat's presentation resolver may externalize its selected final prose
@@ -100,6 +111,10 @@ export async function resolveChatRunPresentationAuthorizationReason(
   const githubEndpoints = await db
     .select({ id: chatEndpoints.id })
     .from(chatEndpoints)
+    .innerJoin(chatGitHubConfigurations, and(
+      eq(chatGitHubConfigurations.companyId, chatEndpoints.companyId),
+      eq(chatGitHubConfigurations.endpointId, chatEndpoints.id),
+    ))
     .where(and(
       eq(chatEndpoints.companyId, input.companyId),
       eq(chatEndpoints.provider, "github"),
@@ -325,7 +340,7 @@ async function enqueueSafeNativeChatProgress(
           eq(chatEndpoints.companyId, chatConversations.companyId),
           eq(chatEndpoints.id, chatConversations.endpointId),
           eq(chatEndpoints.publicationMode, "automatic"),
-          ne(chatEndpoints.provider, "github"),
+          allowsAutomaticRunPublication(),
           eq(chatEndpoints.assignedAgentId, heartbeatRuns.agentId),
         ),
       )
@@ -447,7 +462,7 @@ async function enqueueSafeNativeChatProgress(
               eq(chatEndpoints.companyId, chatConversations.companyId),
               eq(chatEndpoints.id, chatConversations.endpointId),
               eq(chatEndpoints.publicationMode, "automatic"),
-              ne(chatEndpoints.provider, "github"),
+              allowsAutomaticRunPublication(),
               eq(chatEndpoints.assignedAgentId, row.agentId),
             ),
           )
@@ -783,7 +798,7 @@ export async function enqueueChatRunMilestones(
             "timed_out",
             "cancelled",
           ]),
-          or(ne(chatEndpoints.provider, "github"),
+          or(allowsAutomaticRunPublication(),
             inArray(heartbeatRuns.status, ["succeeded", "interrupted", "failed", "timed_out", "cancelled"])),
           or(
             and(

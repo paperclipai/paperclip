@@ -37165,6 +37165,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (isExplicitOperatorPublication(publication) || publication.payload.interactionId) return false;
     const record = await endpointRecord(publication.endpointId);
     if (!record || record.endpoint.provider !== "github" || record.endpoint.companyId !== publication.companyId) return false;
+    // Legacy connections cannot use the replacement task-scoped tools yet.
+    const [configuration] = await db.select({ endpointId: chatGitHubConfigurations.endpointId })
+      .from(chatGitHubConfigurations).where(and(
+        eq(chatGitHubConfigurations.companyId, publication.companyId),
+        eq(chatGitHubConfigurations.endpointId, publication.endpointId),
+      )).limit(1);
+    if (!configuration) return false;
     let runId = runIdFromMilestonePublication(publication);
     if (!publication.payload.progressState) {
       // Also settle automatic agent comments retained from an older instance

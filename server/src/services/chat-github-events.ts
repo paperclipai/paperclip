@@ -135,7 +135,11 @@ export function githubExplicitMentionEvent(
     raw: comment ? {
       type: eventType === "pull_request_review_comment" ? "review_comment" : "issue_comment",
       comment: source.comment, repository: source.repository, prNumber: number, threadType: issueThread ? "issue" : "pr",
-    } : {},
+    } : {
+      type: description ? issueThread ? "issue_description" : "pull_request_description" : "review_summary",
+      source: source[description ? isIssue ? "issue" : "pull_request" : "review"],
+      repository: source.repository, prNumber: number, threadType: issueThread ? "issue" : "pr",
+    },
   };
 }
 const payloadSchema = z.object({

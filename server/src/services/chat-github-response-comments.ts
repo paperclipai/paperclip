@@ -5,7 +5,7 @@ import {
   chatEndpointResources, chatGitHubConfigurations, chatMessageLinks, heartbeatRuns, issues,
   type Db,
 } from "@paperclipai/db";
-import { conflict, forbidden } from "../errors.js";
+import { conflict, forbidden, HttpError } from "../errors.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
 import { githubAutomaticAdmission } from "./chat-github-events.js";
 import { githubBotRepositoryToken, githubBotRequest } from "./chat-github-client.js";
@@ -221,11 +221,25 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         await lease.commit(async tx => { await tx.update(chatActions).set({ status: "cancelled", result: { final: true, code: "run_already_answered" }, updatedAt: new Date() }).where(eq(chatActions.id, response.id)); });
         continue;
       }
-      await writeGitHubResponseComment(db, sibling, api, lease, {
-        body: link.deliveryId === primary.delivery.id
-          ? `Review complete. See the [review finding](${receipt.url}).`
-          : `Handled with the [response to this request](${receipt.url}).`, final: true, versionAt: new Date(),
-      }, async () => { await assertCurrent(); await context(link.deliveryId!); });
+      try {
+        await writeGitHubResponseComment(db, sibling, api, lease, {
+          body: link.deliveryId === primary.delivery.id
+            ? `Review complete. See the [review finding](${receipt.url}).`
+            : `Handled with the [response to this request](${receipt.url}).`, final: true, versionAt: new Date(),
+        }, async () => { await assertCurrent(); await context(link.deliveryId!); });
+      } catch (error) {
+        const details = error instanceof HttpError ? error.details as { code?: string; providerStatus?: number } | undefined : undefined;
+        if (!response.result?.id || details?.code !== "github_bot_operation_failed" || details.providerStatus !== 404) throw error;
+        // A human can delete an earlier working comment while the coalesced
+        // review runs. Settle that exact receipt without recreating the comment
+        // or blocking the current response and check publication.
+        await assertCurrent();
+        await context(link.deliveryId);
+        await lease.commit(async tx => { await tx.update(chatActions).set({ status: "cancelled",
+          result: { ...response.result, final: true, code: "response_deleted" }, updatedAt: new Date(),
+        }).where(and(eq(chatActions.id, response.id), eq(chatActions.companyId, input.companyId),
+          eq(chatActions.endpointId, input.endpointId))); });
+      }
     }
   }
   async function failRun(input: { companyId: string; endpointId: string; issueId: string; runId: string; body: string }) {

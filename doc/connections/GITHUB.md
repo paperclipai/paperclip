@@ -242,11 +242,15 @@ The `comment` tool replaces that same comment with the final answer.
 findings and explicitly permitted formal reviews remain separate. Corrected
 assessments can update the summary again. Delayed progress cannot overwrite a
 final answer. Native final text stays in Paperclip and creates no extra comment.
+Legacy connections without a saved review configuration retain automatic run
+progress and final replies until upgraded to this tool-owned response model.
 
 Receipts are bound to the company, App, task, accepted request and original
 runtime generation. The existing publication lease serializes edits, and
 App-owned markers recover uncertain creation without posting duplicates.
-Deleted or no-longer-owned comments are not recreated or edited. Failed runs
+Deleted or no-longer-owned comments are not recreated or edited. Coalesced runs
+settle a deleted earlier working comment without blocking the current response,
+review findings, or check publication. Failed runs
 update the same comment when no final reply is confirmed or unresolved. A run
 that ends without a final reply clears a remaining working state honestly.
 Repository restrictions, person authorization and governed tool checks remain
@@ -255,6 +259,12 @@ Existing native sessions refresh incompatible tool checkpoints so the agent
 can see `update_comment`. The same Paperclip task and saved history remain.
 
 ### Explicit bot mentions and subscriptions
+
+Issue and PR descriptions, discussion comments, inline comments, and review
+summaries retain uploaded attachment references when they mention the bot.
+Private images use the exact unchanged source's authenticated GitHub rendering;
+repository/thread identity and body hashes remain bound across restarts. Signed
+image URLs and credentials are never added to durable attachment descriptors.
 
 A manual message naming another connected GitHub bot in the same company does
 not wake this bot through its thread subscription. Paperclip filters that
