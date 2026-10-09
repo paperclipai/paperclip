@@ -194,6 +194,21 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
     expect(await leaseRow(leaseId)).toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed" });
   });
 
+  it("releases a cancelled SSH run's bookkeeping lease", async () => {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    await db.update(environments).set({ driver: "ssh", config: {} }).where(eq(environments.id, environmentId));
+    const runId = await insertHeartbeatRun({ companyId, agentId, status: "cancelled" });
+    const leaseId = await insertActiveLease({ companyId, environmentId, heartbeatRunId: runId,
+      updatedAt: oldEnough(), provider: "ssh", providerLeaseId: "ssh://agent@build-host:22/srv/work" });
+    await db.update(environmentLeases).set({ leasePolicy: "ephemeral", metadata: { driver: "ssh" } })
+      .where(eq(environmentLeases.id, leaseId));
+
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 0 });
+
+    expect(await leaseRow(leaseId)).toMatchObject({ status: "expired", cleanupStatus: "success" });
+    expect((await leaseRow(leaseId))?.releasedAt).toBeInstanceOf(Date);
+  });
+
   it("test_flips_an_active_lease_when_its_run_is_failed", async () => {
     const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
     const runId = await insertHeartbeatRun({ companyId, agentId, status: "failed" });
@@ -310,6 +325,58 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
     expect(result).toEqual({ recovered: 0 });
     const row = await leaseRow(orphanedLeaseId);
     expect(row?.status).toBe("active");
+  });
+
+  it("test_recovers_stranded_ssh_leases_that_share_a_host_with_each_other_and_a_live_run", async () => {
+    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
+    await db
+      .update(environments)
+      .set({ name: "Build Host", driver: "ssh", config: {} })
+      .where(eq(environments.id, environmentId));
+    // Every SSH lease on one host carries the same id: the host and the
+    // workspace root.
+    const sharedHostLeaseId = "ssh://agent@build-host:22/srv/work";
+    const cancelledRunId = await insertHeartbeatRun({ companyId, agentId, status: "cancelled" });
+    const failedRunId = await insertHeartbeatRun({ companyId, agentId, status: "failed" });
+    const liveRunId = await insertHeartbeatRun({ companyId, agentId, status: "running" });
+    const strandedLeaseIds = [
+      await insertActiveLease({
+        companyId,
+        environmentId,
+        heartbeatRunId: cancelledRunId,
+        updatedAt: oldEnough(),
+        provider: "ssh",
+        providerLeaseId: sharedHostLeaseId,
+      }),
+      await insertActiveLease({
+        companyId,
+        environmentId,
+        heartbeatRunId: failedRunId,
+        updatedAt: oldEnough(),
+        provider: "ssh",
+        providerLeaseId: sharedHostLeaseId,
+      }),
+    ];
+    const liveLeaseId = await insertActiveLease({
+      companyId,
+      environmentId,
+      heartbeatRunId: liveRunId,
+      updatedAt: new Date(),
+      provider: "ssh",
+      providerLeaseId: sharedHostLeaseId,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 5 * 60 * 1000 });
+
+    expect(result).toEqual({ recovered: 2 });
+    for (const leaseId of strandedLeaseIds) {
+      const row = await leaseRow(leaseId);
+      expect(row?.status).toBe("pending_cleanup");
+      expect(row?.failureReason).toBe("orphaned_active_lease_recovered");
+    }
+    const liveRow = await leaseRow(liveLeaseId);
+    expect(liveRow?.status).toBe("active");
   });
 
   it("test_defers_a_guarded_lease_instead_of_leaving_it_at_the_front_of_the_page", async () => {
