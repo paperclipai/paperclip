@@ -81,7 +81,7 @@ import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHand
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import { askFirstCatalogEntryIdsFor } from "./connection-defaults";
 import { AppLogo } from "@/pages/apps/AppLogo";
-import { appApplicationSourceSlug } from "@/pages/apps/app-definition-display";
+import { appApplicationSourceSlug, appConnectionSourceSlug } from "@/pages/apps/app-definition-display";
 import { UnverifiedServerBadge } from "@/pages/apps/UnverifiedServerBadge";
 import {
   appSourceConnectHref,
@@ -209,16 +209,40 @@ export function requestedConnectionEntry(input: {
   requestedAppKey: string;
   galleryApps: readonly AppDefinition[];
   reconnectConnection: ToolConnection | null;
+  resumeConnection: ToolConnection | null;
+  resumeApplication: ToolApplication | null;
   applications: readonly ToolApplication[];
 }): AppDefinition | null {
   const visible = input.galleryApps.find((candidate) => candidate.slug === input.requestedAppKey);
   if (visible) return visible;
+  if (retainedResumeMatches({
+    requestedAppKey: input.requestedAppKey,
+    resumeConnection: input.resumeConnection,
+    resumeApplication: input.resumeApplication,
+  })) return getConnectableAppDefinition(input.requestedAppKey);
   if (!input.reconnectConnection) return null;
   const application = input.applications.find(
     (candidate) => candidate.id === input.reconnectConnection?.applicationId,
   );
   if (appApplicationSourceSlug(application) !== input.requestedAppKey) return null;
   return getConnectableAppDefinition(input.requestedAppKey);
+}
+
+export function retainedResumeMatches(input: {
+  requestedAppKey: string;
+  resumeConnection: ToolConnection | null;
+  resumeApplication: ToolApplication | null;
+}): boolean {
+  const { requestedAppKey, resumeConnection, resumeApplication } = input;
+  return Boolean(
+    resumeConnection
+    && resumeConnection.status === "draft"
+    && resumeApplication
+    && resumeConnection.applicationId === resumeApplication.id
+    && resumeConnection.companyId === resumeApplication.companyId
+    && appApplicationSourceSlug(resumeApplication) === requestedAppKey
+    && appConnectionSourceSlug(resumeConnection) === requestedAppKey,
+  );
 }
 
 export function retainedReconnectMatches(input: {
@@ -1172,6 +1196,17 @@ function StandardConnectionSetupFlow({
       : null,
     [connectionsQuery.data, resumeConnectionId],
   );
+  const resumeApplication = useMemo(
+    () => resumeConnection
+      ? (applicationsQuery.data?.applications ?? []).find(
+        (application) => application.id === resumeConnection.applicationId,
+      ) ?? null
+      : null,
+    [applicationsQuery.data, resumeConnection],
+  );
+  const resumeSourceMatches = requestedAppKey
+    ? retainedResumeMatches({ requestedAppKey, resumeConnection, resumeApplication })
+    : false;
   const identityConnection = resumeConnection ?? reconnectConnection;
   const reconnectGrantKind: ConnectionGrantKind | null = identityConnection
     ? identityConnection.credentialPolicy === "per_user"
@@ -1485,15 +1520,22 @@ function StandardConnectionSetupFlow({
   useEffect(() => {
     if (!requestedAppKey || galleryQuery.isLoading || !galleryQuery.data) return;
 
-    if (reconnectConnectionId && (
+    if ((resumeConnectionId || reconnectConnectionId) && (
       !connectionsQuery.isFetchedAfterMount
       || !applicationsQuery.isFetchedAfterMount
     )) return;
+
+    // A resume URL is only a recovery route. Invalid or cross-provider drafts
+    // must remain on the blocked recovery screen instead of falling through to
+    // fresh setup for a hidden provider.
+    if (resumeConnectionId && !resumeSourceMatches) return;
 
     const requestedEntry = requestedConnectionEntry({
       requestedAppKey,
       galleryApps: galleryQuery.data.apps,
       reconnectConnection,
+      resumeConnection,
+      resumeApplication,
       applications: applicationsQuery.data?.applications ?? [],
     });
     const requestedEntryAdvertisesManagedConnector = Boolean(
@@ -1638,6 +1680,9 @@ function StandardConnectionSetupFlow({
     reconnectConnection,
     reconnectConnectionId,
     reconnectSourceMatches,
+    resumeConnection,
+    resumeApplication,
+    resumeSourceMatches,
     resumeConnectionId,
     fullRequestedDefinition,
     requestedAppKey,
@@ -1818,6 +1863,26 @@ function StandardConnectionSetupFlow({
         <h2 className="text-lg font-semibold text-foreground">This setup can’t be resumed</h2>
         <p className="mt-2 text-sm text-muted-foreground">
           The saved connection no longer exists or is not available to this organization.
+        </p>
+        <Button type="button" variant="outline" className="mt-5" onClick={() => navigate("/apps")}>
+          Back to apps
+        </Button>
+      </div>
+    );
+  }
+
+  if (
+    resumeConnectionId
+    && connectionsQuery.isFetchedAfterMount
+    && applicationsQuery.isFetchedAfterMount
+    && resumeConnection
+    && !resumeSourceMatches
+  ) {
+    return (
+      <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
+        <h2 className="text-lg font-semibold text-foreground">This setup can’t be resumed</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          This saved draft does not match the requested provider. The connection was not changed.
         </p>
         <Button type="button" variant="outline" className="mt-5" onClick={() => navigate("/apps")}>
           Back to apps

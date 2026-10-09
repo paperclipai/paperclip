@@ -2666,6 +2666,98 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it("resumes a hidden provider draft only after matching its company-visible application", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-clickup",
+        status: "active",
+        metadata: { sourceTemplateKey: "clickup" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        applicationId: "app-clickup",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "draft",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: {},
+      }],
+    });
+    startOAuthMock.mockResolvedValueOnce({
+      connectionId,
+      provider: "clickup",
+      authorizationUrl: "https://app.clickup.com/api?state=resumed",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    await render();
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Finish connecting ClickUp");
+    });
+    expect(getAppStoreDefinition("clickup")).toBeNull();
+    await act(async () => {
+      buttonByText("Finish with ClickUp")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true });
+  });
+
+  it("does not resolve a hidden provider when a resumed draft belongs to another provider", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-monday",
+        status: "active",
+        metadata: { sourceTemplateKey: "monday" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: connectionId,
+        applicationId: "app-monday",
+        authKind: "oauth",
+        credentialPolicy: "per_user",
+        status: "draft",
+        config: { sourceTemplateKey: "clickup" },
+        transportConfig: {},
+      }],
+    });
+
+    await render();
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("This setup can’t be resumed");
+    });
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unavailable hidden draft on the blocked recovery screen", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=clickup&resume=${connectionId}`;
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({ applications: [] });
+    listConnectionsMock.mockResolvedValueOnce({ connections: [] });
+
+    await render();
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("The saved connection no longer exists");
+    });
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
   it("shows installation recovery for GitHub even when an advanced PAT method is available", async () => {
     const connectionId = "22222222-2222-4222-8222-222222222222";
     mockSearch.value = `source=github&resume=${connectionId}&oauth=failed&code=github_installation_required&installation_url=https%3A%2F%2Fgithub.com%2Fapps%2Fpaperclip-for-github%2Finstallations%2Fnew`;

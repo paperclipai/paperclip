@@ -91,12 +91,16 @@ describe("retained reconnect definition lookup", () => {
       requestedAppKey: "github",
       galleryApps: [],
       reconnectConnection: connection,
+      resumeConnection: null,
+      resumeApplication: null,
       applications: [githubApplication],
     })?.slug).toBe("github");
     expect(requestedConnectionEntry({
       requestedAppKey: "notion",
       galleryApps: [],
       reconnectConnection: connection,
+      resumeConnection: null,
+      resumeApplication: null,
       applications: [githubApplication],
     })).toBeNull();
   });
@@ -141,6 +145,8 @@ describe("retained reconnect definition lookup", () => {
       requestedAppKey: "github",
       galleryApps: [],
       reconnectConnection: null,
+      resumeConnection: null,
+      resumeApplication: null,
       applications: [],
     })).toBeNull();
     const visibleNotion = getConnectableAppDefinition("notion")!;
@@ -148,6 +154,8 @@ describe("retained reconnect definition lookup", () => {
       requestedAppKey: "notion",
       galleryApps: [visibleNotion],
       reconnectConnection: null,
+      resumeConnection: null,
+      resumeApplication: null,
       applications: [],
     })).toBe(visibleNotion);
   });
