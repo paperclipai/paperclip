@@ -435,6 +435,95 @@ describe("notifications", () => {
   });
 });
 
+describe("comment notifications", () => {
+  async function commentSetup() {
+    const { harness, calls } = await setup({ "company-a": { botToken: TOKEN_A } });
+    harness.seed({
+      issues: [
+        { id: "issue-1", companyId: "company-a", identifier: "ALP-1", title: "Smoke test" } as unknown as Issue,
+      ],
+      agents: [{ id: "agent-1", companyId: "company-a", name: "Builder" } as unknown as Agent],
+      accessMembers: [
+        {
+          companyId: "company-a",
+          principalType: "user",
+          principalId: "user-1",
+          status: "active",
+          membershipRole: "owner",
+        } as unknown as PluginAccessMember,
+      ],
+    });
+    await setPairedChat(harness.ctx, "company-a", {
+      chatId: "100",
+      chatLabel: "chat",
+      pairedAt: "",
+      pairedByTelegramUserId: 42,
+      pairedByUserId: "user-1",
+    });
+    return { harness, calls };
+  }
+
+  async function emitComment(
+    harness: TestHarness,
+    commentId: string,
+    actor: { actorType: "user" | "agent"; actorId: string },
+  ) {
+    await harness.emit(
+      "issue.comment.created",
+      { commentId, identifier: "ALP-1", bodySnippet: "hi" },
+      { companyId: "company-a", entityId: "issue-1", entityType: "issue", ...actor },
+    );
+  }
+
+  it("names a board author and hydrates a missing issue title", async () => {
+    const { harness, calls } = await commentSetup();
+    const comment = await harness.ctx.issues.createComment("issue-1", "hello", "company-a", {
+      actorUserId: "user-1",
+    });
+    await emitComment(harness, comment.id, { actorType: "user", actorId: "user-1" });
+
+    const text = String(calls.find((c) => c.method === "sendMessage")?.body.text);
+    expect(text).toContain("*Board* wrote:");
+    expect(text).toContain("Smoke test");
+    expect(text).not.toContain("Someone");
+    expect(text).not.toContain("no title");
+  });
+
+  it("names an agent author", async () => {
+    const { harness, calls } = await commentSetup();
+    const comment = await harness.ctx.issues.createComment("issue-1", "done", "company-a", {
+      authorAgentId: "agent-1",
+    });
+    await emitComment(harness, comment.id, { actorType: "agent", actorId: "agent-1" });
+
+    expect(String(calls.find((c) => c.method === "sendMessage")?.body.text)).toContain(
+      "*Builder* wrote:",
+    );
+  });
+
+  it("does not echo a reply it relayed from Telegram back to the chat", async () => {
+    const { harness, calls } = await commentSetup();
+    const chat = (await readPairing(harness.ctx)).pairedByCompany!["company-a"]!;
+    await postTelegramReplyComment(
+      harness.ctx,
+      chat,
+      { message_id: 5, from: { id: 42 }, chat: { id: 100, type: "private" }, date: 0, text: "ship it" },
+      { companyId: "company-a", issueId: "issue-1" },
+      "ship it",
+    );
+    const [relayed] = await harness.ctx.issues.listComments("issue-1", "company-a");
+    await emitComment(harness, relayed!.id, { actorType: "user", actorId: "user-1" });
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(0);
+
+    // A later board comment still notifies.
+    const next = await harness.ctx.issues.createComment("issue-1", "ship it", "company-a", {
+      actorUserId: "user-1",
+    });
+    await emitComment(harness, next.id, { actorType: "user", actorId: "user-1" });
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+  });
+});
+
 describe("config", () => {
   it("allows a config without botToken so Disconnect can clear it", () => {
     const schema = manifest.instanceConfigSchema as { required?: string[] };

@@ -604,31 +604,22 @@ async function onCommentCreated(
     "";
   let authorName =
     asString(payload.authorName) ?? asString(payload.actorName);
+  let authorAgentId: string | undefined;
+  let authorIsUser = false;
 
-  // Hydrate full body + author name from the comment record itself when
-  // we have an issueId. The activity-log payload truncates body and omits
-  // author identity.
+  // Hydrate full body + author from the comment record itself when we have
+  // an issueId. The activity-log payload truncates body and omits author
+  // identity.
   if (issueId && commentId) {
     try {
       const comments = await ctx.issues.listComments(issueId, event.companyId);
-      const comment = comments.find(
-        (c) => (c as { id?: string }).id === commentId,
-      );
+      const comment = comments.find((c) => c.id === commentId);
       if (comment) {
-        const cBody = (comment as { body?: string }).body;
-        if (typeof cBody === "string" && cBody.length > 0) fullBody = cBody;
-        if (!authorName) {
-          const cAuthorId = (comment as { authorAgentId?: string | null })
-            .authorAgentId;
-          if (cAuthorId) {
-            try {
-              const agent = await ctx.agents.get(cAuthorId, event.companyId);
-              if (agent?.name) authorName = agent.name;
-            } catch {
-              // ignore — fall back to "Someone"
-            }
-          }
+        if (typeof comment.body === "string" && comment.body.length > 0) {
+          fullBody = comment.body;
         }
+        authorAgentId = comment.authorAgentId ?? undefined;
+        authorIsUser = !authorAgentId && Boolean(comment.authorUserId);
       }
     } catch (err) {
       ctx.logger.warn("telegram-notifier: comment hydrate failed", {
@@ -637,7 +628,40 @@ async function onCommentCreated(
       });
     }
   }
+  // A reply relayed from this chat comes back as a comment event; the chat
+  // already got "✅ Comment posted", so echoing it would be noise.
+  if (issueId && consumeRelayedComment(issueId, commentId, fullBody)) return;
+
+  if (!authorName) {
+    // The comment record is authoritative; the event actor covers a failed
+    // hydrate.
+    if (!authorAgentId && !authorIsUser && event.actorId) {
+      if (event.actorType === "agent") authorAgentId = event.actorId;
+      else if (event.actorType === "user") authorIsUser = true;
+    }
+    if (authorAgentId) {
+      try {
+        const agent = await ctx.agents.get(authorAgentId, event.companyId);
+        if (agent?.name) authorName = agent.name;
+      } catch {
+        // ignore — fall back below
+      }
+    }
+    // The plugin SDK exposes no user directory, so a board/human author is
+    // labelled by role rather than by name.
+    if (!authorName && authorIsUser) authorName = "Board";
+  }
   if (!authorName) authorName = "Someone";
+
+  // Comments the plugin posts itself carry no `issueTitle` in the payload.
+  let issueTitle = asString(payload.issueTitle) ?? asString(payload.title);
+  if (!issueTitle && issueId) {
+    try {
+      issueTitle = (await ctx.issues.get(issueId, event.companyId))?.title ?? undefined;
+    } catch {
+      /* best-effort */
+    }
+  }
 
   const inlineLimit = COMMENT_INLINE_LIMIT;
   const hasFullBody = fullBody.length > inlineLimit;
@@ -657,8 +681,7 @@ async function onCommentCreated(
     baseUrl: config.paperclipBaseUrl ?? "http://localhost:3100",
     identifier,
     issueId,
-    issueTitle:
-      asString(payload.issueTitle) ?? asString(payload.title) ?? "(no title)",
+    issueTitle: issueTitle ?? "(no title)",
     authorName,
     body: inlineBody,
     hasFullBody,
@@ -1217,6 +1240,50 @@ async function handleConfirmationDeclineReply(
   return true;
 }
 
+// Comments this worker posted from Telegram replies. The host emits
+// `issue.comment.created` for them and may deliver it before createComment
+// resolves, so a reply is marked by issue + body before the call and by
+// comment id after it.
+const RELAY_TTL_MS = 5 * 60_000;
+const relayedComments = new Map<string, number>();
+
+function relayKeys(issueId: string, commentId?: string, body?: string): string[] {
+  const keys: string[] = [];
+  if (commentId) keys.push(`id:${commentId}`);
+  if (body !== undefined) keys.push(`body:${issueId}:${body.trim()}`);
+  return keys;
+}
+
+function markRelayedComment(issueId: string, commentId?: string, body?: string) {
+  const now = Date.now();
+  for (const [key, expires] of relayedComments) {
+    if (expires <= now) relayedComments.delete(key);
+  }
+  for (const key of relayKeys(issueId, commentId, body)) {
+    relayedComments.set(key, now + RELAY_TTL_MS);
+  }
+}
+
+function unmarkRelayedComment(issueId: string, body: string) {
+  for (const key of relayKeys(issueId, undefined, body)) relayedComments.delete(key);
+}
+
+/** True (once) when the comment is one this worker relayed from Telegram. */
+function consumeRelayedComment(
+  issueId: string,
+  commentId: string | undefined,
+  body: string,
+): boolean {
+  const now = Date.now();
+  const hit = relayKeys(issueId, commentId, body).some(
+    (key) => (relayedComments.get(key) ?? 0) > now,
+  );
+  if (hit) {
+    for (const key of relayKeys(issueId, commentId, body)) relayedComments.delete(key);
+  }
+  return hit;
+}
+
 /**
  * Post a Telegram reply as an issue comment.
  *
@@ -1234,11 +1301,13 @@ export async function postTelegramReplyComment(
   context: { companyId: string; issueId: string },
   body: string,
 ): Promise<"user" | "agent" | "plugin"> {
+  markRelayedComment(context.issueId, undefined, body);
   if (chat.pairedByUserId && isPairingOperator(chat, message.from?.id)) {
     try {
-      await ctx.issues.createComment(context.issueId, body, context.companyId, {
+      const comment = await ctx.issues.createComment(context.issueId, body, context.companyId, {
         actorUserId: chat.pairedByUserId,
       });
+      markRelayedComment(context.issueId, comment.id);
       return "user";
     } catch (err) {
       // The user may have left the company or lost write access; keep the
@@ -1250,12 +1319,18 @@ export async function postTelegramReplyComment(
     }
   }
   const operateAsAgentId = chat.operateAsAgentId;
-  await ctx.issues.createComment(
-    context.issueId,
-    body,
-    context.companyId,
-    operateAsAgentId ? { authorAgentId: operateAsAgentId } : undefined,
-  );
+  try {
+    const comment = await ctx.issues.createComment(
+      context.issueId,
+      body,
+      context.companyId,
+      operateAsAgentId ? { authorAgentId: operateAsAgentId } : undefined,
+    );
+    markRelayedComment(context.issueId, comment.id);
+  } catch (err) {
+    unmarkRelayedComment(context.issueId, body);
+    throw err;
+  }
   return operateAsAgentId ? "agent" : "plugin";
 }
 
