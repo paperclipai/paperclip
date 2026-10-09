@@ -83,7 +83,7 @@ describe("skill create helpers", () => {
   });
 
   it("builds fork drafts from the source skill metadata", () => {
-    const draft = buildForkSkillDraft(skill({ color: "#123456" }));
+    const draft = buildForkSkillDraft(skill({ color: "#123456", folderId: "bundled-folder" }));
 
     expect(draft.name).toBe("Demo Skill Fork");
     expect(draft.slug).toBe("demo-skill-fork");
@@ -91,6 +91,7 @@ describe("skill create helpers", () => {
     expect(draft.categories).toEqual(["engineering", "review"]);
     expect(draft.forkedFromSkillId).toBe("skill-1");
     expect(draft.forkedFromName).toBe("Demo Skill");
+    expect(draft.folderId).toBeNull();
     expect(draft.markdown).toContain("name: Demo Skill Fork");
   });
 

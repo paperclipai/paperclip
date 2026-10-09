@@ -8,6 +8,8 @@ const EXPECTED_BUNDLED_KEYS = [
   "paperclipai/bundled/docs/doc-maintenance",
   "paperclipai/bundled/paperclip-operations/issue-triage",
   "paperclipai/bundled/paperclip-operations/reflection-coach",
+  "paperclipai/bundled/paperclip-operations/status-card-query",
+  "paperclipai/bundled/paperclip-operations/summarize-status",
   "paperclipai/bundled/paperclip-operations/task-planning",
   "paperclipai/bundled/product/paperclip-capsules",
   "paperclipai/bundled/product/wireframe",
@@ -18,9 +20,11 @@ const EXPECTED_BUNDLED_KEYS = [
 const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/browser/agent-browser",
   "paperclipai/optional/content/release-announcement",
+  "paperclipai/optional/content/simplified-english",
   "paperclipai/optional/finance/ramp",
   "paperclipai/optional/product/design-critique",
   "paperclipai/optional/research/last30days",
+  "paperclipai/optional/software-development/prepare-mcp-integration",
 ];
 
 const MAX_FRONTMATTER_DESCRIPTION_LENGTH = 300;
@@ -36,6 +40,9 @@ const SKILL_FRONTMATTER_ROOTS = [
 
 function listSkillFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    // Standalone provider installs can contain third-party skills. They are not
+    // shipped Paperclip skills and must not participate in this repo audit.
+    if (entry.name === "node_modules") return [];
     const entryPath = path.join(dir, entry.name);
     if (entry.isDirectory()) return listSkillFiles(entryPath);
     if (entry.isFile() && entry.name === "SKILL.md") return [entryPath];
@@ -66,6 +73,25 @@ function readFrontmatterDescription(markdown: string): string | null {
 }
 
 describe("shipped skills catalog", () => {
+  it("ships the summarize-status streaming protocol", () => {
+    const skill = readFileSync(
+      path.join(
+        REPO_ROOT,
+        "packages/skills-catalog/catalog/bundled/paperclip-operations/summarize-status/SKILL.md",
+      ),
+      "utf8",
+    );
+
+    expect(skill).toContain("Post the first status update immediately, before doing anything else.");
+    expect(skill).toContain('STATUS: considering "Fix login redirect loop"…');
+    expect(skill).toContain("<<<SUMMARY-DRAFT>>>");
+    expect(skill).toContain("<<<END-SUMMARY-DRAFT>>>");
+    expect(skill).toContain("tool-call arguments don't stream; assistant text does");
+    expect(skill).toContain("falls back to its spinner");
+    expect(skill).toContain("Open with what the reader needs to do.");
+    expect(skill).toContain("1–3 specific, concrete, actionable items");
+  });
+
   it("keeps repo and catalog skill descriptions within the prompt budget cap", () => {
     const violations: string[] = [];
     for (const skillFile of SKILL_FRONTMATTER_ROOTS.flatMap(listSkillFiles)) {

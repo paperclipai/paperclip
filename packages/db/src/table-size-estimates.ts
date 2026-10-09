@@ -92,8 +92,6 @@ export const LOCAL_TABLE_ROW_COUNTS = [
   { table: "budget_incidents", localRows: 0 },
   { table: "budget_policies", localRows: 0 },
   { table: "cli_auth_challenges", localRows: 0 },
-  { table: "cloud_upstream_connections", localRows: 0 },
-  { table: "cloud_upstream_runs", localRows: 0 },
   { table: "company_logos", localRows: 0 },
   { table: "company_secret_provider_configs", localRows: 0 },
   { table: "company_skill_comments", localRows: 0 },

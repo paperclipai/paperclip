@@ -5,11 +5,20 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { AuthPage } from "./Auth";
 
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
 const signUpEmailMock = vi.hoisted(() => vi.fn());
+const healthMock = vi.hoisted(() => vi.fn());
+const beginCloudSignInMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../api/health", () => ({ healthApi: { get: () => healthMock() } }));
+vi.mock("@/lib/cloud-sign-in", () => ({
+  beginCloudSignIn: (url: string) => beginCloudSignInMock(url),
+  clearCloudSignInAttempt: vi.fn(),
+}));
 
 vi.mock("../api/auth", () => ({
   authApi: {
@@ -85,6 +94,8 @@ describe("AuthPage", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     getSessionMock.mockResolvedValue(null);
+    healthMock.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
+    beginCloudSignInMock.mockReturnValue(true);
     signInEmailMock.mockResolvedValue(undefined);
     signUpEmailMock.mockResolvedValue(undefined);
   });
@@ -95,11 +106,11 @@ describe("AuthPage", () => {
     vi.clearAllMocks();
   });
 
-  async function mount() {
+  async function mount(path = "/auth") {
     const { root, queryClient } = renderAuthPage(container);
     await act(async () => {
       root.render(
-        <MemoryRouter initialEntries={["/auth"]}>
+        <MemoryRouter initialEntries={[path]}>
           <QueryClientProvider client={queryClient}>
             <Routes>
               <Route path="/auth" element={<AuthPage />} />
@@ -110,11 +121,57 @@ describe("AuthPage", () => {
     });
     await flushReact();
     await flushReact();
-    return root;
+    return { root, queryClient };
   }
 
+  it.each(["https://my.paperclip.app", "https://my-staging.paperclip.app"])("recovers Cloud auth through %s without rendering an instance form", async (origin) => {
+    healthMock.mockResolvedValue({ cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: origin, stackSlug: "team" } });
+    const { root } = await mount("/auth?next=%2FTEST%2Fissues%2FTEST-1%3Ftab%3Dactivity%23comment");
+    await vi.waitFor(() => expect(beginCloudSignInMock).toHaveBeenCalledTimes(1));
+    const target = new URL(beginCloudSignInMock.mock.calls[0][0]);
+    expect(target.origin).toBe(origin);
+    expect(target.pathname).toBe("/v1/stacks/team/entry-redirect");
+    expect(target.searchParams.get("returnTo")).toBe("/TEST/issues/TEST-1?tab=activity#comment");
+    expect(container.querySelector("form")).toBeNull();
+    await act(() => root.unmount());
+  });
+
+  it("never flashes a form while deployment metadata is loading", async () => {
+    healthMock.mockReturnValue(new Promise(() => {}));
+    const { root } = await mount();
+    expect(container.querySelector("form")).toBeNull();
+    expect(container.textContent).toContain("Loading");
+    await act(() => root.unmount());
+  });
+
+  it("fails closed when deployment metadata cannot be loaded", async () => {
+    healthMock.mockRejectedValue(new Error("offline"));
+    const { root } = await mount();
+    await vi.waitFor(() => expect(container.textContent).toContain("Unable to check sign-in"));
+    expect(container.querySelector("form")).toBeNull();
+    await act(() => root.unmount());
+  });
+
+  it("offers a manual Cloud retry after the automatic recovery limit", async () => {
+    healthMock.mockResolvedValue({ cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: "https://my.paperclip.app", stackSlug: "team" } });
+    beginCloudSignInMock.mockReturnValue(false);
+    const { root } = await mount();
+    await vi.waitFor(() => expect(container.textContent).toContain("Continue to Paperclip Cloud"));
+    expect(container.querySelector("form")).toBeNull();
+    await act(() => root.unmount());
+  });
+
+  it("keeps incomplete Cloud configuration out of the instance form", async () => {
+    healthMock.mockResolvedValue({ cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: null, stackSlug: null } });
+    const { root } = await mount();
+    await vi.waitFor(() => expect(container.textContent).toContain("Cloud sign-in is unavailable"));
+    expect(container.querySelector("form")).toBeNull();
+    expect(beginCloudSignInMock).not.toHaveBeenCalled();
+    await act(() => root.unmount());
+  });
+
   it("exposes password-manager metadata and a11y attributes on the sign-in form", async () => {
-    const root = await mount();
+    const { root } = await mount();
 
     const emailInput = container.querySelector('input[name="email"]') as HTMLInputElement;
     const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement;
@@ -147,7 +204,7 @@ describe("AuthPage", () => {
   });
 
   it("uses new-password autocomplete in sign-up mode", async () => {
-    const root = await mount();
+    const { root } = await mount();
 
     const createOne = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Create one",
@@ -172,7 +229,7 @@ describe("AuthPage", () => {
   });
 
   it("renders auth errors in an assertive alert region referenced by the inputs", async () => {
-    const root = await mount();
+    const { root } = await mount();
 
     const inputValueSetter = Object.getOwnPropertyDescriptor(
       HTMLInputElement.prototype,
@@ -208,6 +265,45 @@ describe("AuthPage", () => {
     expect(emailInput.getAttribute("aria-invalid")).toBe("true");
     expect(passwordInput.getAttribute("aria-describedby")).toBe(errorId);
     expect(passwordInput.getAttribute("aria-invalid")).toBe("true");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("invalidates anonymous health metadata after sign-in", async () => {
+    const { root, queryClient } = await mount();
+    queryClient.setQueryData(queryKeys.health, {
+      status: "ok",
+      deploymentMode: "authenticated",
+    });
+
+    const inputValueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    const emailInput = container.querySelector('input[name="email"]') as HTMLInputElement;
+    const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement;
+
+    await act(async () => {
+      inputValueSetter!.call(emailInput, "jane@example.com");
+      emailInput.dispatchEvent(new Event("input", { bubbles: true }));
+      inputValueSetter!.call(passwordInput, "supersecret");
+      passwordInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const form = container.querySelector("form") as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(signInEmailMock).toHaveBeenCalledWith({
+      email: "jane@example.com",
+      password: "supersecret",
+    });
+    expect(healthMock).toHaveBeenCalledTimes(2);
 
     await act(async () => {
       root.unmount();

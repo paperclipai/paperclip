@@ -4,7 +4,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { companies, companySkills, createDb } from "@paperclipai/db";
+import { companies, companySkills, createDb, folders } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -132,6 +132,7 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
 
   afterEach(async () => {
     await db.delete(companySkills);
+    await db.delete(folders);
     await db.delete(companies);
     await Promise.all(Array.from(cleanupDirs, (dir) => fs.rm(dir, { recursive: true, force: true })));
     cleanupDirs.clear();
@@ -154,6 +155,7 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
     expect(result.action).toBe("created");
     expect(result.skill).toMatchObject({
       companyId,
+      folderId: expect.any(String),
       key: sampleCatalogSkill.key,
       slug: sampleCatalogSkill.slug,
       sourceType: "catalog",
@@ -181,6 +183,37 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
       originHash: sampleCatalogSkill.contentHash,
       packageName: "@paperclipai/skills-catalog",
       packageVersion: "0.3.1",
+    });
+    const folder = await db
+      .select()
+      .from(folders)
+      .where(eq(folders.id, result.skill.folderId!))
+      .then((rows) => rows[0]);
+    expect(folder).toMatchObject({
+      name: "Software Development",
+      slug: "software-development",
+      systemKey: "bundled:software-development",
+    });
+  });
+
+  it("repairs an existing unfiled Paperclip catalog skill during inventory refresh", async () => {
+    const companyId = await createCompany();
+    const installed = await svc.installFromCatalog(companyId, { catalogSkillId: sampleCatalogSkill.id });
+    await db
+      .update(companySkills)
+      .set({ folderId: null })
+      .where(eq(companySkills.id, installed.skill.id));
+
+    const listed = await svc.list(companyId);
+    const repaired = listed.find((skill) => skill.id === installed.skill.id);
+    const folder = repaired?.folderId
+      ? await db.select().from(folders).where(eq(folders.id, repaired.folderId)).then((rows) => rows[0])
+      : null;
+
+    expect(repaired?.folderId).toEqual(expect.any(String));
+    expect(folder).toMatchObject({
+      name: "Software Development",
+      systemKey: "bundled:software-development",
     });
   });
 

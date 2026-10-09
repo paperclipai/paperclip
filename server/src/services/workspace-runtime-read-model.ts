@@ -1,5 +1,9 @@
 import type { Db } from "@paperclipai/db";
 import { workspaceRuntimeServices } from "@paperclipai/db";
+import {
+  listWorkspaceServiceCommandDefinitions,
+  matchWorkspaceRuntimeServiceToCommand,
+} from "@paperclipai/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
 
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -25,6 +29,54 @@ export function selectCurrentRuntimeServiceRows(rows: WorkspaceRuntimeServiceRow
     if (!current.has(identity)) current.set(identity, row);
   }
   return [...current.values()];
+}
+
+export function selectConfiguredRuntimeServiceRows(
+  rows: WorkspaceRuntimeServiceRow[],
+  workspaceRuntime: Record<string, unknown> | null | undefined,
+  options?: {
+    fallbackScopeTypes?: WorkspaceRuntimeServiceRow["scopeType"][];
+  },
+) {
+  const availableRows = selectCurrentRuntimeServiceRows(rows).map((row) => ({
+    ...row,
+    configIndex: null as number | null,
+  }));
+  const selectedRows: Array<WorkspaceRuntimeServiceRow & { configIndex: number | null }> = [];
+
+  for (const command of listWorkspaceServiceCommandDefinitions(workspaceRuntime)) {
+    const reuseScope = command.rawConfig.reuseScope;
+    const expectedScope =
+      reuseScope === "project_workspace" ||
+      reuseScope === "execution_workspace" ||
+      reuseScope === "agent" ||
+      reuseScope === "run"
+        ? reuseScope
+        : command.lifecycle === "shared"
+          ? "project_workspace"
+          : "run";
+    const candidateScopes = [
+      expectedScope,
+      ...(options?.fallbackScopeTypes ?? []).filter((scopeType) => scopeType !== expectedScope),
+    ];
+    const matchedRow = candidateScopes.reduce<(typeof availableRows)[number] | null>(
+      (match, scopeType) =>
+        match
+        ?? matchWorkspaceRuntimeServiceToCommand(
+          command,
+          availableRows.filter((row) => row.scopeType === scopeType),
+        ),
+      null,
+    );
+    if (!matchedRow) continue;
+    selectedRows.push({
+      ...matchedRow,
+      configIndex: command.serviceIndex,
+    });
+    availableRows.splice(availableRows.indexOf(matchedRow), 1);
+  }
+
+  return selectedRows;
 }
 
 export async function listCurrentRuntimeServicesForProjectWorkspaces(

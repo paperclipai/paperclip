@@ -6,14 +6,15 @@ type MarkdownNode = {
 };
 
 const BARE_ISSUE_IDENTIFIER_RE = /^[A-Z][A-Z0-9]*-\d+$/i;
-const ISSUE_SCHEME_RE = /^issue:\/\/:?([^?#\s]+)(?:[?#].*)?$/i;
+const ISSUE_SCHEME_RE = /^issue:\/\/:?([^?#\s]+)([?#].*)?$/i;
 const ISSUE_REFERENCE_TOKEN_RE = /issue:\/\/:?[^\s<>()]+|https?:\/\/[^\s<>()]+|\/(?:[^\s<>()/]+\/)*issues\/[A-Z][A-Z0-9]*-\d+(?=$|[\s<>)\],.;!?:])|\b[A-Z][A-Z0-9]*-\d+\b/gi;
 
 export function parseIssuePathIdFromPath(pathOrUrl: string | null | undefined): string | null {
   if (!pathOrUrl) return null;
-  const pathname = pathOrUrl.trim();
-  if (!pathname) return null;
-  if (/^https?:\/\//i.test(pathname)) return null;
+  const value = pathOrUrl.trim();
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) return null;
+  const pathname = value.split(/[?#]/, 1)[0]!;
 
   const segments = pathname.split("/").filter(Boolean);
   const issueIndex = segments.findIndex((segment) => segment === "issues");
@@ -34,7 +35,7 @@ export function parseIssueReferenceFromHref(
     const issuePathId = decodeURIComponent(issueSchemeMatch[1]);
     return {
       issuePathId,
-      href: `/issues/${encodeURIComponent(issuePathId)}`,
+      href: `/issues/${encodeURIComponent(issuePathId)}${issueSchemeMatch[2] ?? ""}`,
     };
   }
 
@@ -42,7 +43,7 @@ export function parseIssueReferenceFromHref(
   if (pathId) {
     return {
       issuePathId: pathId,
-      href: `/issues/${encodeURIComponent(pathId)}`,
+      href: `/issues/${encodeURIComponent(pathId)}${trimmed.match(/[?#].*$/)?.[0] ?? ""}`,
     };
   }
 

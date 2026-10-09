@@ -1,8 +1,11 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+
+const mockRetainBacklogAssignment = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../services/human-directed-work.js", () => ({ retainBacklogHumanAssignment: mockRetainBacklogAssignment }));
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -46,7 +49,7 @@ vi.mock("../services/index.js", () => ({
     completeTestRunForIssue: vi.fn(async () => null),
   }),
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    getById: vi.fn(async () => ({ id: "company-1" })),
   }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({
@@ -168,6 +171,15 @@ function expectClearAssignedStatusValidation(res: request.Response) {
 }
 
 describe("assigned backlog creation contract", () => {
+  // Load the real route and middleware modules once before the tests run. The
+  // first import transforms a large module graph. Under the loaded serial shard
+  // (maxWorkers=1) that cold cost crossed the 5s testTimeout of the first test.
+  // The hook has a 30s budget, so it absorbs the cost and every createApp() call
+  // then hits the cached modules.
+  beforeAll(async () => {
+    await createApp();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue({
@@ -178,7 +190,7 @@ describe("assigned backlog creation contract", () => {
     }));
     mockIssueService.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) =>
       makeIssue({
-        id: "issue-1",
+        id: String(data.id),
         title: String(data.title),
         status: String(data.status),
         assigneeAgentId: data.assigneeAgentId as string | null | undefined,
@@ -322,11 +334,15 @@ describe("assigned backlog creation contract", () => {
       assigneeAgentId,
       status: "backlog",
     }));
+    expect(mockRetainBacklogAssignment).toHaveBeenCalledWith(
+      expect.anything(), expect.objectContaining({ assigneeAgentId, status: "backlog" }),
+      expect.objectContaining({ actorType: "user", actorId: "local-board" }),
+    );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         action: "issue.created",
-        entityId: "issue-1",
+        entityId: expect.any(String),
         details: expect.objectContaining({
           status: "backlog",
           statusDefaulted: false,
