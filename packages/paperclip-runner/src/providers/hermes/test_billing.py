@@ -168,12 +168,13 @@ class DirectTokens(unittest.TestCase):
         install_billing_capture()
         for provider, mode in [('anthropic', 'anthropic_messages'), ('openai', 'chat_completions')]:
             key_name = 'ANTHROPIC_API_KEY' if provider == 'anthropic' else 'OPENAI_API_KEY'
-            ledger = start_turn(SimpleNamespace(provider=provider, api_mode=mode, model='fixture-model'), token_accounting=True)
+            model = 'claude-haiku-4-5-20251001' if provider == 'anthropic' else 'fixture-model'
+            ledger = start_turn(SimpleNamespace(provider=provider, api_mode=mode, model=model), token_accounting=True)
             try:
                 if provider == 'anthropic':
                     body = b''.join(b'data: ' + json.dumps(value).encode() + b'\n\n' for value in [
                         {'type':'message_start','message':{'id':'fixture','type':'message','role':'assistant','model':'fixture-model','content':[],
-                            'stop_reason':None,'stop_sequence':None,'usage':{'input_tokens':20,'output_tokens':1}}},
+                            'stop_reason':None,'stop_sequence':None,'usage':{'input_tokens':20,'output_tokens':1,'service_tier':'standard','inference_geo':'not_available'}}},
                         {'type':'message_delta','delta':{'stop_reason':'end_turn','stop_sequence':None},'usage':{'output_tokens':5}},
                         {'type':'message_stop'}])
                 else:
@@ -182,7 +183,8 @@ class DirectTokens(unittest.TestCase):
                     lambda request: httpx.Response(200, headers={'content-type':'text/event-stream'}, stream=httpx.ByteStream(body)))) as client:
                     if provider == 'anthropic':
                         with Anthropic(http_client=client, api_key='synthetic-fixture-only') as sdk:
-                            list(sdk.messages.create(model='fixture-model', messages=[], max_tokens=8, stream=True))
+                            with sdk.messages.stream(model=model, messages=[], max_tokens=8) as stream:
+                                list(stream)
                     else:
                         with OpenAI(http_client=client, api_key='synthetic-fixture-only') as sdk:
                             list(sdk.chat.completions.create(model='fixture-model', messages=[], stream=True, stream_options={'include_usage':True}))
@@ -191,6 +193,24 @@ class DirectTokens(unittest.TestCase):
                 self.assertEqual(totals, (20, 5, 0, 0) if provider == 'anthropic' else (15, 5, 3, 2))
             finally:
                 close_turn(ledger)
+
+    def test_haiku_geography_sentinel_does_not_admit_unknown_models_or_premium_usage(self):
+        for model, geography, tier, speed, accepted in [
+            ('claude-haiku-4-5-20251001', 'not_available', 'standard', 'standard', True),
+            ('claude-sonnet-4-6', 'not_available', 'standard', 'standard', False),
+            ('claude-haiku-4-5-20251001', 'us', 'standard', 'standard', False),
+            ('claude-haiku-4-5-20251001', 'not_available', 'priority', 'standard', False),
+            ('claude-haiku-4-5-20251001', 'not_available', 'standard', 'fast', False),
+        ]:
+            ledger = TokenBilling('anthropic', model, 'messages')
+            receipt = ledger.begin()
+            for frame in [
+                {'type':'message_start','message':{'usage':{'input_tokens':10,'output_tokens':1,
+                    'inference_geo':geography,'service_tier':tier,'speed':speed}}},
+                {'type':'message_delta','usage':{'output_tokens':4}}, {'type':'message_stop'},
+            ]:
+                receipt.feed(b'data: '+json.dumps(frame).encode()+b'\n\n')
+            self.assertEqual(ledger.finish()[0]['complete'], accepted, (model, geography, tier, speed))
 
 
 class Transport(unittest.TestCase):

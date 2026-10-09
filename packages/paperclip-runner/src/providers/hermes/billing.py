@@ -276,9 +276,13 @@ class TokenWireReceipt(WireReceipt):
                 kind = value.get("type")
                 usage = (value.get("message") or {}).get("usage") if kind == "message_start" else value.get("usage")
                 if isinstance(usage, dict):
+                    # Haiku 4.5 predates geographic pricing and reports this
+                    # documented sentinel even on ordinary standard-rate work.
+                    # Newer models' regional premiums must still stay unknown.
+                    geography = (None, "global", "not_available") if self.owner.model == "claude-haiku-4-5-20251001" else (None, "global")
                     if (usage.get("speed") not in (None, "standard")
                             or usage.get("service_tier") not in (None, "standard")
-                            or usage.get("inference_geo") not in (None, "global")):
+                            or usage.get("inference_geo") not in geography):
                         raise ValueError()
                     if kind in ("message_start", "message"):
                         if self._input is not None:

@@ -2175,3 +2175,30 @@ A twelve-minute workflow step bound leaves time to retain provenance even
 when test cleanup hangs, within the existing thirty-minute job bound. These
 are verification-only changes; the corrected `cc1a98418` image/runtime source
 is unchanged.
+
+### 2026-10-09 paid Haiku receipt qualification
+
+The first paid direct Anthropic Product E2E cell at `85f701daa` completed its
+native task and all six completion matchers, but failed the healthy-budget
+settlement check: both observed requests had rejected usage, leaving the agent
+paused with an unpriced receipt. Cleanup passed. The original machine grade,
+screenshots and trace remain in campaign
+`hermes-paid-85f701-anthropic-local-hello-complete-20261009T220407Z`;
+this attempt is a failure, not API qualification.
+
+A separate eight-output-token, zero-retry diagnostic observed Haiku's standard
+usage with `inference_geo: "not_available"`. Anthropic documents this sentinel
+for models released before February 2026 and confirms those models retain
+standard prices even when an organization enables US-only inference:
+[usage documentation](https://platform.claude.com/docs/en/manage-claude/usage-cost-api),
+[organization pricing](https://support.claude.com/en/articles/15422948-enable-us-only-inference-for-your-organization).
+The validator now accepts that response value only for the exact reviewed
+`claude-haiku-4-5-20251001` model. Newer models with unavailable geography,
+regional premiums, priority tiers and fast-mode usage remain unpriced.
+Request credential, endpoint, protocol and model checks are unchanged.
+
+The regression uses the pinned SDK's actual Messages streaming manager with a
+mock HTTP transport and the observed usage fields, plus negative premium and
+model cases. The platform closures change only `billing.py`; all remaining
+execution bytes retain their verified pins. A corrected cloud image and live
+Product E2E rerun are required before either API path is qualified.
