@@ -2,6 +2,8 @@ import express from "express";
 import request from "supertest";
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { agentRoutes } from "../routes/agents.js";
+import { errorHandler } from "../middleware/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
@@ -134,10 +136,6 @@ function boardActor() {
 }
 
 async function createApp(actor: Record<string, unknown> = boardActor(), db: Record<string, unknown> = {}) {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
