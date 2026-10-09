@@ -10,6 +10,7 @@ type Session = { id: string; agentId: string; token: string; endedAt: string | n
 export async function installSpekoTestProvider(origin: string, port: number) {
   const originalFetch = globalThis.fetch;
   const tools = new Map<string, Tool[]>(), sessions = new Map<string, Session>(), hooks = new Map<string, any>();
+  const messages = new Map<string, {id: string; sessionId: string; text: string; mode: string}[]>();
   let numberAgentId: string | null = null;
   const creditRejectedAgents = new Set<string>(), creationAttempts = new Map<string, number>();
   // The simulated external provider outlives an app restart, just as Speko does.
@@ -20,10 +21,11 @@ export async function installSpekoTestProvider(origin: string, port: number) {
     for (const [key, value] of state.tools) tools.set(key, value);
     numberAgentId = state.numberAgentId ?? null;
     for (const [key, value] of state.hooks ?? []) hooks.set(key, value);
+    for (const [key, value] of state.messages ?? []) messages.set(key, value);
     for (const [key, value] of state.sessions) sessions.set(key, value);
   }
   const persist = () => {
-    writeFileSync(`${stateFile}.pending`, JSON.stringify({ tools: [...tools], sessions: [...sessions], hooks: [...hooks], numberAgentId }), { mode: 0o600 });
+    writeFileSync(`${stateFile}.pending`, JSON.stringify({ tools: [...tools], sessions: [...sessions], hooks: [...hooks], messages: [...messages], numberAgentId }), { mode: 0o600 });
     renameSync(`${stateFile}.pending`, stateFile);
   };
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -60,6 +62,16 @@ export async function installSpekoTestProvider(origin: string, port: number) {
       if (url.pathname.endsWith("/phone")) return json({ sessionId: id, status: "dialing" });
       return json({ sessionId: id, transportToken: `fixture:${id}`, transportUrl: "wss://speko-transport.invalid" });
     }
+    const messageCall = /^\/v1\/calls\/([^/]+)\/messages$/.exec(url.pathname);
+    if (messageCall && method === "POST") {
+      const session = sessions.get(messageCall[1]);
+      if (!session) return json({error: "unknown fixture call"}, 404);
+      if (session.endedAt) return json({error: "call already ended"}, 409);
+      if (typeof body.text !== "string" || !body.text.trim() || body.mode !== "respond") return json({error: "invalid message"}, 400);
+      const message = {id: `message_${randomUUID()}`, sessionId: session.id, text: body.text, mode: body.mode};
+      messages.set(session.id, [...messages.get(session.id) ?? [], message]); persist();
+      return json({message_id: message.id}, 202);
+    }
     const call = /^\/v1\/calls\/([^/]+)(\/end)?$/.exec(url.pathname);
     if (call) {
       const session = sessions.get(call[1]); if (!session) return json({ error: "unknown fixture call" }, 404);
@@ -94,6 +106,9 @@ export async function installSpekoTestProvider(origin: string, port: number) {
         if (!response.ok) {res.writeHead(response.status).end(JSON.stringify(payload)); return;}
         sessions.set(id, {id, agentId: command.agentId, token: payload.toolSecrets.paperclip_session_token, endedAt: null, mode: "inbound_phone"}); persist();
         res.writeHead(200, {"content-type": "application/json"}).end(JSON.stringify({sessionId: id, firstMessage: payload.firstMessage})); return;
+      }
+      if (command.action === "messages") {
+        res.writeHead(200, {"content-type": "application/json"}).end(JSON.stringify(messages.get(command.sessionId) ?? [])); return;
       }
       const session = sessions.get(command.sessionId);
       const tool = session && tools.get(session.agentId)?.find(item => item.name === command.tool);

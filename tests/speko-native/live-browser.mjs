@@ -98,9 +98,12 @@ try {
     await page.getByRole('button', { name: `Talk to ${fixture.agentName}`, exact: true }).click();
   } else if (process.env.SPEKO_NATIVE_CONNECTED === '1') {
     if (!fixture.endpointId) throw new Error('Connected qualification requires the verified endpoint fixture');
-    await page.goto(`${origin}/${fixture.companyPrefix}/apps/chat/${fixture.endpointId}/settings`);
-    await expect(page.getByRole('button', {name: 'Start voice', exact: true}).or(page.getByRole('button', {name: 'Continue setup', exact: true}))).toBeVisible({timeout: 30000});
-    if (await page.getByRole('button', {name: 'Continue setup', exact: true}).isVisible()) await page.getByRole('button', {name: 'Continue setup', exact: true}).click();
+    const taskResponse = await page.request.post(`${origin}/api/companies/${fixture.companyId}/issues`, {headers: {Origin: origin}, data: {title: "Speko live browser qualification", assigneeAgentId: fixture.agentId, status: "backlog"}});
+    if (!taskResponse.ok()) throw new Error(`Qualification task creation rejected (${taskResponse.status()})`);
+    const task = await taskResponse.json();
+    await page.goto(`${origin}/${fixture.companyPrefix}/issues/${task.id}`);
+    await page.getByRole('button', {name: `Talk to ${fixture.agentName}`, exact: true}).click();
+    event('qualification_task_created', {issueId: task.id});
     event('existing_connection_used', {endpointId: fixture.endpointId});
   } else {
   await page.getByRole('link', { name: 'Connectors', exact: true }).first().click();

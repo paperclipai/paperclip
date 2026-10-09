@@ -244,6 +244,11 @@ test("E01/E03–E11/E13/E15/E16: setup, delayed work, duplicate input, navigatio
   expect(await providerCommand(phoneWork)).toEqual(incomingAccepted);
   const boundIncoming = (await evidence()).sessions.find((call: any) => call.providerSessionId === incoming.sessionId);
   await expect.poll(async () => (await evidence()).tools.filter((call: any) => call.sessionId === boundIncoming.id && call.tool === "submit_request").length).toBe(1);
+  // A saved task answer must reach the live phone transport before hangup.
+  // Provider acceptance is asserted separately from actual spoken playback.
+  await expect.poll(async () => (await evidence()).comments.some((row: any) => row.issueId === inboundTask.id && row.authorAgentId === agent.id && row.body.includes("Verification number")), {timeout: 100_000}).toBe(true);
+  await expect.poll(async () => (await providerCommand({action: "messages", sessionId: incoming.sessionId})).some((message: any) => message.text.includes("Verification number")), {timeout: 30_000}).toBe(true);
+  await expect.poll(async () => (await evidence()).pushActions.some((action: any) => action.payload.sessionId === boundIncoming.id && action.status === "completed" && action.result?.messageId && action.result.playback === "unknown")).toBe(true);
   await post(`/companies/${company.id}/voice-sessions/${boundIncoming.id}/end`, {});
   // E15: report reconciliation persists one report, excludes recordings and keeps task assignment.
   await expect.poll(async () => (await evidence()).reports.find((report: any) => report.sessionId === boundIncoming.id)?.status, {timeout: 45000}).toBe("available");

@@ -133,6 +133,6 @@ $('mute').onclick = async () => {
   try { await conversation.setMicMuted(!muted); muted = !muted; $('mute').textContent = muted ? 'Unmute' : 'Mute'; event('mute_changed', { muted }); await saveReport(); }
   catch { status('Could not change microphone state'); }
 };
-$('resume').onclick = async () => { await conversation.startAudioPlayback(); $('resume').hidden = !conversation.canPlaybackAudio; };
+$('resume').onclick = async () => { await conversation.startAudioPlayback(); $('resume').hidden = conversation.canPlaybackAudio; };
 $('end').onclick = () => end().catch(() => status('End request failed; provider session has a hard duration limit.'));
 window.addEventListener('pagehide', () => { void conversation?.endSession(); });

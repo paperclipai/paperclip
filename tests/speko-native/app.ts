@@ -5,7 +5,7 @@ import { randomInt } from "node:crypto";
 import { once } from "node:events";
 import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
-import { createDb, authUsers, instanceUserRoles, issueComments, issues, issueThreadInteractions, issueQuestionResponseDeliveries, chatVoiceInboundCalls, chatVoiceReports, chatVoiceSessions, chatVoiceReplies, chatVoiceToolCalls, chatDeliveries, chatPublications, heartbeatRuns, agentWakeupRequests } from "../../packages/db/src/index.js";
+import { createDb, authUsers, instanceUserRoles, issueComments, issues, issueThreadInteractions, issueQuestionResponseDeliveries, chatVoiceInboundCalls, chatVoiceReports, chatVoiceSessions, chatVoiceReplies, chatVoiceToolCalls, chatActions, chatDeliveries, chatPublications, heartbeatRuns, agentWakeupRequests } from "../../packages/db/src/index.js";
 const home = process.env.PAPERCLIP_HOME!;
 const port = Number(process.env.SPEKO_NATIVE_PORT ?? 3449);
 const origin = `http://127.0.0.1:${port}`;
@@ -114,7 +114,7 @@ async function writeEvidence() {
   if (evidenceWriting) return;
   evidenceWriting = true;
   try {
-  const [reports, incoming, sessions, replies, tools, deliveries, publications, runs, wakeups, comments, interactions, questionDeliveries] = await Promise.all([
+  const [reports, incoming, sessions, replies, tools, deliveries, publications, runs, wakeups, comments, interactions, questionDeliveries, pushActions] = await Promise.all([
     db.select({sessionId: chatVoiceReports.sessionId, companyId: chatVoiceReports.companyId, status: chatVoiceReports.status, costMicroUsd: chatVoiceReports.costMicroUsd, transcript: chatVoiceReports.transcript}).from(chatVoiceReports),
     db.select({id: chatVoiceInboundCalls.id, companyId: chatVoiceInboundCalls.companyId, endpointId: chatVoiceInboundCalls.endpointId, state: chatVoiceInboundCalls.state, sessionId: chatVoiceInboundCalls.sessionId}).from(chatVoiceInboundCalls),
     db.select({ id: chatVoiceSessions.id, issueId: chatVoiceSessions.issueId, providerSessionId: chatVoiceSessions.providerSessionId, mode: chatVoiceSessions.mode, state: chatVoiceSessions.state }).from(chatVoiceSessions),
@@ -127,6 +127,7 @@ async function writeEvidence() {
     db.select({ id: issueComments.id, issueId: issueComments.issueId, body: issueComments.body, authorAgentId: issueComments.authorAgentId, createdByRunId: issueComments.createdByRunId }).from(issueComments),
     db.select().from(issueThreadInteractions),
     db.select().from(issueQuestionResponseDeliveries),
+    db.select().from(chatActions).where(eq(chatActions.kind, "speko_voice_reply_push")),
   ]);
   const runEvidence = runs.map(({ contextSnapshot, ...row }) => {
     const context = (contextSnapshot ?? {}) as Record<string, unknown>;
@@ -135,7 +136,7 @@ async function writeEvidence() {
       paperclipTaskCommunicationGuidance: context.paperclipTaskCommunicationGuidance, paperclipHarnessCheckedOut: context.paperclipHarnessCheckedOut, paperclipExternalChatExecutionBound: context.paperclipExternalChatExecutionBound,
       wake: { externalChatProvider: wake.externalChatProvider, checkedOutByHarness: wake.checkedOutByHarness, externalChatExecutionBound: wake.externalChatExecutionBound } } };
   });
-  await writeFile(resolve(home, "evidence.pending.json"), JSON.stringify({ appPid: process.pid, at: new Date().toISOString(), reports, incoming, sessions, replies, tools, deliveries, publications, runs: runEvidence, wakeups, comments, interactions, questionDeliveries }), { mode: 0o600 });
+  await writeFile(resolve(home, "evidence.pending.json"), JSON.stringify({ appPid: process.pid, at: new Date().toISOString(), reports, incoming, sessions, replies, tools, deliveries, publications, runs: runEvidence, wakeups, comments, interactions, questionDeliveries, pushActions }), { mode: 0o600 });
   await rename(resolve(home, "evidence.pending.json"), resolve(home, "evidence.json"));
   } finally { evidenceWriting = false; }
 }

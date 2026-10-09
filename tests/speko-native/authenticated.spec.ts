@@ -8,7 +8,7 @@ test("E03/E14: real signed-in callers cannot substitute companies, private tasks
   const memberContext = await browser.newContext(), outsiderContext = await browser.newContext(), anonymousContext = await browser.newContext();
   const request = async (api: APIRequestContext, method: "POST" | "PATCH", path: string, data: unknown) => {
     const response = await api.fetch(`${origin}/api${path}`, { method, headers: { Origin: origin }, data });
-    expect(response.ok(), `${method} ${path}: ${response.status()}`).toBe(true);
+    expect(response.ok(), `${method} ${path}: ${response.status()} ${await response.text()}`).toBe(true);
     return response.json();
   };
   const signUp = (api: APIRequestContext, name: string) => request(api, "POST", "/auth/sign-up/email", { name, email: `${randomUUID()}@example.test`, password: randomBytes(24).toString("base64url") });
@@ -27,6 +27,7 @@ test("E03/E14: real signed-in callers cannot substitute companies, private tasks
     await invite(memberContext.request, company.id); await invite(outsiderContext.request, other.id);
     await request(page.request, "PATCH", `/companies/${company.id}`, { requireBoardApprovalForNewAgents: false });
     const agent = await request(page.request, "POST", `/companies/${company.id}/agents`, { name: "Voice worker", role: "general", adapterType: "process", adapterConfig: { command: "fixture" }, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } } });
+    await expect.poll(async () => (await (await page.request.get(`${origin}/api/agents/${agent.id}`)).json()).status).toBe("idle");
     const endpoint = await request(memberContext.request, "POST", `/companies/${company.id}/chat-endpoints`, { provider: "speko", assignedAgentId: agent.id });
     const configured = await request(memberContext.request, "POST", `/chat-endpoints/${endpoint.id}/setup`, { action: "configure", credentials: { apiKey: "fixture-speko-key", agentId: "agent_member", signingSecret: `whsec_${randomBytes(32).toString("base64")}` } });
     expect(configured.setup.step).toBe("test");

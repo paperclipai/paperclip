@@ -221,26 +221,35 @@ try {
   event("script_failed", { reason: failure });
 } finally {
   stopping = true;
+  const cleanupFailures = [];
+  const cleanup = async (operation, close) => {
+    try { await close(); } catch (error) { cleanupFailures.push({operation, reason: error.message}); event("cleanup_failed", {operation}); }
+  };
   await Promise.allSettled(audioReaders.map((reader) => reader.cancel()));
-  proof.close();
-  server.close();
-  server.closeAllConnections();
+  await cleanup("proof.close", () => proof.close());
+  await cleanup("server.close", () => { server.close(); server.closeAllConnections(); });
   if (sessionId) {
     try { const ended = await api(`/v1/calls/${encodeURIComponent(sessionId)}/end`, {}); event("session_end_requested", { status: ended.status }); }
     catch { event("session_end_failed"); }
   }
-  await room.disconnect();
-  if (notifierRoom) await notifierRoom.disconnect();
-  await source.close();
-  await Promise.allSettled([pump, ...consumers]);
-  await dispose();
+  for (const [name, close] of [
+    ["room.disconnect", () => room.disconnect()],
+    ["notifier.disconnect", () => notifierRoom?.disconnect()],
+    ["source.close", () => source.close()],
+    ["consumers", () => Promise.allSettled([pump, ...consumers])],
+    ["dispose", () => dispose()],
+  ]) {
+    await cleanup(name, close);
+  }
   process.removeListener("SIGINT", interrupt);
   process.removeListener("SIGTERM", interrupt);
   // These files contain only this synthetic client/session, never human audio.
-  await writeFile(resolve(out, "output.pcm"), Buffer.concat(audioFrames.map((f) => f.data)), { mode: 0o600 });
-  if (resultAt !== undefined) await writeFile(resolve(out, "result.pcm"), Buffer.concat(audioFrames.filter((f) => f.at >= resultAt - 250).map((f) => f.data)), { mode: 0o600 });
-  const report = { startedAt, sourceDigests, sessionId, mode, provider, notifyReady, notifyViaJoin, interruptAcknowledgment, failure: failure ?? null, firstAudio, resultAt, resultAudioAt, lastAudio, audioBursts, audioFrames: audioFrames.length, proof: proof.evidence(), events, syntheticTranscript: transcript, qualification: "requires_audio_and_transport_review" };
+  try {
+    await writeFile(resolve(out, "output.pcm"), Buffer.concat(audioFrames.map((f) => f.data)), {mode: 0o600});
+    if (resultAt !== undefined) await writeFile(resolve(out, "result.pcm"), Buffer.concat(audioFrames.filter((f) => f.at >= resultAt - 250).map((f) => f.data)), {mode: 0o600});
+  } catch (error) { cleanupFailures.push({operation: "audio_evidence", reason: error.message}); }
+  const report = { cleanupFailures, startedAt, sourceDigests, sessionId, mode, provider, notifyReady, notifyViaJoin, interruptAcknowledgment, failure: failure ?? null, firstAudio, resultAt, resultAudioAt, lastAudio, audioBursts, audioFrames: audioFrames.length, proof: proof.evidence(), events, syntheticTranscript: transcript, qualification: "requires_audio_and_transport_review" };
   await writeFile(resolve(out, "report.json"), JSON.stringify(report, null, 2), { mode: 0o600 });
   console.log(JSON.stringify({ reportPath: resolve(out, "report.json"), resultReturned: report.proof.resultReturned, acceptedRequests: report.proof.acceptedRequests, failure: report.failure }));
-  process.exitCode = failure ? 1 : 0;
+  process.exitCode = failure || cleanupFailures.length ? 1 : 0;
 }
