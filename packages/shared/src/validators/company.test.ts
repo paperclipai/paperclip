@@ -55,6 +55,45 @@ describe("company schemas without the retired settings", () => {
   });
 });
 
+describe("interaction resolver governance schema", () => {
+  it("accepts a cap for connection_intent, which the settings UI offers", () => {
+    const parsed = updateCompanySchema.parse({
+      interactionResolverGovernance: {
+        connection_intent: { cap: "human_only" },
+      },
+    });
+
+    expect(parsed.interactionResolverGovernance).toEqual({
+      connection_intent: { cap: "human_only" },
+    });
+  });
+
+  it("accepts governance for every kind in ISSUE_THREAD_INTERACTION_KINDS", () => {
+    const result = updateCompanySchema.safeParse({
+      interactionResolverGovernance: {
+        suggest_tasks: { defaultPolicy: "anyone" },
+        ask_user_questions: { defaultPolicy: "not_creator" },
+        request_confirmation: { cap: "human_only" },
+        request_checkbox_confirmation: { cap: "human_only" },
+        request_item_verdicts: { defaultPolicy: "anyone", cap: "human_only" },
+        connection_intent: { defaultPolicy: "human_only", cap: "human_only" },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("still rejects an unknown interaction kind", () => {
+    const result = updateCompanySchema.safeParse({
+      interactionResolverGovernance: {
+        not_a_real_kind: { cap: "human_only" },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
 describe("portability company manifest tolerance", () => {
   it("accepts a legacy manifest entry carrying the retired keys and ignores them", () => {
     const parsed = portabilityCompanyManifestEntrySchema.parse({
