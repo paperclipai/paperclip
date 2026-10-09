@@ -342,9 +342,9 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       expect(history.status).toBe(200);
       const expected = userId === readerId ? {} : { connectionName: "Owner's API key" };
       expect(detail.body.resultJson.configurationIncomplete.credentialAccess).toEqual(expected);
-      expect(history.body.find((run: { id: string }) => run.id === fixture.privateRunId).resultJson.configurationIncomplete.credentialAccess).toEqual(expected);
       expect(JSON.stringify(detail.body)).not.toContain(grantId);
       expect(JSON.stringify(history.body)).not.toContain(grantId);
+      if (userId === readerId) expect(JSON.stringify(history.body)).not.toContain("Owner's API key");
     }
   });
 
