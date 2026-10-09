@@ -118,6 +118,7 @@ import {
   readChatControlRecoveryStop,
 } from "../chat-control-recovery-stop.js";
 import {
+  ISSUE_COMMENT_ADDED_ACTIVITY_ACTION,
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
@@ -3788,7 +3789,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 (sampleRun) => sampleRun.id,
               );
               const progressRows = await tx
-                .select({ runId: activityLog.runId })
+                .select({ runId: activityLog.runId, action: activityLog.action })
                 .from(activityLog)
                 .where(
                   and(
@@ -3802,6 +3803,29 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                     ),
                   ),
                 );
+              // Split runs whose only trace is their own comment from runs
+              // with some other progress action, so the throttle can bound
+              // how many consecutive runs a comment alone can exempt. See
+              // ISSUE_REWAKE_COMMENT_ONLY_PROGRESS_MAX_STREAK.
+              const progressActionsByRun = new Map<string, Set<string>>();
+              for (const row of progressRows) {
+                if (!row.runId) continue;
+                const actions = progressActionsByRun.get(row.runId) ?? new Set<string>();
+                actions.add(row.action);
+                progressActionsByRun.set(row.runId, actions);
+              }
+              const runIdsWithIssueProgress = new Set<string>();
+              const runIdsWithCommentOnlyProgress = new Set<string>();
+              for (const [runId, actions] of progressActionsByRun) {
+                const hasNonCommentProgress = Array.from(actions).some(
+                  (action) => action !== ISSUE_COMMENT_ADDED_ACTIVITY_ACTION,
+                );
+                if (hasNonCommentProgress) {
+                  runIdsWithIssueProgress.add(runId);
+                } else {
+                  runIdsWithCommentOnlyProgress.add(runId);
+                }
+              }
               const lastRunFinishedAt =
                 recentTerminalRuns[0]?.finishedAt ?? null;
               const newInputRows = lastRunFinishedAt
@@ -3829,11 +3853,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               const throttleDecision = evaluateIssueRewakeThrottle({
                 now: throttleNow,
                 recentTerminalRuns,
-                runIdsWithIssueProgress: new Set(
-                  progressRows
-                    .map((row) => row.runId)
-                    .filter((runId): runId is string => Boolean(runId)),
-                ),
+                runIdsWithIssueProgress,
+                runIdsWithCommentOnlyProgress,
                 // For an agent comment wake, the query excludes agent-authored
                 // activity while preserving genuinely new user/system input.
                 // Presentation/author metadata therefore cannot smuggle human
