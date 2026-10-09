@@ -383,6 +383,8 @@ function workspaceOperationPhaseLabel(phase: string) {
       return "Worktree cleanup";
     case "workspace_finalize":
       return "Finalize";
+    case "provider_tool_execution":
+      return "Provider tool calls";
     default:
       return phase;
   }

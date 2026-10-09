@@ -51,7 +51,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
+import { isOpenCodeUnknownSessionError, extractOpenCodeToolCallEvents, parseOpenCodeJsonl } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -72,6 +72,54 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+/**
+ * Wrap `onLog` so each complete OpenCode stream-json stdout line is also
+ * forwarded to `onEvent` as a structured tool-call runtime event (mirrors the
+ * kimi event-forwarding log). The raw run log stays intact; the structured
+ * events are what the host uses to record provider tool calls as workspace
+ * operations while they happen, so a run killed mid-execution still shows the
+ * work that was in flight. Stdout arrives in arbitrary chunks, so lines are
+ * buffered and split on newlines; `flush` must be called once the process
+ * exits so the final line still reaches `onEvent` without a trailing newline.
+ */
+function createOpenCodeEventForwardingLog(
+  onLog: AdapterExecutionContext["onLog"],
+  onEvent: AdapterExecutionContext["onEvent"],
+): { log: AdapterExecutionContext["onLog"]; flush: () => Promise<void> } {
+  if (!onEvent) return { log: onLog, flush: async () => {} };
+  let buffer = "";
+  const emitLine = async (raw: string): Promise<void> => {
+    const line = raw.trim();
+    if (!line) return;
+    for (const event of extractOpenCodeToolCallEvents(line)) {
+      await onEvent({
+        eventType: event.eventType,
+        stream: event.stream,
+        message: event.message ?? undefined,
+        payload: event.payload,
+      });
+    }
+  };
+  return {
+    log: async (stream, chunk) => {
+      await onLog(stream, chunk);
+      if (stream !== "stdout") return;
+      buffer += chunk;
+      let newlineIndex: number;
+      while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        await emitLine(line);
+      }
+    },
+    flush: async () => {
+      const remaining = buffer;
+      buffer = "";
+      await emitLine(remaining);
+    },
+  };
 }
 
 function parseModelProvider(model: string | null): string | null {
@@ -620,6 +668,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return args;
     };
 
+    const opencodeEventForwardingLog = createOpenCodeEventForwardingLog(onLog, ctx.onEvent);
     const runAttempt = async (resumeSessionId: string | null) => {
       const prompt = joinPromptSections([
         selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
@@ -648,10 +697,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceSec,
         onSpawn,
         onRuntimeProgress: ctx.onRuntimeProgress,
-        onLog,
+        onLog: opencodeEventForwardingLog.log,
         runLogTail: paperclipBridge?.runLogTail,
         settleRunDisposition: paperclipBridge?.settleRunDisposition,
       });
+      await opencodeEventForwardingLog.flush();
       return {
         proc,
         rawStderr: proc.stderr,

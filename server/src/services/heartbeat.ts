@@ -261,6 +261,7 @@ import {
   PROVIDER_TRACE_MAX_BYTES,
 } from "./provider-trace-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
+import { createAdapterToolOperationSink } from "../services/adapter-tool-operations.js";
 import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
@@ -23023,6 +23024,23 @@ export function heartbeatService(
           });
         };
 
+        // Legacy adapters report provider tool calls as runtime events; each one
+        // becomes a workspace_operations row so a run that died mid-execution
+        // still records the work that happened (and the recovery gate can tell
+        // real writes from a pre-execution orphan). Native runs are excluded on
+        // purpose: their workspace changes are verified by the runner instead.
+        const recordObservedAdapterToolOperation = createAdapterToolOperationSink({
+          workspaceOperations: workspaceOperationsSvc,
+          companyId: agent.companyId,
+          heartbeatRunId: run.id,
+          issueId: issueId ?? null,
+          executionWorkspaceId: () => persistedExecutionWorkspace?.id ?? null,
+        });
+        const onLegacyAdapterEvent = async (event: AdapterRuntimeEvent) => {
+          await onAdapterEvent(event);
+          await recordObservedAdapterToolOperation(event);
+        };
+
         const adapter = getServerAdapter(agent.adapterType);
         const durableGoalControlRun =
           readNonEmptyString(context.goalControlRequestId) !== null ||
@@ -24368,7 +24386,7 @@ export function heartbeatService(
                     runtimeTools,
                     onLog,
                     onMeta: onAdapterMeta,
-                    onEvent: onAdapterEvent,
+                    onEvent: onLegacyAdapterEvent,
                     startupTraceContext: getStartupTraceContext(),
                     onRuntimeProgress: async (progress) => {
                       await recordCurrentHeartbeatRunRuntimeProgress(

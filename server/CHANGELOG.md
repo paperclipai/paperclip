@@ -6,6 +6,7 @@
 
 - Bound full-tree workspace Git scans with process-wide concurrency, queue, timeout, cancellation, coalescing, and short-lived changed-file caching. Saturated or timed-out changed-file requests now return a retryable degraded response, and hidden file-browser panels no longer initiate scans.
 - Add a `recovery:reconcile` company permission so a permitted agent can resolve an execution-reconciliation recovery action without a board actor, but only when the server itself (never the request body) verifies the run is terminal, its provider process is confirmed stopped, it recorded zero workspace operations, and its cause is on a narrow allowlist starting with `legacy_execution_requires_reconciliation` runs whose `errorCode` is `orphaned_running_run`/`orphaned_running_run_issue_terminal`. Any other case still requires a board actor.
+- Record legacy provider tool calls as `workspace_operations` rows (`provider_tool_execution` phase) as adapter runtime events report them, so a run that dies mid-execution still shows the work that was in flight or already applied. "Zero recorded workspace operations" now holds only for runs that truly performed no provider work.
 
 ## 0.3.1
 

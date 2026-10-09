@@ -3121,6 +3121,20 @@ async function emitRuntimeEvent(
       tag: event.tag,
       ...(toolInput !== undefined ? { input: toolInput } : {}),
     });
+    // Structured channel for the host: the run log above keeps the human-facing
+    // transcript, while this event is what lets the server record the call as a
+    // workspace_operation as it happens (the ALE-241 instrumentation seam).
+    await ctx.onEvent?.({
+      eventType: "acpx.tool_call",
+      stream: "stdout",
+      payload: {
+        name,
+        toolCallId: event.toolCallId,
+        status: event.status,
+        ...(event.text !== undefined ? { text: event.text } : {}),
+        ...(event.tag !== undefined ? { tag: event.tag } : {}),
+      },
+    });
     return;
   }
   if (event.type === "status") {

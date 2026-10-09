@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
+import { extractOpenCodeToolCallEvents, parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";
 
 describe("parseOpenCodeJsonl", () => {
   it("parses assistant text, usage, cost, and errors", () => {
@@ -73,5 +73,65 @@ describe("parseOpenCodeJsonl", () => {
     expect(isOpenCodeUnknownSessionError("Session not found: s_123", "")).toBe(true);
     expect(isOpenCodeUnknownSessionError("", "unknown session id")).toBe(true);
     expect(isOpenCodeUnknownSessionError("all good", "")).toBe(false);
+  });
+});
+
+describe("extractOpenCodeToolCallEvents", () => {
+  it("maps each tool-part update to a structured tool-call event", () => {
+    const line = JSON.stringify({
+      type: "tool_use",
+      sessionID: "session_123",
+      part: {
+        id: "part_1",
+        callID: "call_abc",
+        tool: "bash",
+        state: { status: "running", title: "ls -la" },
+      },
+    });
+    expect(extractOpenCodeToolCallEvents(line)).toEqual([
+      {
+        eventType: "opencode.tool_call",
+        stream: "stdout",
+        message: "bash",
+        payload: { name: "bash", toolCallId: "call_abc", status: "running" },
+      },
+    ]);
+  });
+
+  it("maps a completed tool part to its outcome", () => {
+    const line = JSON.stringify({
+      type: "tool_use",
+      part: {
+        callID: "call_def",
+        tool: "write",
+        state: { status: "completed", title: "src/a.ts" },
+      },
+    });
+    const events = extractOpenCodeToolCallEvents(line);
+    expect(events[0]?.payload).toEqual({ name: "write", toolCallId: "call_def", status: "completed" });
+  });
+
+  it("maps an errored tool part", () => {
+    const line = JSON.stringify({
+      type: "tool_use",
+      part: {
+        callID: "call_err",
+        tool: "bash",
+        state: { status: "error", error: "File not found" },
+      },
+    });
+    const events = extractOpenCodeToolCallEvents(line);
+    expect(events[0]?.payload.status).toBe("error");
+    expect(events[0]?.payload.name).toBe("bash");
+    expect(events[0]?.payload.toolCallId).toBe("call_err");
+  });
+
+  it("ignores non-tool and non-JSON lines", () => {
+    expect(extractOpenCodeToolCallEvents(JSON.stringify({ type: "text", part: { text: "hi" } }))).toEqual([]);
+    expect(extractOpenCodeToolCallEvents(JSON.stringify({ type: "step_finish", part: {} }))).toEqual([]);
+    expect(extractOpenCodeToolCallEvents("not json at all")).toEqual([]);
+    expect(extractOpenCodeToolCallEvents("")).toEqual([]);
+    // A tool_use part with neither identity nor name cannot be recorded.
+    expect(extractOpenCodeToolCallEvents(JSON.stringify({ type: "tool_use", part: { state: { status: "error" } } }))).toEqual([]);
   });
 });

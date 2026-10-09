@@ -5,6 +5,7 @@
 ### Patch Changes
 
 - Allow the Paperclip host to route adapter sandbox-sync full-tree Git enumeration through its process-wide bounded scheduler.
+- Also emit ACP tool-call updates through the adapter `onEvent` channel (in addition to the run log), so the host can record provider tool calls as they happen.
 
 ## 0.3.1
 

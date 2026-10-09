@@ -1,5 +1,11 @@
 # @paperclipai/adapter-opencode-local
 
+## Unreleased
+
+### Patch Changes
+
+- Forward OpenCode stream-json tool-call lines to the adapter `onEvent` channel so the host can record provider tool calls as they happen.
+
 ## 0.3.1
 
 ### Patch Changes

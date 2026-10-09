@@ -5,6 +5,7 @@
 ### Patch Changes
 
 - Add `recovery:reconcile` to `PERMISSION_KEYS`.
+- Add a `provider_tool_execution` workspace-operation phase for provider tool calls observed through legacy adapter runtime events.
 
 ## 0.3.1
 
