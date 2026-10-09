@@ -1074,6 +1074,7 @@ const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   CHAT_COMPLETION_WAKE_REASON,
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  "issue_children_completed",
   "issue_recovery_action_restored",
 ]);
 
