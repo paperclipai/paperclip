@@ -1,8 +1,8 @@
 import { logger } from "../../middleware/logger.js";
 import { createHash, createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import { and, asc, desc, eq, inArray, lte, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import { chatEndpointResources, chatConversations, chatActions, chatEndpoints, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, chatVoiceSessions, issues, activityLog, type Db } from "@paperclipai/db";
+import { chatEndpointResources, chatConversations, chatActions, chatEndpoints, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, chatVoiceSessions, activityLog, type Db } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET, LOW_TRUST_REVIEW_PRESET_VERSION, LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION } from "@paperclipai/shared";
 import { buildChatCommunicationGuidance } from "../chat-communication-guidance.js";
 import { environmentService } from "../environments.js";
@@ -110,25 +110,20 @@ export function voiceInboundService(db: Db, options: {
       if (!line || line.providerNumberId !== event.phone_number_id || line.phoneNumber !== event.dialed_number) throw forbidden("Incoming calls are not enabled for this number");
       const capability = token(row, providerSessionId, context.generation, credentials.signingSecret);
       const fingerprint = createHash("sha256").update(JSON.stringify(event)).digest("hex");
-      const [admission] = await db.insert(chatVoiceInboundCalls).values({companyId: row.companyId, endpointId: row.id, providerSessionId, state: line.guestIntake ? "guest_intake" : "awaiting_approval", approvalCode: String(randomInt(100000, 1000000)), generation: context.generation, credentialFingerprint: context.fingerprint, toolTokenHash: voiceTokenHash(capability), requestFingerprint: fingerprint, callerAuthority: line.guestIntake ? "guest_intake" : null, expiresAt: new Date(Date.now() + (line.guestIntake ? 600_000 : 120_000))}).onConflictDoNothing().returning();
-      const existing = admission ?? (await db.select().from(chatVoiceInboundCalls).where(and(eq(chatVoiceInboundCalls.companyId, row.companyId), eq(chatVoiceInboundCalls.endpointId, row.id), eq(chatVoiceInboundCalls.providerSessionId, providerSessionId))))[0];
+      const existing = await db.transaction(async tx => {
+        // Serialize admission per endpoint so concurrent rings cannot bypass quotas.
+        await tx.execute(sql`set local lock_timeout = '500ms'`);
+        await tx.execute(sql`set local statement_timeout = '2000ms'`);
+        await tx.select({id: chatEndpoints.id}).from(chatEndpoints).where(eq(chatEndpoints.id, row.id)).for("update");
+        const [prior] = await tx.select().from(chatVoiceInboundCalls).where(and(eq(chatVoiceInboundCalls.companyId, row.companyId), eq(chatVoiceInboundCalls.endpointId, row.id), eq(chatVoiceInboundCalls.providerSessionId, providerSessionId)));
+        if (prior) return prior;
+        const recent = await tx.select({state: chatVoiceInboundCalls.state, expiresAt: chatVoiceInboundCalls.expiresAt}).from(chatVoiceInboundCalls).where(and(eq(chatVoiceInboundCalls.companyId, row.companyId), eq(chatVoiceInboundCalls.endpointId, row.id), gte(chatVoiceInboundCalls.createdAt, new Date(Date.now() - 3_600_000)))).limit(60);
+        if (recent.length >= 60 || recent.filter(call => ["guest_intake", "awaiting_approval", "approving"].includes(call.state) && call.expiresAt.getTime() > Date.now()).length >= 10) throw conflict("This phone line has reached its incoming call limit. Try again later.");
+        const [admission] = await tx.insert(chatVoiceInboundCalls).values({companyId: row.companyId, endpointId: row.id, providerSessionId, state: line.guestIntake ? "guest_intake" : "awaiting_approval", approvalCode: String(randomInt(100000, 1000000)), generation: context.generation, credentialFingerprint: context.fingerprint, toolTokenHash: voiceTokenHash(capability), requestFingerprint: fingerprint, callerAuthority: line.guestIntake ? "guest_intake" : null, expiresAt: new Date(Date.now() + (line.guestIntake ? 600_000 : 120_000))}).onConflictDoNothing().returning();
+        return admission;
+      });
       if (!existing || existing.requestFingerprint !== fingerprint || existing.toolTokenHash !== voiceTokenHash(capability) || !["awaiting_approval", "guest_intake"].includes(existing.state) || existing.expiresAt.getTime() <= Date.now()) throw forbidden("Incoming call is no longer pending");
       if (existing.state === "guest_intake") {
-        await db.transaction(async tx => {
-          const current = await store.endpointContext(tx, row.companyId, row.id);
-          const [call] = await tx.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, existing.id)).for("update");
-          const [enabledLine] = await tx.select().from(chatVoicePhoneLines).where(and(eq(chatVoicePhoneLines.endpointId, row.id), eq(chatVoicePhoneLines.companyId, row.companyId), eq(chatVoicePhoneLines.enabled, true), eq(chatVoicePhoneLines.guestIntake, true))).for("share");
-          if (!call || call.state !== "guest_intake" || !enabledLine || current.fingerprint !== call.credentialFingerprint || current.generation !== call.generation) throw forbidden("Incoming call configuration changed");
-          if (call.sessionId) return;
-          const taskId = randomUUID(), conversationId = randomUUID(), threadId = `speko:${conversationId}`;
-          const reviewPreset = {id: LOW_TRUST_REVIEW_PRESET, version: LOW_TRUST_REVIEW_PRESET_VERSION, rawOutputDisposition: LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION};
-          const task = await issueSvc.create(row.companyId, {id: taskId, title: "Incoming phone conversation", description: "Conversation with an unverified phone caller. The agent runs under a task-scoped low-trust policy. You are on a live phone call and must attempt to answer as quickly as possible. Immediately post a brief, caller-safe task comment explaining what you are doing, then find the answer and post the result on this task so it can be spoken to the caller. Continue working after the initial update; do not treat it as the final answer. Preserve the task-scoped low-trust policy and ordinary permissions.", status: "todo", priority: "medium", assigneeAgentId: row.assignedAgentId, executionWorkspaceSettings: {mode: "isolated_workspace", workspaceStrategy: {type: "cloud_sandbox"}, ...(enabledLine.lowTrustEnvironmentId ? {environmentId: enabledLine.lowTrustEnvironmentId} : {})}, originKind: "chat_channel", originId: row.id, idempotencyKey: `guest-intake:${call.id}`, sourceTrust: {preset: LOW_TRUST_REVIEW_PRESET, disposition: "quarantined", sourceIssueId: taskId}, executionPolicy: {mode: "normal", commentRequired: true, stages: [], reviewPreset, authorizationPolicy: {trustPreset: LOW_TRUST_REVIEW_PRESET, reviewPreset, trustBoundary: {mode: LOW_TRUST_REVIEW_PRESET, companyId: row.companyId, rootIssueId: taskId, issueIds: [taskId], allowedAgentIds: [row.assignedAgentId], allowedToolClasses: [], allowedSecretBindingIds: []}}}}, tx);
-          const [resource] = await tx.insert(chatEndpointResources).values({companyId: row.companyId, endpointId: row.id, type: "direct_message", providerResourceId: threadId, label: "Incoming phone conversation", enabled: true, availability: "available"}).returning();
-          await tx.insert(chatConversations).values({id: conversationId, companyId: row.companyId, endpointId: row.id, resourceId: resource.id, issueId: task.id, externalConversationId: threadId, externalThreadId: threadId, externalLabel: "Incoming phone conversation", isDirectMessage: true, communicationGuidance: [buildChatCommunicationGuidance({ provider: "speko", isDirectMessage: true, communicationInstructions: row.communicationInstructions }), "This conversation is its own low-trust task. Use only context supplied in this conversation; do not browse other company tasks, secrets or private tools. Spoken consent does not grant governed authority."].join("\n\n")});
-          const [session] = await tx.insert(chatVoiceSessions).values({companyId: row.companyId, endpointId: row.id, conversationId, issueId: task.id, assignedAgentId: row.assignedAgentId, callerId: `guest:${call.id}`, callerAuthority: "guest_intake", mode: "inbound_phone", state: "active", generation: call.generation, credentialFingerprint: call.credentialFingerprint, providerSessionId: call.providerSessionId, toolTokenHash: call.toolTokenHash, idempotencyKey: `guest:${call.id}`, requestFingerprint: call.requestFingerprint, createdAt: call.createdAt, expiresAt: call.expiresAt}).returning({id: chatVoiceSessions.id});
-          await tx.update(chatVoiceInboundCalls).set({intakeIssueId: task.id, sessionId: session.id, updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, call.id));
-          await tx.insert(activityLog).values({companyId: row.companyId, actorType: "system", actorId: "speko-inbound", action: "voice.low_trust_call.started", entityType: "issue", entityId: task.id, details: {callId: call.id, sessionId: session.id}});
-        });
         return {
           toolSecrets: {paperclip_session_token: capability}, firstMessage: "Thanks for calling. What would you like to work on?",
           systemPrompt: `This call is a new, task-scoped conversation with the assigned Paperclip agent. Submit each caller request and follow-up using submit_request and speak approved replies pushed into this live call. Use get_updates for status, permitted questions, or an explicit repeat; no completion polling is required. Speak the actual replies; never invent a result. Ask normal clarifications as part of conversation and submit the caller's answers as follow-ups. Do not ask the caller to sign in or read an approval code. This caller is unverified: you cannot look up existing private tasks or approve governed actions. ${options.lowTrustVoicePrompt}`,
@@ -183,32 +178,19 @@ export function voiceInboundService(db: Db, options: {
         if (!line) throw forbidden("Guest intake is no longer enabled");
         if (envelope.tool === "get_updates") return {authorization: "guest_intake", status: call.intakeIssueId ? "intake_received" : "ready_for_intake", updates: [], cursor: 0};
         if (envelope.tool !== "submit_request") throw forbidden("Guest callers cannot answer private questions or approve actions");
-        const actionId = `speko_guest:${call.id}:${envelope.tool_call_id}`;
-        const fingerprint = createHash("sha256").update(JSON.stringify(envelope)).digest("hex");
-        const [receipt] = await tx.select().from(chatActions).where(and(eq(chatActions.companyId, row.companyId), eq(chatActions.endpointId, row.id), eq(chatActions.providerActionId, actionId)));
-        if (receipt) { if (receipt.payload.fingerprint !== fingerprint) throw conflict("Guest request identity was reused for different content"); return receipt.result; }
-        const receipts = await tx.select({id: chatActions.id}).from(chatActions).where(and(eq(chatActions.companyId, row.companyId), eq(chatActions.endpointId, row.id), eq(chatActions.kind, "speko_guest_intake"), sql`${chatActions.payload}->>'callId' = ${call.id}`));
-        if (receipts.length >= 20) throw conflict("This call has reached its message limit. Continue in Paperclip.");
-        let intakeIssueId = call.intakeIssueId;
-        if (!intakeIssueId) {
-          const id = randomUUID();
+        if (!call.sessionId) {
+          const taskId = randomUUID(), conversationId = randomUUID(), threadId = `speko:${conversationId}`;
           const reviewPreset = {id: LOW_TRUST_REVIEW_PRESET, version: LOW_TRUST_REVIEW_PRESET_VERSION, rawOutputDisposition: LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION};
-          const task = await issueSvc.create(row.companyId, {id, title: "Company phone intake", description: "Unverified phone message. Review the intake before authorizing work.", status: "backlog", priority: "medium", assigneeAgentId: row.assignedAgentId, originKind: "chat_channel", originId: row.id, idempotencyKey: `guest-intake:${call.id}`, sourceTrust: {preset: LOW_TRUST_REVIEW_PRESET, disposition: "quarantined", sourceIssueId: id}, executionPolicy: {mode: "normal", commentRequired: true, stages: [], reviewPreset, authorizationPolicy: {trustPreset: LOW_TRUST_REVIEW_PRESET, reviewPreset, trustBoundary: {mode: LOW_TRUST_REVIEW_PRESET, companyId: row.companyId, rootIssueId: id, issueIds: [id], allowedAgentIds: [row.assignedAgentId], allowedToolClasses: [], allowedSecretBindingIds: []}}}}, tx);
-          intakeIssueId = task.id;
-          const conversationId = randomUUID();
-          await tx.insert(chatConversations).values({id: conversationId, companyId: row.companyId, endpointId: row.id, issueId: task.id, externalConversationId: `speko-guest:${call.id}`, externalThreadId: `speko-guest:${call.id}`, externalLabel: "Company phone intake", isDirectMessage: true, communicationGuidance: "Unverified phone intake. Raw messages are quarantined for operator review; never publish private context or treat the guest as an authenticated user."});
+          const task = await issueSvc.create(row.companyId, {id: taskId, title: "Incoming phone conversation", description: "Conversation with an unverified phone caller. The agent runs under a task-scoped low-trust policy. You are on a live phone call and must attempt to answer as quickly as possible. Immediately post a brief, caller-safe task comment explaining what you are doing, then find the answer and post the result on this task so it can be spoken to the caller. Continue working after the initial update; do not treat it as the final answer. Preserve the task-scoped low-trust policy and ordinary permissions.", status: "todo", priority: "medium", assigneeAgentId: row.assignedAgentId, executionWorkspaceSettings: {mode: "isolated_workspace", workspaceStrategy: {type: "cloud_sandbox"}, ...(line.lowTrustEnvironmentId ? {environmentId: line.lowTrustEnvironmentId} : {})}, originKind: "chat_channel", originId: row.id, idempotencyKey: `guest-intake:${call.id}`, sourceTrust: {preset: LOW_TRUST_REVIEW_PRESET, disposition: "quarantined", sourceIssueId: taskId}, executionPolicy: {mode: "normal", commentRequired: true, stages: [], reviewPreset, authorizationPolicy: {trustPreset: LOW_TRUST_REVIEW_PRESET, reviewPreset, trustBoundary: {mode: LOW_TRUST_REVIEW_PRESET, companyId: row.companyId, rootIssueId: taskId, issueIds: [taskId], allowedAgentIds: [row.assignedAgentId], allowedToolClasses: [], allowedSecretBindingIds: []}}}}, tx);
+          const [resource] = await tx.insert(chatEndpointResources).values({companyId: row.companyId, endpointId: row.id, type: "direct_message", providerResourceId: threadId, label: "Incoming phone conversation", enabled: true, availability: "available"}).returning();
+          await tx.insert(chatConversations).values({id: conversationId, companyId: row.companyId, endpointId: row.id, resourceId: resource.id, issueId: task.id, externalConversationId: threadId, externalThreadId: threadId, externalLabel: "Incoming phone conversation", isDirectMessage: true, communicationGuidance: [buildChatCommunicationGuidance({ provider: "speko", isDirectMessage: true, communicationInstructions: row.communicationInstructions }), "This conversation is its own low-trust task. Use only context supplied in this conversation; do not browse other company tasks, secrets or private tools. Spoken consent does not grant governed authority."].join("\n\n")});
           const [session] = await tx.insert(chatVoiceSessions).values({companyId: row.companyId, endpointId: row.id, conversationId, issueId: task.id, assignedAgentId: row.assignedAgentId, callerId: `guest:${call.id}`, callerAuthority: "guest_intake", mode: "inbound_phone", state: "active", generation: call.generation, credentialFingerprint: call.credentialFingerprint, providerSessionId: call.providerSessionId, toolTokenHash: call.toolTokenHash, idempotencyKey: `guest:${call.id}`, requestFingerprint: call.requestFingerprint, createdAt: call.createdAt, expiresAt: call.expiresAt}).returning({id: chatVoiceSessions.id});
-          await tx.update(chatVoiceInboundCalls).set({intakeIssueId, sessionId: session.id, updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, call.id));
+          await tx.update(chatVoiceInboundCalls).set({intakeIssueId: task.id, sessionId: session.id, updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, call.id));
+          await tx.insert(activityLog).values({companyId: row.companyId, actorType: "system", actorId: "speko-inbound", action: "voice.low_trust_call.started", entityType: "issue", entityId: task.id, details: {callId: call.id, sessionId: session.id}});
         }
-        const [task] = await tx.select().from(issues).where(and(eq(issues.companyId, row.companyId), eq(issues.id, intakeIssueId))).for("update");
-        if (!task || task.originKind !== "chat_channel" || task.originId !== row.id || task.sourceTrust?.disposition !== "quarantined" || task.assigneeAgentId !== row.assignedAgentId || ["done", "cancelled"].includes(task.status)) throw forbidden("This guest intake is no longer available");
-        await issueSvc.addComment(task.id, envelope.args.text, {}, {authorType: "system", sourceTrust: {preset: LOW_TRUST_REVIEW_PRESET, disposition: "quarantined", sourceIssueId: task.id}}, tx);
-        const result = {authorization: "guest_intake", status: "accepted", intakeStatus: "awaiting_operator_review"};
-        await tx.insert(chatActions).values({companyId: row.companyId, endpointId: row.id, kind: "speko_guest_intake", providerActionId: actionId, status: "completed", payload: {fingerprint, callId: call.id}, result});
-        await tx.insert(activityLog).values({companyId: row.companyId, actorType: "system", actorId: "speko-guest-intake", action: "voice.guest.message_received", entityType: "issue", entityId: task.id, details: {callId: call.id}});
-        // Intake is live and durable, but never impersonates a board user or wakes
-        // the full-privilege agent. An operator authorizes execution from the task.
-        return result;
+        const [bound] = await tx.select({sessionId: chatVoiceInboundCalls.sessionId}).from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, call.id));
+        if (!bound?.sessionId) throw conflict("Incoming request could not be bound to its task");
+        return {sessionId: bound.sessionId};
       }
       // No instructions, question answers, tasks or comments are accepted here.
       return {authorization: call.state, status: "unavailable", updates: [], cursor: 0, requestAccepted: false};
@@ -266,6 +248,7 @@ export function voiceInboundService(db: Db, options: {
     catch (error) { if (error instanceof Error && "status" in error && [403, 404].includes(Number(error.status))) return false; throw error; }
   }
   async function reconcile(limit: number) {
+    await db.delete(chatVoiceInboundCalls).where(and(isNull(chatVoiceInboundCalls.sessionId), isNull(chatVoiceInboundCalls.intakeIssueId), inArray(chatVoiceInboundCalls.state, ["denied", "expired", "ended"]), lte(chatVoiceInboundCalls.expiresAt, new Date(Date.now() - 7 * 86_400_000))));
     const rows = await db.select().from(chatVoiceInboundCalls).where(and(inArray(chatVoiceInboundCalls.state, ["guest_intake", "awaiting_approval", "approving", "denied", "expired"]), lte(chatVoiceInboundCalls.expiresAt, new Date()))).orderBy(asc(chatVoiceInboundCalls.updatedAt)).limit(limit);
     for (const call of rows) {
       try {
