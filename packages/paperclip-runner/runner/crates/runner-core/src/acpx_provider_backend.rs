@@ -4083,7 +4083,7 @@ mod tests {
         descriptor_value["agentRuntimePackage"] = Value::Null;
         descriptor_value["agentRuntimeVersion"] = Value::Null;
         descriptor_value["commandDigest"] = serde_json::from_str::<Value>(include_str!(
-            "../../../../test/fixtures/copilot-profile-v38-identity.json"
+            "../../../../test/fixtures/copilot-profile-v39-identity.json"
         ))
         .unwrap()["commandDigest"]
             .clone();

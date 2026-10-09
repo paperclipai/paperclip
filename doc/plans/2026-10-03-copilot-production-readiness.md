@@ -2,19 +2,23 @@
 
 Current release checklist, updated 2026-10-09 (America/Chicago).
 
-## Current shipping gate: retain empty native context arguments, then qualify profile 38
+## Current shipping gate: publish the actual context origin, then qualify profile 39
 
 The current master baseline is `0726a00e80f392598b17b847a2bb7fa663f25dcd`. Copilot remains pinned to **1.0.88**, with exact **gpt-5.6-luna** for qualification. Pi 22, Cursor 15, and the shared mainline sandbox remain unchanged. Docker images build in the cloud.
 
+Profile 38 source `05bbf940ba609fe3d976da7f08f995304f1582b2` passes application build, runner/server types, native startup/cleanup, both macOS installed smokes and exact authenticated model discovery. Its first local Product attached-command case ran and settled the exact command, retired its processes, then failed the unchanged pre-action evidence oracle. The read happened before the command, but the projector emitted the pending native origin after the receipt. It has **0/20 Product passes** and has not shipped. No profile38 Docker image was built or published.
+
+The narrow follow-up treats explicit `{}` as complete native arguments and publishes the actual pending origin before execution. Only wholly absent arguments can stream later. Missing input and changed arguments still fail correlation; no file-read authority is inferred. The chronological origin regression fails against profile38; the repair passes **72 focused checks**, with one preexisting skip. All oracle and completion assertions remain unchanged. Profile39 must receive fresh live qualification.
+
 Profile 37 source `59aab279f9da6d811406761cb2f94abd03131821` passed full native no-prompt startup/cleanup, macOS ARM64 and Intel installed-runtime smokes, exact authenticated model discovery, and recursive typecheck. Its first local Product attached-command case failed because context evidence was explicitly incomplete; it has **0/20 Product passes**, with cleanup passed. The task's successful status alone does not qualify settlement. The profile37 cloud image was never built or published.
 
-The failure is reproduced offline: Copilot classifies `get_task_context` as a read, and its actual empty `{}` origin was deferred as an unfinished file-read input. The authoritative context receipt then could not match that lost digest. The narrow repair retains only the bounded origin digest while waiting for possible file arguments, preserves pre-execution streamed file-read attestation, and rejects absent or changed semantic input. The initial regression failed exactly this case; the repair passes 70 focused checks with one preexisting skip. Qualification must restart on the new identity.
+The failure is reproduced offline: Copilot classifies `get_task_context` as a read, and its actual empty `{}` origin was deferred as an unfinished file-read input. The authoritative context receipt then could not match that lost digest. The first repair retained the bounded origin digest and restored receipt matching, but profile38 showed that deferring the origin notice still broke chronological evidence. The profile39 follow-up above corrects that ordering and rejects absent or changed semantic input. The initial regression failed exactly this case; the repair passes 70 focused checks with one preexisting skip. Qualification must restart on the new identity.
 
 Profile 36 source `9769279bb712cec9c5aa1d814e82f369129149bf` passed seven protocol cases and three installed platform smokes, then failed its first Product case before startup because the native manifest/root ownership was inconsistent. Profile37 repaired that root binding with regressions for source, scoped npm, and deployment layouts. Canonical temporary paths preserve owned cleanup. Historical v33 evidence remains historical.
 
 | Next gate | Required evidence |
 |---|---|
-| Repaired candidate | Mint profile 38; synchronized TypeScript/Rust identity, receipt regressions, native no-prompt startup/cleanup |
+| Repaired candidate | Mint profile 39; synchronized TypeScript/Rust identity, receipt regressions, native no-prompt startup/cleanup |
 | Local Product | Exact attached-command case first, seven unchanged protocol cases, then nine remaining local cells; no automatic behavior retries |
 | Daytona | Scan and publish the exact cloud-built repaired image, then ten exact remote cells |
 | Ordinary installation | Saved-token setup, save/reopen, metadata-only Test and a completed file task locally and remotely |

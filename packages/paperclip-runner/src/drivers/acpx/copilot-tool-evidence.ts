@@ -8,7 +8,7 @@ import { safeCopilotEditTarget } from "./copilot-permission-context.js";
 const LIMIT = 256;
 const CATEGORY = "copilot_tool_evidence_v1";
 type Fields = Record<string, string | number | boolean | null>;
-interface Tool { kind?: string; input?: string; fields: Fields; invalid?: boolean; semanticInput?: string; semanticReceipt?: SemanticToolReceipt; read?: SingleReadEvidence; pendingReadNotice?: boolean; pendingReadSemanticInput?: string }
+interface Tool { kind?: string; input?: string; fields: Fields; invalid?: boolean; semanticInput?: string; semanticReceipt?: SemanticToolReceipt; read?: SingleReadEvidence; pendingReadNotice?: boolean }
 const record = (v: unknown): Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 const identity = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 240 && !/[\u0000-\u001f\u007f]/u.test(v);
 const shellIdentity = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_.-]{1,80}$/u.test(v);
@@ -108,19 +108,15 @@ export function createCopilotToolEvidence(binding: {
       let publishPendingRead = false;
       if (state.kind === "read") {
         state.read = updateSingleReadEvidence(state.read, call, binding.workingDirectory);
-        if (state.read.pendingOriginInput && call.tag === "tool_call") {
-          state.pendingReadNotice = true;
-          // Copilot also classifies empty-argument semantic context calls as
-          // reads. Keep their actual origin digest while withholding file-read
-          // attestation until a complete path arrives before execution.
-          state.pendingReadSemanticInput = boundedSemanticInputDigest(call.rawInput);
-        }
+        // Copilot classifies empty-argument semantic context calls as reads.
+        // Explicit {} is a complete input, so publish its real pending origin
+        // before execution/receipt. Only absent arguments may stream later;
+        // neither shape acquires file-path evidence without an actual path.
+        if (state.read.pendingOriginInput && call.tag === "tool_call" && call.rawInput !== null
+          && typeof call.rawInput === "object" && !Array.isArray(call.rawInput) && Object.keys(call.rawInput).length === 0) state.read = {};
+        if (state.read.pendingOriginInput && call.tag === "tool_call") state.pendingReadNotice = true;
         if (state.pendingReadNotice && state.read.pendingOriginInput) return;
-        if (state.pendingReadNotice) {
-          if (!state.read.targetSha256) state.semanticInput = state.pendingReadSemanticInput;
-          delete state.pendingReadSemanticInput;
-          state.pendingReadNotice = false; publishPendingRead = true;
-        }
+        if (state.pendingReadNotice) { state.pendingReadNotice = false; publishPendingRead = true; }
       }
       if (call.rawInput !== undefined) {
         // Retain only a bounded digest of the native arguments, never their text.
