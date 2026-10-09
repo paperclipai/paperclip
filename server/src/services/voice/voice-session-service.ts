@@ -186,8 +186,13 @@ export function voiceSessionService(db: Db, options: {
     const verified = verifySpekoToolRequest({ body, headers, keys: [{ secret: credentials.signingSecret }] });
     const authorization = headers.authorization;
     if (typeof authorization !== "string" || !/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization)) throw forbidden("Missing voice session credential");
-    const session = await db.select({ id: chatVoiceSessions.id, authority: chatVoiceSessions.callerAuthority, mode: chatVoiceSessions.mode }).from(chatVoiceSessions).where(and(eq(chatVoiceSessions.companyId, endpoint.companyId), eq(chatVoiceSessions.endpointId, endpoint.id), eq(chatVoiceSessions.providerSessionId, verified.envelope.session_id))).then((rows) => rows[0]);
-    if (!session) return inbound.pendingTool(endpoint, verified.envelope, authorization.slice(7));
+    let session = await db.select({ id: chatVoiceSessions.id, authority: chatVoiceSessions.callerAuthority, mode: chatVoiceSessions.mode }).from(chatVoiceSessions).where(and(eq(chatVoiceSessions.companyId, endpoint.companyId), eq(chatVoiceSessions.endpointId, endpoint.id), eq(chatVoiceSessions.providerSessionId, verified.envelope.session_id))).then((rows) => rows[0]);
+    if (!session) {
+      const pending = await inbound.pendingTool(endpoint, verified.envelope, authorization.slice(7));
+      if (!("sessionId" in pending) || typeof pending.sessionId !== "string") return pending;
+      session = await db.select({id: chatVoiceSessions.id, authority: chatVoiceSessions.callerAuthority, mode: chatVoiceSessions.mode}).from(chatVoiceSessions).where(and(eq(chatVoiceSessions.id, pending.sessionId), eq(chatVoiceSessions.companyId, endpoint.companyId), eq(chatVoiceSessions.endpointId, endpoint.id))).then(rows => rows[0]);
+      if (!session) throw conflict("Incoming request could not be bound to its task");
+    }
     const result = await store.runTool({ ...verified, companyId: endpoint.companyId, endpointId: endpoint.id, sessionId: session.id, token: authorization.slice(7), accept: store.stageDelivery });
     // Do not await execution within Speko's four-second webhook budget. The
     // shared delivery service deduplicates retries; its sweep repairs crashes.

@@ -2834,7 +2834,7 @@ export function createHeartbeatRunPreparation(db: Db) {
         chatAssignedAgentId: chatEndpoints.assignedAgentId,
         chatProvider: chatEndpoints.provider,
         // Select only the public command, never the rest of setup state.
-        chatSlackCommand: sql<string | null>`case when ${chatEndpoints.status} in ('active', 'verifying') then ${chatEndpoints.setup}->>'command' end`,
+        chatSlackCommand: sql<string | null>`case when ${chatEndpoints.provider} = 'slack' and ${chatEndpoints.status} in ('active', 'verifying') then ${chatEndpoints.setup}->>'command' end`,
         externalConversationState: externalConversationStateSql(),
         conversationAgentId: issues.conversationAgentId,
         conversationUserId: issues.conversationUserId,
@@ -2877,7 +2877,6 @@ export function createHeartbeatRunPreparation(db: Db) {
       .leftJoin(chatEndpoints, and(
         eq(chatEndpoints.companyId, chatConversations.companyId),
         eq(chatEndpoints.id, chatConversations.endpointId),
-        eq(chatEndpoints.provider, "slack"),
       ))
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);

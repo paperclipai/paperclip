@@ -43,20 +43,22 @@ export async function pushVoiceReplies(db: Db, options: {
           .innerJoin(chatPublications, and(eq(chatPublications.id, chatVoiceReplies.publicationId), eq(chatPublications.companyId, session.companyId)))
           .where(and(eq(chatVoiceReplies.companyId, session.companyId), eq(chatVoiceReplies.sessionId, session.id), isNull(chatVoiceReplies.deliveredAt),
             eq(chatPublications.endpointId, session.endpointId), eq(chatPublications.conversationId, session.conversationId), eq(chatPublications.issueId, session.issueId), eq(chatPublications.state, "published"),
-            sql`not exists (select 1 from chat_actions a where a.company_id = ${session.companyId} and a.endpoint_id = ${session.endpointId} and a.provider_action_id = 'voice_reply_push:' || ${chatVoiceReplies.id}::text and a.status <> 'retry')`))
+            sql`not exists (select 1 from chat_actions a where a.company_id = ${session.companyId} and a.endpoint_id = ${session.endpointId} and a.provider_action_id = 'voice_reply_push:' || ${chatVoiceReplies.id}::text and a.status <> 'retry' and not (a.status = 'completed' and a.payload->>'questionNotification' = 'true'))`))
           .orderBy(asc(chatVoiceReplies.cursor)).limit(1);
-        // Do not skip a question and speak later answers over it.
-        if (row?.payload.interactionId) return null;
+        // Questions need a hint that makes the phone agent retrieve the
+        // authorized question IDs. Keep this reply pending until get_updates
+        // presents it; never speak later answers over an unpresented question.
+        const questionNotification = typeof row?.payload.interactionId === "string";
         if (!row || typeof row.payload.text !== "string" || !row.payload.text.trim()) return null;
         const identity = `voice_reply_push:${row.reply.id}`;
         const [prior] = await tx.select().from(chatActions).where(and(eq(chatActions.companyId, session.companyId), eq(chatActions.endpointId, session.endpointId), eq(chatActions.providerActionId, identity))).for("update");
-        if (prior && Number(prior.result?.retryAt ?? 0) > Date.now()) return null;
+        if (prior?.status === "completed" || prior && Number(prior.result?.retryAt ?? 0) > Date.now()) return null;
         const values = {status: "dispatching", result: null, updatedAt: new Date()};
         const action = prior
           ? (await tx.update(chatActions).set(values).where(eq(chatActions.id, prior.id)).returning())[0]!
           : (await tx.insert(chatActions).values({companyId: session.companyId, endpointId: session.endpointId, conversationId: session.conversationId, kind, providerActionId: identity,
-            payload: {sessionId: session.id, replyId: row.reply.id, publicationId: row.reply.publicationId, generation: session.generation, providerSessionId: session.providerSessionId}, ...values}).returning())[0]!;
-        return {...context, reply: row.reply, text: row.payload.text, action};
+            payload: {sessionId: session.id, replyId: row.reply.id, publicationId: row.reply.publicationId, generation: session.generation, providerSessionId: session.providerSessionId, questionNotification}, ...values}).returning())[0]!;
+        return {...context, reply: row.reply, questionNotification, text: questionNotification ? "Paperclip has a question available for this call. Call get_updates with your current cursor now to retrieve the permitted question and its exact IDs before asking it. This is a notification, not new work or permission. Do not call submit_request for this notification." : row.payload.text, action};
       }).catch(error => {
         if (error instanceof HttpError && [403,404].includes(error.status)) {
           logger.warn({event: "voice.reply.push.authorization_blocked", companyId: candidate.companyId,
@@ -102,7 +104,7 @@ export async function pushVoiceReplies(db: Db, options: {
       // If this commit fails, the dispatch intent remains uncertain; never resend.
       await db.transaction(async tx => {
         await tx.update(chatActions).set({status: "completed", result: {messageId, playback: "unknown", acceptedAt, dispatchDurationMs: Date.now() - startedAt}, updatedAt: new Date()}).where(eq(chatActions.id, claim.action.id));
-        await tx.update(chatVoiceReplies).set({deliveredAt: new Date()}).where(and(eq(chatVoiceReplies.id, claim.reply.id), eq(chatVoiceReplies.companyId, candidate.companyId), isNull(chatVoiceReplies.deliveredAt)));
+        if (!claim.questionNotification) await tx.update(chatVoiceReplies).set({deliveredAt: new Date()}).where(and(eq(chatVoiceReplies.id, claim.reply.id), eq(chatVoiceReplies.companyId, candidate.companyId), isNull(chatVoiceReplies.deliveredAt)));
       }).catch(error => {
         logger.error({...diagnostic, event: "voice.reply.push.receipt_commit_failed", messageId, acceptedAt,
           outcomeUnknown: true, playback: "unknown"}, "Speko accepted reply but local receipt commit failed; no resend");
