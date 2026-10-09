@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "require_goal_attachment" boolean DEFAULT false NOT NULL;
