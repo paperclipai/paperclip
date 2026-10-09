@@ -1,3 +1,4 @@
+import { FastResponseSettingsSection } from "../components/fast-responses/FastResponseSettings";
 import { DecisionModelSettingsSection } from "../components/decision-models/DecisionModelSettings";
 import { ChangeEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -357,6 +358,7 @@ export function CompanySettings() {
 
       {/* Interaction governance */}
       {selectedCompanyId && <DecisionModelSettingsSection key={selectedCompanyId} companyId={selectedCompanyId} />}
+      {selectedCompanyId && <FastResponseSettingsSection key={`fast-${selectedCompanyId}`} companyId={selectedCompanyId} />}
 
       <InteractionGovernancePanel
         governance={governance}

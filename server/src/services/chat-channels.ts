@@ -13,6 +13,8 @@ import {
   stageReceiptReactionRemovals,
   type ReceiptReactionPayload,
 } from "./chat-receipt-reactions.js";
+import { fastResponseService, enqueueFastResponse, fastResponseSourceCurrent } from "./fast-responses.js";
+import { fastResponseRequests } from "@paperclipai/db";
 import { chatCredentialMutationLease, CREDENTIAL_MUTATION_LEASE_TTL_MS, type CredentialMutationLeaseGuard } from "./chat-credential-mutation-lease.js";
 import type { AgentAvatarRequest } from "./agent-avatars.js";
 import { slackChatRegistrationService, slackRegistrationProjection } from "./chat-slack-registration.js";
@@ -11692,7 +11694,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       delivery.conversationId !== action.conversationId ||
       delivery.principalId !== action.principalId ||
       !fence ||
-      !(await runtimeCallbackEndpoint(tx as DbTransaction, endpoint.id, fence, [
+      !(await runtimeCallbackEndpoint(tx as unknown as DbTransaction, endpoint.id, fence, [
         "verifying",
         "active",
       ]))
@@ -12204,7 +12206,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     )
       throw failedChatRetryDenied();
     const evidence = await nativeProviderRecoveryEvidence({
-      db: tx as Db,
+      db: tx as unknown as Db,
       runId: run.id,
       sourceFailureCode: detail.originalFailureCode as Parameters<
         typeof nativeProviderRecoveryEvidence
@@ -13090,7 +13092,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         updatedAt: now,
       })
       .returning();
-    await logActivity(tx as Db, {
+    await logActivity(tx as unknown as Db, {
       companyId: input.companyId,
       actorType: "user",
       actorId: input.initiatedByUserId,
@@ -13618,6 +13620,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     publication: typeof chatPublications.$inferSelect,
   ): Promise<boolean> {
     if (!(await canPublishIssueToChatAudience(tx, publication))) return false;
+    if (publication.idempotencyKey.startsWith("fast-response:")) {
+      const [request] = await tx.select().from(fastResponseRequests).where(and(eq(fastResponseRequests.companyId, publication.companyId), eq(fastResponseRequests.id, publication.idempotencyKey.slice("fast-response:".length))));
+      if (!request || request.commentId !== publication.commentId || request.endpointId !== publication.endpointId || request.conversationId !== publication.conversationId || !(await fastResponseSourceCurrent(tx as unknown as Db, request))) return false;
+      try { await fastResponseService(tx as unknown as Db).authorize(tx as unknown as Db, request); await authorizeFastResponse(tx as unknown as Db, request); return true; } catch { return false; }
+    }
     const notice = parseInboundWakePublicationKey(publication.idempotencyKey);
     let runId = runIdFromMilestonePublication(publication);
     if (!runId && publication.commentId && !notice) {
@@ -14172,11 +14179,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           );
         }
         await notifyChatDeliveryWork(tx);
+        const acceptedAt = new Date();
         const accepted = await tx
           .update(chatDeliveries)
           .set({
             state: "processed",
-            processedAt: new Date(),
+            processedAt: acceptedAt,
             redactedError: attachmentOmissionDetail(attachmentResult),
             nextAttemptAt: null,
             updatedAt: new Date(),
@@ -14214,6 +14222,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           .returning({ id: chatActions.id });
         if (issued.length !== 1)
           throw new Error("chat_inbound_wakeup_action_claim_lost");
+        const source = delivery.normalizedEvent as { githubAutomatic?: unknown; principal?: { isBot?: boolean }; message?: { text?: string } };
+        if (!source.githubAutomatic && !source.principal?.isBot && !/^\s*\//.test(source.message?.text ?? "")) {
+          await enqueueFastResponse(tx as unknown as Db, { companyId: action.companyId, issueId: String(action.payload.issueId), agentId: String(action.payload.agentId),
+            sourceCommentId: String(action.payload.commentId), sourceKey: `comment:${action.payload.commentId}`, acceptedAt,
+            responsibleUserId: action.payload.requestedByActorType === "user" ? String(action.payload.requestedByActorId) : null,
+            sponsored: action.payload.requestedByActorType !== "user", endpointId: action.endpointId, conversationId: action.conversationId, deliveryId: action.deliveryId });
+        }
       }),
     );
   }
@@ -14258,6 +14273,20 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       });
     }
     return current;
+  }
+
+  async function authorizeFastResponse(tx: Db, request: typeof fastResponseRequests.$inferSelect) {
+    const [action] = await tx.select().from(chatActions).where(and(eq(chatActions.companyId, request.companyId), eq(chatActions.deliveryId, request.deliveryId!), eq(chatActions.kind, "inbound_wakeup")));
+    if (!action || action.endpointId !== request.endpointId || action.conversationId !== request.conversationId || action.payload.commentId !== request.sourceCommentId || action.payload.agentId !== request.agentId || action.payload.issueId !== request.issueId) throw forbidden();
+    const current = await authorizeInboundWorkStart(tx, action);
+    const normalized = current.delivery.normalizedEvent as { message?: { text?: string; attachments?: Array<{ name?: string; mimeType?: string }> }; principal?: { isBot?: boolean } };
+    if (normalized.principal?.isBot || current.delivery.normalizedEvent.githubAutomatic || current.delivery.state !== "processed") throw forbidden();
+    if ((action.payload.requestedByActorType === "user" ? action.payload.requestedByActorId : null) !== request.responsibleUserId) throw forbidden();
+    const [agent] = await tx.select({ name: agents.name }).from(agents).where(and(eq(agents.id, request.agentId!), eq(agents.companyId, request.companyId)));
+    const [receipt] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, action.id));
+    if (receipt && ["skipped", "cancelled", "failed"].includes(receipt.status)) throw forbidden();
+    return { agentName: agent?.name ?? "Assistant", message: normalized.message?.text ?? "Shared an attachment.", queued: !receipt?.runId,
+      attachments: normalized.message?.attachments?.map(a => `${a.name ?? "Attachment"} (${a.mimeType ?? "unknown type"})`) };
   }
 
   async function processInboundWakeup(deliveryId: string): Promise<boolean> {
@@ -14699,6 +14728,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       ...(githubIssue ? { githubIssue } : {}),
       ...(githubManual ? { githubManual } : {}),
       principal: {
+        // Bot/system authors have already been rejected at this intake boundary.
+        isBot: false,
         externalId: stableExternalPrincipalId(
           endpoint.provider,
           message.author,
@@ -35177,6 +35208,18 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return null;
   }
 
+  async function progressSupersededByFastResponse(publication: typeof chatPublications.$inferSelect): Promise<boolean> {
+    if (!["queued", "working"].includes(publication.payload.progressState ?? "")) return false;
+    const runId = runIdFromMilestonePublication(publication);
+    const [run] = runId ? await db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, publication.companyId), eq(heartbeatRuns.id, runId))) : [];
+    const sourceCommentId = typeof run?.context?.wakeCommentId === "string" ? run.context.wakeCommentId : typeof run?.context?.commentId === "string" ? run.context.commentId : publication.commentId;
+    if (!sourceCommentId) return false;
+    const [receipt] = await db.select({ id: fastResponseRequests.id }).from(fastResponseRequests).innerJoin(chatPublications,
+      and(eq(chatPublications.companyId, publication.companyId), eq(chatPublications.commentId, fastResponseRequests.commentId), eq(chatPublications.state, "published")))
+      .where(and(eq(fastResponseRequests.companyId, publication.companyId), eq(fastResponseRequests.sourceCommentId, sourceCommentId), eq(fastResponseRequests.endpointId, publication.endpointId), eq(fastResponseRequests.conversationId, publication.conversationId))).limit(1);
+    return Boolean(receipt);
+  }
+
   async function runProgressSupersededByPublishedInteraction(
     publication: typeof chatPublications.$inferSelect,
   ): Promise<boolean> {
@@ -37752,6 +37795,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // because it now occupies the next FIFO slot.
         const progressSupersessionReason =
           (await runOwnershipMilestoneSupersessionReason(publication)) ??
+          ((await progressSupersededByFastResponse(publication)) ? "Acknowledged by contextual fast response" : null) ??
           ((await runProgressSupersededByPublishedInteraction(publication))
             ? "Run progress was superseded by its provider interaction"
             : null);
@@ -39020,6 +39064,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   return {
     voice,
+    authorizeFastResponse,
     slackRegistration,
     saveGitHubSetupProgress: async (endpointId: string, stage: NonNullable<ChatEndpointSetupState["github"]>["stage"]) => {
       const record = await endpointRecord(endpointId);

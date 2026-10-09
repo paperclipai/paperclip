@@ -1,3 +1,6 @@
+import { aiConnectionService } from "../services/ai-connections.js";
+import { fastResponseService } from "../services/fast-responses.js";
+import { fastResponseReceipt } from "../services/fast-response-provider.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments, annotateConnectorSkills } from "../services/connector-runtime.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
@@ -40,6 +43,7 @@ import {
   emailEndpoints,
   emailMessages,
   emailSends,
+  fastResponseRequests,
   issueComments,
   heartbeatRuns,
   issues,
@@ -442,6 +446,31 @@ describe("AgentMail durable email pipeline", () => {
     expect(f.sends.map(send => send.key)).toEqual([input.idempotencyKey, second.idempotencyKey]);
     for (const id of [input.idempotencyKey, second.idempotencyKey])
       expect((await f.service.publication(id, f.companyId)).outcome).toBe("sent");
+  });
+
+  it("publishes one sponsored fast response only to the originating email sender", async () => {
+    const f = await fixture();
+    const binding = await aiConnectionService(db).save(f.companyId, "email-board", { provider: "openrouter", method: "api_key", name: "Fast email", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
+    const provider = vi.fn(async () => ({ text: "I’ll check the settings panel border.", receipt: fastResponseReceipt({ usage: { inputTokens: 80, outputTokens: 9 }, response: { body: { usage: { cost: 0.00001 } } } }) }));
+    const fast = fastResponseService(db, { provider, authorizeExternal: f.service.authorizeFastResponse,
+      publishExternal: async (...args) => { await f.service.publishFastResponse(...args); return true; } });
+    await fast.configure(f.companyId, "email-board", { enabled: true, ...binding, model: "openai/gpt-oss-120b", allowSponsored: true });
+    vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    const incoming = f.message("fast-email", "fast-thread", { text: "Please check the settings panel border.", cc: ["bystander@example.test"] });
+    await f.receive(incoming);
+    const [job] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.companyId, f.companyId));
+    expect(job).toMatchObject({ sponsored: true, responsibleUserId: null });
+    expect(f.wakeup).toHaveBeenCalled();
+    await fast.process(job);
+    await f.service.flushPublications();
+    await f.service.flushPublications();
+    expect(f.sends).toHaveLength(1);
+    expect(f.sends[0].body.text).toBe("I’ll check the settings panel border.");
+    expect(f.sends[0].body.cc ?? []).not.toContain("bystander@example.test");
+    expect(f.sends[0].path).toContain("fast-email/reply");
+    const [receipt] = await db.select().from(issueComments).where(and(eq(issueComments.issueId, job.issueId!), eq(issueComments.origin, "fast_response")));
+    expect(receipt).toMatchObject({ authorAgentId: f.agentId, createdByRunId: null });
+    expect((await issueService(db).getById(job.issueId!))?.status).not.toBe("done");
   });
 
   it("admits signed webhooks through the durable queue and rejects a valid signature for another inbox", async () => {
