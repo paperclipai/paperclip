@@ -118,6 +118,7 @@ function getPluginIdFromPath(): string | null {
 // ---------------------------------------------------------------------------
 
 export function TelegramNotifierSettings(_: PluginSettingsPageProps) {
+  const { companyId: hostCompanyId } = useHostContext();
   const { data: status, loading, error, refresh: refreshStatus } =
     usePluginData<StatusData>("status");
   const { data: companiesData, refresh: refreshCompanies } =
@@ -186,6 +187,8 @@ export function TelegramNotifierSettings(_: PluginSettingsPageProps) {
       {status && (
         <>
           <BotCredentialsCard
+            // Remount per company so no draft or token field carries over.
+            key={hostCompanyId ?? "none"}
             tokenConfigured={status.tokenConfigured}
             tokenMasked={status.tokenMasked}
             onSaved={() => {
@@ -914,41 +917,63 @@ function ApprovalSection({
 function useCompanyConfig() {
   const pluginId = useMemo(() => getPluginIdFromPath(), []);
   const { companyId } = useHostContext();
-  const [config, setConfig] = useState<InstanceConfig | null>(null);
+  // The draft is tagged with the company it was loaded for. The page stays
+  // mounted when the operator switches company, so an untagged draft (or a
+  // late response for the previous company) could be saved into the newly
+  // selected company's config.
+  const [draft, setDraft] = useState<{
+    companyId: string;
+    config: InstanceConfig;
+  } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const companyRef = useRef(companyId);
+  companyRef.current = companyId;
+  const config =
+    draft && companyId && draft.companyId === companyId ? draft.config : null;
 
-  const fetchStored = useCallback(async (): Promise<InstanceConfig> => {
-    if (!pluginId) {
-      throw new Error(
-        "Could not determine plugin ID from URL — open the settings page from the Plugins list.",
+  const fetchStored = useCallback(
+    async (forCompanyId: string): Promise<InstanceConfig> => {
+      if (!pluginId) {
+        throw new Error(
+          "Could not determine plugin ID from URL — open the settings page from the Plugins list.",
+        );
+      }
+      const res = await fetch(
+        `/api/plugins/${pluginId}/config?companyId=${encodeURIComponent(forCompanyId)}`,
+        {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        },
       );
-    }
-    if (!companyId) throw new Error("Select a company first.");
-    const res = await fetch(
-      `/api/plugins/${pluginId}/config?companyId=${encodeURIComponent(companyId)}`,
-      {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      },
-    );
-    if (!res.ok) throw new Error(`Failed to load config: HTTP ${res.status}`);
-    const body = (await res.json()) as
-      | { configJson?: InstanceConfig }
-      | InstanceConfig
-      | null;
-    return body && typeof body === "object" && "configJson" in body
-      ? (body.configJson ?? {})
-      : ((body ?? {}) as InstanceConfig);
-  }, [pluginId, companyId]);
+      if (!res.ok) throw new Error(`Failed to load config: HTTP ${res.status}`);
+      const body = (await res.json()) as
+        | { configJson?: InstanceConfig }
+        | InstanceConfig
+        | null;
+      return body && typeof body === "object" && "configJson" in body
+        ? (body.configJson ?? {})
+        : ((body ?? {}) as InstanceConfig);
+    },
+    [pluginId],
+  );
 
   const reload = useCallback(async () => {
+    const forCompanyId = companyId;
+    if (!forCompanyId) {
+      setLoadError("Select a company first.");
+      return;
+    }
     try {
-      setConfig(await fetchStored());
+      const loaded = await fetchStored(forCompanyId);
+      // Ignore a response that arrives after the operator switched company.
+      if (companyRef.current !== forCompanyId) return;
+      setDraft({ companyId: forCompanyId, config: loaded });
       setLoadError(null);
     } catch (err) {
+      if (companyRef.current !== forCompanyId) return;
       setLoadError(err instanceof Error ? err.message : String(err));
     }
-  }, [fetchStored]);
+  }, [companyId, fetchStored]);
 
   useEffect(() => {
     void reload();
@@ -957,27 +982,38 @@ function useCompanyConfig() {
   const savePatch = useCallback(
     async (patch: ConfigPatch): Promise<InstanceConfig> => {
       if (!pluginId) throw new Error("plugin id unresolved");
-      if (!companyId) throw new Error("Select a company first.");
-      const next = applyConfigPatch(await fetchStored(), patch);
+      const forCompanyId = companyId;
+      if (!forCompanyId || draft?.companyId !== forCompanyId) {
+        throw new Error("Config for this company is still loading.");
+      }
+      const next = applyConfigPatch(await fetchStored(forCompanyId), patch);
       const res = await fetch(`/api/plugins/${pluginId}/config`, {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyId, configJson: next }),
+        body: JSON.stringify({ companyId: forCompanyId, configJson: next }),
       });
       if (!res.ok) {
         const errBody = await res.text().catch(() => "");
         throw new Error(`Save failed: HTTP ${res.status} ${errBody}`);
       }
-      setConfig((prev) => applyConfigPatch(prev ?? {}, patch));
+      setDraft((prev) =>
+        prev && prev.companyId === forCompanyId
+          ? { companyId: forCompanyId, config: applyConfigPatch(prev.config, patch) }
+          : prev,
+      );
       return next;
     },
-    [pluginId, companyId, fetchStored],
+    [pluginId, companyId, draft?.companyId, fetchStored],
   );
 
   const update = useCallback(
     (patch: (prev: InstanceConfig) => InstanceConfig) => {
-      setConfig((prev) => patch(prev ?? {}));
+      setDraft((prev) =>
+        prev && prev.companyId === companyRef.current
+          ? { companyId: prev.companyId, config: patch(prev.config) }
+          : prev,
+      );
     },
     [],
   );
