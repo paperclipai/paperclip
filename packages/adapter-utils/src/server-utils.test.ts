@@ -715,6 +715,51 @@ describe("runChildProcess", () => {
   );
 
   it.skipIf(process.platform === "win32")(
+    "settles a stopped run when a process outside its group keeps stdout open",
+    async () => {
+      // A process that left the run's process group (its own session here; a
+      // shared ssh connection's master in production) survives the group kill
+      // and holds the stdout pipe, so "close" never fires on its own. The run
+      // must still settle shortly after the child it started has exited.
+      let escapedPid: number | null = null;
+      const startedAt = Date.now();
+      try {
+        const result = await runChildProcess(
+          randomUUID(),
+          process.execPath,
+          [
+            "-e",
+            [
+              "const { spawn } = require('node:child_process');",
+              "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
+              "child.unref();",
+              "process.stdout.write(String(child.pid));",
+              "setInterval(() => {}, 1000);",
+            ].join(" "),
+          ],
+          {
+            cwd: process.cwd(),
+            env: {},
+            timeoutSec: 1,
+            graceSec: 1,
+            onLog: async () => {},
+            onSpawn: async () => {},
+          },
+        );
+        escapedPid = Number.parseInt(result.stdout.trim(), 10);
+        expect(result.timedOut).toBe(true);
+        expect(Number.isInteger(escapedPid) && escapedPid > 0).toBe(true);
+        // The escaped process is still alive: the run settled without waiting for it.
+        expect(isPidAlive(escapedPid!)).toBe(true);
+        expect(Date.now() - startedAt).toBeLessThan(20_000);
+      } finally {
+        if (escapedPid && isPidAlive(escapedPid)) process.kill(escapedPid, "SIGKILL");
+      }
+    },
+    30_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
     "signalRunningProcess escalates SIGKILL on the direct-child fallback after SIGTERM is sent",
     async () => {
       // Directly cover the branch this PR changed: the direct-child fallback

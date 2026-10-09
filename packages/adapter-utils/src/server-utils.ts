@@ -4931,13 +4931,29 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
-        child.on("exit", () => {
+        let closed = false;
+        let closeBoundTimer: ReturnType<typeof setTimeout> | null = null;
+        child.on("exit", (_code: number | null, signal: NodeJS.Signals | null) => {
           maybeArmTerminalResultCleanup();
+          // A stopped run (timeout, cancel, watchdog, cleanup) must end even
+          // when a process outside its group keeps stdout/stderr open: "close"
+          // waits for every holder of the pipes, and the group kill does not
+          // reach a process that left the group.
+          const stopped = signal !== null || timedOut || terminalCleanupStarted;
+          if (!stopped || closeBoundTimer) return;
+          closeBoundTimer = setTimeout(() => {
+            closeBoundTimer = null;
+            if (closed) return;
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          }, (Math.max(5, opts.graceSec) + 5) * 1000);
         });
 
         child.on(
           "close",
           (code: number | null, signal: NodeJS.Signals | null) => {
+            closed = true;
+            if (closeBoundTimer) clearTimeout(closeBoundTimer);
             if (timeout) clearTimeout(timeout);
             clearTerminalCleanupTimers();
             runningProcesses.delete(runId);
