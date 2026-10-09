@@ -178,7 +178,7 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Idle test", issuePrefix: "IDLE" });
+    await db.insert(companies).values({ id: companyId, name: "Idle test", issuePrefix: `T${companyId.slice(0, 6).toUpperCase()}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "On-demand agent", role: "engineer", status: "idle", adapterType: "process" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", status: "succeeded" });
     return { companyId, agentId, runId };
@@ -246,6 +246,44 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     expect(await read()).toEqual(present);
   });
 
+  it("allows consumed coalesced wakes only after their linked run finishes", async () => {
+    const { companyId, agentId, runId } = await seed();
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "assignment", status: "coalesced", runId, finishedAt: new Date(now),
+    });
+    expect(await read()).toEqual(present);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(now) })
+      .where(eq(heartbeatRuns.id, runId));
+    expect(await read()).toEqual(none);
+  });
+
+  it.each(["unfinished", "missing_run", "wrong_company", "wrong_agent", "unfinished_run", "retry", "accounting"])(
+    "keeps a coalesced wake awake with %s evidence", async kind => {
+      const { companyId, agentId, runId } = await seed();
+      await db.update(heartbeatRuns).set({ finishedAt: new Date(now) }).where(eq(heartbeatRuns.id, runId));
+      let linkedRunId = runId;
+      if (kind === "missing_run") linkedRunId = randomUUID();
+      if (kind === "wrong_company") {
+        linkedRunId = (await seed()).runId;
+        await db.update(heartbeatRuns).set({ finishedAt: new Date(now) }).where(eq(heartbeatRuns.id, linkedRunId));
+      }
+      if (kind === "wrong_agent") {
+        const otherAgentId = randomUUID();
+        await db.insert(agents).values({ id: otherAgentId, companyId, name: "Other agent", role: "engineer", status: "idle", adapterType: "process" });
+        await db.update(heartbeatRuns).set({ agentId: otherAgentId }).where(eq(heartbeatRuns.id, runId));
+      }
+      if (kind === "unfinished_run") await db.update(heartbeatRuns).set({ finishedAt: null }).where(eq(heartbeatRuns.id, runId));
+      if (kind === "retry") await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(now + 1000) }).where(eq(heartbeatRuns.id, runId));
+      if (kind === "accounting") await db.update(heartbeatRuns).set({ costAccountingPending: true }).where(eq(heartbeatRuns.id, runId));
+      await db.insert(agentWakeupRequests).values({
+        companyId, agentId, source: "assignment", status: "coalesced", runId: linkedRunId,
+        finishedAt: kind === "unfinished" ? null : new Date(now),
+      });
+      expect(await read()).toEqual(present);
+    },
+  );
+
   it("blocks an active routine without waiting for its next due time", async () => {
     const { companyId } = await seed();
     await db.insert(routines).values({ companyId, title: "Tomorrow", status: "active" });
@@ -267,6 +305,71 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     });
     expect(await read()).toEqual(present);
   });
+
+  async function seedFinishedLogin() {
+    const { companyId } = await seed();
+    const [environment] = await db.insert(environments).values({ name: "Finished login fixture" }).returning();
+    const [lease] = await db.insert(environmentLeases).values({
+      companyId, environmentId: environment!.id, providerLeaseId: "fixture-login-resource",
+      status: "released", cleanupStatus: "success", releasedAt: new Date(now),
+    }).returning();
+    const [session] = await db.insert(adapterAuthSessions).values({
+      companyId, environmentId: environment!.id, adapterType: "codex_local",
+      startedByUserId: "fixture-user", publicSessionId: "finished-fixture-session",
+      status: "authenticated", finishedAt: new Date(now), providerLeaseId: lease!.providerLeaseId,
+    }).returning();
+    return { companyId, environment: environment!, lease: lease!, session: session! };
+  }
+
+  it.each(["authenticated", "completed", "failed", "timed_out", "cancelled"] as const)(
+    "permits finished %s login history after confirmed provider cleanup", async status => {
+      const { session } = await seedFinishedLogin();
+      await db.update(adapterAuthSessions).set({ status }).where(eq(adapterAuthSessions.id, session.id));
+      expect(await read()).toEqual(none);
+    },
+  );
+
+  it("accepts a cleanup reference to the internal lease id", async () => {
+    const { session, lease } = await seedFinishedLogin();
+    await db.update(adapterAuthSessions).set({ providerLeaseId: lease.id }).where(eq(adapterAuthSessions.id, session.id));
+    expect(await read()).toEqual(none);
+  });
+
+  it("permits terminal login history without a provider resource", async () => {
+    const { session } = await seedFinishedLogin();
+    await db.update(adapterAuthSessions).set({ providerLeaseId: null }).where(eq(adapterAuthSessions.id, session.id));
+    expect(await read()).toEqual(none);
+  });
+
+  it.each(["cleanup_pending", "starting", "promoting", "awaiting_code", "submitting", "stored"] as const)(
+    "retains %s login work even with an old successful cleanup receipt", async status => {
+      const { session } = await seedFinishedLogin();
+      await db.update(adapterAuthSessions).set({ status }).where(eq(adapterAuthSessions.id, session.id));
+      expect(await read()).toEqual(present);
+    },
+  );
+
+  it.each(["unfinished", "promotion_claim", "missing_lease", "wrong_company", "wrong_environment", "cleanup_failed", "cleanup_unknown", "unreleased", "conflicting_lease"])(
+    "retains terminal login history with %s cleanup evidence", async kind => {
+      const { companyId, session, lease, environment } = await seedFinishedLogin();
+      if (kind === "unfinished") await db.update(adapterAuthSessions).set({ finishedAt: null }).where(eq(adapterAuthSessions.id, session.id));
+      if (kind === "promotion_claim") await db.update(adapterAuthSessions).set({ promotionExpiresAt: new Date(now + 1000) }).where(eq(adapterAuthSessions.id, session.id));
+      if (kind === "missing_lease") await db.delete(environmentLeases).where(eq(environmentLeases.id, lease.id));
+      if (kind === "wrong_company") await db.update(environmentLeases).set({ companyId: (await seed()).companyId }).where(eq(environmentLeases.id, lease.id));
+      if (kind === "wrong_environment") {
+        const [other] = await db.insert(environments).values({ name: "Other environment", driver: "sandbox" }).returning();
+        await db.update(environmentLeases).set({ environmentId: other!.id }).where(eq(environmentLeases.id, lease.id));
+      }
+      if (kind === "cleanup_failed") await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, lease.id));
+      if (kind === "cleanup_unknown") await db.update(environmentLeases).set({ cleanupStatus: null }).where(eq(environmentLeases.id, lease.id));
+      if (kind === "unreleased") await db.update(environmentLeases).set({ releasedAt: null }).where(eq(environmentLeases.id, lease.id));
+      if (kind === "conflicting_lease") await db.insert(environmentLeases).values({
+        companyId, environmentId: environment.id, providerLeaseId: lease.providerLeaseId,
+        status: "released", cleanupStatus: "failed", releasedAt: new Date(now),
+      });
+      expect(await read()).toEqual(present);
+    },
+  );
 
   it("reports a pending secret proposal with future expiry", async () => {
     const { companyId, agentId, runId } = await seed();
