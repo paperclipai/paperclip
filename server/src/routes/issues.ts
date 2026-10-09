@@ -316,7 +316,7 @@ import {
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
-import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import { buildExecutionWorkspaceAdapterConfig, parseProjectExecutionWorkspacePolicy, parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -9596,7 +9596,24 @@ export function issueRoutes(
             || workspaceBaseRef.branch === workspaceBaseRef.requestedRef) {
             throw conflict("This branch repair no longer matches the task. Refresh before retrying.");
           }
-          repairedWorkspaceSettings = { ...currentSettings, workspaceStrategy: { ...currentStrategy, type: "git_worktree", baseRef: workspaceBaseRef.branch } };
+          // Materialize the currently effective strategy before adding a task
+          // override, so agent defaults retain their setup and workspace layout.
+          const repairOwner = await agentsSvc.getById(lockedIssue.assigneeAgentId);
+          const repairProject = lockedIssue.projectId ? await projectsSvc.getById(lockedIssue.projectId) : null;
+          const effectiveStrategy = parseObject(buildExecutionWorkspaceAdapterConfig({
+            agentConfig: parseObject(repairOwner?.adapterConfig),
+            projectPolicy: parseProjectExecutionWorkspacePolicy(repairProject?.executionWorkspacePolicy),
+            issueSettings: parseIssueExecutionWorkspaceSettings(currentSettings),
+            mode: "isolated_workspace", legacyUseProjectWorkspace: null,
+          }).workspaceStrategy);
+          // This failure is emitted only by Git worktree preparation. With no
+          // strategy object, the runtime used its default Git worktree strategy.
+          if (!effectiveStrategy.type) effectiveStrategy.type = "git_worktree";
+          if (effectiveStrategy.type !== "git_worktree"
+            || (typeof effectiveStrategy.baseRef === "string" && effectiveStrategy.baseRef.trim() && effectiveStrategy.baseRef !== workspaceBaseRef.requestedRef)) {
+            throw conflict("The workspace configuration changed. Refresh before repairing its branch.");
+          }
+          repairedWorkspaceSettings = { ...currentSettings, workspaceStrategy: { ...effectiveStrategy, baseRef: workspaceBaseRef.branch } };
         }
 
         if (outcome === "restored" && activeRecoveryAction.cause === "native_workspace_sync_out_unsafe_archive") {

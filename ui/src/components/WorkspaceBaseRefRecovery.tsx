@@ -12,7 +12,7 @@ function record(value: unknown): Record<string, unknown> {
 type RecoveryValue = { actionId: string; runId: string; props: WorkspaceBaseRefRecoveryNoticeProps };
 const Context = createContext<RecoveryValue | null>(null);
 
-/** Bind the repair to the server-owned action and run, including pre-upgrade notices. */
+/** Bind the repair to the server-owned action and its latest failed run. */
 export function useWorkspaceBaseRefRecovery(metadata: IssueCommentMetadata | null | undefined) {
   const value = useContext(Context);
   return value && metadata?.sourceRunId === value.runId

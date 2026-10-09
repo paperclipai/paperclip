@@ -1365,7 +1365,9 @@ describe("realizeExecutionWorkspace", () => {
     } else {
       // Git returns the remote name when its URL is empty, then the fetch fails.
       expect(error.fetchError).toBeTruthy();
-      expect(authCalls).toBe(1);
+      // Fetch and the bounded default-branch suggestion each use the credential resolver.
+      expect(authCalls).toBe(2);
+      expect(error.defaultBranch).toBeNull();
       expect(readUnresolvedWorkspaceBaseRefDiagnostic(error)).toEqual({ schemaVersion: 1,
         remoteLookup: "resolved", authLookup: "unavailable", fetch: "failed", fetchExitCode: 128,
         fetchFailureKind: "unknown", refResolution: "failed", refExitCode: 128 });
@@ -1417,7 +1419,9 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
     expect(JSON.stringify(diagnostic)).not.toContain("example.invalid");
     expect((await fs.readFile(calls, "utf8")).trim().split("\n").map(line => JSON.parse(line))).toEqual([
       ["fetch", "--prune", "origin", "+refs/heads/absent-fixture:refs/remotes/origin/absent-fixture"],
+      ["ls-remote", "--symref", "origin", "HEAD"],
     ]);
+    expect(error.defaultBranch).toBeNull();
   });
 
   it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {

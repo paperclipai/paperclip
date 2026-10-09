@@ -2473,6 +2473,18 @@ describe("agent issue mutation checkout ownership", () => {
         executionWorkspaceSettings: { workspaceStrategy: { type: "git_worktree", baseRef: "master" } },
       }), expect.anything(), expect.anything());
     });
+    it("preserves inherited agent setup when repairing only the base branch", async () => {
+      const db = seedBranchRepair();
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId, executionWorkspaceSettings: null }));
+      const strategy = { type: "git_worktree", baseRef: "main", provisionCommand: "npm run setup", branchTemplate: "task/{{issue.identifier}}", worktreeParentDir: ".worktrees" };
+      mockAgentService.getById.mockResolvedValue({ ...makeAgent(ownerAgentId), adapterConfig: { workspaceStrategy: strategy } });
+      const res = await request(await createApp(boardActor(), db)).post(`/api/issues/${issueId}/recovery-actions/resolve`).send(repair);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({
+        executionWorkspaceSettings: { workspaceStrategy: { ...strategy, baseRef: "master" } },
+      }), expect.anything(), expect.anything());
+      expect(strategy.baseRef).toBe("main");
+    });
     it.each(["stale", "project", "strategy", "agent", "permission", "paused", "run", "approval", "budget", "blocker"])("rejects %s repairs without saving or waking", async gate => {
       const db = seedBranchRepair();
       if (gate === "project") mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId, projectId: "new-project" }));

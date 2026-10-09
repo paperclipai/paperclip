@@ -87,7 +87,7 @@ export function TaskChatSystemNotice({
       .catch(() => undefined);
   };
 
-  if (item.author === "system" && branchRecovery) return <WorkspaceBaseRefRecoveryNotice key={branchRecovery.actionId} {...branchRecovery.props} />;
+  if (item.author === "system" && branchRecovery) return <WorkspaceBaseRefRecoveryNotice key={`${branchRecovery.actionId}:${branchRecovery.runId}`} {...branchRecovery.props} />;
 
   if (item.author === "system" && recoverySnapshot) {
     return <DispositionRecoveryNotice snapshot={recoverySnapshot} createdAt={item.createdAtIso} defaultExpanded={item.presentation?.detailsDefaultOpen} />;

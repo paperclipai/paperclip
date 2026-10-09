@@ -29,3 +29,8 @@ satisfy this acceptance check.
 
 The component stories are under **Workspace branch recovery**. Their save and
 retry callbacks are simulated; use this fixture for the real server journey.
+
+Pass `--agent-defaults` to the seed command to put the missing base branch,
+setup command, branch template, and worktree directory in agent defaults.
+The task has no strategy override. On repair, the worker also verifies that
+inherited setup ran and the branch template and worktree directory survived.

@@ -46,7 +46,7 @@ it("binds the repair to the exact notice and sends an atomic recovery request", 
   expect(container.textContent).toContain("Branch updated · retry requested");
 });
 it("does not turn an unrelated notice into a repair", async () => {
-  await render({ ...metadata, sourceRunId: "older-run" });
+  await render({ ...metadata, sections: [{ rows: [{ type: "key_value", label: "Recovery action", value: "other-action" }] }] });
   expect(container.textContent).toBe("No repair");
 });
 it("does not report success from an incomplete receipt", async () => {
@@ -55,4 +55,12 @@ it("does not report success from an incomplete receipt", async () => {
   await act(async () => [...container.querySelectorAll("button")].find(b => b.textContent === "Use master & retry")!.click());
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("The task changed while saving");
   expect(container.textContent).not.toContain("Branch updated · retry requested");
+});
+
+it("renders only the latest run notice when a repeated failure reuses the incident", async () => {
+  await render({ ...metadata, sourceRunId: "first-failed-run" });
+  expect(container.textContent).toBe("No repair");
+  await render(metadata);
+  expect(mocks.get).toHaveBeenCalledWith("run");
+  expect(container.textContent).toContain("Use master & retry");
 });

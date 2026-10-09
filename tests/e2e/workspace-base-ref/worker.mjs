@@ -13,6 +13,11 @@ const run = await api(`/heartbeat-runs/${process.env.PAPERCLIP_RUN_ID}`);
 assert.equal(run.contextSnapshot.paperclipWorkspace.mode, "isolated_workspace");
 process.chdir(run.contextSnapshot.paperclipWorkspace.cwd);
 assert.equal(await readFile("README.md", "utf8"), "Branch repair acceptance fixture\n");
+if (process.argv.includes("--expect-setup")) {
+  assert.equal(await readFile("setup-proof.txt", "utf8"), "ready");
+  assert.match(git("branch", "--show-current"), /^agent\//);
+  assert.match(process.cwd(), /\.agent-worktrees/);
+}
 assert.equal(git("rev-parse", "HEAD"), git("rev-parse", "origin/master"));
 await api(`/issues/${run.contextSnapshot.issueId}`, "PATCH", { status: "done", comment: `Branch repair verified: the agent started in an isolated worktree at master (${git("rev-parse", "HEAD")}).` });
 console.log("Branch repair verified in the real Git worktree.");
