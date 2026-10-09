@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
 import { describe, expect, it } from "vitest";
 
 import { buildNativeModelEnvelope, parseNativeExecutionInput, NATIVE_EXECUTION_INPUT_SCHEMA, type NativeExecutionInputV1 } from "./native-execution.js";
@@ -482,6 +483,40 @@ describe("native task context ownership", () => {
       runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
     });
   }
+
+  it("keeps Dot v6 isolated while replaying recorded Hermes v6 as v7", () => {
+    const current = currentInput();
+    const resolved = resolveQualifiedAcpxProfile("hermes", "hermes-fixture");
+    const profile = Object.fromEntries([
+      "driverKind", "protocolVersion", "acpxVersion", "agent", "agentProfileVersion",
+      "agentServerPackage", "agentServerVersion", "agentRuntimePackage", "agentRuntimeVersion", "commandDigest",
+    ].map(key => [key, resolved[key as keyof typeof resolved]]));
+    const attachment = { schema: "paperclip.user_attachment.v1", kind: "text", mediaType: "text/markdown", name: "notes.md", text: "Authorized input" };
+    const hermes = { ...current, schema: "paperclip.native-execution-input.v7",
+      session: { ...current.session, driverKind: "acpx_runtime" },
+      provider: { kind: "acpx", agent: "hermes", model: "hermes-fixture", permissionMode: "approve-all", profile, connectionFingerprint: "1".repeat(64) },
+      attachments: [attachment],
+    };
+    const parsed = parseNativeExecutionInput(hermes);
+    expect(parsed.schema).toBe("paperclip.native-execution-input.v7");
+    expect(parseNativeExecutionInput(parsed)).toEqual(parsed);
+    expect(parseNativeExecutionInput({ ...hermes, schema: "paperclip.native-execution-input.v6" })).toEqual(parsed);
+    expect(buildNativeModelEnvelope(parsed).workspace).toEqual({ cwd: current.workspace.cwd });
+    expect(parsed).toHaveProperty("attachments", [attachment]);
+    const dot = { ...current, schema: "paperclip.native-execution-input.v6", credentialBindings: [],
+      provider: { kind: "openai_dot", model: null, binding: { bindingId: "dot-binding", bindingGeneration: 1,
+        companyId: current.binding.companyId, agentId: current.binding.agentId, acceptByUnixMs: 1000, expiresAtUnixMs: 2000 } },
+      workspace: { access: "none", cwd: null, repoUrl: null, repoRef: null, branchName: null },
+      session: { ...current.session, driverKind: "openai_dot_mcp" },
+    };
+    const parsedDot = parseNativeExecutionInput(dot);
+    expect(parsedDot.schema).toBe("paperclip.native-execution-input.v6");
+    expect(parseNativeExecutionInput(parsedDot)).toEqual(parsedDot);
+    expect(buildNativeModelEnvelope(parsedDot).workspace).toBeNull();
+    expect(() => parseNativeExecutionInput({ ...dot, attachments: [attachment] })).toThrow();
+    expect(() => parseNativeExecutionInput({ ...dot, schema: "paperclip.native-execution-input.v7" })).toThrow();
+    expect(() => parseNativeExecutionInput({ ...current, schema: "paperclip.native-execution-input.v6" })).toThrow();
+  });
 
   it("carries an opaque provider mode without a vendor restriction and fences obsolete field names", () => {
     const current = currentInput();

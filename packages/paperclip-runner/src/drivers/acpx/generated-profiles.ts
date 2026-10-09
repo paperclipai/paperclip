@@ -35,12 +35,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "cursor",
-    "agentProfileVersion": 14,
+    "agentProfileVersion": 16,
     "agentServerPackage": "cursor-agent",
     "agentServerVersion": "2026.09.26-dd393fe",
     "agentRuntimePackage": null,
     "agentRuntimeVersion": null,
-    "commandDigest": "sha256:a5e70580e4933a1a9248cd3c1b16500c6c93e1e14913e0a98cd5ef878bd53d39",
+    "commandDigest": "sha256:d4d2e4f4542e8b4e1e86698ddbc617bf704221637bacb1f0b779a41bf5c649b9",
     "permissionPolicy": "interactive"
   },
   "copilot": {
@@ -81,6 +81,20 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentRuntimePackage": "@openai/codex",
     "agentRuntimeVersion": "0.160.0",
     "commandDigest": "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
+    "permissionPolicy": "interactive"
+  },
+  "hermes": {
+    "driverKind": "acpx_runtime",
+    "protocolVersion": 1,
+    "acpxVersion": "0.13.1",
+    "agent": "hermes",
+    "agentProfileVersion": 1,
+    "agentServerPackage": "builtin:hermes-acp",
+    "agentServerVersion": "1",
+    "agentRuntimePackage": "native:hermes",
+    "agentRuntimeVersion": "v2026.9.24",
+    "commandDigest": "sha256:49e4107f37e8cb228a8f94dc63e730323ecfa3b79dd1e2a71d7871b45a79ea94",
+    "qualificationStatus": "pending",
     "permissionPolicy": "interactive"
   }
 } as const;

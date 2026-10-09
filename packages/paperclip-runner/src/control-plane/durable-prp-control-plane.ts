@@ -51,9 +51,14 @@ const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
 const transitionCoreStateSchema =
   "paperclip.runner.durable.control-plane-state.warm-transition.v1";
-const maxFrameBytes = 1024 * 1024;
+// v6 user content may carry controller-authorized image bytes. Commands still
+// reserve half a frame for the secure envelope's ciphertext hex encoding.
+const maxFrameBytes = 16 * 1024 * 1024;
 // Secure frames hex-encode ciphertext. Reserve envelope/tag space as well.
 const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
+// Only turn input needs the larger attachment allowance. Preserve the existing
+// bound for semantic results and other durable commands.
+const maxOrdinaryCommandBytes = Math.floor((1024 * 1024 - 4 * 1024) / 2);
 const maxCommands = 500;
 class CommandJournalLimitError extends Error {
   constructor(readonly code: "command_payload_too_large" | "command_journal_full") {
@@ -1986,7 +1991,8 @@ export class DurablePrpControlPlane {
     };
     if (this.#store.state.commands.length >= maxCommands)
       throw new CommandJournalLimitError("command_journal_full");
-    if (Buffer.byteLength(JSON.stringify(command)) > maxCommandBytes)
+    const commandByteLimit = type === "turn.start" ? maxCommandBytes : maxOrdinaryCommandBytes;
+    if (Buffer.byteLength(JSON.stringify(command)) > commandByteLimit)
       throw new CommandJournalLimitError("command_payload_too_large");
     this.#store.state.commands.push(command);
     this.#store.save();
@@ -3395,6 +3401,9 @@ const runnerExplicitProviderEnvironmentKeys = [
   ...ACPX_CREDENTIAL_NAMES.pi,
   ...ACPX_CREDENTIAL_NAMES.cursor,
   ...ACPX_CREDENTIAL_NAMES.copilot,
+  ...ACPX_CREDENTIAL_NAMES.hermes,
+  "PAPERCLIP_HERMES_CONFIG_JSON",
+  "PAPERCLIP_HERMES_CONNECTION_FINGERPRINT",
   ACPX_CREDENTIAL_BINDING_ENV,
   "ANTHROPIC_API_KEY",
   "CLAUDE_CODE_OAUTH_TOKEN",
@@ -3573,6 +3582,9 @@ export function spawnRunner(options: {
     fakeHarnessBinary,
     "--fake-harness-script",
     fakeHarnessScript,
+    // Keep transport limits symmetric for v6 attachment commands.
+    "--max-frame-bytes",
+    String(maxFrameBytes),
     "--max-outbox-bytes",
     String(options.maxOutboxBytes),
     "--p0-reserve-bytes",

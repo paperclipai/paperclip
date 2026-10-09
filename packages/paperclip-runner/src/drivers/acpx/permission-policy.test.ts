@@ -4,10 +4,22 @@ import { capabilityCanonicalOperationsForSurface } from "../../catalog/canonical
 import {
   acpxRuntimePermissionPolicy,
   claudePaperclipPermissionRules,
+  paperclipReadOnlyToolRules,
   decideAcpxPermission,
 } from "./permission-policy.js";
 
 describe("ACPX permission policy", () => {
+  it("admits assigned planning workflow tools without treating them as reads", () => {
+    const tools = ["write_document", "request_human_input", "set_task_title", "call_api",
+      "manage_routine", "create_task", "unknown_read", "mcp__other__write_document"]
+      .map(name => ({ name, annotations: { readOnlyHint: true } }));
+    expect(paperclipReadOnlyToolRules(tools)).toEqual([
+      "mcp__paperclip__call_api", "mcp__paperclip__request_human_input",
+      "mcp__paperclip__set_task_title", "mcp__paperclip__write_document",
+    ]);
+    expect(claudePaperclipPermissionRules(tools, "approve-reads")).toEqual([]);
+    expect(paperclipReadOnlyToolRules([])).toEqual([]);
+  });
   it.each(["approve-reads", "approve-paperclip"] as const)("allows assigned canonical live reads, including approval lookup, in %s", mode => {
     const reads = capabilityCanonicalOperationsForSurface("live").filter(action => action.sideEffectClass === "read");
     expect(reads.some(action => action.operationId === "get_approval")).toBe(true);

@@ -14,7 +14,7 @@ export function qualifiedAcpxUsageBreakdown(
 ): unknown {
   if (value === null || value === undefined) return value;
   const breakdown = record(value);
-  if (agent !== "claude" && agent !== "codex" && agent !== "pi") return breakdown;
+  if (agent !== "claude" && agent !== "codex" && agent !== "pi" && agent !== "hermes") return breakdown;
   // Claude SDK aggregate output and Codex ACP toPromptUsage.outputTokens both
   // INCLUDE reasoning. The exact pinned Pi OpenRouter model uses
   // openai-completions, where completion_tokens also includes reasoning. PRP folds thought into output, so its additive component
@@ -61,7 +61,7 @@ export function persistedAcpxTurnUsage(
     text: "terminal prompt usage",
     // Pi calculates cost from catalog prices, not billing receipts. Never feed
     // this estimate into the authoritative/cumulative provider spend channel.
-    cost: agent === "pi" ? undefined : current.usageCost,
+    cost: agent === "pi" || agent === "hermes" ? undefined : current.usageCost,
     ...(piReceiptVerified ? { usageProvenance: `pi_${piReceipt.provenance}` } : {}),
     ...(estimate === undefined ? {} : { pricingEstimateUsd: estimate }),
     breakdown: {

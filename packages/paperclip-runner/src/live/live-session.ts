@@ -212,7 +212,7 @@ export interface CapabilityLiveUsageReceipt {
 export interface CapabilityLiveUnavailableUsage {
   turnId: string;
   attemptId: string;
-  agent: "pi" | "cursor" | "copilot";
+  agent: "pi" | "cursor" | "copilot" | "hermes";
   reason: "provider_did_not_report_usage";
   tokenUsage: null;
   costNanodollars: null;
@@ -650,7 +650,7 @@ export function assertCapabilityLiveSessionSnapshot(
   }
   if (provider === "acpx") {
     const agent = config.acpxAgent;
-    if (agent !== "pi" && agent !== "claude" && agent !== "codex" && agent !== "grok" && agent !== "cursor" && agent !== "copilot") {
+    if (agent !== "pi" && agent !== "claude" && agent !== "codex" && agent !== "grok" && agent !== "cursor" && agent !== "copilot" && agent !== "hermes") {
       throw new Error("capability_live_checkpoint_corrupt: invalid config.acpxAgent");
     }
     const expected = resolveQualifiedAcpxProfile(agent, text(config.requestedModel));
@@ -798,7 +798,7 @@ export function assertCapabilityLiveSessionSnapshot(
     const unavailable = record(value);
     const turnId = text(unavailable.turnId);
     if (config.provider !== "acpx" || unavailable.agent !== config.acpxAgent
-      || !["pi", "cursor", "copilot"].includes(text(unavailable.agent))
+      || !["pi", "cursor", "copilot", "hermes"].includes(text(unavailable.agent))
       || !turnId || turnId.length > 512 || unavailableTurnIds.has(turnId)
       || !text(unavailable.attemptId) || text(unavailable.attemptId).length > 512
       || !text(unavailable.observedAt)
@@ -902,7 +902,7 @@ export class CapabilityLiveSessionService {
 
   async create(input: CreateCapabilityLiveSessionInput = {}): Promise<CapabilityLiveSession> {
     if (input.provider === "acpx" && input.acpxAgent !== undefined
-      && ["pi", "copilot"].includes(input.acpxAgent)
+      && ["pi", "copilot", "hermes"].includes(input.acpxAgent)
       && this.#transportOptions.acpxCandidateProfile !== input.acpxAgent) {
       throw new Error("The candidate ACPX profile requires explicit evaluation opt-in");
     }
@@ -1828,7 +1828,7 @@ export class CapabilityLiveSession {
       + (selectedWithReportedCost?.outputTokens ?? 0) === 0;
     const candidate = this.#config.acpxAgent;
     if (missingTokens && this.#config.provider === "acpx"
-      && (candidate === "pi" || candidate === "cursor" || candidate === "copilot")
+      && (candidate === "pi" || candidate === "cursor" || candidate === "copilot" || candidate === "hermes")
       && (candidate === "cursor" || this.#transportOptions.acpxCandidateProfile === candidate)) {
       // Native candidate wrappers can complete a turn without a usage receipt,
       // including entitlement-denied turns. Retain the actual result for the

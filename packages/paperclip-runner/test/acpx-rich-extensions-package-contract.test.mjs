@@ -18,6 +18,7 @@ readline.createInterface({input:process.stdin}).on('line',(line)=>{
  const message=JSON.parse(line);
  if (message.method==='initialize') send({id:message.id,result:{protocolVersion:1,agentCapabilities:{},authMethods:[],_meta:{receivedCapabilities:message.params.clientCapabilities}}});
  else if (message.method==='session/new') send({id:message.id,result:{sessionId:'session-1'}});
+ else if (message.method==='_fixture/control') send({id:message.id,result:{accepted:true}});
  else if (message.method==='session/prompt') {
   promptId=message.id;
   const mode=message.params.prompt[0].text;
@@ -74,6 +75,14 @@ test("initialize retains mandatory capabilities while merging provider metadata"
     assert.deepEqual(actual.elicitation, { form: {} });
     assert.deepEqual(actual._meta["github.com/copilot"], { events: ["session.idle"] });
     assert.deepEqual(actual._meta.jetbrains.air.capabilities, ["sessionFailure"]);
+  });
+});
+
+test("outbound extensions call the real client method and enforce the session allowlist", { timeout: 10000 }, async () => {
+  await withClient({ extensionMethods: ["_fixture/control"] }, async client => {
+    assert.deepEqual(await client.requestExtension("_fixture/control", { sessionId: "session-1" }), { accepted: true });
+    await assert.rejects(client.requestExtension("_fixture/control", { sessionId: "other" }), /session mismatch/);
+    await assert.rejects(client.requestExtension("_fixture/not-admitted", { sessionId: "session-1" }), /not enabled/);
   });
 });
 

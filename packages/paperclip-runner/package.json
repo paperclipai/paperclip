@@ -53,7 +53,9 @@
     "dist-issue-thread",
     "protocol",
     "styles.css",
-    "README.md"
+    "README.md",
+    "scripts/provision-hermes.mjs",
+    "scripts/materialize-hermes.py"
   ],
   "sideEffects": false,
   "scripts": {
@@ -163,7 +165,9 @@
     "verify:rootless": "bash scripts/verify-rootless-linux.sh",
     "test:opencode:qualification": "PAPERCLIP_OPENCODE_QUALIFY=1 node --test scripts/qualify-opencode-runtime.test.mjs",
     "generate:acpx-profiles": "node scripts/generate-acpx-profiles.mjs",
-    "check:acpx-profiles": "node scripts/generate-acpx-profiles.mjs --check"
+    "check:acpx-profiles": "node scripts/generate-acpx-profiles.mjs --check",
+    "provision:hermes": "node scripts/provision-hermes.mjs",
+    "test:hermes:transport": "PAPERCLIP_HERMES_QUALIFY=1 node --test --test-concurrency=1 scripts/qualify-hermes-runtime.test.mjs scripts/qualify-hermes-runnerd.test.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.73.0",

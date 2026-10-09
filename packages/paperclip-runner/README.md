@@ -105,7 +105,7 @@ leave the board showing an active run after the provider turn has already ended.
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
 stdin/stdout bridge admits the pinned Claude, Codex, Grok and Cursor ACPX profiles.
 It validates the exact model, session identity, tool catalog, structured input,
-and terminal settlement at the process boundary. Copilot and Pi remain gated.
+and terminal settlement at the process boundary. Copilot, Pi and Hermes remain gated.
 Verified distributions are build-owned; no provider accepts an arbitrary executable.
 See [the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
 
@@ -134,6 +134,8 @@ An independently rehashed older pack is rejected.
 Ordinary remote Cursor startup uses the packaged Linux daemon and verifies every
 image asset against that manifest. A mismatched image fails before the provider
 starts; install the matching package and image together.
+
+Hermes native integration is documented in [Hermes](docs/hermes.md).
 
 Remote Codex sessions relay assigned app tools through the server's configured
 gateway. Small catalogs are sent directly. When a catalog would exceed the
@@ -386,7 +388,7 @@ pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
 requires `OPENAI_API_KEY`; ACPX Claude requires
 `ANTHROPIC_API_KEY`; OpenCode candidates require `OPENROUTER_API_KEY`. The live
 matrix remains qualified-only and does not persist credential values. Candidate
-qualification uses `eval-session --candidate-profile <pi|cursor|copilot>` with an
+qualification uses `eval-session --candidate-profile <pi|cursor|copilot|hermes>` with an
 explicit model and a separately materialized pinned candidate pack. This option
 is a constructor-bound diagnostic opt-in; session JSON cannot enable a candidate.
 Missing credentials or unverifiable spend block paid qualification. Set

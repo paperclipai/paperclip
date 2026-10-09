@@ -1,3 +1,4 @@
+import { isNativeAcpxPermissionModePinned } from "./native-execution-input.js";
 import { agents } from "@paperclipai/db";
 import { dotRunnerBroker } from "../dot-runner-broker.js";
 import { configuredEnvironment } from "../../vendor/paperclip-runner/index.js";
@@ -13,6 +14,7 @@ import { resolveAcpxQualification } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
 import { copyBackGrokAuth } from "@paperclipai/adapter-grok-local/server";
+import { writeFile } from "node:fs/promises";
 
 import { inferOpenAiCompatibleBiller, type AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
@@ -687,7 +689,7 @@ export function resolveNativeProviderEnvironment(
   host: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   if (configured !== undefined) return configured;
-  if (provider.kind === "acpx" && ["pi", "cursor", "copilot"].includes(provider.agent)) {
+  if (provider.kind === "acpx" && ["pi", "cursor", "copilot", "hermes"].includes(provider.agent)) {
     return buildNativeProviderEnvironment({}, host);
   }
   return host;
@@ -5430,7 +5432,10 @@ export function resolveNativeHarnessPersistenceProfile(
               // are also re-materialized in the replacement sandbox. Grok
               // diagnostics can contain auth fields and are not session state.
               excludeEntries:
-                execution.provider.agent === "grok"
+                execution.provider.agent === "hermes"
+                  ? ["auth.json", "auth.json.corrupt", "auth.lock", "auth-refresh.json", "auth-refresh.json.tmp", "auth.json.lock", "config.yaml", ".env", "logs"].map((entry) =>
+                    `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/hermes-home/${entry}`)
+                  : execution.provider.agent === "grok"
                   ? ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", "config.toml", "logs"].map((entry) =>
                     `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/grok-home/${entry}`)
                   : execution.provider.agent === "codex"
@@ -7473,6 +7478,7 @@ export async function executePaperclipNativeSession(input: {
     cleanupStagedAttachments = () => chatAttachmentReadScope.close();
     const attachmentStage = await stageNativeRunnerWakeAttachments({
       db: input.db,
+      nativePromptContent: input.execution.provider.kind === "acpx" && input.execution.provider.agent === "hermes",
       binding: {
         companyId: input.execution.binding.companyId,
         issueId: input.execution.binding.issueId,
@@ -7494,6 +7500,11 @@ export async function executePaperclipNativeSession(input: {
     const stagedPrompt = renderNativeRunnerStagedAttachmentPrompt(
       attachmentStage.attachments,
     );
+    if (attachmentStage.promptAttachments?.length) {
+      preparedInput = { ...preparedInput, execution: parseNativeExecutionInput({
+        ...input.execution, attachments: attachmentStage.promptAttachments,
+      }) };
+    }
     if (stagedPrompt) {
       preparedInput = {
         ...preparedInput,
@@ -7569,7 +7580,7 @@ async function executePaperclipNativeSessionWithinScope(
   }
   if (
     input.execution.provider.kind === "acpx" &&
-    ["pi", "copilot"].includes(input.execution.provider.agent) &&
+    ["pi", "copilot", "hermes"].includes(input.execution.provider.agent) &&
     !resolveAcpxQualification(input.execution.provider, process.env)
   ) {
     throw new Error(
@@ -9556,6 +9567,7 @@ function nativeUsageMeasurement(usage: Record<string, unknown>) {
 
 export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): string {
   if (provider.kind === "acpx") {
+    if (provider.agent === "hermes") return "unknown";
     if (provider.agent === "cursor") return "cursor";
     if (provider.agent === "copilot") return "github";
     if (provider.agent === "pi") return "openrouter";
@@ -9638,7 +9650,7 @@ export function nativeUsageCostUsd(
   // The ACP normalization contract fills absent per-turn cost with zero and
   // reports actual cost cumulatively. Until it carries an authoritative run
   // delta with provenance, neither value is a candidate's billed USD receipt.
-  if (provider?.kind === "acpx" && ["cursor", "copilot", "pi"].includes(provider.agent)) return undefined;
+  if (provider?.kind === "acpx" && ["cursor", "copilot", "pi", "hermes"].includes(provider.agent)) return undefined;
   if (!usage) return undefined;
   const measurement = nativeUsageMeasurement(usage);
   const hasRunDelta = Object.hasOwn(usage, "runDelta") || Object.hasOwn(record(usage.usage), "runDelta");
@@ -9811,7 +9823,7 @@ type RemoteProviderPackManifest = {
       version: string; profileDigest: string; closureDigest: string; qualification: "qualified" | "pending";
       path: string; sha256: string;
     }>>;
-    candidateProviders?: Partial<Record<"cursor" | "copilot" | "pi", {
+    candidateProviders?: Partial<Record<"cursor" | "copilot" | "pi" | "hermes", {
       version: string; profileDigest: string; closureDigest: string; qualification: "qualified" | "pending";
       path: string; sha256: string;
     }>>;
@@ -9996,7 +10008,7 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
     }
     for (const [provider, candidate] of Object.entries(candidates)) {
       const expectedPath = `provider-assets/${provider}/${payload.target.platform}-${payload.target.architecture}`;
-      if (!(inventory === "providers" ? ["cursor"] : ["cursor", "copilot", "pi"]).includes(provider) || !candidate
+      if (!(inventory === "providers" ? ["cursor"] : ["cursor", "copilot", "pi", "hermes"]).includes(provider) || !candidate
         || Object.keys(candidate).some(key => !["version", "profileDigest", "closureDigest", "qualification", "path", "sha256"].includes(key))
         || candidate.qualification !== (provider === "cursor" ? "qualified" : "pending") || candidate.path !== expectedPath
         || typeof candidate.version !== "string" || !candidate.version || candidate.version.length > 120
@@ -12785,6 +12797,9 @@ async function createRunnerdBackendWithinSessionClaim(
       }
     : input.execution;
   const isGrok = input.execution.provider.kind === "acpx" && input.execution.provider.agent === "grok";
+  const isHermes = input.execution.provider.kind === "acpx" && input.execution.provider.agent === "hermes";
+  if (isHermes && !input.managedAiCredentialHome) throw new Error("Select a managed AI connection before running Hermes");
+  if (isHermes && input.execution.session.lifecyclePolicy.mode !== "per_turn") throw new Error("Hermes requires the per-turn lifecycle until warm persistence is qualified");
   let effectiveRunnerEnvironmentBase: NodeJS.ProcessEnv = {
     ...(isGrok
       ? input.runnerEnvironment ?? {}
@@ -12947,9 +12962,7 @@ async function createRunnerdBackendWithinSessionClaim(
               acpxCandidateProfile: resolveAcpxQualification(input.execution.provider, process.env),
               acpxPermissionMode: input.execution.provider.permissionMode,
               acpxMode: input.execution.provider.mode,
-              acpxPermissionModePinned:
-                input.execution.schema === "paperclip.native-execution-input.v4" ||
-                input.execution.schema === "paperclip.native-execution-input.v5",
+              acpxPermissionModePinned: isNativeAcpxPermissionModePinned(input.execution),
               acpxRuntimeDirectory: remoteRunnerFilesystemRoot
                 ? posix.join(remoteRunnerFilesystemRoot, "acpx")
                 : resolve(
@@ -13379,11 +13392,11 @@ async function createRunnerdBackendWithinSessionClaim(
   });
   const boundManagedSessions = new WeakSet<NativeSession>();
   const wrapManagedSession = (session: NativeSession): NativeSession => {
-    if (isGrok && grokCredential?.home && !boundManagedSessions.has(session)) {
+    if (((isGrok && grokCredential?.home) || (isHermes && input.managedAiCredentialHome && effectiveRunnerEnvironmentBase.PAPERCLIP_HERMES_AUTH_JSON_SECRET)) && !boundManagedSessions.has(session)) {
       boundManagedSessions.add(session);
       // The launch runtime directory already ends in "acpx"; ACPX adds its
       // own namespace beneath it in resolveAcpxRuntimeRoot.
-      const relativeHome = `acpx/acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution))}/grok-home`;
+      const relativeHome = `acpx/acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution))}/${isHermes ? "hermes" : "grok"}-home`;
       const localHome = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", relativeHome);
       const remoteHome = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, relativeHome) : null;
       const readAuth = async (name: string): Promise<Buffer> => {
@@ -13395,7 +13408,19 @@ async function createRunnerdBackendWithinSessionClaim(
       };
       return bindManagedNativeCredentialTurn(session, {
         copyBack: async () => {
-          await copyBackGrokAuth({ hostHomeDir: grokCredential.home!, log: () => {},
+          if (isHermes) {
+            const bytes = await readAuth("auth-refresh.json");
+            try {
+              const value = JSON.parse(bytes.toString("utf8"));
+              if (value?.version !== 1 || !value.providers) throw new Error("Hermes refresh handoff is invalid");
+              // This controller-created home is private to the run. The existing
+              // Connections cleanup translates and applies its locked freshness merge.
+              await writeFile(join(input.managedAiCredentialHome!, "hermes-auth.json"), bytes, { mode: 0o600 });
+            } finally { bytes.fill(0); }
+            return;
+          }
+          if (!grokCredential?.home) throw new Error("Managed Grok credential home is unavailable");
+          await copyBackGrokAuth({ hostHomeDir: grokCredential.home, log: () => {},
             readSandboxAuth: () => readAuth("auth.json").catch((error) => {
               if (error.code !== "ENOENT") throw error;
               return readAuth("auth-refresh.json");

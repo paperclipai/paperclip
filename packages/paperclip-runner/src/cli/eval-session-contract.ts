@@ -58,7 +58,7 @@ export interface EvalSessionAgentCoreProfile {
   timeoutSeconds: number;
 }
 
-export type EvalCandidateProfile = "pi" | "cursor" | "copilot";
+export type EvalCandidateProfile = "pi" | "cursor" | "copilot" | "hermes";
 
 export interface EvalSessionRequest {
   schema: typeof EVAL_SESSION_REQUEST_SCHEMA;
@@ -251,14 +251,14 @@ export function parseEvalSessionRequest(
     acpxAgent !== undefined &&
     acpxAgent !== "codex" &&
     acpxAgent !== "claude" && acpxAgent !== "grok" &&
-    acpxAgent !== "pi" && acpxAgent !== "cursor" && acpxAgent !== "copilot"
+    acpxAgent !== "pi" && acpxAgent !== "cursor" && acpxAgent !== "copilot" && acpxAgent !== "hermes"
   ) {
     throw new Error("eval-session acpxAgent must be a registered ACPX profile");
   }
   if (provider !== "acpx" && acpxAgent !== undefined) {
     throw new Error("eval-session acpxAgent requires provider acpx");
   }
-  const candidate = acpxAgent === "pi" || acpxAgent === "cursor" || acpxAgent === "copilot";
+  const candidate = acpxAgent === "pi" || acpxAgent === "cursor" || acpxAgent === "copilot" || acpxAgent === "hermes";
   if (options.candidateProfile !== undefined && (provider !== "acpx" || acpxAgent !== options.candidateProfile || !candidate)) {
     throw new Error("--candidate-profile must match the request's registered candidate ACPX agent");
   }
@@ -394,7 +394,7 @@ export function evalSessionUsage(
     throw new Error("completed turn omitted usage accounting");
   }
   const candidate = snapshot.config?.provider === "acpx"
-    && ["pi", "cursor", "copilot"].includes(snapshot.config.acpxAgent ?? "");
+    && ["pi", "cursor", "copilot", "hermes"].includes(snapshot.config.acpxAgent ?? "");
   let estimate: EstimatedModelCost | null;
   try {
     estimate = estimateModelCostNanodollars(model, totals);

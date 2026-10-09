@@ -2,6 +2,7 @@ import { verifyCursorInstallation } from "./cursor-installation.js";
 import { assertCursorWorkspacePolicy } from "./cursor-launch-policy.js";
 import { resolveQualifiedAcpxProfile, type QualifiedAcpxAgent, type QualifiedAcpxProfile } from "./qualified-profiles.js";
 import { verifyQualifiedAcpxInstallation, type VerifiedAcpxInstallation } from "./installation-integrity.js";
+import { verifyHermesInstallation } from "./hermes-installation.js";
 
 /** Closed build-owned registry. Provider branches add their pinned installations here. */
 export async function verifyAcpxProfileInstallation(profile: QualifiedAcpxProfile): Promise<VerifiedAcpxInstallation> {
@@ -12,6 +13,7 @@ export async function verifyAcpxProfileInstallation(profile: QualifiedAcpxProfil
       throw error;
     }
   }
+  if (profile.agent === "hermes") return verifyHermesInstallation(profile);
   if (profile.agent !== "claude" && profile.agent !== "codex" && profile.agent !== "grok") {
     throw new Error(`ACPX ${profile.agent} verified candidate distribution is not installed in this build`);
   }

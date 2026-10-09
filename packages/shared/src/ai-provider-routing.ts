@@ -82,7 +82,7 @@ export function aiRoutingHarness(
 ): string {
   if (adapter !== "paperclip_runner") return adapter;
   const runner =
-    provider === "acpx" && (acpxAgent === "claude" || acpxAgent === "grok")
+    provider === "acpx" && (acpxAgent === "claude" || acpxAgent === "grok" || acpxAgent === "hermes")
       ? acpxAgent
       : provider;
   return (
@@ -92,6 +92,7 @@ export function aiRoutingHarness(
         codex: "codex_local",
         opencode: "opencode_local",
         grok: "grok_local",
+        hermes: "hermes_runner",
       } as Record<string, string>
     )[String(runner)] ?? "unsupported"
   );
@@ -100,6 +101,7 @@ export function isAiRoutingCompatible(
   route: AiProviderRouting,
   harness: string,
 ): boolean {
+  if (harness === "hermes_runner") return true;
   if (route.kind === "bedrock") return harness === "claude_local";
   if (route.kind === "openrouter")
     return [

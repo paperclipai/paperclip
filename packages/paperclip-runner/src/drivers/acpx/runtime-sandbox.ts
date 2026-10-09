@@ -30,7 +30,8 @@ import {
 
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
 import { cursorInstructionBinding } from "./cursor-instructions.js";
-import { claudePaperclipPermissionRules } from "./permission-policy.js";
+import { parseHermesConfig } from "./hermes-config.js";
+import { claudePaperclipPermissionRules, paperclipReadOnlyToolRules } from "./permission-policy.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import {
   resolveAcpxRuntimeRoot,
@@ -342,8 +343,8 @@ export async function prepareAcpxRuntimeSandbox(input: {
   tools?: readonly Readonly<Record<string, unknown>>[];
   providerPolicy?: AcpxProviderRuntimePolicy;
 }): Promise<AcpxRuntimeSandbox> {
-  if (input.agent === "pi" && (input.providerPolicy === undefined || typeof input.providerPolicy.readOnly !== "boolean")) {
-    throw new Error("Pi admission requires an explicit task execution policy");
+  if ((input.agent === "pi" || input.agent === "hermes") && (input.providerPolicy === undefined || typeof input.providerPolicy.readOnly !== "boolean")) {
+    throw new Error(`${input.agent} admission requires an explicit task execution policy`);
   }
   const policy = await validateProviderPolicy(input.providerPolicy);
   const expectedRoot = input.binding.runtimeRoot;
@@ -388,6 +389,19 @@ export async function prepareAcpxRuntimeSandbox(input: {
     workspaceRecordPath,
     `${input.binding.workspacePath}\n`,
   );
+  if (input.agent === "hermes") {
+    const config = parseHermesConfig(input.environment?.PAPERCLIP_HERMES_CONFIG_JSON, input.binding.requestedModel);
+    await writePrivateFile(join(agentHomeDirectory, "config.yaml"), JSON.stringify({
+      ...config,
+      security: { allow_lazy_installs: false },
+      // The run-bound catalog is already scoped by Paperclip. Keep semantic
+      // authority tools directly addressable, including completion and input.
+      tools: { tool_search: { enabled: "off" } },
+      platform_toolsets: { acp: ["hermes-acp", "clarify", "no_mcp"] },
+      agent: { disabled_toolsets: ["cronjob", "messaging", "gateway", "plugins"] },
+      mcp_servers: {},
+    }));
+  }
   if (input.agent === "claude") {
     // ACP otherwise rewrites exact IDs (including user-entered model IDs) to
     // picker aliases such as "sonnet". Its supported availableModels setting
@@ -489,6 +503,16 @@ export async function prepareAcpxRuntimeSandbox(input: {
     XDG_CACHE_HOME: cacheDirectory,
     PAPERCLIP_ACPX_PROFILE: input.agent,
     PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+    ...(input.agent === "hermes" ? {
+      HERMES_HOME: agentHomeDirectory,
+      HERMES_ACP_SKIP_CONFIGURED_MCP: "1", HERMES_DISABLE_LAZY_INSTALLS: "1",
+      PAPERCLIP_HERMES_SYSTEM_INSTRUCTIONS: policy.systemInstructions,
+      PAPERCLIP_HERMES_POLICY: JSON.stringify({ readOnly: policy.readOnly, readRoots: policy.readRoots, protectedPaths, permissionMode: input.binding.permissionMode,
+        paperclipReadTools: claudePaperclipPermissionRules(input.tools ?? [], "approve-reads"),
+        paperclipReadOnlyTools: paperclipReadOnlyToolRules(input.tools ?? []),
+        paperclipAutomaticTools: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode),
+      }),
+    } : {}),
     ...(input.agent === "grok" ? { GROK_HOME: agentHomeDirectory, NO_BROWSER: "1", GROK_DISABLE_AUTOUPDATER: "1" } : {}),
     ...(input.agent === "pi"
       ? {

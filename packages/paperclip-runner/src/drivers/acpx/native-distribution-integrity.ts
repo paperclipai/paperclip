@@ -14,6 +14,8 @@ export interface NativeAcpxDistributionInput {
   executable: string;
   /** When present, execute this JS entry with the distribution's bundled Node. */
   entrypoint?: string;
+  /** Python is provisioned with its stdlib and dependencies inside this closure. */
+  pythonEntrypoint?: string;
   fixedArguments: readonly string[];
   isolatedCacheEnvironmentName?: "COPILOT_PKG_CACHE_HOME";
 }
@@ -58,7 +60,7 @@ export function parseNativeAcpxDistributionEntries(value: unknown, expectedSha25
 }
 
 export async function readNativeAcpxDistributionEntries(input: NativeAcpxDistributionInput): Promise<NativeAcpxDistributionEntry[]> {
-  if (!validPath(input.executable) || (input.entrypoint !== undefined && !validPath(input.entrypoint)) || input.fixedArguments.length > 128 || input.fixedArguments.some(arg => typeof arg !== "string" || arg.length > 16_384 || arg.includes("\0")) || (input.isolatedCacheEnvironmentName !== undefined && input.isolatedCacheEnvironmentName !== "COPILOT_PKG_CACHE_HOME")) throw new Error("Native ACPX launch declaration is invalid");
+  if (!validPath(input.executable) || (input.entrypoint !== undefined && !validPath(input.entrypoint)) || (input.pythonEntrypoint !== undefined && (!validPath(input.pythonEntrypoint) || input.entrypoint !== undefined)) || input.fixedArguments.length > 128 || input.fixedArguments.some(arg => typeof arg !== "string" || arg.length > 16_384 || arg.includes("\0")) || (input.isolatedCacheEnvironmentName !== undefined && input.isolatedCacheEnvironmentName !== "COPILOT_PKG_CACHE_HOME")) throw new Error("Native ACPX launch declaration is invalid");
   const file = await open(input.manifestPath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = await file.stat({ bigint: true });
@@ -67,6 +69,7 @@ export async function readNativeAcpxDistributionEntries(input: NativeAcpxDistrib
     if (!same(before, await file.stat({ bigint: true })) || bytes.length !== Number(before.size)) throw new Error("Native ACPX manifest changed while read");
     const entries = parseNativeAcpxDistributionEntries(JSON.parse(bytes.toString("utf8")), input.expectedClosureSha256);
     if (!entries.some(entry => entry.path === input.executable && entry.executable && entry.size > 0) || (input.entrypoint !== undefined && !entries.some(entry => entry.path === input.entrypoint && entry.size > 0))) throw new Error("Native ACPX executable or entrypoint is absent from its closure");
+    if (input.pythonEntrypoint !== undefined && !entries.some(entry => entry.path === input.pythonEntrypoint && entry.size > 0)) throw new Error("Native ACPX Python entrypoint is absent from its closure");
     return entries;
   } finally { await file.close(); }
 }
@@ -142,7 +145,9 @@ export async function createNativeAcpxDistributionSnapshot(input: NativeAcpxDist
     }
     if (!same(rootBefore, await heldRoot.stat({ bigint: true })) || !same(rootBefore, await lstat(source, { bigint: true }))) throw new Error("Native ACPX distribution root changed during snapshot");
     const executable = join(packageRoot, ...input.executable.split("/"));
-    const args = [...(input.entrypoint === undefined ? [] : ["--require", join(packageRoot, GUARD), join(packageRoot, ...input.entrypoint.split("/"))]), ...input.fixedArguments];
+    const args = [...(input.pythonEntrypoint !== undefined
+      ? ["-I", "-B", join(packageRoot, ...input.pythonEntrypoint.split("/"))]
+      : input.entrypoint === undefined ? [] : ["--require", join(packageRoot, GUARD), join(packageRoot, ...input.entrypoint.split("/"))]), ...input.fixedArguments];
     if (input.entrypoint !== undefined) {
       const guard = Buffer.from(nativeModuleGuard(digests));
       await writeFile(join(packageRoot, GUARD), guard, { mode: 0o400, flag: "wx" });

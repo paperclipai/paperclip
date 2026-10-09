@@ -16,7 +16,7 @@ use crate::process_supervisor::{
 };
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
-pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_BUFFERED_EVENTS: usize = 512;
 const MAX_EVENT_POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -108,6 +108,22 @@ impl AcpxSidecarTransport {
                 "PAPERCLIP_AI_PROVIDER_KEY",
             ],
             "grok" => &["XAI_API_KEY", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"],
+            "hermes" => &[
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_AUTH_TOKEN",
+                "OPENAI_API_KEY",
+                "OPENROUTER_API_KEY",
+                "XAI_API_KEY",
+                "GEMINI_API_KEY",
+                "AWS_BEARER_TOKEN_BEDROCK",
+                "PAPERCLIP_HERMES_AUTH_JSON_SECRET",
+                "PAPERCLIP_HERMES_CONFIG_JSON",
+                "PAPERCLIP_HERMES_CONNECTION_FINGERPRINT",
+                "AWS_REGION",
+                "AWS_DEFAULT_REGION",
+                "AWS_EC2_METADATA_DISABLED",
+            ],
             "pi" => &["OPENROUTER_API_KEY"],
             "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
             "copilot" => &["COPILOT_GITHUB_TOKEN"],
@@ -143,7 +159,7 @@ impl AcpxSidecarTransport {
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];
-        if matches!(agent, "pi" | "cursor" | "copilot") {
+        if matches!(agent, "pi" | "cursor" | "copilot" | "hermes") {
             // Credential values alone are not proof of an explicit task binding.
             // The sidecar checks this controller-minted provider/session marker.
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
@@ -709,6 +725,9 @@ fn stderr_diagnostic_categories(value: &str) -> BTreeSet<&'static str> {
 
 fn response_error_classification(error: &ResponseError) -> &'static str {
     match error.code.as_str() {
+        "HERMES_RUNTIME_UNAVAILABLE" => return "hermes_runtime_unavailable: provision the pinned Hermes provider assets with scripts/provision-hermes.mjs",
+        "HERMES_HOST_SANDBOX_UNAVAILABLE" => return "hermes_host_sandbox_unavailable: use a host with working sandbox-exec or bubblewrap namespaces",
+        "HERMES_CONNECTION_INVALID" => return "hermes_connection_invalid: reselect a compatible managed Connection and model",
         "ACP_MODEL_UNSUPPORTED" => return "requested_model_unsupported",
         "AGENT_STARTUP_FAILED" => return "agent_startup_failed",
         "AGENT_STARTUP_FAILED.UNVERIFIED_MODULE" => return "agent_startup_unverified_module",

@@ -20,6 +20,13 @@ export interface AcpxCapabilityProfile {
 
 /** These are runner integration claims, not a proxy for everything a harness can do. */
 export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxCapabilityProfile>> = {
+  hermes: {
+    toolRefreshOnResume: true,
+    displayName: "Hermes", qualification: "pending", models: "explicit-provider-verified",
+    permissions: "runner-policy", questions: "form", plans: "native", tools: "authenticated-mcp",
+    recovery: "session-load", usage: "unverified", steering: "owned-extension-pending", followUp: "controller-queue",
+    artifacts: "policy_disabled", extensionRequests: ["_hermes/ask_questions"], extensionNotifications: ["_hermes/turn_started", "_hermes/usage", "_hermes/delegation"],
+  },
   claude: {
     toolRefreshOnResume: true,
     displayName: "Claude", qualification: "qualified", models: "explicit-provider-verified",

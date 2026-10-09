@@ -48,9 +48,11 @@ export async function createAcpxRecoveryBinding(input: {
   permissionMode: NativeAcpxPermissionMode;
   mode?: string;
   providerPolicy?: { readOnly: boolean; readRoots?: readonly string[]; protectedPaths?: readonly string[] };
+  connectionFingerprint?: string;
 }): Promise<AcpxRecoveryBinding> {
   validateIdentity(input.normalizedSessionId, "normalized session");
   const mode = parseProviderMode(input.mode);
+  if (input.profile.agent === "hermes" && !/^[a-f0-9]{64}$/.test(input.connectionFingerprint ?? "")) throw Object.assign(new Error("Hermes recovery requires the managed connection fingerprint"), { code: "HERMES_CONNECTION_INVALID" });
   if (input.providerPolicy !== undefined && typeof input.providerPolicy.readOnly !== "boolean") throw new Error("ACPX recovery requires a valid task execution policy");
   if (input.requestedModel !== input.profile.qualificationModel) {
     throw new Error("ACPX recovery requested model does not match its admitted profile");
@@ -79,6 +81,7 @@ export async function createAcpxRecoveryBinding(input: {
       qualificationModel: input.profile.qualificationModel,
       reportedModelId: input.profile.reportedModelId,
       permissionPolicy: input.profile.permissionPolicy,
+      ...(input.profile.agent === "hermes" ? { connectionFingerprint: input.connectionFingerprint } : {}),
       ...(input.providerPolicy === undefined ? {} : { executionPolicy: {
         readOnly: input.providerPolicy.readOnly,
         readRoots: input.providerPolicy.readRoots ?? [],

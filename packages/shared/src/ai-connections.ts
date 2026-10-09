@@ -123,11 +123,12 @@ export function isAiConnectionCompatible(
   // A fixed binding contains identity only. The service checks authoritative
   // connection metadata before resolving credentials or running the harness.
   if ("mode" in requirement && requirement.mode !== "responsible_user" && requirement.method === "api_key")
-    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local"].includes(adapterType);
+    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "hermes_runner", "gemini_local", "grok_local"].includes(adapterType);
   const methods = AI_CONNECTION_CAPABILITIES[requirement.provider].methods;
   const candidates = "mode" in requirement && requirement.mode === "responsible_user"
     ? Object.values(methods)
     : requirement.method ? [methods[requirement.method]] : [];
+  if (adapterType === "hermes_runner") return candidates.some(Boolean);
   return (
     candidates.some((method) => method?.adapters.includes(adapterType)) &&
     (requirement.provider !== "openrouter" ||

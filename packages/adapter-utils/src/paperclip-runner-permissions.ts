@@ -242,6 +242,7 @@ export function normalizeLegacyRunnerProvider(
 
 /** Qualification is a release property, never an operator-configurable bypass. */
 export const PAPERCLIP_RUNNER_ACPX_PROFILES = Object.freeze([
+  { value: "hermes", label: "Hermes", qualified: false, credentialEnvironment: [] },
   { value: "grok", label: "Grok Build", qualified: true, credentialEnvironment: ["XAI_API_KEY"] },
   { value: "claude", label: "Claude", qualified: true, credentialEnvironment: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] },
   { value: "cursor", label: "Cursor", qualified: true, credentialEnvironment: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },

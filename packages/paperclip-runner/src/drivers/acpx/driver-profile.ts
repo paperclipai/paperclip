@@ -14,7 +14,7 @@ import {
 
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
 
-const ACPX_AGENTS = ["claude", "codex", "grok", "pi", "cursor", "copilot"] as const;
+const ACPX_AGENTS = ["claude", "codex", "grok", "pi", "cursor", "copilot", "hermes"] as const;
 const ACPX_PERMISSION_MODES = [
   "approve-all",
   "approve-paperclip",
@@ -33,7 +33,7 @@ export function acpxCapabilities(
   agent: QualifiedAcpxAgent,
   negotiated?: NativeTurnControlCapabilities | null,
 ): NativeSessionCapabilities {
-  const controls = agent === "pi" ? negotiated : null;
+  const controls = agent === "pi" || agent === "hermes" ? negotiated : null;
   const profile = ACPX_CAPABILITY_PROFILES[agent];
   return {
     resume: profile.recovery === "session-load",
@@ -103,7 +103,7 @@ export function validateAcpxDriverConfig(
     return invalid(
       "agent",
       "invalid_agent",
-      "ACPX agent must be claude, codex, grok, cursor, copilot, or pi.",
+      "ACPX agent must be claude, codex, grok, cursor, copilot, pi, or hermes.",
     );
   }
   if (ACPX_CAPABILITY_PROFILES[agent].qualification !== "qualified") {

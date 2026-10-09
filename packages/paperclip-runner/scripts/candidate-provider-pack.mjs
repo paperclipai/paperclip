@@ -1,6 +1,9 @@
 import profiles from "../acpx-profiles.json" with { type: "json" };
 import { materializePinnedCursorDistribution } from "./materialize-cursor-distribution.mjs";
-const CANDIDATES = new Set(["cursor", "copilot", "pi"]);
+import { cp, mkdir } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+const CANDIDATES = new Set(["cursor", "copilot", "pi", "hermes"]);
 
 /** Only materialized providers enter the serialized manifest and its digest. */
 export function providerPackManifestFields(providers, candidates) {
@@ -38,6 +41,25 @@ export async function materializeCandidateProviderPack({ provider, outputRoot })
     return { version: result.version,
       profileDigest: profiles.profiles.cursor.commandDigest,
       closureDigest: `sha256:${result.closureSha256}` };
+  }
+  if (provider === "hermes") {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const { resolveQualifiedAcpxProfile } = await import("../dist/drivers/acpx/qualified-profiles.js");
+    const { HERMES_CLOSURES } = await import("../dist/drivers/acpx/hermes-installation.js");
+    const profile = resolveQualifiedAcpxProfile("hermes", "distribution-verification");
+    const platform = `${process.platform}-${process.arch}`;
+    if (!HERMES_CLOSURES[platform]) throw new Error(`Hermes has no reviewed distribution for ${platform}`);
+    await mkdir(dirname(outputRoot), { recursive: true });
+    await cp(resolve(root, "provider-assets/hermes", platform), outputRoot, { recursive: true, errorOnExist: true, force: false });
+    const { verifyNativeAcpxInstallation } = await import("../dist/drivers/acpx/installation-integrity.js");
+    const installation = await verifyNativeAcpxInstallation({ distributionRoot: outputRoot,
+      manifestPath: resolve(outputRoot, "manifest.json"), expectedClosureSha256: HERMES_CLOSURES[platform],
+      executable: "python/bin/python3.12", pythonEntrypoint: "entry.py", fixedArguments: [] });
+    const lease = await installation.openCommand();
+    // Packaging verifies all bytes without executing tools. The actual execution
+    // host must pass its sandbox probe before any credential is staged.
+    await lease.close();
+    return { version: "v2026.9.24", profileDigest: profile.commandDigest, closureDigest: `sha256:${HERMES_CLOSURES[platform]}` };
   }
   throw new Error(`The ${provider} candidate distribution builder is not included in this source revision`);
 }

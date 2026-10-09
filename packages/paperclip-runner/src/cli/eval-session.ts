@@ -63,7 +63,7 @@ export function parseEvalSessionCliArgs(args: string[]): EvalSessionCliOptions {
   }
   const candidateIndex = args.indexOf("--candidate-profile");
   const candidateProfile = candidateIndex < 0 ? undefined : args[candidateIndex + 1];
-  if (candidateProfile !== undefined && candidateProfile !== "pi" && candidateProfile !== "cursor" && candidateProfile !== "copilot") {
+  if (candidateProfile !== undefined && candidateProfile !== "pi" && candidateProfile !== "cursor" && candidateProfile !== "copilot" && candidateProfile !== "hermes") {
     throw new Error("--candidate-profile must be pi, cursor, or copilot");
   }
   const expectedIndex = args.indexOf("--expected-acpx-profile");
@@ -286,7 +286,7 @@ export function boundedEvalSessionUsage(
   }
   const candidate = request.provider === "acpx"
     && request.acpxAgent !== undefined
-    && ["pi", "cursor", "copilot"].includes(request.acpxAgent)
+    && ["pi", "cursor", "copilot", "hermes"].includes(request.acpxAgent)
     && turn.snapshot.config.provider === "acpx"
     && turn.snapshot.config.acpxAgent === request.acpxAgent;
   const measuredTurns = new Set(turn.snapshot.usageLedger?.map((entry) => entry.turnId));

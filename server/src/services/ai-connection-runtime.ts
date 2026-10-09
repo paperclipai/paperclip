@@ -18,6 +18,7 @@ import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
+import { projectHermesConnection, restoreHermesCredential } from "./native-runtime/hermes-connection.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -26,6 +27,7 @@ export function isAiConnectionBusy(error: unknown): error is HttpError {
 
 // Blank values intentionally override inherited credentials in CLI child environments.
 export const AI_AUTH_ENV_KEYS = [
+  "PAPERCLIP_HERMES_AUTH_JSON_SECRET", "PAPERCLIP_HERMES_CONFIG_JSON", "PAPERCLIP_HERMES_CONNECTION_FINGERPRINT",
   "PAPERCLIP_AI_PROVIDER_KEY", "PAPERCLIP_AI_PROVIDER_URL", "PAPERCLIP_CODEX_PROVIDERS",
   "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_USE_VERTEXAI",
   "HERMES_HOME", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
@@ -200,7 +202,7 @@ export function managedAiSessionFingerprintConfig(
   }
   const managed = config.managedAiConnection as Record<string, unknown> | undefined;
   if (managed?.sessionIdentity) {
-    for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY", "GROK_API_KEY", "OPENCODE_AUTH_JSON", "OPENCODE_CONFIG_CONTENT"]) {
+    for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "XAI_API_KEY", "GROK_API_KEY", "GEMINI_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "PAPERCLIP_HERMES_AUTH_JSON_SECRET", "OPENCODE_AUTH_JSON", "OPENCODE_CONFIG_CONTENT"]) {
       if (env[key]) env[key] = "<managed-ai-credential>";
     }
   }
@@ -226,6 +228,7 @@ export async function prepareManagedAiRuntime(
       ? (input.config.env as Record<string, unknown>)
       : {};
   for (const key of [
+    "PAPERCLIP_HERMES_CONFIG_JSON", "PAPERCLIP_HERMES_AUTH_JSON_SECRET", "PAPERCLIP_HERMES_CONNECTION_FINGERPRINT",
     "ANTHROPIC_BASE_URL",
     "OPENAI_BASE_URL",
     "XAI_BASE_URL",
@@ -269,7 +272,8 @@ export async function prepareManagedAiRuntime(
         "The selected default changed. Retry this execution.",
       );
     const credentialRef = selection.grant.credentialSecretRefs.find((ref) => ref.configPath === "ai.credential");
-    const routing = aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing;
+    const metadata = aiConnectionMetadataSchema.parse(selection.connection.config.ai);
+    const routing = metadata.routing;
     const noAuth = routing?.auth === "none";
     if (!noAuth && !credentialRef) throw unprocessable("The selected AI credential is unavailable");
     const readFreshness = async () => {
@@ -348,7 +352,19 @@ export async function prepareManagedAiRuntime(
         security: { auth: { selectedType: "gemini-api-key" } },
       }), { mode: 0o600 });
     }
-    const projected = routing ? managedProviderRouting(routing, harness, value, typeof input.config.model === "string" ? input.config.model : "") : undefined;
+    const hermes = harness === "hermes_runner" ? projectHermesConnection(metadata, typeof input.config.model === "string" ? input.config.model : "", value) : undefined;
+    if (hermes) {
+      // Remove the legacy provider projection; Hermes receives only this account.
+      for (const key of AI_AUTH_ENV_KEYS) if (!(key in managedAiHomeEnvironment(home))) env[key] = "";
+      Object.assign(env, hermes.env);
+      env.PAPERCLIP_HERMES_CONFIG_JSON = JSON.stringify(hermes.config);
+      if (hermes.auth) {
+        const nativeAuth = JSON.stringify(hermes.auth);
+        env.PAPERCLIP_HERMES_AUTH_JSON_SECRET = nativeAuth;
+        await writeFile(path.join(providerHome, "hermes-auth.json"), nativeAuth, { mode: 0o600 });
+      }
+    }
+    const projected = routing && !hermes ? managedProviderRouting(routing, harness, value, typeof input.config.model === "string" ? input.config.model : "") : undefined;
     if (projected) {
       Object.assign(env, projected.env);
       if (projected.hermesConfig) await writeFile(path.join(providerHome, "config.yaml"), projected.hermesConfig, { mode: 0o600 });
@@ -360,11 +376,14 @@ export async function prepareManagedAiRuntime(
       .slice(0, 16);
     const identity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${generation}`;
     const sessionIdentity = `${selection.grant.id}:${input.responsibleUserId ?? "shared"}:${noAuth ? "no-auth" : `${credentialRef!.secretId}:${freshness!.epoch}`}`;
+    const hermesConnectionFingerprint = hermes ? createHash("sha256").update(JSON.stringify({ sessionIdentity, config: hermes.config })).digest("hex") : undefined;
+    if (hermesConnectionFingerprint) env.PAPERCLIP_HERMES_CONNECTION_FINGERPRINT = hermesConnectionFingerprint;
     return {
       sessionIdentity,
       config: {
         ...input.config,
         ...projected?.config,
+        ...(hermesConnectionFingerprint ? { hermesConnectionFingerprint } : {}),
         ...(routing ? { managedAiRouting: routing } : {}),
         env,
         managedAiConnection: { ...selection.attribution, identity, sessionIdentity },
@@ -376,6 +395,11 @@ export async function prepareManagedAiRuntime(
       home,
       cleanup: async () => {
         if (subscriptionFile) {
+            if (hermes?.auth) {
+              if (metadata.provider !== "openai" && metadata.provider !== "xai") throw new Error("Unsupported Hermes subscription refresh");
+              const refreshedNative = await readFile(path.join(providerHome, "hermes-auth.json"), "utf8");
+              await writeFile(authFile, restoreHermesCredential(metadata.provider, value, refreshedNative), { mode: 0o600 });
+            }
           const refreshed = await readFile(authFile, "utf8");
           if (refreshed !== value) {
             // A quota exchange can hold this company lock for 60 seconds.

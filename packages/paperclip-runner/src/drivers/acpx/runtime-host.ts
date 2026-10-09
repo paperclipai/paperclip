@@ -5,8 +5,11 @@ import { bindAcpxAgentFiles } from "./agent-files-binding.js";
 import { assertAcpxProfileEnvironment, assertAcpxProfileWorkspace, classifyAcpxProfileError, verifyAcpxProfileInstallation } from "./profile-installation.js";
 import { createAcpxRuntimeSkillLease } from "./runtime-skill-lease.js";
 import { stageManagedGrokCredential } from "./grok-credentials.js";
+import { stageManagedHermesCredential } from "./hermes-credentials.js";
+import { stageHermesAgentState } from "./hermes-state.js";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
+import { parseNativeUserAttachments, validateNativeUserMessageSize } from "../../contracts/user-attachments.js";
 
 import type {
   AcpElicitationHandler,
@@ -109,6 +112,7 @@ export interface AcpxRuntimeGoalSnapshot {
 
 export interface AcpxRuntimeTurnInput {
   text: string;
+  attachments?: import("../../contracts/user-attachments.js").NativeUserAttachment[];
   requestId: string;
   signal?: AbortSignal;
   onElicitation?: AcpElicitationHandler;
@@ -340,7 +344,8 @@ export class AcpxRuntimeHost {
           requestedModel: options.model,
           permissionMode: options.permissionMode,
           mode: resolveAcpxProviderMode(options.agent, options.mode),
-          ...(["cursor", "copilot", "pi"].includes(options.agent) && options.providerPolicy !== undefined
+          ...(options.agent === "hermes" ? { connectionFingerprint: options.environment?.PAPERCLIP_HERMES_CONNECTION_FINGERPRINT } : {}),
+          ...(["cursor", "copilot", "pi", "hermes"].includes(options.agent) && options.providerPolicy !== undefined
             ? { providerPolicy: options.providerPolicy } : {}),
         }),
       dependencies.retainAdmissionCleanup,
@@ -372,6 +377,7 @@ export class AcpxRuntimeHost {
     let admissionSucceeded = false;
     let command: VerifiedAcpxCommandLease | null = null;
     let credential: AcpxProviderLifetimeLease | null = null;
+    let collectHermesState: (() => Promise<void>) | undefined;
     let toolBridge: RunnerToolBridge | null = null;
     let runtime: AcpxRuntimePort | null = null;
     let pendingRuntimeOwnsCredential = false;
@@ -447,6 +453,15 @@ export class AcpxRuntimeHost {
           reportFailure: (failure) =>
             dependencies.reportRetainedCleanupFailure(failure),
         });
+      } else if (options.agent === "hermes") {
+        credential = await acquireAbortableAdmissionResource({
+          signal: options.signal,
+          acquire: () => stageManagedHermesCredential({ agentHomeDirectory: sandbox.agentHomeDirectory, environment: options.environment, retainRefresh: () => admissionSucceeded,
+            beforeRelease: async () => { if (admissionSucceeded) await collectHermesState?.(); },
+          }),
+          resource: "credential", releaseLate: (lease) => lease.close(),
+          reportFailure: (failure) => dependencies.reportRetainedCleanupFailure(failure),
+        });
       } else if (options.agent === "grok") {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
@@ -479,6 +494,35 @@ export class AcpxRuntimeHost {
         ]) : null;
       if (agentFiles) {
         launchEnvironment = Object.freeze({ ...launchEnvironment, AGENT_HOME: agentFiles.root,
+        });
+      }
+      if (options.agent === "hermes") {
+        const state = await stageHermesAgentState(sandbox.agentHomeDirectory, options.runtimeContext ?? null);
+        collectHermesState = () => state.collect();
+        const skills = await acquireAbortableAdmissionResource({
+          signal: options.signal,
+          acquire: () => createAcpxRuntimeSkillLease(options.runtimeContext ?? null),
+          resource: "skills", releaseLate: value => value.close(),
+          reportFailure: dependencies.reportRetainedCleanupFailure,
+        });
+        const providerLifetime = credential;
+        credential = {
+          lifetimeFenceCandidates: providerLifetime.lifetimeFenceCandidates,
+          lifetimeFenceFds: providerLifetime.lifetimeFenceFds,
+          activateLifetimeOwner: pid => providerLifetime.activateLifetimeOwner(pid),
+          async close() {
+            // The host verifies provider exit before releasing this lease.
+            // A failed state save must not strand the disposable skill copy.
+            const errors: unknown[] = [];
+            for (const release of [() => providerLifetime.close(), () => skills.close()]) {
+              try { await release(); } catch (error) { errors.push(error); }
+            }
+            if (errors.length === 1) throw errors[0];
+            if (errors.length > 1) throw new AggregateError(errors, "Hermes credential and assigned skill cleanup failed");
+          },
+        };
+        launchEnvironment = Object.freeze({ ...sandbox.launchEnvironment,
+          PAPERCLIP_HERMES_ASSIGNED_SKILLS: JSON.stringify(skills.readRoots),
         });
       }
       if (options.agent === "pi") {
@@ -784,9 +828,12 @@ export class AcpxRuntimeHost {
     const text = claudeNativeSkillPrompt(
       boundedTurnText(input.text), this.#claudeSkillNames,
     );
+    const attachments = parseNativeUserAttachments(input.attachments);
+    validateNativeUserMessageSize(text, attachments);
     const turn = this.#runtime.startTurn({
       text,
       requestId,
+      ...(attachments.length ? { attachments } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
       ...(input.onElicitation ? { onElicitation: input.onElicitation } : {}),
       ...(input.onPermissionRequest ? { onPermissionRequest: input.onPermissionRequest } : {}),

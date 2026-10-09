@@ -1,12 +1,13 @@
 import { createCursorProfileExtensionAdapter, CURSOR_CLIENT_CAPABILITIES } from "./cursor-extensions.js";
+import { createHash } from "node:crypto";
 import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
-import { parsePaperclipQuestionSet, type PaperclipQuestionSet } from "../../contracts/question-set.js";
+import { parsePaperclipQuestionSet, parsePaperclipQuestionResponse, type PaperclipQuestionSet } from "../../contracts/question-set.js";
 import { isCanonicalProviderEventType, type CanonicalProviderEvent } from "../../provider-events.js";
 import { validatePrpEvent } from "../../protocol/replay-contract.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 
 export const ACPX_CANONICAL_INPUT_METHODS = [
-  "elicitation/create", "cursor/ask_question", "cursor/create_plan",
+  "elicitation/create", "cursor/ask_question", "cursor/create_plan", "_hermes/ask_questions",
 ] as const;
 export function isAcpxCanonicalInputMethod(method: string): boolean {
   return (ACPX_CANONICAL_INPUT_METHODS as readonly string[]).includes(method);
@@ -32,17 +33,95 @@ export interface AcpxProfileExtensionContext {
   turnId: string;
 }
 
+/** ACPX 0.13.1 bounds the complete encoded extension response at 256 KiB.
+ * Reserve its fixed fields and every selectable ID, then budget text for the
+ * worst JSON escape (six bytes per JavaScript string code unit). The persisted
+ * form and response validator must share this limit before a human submits.
+ */
+function boundedHermesQuestionSet(value: unknown): PaperclipQuestionSet {
+  const input = parsePaperclipQuestionSet(value);
+  const largestEmptyAnswers = Object.fromEntries(input.questions.map(question => [question.id, {
+    selectedOptionIds: (question.options ?? []).map(option => option.id),
+    ...(question.answerMode === "text" ? { text: "" }
+      : question.customAnswer?.enabled ? { customText: "" } : {}),
+  }]));
+  const overhead = Buffer.byteLength(JSON.stringify({ outcome: "answered", answers: largestEmptyAnswers }));
+  const maxLength = Math.min(65_536, Math.floor((256 * 1024 - overhead) / (6 * input.questions.length)));
+  if (maxLength < 1) throw new Error("Hermes question answers exceed the encoded response limit");
+  return parsePaperclipQuestionSet({ ...input, questions: input.questions.map(question => ({
+    ...question, textValidation: { ...question.textValidation,
+      maxLength: Math.min(question.textValidation?.maxLength ?? maxLength, maxLength),
+    },
+  })) });
+}
+
 /** Provider branches install their closed, pinned adapters here after qualification research. */
 export function createAcpxProfileExtensionAdapter(
   agent: QualifiedAcpxAgent,
   context: AcpxProfileExtensionContext,
 ): AcpxProfileExtensionAdapter | null {
   if (agent === "cursor") return createCursorProfileExtensionAdapter(context);
+  if (agent === "hermes") return {
+    async request(method, params) {
+      if (method !== "_hermes/ask_questions" || params.version !== 1 || params.sessionId !== context.sessionId) throw new Error("Unsupported Hermes question extension");
+      const questionSet = boundedHermesQuestionSet(params.input);
+      return { input: {
+        method, questionSet,
+        resolve(resolution) {
+          if (resolution.action !== "submit") return { outcome: "cancelled" };
+          if (!("response" in resolution)) throw new Error("Hermes requires a canonical question response");
+          const response = parsePaperclipQuestionResponse(questionSet, resolution.response);
+          return { outcome: "answered", answers: response.answers };
+        },
+        cancel: () => ({ outcome: "cancelled" }),
+      } };
+    },
+    async notification(method, params) {
+      if (method === "_hermes/delegation") {
+        if (params.version !== 1 || params.sessionId !== context.sessionId
+          || !["subagent.start", "subagent.progress", "subagent.tool", "subagent.complete"].includes(String(params.event))
+          || typeof params.childId !== "string" || !params.childId || params.childId.length > 160
+          || typeof params.delegationId !== "string" || !params.delegationId || params.delegationId.length > 160
+          || typeof params.model !== "string" || params.model.length > 200
+          || typeof params.summary !== "string" || params.summary.length > 4000
+          || typeof params.status !== "string" || params.status.length > 100) throw new Error("Invalid Hermes delegation activity");
+        const id = (value: string) => `hermes:${createHash("sha256").update(`${context.sessionId}:${context.turnId}:${value}`).digest("hex")}`;
+        const delegationId = id(params.delegationId);
+        const done = params.event === "subagent.complete";
+        const status = done ? ["completed", "success", "done"].includes(params.status) ? "completed"
+          : ["cancelled", "interrupted"].includes(params.status) ? "interrupted" : "failed" : "running";
+        return [{ eventType: done ? "delegation.completed" : params.event === "subagent.start" ? "delegation.started" : "delegation.updated",
+          itemId: delegationId, payload: { schema: "paperclip.delegation.v1", delegationId, action: "spawn", status,
+            children: [{ childId: id(params.childId), role: null, model: params.model || null, status,
+              summary: params.summary || null, activitySummary: null }] } }];
+      }
+      if (method === "_hermes/usage") {
+        if (params.version !== 1 || params.sessionId !== context.sessionId
+          || !["reported", "unavailable"].includes(String(params.tokens))
+          || !["estimated", "unavailable"].includes(String(params.cost))
+          || (params.cost === "estimated" && (typeof params.estimatedUsd !== "number" || !Number.isFinite(params.estimatedUsd) || params.estimatedUsd < 0))) {
+          throw new Error("Invalid Hermes usage provenance");
+        }
+        const estimated = params.cost === "estimated";
+        const itemId = `${context.turnId}:hermes-usage`;
+        return [{ eventType: "provider.notice.recorded", itemId, payload: {
+          schema: "paperclip.provider.notice.v1", noticeId: itemId, severity: "info", category: "hermes_usage_provenance", scope: "turn",
+          recoverable: true, userActionable: false,
+          summary: estimated ? `Hermes estimates this turn at $${(params.estimatedUsd as number).toFixed(6)}. Billing cost is unverified.`
+            : "Hermes billing cost is unavailable.",
+          details: [{ name: "Token usage", value: String(params.tokens) }, { name: "Cost source", value: estimated ? "Hermes model pricing estimate" : "Unavailable" },
+            ...(estimated ? [{ name: "Estimated USD", value: String(params.estimatedUsd) }] : [])],
+        } }];
+      }
+      if (method !== "_hermes/turn_started") throw new Error("Unsupported Hermes notification");
+      return [];
+    },
+  };
   return null;
 }
 export function acpxProfileClientCapabilities(agent: QualifiedAcpxAgent): Record<string, unknown> {
   if (agent === "cursor") return structuredClone(CURSOR_CLIENT_CAPABILITIES);
-  return {};
+  return agent === "hermes" ? { _meta: { paperclipHermes: { version: 1 } } } : {};
 }
 
 /** Reject an oversized approval document; never silently approve a truncated revision. */

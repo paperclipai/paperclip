@@ -597,6 +597,7 @@ credentials belong to the connection; the model belongs to the agent.
 | Claude legacy and Claude New Runner (ACPX) | OpenRouter; custom/local Anthropic Messages; Bedrock API key |
 | OpenCode legacy and New Runner | OpenRouter; custom/local Chat Completions |
 | Hermes local | OpenRouter; custom/local Chat Completions |
+| Hermes New Runner (pending qualification) | Native API-key providers; Claude/Codex/Grok managed subscriptions; OpenRouter; custom/local Chat Completions, Responses and Messages; managed Bedrock region/API key |
 | Gemini CLI, Grok | Their native API connections; custom routes are not advertised |
 
 Migration `0306` adds Google to both account-default provider constraints. Local
@@ -608,6 +609,13 @@ and legacy `acpx_local` are excluded: external agents retain their own model
 configuration, and `acpx_local` is retired. Cursor/Pi/Copilot custom routing,
 Vertex, ambient AWS identity, arbitrary authentication headers, and automatic
 catalog discovery for custom gateways are not part of this implementation.
+
+The new `hermes_runner` projection is distinct from the legacy Hermes adapter.
+It retains the existing Connections account ownership, selection, pool affinity,
+refresh merge and revocation rules. Native input v6 carries only a connection
+fingerprint; secrets travel through the ephemeral credential channel. Implemented
+projections remain subject to per-method live qualification. See the
+[Hermes runner contract](../../packages/paperclip-runner/docs/hermes.md).
 
 OpenRouter connections without an explicit model list automatically load its public
 [model catalog](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { NativeUserAttachment } from "../../vendor/paperclip-runner/index.js";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import type { Stats } from "node:fs";
@@ -89,6 +90,7 @@ export interface NativeRunnerStagedAttachment {
 
 export interface NativeRunnerAttachmentStage {
   readonly attachments: readonly NativeRunnerStagedAttachment[];
+  readonly promptAttachments?: NativeUserAttachment[];
   cleanup(): Promise<void>;
 }
 
@@ -812,6 +814,7 @@ export async function stageNativeRunnerWakeAttachments(input: {
     | "executionTargetKind"
   >;
   readonly storage?: StorageService;
+  readonly nativePromptContent?: boolean;
 }): Promise<NativeRunnerAttachmentStage> {
   const [run] = await input.db
     .select({
@@ -962,6 +965,27 @@ export async function stageNativeRunnerWakeAttachments(input: {
       )
       .map((row) => [row.id, row] as const),
   );
+  if (input.nativePromptContent) {
+    try {
+      const promptAttachments: NativeUserAttachment[] = [];
+      let total = 0;
+      if (selections.length > 8) throw new Error("Hermes supports at most eight prompt attachments");
+      for (const selection of selections) {
+        const row = rowById.get(selection.id);
+        if (!row) throw new Error("Hermes attachment is unavailable or no longer authorized for this task");
+        if (!["image/png", "image/jpeg", "image/webp", "image/gif", "text/plain", "text/markdown"].includes(row.contentType)) throw new Error(`Hermes does not support ${row.contentType} as prompt content; use an image or text document`);
+        total += row.byteSize;
+        if (row.byteSize > 2 * 1024 * 1024 || total > 4 * 1024 * 1024) throw new Error("Hermes prompt attachments are limited to 2 MiB per file and 4 MiB per turn");
+        const body = await readBoundedStorageObject({ storage: input.storage ?? getStorageService(), companyId: input.binding.companyId,
+          objectKey: row.objectKey, expectedByteSize: row.byteSize, expectedSha256: row.sha256 });
+        const base = { schema: "paperclip.user_attachment.v1" as const, name: row.filename?.trim() || "attachment" };
+        promptAttachments.push(row.contentType.startsWith("image/")
+          ? { ...base, kind: "image", mediaType: row.contentType as "image/png", data: body.toString("base64") }
+          : { ...base, kind: "text", mediaType: row.contentType as "text/plain", text: new TextDecoder("utf-8", { fatal: true }).decode(body) });
+      }
+      return { attachments: [], promptAttachments, cleanup: async () => { releaseActiveStage(); } };
+    } catch (error) { releaseActiveStage(); throw error; }
+  }
   if (input.binding.executionTargetKind === "remote") {
     return {
       attachments: selections.map((selection) => {

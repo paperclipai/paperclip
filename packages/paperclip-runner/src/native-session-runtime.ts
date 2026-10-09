@@ -2559,7 +2559,9 @@ export async function executeNativeSession(
             modelEnvelope.constraints = [...options.backend.preparedTaskConstraints];
           }
           await session.startTurn({
-            message: { role: "user", text: JSON.stringify(modelEnvelope) },
+            message: { role: "user", text: JSON.stringify(modelEnvelope),
+              ...("attachments" in input && input.attachments?.length ? { attachments: input.attachments } : {}),
+            },
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
               ? { continuation: true as const } : {}),
             requestedCollaborationMode:

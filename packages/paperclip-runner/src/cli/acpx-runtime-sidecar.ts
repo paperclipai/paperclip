@@ -18,6 +18,7 @@ import type {
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "../drivers/acpx/profile-extensions.js";
 import type { PaperclipQuestionSet } from "../contracts/question-set.js";
 import { createAcpxToolEventNormalizer, createGrokMessageNormalizer } from "../provider-events.js";
+import { parseNativeUserAttachments, validateNativeUserMessageSize } from "../contracts/user-attachments.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import {
   PRP_BLOCK_TOOL_NAME,
@@ -358,6 +359,9 @@ async function dispatch(
     if (!runId) throw new Error("attach a run before starting an ACPX turn");
     if (turnId) throw new Error("ACPX sidecar already has an active turn");
     const currentTurnId = boundedIdentity(request.params.turnId, "turnId");
+    const message = boundedText(request.params.message, "message", 1024 * 1024);
+    const attachments = parseNativeUserAttachments(request.params.attachments);
+    validateNativeUserMessageSize(message, attachments);
     const activeAgent = openParams!.agent;
     turnId = currentTurnId;
     turnControls.begin(currentTurnId);
@@ -384,7 +388,8 @@ async function dispatch(
       usageBefore = await readSidecarHostStatusWithin(activeHost);
       runtimeTurn = activeHost.startTurn({
         requestId: `${runId}:${currentTurnId}`,
-        text: boundedText(request.params.message, "message", 1024 * 1024),
+        text: message,
+        attachments,
         onExtensionRequest: extensions.onExtensionRequest,
         onExtensionNotification: extensions.onExtensionNotification,
         onElicitation: (providerRequest, context) =>
@@ -792,7 +797,7 @@ async function waitForPermission(
   }
   const normalized = normalizeAcpxPermission(request, {
     provider: agent, workingDirectory: openParams?.workingDirectory,
-    ...(["pi", "copilot"].includes(agent) ? { allowAlwaysScope: "session" } : {}),
+    ...(["pi", "copilot", "hermes"].includes(agent) ? { allowAlwaysScope: "session" } : {}),
   });
   const responseDelivery = requireAcpxResponseDelivery(context);
   const requestId = stableRequestId(activeTurnId, ++requestSequence, normalized.toolCallId);
@@ -1385,8 +1390,8 @@ function requireHost(
 }
 
 function requireQualifiedAgent(value: unknown): QualifiedAcpxAgent {
-  if (value !== "grok" && value !== "codex" && value !== "claude" && value !== "pi" && value !== "cursor" && value !== "copilot") {
-    throw new Error("ACPX agent must be claude, codex, grok, cursor, copilot, or pi");
+  if (value !== "grok" && value !== "codex" && value !== "claude" && value !== "pi" && value !== "cursor" && value !== "copilot" && value !== "hermes") {
+    throw new Error("ACPX agent must be claude, codex, grok, cursor, copilot, pi, or hermes");
   }
   return value;
 }

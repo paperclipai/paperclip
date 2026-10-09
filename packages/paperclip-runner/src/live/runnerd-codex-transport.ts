@@ -7,6 +7,7 @@ import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-co
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { parseNativeUserAttachments, validateNativeUserMessageSize } from "../contracts/user-attachments.js";
 import {
   appendFileSync,
   existsSync,
@@ -1157,7 +1158,7 @@ export interface CapabilityRunnerdCodexTransportOptions {
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
   /** Explicit evaluation-only candidate selection, never derived from persisted session input. */
-  acpxCandidateProfile?: "pi" | "cursor" | "copilot";
+  acpxCandidateProfile?: "pi" | "cursor" | "copilot" | "hermes";
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxMode?: string;
   acpxPermissionModePinned?: boolean;
@@ -1886,6 +1887,11 @@ export function rehydrateRunnerdItemNotification(
   activeTurnId: string,
 ): Record<string, unknown> {
   const rawItem = record(rawParams.item);
+  if (rawParams.kind === "steering_acknowledgement" && Object.keys(rawItem).length === 0) {
+    // Preserve runnerd's flat receipt so the driver recognizes the transport
+    // echo. The acknowledged request emits the user-visible bound item once.
+    return { ...rawParams, threadId: openedThreadId, turnId: activeTurnId };
+  }
   const channel = rawItem.channel ?? rawParams.channel;
   const providerPhase = rawItem.phase ?? rawParams.providerPhase;
   const phase =
@@ -3249,6 +3255,8 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
       ...(credentialBinding === undefined ? {} : { [ACPX_CREDENTIAL_BINDING_ENV]: credentialBinding }),
       ...(input.options.acpxAgent === "grok" && input.options.environment?.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET
         ? { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: input.options.environment.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET } : {}),
+      ...(input.options.acpxAgent === "hermes" && input.options.environment?.PAPERCLIP_HERMES_AUTH_JSON_SECRET
+        ? { PAPERCLIP_HERMES_AUTH_JSON_SECRET: input.options.environment.PAPERCLIP_HERMES_AUTH_JSON_SECRET } : {}),
       ...commonIdentity,
       // The verified sidecar bundle cannot use import.meta.url while Node
       // executes it through /proc/self/fd. Anchor its closed provider package
@@ -3423,7 +3431,7 @@ export function unwrapToolResponse(response: Record<string, unknown>, preserveEn
   };
 }
 
-/** Only a live, admitted Pi ACP session can enable native turn controls. */
+/** Only live, admitted profiles can enable their negotiated native controls. */
 export function parseAcpxTurnControlCapabilities(
   value: unknown,
   agent: unknown,
@@ -3438,7 +3446,8 @@ export function parseAcpxTurnControlCapabilities(
     || typeof controls.steering !== "boolean" || typeof controls.queuedFollowUp !== "boolean") {
     throw new Error("ACPX turn control capabilities are malformed");
   }
-  if (agent !== "pi" && (controls.steering || controls.queuedFollowUp)) {
+  if ((agent !== "pi" && agent !== "hermes" && (controls.steering || controls.queuedFollowUp))
+    || (agent === "hermes" && controls.queuedFollowUp)) {
     throw new Error("ACPX profile cannot advertise these turn controls");
   }
   return { steering: controls.steering, queuedFollowUp: controls.queuedFollowUp };
@@ -3533,7 +3542,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("native_adopted_runner_state_directory_required");
     }
     if (options.provider === "acpx" && options.acpxAgent !== undefined
-      && ["pi", "copilot"].includes(options.acpxAgent)
+      && ["pi", "copilot", "hermes"].includes(options.acpxAgent)
       && options.acpxCandidateProfile !== options.acpxAgent) {
       throw new Error("The candidate ACPX profile requires explicit evaluation opt-in");
     }
@@ -3660,7 +3669,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         "turn.steer",
         {
           text,
-          turnId: this.#durableTurnId,
+          // ACPX owns the requested provider turn, which can differ from the
+          // durable PRP turn that scopes control-plane and semantic events.
+          turnId: this.options.provider === "acpx" ? expectedTurnId : this.#durableTurnId,
           providerTurnId: expectedTurnId,
           ...(params.mode === "follow_up" ? { mode: "follow_up" } : {}),
           ...(correlationId ? { correlationId } : {}),
@@ -5742,11 +5753,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
     }
     const commandDeadline = Date.now() + turnStartTimeoutMs;
+    const attachments = parseNativeUserAttachments(params.attachments);
+    if (attachments.length && (this.options.provider !== "acpx" || this.options.acpxAgent !== "hermes")) throw new Error("Native prompt attachments are not supported by this runner profile");
     const input = Array.isArray(params.input) ? params.input.map(record) : [];
     const message = input
       .filter((item) => item.type !== "skill")
       .map((item) => (typeof item.text === "string" ? item.text : ""))
       .join("\n");
+    validateNativeUserMessageSize(message, attachments);
     const skills = resolveRunnerdCodexSkillInputs(
       input.filter((item) => item.type === "skill"),
       this.options.runtimeContext ?? null,
@@ -5780,6 +5794,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         "turn.start",
         {
           text: message,
+          ...(attachments.length ? { attachments } : {}),
           ...(skills.length ? { skills } : {}),
           turnId: pendingTurnId,
         },
@@ -6121,7 +6136,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (event.eventType === "session.capabilities.updated" && this.options.provider === "acpx") {
         const capabilities = record(record(event.envelope.payload).payload);
         if (capabilities.turnControls !== undefined) {
-          this.#turnControls = parseAcpxTurnControlCapabilities(capabilities.turnControls, this.#evidence.acpxAgent);
+          // Admission may publish capabilities before session.started. Bind
+          // them to the controller-selected profile, never a nullable receipt.
+          this.#turnControls = parseAcpxTurnControlCapabilities(capabilities.turnControls, this.options.acpxAgent ?? "codex");
         }
       }
       if (event.eventType === "harness.diagnostic") {
@@ -6444,7 +6461,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       descriptor.agent === "claude" ||
       descriptor.agent === "codex" ||
       descriptor.agent === "cursor" ||
-      descriptor.agent === "copilot"
+      descriptor.agent === "copilot" ||
+      descriptor.agent === "hermes"
     )
       this.#evidence.acpxAgent = descriptor.agent;
     if (typeof descriptor.agentServerVersion === "string")
@@ -6895,6 +6913,7 @@ function openedThreadModelProvider(
   if (provider === "claude_managed") return "anthropic";
   if (provider === "aws_agentcore") return "aws";
   if (provider === "acpx") {
+    if (acpxAgent === "hermes") return "unknown"; // Billing is attributed by the managed connection at the server boundary.
     if (acpxAgent === "pi") return "openrouter";
     if (acpxAgent === "grok") return "xai";
     if (acpxAgent === "claude") return "anthropic";

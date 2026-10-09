@@ -14,7 +14,7 @@ export const aiConnectionPoolMemberSchema = z.object({
   binding: aiConnectionBindingSchema.refine((v) => v.mode !== "responsible_user", "Select an explicit account grant"),
   profile: z.object({
     provider: z.enum(["codex", "acpx", "opencode"]),
-    acpxAgent: z.enum(["claude", "grok"]).optional(),
+    acpxAgent: z.enum(["claude", "grok", "hermes"]).optional(),
     model: z.string().trim().min(1).max(256),
     effort: z.string().trim().min(1).max(32).optional(),
   }).strict(),

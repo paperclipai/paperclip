@@ -616,6 +616,9 @@ Use the immutable digest printed by the `Publish verified Daytona image` job,
 or publish the current source locally:
 
 ```bash
+# Resolve the build lock without committing the bot-owned root lockfile.
+pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+lock_sha="$(shasum -a 256 pnpm-lock.yaml | cut -d ' ' -f 1)"
 content_id="$(pnpm --silent test:e2e:runner:image-id)"
 source_revision="$(git rev-parse HEAD)"
 image="ghcr.io/paperclipai/paperclip-daytona-runner:e2e-content-${content_id}"
@@ -624,6 +627,7 @@ if ! docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
     --platform linux/amd64 \
     --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${content_id}" \
     --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${source_revision}" \
+    --build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${lock_sha}" \
     --file docker/daytona-runner/Dockerfile \
     --tag "$image" \
     --push \

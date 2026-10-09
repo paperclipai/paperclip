@@ -12,7 +12,7 @@ import {
 
 export const ACPX_SIDECAR_PROTOCOL_VERSION =
   GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION;
-export const ACPX_SIDECAR_MAX_FRAME_BYTES = 1024 * 1024;
+export const ACPX_SIDECAR_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
 export interface AcpxSidecarRequest {
   protocolVersion: typeof ACPX_SIDECAR_PROTOCOL_VERSION;

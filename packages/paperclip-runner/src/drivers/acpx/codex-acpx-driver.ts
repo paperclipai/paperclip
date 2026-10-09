@@ -40,6 +40,7 @@ import {
 import { PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2 } from "../../contracts/question-set.js";
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
 import type { NativeUserMessage } from "../../contracts/types.js";
+import { parseNativeUserAttachments, validateNativeUserMessageSize } from "../../contracts/user-attachments.js";
 import type {
   PrpEvent,
   PrpStructuredRunResult,
@@ -279,7 +280,7 @@ export class CodexAcpxDriver implements HarnessDriver {
     options: CodexAcpxDriverOptions,
     dependencies: CodexAcpxDriverDependencies = {},
   ) {
-    if (["pi", "cursor", "copilot"].includes(options.agent ?? "codex") && typeof options.providerPolicy?.readOnly !== "boolean") {
+    if (["pi", "cursor", "copilot", "hermes"].includes(options.agent ?? "codex") && typeof options.providerPolicy?.readOnly !== "boolean") {
       throw new Error("ACP candidate requires an explicit provider read-only policy");
     }
     this.#options = {
@@ -861,6 +862,7 @@ class CodexAcpxSession implements HarnessSession {
     message: NativeUserMessage;
   }): Promise<{ turnId: string }> {
     this.#assertOpen();
+    validateNativeUserMessageSize(input.message.text, parseNativeUserAttachments(input.message.attachments));
     if (this.#activeTurnId) {
       throw new Error("Codex ACPX session already has an active turn");
     }
@@ -917,6 +919,7 @@ class CodexAcpxSession implements HarnessSession {
       if (this.#activeTurnId !== turnId) throw new HarnessStaleTurnError(turnId);
       turn = this.#host.startTurn({
         text: input.message.text,
+        attachments: input.message.attachments,
         requestId: `${safeId(this.#input.runId, "run")}:${turnId}`,
         onExtensionRequest: extensions.onExtensionRequest,
         onExtensionNotification: extensions.onExtensionNotification,
@@ -1480,7 +1483,7 @@ class CodexAcpxSession implements HarnessSession {
           this.#emit(
             "item.completed",
             { kind: "agentMessage", channel: "final", text: finalText },
-            { turnId, itemId: `${turnId}:assistant-message` },
+            { turnId, itemId: acpxMessageItemId(this.#assistantMessageId, turnId, "assistant-message") },
           );
         }
         this.#publishTerminal(
@@ -1665,9 +1668,7 @@ class CodexAcpxSession implements HarnessSession {
         },
         {
           turnId,
-          itemId: isReasoning
-            ? `${turnId}:reasoning`
-            : `${turnId}:assistant-message`,
+          itemId: acpxMessageItemId(event.messageId, turnId, isReasoning ? "reasoning" : "assistant-message"),
         },
       );
     }
@@ -2529,4 +2530,11 @@ async function readUsageStatus(host: CodexAcpxHost): Promise<unknown> {
     ]);
   } catch { return undefined; }
   finally { if (timer) clearTimeout(timer); }
+}
+
+function acpxMessageItemId(messageId: unknown, turnId: string, channel: string): string {
+  if (typeof messageId !== "string" || !messageId) return `${turnId}:${channel}`;
+  // Keep the provider boundary, with opaque IDs bounded like the Rust mapper.
+  if (/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(messageId)) return messageId;
+  return `acpx-${channel}-${createHash("sha256").update(`paperclip.acpx.opaque-item.v1\0${channel}\0${messageId}`).digest("hex")}`;
 }

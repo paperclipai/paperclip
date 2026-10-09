@@ -200,6 +200,9 @@ describe("runner E2E Daytona image contract", () => {
       "packages/paperclip-eval-kernel/src",
       "packages/paperclip-runner/package.json",
       "packages/paperclip-runner/scripts/candidate-provider-pack.mjs",
+      "packages/paperclip-runner/scripts/provision-hermes.mjs",
+      "packages/paperclip-runner/scripts/materialize-hermes.py",
+      "packages/paperclip-runner/acpx-profiles.json",
       "packages/paperclip-runner/scripts/materialize-cursor-distribution.mjs",
       "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
       "packages/paperclip-runner/cursor-distributions.json",
@@ -283,6 +286,9 @@ describe("runner E2E Daytona image contract", () => {
       const baseline = await computeDaytonaImageContentId(options);
       const candidate = await computeDaytonaImageContentId({ ...options, candidateProviders: ["pi"] });
       expect(candidate).not.toBe(baseline);
+      const hermes = await computeDaytonaImageContentId({ ...options, candidateProviders: ["hermes"] });
+      expect(hermes).not.toBe(baseline);
+      expect(hermes).not.toBe(candidate);
       expect(await computeDaytonaImageContentId({ ...options, candidateProviders: ["copilot", "pi"] }))
         .toBe(await computeDaytonaImageContentId({ ...options, candidateProviders: ["pi", "copilot"] }));
       await expect(computeDaytonaImageContentId({ ...options, candidateProviders: ["pi", "pi"] }))

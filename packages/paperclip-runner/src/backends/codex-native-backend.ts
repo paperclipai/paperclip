@@ -114,7 +114,7 @@ function createTransportBackedNativeSessionBackend(
   }
   const driverIdentity = transportDriverIdentity(input);
   const isCodex = input.provider.kind === "codex";
-  const preparedContext = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
+  const preparedContext = (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === "paperclip.native-execution-input.v6" || input.schema === "paperclip.native-execution-input.v7");
   const supportsCollaborativePlanning =
     isCodex ||
     input.provider.kind === "opencode" ||
@@ -203,7 +203,7 @@ function createTransportBackedNativeSessionBackend(
 export function describeRunnerdNativeSessionBackend(
   input: NativeExecutionInput,
 ): Promise<NativeSessionBackendDescriptor> {
-  if (input.schema === "paperclip.native-execution-input.v6") {
+  if (input.provider.kind === "openai_dot") {
     // Dot uses its dedicated Rust bridge, rather than the JSON-RPC facade.
     const descriptor = describeRunnerdDotDriver();
     return Promise.resolve({

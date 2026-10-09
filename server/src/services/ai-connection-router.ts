@@ -28,12 +28,13 @@ export function poolMemberRuntimeConfig(member: AiConnectionPoolMember, adapterT
   const notes: string[] = [];
   const provider = member.binding.provider;
   const profile = member.profile;
-  const expected = provider === "openai" ? profile.provider === "codex"
+  const hermes = profile.provider === "acpx" && profile.acpxAgent === "hermes";
+  const expected = hermes || (provider === "openai" ? profile.provider === "codex"
     : provider === "anthropic" ? profile.provider === "acpx" && profile.acpxAgent === "claude"
     : provider === "xai" ? profile.provider === "acpx" && profile.acpxAgent === "grok"
-    : profile.provider === "opencode";
+    : profile.provider === "opencode");
   if (!expected) throw unprocessable("Pool member harness does not match its account");
-  const supportsModel = (value: string) => provider === "openai" ? isCodexLocalKnownModel(value)
+  const supportsModel = (value: string) => hermes ? Boolean(value.trim()) : provider === "openai" ? isCodexLocalKnownModel(value)
     : provider === "anthropic" ? claudeModels.some((m) => m.id === value)
     : provider === "xai" ? grokModels.some((m) => m.id === value) : value.startsWith("openrouter/");
   const config: Record<string, unknown> = { provider: profile.provider, ...(profile.acpxAgent ? { acpxAgent: profile.acpxAgent } : {}), model: profile.model };

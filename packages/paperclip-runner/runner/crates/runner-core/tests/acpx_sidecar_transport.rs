@@ -102,7 +102,7 @@ fn rejects_an_oversized_stdout_frame() {
     let error = transport
         .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
         .expect_err("oversized frame must fail");
-    assert!(error.to_string().contains("exceeded 1048576 bytes"));
+    assert!(error.to_string().contains("exceeded 16777216 bytes"));
 }
 
 #[test]

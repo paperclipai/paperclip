@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import { acpxAttachmentInput } from "../../contracts/user-attachments.js";
 
 import {
   createAcpRuntime,
@@ -85,6 +86,9 @@ interface AcpxRuntimeGoalState {
 }
 
 interface AcpxRuntimeExtensionTurn {
+  nativeTurnToken?: string;
+  nativeTurnReady: Promise<void>;
+  acknowledgeNativeTurn(): void;
   requestId: string;
   sessionId: string;
   controller: AbortController;
@@ -95,6 +99,7 @@ interface AcpxRuntimeExtensionTurn {
 }
 
 interface AcpxRuntimeExtensionBoundary {
+  agent: string;
   active: AcpxRuntimeExtensionTurn | null;
   sessionIds: Set<string>;
   steering: AcpxRuntimeSteeringCapability | null;
@@ -274,7 +279,7 @@ export async function openQualifiedAcpxRuntime(
   const extensionRequests = new Set(extensionProfile.extensionRequests);
   const extensionNotifications = new Set(extensionProfile.extensionNotifications);
   const extensionBoundary: AcpxRuntimeExtensionBoundary = {
-    active: null, sessionIds: new Set(), steering: null,
+    agent: options.profile.agent, active: null, sessionIds: new Set(), steering: null,
   };
   const ownsExtensionTurn = (active: AcpxRuntimeExtensionTurn, params: Record<string, unknown>): boolean =>
     extensionBoundary.active === active && !active.signal.aborted
@@ -326,12 +331,15 @@ export async function openQualifiedAcpxRuntime(
       : options.permissionMode,
     elicitationModes: ["form"],
     ...(options.clientCapabilities === undefined ? {} : { clientCapabilities: structuredClone(options.clientCapabilities) }),
-    extensionMethods: [...new Set([...extensionRequests, ...extensionNotifications])],
+    extensionMethods: [...new Set([...extensionRequests, ...extensionNotifications,
+      ...(options.profile.agent === "hermes" ? ["_hermes/steer"] : options.profile.agent === "pi" ? ["pi/steer", "pi/follow_up"] : []),
+    ])],
     onExtensionRequest: async (method, params, context) => {
       const active = extensionBoundary.active;
       if (!extensionRequests.has(method) || !active?.onRequest || !ownsExtensionTurn(active, params) || context.signal.aborted) {
         throw new Error("ACPX extension request does not own an admitted active turn");
       }
+      if (options.profile.agent === "hermes" && (params.version !== 1 || !active.nativeTurnToken || params.turnToken !== active.nativeTurnToken)) throw new Error("Hermes question belongs to a stale turn");
       const signal = AbortSignal.any([active.signal, context.signal]);
       // Cursor's native extensions omit sessionId. Only after admission may
       // that omission inherit this exact prompt's ACP wire session identity.
@@ -343,7 +351,14 @@ export async function openQualifiedAcpxRuntime(
     },
     onExtensionNotification: (method, params) => {
       const active = extensionBoundary.active;
+      if (options.profile.agent === "hermes" && method === "_hermes/turn_started") {
+        if (!active || !ownsExtensionTurn(active, params) || params.version !== 1 || typeof params.turnToken !== "string" || !/^[0-9a-f-]{36}$/.test(params.turnToken) || active.nativeTurnToken) throw new Error("Invalid Hermes turn binding");
+        active.nativeTurnToken = params.turnToken;
+      active.acknowledgeNativeTurn();
+        return;
+      }
       if (!extensionNotifications.has(method) || !active?.onNotification || !ownsExtensionTurn(active, params)) return;
+      if (options.profile.agent === "hermes" && (params.version !== 1 || !active.nativeTurnToken || params.turnToken !== active.nativeTurnToken)) throw new Error("Hermes activity belongs to a stale turn");
       active.onNotification(method, params.sessionId === undefined ? { ...params, sessionId: active.sessionId } : params);
     },
     nonInteractivePermissions: "fail",
@@ -413,7 +428,10 @@ export async function openQualifiedAcpxRuntime(
       // Only the runner-owned Pi wrapper has an admitted steering contract.
       // Never infer it from generic ACP prompt support or native-only features.
       const pi = objectRecord(objectRecord(objectRecord(objectRecord(result).agentCapabilities)._meta).paperclipPi);
-      extensionBoundary.steering = options.profile.agent === "pi" && pi.version === 1
+      const hermes = objectRecord(objectRecord(objectRecord(objectRecord(result).agentCapabilities)._meta).paperclipHermes);
+      extensionBoundary.steering = options.profile.agent === "hermes" && hermes.version === 1
+        ? { steering: hermes.steering === true, queuedFollowUp: false }
+        : options.profile.agent === "pi" && pi.version === 1
         ? { steering: pi.steering === true, queuedFollowUp: pi.queuedFollowUp === true }
         : null;
     },
@@ -1016,9 +1034,9 @@ function runtimePort(
 ): AcpxRuntimePort {
   extensionBoundary.sessionIds = new Set([identity.backendSessionId]);
   let extensionControls: Promise<void> = Promise.resolve();
-  const controlActiveTurn = (method: "pi/steer" | "pi/follow_up", text: string, requestId: string): Promise<void> => {
+  const controlActiveTurn = (method: "pi/steer" | "pi/follow_up" | "_hermes/steer", text: string, requestId: string): Promise<void> => {
     const active = extensionBoundary.active;
-    const supported = method === "pi/steer"
+    const supported = method.endsWith("/steer")
       ? extensionBoundary.steering?.steering : extensionBoundary.steering?.queuedFollowUp;
     if (!supported || !runtime.requestExtension || !active || active.requestId !== requestId || active.signal.aborted) {
       return Promise.reject(new Error("ACPX extension control does not own a supported active turn"));
@@ -1030,12 +1048,20 @@ function runtimePort(
       await abortableExtensionResult(active.promptStarted, active.signal);
       active.signal.throwIfAborted();
       if (extensionBoundary.active !== active) throw new Error("ACPX extension control turn expired");
+      if (method === "_hermes/steer") {
+        await waitForHermesNativeTurn(active);
+        active.signal.throwIfAborted();
+        if (extensionBoundary.active !== active) throw new Error("ACPX extension control turn expired");
+      }
       const response = await abortableExtensionResult(runtime.requestExtension!({
-        handle, method, params: { sessionId: identity.backendSessionId, message: text }, sessionMode: "persistent",
+        handle, method, params: { sessionId: identity.backendSessionId, message: text,
+          ...(method === "_hermes/steer" ? { version: 1, turnToken: active.nativeTurnToken } : {}),
+        }, sessionMode: "persistent",
       }), active.signal);
       active.signal.throwIfAborted();
       if (extensionBoundary.active !== active) throw new Error("ACPX extension control turn expired");
       if (response.accepted !== true) throw new Error("ACPX extension control was not acknowledged");
+      if (method === "_hermes/steer" && response.turnToken !== active.nativeTurnToken) throw new Error("Hermes steering acknowledgement belongs to a stale turn");
     };
     const delivery = extensionControls.then(send);
     // Preserve caller ordering without letting one rejection deadlock later calls.
@@ -1275,7 +1301,7 @@ function runtimePort(
     steeringCapability() {
       return extensionBoundary.steering === null ? null : structuredClone(extensionBoundary.steering);
     },
-    steerActiveTurn: (text, requestId) => controlActiveTurn("pi/steer", text, requestId),
+    steerActiveTurn: (text, requestId) => controlActiveTurn(extensionBoundary.agent === "hermes" ? "_hermes/steer" : "pi/steer", text, requestId),
     queueFollowUp: (text, requestId) => controlActiveTurn("pi/follow_up", text, requestId),
     goalCapability() {
       return goalState.capability === null
@@ -1373,7 +1399,10 @@ function runtimePort(
       if (extensionBoundary.active) throw new Error("ACPX runtime already has an active turn");
       const approval = new AbortController();
       const controller = new AbortController();
+      let acknowledgeNativeTurn!: () => void;
+      const nativeTurnReady = new Promise<void>(resolve => { acknowledgeNativeTurn = resolve; });
       const extensionTurn: AcpxRuntimeExtensionTurn = {
+        nativeTurnReady, acknowledgeNativeTurn,
         requestId: input.requestId, sessionId: identity.backendSessionId, controller,
         signal: input.signal ? AbortSignal.any([controller.signal, input.signal, approval.signal]) : AbortSignal.any([controller.signal, approval.signal]),
         promptStarted: Promise.resolve(),
@@ -1393,7 +1422,7 @@ function runtimePort(
       try {
         turn = runtime.startTurn({
           handle,
-          text: input.text,
+          ...acpxAttachmentInput(input.text, input.attachments),
           mode: "prompt",
           requestId: input.requestId,
           signal: input.signal
@@ -2004,6 +2033,17 @@ async function abortableExtensionResult<T>(result: Promise<T>, signal: AbortSign
   });
   try { return await Promise.race([result, cancellation]); }
   finally { if (rejectAbort) signal.removeEventListener("abort", rejectAbort); }
+}
+
+async function waitForHermesNativeTurn(active: AcpxRuntimeExtensionTurn): Promise<void> {
+  if (active.nativeTurnToken) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await abortableExtensionResult(Promise.race([active.nativeTurnReady, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("Hermes native turn acknowledgement timed out")), 5_000);
+      timer.unref();
+    })]), active.signal);
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 function goalCapabilityFromAcpMessage(

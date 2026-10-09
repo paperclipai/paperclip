@@ -27,6 +27,22 @@ const AUTOMATIC_PAPERCLIP_WORKFLOW_ACTIONS = new Set([
   "create_project", "request_approval",
 ]);
 
+/** Assigned control-plane tools permitted in a read-only task mode.
+ * This exempts them from the native filesystem-write guard, not the active
+ * task's semantic authorization or the configured permission prompt.
+ */
+export function paperclipReadOnlyToolRules(
+  tools: readonly Readonly<Record<string, unknown>>[],
+): string[] {
+  return [...new Set(tools.flatMap(tool => {
+    if (typeof tool.name !== "string") return [];
+    const name = canonicalRunnerToolName(tool.name);
+    const action = capabilityCanonicalOperation(name);
+    return action?.surfaces.includes("live") && action.taskModes.some(mode => mode === "planning" || mode === "ask")
+      ? [`mcp__paperclip__${name}`] : [];
+  }))].sort();
+}
+
 /** Exact SDK rules for the run's runner-owned Paperclip MCP connection. */
 export function claudePaperclipPermissionRules(
   tools: readonly Readonly<Record<string, unknown>>[],

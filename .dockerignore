@@ -9,6 +9,7 @@ data
 tmp
 *.log
 packages/paperclip-runner/dist
+packages/paperclip-runner/provider-assets
 packages/paperclip-runner/runner/target
 packages/paperclip-runner/devtools
 packages/paperclip-runner/docs

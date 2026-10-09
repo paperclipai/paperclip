@@ -48,6 +48,8 @@ feedback-export-*
 diagnostics/
 
 # Editor / tool temp files
+__pycache__/
+*.pyc
 *.tmp
 .vscode/
 .claude/settings.local.json

@@ -38,7 +38,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: None,
             agent_runtime_version: None,
             command_digest:
-                "sha256:a5e70580e4933a1a9248cd3c1b16500c6c93e1e14913e0a98cd5ef878bd53d39",
+                "sha256:d4d2e4f4542e8b4e1e86698ddbc617bf704221637bacb1f0b779a41bf5c649b9",
             requires_provider_policy: true,
         },
         "copilot" => AcpxReleaseProfile {
@@ -67,6 +67,15 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             command_digest:
                 "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
             requires_provider_policy: false,
+        },
+        "hermes" => AcpxReleaseProfile {
+            agent_server_package: "builtin:hermes-acp",
+            agent_server_version: "1",
+            agent_runtime_package: Some("native:hermes"),
+            agent_runtime_version: Some("v2026.9.24"),
+            command_digest:
+                "sha256:49e4107f37e8cb228a8f94dc63e730323ecfa3b79dd1e2a71d7871b45a79ea94",
+            requires_provider_policy: true,
         },
         _ => return None,
     })

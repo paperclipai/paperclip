@@ -1,0 +1,10 @@
+{
+  "release": "v2026.9.24",
+  "commit": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+  "archiveSha256": "b71f4b7d4fe5b158ed9bbbeb73f5eb107f2f05e54bd582d32c2d9f718b58d9b0",
+  "lockSha256": "5b3798f326209475abca8ef7cbf7c9406f12e687c28c0b540dfe597466f48590",
+  "python": "3.12.14",
+  "acp": "0.9.0",
+  "acpx": "0.13.1",
+  "qualification": "pending"
+}

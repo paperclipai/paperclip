@@ -32,8 +32,9 @@ Cursor CLI 2026.10.01-e373342, and GitHub CLI 2.102.0 in the sandbox layer.
 The native Cursor provider uses its separately verified distribution, pinned to
 2026.09.26-dd393fe; it does not use the sandbox layer’s global Cursor executable.
 Grok CLI 1.0.46 supports the current
-[Grok 4.7](https://docs.x.ai/developers/grok-4-7) model family. Hermes stays
-at 0.19.0, the newest release on PyPI.
+[Grok 4.7](https://docs.x.ai/developers/grok-4-7) model family. The legacy Hermes
+CLI remains at 0.19.0. The separate native runner candidate pins Hermes
+`v2026.9.24` and its Python/ACP/MCP dependencies in a verified provider asset.
 
 Keep the patched ACP bridge versions separate from their CLI runtime pins.
 Their executable digests do not change when only the runtime dependency
@@ -56,11 +57,15 @@ The fleet image is currently amd64-only because the pinned Cursor and GitHub CLI
 checksums cover amd64.
 
 ```bash
+# Resolve the target manifest/patch changes without committing the bot-owned lock.
+pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+lock_sha="$(shasum -a 256 pnpm-lock.yaml | cut -d ' ' -f 1)"
 content_id="$(pnpm --silent test:e2e:runner:image-id)"
 docker buildx build \
   --platform linux/amd64 \
   --build-arg PAPERCLIP_RUNNER_CONTENT_ID="${content_id}" \
   --build-arg PAPERCLIP_RUNNER_SOURCE_REVISION="$(git rev-parse HEAD)" \
+  --build-arg PAPERCLIP_RUNNER_LOCK_SHA256="${lock_sha}" \
   --tag "paperclip-daytona-runner:e2e-content-${content_id}" \
   --load \
   --file docker/daytona-runner/Dockerfile \
@@ -117,17 +122,16 @@ lockfile. Resolve the complete workspace manifest graph in the build context
 before invoking Docker, matching CI when a source commit precedes the lockfile
 bot. The trusted workflow supplies this resolved lockfile as an immutable artifact.
 The complete resolved lockfile must match `PAPERCLIP_RUNNER_LOCK_SHA256` before
-package installation or lifecycle execution. Review and refresh that digest
-with source dependency changes; registry-time resolution drift fails closed.
+package installation or lifecycle execution. Compute that digest from the
+resolved build lock; registry-time resolution drift fails closed.
 The Product E2E workflow resolves one lockfile before the image build. It
 verifies the downloaded artifact, then passes that artifact's SHA-256 as the
 `PAPERCLIP_RUNNER_LOCK_SHA256` build argument. The Dockerfile checks the resolved
-lock against this value before installation. The fixed Dockerfile default is
-for standalone builds; it must not replace a campaign's verified lock digest.
-Refresh the default from the clean tracked lockfile using the exact
-`pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile` command,
-and verify a second resolution preserves the digest. A lockfile left by a
-filtered or incremental install can retain stale importer patch identities.
+lock against this value before installation. Standalone builds must also pass
+the resolved lock's digest, as shown above; the Dockerfile has no default.
+Use the exact `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile`
+command. A lockfile left by a filtered or incremental install can retain stale
+importer patch identities.
 Refresh exact runtime versions and qualification digests together; do not
 download dependencies when a task starts.
 
@@ -135,11 +139,17 @@ download dependencies when a task starts.
 
 Provider branches can build their pinned assets with
 `node packages/paperclip-runner/scripts/build-provider-pack.mjs /absolute/pack --candidate-providers=cursor`
-(or `copilot` or `pi`). The source revision must include the named provider's
+(or `copilot`, `pi` or `hermes`). The source revision must include the named provider's
 builder. Assets are installed at build time under `provider-assets/<provider>/<platform>-<architecture>`.
 The pack manifest binds each complete asset tree. Runtime admission separately
 checks the provider's source-owned closure pins and copies a verified launch snapshot.
 A pack with candidate assets does not qualify or enable that provider.
+
+The Hermes candidate build provisions Python 3.12.14 and the locked native
+runtime before publishing its pack. Command tools require bubblewrap plus kernel
+namespace support; default Docker namespace restrictions are insufficient.
+Verify this on the actual Daytona target before promoting the candidate. See
+[Hermes deployment and qualification](../../packages/paperclip-runner/docs/hermes.md).
 
 For an isolated Linux x64 Daytona qualification image, pass
 `--build-arg PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=cursor` with the normal build arguments.

@@ -3,6 +3,7 @@ import { QUALIFIED_ACPX_VERSION } from "../drivers/acpx/generated-profiles.js";
 import { isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
 import { isProviderMode } from "./provider-mode.js";
 import { createHash } from "node:crypto";
+import { parseNativeUserAttachments, type NativeUserAttachment } from "./user-attachments.js";
 import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeContextSnapshot } from "./runtime-context.js";
 
@@ -12,6 +13,7 @@ export const NATIVE_EXECUTION_INPUT_SCHEMA_V3 = "paperclip.native-execution-inpu
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V6 = "paperclip.native-execution-input.v6" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V4 = "paperclip.native-execution-input.v4" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA = "paperclip.native-execution-input.v5" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V7 = "paperclip.native-execution-input.v7" as const;
 export const NATIVE_MODEL_ENVELOPE_SCHEMA_V1 = "paperclip.native-model-envelope.v1" as const;
 export const NATIVE_MODEL_ENVELOPE_SCHEMA_V2 = "paperclip.native-model-envelope.v2" as const;
 export const NATIVE_MODEL_ENVELOPE_SCHEMA = "paperclip.native-model-envelope.v3" as const;
@@ -85,7 +87,7 @@ export interface NativeAwsAgentCoreProfileSnapshot {
   eventExpiryDays: 90;
 }
 
-export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot";
+export type NativeAcpxAgent = "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot" | "hermes";
 export type NativeCodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type NativeOpenCodePermissionMode = "allow" | "ask" | "deny";
 export type NativeAcpxPermissionMode = "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
@@ -150,6 +152,8 @@ export type NativeProviderConfigV4 =
 export type NativeProviderConfigV5 =
   | Exclude<NativeProviderConfigV4, { kind: "codex" }>
   | (Extract<NativeProviderConfigV4, { kind: "codex" }> & { reasoningEffort?: string });
+export type NativeProviderConfigV6 = Exclude<NativeProviderConfigV5, { kind: "acpx" }>
+  | (Extract<NativeProviderConfigV5, { kind: "acpx" }> & { connectionFingerprint?: string });
 
 export interface NativeExecutionInputV1 {
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V1;
@@ -242,7 +246,12 @@ export interface NativeExecutionInputV6 extends Omit<NativeExecutionInputV5, "sc
   session: Omit<NativeExecutionInputV5["session"], "driverKind"> & { driverKind: "openai_dot_mcp" };
 }
 
-export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6;
+export interface NativeExecutionInputV7 extends Omit<NativeExecutionInputV5, "schema" | "provider"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V7;
+  provider: NativeProviderConfigV6;
+  attachments?: NativeUserAttachment[];
+}
+export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7;
 
 /** The only task data that may enter provider-visible model input. */
 export interface NativeModelEnvelopeV1 {
@@ -368,8 +377,14 @@ function parseDotNativeExecutionInput(input: Record<string, unknown>): NativeExe
 
 export function parseNativeExecutionInput(value: unknown): NativeExecutionInput {
   const input = record(value, "input");
-  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6) return parseDotNativeExecutionInput(input);
-  const isV5 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 && record(input.provider, "input.provider").kind === "openai_dot") return parseDotNativeExecutionInput(input);
+  // Hermes v6 was recorded during qualification before Dot reserved v6.
+  // Accept only its existing provider discriminator; all new Hermes inputs use v7.
+  const legacyHermesV6 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6
+    && record(input.provider, "input.provider").kind === "acpx"
+    && record(input.provider, "input.provider").agent === "hermes";
+  const isV6 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7 || legacyHermesV6;
+  const isV5 = isV6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
   const isV4 = isV5 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V4;
   const isV3 = isV4 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V3;
   const isV2 = isV3 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V2;
@@ -387,10 +402,11 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     ...(isV3 ? ["runtimeContext"] : []),
     ...(isV4 ? ["continuationPrompt", "initialCommunicationGuidance"] : []),
     ...(isV5 ? ["completionSources"] : []),
+    ...(isV6 ? ["attachments"] : []),
   ], "input");
   if (!isV2 && input.schema !== NATIVE_EXECUTION_INPUT_SCHEMA_V1) {
     throw new NativeExecutionInputError(
-      `input.schema must be ${NATIVE_EXECUTION_INPUT_SCHEMA_V1}, ${NATIVE_EXECUTION_INPUT_SCHEMA_V2}, ${NATIVE_EXECUTION_INPUT_SCHEMA_V3}, ${NATIVE_EXECUTION_INPUT_SCHEMA_V4}, or ${NATIVE_EXECUTION_INPUT_SCHEMA}`,
+      `input.schema must be ${NATIVE_EXECUTION_INPUT_SCHEMA_V1}, ${NATIVE_EXECUTION_INPUT_SCHEMA_V2}, ${NATIVE_EXECUTION_INPUT_SCHEMA_V3}, ${NATIVE_EXECUTION_INPUT_SCHEMA_V4}, ${NATIVE_EXECUTION_INPUT_SCHEMA}, ${NATIVE_EXECUTION_INPUT_SCHEMA_V6}, or ${NATIVE_EXECUTION_INPUT_SCHEMA_V7}`,
     );
   }
 
@@ -501,7 +517,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       : provider.kind === "aws_agentcore"
         ? ["kind", "model", "agentCoreProfile", "maxEstimatedSessionCostUsd", "invocationLimits"]
       : provider.kind === "acpx"
-        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", ...(isV4 ? ["mode"] : [])]
+        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", ...(isV4 ? ["mode"] : []), ...(isV6 ? ["connectionFingerprint"] : [])]
       : provider.kind === "codex" && isV4
         ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort"] : [])]
         : provider.kind === "opencode" && isV4
@@ -524,7 +540,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   if (provider.kind === "opencode" && (providerModel === null || !providerModel.includes("/"))) {
     throw new NativeExecutionInputError("input.provider.model is required for opencode in provider/model form");
   }
-  let parsedProvider: NativeProviderConfig | NativeProviderConfigV5;
+  let parsedProvider: NativeProviderConfig | NativeProviderConfigV6;
   if (provider.kind === "claude_managed") {
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for claude_managed");
@@ -624,11 +640,13 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (provider.mode !== undefined && !isProviderMode(provider.mode)) {
       throw new NativeExecutionInputError("input.provider.mode must be a bounded nonempty provider mode identifier");
     }
+    if (provider.agent === "hermes" && (!isV6 || typeof provider.connectionFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(provider.connectionFingerprint))) throw new NativeExecutionInputError("Hermes requires a v7 input with a pinned connection fingerprint");
+    if (provider.connectionFingerprint !== undefined && provider.agent !== "hermes") throw new NativeExecutionInputError("Only Hermes accepts a connection fingerprint");
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for acpx");
     }
-    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok" && provider.agent !== "cursor" && provider.agent !== "copilot") {
-      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, grok, cursor, or copilot");
+    if (provider.agent !== "pi" && provider.agent !== "claude" && provider.agent !== "codex" && provider.agent !== "grok" && provider.agent !== "cursor" && provider.agent !== "copilot" && provider.agent !== "hermes") {
+      throw new NativeExecutionInputError("input.provider.agent must be pi, claude, codex, grok, cursor, copilot, or hermes");
     }
     if (isV4) {
       if (provider.permissionMode !== "approve-all" && provider.permissionMode !== "approve-paperclip" && provider.permissionMode !== "approve-reads" && provider.permissionMode !== "deny-all") {
@@ -668,6 +686,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       kind: "acpx",
       agent: provider.agent,
       model: providerModel,
+      ...(provider.agent === "hermes" ? { connectionFingerprint: provider.connectionFingerprint as string } : {}),
       ...(isV4
         ? { permissionMode: provider.permissionMode as NativeAcpxPermissionMode }
         : { permissionPolicy: "interactive" as const }),
@@ -825,11 +844,16 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     provider: parsedProvider as NativeProviderConfigV4,
   };
   if (!isV5) return { ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V4 };
-  return {
+  const latest = {
     ...withPermissions,
     schema: NATIVE_EXECUTION_INPUT_SCHEMA,
     provider: parsedProvider as NativeProviderConfigV5,
     ...(input.completionSources !== undefined ? { completionSources: parseCompletionSources(input.completionSources) } : {}),
+  };
+  if (!isV6) return latest;
+  if (input.attachments !== undefined && !(provider.kind === "acpx" && provider.agent === "hermes")) throw new NativeExecutionInputError("Native prompt attachments require the Hermes profile");
+  return { ...latest, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V7, provider: parsedProvider as NativeProviderConfigV6,
+    ...(input.attachments !== undefined ? { attachments: parseNativeUserAttachments(input.attachments) } : {}),
   };
 }
 
@@ -890,7 +914,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
       interactionResponses: structuredClone(input.interactionResponses),
     };
   }
-  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6) {
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7) {
     const sourceBinding = input.completionSources;
     const references = sourceBinding?.contractRevision === input.completionContract.contract.revision
       && sourceBinding.promptSha256 === createHash("sha256").update(input.task.prompt).digest("hex")

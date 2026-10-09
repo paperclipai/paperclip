@@ -106,11 +106,12 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).toContain('ACP agents');
     expect(html).toContain("ACP agent");
     expect(html).toContain('aria-label="ACP agent"');
-    expect(html.match(/role="option"[^>]*data-disabled=""/g)).toHaveLength(2);
+    expect(html.match(/role="option"[^>]*data-disabled=""/g)).toHaveLength(3);
     expect(html).toContain('Cursor');
     expect(html).not.toContain('Cursor — qualification pending');
     expect(html).toContain('GitHub Copilot — qualification pending');
     expect(html).toContain('Pi — qualification pending');
+    expect(html).toContain('Hermes — qualification pending');
     expect(html).not.toContain("Codex via ACPX");
     expect(html).not.toContain("ACPX Codex");
     expect(html).not.toContain("Pi via ACPX");

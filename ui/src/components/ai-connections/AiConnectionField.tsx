@@ -36,6 +36,7 @@ export function aiProviderForAdapter(
       grok_local: "xai",
       gemini_local: "google",
       hermes_local: "openrouter",
+      hermes_runner: "openrouter",
     } as Record<string, AiProvider>
   )[adapterType];
 }
@@ -66,7 +67,8 @@ export function AiConnectionField({
   preferAdvanced?: boolean;
   routerAdapterType?: string;
 }) {
-  const provider = aiProviderForAdapter(adapterType);
+  const provider = adapterType === "hermes_runner" && value && value.mode !== "router"
+    ? value.provider : aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
   const restoreFocus = (event: Event) => { event.preventDefault(); returnFocus.current?.focus(); };
   const [adopting, setAdopting] = useState(false);
@@ -103,7 +105,7 @@ export function AiConnectionField({
   const openConnection = (reconnect?: AiManagedConnectionSummary) => {
     returnFocus.current = document.activeElement as HTMLElement;
     setReconnecting(reconnect);
-    setAdvancedSetup(!reconnect && (preferAdvanced || provider === "openrouter"));
+    setAdvancedSetup(!reconnect && (preferAdvanced || provider === "openrouter" || adapterType === "hermes_runner"));
     setAllAgents(accounts.data?.canManageConnections ?? false);
     setSavedAccount(undefined);
     selectDefault.reset();
