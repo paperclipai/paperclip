@@ -144,6 +144,8 @@ export type AiConnectionUnavailableReason =
   | "access_denied"
   | "credential_missing";
 export interface AiConnectionAttribution {
+  /** Billing account at execution time; never resolved again from mutable settings. */
+  subscriptionId?: string;
   connectionId: string;
   grantId: string;
   provider: AiProvider;

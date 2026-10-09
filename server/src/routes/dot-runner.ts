@@ -9,6 +9,7 @@ import { agentService } from "../services/agents.js";
 import { notFound } from "../errors.js";
 import { accessService } from "../services/access.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
+import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
 
 export function dotRunnerRoutes(db: Db, resourceUrl?: string) {
   const router = Router();
@@ -48,7 +49,14 @@ export function dotRunnerRoutes(db: Db, resourceUrl?: string) {
     const agent = await agentService(db).getById(input.agentId);
     if (!agent || agent.companyId !== input.companyId) throw notFound("Agent not found");
     const config = resourceUrl ? null : publicMcpConfig(process.env);
-    res.json({ agentStatus: agent.status, enabled: await broker.enabled(), resourceUrl: resourceUrl ?? (config ? config.origin + "/mcp/runner" : null), binding: await broker.bindingForAgent(input.companyId, input.agentId) });
+    res.json({
+      agentStatus: agent.status,
+      agentLifecycleState: agent.lifecycleState,
+      canConfigureConnection: canConfigureAgentConnection(agent),
+      enabled: await broker.enabled(),
+      resourceUrl: resourceUrl ?? (config ? config.origin + "/mcp/runner" : null),
+      binding: await broker.bindingForAgent(input.companyId, input.agentId),
+    });
   });
   router.post(path, async (req, res) => {
     const input = scope(req, true);

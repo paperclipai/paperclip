@@ -1,9 +1,9 @@
 import { receiptFingerprint } from "./receipt-fingerprint.js";
-import { agentAvatarUrl, resolveAgentAppearance, createCostEventSchema, createServiceCostEventSchema, normalizeCents, type MoneyInput, type CostByUserReport } from "@paperclipai/shared";
+import { agentAvatarUrl, resolveAgentAppearance, createCostEventSchema, createServiceCostEventSchema, normalizeCents, isUuidLike, type MoneyInput, type CostByUserReport } from "@paperclipai/shared";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentRuntimeState, authUsers, companies, companyMemberships, costEvents, heartbeatRuns, issues, projects, goals } from "@paperclipai/db";
+import { activityLog, agents, agentRuntimeState, authUsers, companies, companyMemberships, costEvents, heartbeatRuns, issues, projects, goals, aiSubscriptions } from "@paperclipai/db";
 import { notFound, unprocessable, conflict } from "../errors.js";
 import { budgetService, budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
 import { logActivity, type LogActivityInput, type ActivityPublication } from "./activity-log.js";
@@ -20,7 +20,7 @@ const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overa
 // provider-qualified model IDs and already excluded cache reads. Normalize each
 // historical row before aggregation so mixed old/new groups share the current
 // exclusive-input contract. Preserve the original ledger and monetary amounts.
-const ordinaryInputTokens = sql<number>`case
+export const ordinaryInputTokens = sql<number>`case
   when ${costEvents.receiptHash} is null and ${costEvents.provider} = 'openai'
     and ${costEvents.model} not like 'openai/_%'
     then greatest(0, ${costEvents.inputTokens} - ${costEvents.cachedInputTokens})
@@ -124,11 +124,19 @@ export async function createCostEventInTransaction(db: Db, companyId: string, da
     if (!row) throw notFound(`${label} not found`);
     if (row.companyId !== companyId) throw unprocessable(`${label} does not belong to company`);
   }
+  let subscriptionId: string | null = null;
   if (values.heartbeatRunId) {
-    const [run] = await db.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, values.heartbeatRunId));
+    const [run] = await db.select({ agentId: heartbeatRuns.agentId, context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, values.heartbeatRunId));
     if (run.agentId !== values.agentId) throw unprocessable("Heartbeat run does not belong to agent");
+    const attribution = run.context?.aiConnection as { subscriptionId?: unknown; provider?: unknown } | undefined;
+    if (SUBSCRIPTION_BILLING_TYPES.includes(values.billingType as typeof SUBSCRIPTION_BILLING_TYPES[number]) && attribution?.provider === values.provider && typeof attribution.subscriptionId === "string" && isUuidLike(attribution.subscriptionId)) {
+      const [account] = await db.select({ id: aiSubscriptions.id }).from(aiSubscriptions).where(and(eq(aiSubscriptions.id, attribution.subscriptionId), eq(aiSubscriptions.companyId, companyId), eq(aiSubscriptions.provider, values.provider)));
+      subscriptionId = account?.id ?? null;
+    }
   }
-  const [event] = await db.insert(costEvents).values({ ...values, costCents: sql`${values.costCents}::numeric`, reportedCostCents: values.costCents, id: data.id, companyId, receiptHash }).returning();
+  // Server-derived attribution stays outside the immutable receipt fingerprint;
+  // replaying a receipt must not depend on later account metadata changes.
+  const [event] = await db.insert(costEvents).values({ ...values, subscriptionId, costCents: sql`${values.costCents}::numeric`, reportedCostCents: values.costCents, id: data.id, companyId, receiptHash }).returning();
   await updateMonthlySpendProjections(db, companyId, event.agentId, values.costCents, event.occurredAt);
   // Separately reported charges linked to an already-accounted run contribute
   // to lifetime totals too. Before acknowledgement, accountRunCost includes
@@ -676,6 +684,8 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .select({
           projectId: projects.id,
           projectName: projects.name,
+          eventCount: sql<number>`count(*)::int`,
+          estimatedEventCount: sql<number>`count(*) filter (where ${costEvents.costStatus} = 'estimated')::int`,
           costCents: costCentsExpr,
           costCentsExact: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
           inputTokens: sumAsNumber(ordinaryInputTokens),
