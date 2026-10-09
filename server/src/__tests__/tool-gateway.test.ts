@@ -589,6 +589,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
   it("preserves provider tool errors in MCP responses and failed invocation audits", async () => {
     const company = await createCompany(db);
     const remote = await startFakeRemoteMcpServer(({ body }) => ({
+      headers: { "x-govna-call-id": "call_govna_tool_error_321" },
       body: {
         jsonrpc: "2.0",
         id: body?.id,
@@ -631,7 +632,11 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         content: [{ type: "text", text: "Search denied: outside consented tag" }], isError: true,
       });
       expect(await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id)))
-        .toEqual([expect.objectContaining({ status: "failed", errorCode: "tool_error" })]);
+        .toEqual([expect.objectContaining({
+          status: "failed",
+          errorCode: "tool_error",
+          upstreamRequestId: "call_govna_tool_error_321",
+        })]);
       const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.companyId, company.id));
       expect(events).toContainEqual(expect.objectContaining({ eventType: "call_failed", outcome: "failure", reasonCode: "tool_error" }));
       expect(events.some((event) => event.eventType === "call_completed")).toBe(false);
@@ -643,7 +648,11 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         agentId: agent.id, userId: "test-user", toolName, parameters: {} });
       expect(testCall).toMatchObject({ decision: "allowed", error: { reasonCode: "tool_error" } });
       expect(await db.select().from(toolInvocations).where(eq(toolInvocations.id, testCall.invocationId)))
-        .toEqual([expect.objectContaining({ status: "failed", errorCode: "tool_error" })]);
+        .toEqual([expect.objectContaining({
+          status: "failed",
+          errorCode: "tool_error",
+          upstreamRequestId: "call_govna_tool_error_321",
+        })]);
       const testEvents = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, testCall.invocationId));
       expect(testEvents.some(event => event.eventType === "call_failed")).toBe(true);
       expect(testEvents.some(event => event.eventType === "call_completed")).toBe(false);
@@ -2207,6 +2216,10 @@ rl.on("line", (line) => {
       const params = fakeRequest.body?.params as Record<string, unknown>;
       const args = params.arguments as Record<string, unknown>;
       return {
+        headers: {
+          "x-govna-call-id": "call_govna_terminal_receipt_123",
+          "x-request-id": "provider-request-456",
+        },
         body: {
           jsonrpc: "2.0",
           id: fakeRequest.body?.id,
@@ -2298,6 +2311,7 @@ rl.on("line", (line) => {
         upstreamToolName: "kv_set",
         riskLevel: "write",
         status: "succeeded",
+        upstreamRequestId: "call_govna_terminal_receipt_123",
       });
       expect(invocation.applicationId).toBe(connectedTool!.applicationId);
       expect(invocation.connectionId).toBe(connectedTool!.connectionId);
@@ -2307,6 +2321,19 @@ rl.on("line", (line) => {
       });
       expect(invocation.resultSummary).toMatchObject({
         summary: expect.stringContaining("\"saved\":true"),
+      });
+
+      const completedActivity = (await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "tool_gateway.call_completed")))
+        .find((event) => event.details?.invocationId === invocation.id);
+      expect(completedActivity?.details).toMatchObject({
+        execution: {
+          response: {
+            upstreamRequestId: "call_govna_terminal_receipt_123",
+          },
+        },
       });
 
       const callEvents = await db.select().from(toolCallEvents);
@@ -3498,6 +3525,7 @@ rl.on("line", (line) => {
         await approvedExecutionRelease;
       }
       return {
+        headers: { "x-govna-call-id": "call_govna_approved_receipt_456" },
         body: {
           jsonrpc: "2.0",
           id: fakeRequest.body?.id,
@@ -3713,6 +3741,13 @@ rl.on("line", (line) => {
         .from(toolActionRequests)
         .where(eq(toolActionRequests.id, approvalRequest.id));
       expect(executedApproval.status).toBe("executed");
+      const [executedInvocation] = await db
+        .select()
+        .from(toolInvocations)
+        .where(eq(toolInvocations.id, approvalRequest.invocationId));
+      expect(executedInvocation.upstreamRequestId).toBe(
+        "call_govna_approved_receipt_456",
+      );
       const [completedInteraction] = await db
         .select()
         .from(issueThreadInteractions)
@@ -4317,7 +4352,11 @@ rl.on("line", (line) => {
       name: "HTTP status",
       reasonCode: "mcp_remote_status",
       status: 502,
-      response: () => ({ status: 503, body: { error: "unavailable" } }),
+      response: () => ({
+        status: 503,
+        headers: { "x-govna-call-id": "call_govna_failed_receipt_789" },
+        body: { error: "unavailable" },
+      }),
     },
     {
       name: "invalid JSON",
@@ -4403,8 +4442,16 @@ rl.on("line", (line) => {
           },
         });
         if (scenario.reasonCode === "mcp_remote_status") {
+          expect(invocation.upstreamRequestId).toBe(
+            "call_govna_failed_receipt_789",
+          );
           expect(failureAudit.details).toMatchObject({
-            execution: { response: { httpStatus: 503 } },
+            execution: {
+              response: {
+                httpStatus: 503,
+                upstreamRequestId: "call_govna_failed_receipt_789",
+              },
+            },
           });
         }
       } finally {

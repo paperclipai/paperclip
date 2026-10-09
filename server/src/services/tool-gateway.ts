@@ -692,6 +692,23 @@ function safeHeaderValue(
   return sanitized ? sanitized.slice(0, maxLength) : null;
 }
 
+function upstreamRequestIdFromHeaders(headers: Headers) {
+  // A governance receipt identifies the durable tool-call record, so prefer it
+  // over a transport request ID. Keep the stored value opaque and bounded.
+  for (const name of [
+    "x-govna-call-id",
+    "x-request-id",
+    "x-zapier-request-id",
+    "traceparent",
+  ]) {
+    const raw = headers.get(name);
+    if (!raw) continue;
+    const sanitized = raw.replace(/[\r\n\t]/g, " ").trim();
+    if (sanitized) return sanitized.slice(0, 160);
+  }
+  return null;
+}
+
 function safeClientMetadata(
   headers: Record<string, string | string[] | undefined> | undefined,
 ) {
@@ -6002,9 +6019,7 @@ export function createToolGatewayService(
           httpStatus: refreshedResponse.status,
           contentType: refreshedResponse.headers.get("content-type"),
           bodySizeBytes: 0,
-          upstreamRequestId:
-            refreshedResponse.headers.get("x-request-id") ??
-            refreshedResponse.headers.get("traceparent"),
+          upstreamRequestId: upstreamRequestIdFromHeaders(refreshedResponse.headers),
         };
         throw new ToolGatewayHttpError(
           409,
@@ -6199,10 +6214,7 @@ export function createToolGatewayService(
         httpStatus: response.status,
         contentType: response.headers.get("content-type"),
         bodySizeBytes: Buffer.byteLength(body, "utf8"),
-        upstreamRequestId:
-          response.headers.get("x-request-id") ??
-          response.headers.get("x-zapier-request-id") ??
-          response.headers.get("traceparent"),
+        upstreamRequestId: upstreamRequestIdFromHeaders(response.headers),
       };
       if (isInsufficientConnectionScope(response, body)) {
         await markRemoteConnectionHealth(connection, "degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
@@ -7305,6 +7317,9 @@ export function createToolGatewayService(
         .update(toolInvocations)
         .set({
           status: "succeeded",
+          upstreamRequestId:
+            connectedMcpExecution.execution?.response?.upstreamRequestId ??
+            null,
           resultHash: resultValidation.summary.sha256 ?? null,
           resultSummary: resultValidation.summary,
           resultSizeBytes: resultValidation.summary.sizeBytes ?? null,
@@ -7371,6 +7386,7 @@ export function createToolGatewayService(
             ? err.reasonCode
             : "tool_execution_failed";
       const message = err instanceof Error ? err.message : String(err);
+      const failedExecution = executionAuditFromError(err);
       await db
         .update(toolInvocations)
         .set({
@@ -7382,6 +7398,8 @@ export function createToolGatewayService(
                 : "failed",
           errorCode: reasonCode,
           errorMessage: message,
+          upstreamRequestId:
+            failedExecution?.response?.upstreamRequestId ?? null,
           completedAt: new Date(),
           updatedAt: new Date(),
         })
@@ -7401,8 +7419,8 @@ export function createToolGatewayService(
           ...(err instanceof ToolContentValidationError
             ? { findings: err.findings }
             : {}),
-          ...(executionAuditFromError(err)
-            ? { execution: executionAuditFromError(err) }
+          ...(failedExecution
+            ? { execution: failedExecution }
             : {}),
         },
         tool: args.tool,
@@ -7429,8 +7447,8 @@ export function createToolGatewayService(
           argumentsSummary: args.argumentsSummary,
           durationMs: Date.now() - startedAt,
           error: message,
-          ...(executionAuditFromError(err)
-            ? { execution: executionAuditFromError(err) }
+          ...(failedExecution
+            ? { execution: failedExecution }
             : {}),
         },
       });
@@ -8105,44 +8123,44 @@ export function createToolGatewayService(
 
     try {
       const executionTimeoutMs = timeoutMs(APPROVED_EXECUTION_TIMEOUT_MS);
-      const result =
+      const connectedMcpExecution =
         (tool.providerType === "mcp_remote_http" || tool.providerType === "provider_rest")
-          ? (
-              await executeRemoteHttpTool(
+          ? await executeRemoteHttpTool(
+              session,
+              tool,
+              parameters,
+              executionTimeoutMs,
+              invocation.id,
+            )
+          : tool.providerType === "mcp_local_stdio"
+            ? await executeLocalStdioTool(
                 session,
                 tool,
                 parameters,
                 executionTimeoutMs,
-                invocation.id,
               )
-            ).result
-          : tool.providerType === "mcp_local_stdio"
-            ? (
-                await executeLocalStdioTool(
-                  session,
-                  tool,
-                  parameters,
-                  executionTimeoutMs,
-                )
-              ).result
-            : tool.providerType !== "paperclip_plugin"
-              ? await runWithTimeout(
-                  executeBuiltinTool(session, tool, parameters, invocation.id),
-                  executionTimeoutMs,
-                )
-              : (() => {
-                  throw new ToolGatewayHttpError(
-                    409,
-                    "Plugin actions cannot execute outside their originating run",
-                    "approved_execution_unsupported",
-                  );
-                })();
+            : null;
+      const result = connectedMcpExecution
+        ? connectedMcpExecution.result
+        : tool.providerType !== "paperclip_plugin"
+          ? await runWithTimeout(
+              executeBuiltinTool(session, tool, parameters, invocation.id),
+              executionTimeoutMs,
+            )
+          : (() => {
+              throw new ToolGatewayHttpError(
+                409,
+                "Plugin actions cannot execute outside their originating run",
+                "approved_execution_unsupported",
+              );
+            })();
       const resultRecord = asRecord(result);
       if (resultRecord?.error)
         throw new ToolGatewayHttpError(
           502,
           String(resultRecord.content || resultRecord.error),
           "tool_execution_failed",
+          { execution: connectedMcpExecution?.execution },
         );
       const resultValidation = validateToolContent({
         value: result,
@@ -8155,6 +8173,9 @@ export function createToolGatewayService(
         .update(toolInvocations)
         .set({
           status: "succeeded",
+          upstreamRequestId:
+            connectedMcpExecution?.execution?.response?.upstreamRequestId ??
+            null,
           resultHash: resultValidation.summary.sha256 ?? null,
           resultSummary: resultValidation.summary,
           resultSizeBytes: resultValidation.summary.sizeBytes ?? null,
@@ -8186,6 +8207,9 @@ export function createToolGatewayService(
         metadata: {
           durationMs: Date.now() - startedAt,
           timeoutMs: executionTimeoutMs,
+          ...(connectedMcpExecution
+            ? { execution: connectedMcpExecution.execution }
+            : {}),
         },
         tool,
       });
@@ -8198,6 +8222,16 @@ export function createToolGatewayService(
         expectedInvocationStatus: "executing",
         error,
       });
+      const failedExecution = executionAuditFromError(error);
+      if (failedExecution?.response?.upstreamRequestId) {
+        await db
+          .update(toolInvocations)
+          .set({
+            upstreamRequestId: failedExecution.response.upstreamRequestId,
+            updatedAt: new Date(),
+          })
+          .where(eq(toolInvocations.id, invocation.id));
+      }
       await writeToolCallEvent({
         invocationId: invocation.id,
         actionRequestId: claimed.id,
@@ -8208,7 +8242,10 @@ export function createToolGatewayService(
         policyDecision: "deny",
         reasonCode,
         argumentsSummary,
-        metadata: { durationMs: Date.now() - startedAt },
+        metadata: {
+          durationMs: Date.now() - startedAt,
+          ...(failedExecution ? { execution: failedExecution } : {}),
+        },
         tool,
       });
       throw error;
@@ -10680,6 +10717,9 @@ export function createToolGatewayService(
           .update(toolInvocations)
           .set({
             status: "succeeded",
+            upstreamRequestId:
+              connectedMcpExecution?.execution?.response?.upstreamRequestId ??
+              null,
             resultHash: resultValidation.summary.sha256 ?? null,
             resultSummary: resultValidation.summary,
             resultSizeBytes: resultValidation.summary.sizeBytes ?? null,
@@ -10802,6 +10842,7 @@ export function createToolGatewayService(
           throw normalizedError;
         }
         const completedAt = new Date();
+        const failedExecution = executionAuditFromError(normalizedError);
         await db
           .update(toolInvocations)
           .set({
@@ -10813,6 +10854,8 @@ export function createToolGatewayService(
                   : "failed",
             errorCode: reasonCode,
             errorMessage: message,
+            upstreamRequestId:
+              failedExecution?.response?.upstreamRequestId ?? null,
             completedAt,
             updatedAt: completedAt,
           })
@@ -10859,8 +10902,8 @@ export function createToolGatewayService(
             ...(normalizedError instanceof ToolContentValidationError
               ? { findings: normalizedError.findings }
               : {}),
-            ...(executionAuditFromError(normalizedError)
-              ? { execution: executionAuditFromError(normalizedError) }
+            ...(failedExecution
+              ? { execution: failedExecution }
               : {}),
           },
           tool,
@@ -10885,8 +10928,8 @@ export function createToolGatewayService(
             argumentsSummary: effectiveArgumentsSummary,
             durationMs: Date.now() - startedAt,
             error: message,
-            ...(executionAuditFromError(normalizedError)
-              ? { execution: executionAuditFromError(normalizedError) }
+            ...(failedExecution
+              ? { execution: failedExecution }
               : {}),
           },
         });
