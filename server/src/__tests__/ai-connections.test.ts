@@ -1303,6 +1303,23 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await expect(service.save(companyId, "bob", reconnect, "fixture-stale", undefined, beforeRevocation)).rejects.toThrow("changed");
     await expect(service.select({ ...input, userId: "bob" })).rejects.toThrow("Reconnect");
   });
+  it("refuses to downgrade a durable setup-token credential through an ordinary reconnect", async () => {
+    const setupToken = `sk-ant-oat01-${"c".repeat(40)}`;
+    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Setup token account", agentIds: [], allAgents: true } as const;
+    const saved = await service.save(companyId, "alice", intent, setupToken);
+    const row = async () => (await db.select({ connection: toolConnections, grant: connectionGrants }).from(toolConnections)
+      .innerJoin(connectionGrants, eq(connectionGrants.connectionId, toolConnections.id))
+      .where(eq(toolConnections.id, saved.connectionId)))[0];
+    // An ordinary "Sign in" click reconnecting the same subscription method must not
+    // silently overwrite the durable setup token with a short-lived login credential.
+    await expect(service.save(companyId, "alice", { ...intent, connectionId: saved.connectionId }, "fixture-ordinary-login"))
+      .rejects.toThrow("long-lived setup token");
+    expect(await service.credential(await row())).toBe(setupToken);
+    // Replacing it with another pasted setup token is still allowed.
+    const rotatedSetupToken = `sk-ant-oat01-${"d".repeat(40)}`;
+    await service.save(companyId, "alice", { ...intent, connectionId: saved.connectionId }, rotatedSetupToken);
+    expect(await service.credential(await row())).toBe(rotatedSetupToken);
+  });
   it("rejects invalid purpose/transport combinations in the database", async () => {
     const selected = await service.select({ ...input, userId: "alice" });
     await expect(db.update(toolConnections).set({ transport: "mcp_remote" }).where(eq(toolConnections.id, selected.connection.id))).rejects.toThrow();
