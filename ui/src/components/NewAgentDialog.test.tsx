@@ -452,6 +452,10 @@ it("keeps watching after the event check until hire verification completes", asy
   await act(async () => cache.invalidateQueries({ queryKey: ["dot-binding", "company-1", "dot-agent"] }));
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   expect(document.body.textContent).not.toContain("Your Dot is connected");
+  expect(document.body.textContent).toContain("Test event confirmed: complete");
+  expect(document.body.textContent).toContain("Your Dot confirmed the test event. Paperclip is finishing agent setup.");
+  const finishing = Array.from(document.querySelectorAll("button")).find(button => button.textContent?.includes("Finishing setup…"));
+  expect(finishing?.disabled).toBe(true);
   connection.agentLifecycleState = "ready";
   connection.agentStatus = "idle";
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 2750)); });

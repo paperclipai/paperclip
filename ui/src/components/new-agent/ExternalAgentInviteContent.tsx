@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 export type ExternalAgentPreset = "dot" | "hermes" | "other";
 export type DotConnectionState = {
-  phase: "waiting" | "connected" | "subscribed" | "testing" | "ready";
+  phase: "waiting" | "connected" | "subscribed" | "testing" | "finishing" | "ready";
   problem?: "event_timeout" | "prompt_unavailable" | "offline";
 };
 
@@ -43,10 +43,11 @@ const checks = [
 
 /** Controlled by server evidence in the invite controller, never by copying a prompt. */
 export function DotConnectionChecks({ state }: { state: DotConnectionState }) {
-  const completed = { waiting: 0, connected: 1, subscribed: 2, testing: 2, ready: 3 }[state.phase];
+  const completed = { waiting: 0, connected: 1, subscribed: 2, testing: 2, finishing: 3, ready: 3 }[state.phase];
   const message = state.problem === "offline" ? "Connection updates paused. Reconnect to check the latest status."
     : state.problem === "prompt_unavailable" ? "This setup prompt was replaced in another window. Create a fresh prompt to continue."
     : state.problem === "event_timeout" ? "Your Dot connected, but hasn’t confirmed the test event. Ask it to check Paperclip, then retry."
+    : state.phase === "finishing" ? "Your Dot confirmed the test event. Paperclip is finishing agent setup."
     : state.phase === "ready" ? "Your Dot is ready for tasks. Messages can travel both ways."
     : state.phase === "waiting" ? "Watching for your Dot. Updates will appear here automatically."
     : state.phase === "connected" ? "Your Dot connected. Waiting for it to enable task updates."
@@ -101,6 +102,7 @@ export function ExternalAgentInviteContent({
   const connecting = dot && connection.phase !== "waiting";
   const progressLabel = connection.problem === "offline" ? "Updates paused"
     : connection.problem === "event_timeout" ? "Needs attention"
+    : connection.phase === "finishing" ? "Finishing setup…"
     : connection.phase === "connected" ? "Connecting…" : "Confirming connection…";
   return <>
     <div className="min-h-0 space-y-6 overflow-y-auto px-6 pb-6 pt-8 sm:px-8">
@@ -113,6 +115,7 @@ export function ExternalAgentInviteContent({
           <DialogDescription className="text-sm leading-relaxed">
             {!provider ? `Bring an agent you already use into ${companyName}.`
               : ready ? `Your Dot can now receive assignments and work with ${companyName}.`
+              : connection.phase === "finishing" ? "Your Dot has connected and confirmed task updates. Paperclip is preparing it for assignments."
               : connecting ? "Your Dot has connected. We’re checking that task updates can travel both ways."
               : dot ? "Copy the setup prompt and send it to your Dot in ChatGPT. Your Dot will connect itself; we’ll watch for it here."
               : `Copy the invitation prompt and send it to your ${preset === "hermes" ? "Hermes " : ""}agent. Approve its join request in Paperclip when it’s ready.`}

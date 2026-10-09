@@ -96,7 +96,7 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
   }, [pairing]);
   const connection: DotConnectionState = {
     phase: binding?.status === "ready" && binding.subscriptionVerified
-      && state.data?.agentLifecycleState === "ready" && state.data.canConfigureConnection ? "ready"
+      ? state.data?.agentLifecycleState === "ready" && state.data.canConfigureConnection ? "ready" : "finishing"
       : binding?.hasPendingChallenge ? "testing" : binding?.subscriptionVerified ? "subscribed" : binding?.connected ? "connected" : "waiting",
     problem: state.error ? "offline"
       : binding?.status === "pairing" && !preparePairing && !pair.isPending && !state.isFetching && !pair.isError && pairing?.bindingId !== binding.id ? "prompt_unavailable"

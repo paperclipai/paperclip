@@ -20,6 +20,16 @@ export const ChooseAgent: Story = { name: "Choose · Dot, Hermes, or Other", arg
 export const GivePromptToDot: Story = { name: "Dot · Copy and send the prompt", args: { initialScreen: "setup" } };
 export const WatchingDotConnect: Story = { name: "Dot · Watching task updates", args: { initialScreen: "setup", initialConnection: { phase: "connected" }, simulate: false } };
 export const ConfirmingRoundTrip: Story = { name: "Dot · Confirming the round trip", args: { initialScreen: "setup", initialConnection: { phase: "testing" }, simulate: false } };
+export const FinishingAgentSetup: Story = {
+  name: "Dot · Finishing agent setup",
+  args: { initialScreen: "setup", initialConnection: { phase: "finishing" }, simulate: false },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(page.getByText("Test event confirmed", { exact: false })).toHaveTextContent("complete");
+    await expect(page.getByRole("button", { name: "Finishing setup…" })).toBeDisabled();
+    await expect(page.queryByRole("button", { name: "Done" })).not.toBeInTheDocument();
+  },
+};
 export const DotReady: Story = { name: "Dot · Ready for tasks", args: { initialScreen: "setup", initialConnection: { phase: "ready" } } };
 export const RetryEvent: Story = { name: "Recovery · Retry the test event", args: { initialScreen: "setup", initialConnection: { phase: "testing", problem: "event_timeout" } } };
 export const RefreshingPrompt: Story = { name: "Setup · Preparing a fresh prompt automatically", args: { initialScreen: "setup", preparing: true, simulate: false } };
