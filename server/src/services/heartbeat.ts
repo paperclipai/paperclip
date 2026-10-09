@@ -589,6 +589,7 @@ import {
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
   isUnresolvedWorkspaceBaseRefError,
+  readUnresolvedWorkspaceBaseRefDiagnostic,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
   type RuntimeServiceRef,
@@ -850,9 +851,11 @@ function buildUnresolvedWorkspaceBaseRefResultJson(
   error: UnresolvedWorkspaceBaseRefError,
 ): Record<string, unknown> {
   const context = parseObject(run.contextSnapshot);
+  const diagnostic = readUnresolvedWorkspaceBaseRefDiagnostic(error);
   return {
     configurationIncomplete: {
       reason: "workspace_base_ref_unresolved",
+      ...(diagnostic ? { baseRefDiagnostic: diagnostic } : {}),
       companyId: run.companyId,
       agentId: run.agentId,
       issueId: readNonEmptyString(context.issueId) ?? null,

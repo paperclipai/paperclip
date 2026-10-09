@@ -1,5 +1,6 @@
 import * as conversationContinuation from "../services/conversation-continuation.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import * as workspaceRuntime from "../services/workspace-runtime.js";
 import { ensureNativeCompletionContract } from "../services/native-runtime/completion-contracts.js";
 import { readNativePlanWait, hasCommittedNativePlanWait } from "../services/native-runtime/native-plan-wait.js";
 import { nativeSha256 } from "../services/native-runtime/canonical.js";
@@ -1533,6 +1534,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
+
+  it.each(["owned", "forged"] as const)("keeps unresolved-ref recovery and reporting while persisting only owned diagnostics: %s", async provenance => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "base-ref-heartbeat-"));
+    execFileSync("git", ["init", "-b", "master"], { cwd: repoRoot, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "Fixture"], { cwd: repoRoot, stdio: "ignore" });
+    const original = await workspaceRuntime.realizeExecutionWorkspace({
+      base: { baseCwd: repoRoot, source: "project_primary", projectId: null, workspaceId: null, repoUrl: null, repoRef: "absent-fixture" },
+      config: { workspaceStrategy: { type: "git_worktree" } },
+      issue: { id: issueId, identifier: "FIXTURE-1", title: "Fixture" }, agent: { id: agentId, companyId, name: "Fixture" },
+    }).catch(error => error);
+    expect(original).toBeInstanceOf(workspaceRuntime.UnresolvedWorkspaceBaseRefError);
+    const diagnostic = workspaceRuntime.readUnresolvedWorkspaceBaseRefDiagnostic(original);
+    expect(diagnostic).toMatchObject({ remoteLookup: "failed", fetch: "not_attempted" });
+    const error = provenance === "owned" ? original : Object.assign(new workspaceRuntime.UnresolvedWorkspaceBaseRefError({
+      requestedRef: "absent-fixture", recoveryIdentityRef: "origin/absent-fixture", attemptedRefs: ["origin/absent-fixture"],
+    }), { baseRefDiagnostic: diagnostic });
+    const realize = vi.spyOn(workspaceRuntime, "realizeExecutionWorkspace").mockRejectedValueOnce(error);
+    try {
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      await waitForPendingRunFailureReports();
+      expect(realize).toHaveBeenCalled();
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      const failed = await heartbeat.getRun(runId);
+      expect(failed).toMatchObject({ status: "failed", errorCode: "configuration_incomplete", resultJson: {
+        configurationIncomplete: { reason: "workspace_base_ref_unresolved" },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      } });
+      if (provenance === "owned") expect(failed?.resultJson?.configurationIncomplete).toHaveProperty("baseRefDiagnostic", diagnostic);
+      else expect(failed?.resultJson?.configurationIncomplete).not.toHaveProperty("baseRefDiagnostic");
+      expect(mockCaptureRunFailure).toHaveBeenCalledWith(expect.objectContaining({ runId, errorCode: "configuration_incomplete" }));
+      const captured = mockCaptureRunFailure.mock.calls.find(([entry]) => entry.runId === runId)?.[0];
+      if (provenance === "owned") expect(captured?.diagnostics.execution).toMatchObject({ workspaceBaseRefRemoteLookup: "failed", workspaceBaseRefFetch: "not_attempted" });
+      else expect(captured?.diagnostics.execution).not.toHaveProperty("workspaceBaseRefFetch");
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue).toMatchObject({ status: "blocked", executionRunId: null });
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      expect(action).toMatchObject({ status: "active", kind: "configuration_validation", ownerType: "board" });
+      const [wakeup] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId));
+      expect(wakeup.status).toBe("failed");
+    } finally { realize.mockRestore(); await fs.rm(repoRoot, { recursive: true, force: true }); }
+  });
 
   it.each(["missing_default", "credential_not_shared", "database_error", "unmarked_http_error", "unmarked_forbidden", "provider_error"] as const)(
     "preserves AI configuration recovery and reports only unexpected causes: %s", async (cause) => {
