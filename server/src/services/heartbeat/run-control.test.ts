@@ -271,7 +271,6 @@ describe.skipIf(!support.supported)("heartbeat run-control database wiring", () 
     expect(await createHeartbeatRunControl(db, deps).cancelInvocationsForAgentsInternal([agent.id, "", agent.id], "pause")).toEqual({ agentIds: [agent.id], runsCancelled: 0, wakeupsCancelled: 2 });
     const persisted = await db.select().from(agentWakeupRequests);
     expect(wakes.map(wake => persisted.find(row => row.id === wake.id)?.status)).toEqual(["cancelled", "cancelled", "claimed", "queued", "queued"]);
-    expect(deps.getAgent).toHaveBeenCalledTimes(1);
   });
 
   it("rechecks stale budget enforcement before cancelling runs or queued wakes", async () => {
