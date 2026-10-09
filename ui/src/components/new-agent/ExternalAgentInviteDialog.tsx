@@ -36,7 +36,8 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
     enabled: preset === "dot" && !!invitation,
     retry: false,
     staleTime: 0,
-    refetchInterval: query => query.state.error ? false : query.state.data?.binding?.status === "ready" && query.state.data.binding.subscriptionVerified ? false : 2500,
+    refetchInterval: query => query.state.error ? false : query.state.data?.agentLifecycleState === "ready" && query.state.data.canConfigureConnection
+      && query.state.data.binding?.status === "ready" && query.state.data.binding.subscriptionVerified ? false : 2500,
   });
   const generate = useMutation({
     mutationFn: async (kind: ExternalAgentPreset) => {
@@ -71,7 +72,7 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
     onSuccess: () => { void cache.invalidateQueries({ queryKey: key }); } });
   const binding = state.data?.binding;
   const canPreparePairing = preset === "dot" && state.data?.enabled && !!state.data.resourceUrl
-    && !["pending_approval", "paused", "terminated"].includes(state.data.agentStatus)
+    && state.data.canConfigureConnection
     && (!binding || binding.status === "pairing");
   const preparePairing = canPreparePairing && !pairing && !state.error && !pair.isError
     && !attemptedAutomaticPairing.current
@@ -94,14 +95,15 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
     return () => window.clearTimeout(timer);
   }, [pairing]);
   const connection: DotConnectionState = {
-    phase: binding?.status === "ready" && binding.subscriptionVerified && !["paused", "terminated", "pending_approval"].includes(state.data?.agentStatus ?? "") ? "ready"
+    phase: binding?.status === "ready" && binding.subscriptionVerified
+      && state.data?.agentLifecycleState === "ready" && state.data.canConfigureConnection ? "ready"
       : binding?.hasPendingChallenge ? "testing" : binding?.subscriptionVerified ? "subscribed" : binding?.connected ? "connected" : "waiting",
     problem: state.error ? "offline"
       : binding?.status === "pairing" && !preparePairing && !pair.isPending && !state.isFetching && !pair.isError && pairing?.bindingId !== binding.id ? "prompt_unavailable"
       : binding?.challengeExpiresAt && !binding.hasPendingChallenge && binding.status !== "ready" ? "event_timeout" : undefined,
   };
   const pendingApproval = (state.data?.agentStatus ?? invitation?.agent.status) === "pending_approval";
-  const unavailable = state.data && ["paused", "terminated"].includes(state.data.agentStatus);
+  const unavailable = state.data && !state.data.canConfigureConnection && !pendingApproval;
   const prompt = preset === "dot" ? pairing && pairing.bindingId === binding?.id && state.data?.resourceUrl && invitation
     ? buildDotSetupPrompt({ companyId, agentId: invitation.agent.id, resourceUrl: state.data.resourceUrl, ...pairing }) : "" : genericPrompt;
   const error = (generate.variables === preset ? generate.error : null) ?? (preset === "dot" ? (binding?.connected ? null : pair.error) ?? test.error : null);

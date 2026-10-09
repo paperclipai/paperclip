@@ -128,3 +128,32 @@ it("does not trust editable agent metadata as an invitation ownership receipt", 
   expect(await service.resume(f.companyId, f.userId)).toBeNull();
   expect((await service.create(f.companyId, f.userId)).agent.id).not.toBe(spoof!.id);
 });
+
+
+it("reports connection setup authority separately from compatibility status", async () => {
+  const f = await fixture();
+  const invite = await dotInvitationService(db).create(f.companyId, f.userId);
+  const app = express();
+  app.use((req, _res, next) => {
+    req.actor = { type: "board", source: "session", userId: f.userId, companyIds: [f.companyId],
+      memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active" }] };
+    next();
+  });
+  app.use(dotRunnerRoutes(db, "https://paperclip.example/mcp/runner"));
+  const path = `/companies/${f.companyId}/agents/${invite.agent.id}/dot-binding`;
+  const cases = [
+    { lifecycleState: "preparing", status: "paused", allowed: true },
+    { lifecycleState: "verifying", status: "paused", allowed: true },
+    { lifecycleState: "ready", status: "idle", allowed: true },
+    { lifecycleState: "paused", status: "paused", allowed: false },
+    { lifecycleState: "pending_approval", status: "pending_approval", allowed: false },
+    { lifecycleState: "terminated", status: "terminated", allowed: false },
+  ] as const;
+  for (const state of cases) {
+    await db.update(agents).set({ lifecycleState: state.lifecycleState, status: state.status }).where(eq(agents.id, invite.agent.id));
+    const result = await request(app).get(path);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ agentStatus: state.status, agentLifecycleState: state.lifecycleState,
+      canConfigureConnection: state.allowed });
+  }
+});
