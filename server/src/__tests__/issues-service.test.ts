@@ -2540,6 +2540,94 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     );
   });
 
+  it("ignores execution-recovery bookkeeping when reporting last activity", async () => {
+    const companyId = randomUUID();
+    const sweptIssueId = randomUUID();
+    const realUpdateIssueId = randomUUID();
+    const otherSystemIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values(
+      [sweptIssueId, realUpdateIssueId, otherSystemIssueId].map((id) => ({
+        id,
+        companyId,
+        title: `Issue ${id}`,
+        status: "todo" as const,
+        priority: "medium" as const,
+        updatedAt: new Date("2026-03-26T10:00:00.000Z"),
+      })),
+    );
+
+    await db.insert(activityLog).values([
+      // The sweep revisits a stalled issue repeatedly. These rows are machine
+      // bookkeeping and must not look like activity.
+      {
+        companyId,
+        actorType: "system",
+        actorId: "execution-recovery",
+        action: "issue.execution_recovery_settled",
+        entityType: "issue",
+        entityId: sweptIssueId,
+        createdAt: new Date("2026-03-26T14:00:00.000Z"),
+      },
+      // The sweep also writes the GENERIC issue.updated action, so the filter
+      // cannot key on the action name.
+      {
+        companyId,
+        actorType: "system",
+        actorId: "execution-recovery",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: sweptIssueId,
+        createdAt: new Date("2026-03-26T15:00:00.000Z"),
+      },
+      // The same action from a real actor must still count.
+      {
+        companyId,
+        actorType: "agent",
+        actorId: "agent-1",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: realUpdateIssueId,
+        createdAt: new Date("2026-03-26T12:00:00.000Z"),
+      },
+      // Only the recovery actor is excluded, not every system actor.
+      {
+        companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: otherSystemIssueId,
+        createdAt: new Date("2026-03-26T13:00:00.000Z"),
+      },
+    ]);
+
+    const result = await svc.list(companyId, {});
+    const lastActivityFor = (id: string) =>
+      result.find((issue) => issue.id === id)?.lastActivityAt?.toISOString();
+
+    // Recovery chatter alone leaves the issue at its own updatedAt, so a stalled
+    // issue reads as stalled instead of perpetually fresh.
+    expect(lastActivityFor(sweptIssueId)).toBe("2026-03-26T10:00:00.000Z");
+    expect(lastActivityFor(realUpdateIssueId)).toBe("2026-03-26T12:00:00.000Z");
+    expect(lastActivityFor(otherSystemIssueId)).toBe("2026-03-26T13:00:00.000Z");
+
+    // Ordering follows the corrected timestamps, so the swept issue sorts last
+    // even though it carries the newest log row.
+    expect(result.map((issue) => issue.id)).toEqual([
+      otherSystemIssueId,
+      realUpdateIssueId,
+      sweptIssueId,
+    ]);
+  });
+
   it("paginates earlier comments in descending order from an anchor comment", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

@@ -2931,6 +2931,42 @@ const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
   "issue.inbox_unarchived",
 ] as const;
 
+/**
+ * The execution-recovery sweep writes its bookkeeping to the activity log of the
+ * issue it is reconciling. Those rows are machine chatter, not issue activity,
+ * and counting them makes `lastActivityAt` advance forever on exactly the issues
+ * recovery keeps revisiting — so stall detection goes blind on the issues that
+ * most need attention.
+ *
+ * This must be excluded by ACTOR and not by action: the sweep writes the generic
+ * `issue.updated` action, which real user and agent edits also use, so filtering
+ * on the action name would hide genuine activity.
+ *
+ * A recovery pass that actually changes the issue still advances
+ * `issues.updatedAt`, and `issueCanonicalLastActivityAtExpr` takes the GREATEST
+ * over that, so a real state change is still reported as activity. Only the
+ * log-only rows stop counting.
+ */
+const EXECUTION_RECOVERY_ACTOR_TYPE = "system";
+const EXECUTION_RECOVERY_ACTOR_ID = "execution-recovery";
+
+/**
+ * Rows that must not count towards an issue's activity timestamps. Shared by the
+ * per-issue correlated subquery and the bulk prefetch so the two cannot drift.
+ */
+function issueActivityLogExclusionCondition() {
+  return sql`
+    ${activityLog.action} NOT IN (${sql.join(
+      ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+      sql`, `,
+    )})
+    AND NOT (
+      ${activityLog.actorType} = ${EXECUTION_RECOVERY_ACTOR_TYPE}
+      AND ${activityLog.actorId} = ${EXECUTION_RECOVERY_ACTOR_ID}
+    )
+  `;
+}
+
 function issueLatestCommentAtExpr(companyId: string) {
   return sql<Date | null>`
     (
@@ -2950,10 +2986,7 @@ function issueLatestLogAtExpr(companyId: string) {
       WHERE ${activityLog.companyId} = ${companyId}
         AND ${activityLog.entityType} = 'issue'
         AND ${activityLog.entityId} = ${issues.id}::text
-        AND ${activityLog.action} NOT IN (${sql.join(
-          ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
-          sql`, `,
-        )})
+        AND (${issueActivityLogExclusionCondition()})
     )
   `;
 }
@@ -5125,12 +5158,7 @@ async function lastActivityStatsForIssues(
             eq(activityLog.companyId, companyId),
             eq(activityLog.entityType, "issue"),
             inArray(activityLog.entityId, issueIdChunk),
-            sql`${activityLog.action} NOT IN (${sql.join(
-              ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS.map(
-                (action) => sql`${action}`,
-              ),
-              sql`, `,
-            )})`,
+            sql`(${issueActivityLogExclusionCondition()})`,
           ),
         )
         .groupBy(activityLog.entityId),
