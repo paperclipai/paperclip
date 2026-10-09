@@ -56,6 +56,14 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
           if (!await runStep("complete_plugin", () => store.completePlugin(agent, owner, pluginId), pluginId)) continue phase;
         }
         const changed = await runStep("transition", () => store.change(id, "complete", { version: agent.lifecycleVersion, owner }));
+        if (changed?.lifecycleState === "ready" && !stopped && canRun()) {
+          // Accepted messages may already be waiting for verification. Do not
+          // leave them until the periodic queue sweep. Readiness is committed;
+          // a dispatch failure must not replay setup or defer the old phase.
+          await attempt({ ...context, stage: "ready", phase: changed.lifecycleState,
+            version: changed.lifecycleVersion, operationId: changed.lifecycleOperation?.id },
+          async () => { await driver.onReady?.(changed); }).catch(() => {});
+        }
         if (changed && !isLifecycleWorkPending(changed.lifecycleState)) return;
       } catch {
         if (!await runStep("defer", () => store.defer(agent, owner, "The lifecycle step failed. Retry the operation.", new Date()))) continue;

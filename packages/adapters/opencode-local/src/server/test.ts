@@ -25,7 +25,7 @@ import {
   prepareAdapterExecutionTargetRuntime,
   overrideAdapterExecutionTargetRemoteCwd,
 } from "@paperclipai/adapter-utils/execution-target";
-import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
+import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable, requireOpenCodeModelId } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
@@ -141,9 +141,16 @@ export async function testEnvironment(
   // still has the path available for cleanup in `finally` — otherwise the
   // `fs.mkdtemp` directory leaks on the early-throw path.
   let preparedRuntimeWorkspaceLocalDir: string | null = null;
+  let nativeProbeWorkspaceLocalDir: string | null = null;
   try {
     let runtimeTarget: AdapterExecutionTarget | null = target ?? null;
     let runtimeCwd = cwd;
+    // Native workspaces are assigned at execution time. A configuration probe
+    // without an explicit workspace must not run in the server's checkout.
+    if (!targetIsRemote && ctx.adapterType === "paperclip_runner" && !asString(config.cwd, "").trim()) {
+      nativeProbeWorkspaceLocalDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-native-probe-"));
+      runtimeCwd = nativeProbeWorkspaceLocalDir;
+    }
     if (targetIsRemote) {
       preparedRuntimeWorkspaceLocalDir = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-opencode-envtest-${runId}-`));
       const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
@@ -223,12 +230,30 @@ export async function testEnvironment(
     let modelValidationPassed = false;
     const configuredModel = asString(config.model, "").trim();
 
+    // The native runner already selects a concrete model. Its real hello probe
+    // verifies model access and credentials; a full catalog scan adds another
+    // cold CLI launch (and discovery retries) without verifying that request.
+    const nativeModelProbe = ctx.adapterType === "paperclip_runner" && Boolean(configuredModel);
+
     // Model discovery and validation use local child processes against
     // OpenCode's `models` subcommand and JSON config; these are not yet
     // wired through the execution target. When probing a remote env, skip
     // discovery/validation and rely on the remote hello probe to surface
     // model/auth issues directly.
-    if (targetIsRemote && configuredModel) {
+    if (nativeModelProbe) {
+      try {
+        requireOpenCodeModelId(configuredModel);
+        modelValidationPassed = true;
+        checks.push({
+          code: "opencode_model_validation_via_probe",
+          level: "info",
+          message: "The configured native-runner model will be validated by the hello probe.",
+        });
+      } catch (error) {
+        checks.push({ code: "opencode_model_invalid", level: "error",
+          message: error instanceof Error ? error.message : "Configured model is invalid." });
+      }
+    } else if (targetIsRemote && configuredModel) {
       checks.push({
         code: "opencode_model_validation_skipped_remote",
         level: "info",
@@ -305,7 +330,7 @@ export async function testEnvironment(
     const modelUnavailable = checks.some((check) => check.code === "opencode_hello_probe_model_unavailable");
     if (!configuredModel && !modelUnavailable) {
       // No model configured – skip model requirement if no model-related checks exist
-    } else if (!targetIsRemote && configuredModel && canRunProbe) {
+    } else if (!nativeModelProbe && !targetIsRemote && configuredModel && canRunProbe) {
       try {
         await ensureOpenCodeModelConfiguredAndAvailable({
           model: configuredModel,
@@ -430,6 +455,9 @@ export async function testEnvironment(
       }
     }
   } finally {
+    if (nativeProbeWorkspaceLocalDir) {
+      await fs.rm(nativeProbeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+    }
     await restoreWorkspace?.();
     if (!restoreWorkspace && preparedRuntimeWorkspaceLocalDir) {
       // Reached when `prepareAdapterExecutionTargetRuntime` threw before
