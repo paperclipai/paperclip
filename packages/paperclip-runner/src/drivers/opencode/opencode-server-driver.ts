@@ -178,6 +178,7 @@ export interface OpenCodeServerDriverOptions {
   commandLifecycle?: {
     beforeSpawn(): void;
     afterSpawn(): void;
+    afterExit?(): void;
   };
   runtimeDirectory: string;
   systemInstructions?: string;
@@ -2265,6 +2266,16 @@ async function startRuntime(input: {
     input.trace?.addSensitiveValues([providerProxy.token]);
   }
   let child: ChildProcess | undefined;
+  let launchPrepared = false;
+  const releaseExecutable = () => {
+    if (!launchPrepared) return;
+    launchPrepared = false;
+    try {
+      input.options.commandLifecycle?.afterExit?.();
+    } catch (error) {
+      input.options.onDiagnostic?.(redact(`OpenCode executable cleanup failed: ${String(error)}`, sensitiveValues));
+    }
+  };
   try {
     const config = {
       $schema: "https://opencode.ai/config.json",
@@ -2365,6 +2376,7 @@ async function startRuntime(input: {
       stdio[input.options.commandFd] = input.options.commandFd;
     }
     input.options.commandLifecycle?.beforeSpawn();
+    launchPrepared = true;
     child = spawn(
       input.options.command ?? resolvePinnedOpenCodeCommand(),
       ["serve", "--hostname", "127.0.0.1", "--port", String(port)],
@@ -2375,6 +2387,7 @@ async function startRuntime(input: {
         detached: globalThis.process.platform !== "win32" && isolateProcessGroup,
       },
     );
+    child.once("exit", releaseExecutable);
     if (child.pid !== undefined) {
       try {
         input.options.commandLifecycle?.afterSpawn();
@@ -2471,6 +2484,7 @@ async function startRuntime(input: {
           } catch {
             providerChild.kill("SIGKILL");
           }
+          await waitForExit(providerChild, 2_000);
         }
         await rm(join(configHome, "opencode", "opencode.json"), {
           force: true,
@@ -2487,6 +2501,8 @@ async function startRuntime(input: {
     await providerProxy?.close();
     await bridge.close().catch(() => {});
     child?.kill("SIGKILL");
+    if (child?.pid) await waitForExit(child, 2_000);
+    if (!child?.pid || child.exitCode !== null || child.signalCode !== null) releaseExecutable();
     await rm(join(configHome, "opencode", "opencode.json"), {
       force: true,
     }).catch(() => undefined);

@@ -2484,6 +2484,9 @@ describe("OpenCodeServerDriver", () => {
         afterSpawn: () => {
           commandLifecycle.push("after");
         },
+        afterExit: () => {
+          commandLifecycle.push("exit");
+        },
       },
       fetch: async (input, init) => {
         if (
@@ -2509,9 +2512,31 @@ describe("OpenCodeServerDriver", () => {
     expect(spawns.length).toBeGreaterThanOrEqual(2);
     expect(spawns.length).toBeLessThanOrEqual(3);
     expect(commandLifecycle).toEqual(
-      Array.from({ length: spawns.length }, () => ["before", "after"]).flat(),
+      [...Array.from({ length: spawns.length - 1 }, () => ["before", "after", "exit"]).flat(), "before", "after"],
     );
     await session.close({ reason: "test" });
+    expect(commandLifecycle).toEqual(
+      Array.from({ length: spawns.length }, () => ["before", "after", "exit"]).flat(),
+    );
+  });
+
+  it("releases the executable binding when spawning fails before health checks", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-spawn-error-"));
+    roots.push(root);
+    const lifecycle: string[] = [];
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: join(root, "missing-executable"),
+      commandLifecycle: {
+        beforeSpawn: () => { lifecycle.push("before"); },
+        afterSpawn: () => { lifecycle.push("spawned"); },
+        afterExit: () => { lifecycle.push("released"); },
+      },
+    });
+    await expect(driver.openSession({ runId: "spawn-error", normalizedSessionId: "spawn-error",
+      workingDirectory: root })).rejects.toThrow("ENOENT");
+    expect(lifecycle).toEqual(["before", "released"]);
   });
 
   it("reports startup exit details with stderr captured after spawn and redacted", async () => {

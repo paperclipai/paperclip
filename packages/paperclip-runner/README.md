@@ -247,6 +247,12 @@ runner supplies the pinned executable, selected model, and assigned MCP tools.
 Provider inference and reasoning still contribute to time to first text. These
 startup settings do not disable model reasoning.
 
+On macOS, the verified OpenCode executable keeps its private launch pathname
+until the provider process exits. Removing that pathname immediately after
+spawn can kill or stall the signed binary before its health check succeeds.
+Ownership, permissions, and file-identity checks remain enforced; cleanup also
+runs on failed launches, and retries create a fresh launch snapshot.
+
 Call `session.startTurn({ message, reasoningMode: "disabled" })` to disable
 reasoning for one OpenCode/OpenRouter turn. `CapabilityLiveSession.sendMessage`
 accepts the same option in its second argument. The choice travels in the durable

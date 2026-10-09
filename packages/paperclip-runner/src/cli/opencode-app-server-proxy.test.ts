@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -28,7 +28,7 @@ describe("OpenCode runnerd proxy executable", () => {
     ])).toEqual({ command: "/proc/self/fd/7", commandFd: 7 });
   });
 
-  it("executes the inherited artifact through the nested child fd mapping", () => {
+  it("executes the inherited artifact through the nested child fd mapping", async () => {
     if (process.platform === "win32") return;
     if (process.platform === "darwin") {
       const root = mkdtempSync(join(tmpdir(), "paperclip-opencode-nested-"));
@@ -45,22 +45,27 @@ describe("OpenCode runnerd proxy executable", () => {
           TRUSTED_OPENCODE_EXECUTABLE_ARG,
           command,
         ]);
-        binding.commandLifecycle?.beforeSpawn();
-        const child = spawnSync(binding.command, [], { encoding: "utf8" });
-        expect(child.error).toBeUndefined();
-        expect(child.status).toBe(0);
-        expect(child.stdout).toBe("verified-nested-spawn");
-        binding.commandLifecycle?.afterSpawn();
-        expect(() => lstatSync(command)).toThrow();
-        expect(() => lstatSync(directory)).toThrow();
-        binding.commandLifecycle?.beforeSpawn();
-        const retriedChild = spawnSync(binding.command, [], { encoding: "utf8" });
-        expect(retriedChild.error).toBeUndefined();
-        expect(retriedChild.status).toBe(0);
-        expect(retriedChild.stdout).toBe("verified-nested-spawn");
-        binding.commandLifecycle?.afterSpawn();
-        expect(() => lstatSync(command)).toThrow();
-        expect(() => lstatSync(directory)).toThrow();
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          binding.commandLifecycle!.beforeSpawn();
+          const child = spawn(binding.command, [], { stdio: ["ignore", "pipe", "pipe"] });
+          let stdout = "";
+          child.stdout!.on("data", chunk => { stdout += chunk; });
+          const exited = new Promise<number | null>((resolve, reject) => {
+            child.once("error", reject);
+            child.once("close", resolve);
+          });
+          binding.commandLifecycle!.afterSpawn();
+          // Exercise the production async boundary, not spawnSync followed by
+          // cleanup after the executable has already finished.
+          expect(lstatSync(command).isFile()).toBe(true);
+          expect(() => binding.commandLifecycle!.beforeSpawn()).toThrow("still in use");
+          expect(await exited).toBe(0);
+          expect(stdout).toBe("verified-nested-spawn");
+          binding.commandLifecycle!.afterExit();
+          binding.commandLifecycle!.afterExit();
+          expect(() => lstatSync(command)).toThrow();
+          expect(() => lstatSync(directory)).toThrow();
+        }
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
