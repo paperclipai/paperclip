@@ -309,6 +309,43 @@ export function claudeOAuthClaimRejectedError(): HttpError {
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type SecretBindingDb = Pick<Db | DbTransaction, "select" | "delete" | "insert">;
+// A binding executor that can also run the per-secret advisory-lock
+// statement (see `secretBindingLockKey`). Transaction-scoped locks only work
+// inside a transaction, so executors that cannot `execute` keep the plain
+// binding semantics.
+type SecretBindingWriteDb = Pick<Db | DbTransaction, "select" | "delete" | "insert" | "execute">;
+
+/**
+ * Advisory-lock key shared by the guarded secret delete (`removeIfUnbound`)
+ * and every binding write funnel. Binding writers take this lock per
+ * referenced secret before they re-validate and insert, and the guarded
+ * delete takes it before it counts bindings and flips the secret to
+ * `deleted`. This makes "count zero bindings, then delete" atomic against
+ * "validate the secret, then insert a binding": the two orders can no longer
+ * interleave into a binding row that the delete's foreign-key cascade
+ * silently removes from a consumer that still references the secret.
+ *
+ * The lock is transaction-scoped: it is held until the surrounding
+ * transaction commits or rolls back. On a plain autocommit executor the lock
+ * statement returns immediately and releases at statement end, so callers
+ * that do not run in a transaction keep their pre-existing semantics.
+ */
+function secretBindingLockKey(secretId: string) {
+  return `paperclip:secret-bindings:${secretId}`;
+}
+
+async function lockSecretBindingSecrets(
+  executor: Pick<Db | DbTransaction, "execute">,
+  secretIds: Iterable<string>,
+) {
+  // Sorted so two multi-secret writers always request the ids in the same
+  // order and cannot deadlock against each other.
+  for (const secretId of [...new Set(secretIds)].sort()) {
+    await executor.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${secretBindingLockKey(secretId)}, 0))`,
+    );
+  }
+}
 
 function isUniqueConstraintViolation(error: unknown, constraintName: string) {
   const seen = new Set<unknown>();
@@ -2738,6 +2775,23 @@ export function secretService(db: Db | DbTransaction) {
     };
   }
 
+  // The binding rows for one secret, enriched with the consuming target's
+  // label. Shared by the usage endpoint and the guarded delete's 409 body.
+  async function listBindingReferencesInternal(companyId: string, secretId: string) {
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(eq(companySecretBindings.companyId, companyId), eq(companySecretBindings.secretId, secretId)))
+      .orderBy(desc(companySecretBindings.createdAt));
+    const targetMap = await buildBindingTargetMap(companyId, bindings);
+    return bindings.map((binding) => ({
+      ...binding,
+      target:
+        targetMap.get(`${binding.targetType}:${binding.targetId}`) ??
+        fallbackBindingTarget(binding),
+    }));
+  }
+
   async function buildBindingTargetMap(
     companyId: string,
     bindings: Array<typeof companySecretBindings.$inferSelect>,
@@ -3384,9 +3438,6 @@ export function secretService(db: Db | DbTransaction) {
   async function removeSecretUnlocked(secretId: string) {
     const secret = await getById(secretId);
     if (!secret) return null;
-    const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
-    const providerId = secret.provider as SecretProvider;
-    const provider = getSecretProvider(providerId);
     if (secret.status !== "deleted") {
       await db
         .update(companySecrets)
@@ -3399,6 +3450,17 @@ export function secretService(db: Db | DbTransaction) {
         })
         .where(eq(companySecrets.id, secretId));
     }
+    return removeSecretMaterialAndRow(secret);
+  }
+
+  // Provider cleanup plus the hard row delete, shared by the unconditional
+  // delete and the guarded delete. Callers pass the pre-delete read so the
+  // provider context keeps the original key and name, not the
+  // `__deleted__`-mangled values the soft delete writes.
+  async function removeSecretMaterialAndRow(secret: typeof companySecrets.$inferSelect) {
+    const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
+    const providerId = secret.provider as SecretProvider;
+    const provider = getSecretProvider(providerId);
     const providerConfig = secret.providerConfigId
       ? await getProviderConfigById(secret.providerConfigId)
       : null;
@@ -3426,8 +3488,79 @@ export function secretService(db: Db | DbTransaction) {
         }
       }
     }
-    await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
+    await db.delete(companySecrets).where(eq(companySecrets.id, secret.id));
     return secret;
+  }
+
+  // Delete a company secret only while no binding row references it. The
+  // binding count and the flip to `deleted` run in one transaction under the
+  // per-secret advisory lock every binding write funnel also takes, so an
+  // agent (or project, routine, or environment) update cannot land a new
+  // binding between the count and the delete. See `secretBindingLockKey`.
+  async function removeIfUnboundInternal(secretId: string) {
+    const preCheckSecret = await getById(secretId);
+    if (!preCheckSecret) return null;
+    return withAccountHomeSecretMutationLock(undefined, preCheckSecret.companyId, () =>
+      removeIfUnboundUnlocked(secretId),
+    );
+  }
+
+  async function removeIfUnboundUnlocked(secretId: string) {
+    const secret = await getById(secretId);
+    if (!secret) return null;
+    // An earlier attempt already flipped this row to `deleted` (for example
+    // a provider failure between the soft delete and the hard delete). Retry
+    // the cleanup without the binding guard so operators can finish the
+    // delete, matching the plain remove() retry behavior.
+    if (secret.status === "deleted") {
+      return removeSecretUnlocked(secretId);
+    }
+    const stillBound = await db.transaction(async (tx) => {
+      await lockSecretBindingSecrets(tx, [secret.id]);
+      const bindings = await tx
+        .select({ id: companySecretBindings.id })
+        .from(companySecretBindings)
+        .where(
+          and(
+            eq(companySecretBindings.companyId, secret.companyId),
+            eq(companySecretBindings.secretId, secret.id),
+          ),
+        );
+      if (bindings.length > 0) return true;
+      // Flip the row to `deleted` under the same advisory lock the binding
+      // writers hold. Every funnel re-validates the secret status after it
+      // takes the lock, so once this transaction commits no new binding can
+      // reference the secret and the hard delete below cannot cascade a
+      // binding away from a consumer that still points at the secret.
+      await tx
+        .update(companySecrets)
+        .set({
+          key: `${secret.key}__deleted__${secret.id}`,
+          name: `${secret.name}__deleted__${secret.id}`,
+          status: "deleted",
+          deletedAt: secret.deletedAt ?? new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(companySecrets.id, secretId));
+      return false;
+    });
+    if (stillBound) {
+      const references = await listBindingReferencesInternal(secret.companyId, secret.id);
+      const shown = references
+        .slice(0, 5)
+        .map(
+          (reference) =>
+            `${reference.target.type} "${reference.target.label}" at ${reference.configPath}`,
+        );
+      const hidden = references.length - shown.length;
+      throw conflict(
+        `Secret is still bound to ${references.length} consumer${references.length === 1 ? "" : "s"}. ` +
+          `Remove the bindings before you delete the secret: ${shown.join(", ")}` +
+          (hidden > 0 ? `, and ${hidden} more` : ""),
+        { code: "secret_in_use", bindings: references },
+      );
+    }
+    return removeSecretMaterialAndRow(secret);
   }
 
   async function removeUserSecretDefinitionInternal(
@@ -3755,20 +3888,8 @@ export function secretService(db: Db | DbTransaction) {
         )
         .orderBy(desc(companySecretBindings.createdAt)),
 
-    listBindingReferences: async (companyId: string, secretId: string) => {
-      const bindings = await db
-        .select()
-        .from(companySecretBindings)
-        .where(and(eq(companySecretBindings.companyId, companyId), eq(companySecretBindings.secretId, secretId)))
-        .orderBy(desc(companySecretBindings.createdAt));
-      const targetMap = await buildBindingTargetMap(companyId, bindings);
-      return bindings.map((binding) => ({
-        ...binding,
-        target:
-          targetMap.get(`${binding.targetType}:${binding.targetId}`) ??
-          fallbackBindingTarget(binding),
-      }));
-    },
+    listBindingReferences: async (companyId: string, secretId: string) =>
+      listBindingReferencesInternal(companyId, secretId),
 
     listAccessEvents: (companyId: string, secretId: string) =>
       db
@@ -4664,35 +4785,42 @@ export function secretService(db: Db | DbTransaction) {
         projectionClass: input.projectionClass,
         projectionAllowlistKey: input.projectionAllowlistKey,
       });
-      const existing = await db
-        .select()
-        .from(companySecretBindings)
-        .where(
-          and(
-            eq(companySecretBindings.companyId, input.companyId),
-            eq(companySecretBindings.targetType, input.targetType),
-            eq(companySecretBindings.targetId, input.targetId),
-            eq(companySecretBindings.configPath, input.configPath),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
-      if (existing) throw conflict(`Secret binding already exists at ${input.configPath}`);
-      return db
-        .insert(companySecretBindings)
-        .values({
-          companyId: input.companyId,
-          secretId: input.secretId,
-          targetType: input.targetType,
-          targetId: input.targetId,
-          configPath: input.configPath,
-          versionSelector: String(input.versionSelector ?? "latest"),
-          required: input.required ?? true,
-          label: input.label ?? null,
-          projectionClass: input.projectionClass ?? "unclassified",
-          projectionAllowlistKey: input.projectionAllowlistKey ?? null,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      return db.transaction(async (tx) => {
+        // Same per-secret advisory lock as the guarded delete (see
+        // `secretBindingLockKey`); re-validate under it so a secret the
+        // guarded delete removed mid-call cannot gain a binding.
+        await lockSecretBindingSecrets(tx, [input.secretId]);
+        await assertSecretInCompany(input.companyId, input.secretId, tx);
+        const existing = await tx
+          .select()
+          .from(companySecretBindings)
+          .where(
+            and(
+              eq(companySecretBindings.companyId, input.companyId),
+              eq(companySecretBindings.targetType, input.targetType),
+              eq(companySecretBindings.targetId, input.targetId),
+              eq(companySecretBindings.configPath, input.configPath),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (existing) throw conflict(`Secret binding already exists at ${input.configPath}`);
+        return tx
+          .insert(companySecretBindings)
+          .values({
+            companyId: input.companyId,
+            secretId: input.secretId,
+            targetType: input.targetType,
+            targetId: input.targetId,
+            configPath: input.configPath,
+            versionSelector: String(input.versionSelector ?? "latest"),
+            required: input.required ?? true,
+            label: input.label ?? null,
+            projectionClass: input.projectionClass ?? "unclassified",
+            projectionAllowlistKey: input.projectionAllowlistKey ?? null,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+      });
     },
 
     syncSecretRefsForTarget: async (
@@ -4743,6 +4871,15 @@ export function secretService(db: Db | DbTransaction) {
       const pathPrefixes = [...new Set(normalizedRefs.map((ref) => ref.configPath.split(".")[0]))];
 
       await db.transaction(async (tx) => {
+        if (normalizedRefs.length > 0) {
+          // Same per-secret advisory lock as the guarded delete (see
+          // `secretBindingLockKey`); re-validate under it so a secret deleted
+          // mid-call cannot gain a binding the delete cascade would eat.
+          await lockSecretBindingSecrets(tx, normalizedRefs.map((ref) => ref.secretId));
+          for (const ref of normalizedRefs) {
+            await assertSecretInCompany(companyId, ref.secretId, tx);
+          }
+        }
         if (options?.replaceAll) {
           await tx
             .delete(companySecretBindings)
@@ -4825,7 +4962,9 @@ export function secretService(db: Db | DbTransaction) {
         projectionClass?: SecretProjectionClass;
         projectionAllowlistKey?: string | null;
       }>,
-      options?: { db?: SecretBindingDb },
+      // Transaction-scoped advisory locks only work inside a transaction, so
+      // a caller-supplied executor must be a transaction, not a plain `Db`.
+      options?: { db?: SecretBindingWriteDb },
     ) => {
       const normalizedRefs: Array<{
         companyId: string;
@@ -4867,7 +5006,27 @@ export function secretService(db: Db | DbTransaction) {
         });
       }
 
-      const writeBindings = async (executor: SecretBindingDb) => {
+      const writeBindings = async (executor: SecretBindingWriteDb) => {
+        if (normalizedRefs.length > 0) {
+          // Same per-secret advisory lock as the guarded delete (see
+          // `secretBindingLockKey`). Re-validate each referenced secret under
+          // the lock, mirroring the pre-pass above, so a secret the guarded
+          // delete flipped to `deleted` mid-call cannot gain a binding here.
+          await lockSecretBindingSecrets(executor, normalizedRefs.map((ref) => ref.secretId));
+          for (const ref of normalizedRefs) {
+            const secretRow = await executor
+              .select({ id: companySecrets.id, status: companySecrets.status })
+              .from(companySecrets)
+              .where(eq(companySecrets.id, ref.secretId))
+              .then((rows) => rows[0] ?? null);
+            if (!secretRow || secretRow.status === "deleted") {
+              throw unprocessable(
+                `Secret referenced at ${ref.configPath} was not found`,
+                { code: "secret_missing", configPath: ref.configPath },
+              );
+            }
+          }
+        }
         await executor
           .delete(companySecretBindings)
           .where(
@@ -4967,7 +5126,7 @@ export function secretService(db: Db | DbTransaction) {
       companyId: string,
       target: { targetType: SecretBindingTargetType; targetId: string; pathPrefix?: string },
       envValue: unknown,
-      options?: { db?: SecretBindingDb },
+      options?: { db?: SecretBindingWriteDb },
     ) => {
       const record = asRecord(envValue) ?? {};
       const refs: Array<{
@@ -5095,19 +5254,34 @@ export function secretService(db: Db | DbTransaction) {
         );
       };
 
+      const writeAll = async (executor: SecretBindingWriteDb) => {
+        if (refs.length > 0) {
+          // Hold the per-secret advisory lock the guarded delete also takes
+          // (see `secretBindingLockKey`), then re-validate under it. A secret
+          // the guarded delete flipped to `deleted` mid-call cannot gain a
+          // binding here: the delete counted zero bindings under this same
+          // lock, so its later hard delete cannot cascade a fresh binding
+          // away from this target's persisted config.
+          await lockSecretBindingSecrets(executor, refs.map((ref) => ref.secretId));
+          for (const ref of refs) {
+            await assertSecretInCompany(companyId, ref.secretId, executor);
+          }
+        }
+        await writeBindings(executor);
+        await writeUserDeclarations(executor);
+      };
+
       if (options?.db) {
-        await writeBindings(options.db);
-        await writeUserDeclarations(options.db);
+        await writeAll(options.db);
       } else {
-        await db.transaction(async (tx) => {
-          await writeBindings(tx);
-          await writeUserDeclarations(tx);
-        });
+        await db.transaction(writeAll);
       }
       return refs;
     },
 
     remove: removeSecretInternal,
+
+    removeIfUnbound: removeIfUnboundInternal,
 
     normalizeAdapterConfigForPersistence: async (
       companyId: string,
