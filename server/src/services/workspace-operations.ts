@@ -693,6 +693,103 @@ export function workspaceOperationService(db: Db) {
       return rows.map(toWorkspaceOperation);
     },
 
+    /**
+     * Record an operation this process did not execute but observed — for example a
+     * legacy provider tool call reported through adapter runtime events. These rows
+     * are evidence about work the provider performed, not managed controls, so they
+     * carry no runtime-control ownership stamp, heartbeat, timeout, or log-store
+     * handle. A row left `running` is the honest representation of a tool call whose
+     * outcome was never observed (e.g. the provider died mid-call).
+     */
+    recordObservedOperation: async (input: {
+      companyId: string;
+      heartbeatRunId?: string | null;
+      issueId?: string | null;
+      executionWorkspaceId?: string | null;
+      phase: WorkspaceOperationPhase;
+      command?: string | null;
+      cwd?: string | null;
+      metadata?: Record<string, unknown> | null;
+      observedStatus: WorkspaceOperationStatus;
+    }): Promise<string> => {
+      const currentUserRedactionOptions = {
+        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+      };
+      const startedAt = new Date();
+      const id = randomUUID();
+      await db.insert(workspaceOperations).values({
+        id,
+        companyId: input.companyId,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        heartbeatRunId: input.heartbeatRunId ?? null,
+        issueId: input.issueId ?? null,
+        phase: input.phase,
+        command: input.command ?? null,
+        cwd: input.cwd ?? null,
+        status: input.observedStatus,
+        metadata: input.metadata
+          ? (redactCurrentUserValue(input.metadata, currentUserRedactionOptions) as Record<
+              string,
+              unknown
+            >)
+          : null,
+        startedAt,
+        // A directly terminal observation was already over when recorded, so its
+        // finish time is the moment the outcome arrived.
+        finishedAt: input.observedStatus === "running" ? null : startedAt,
+        updatedAt: startedAt,
+      });
+      return id;
+    },
+
+    /**
+     * Terminalize an observed operation that is still `running`, once its outcome
+     * became known from a later runtime event. Compare-and-swap on `running`: a
+     * row already settled by a previous event is left untouched, and `true` is
+     * returned only when this call performed the settle.
+     */
+    settleObservedOperation: async (input: {
+      companyId: string;
+      id: string;
+      status: Exclude<WorkspaceOperationStatus, "running">;
+      metadataPatch?: Record<string, unknown> | null;
+      finishedAt?: Date | null;
+    }): Promise<boolean> => {
+      const [current] = await db
+        .select({ metadata: workspaceOperations.metadata })
+        .from(workspaceOperations)
+        .where(
+          and(
+            eq(workspaceOperations.companyId, input.companyId),
+            eq(workspaceOperations.id, input.id),
+            eq(workspaceOperations.status, "running"),
+          ),
+        )
+        .limit(1);
+      if (!current) return false;
+      const finishedAt = input.finishedAt ?? new Date();
+      const metadata = input.metadataPatch
+        ? combineMetadata((current.metadata as Record<string, unknown> | null), input.metadataPatch)
+        : (current.metadata as Record<string, unknown> | null);
+      const updated = await db
+        .update(workspaceOperations)
+        .set({
+          status: input.status,
+          ...(metadata ? { metadata } : {}),
+          finishedAt,
+          updatedAt: finishedAt,
+        })
+        .where(
+          and(
+            eq(workspaceOperations.companyId, input.companyId),
+            eq(workspaceOperations.id, input.id),
+            eq(workspaceOperations.status, "running"),
+          ),
+        )
+        .returning({ id: workspaceOperations.id });
+      return updated.length > 0;
+    },
+
     readLog: async (operationId: string, opts?: { offset?: number; limitBytes?: number }) => {
       const operation = await getById(operationId);
       if (!operation) throw notFound("Workspace operation not found");

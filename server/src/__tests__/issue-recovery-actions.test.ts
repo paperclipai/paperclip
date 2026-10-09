@@ -2900,6 +2900,33 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(recoveryRow?.status).toBe("active");
     });
 
+    it("denies agent reconciliation when the run recorded an observed provider tool call (ALE-241 instrumentation)", async () => {
+      const { companyId, coderId, sourceIssueId, runId, actingRunId, action } = await seedOrphanedRunRecovery();
+      await grantRecoveryReconcile(companyId, coderId);
+      // The ALE-241 seam records a row the moment a legacy adapter runtime event
+      // reports a provider tool call — including one that was still running when
+      // the run was orphaned. One row must be enough to hold the board gate.
+      await db.insert(workspaceOperations).values({
+        companyId,
+        heartbeatRunId: runId,
+        issueId: sourceIssueId,
+        phase: "provider_tool_execution",
+        status: "running",
+        command: "bash",
+        metadata: { toolName: "Terminal", toolCallId: "call_1", source: "adapter_runtime_event" },
+      });
+      const app = createApp({ type: "agent", agentId: coderId, companyId, runId: actingRunId, source: "agent_jwt" });
+
+      const res = await request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send(resolveBody({ actionId: action.id, runId }))
+        .expect(403);
+
+      expect(res.body.error).toMatch(/Board access required/);
+      const [recoveryRow] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+      expect(recoveryRow?.status).toBe("active");
+    });
+
     it("still requires a board actor for a reconciliation cause outside the server-verified allowlist", async () => {
       const { companyId, coderId, sourceIssueId, runId, actingRunId, action } = await seedOrphanedRunRecovery({
         cause: "uncertain_provider_action",
