@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, withEnvironmentSyncTransferStep, recordEnvironmentSyncError } from "../src/environment-sync-error.js";
+import { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, withEnvironmentSyncTransferStep, recordEnvironmentSyncError } from "../src/environment-sync-error.js";
 
 const schema = "paperclip/environment-sync-error/v1";
 
@@ -88,5 +88,28 @@ describe("request-local transfer evidence", () => {
     });
     resume();
     expect(await detached).toBeUndefined();
+  });
+});
+
+
+it("copies safe evidence into an existing wrapper only within its request", async () => {
+  const source = Object.freeze(Object.assign(new Error("private-message"), { status: 404, cause: { code: "EIO", token: "private-token" } }));
+  const wrapper = Object.freeze(new Error("stable-policy-message"));
+  await withEnvironmentSyncErrorCapture(async () => {
+    await expect(withEnvironmentSyncTransferStep("file_download", async () => { throw source; })).rejects.toBe(source);
+    expect(preserveEnvironmentSyncErrorDiagnostic(wrapper, source)).toBe(wrapper);
+    expect(readEnvironmentSyncErrorDiagnostic({ data: environmentSyncErrorData(wrapper) })).toEqual({
+      errorCode: "EIO", httpStatus: 404, transferStep: "file_download",
+    });
+    expect(wrapper).not.toHaveProperty("cause");
+    expect(wrapper.message).toBe("stable-policy-message");
+    // Reusing a wrapper for a later untyped failure must clear the earlier evidence.
+    preserveEnvironmentSyncErrorDiagnostic(wrapper, new Error("private-untyped-message"));
+    expect(environmentSyncErrorData(wrapper)).toBeUndefined();
+  });
+  expect(environmentSyncErrorData(wrapper)).toBeUndefined();
+  await withEnvironmentSyncErrorCapture(async () => {
+    preserveEnvironmentSyncErrorDiagnostic(wrapper, source);
+    expect(readEnvironmentSyncErrorDiagnostic({ data: environmentSyncErrorData(wrapper) })).toEqual({ errorCode: "EIO", httpStatus: 404 });
   });
 });

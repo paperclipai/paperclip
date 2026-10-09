@@ -39,8 +39,9 @@ export async function withEnvironmentSyncErrorCapture<T>(operation: () => Promis
 export function recordEnvironmentSyncError<T>(error: T, diagnostic: Partial<PluginEnvironmentSyncErrorDiagnostic>): T {
   const scope = capture.getStore();
   const safe = sanitize(diagnostic);
-  if (scope?.active && error && typeof error === "object" && safe) {
-    scope.errors.set(error, { sequence: ++scope.sequence, diagnostic: safe });
+  if (scope?.active && error && typeof error === "object") {
+    if (safe) scope.errors.set(error, { sequence: ++scope.sequence, diagnostic: safe });
+    else scope.errors.delete(error);
   }
   return error;
 }
@@ -98,7 +99,7 @@ function sanitize(value: unknown): PluginEnvironmentSyncErrorDiagnostic | undefi
 }
 
 /** Capture known codes and numbers, never arbitrary error data, text, or names. */
-export function environmentSyncErrorData(error: unknown): unknown {
+function captureDiagnostic(error: unknown): PluginEnvironmentSyncErrorDiagnostic | undefined {
   const diagnostic: PluginEnvironmentSyncErrorDiagnostic = { errorCode: "unknown" };
   const scope = capture.getStore();
   if (scope?.active && error && typeof error === "object") {
@@ -115,8 +116,18 @@ export function environmentSyncErrorData(error: unknown): unknown {
     diagnostic.exitCode ??= integer(field(current, "exitCode"), 1, 255) ?? integer(code, 1, 255);
     current = field(current, "cause");
   }
-  const safe = sanitize(diagnostic);
-  return safe ? { schema: SCHEMA, diagnostic: safe } : undefined;
+  return sanitize(diagnostic);
+}
+
+export function environmentSyncErrorData(error: unknown): unknown {
+  const diagnostic = captureDiagnostic(error);
+  return diagnostic ? { schema: SCHEMA, diagnostic } : undefined;
+}
+
+/** Retain bounded evidence across an existing wrapper, without adding a raw cause. */
+export function preserveEnvironmentSyncErrorDiagnostic<T>(wrapper: T, source: unknown): T {
+  const diagnostic = captureDiagnostic(source);
+  return recordEnvironmentSyncError(wrapper, diagnostic ?? { errorCode: "unknown" });
 }
 
 /** Revalidate the worker envelope before adapting it into host-only diagnostics. */

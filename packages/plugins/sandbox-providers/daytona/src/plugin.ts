@@ -9,7 +9,7 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError, withEnvironmentSyncTransferStep } from "@paperclipai/plugin-sdk";
+import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError, withEnvironmentSyncTransferStep, preserveEnvironmentSyncErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import type {
   PluginContext,
   PluginEnvironmentCreationCleanup,
@@ -3291,7 +3291,7 @@ const plugin = definePlugin({
       // unexported workspace bytes no longer exist. Convert the SDK class to a
       // stable cross-worker message; every other error remains retryable.
       if (error instanceof DaytonaNotFoundError) {
-        throw new Error("daytona_sandbox_not_found");
+        throw preserveEnvironmentSyncErrorDiagnostic(new Error("daytona_sandbox_not_found"), error);
       }
       throw error;
     }
