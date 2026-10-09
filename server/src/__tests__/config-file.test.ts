@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readConfigFile } from "../config-file.js";
 
 const ORIGINAL_PAPERCLIP_CONFIG = process.env.PAPERCLIP_CONFIG;
@@ -42,6 +42,7 @@ describe("readConfigFile", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (ORIGINAL_PAPERCLIP_CONFIG === undefined) {
       delete process.env.PAPERCLIP_CONFIG;
     } else {
@@ -88,5 +89,26 @@ describe("readConfigFile", () => {
         mode: "file",
       },
     });
+  });
+
+  it("warns about likely misspellings without stripping them", () => {
+    const config = {
+      ...(minimalConfig() as Record<string, unknown>),
+      server: {
+        ports: 3200,
+      },
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    writeConfig(configPath, config);
+
+    expect(readConfigFile()).toMatchObject({
+      server: {
+        port: 3100,
+        ports: 3200,
+      },
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Unknown config key server.ports; did you mean server.port? It will be preserved.",
+    );
   });
 });

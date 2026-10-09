@@ -35,6 +35,10 @@ export function grantsForHumanRole(
         { permissionKey: "users:manage_permissions", scope: null },
         { permissionKey: "tasks:assign", scope: null },
         { permissionKey: "joins:approve", scope: null },
+        { permissionKey: "tools:manage_connections", scope: null },
+        { permissionKey: "tools:manage_runtime", scope: null },
+        { permissionKey: "tools:use", scope: null },
+        { permissionKey: "tools:admin", scope: null },
       ];
     case "admin":
       return [
@@ -45,9 +49,28 @@ export function grantsForHumanRole(
         { permissionKey: "users:invite", scope: null },
         { permissionKey: "tasks:assign", scope: null },
         { permissionKey: "joins:approve", scope: null },
+        { permissionKey: "tools:manage_connections", scope: null },
+        { permissionKey: "tools:manage_runtime", scope: null },
+        { permissionKey: "tools:use", scope: null },
+        { permissionKey: "tools:admin", scope: null },
       ];
     case "operator":
-      return [{ permissionKey: "tasks:assign", scope: null }];
+      return [
+        { permissionKey: "agents:create", scope: null },
+        { permissionKey: "agents:configure", scope: null },
+        { permissionKey: "skills:create", scope: null },
+        { permissionKey: "environments:manage", scope: null },
+        { permissionKey: "users:invite", scope: null },
+        { permissionKey: "tasks:assign", scope: null },
+        { permissionKey: "pipelines:write", scope: null },
+        { permissionKey: "tools:manage_connections", scope: null },
+        { permissionKey: "tools:manage_profiles", scope: null },
+        { permissionKey: "tools:manage_runtime", scope: null },
+        { permissionKey: "tools:use", scope: null },
+        { permissionKey: "tools:admin", scope: null },
+        { permissionKey: "tools:view_audit", scope: null },
+        { permissionKey: "audit:view_agent_actions", scope: null },
+      ];
     case "viewer":
       return [];
   }

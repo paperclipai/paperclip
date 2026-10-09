@@ -20,7 +20,7 @@ describe("summary slot shared contract", () => {
     );
   });
 
-  it("allows scoped project and project-workspace header slots", () => {
+  it("allows scoped project, project-workspace, and execution-workspace header slots", () => {
     expect(summarySlotScopeSelectorSchema.parse({
       scopeKind: "project",
       scopeId,
@@ -32,6 +32,12 @@ describe("summary slot shared contract", () => {
       scopeId,
       slotKey: "header",
     })).toEqual({ scopeKind: "project_workspace", scopeId, slotKey: "header" });
+
+    expect(summarySlotScopeSelectorSchema.parse({
+      scopeKind: "execution_workspace",
+      scopeId,
+      slotKey: "header",
+    })).toEqual({ scopeKind: "execution_workspace", scopeId, slotKey: "header" });
   });
 
   it("treats workspaces_overview as a company-scoped singleton", () => {
@@ -56,6 +62,10 @@ describe("summary slot shared contract", () => {
       scopeKind: "project_workspace",
       slotKey: "header",
     })).toThrow("project_workspace summary slots require scopeId");
+    expect(() => summarySlotScopeSelectorSchema.parse({
+      scopeKind: "execution_workspace",
+      slotKey: "header",
+    })).toThrow("execution_workspace summary slots require scopeId");
   });
 
   it("validates summary write payload revision and generation metadata", () => {

@@ -1,17 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { KeyRound, Plus, ServerCog, Trash2, Variable } from "lucide-react";
-import type { CompanySecret, EnvSecretRefBinding, SecretVersionSelector } from "@paperclipai/shared";
+import type {
+  CompanySecret,
+  EnvSecretRefBinding,
+  SecretProposalView,
+  SecretVersionSelector,
+} from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { SecretBindingPicker, type SecretBindingValue } from "./SecretBindingPicker";
+import { SecretPicker } from "./environment-variables-editor/SecretPicker";
+import { CreateSecretPopover } from "./environment-variables-editor/CreateSecretPopover";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import {
   AGENT_ACCESS_CONFIG_PATH_PREFIX,
   ENV_CONFIG_PATH_PREFIX,
   SECRET_ALIAS_RE,
   deliveryModeDescription,
 } from "../lib/secret-delivery";
-import { envKeyFromSecretName } from "./environment-variables-editor/model";
+import { envKeyFromSecretName, secretNameFromKey } from "./environment-variables-editor/model";
+import {
+  DeliveryBadge as ProposalDeliveryBadge,
+  ProposalActions,
+  ProposedBadge,
+  bindingEnvKey,
+  bindingSecretLabel,
+} from "../pages/secrets/proposal-review";
 
 /* -------------------------------------------------------------------------- */
 /* Pure model (exported for tests)                                            */
@@ -145,7 +159,15 @@ export interface AgentSecretAccessEditorProps {
    * parent diffs this against the current `access.*` keys to add/remove them.
    */
   onChange: (next: Record<string, EnvSecretRefBinding>) => void;
+  /** Create a company secret from the shared picker's pinned create action. */
+  onCreateSecret?: (name: string, value: string) => Promise<CompanySecret>;
   disabled?: boolean;
+  /** Pending binding proposals targeting this agent (PAP-14731). */
+  proposals?: readonly SecretProposalView[];
+  /** Open the approve confirm dialog for a proposal (wired by the parent surface). */
+  onApproveProposal?: (proposal: SecretProposalView) => void;
+  /** Open the reject dialog for a proposal (wired by the parent surface). */
+  onRejectProposal?: (proposal: SecretProposalView) => void;
 }
 
 function DeliveryBadge({ mode }: { mode: "env" | "api" }) {
@@ -169,7 +191,20 @@ function DeliveryBadge({ mode }: { mode: "env" | "api" }) {
   );
 }
 
-export function AgentSecretAccessEditor({ config, secrets, onChange, disabled }: AgentSecretAccessEditorProps) {
+export function AgentSecretAccessEditor({
+  config,
+  secrets,
+  onChange,
+  onCreateSecret,
+  disabled,
+  proposals,
+  onApproveProposal,
+  onRejectProposal,
+}: AgentSecretAccessEditorProps) {
+  const bindingProposals = useMemo(
+    () => (proposals ?? []).filter((proposal) => proposal.kind === "binding"),
+    [proposals],
+  );
   const envBindings = useMemo(() => parseEnvSecretRefs(config), [config]);
   const apiBindings = useMemo(() => parseAccessGrants(config), [config]);
   const summaries = useMemo(() => summarizeAgentBindings(envBindings, apiBindings), [envBindings, apiBindings]);
@@ -178,6 +213,8 @@ export function AgentSecretAccessEditor({ config, secrets, onChange, disabled }:
   const incomingKey = useMemo(() => normalizeAccessMapKey(incomingMap), [incomingMap]);
 
   const [rows, setRows] = useState<AccessRow[]>(() => entriesToRows(apiBindings));
+  const [createRequest, setCreateRequest] = useState<{ rowId: string; name: string } | null>(null);
+  const pickerAnchorRefs = useRef(new Map<string, HTMLDivElement>());
   const lastEmittedKeyRef = useRef(incomingKey);
   const lastIncomingKeyRef = useRef(incomingKey);
 
@@ -251,6 +288,48 @@ export function AgentSecretAccessEditor({ config, secrets, onChange, disabled }:
         <p className="text-sm text-muted-foreground">No secrets are bound to this agent yet.</p>
       )}
 
+      {/* Pending binding proposals targeting this agent (PAP-14731). */}
+      {bindingProposals.length > 0 && onApproveProposal && onRejectProposal ? (
+        <div className="space-y-2">
+          <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
+            Proposed access
+          </div>
+          {bindingProposals.map((proposal) => {
+            const secret = bindingSecretLabel(proposal);
+            const envKey = bindingEnvKey(proposal);
+            return (
+              <div
+                key={proposal.id}
+                className="flex flex-col gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs sm:flex-row sm:items-center"
+              >
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    <ProposalDeliveryBadge configPath={proposal.configPath} />
+                    <code className="font-mono">{envKey || proposal.configPath}</code>
+                    <span className="text-muted-foreground">→</span>
+                    <KeyRound className="size-3 text-muted-foreground" />
+                    <span className="font-medium">{secret.name}</span>
+                    {secret.pending ? <ProposedBadge /> : null}
+                  </div>
+                  <p className="flex flex-wrap items-center gap-1 text-muted-foreground">
+                    <span>proposed by {proposal.proposedBy.name}</span>
+                    <span aria-hidden="true">·</span>
+                    <span className="truncate italic">“{proposal.justification}”</span>
+                  </p>
+                </div>
+                <ProposalActions
+                  proposal={proposal}
+                  onApprove={onApproveProposal}
+                  onReject={onRejectProposal}
+                  disabled={disabled}
+                  size="xs"
+                />
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
       {/* Editable API-access grants (access.<ALIAS>). */}
       <div className="space-y-2">
         <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
@@ -262,9 +341,7 @@ export function AgentSecretAccessEditor({ config, secrets, onChange, disabled }:
               const trimmedAlias = row.alias.trim();
               const aliasInvalid = Boolean(trimmedAlias) && !SECRET_ALIAS_RE.test(trimmedAlias);
               const aliasDuplicate = Boolean(trimmedAlias) && (aliasCounts.get(trimmedAlias) ?? 0) > 1;
-              const bindingValue: SecretBindingValue | null = row.secretId
-                ? { secretId: row.secretId, version: row.version }
-                : null;
+              const selectedSecret = secrets.find((secret) => secret.id === row.secretId) ?? null;
               return (
                 <div key={row.id} className="space-y-1">
                   <div className="grid grid-cols-(--gtc-65) items-start gap-1.5">
@@ -288,23 +365,106 @@ export function AgentSecretAccessEditor({ config, secrets, onChange, disabled }:
                         )}
                       />
                     </div>
-                    <div>
-                      <SecretBindingPicker
-                        value={bindingValue}
-                        onChange={(next) =>
+                    <div className="flex min-w-0 items-start gap-1.5">
+                      <Popover
+                        open={createRequest?.rowId === row.id}
+                        onOpenChange={(open) => {
+                          if (!open && createRequest?.rowId === row.id) setCreateRequest(null);
+                        }}
+                      >
+                        <PopoverAnchor asChild>
+                          <div
+                            ref={(node) => {
+                              if (node) pickerAnchorRefs.current.set(row.id, node);
+                              else pickerAnchorRefs.current.delete(row.id);
+                            }}
+                            className="min-w-0 flex-1"
+                          >
+                            <SecretPicker
+                              secretId={row.secretId}
+                              secrets={secrets}
+                              onSelect={(secretId) =>
+                                patchRow(row.id, {
+                                  secretId,
+                                  version: "latest",
+                                  alias:
+                                    !row.alias.trim() && secretId
+                                      ? envKeyFromSecretName(secretName(secretId))
+                                      : row.alias,
+                                })
+                              }
+                              onCreateNew={onCreateSecret
+                                ? (query) => {
+                                    window.setTimeout(() => {
+                                      setCreateRequest({
+                                        rowId: row.id,
+                                        name: secretNameFromKey(query) || query.trim(),
+                                      });
+                                    }, 0);
+                                  }
+                                : undefined}
+                              disabled={disabled}
+                              triggerClassName="h-9 min-h-9"
+                            />
+                          </div>
+                        </PopoverAnchor>
+                        <PopoverContent
+                          align="start"
+                          className="w-auto p-3"
+                          onInteractOutside={(event) => {
+                            // Closing the picker returns focus to its trigger inside
+                            // this popover's anchor. Keep that focus restoration from
+                            // dismissing the create form that just opened.
+                            const target = event.detail.originalEvent.target as Node | null;
+                            if (target && pickerAnchorRefs.current.get(row.id)?.contains(target)) {
+                              event.preventDefault();
+                            }
+                          }}
+                        >
+                          {createRequest?.rowId === row.id && onCreateSecret ? (
+                            <CreateSecretPopover
+                              initialName={createRequest.name}
+                              initialValue=""
+                              existingSecretNames={secrets.map((secret) => secret.name)}
+                              onCancel={() => setCreateRequest(null)}
+                              onSubmit={async (name, value) => {
+                                const created = await onCreateSecret(name, value);
+                                patchRow(row.id, {
+                                  secretId: created.id,
+                                  version: "latest",
+                                  alias: row.alias.trim() || envKeyFromSecretName(created.name),
+                                });
+                                setCreateRequest(null);
+                              }}
+                            />
+                          ) : null}
+                        </PopoverContent>
+                      </Popover>
+                      <select
+                        className="h-9 shrink-0 rounded-md border border-border bg-background px-2 text-xs outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                        value={row.version === undefined ? "latest" : String(row.version)}
+                        onChange={(event) => {
+                          const raw = event.target.value;
                           patchRow(row.id, {
-                            secretId: next?.secretId ?? "",
-                            version: next?.version ?? "latest",
-                            alias:
-                              !row.alias.trim() && next?.secretId
-                                ? envKeyFromSecretName(secretName(next.secretId))
-                                : row.alias,
-                          })
-                        }
-                        label=""
-                        placeholder="Select secret"
-                        disabled={disabled}
-                      />
+                            version: raw === "latest" ? "latest" : Number.parseInt(raw, 10),
+                          });
+                        }}
+                        disabled={disabled || !selectedSecret}
+                        aria-label="Version"
+                      >
+                        <option value="latest">latest</option>
+                        {selectedSecret
+                          ? Array.from({ length: Math.max(0, selectedSecret.latestVersion) }, (_, index) => {
+                              const version = selectedSecret.latestVersion - index;
+                              if (version <= 0) return null;
+                              return (
+                                <option key={version} value={version}>
+                                  v{version}
+                                </option>
+                              );
+                            })
+                          : null}
+                      </select>
                     </div>
                     <button
                       type="button"

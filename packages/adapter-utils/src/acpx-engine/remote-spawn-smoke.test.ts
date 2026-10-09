@@ -35,6 +35,7 @@ const fixturePath = path.join(repoRoot, "scripts", "mcp-fixtures", "servers", "a
 const tempRoots: string[] = [];
 
 type PatchedAcpRuntimeOptions = AcpRuntimeOptions & {
+  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
   spawnCwd?: string;
 };
 
@@ -56,7 +57,11 @@ async function makeTempDir(prefix: string): Promise<string> {
  * `spawnCwd`, when set, is the host-only spawn cwd the acpx patch consumes as
  * `spawnCwd ?? cwd`.
  */
-async function ensureRealAcpSession(input: { cwd: string; spawnCwd?: string }) {
+async function ensureRealAcpSession(input: {
+  cwd: string;
+  spawnCwd?: string;
+  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+}) {
   const stateRoot = await makeTempDir("paperclip-acpx-remote-spawn-state-");
   const stderrChunks: string[] = [];
   const agentCommand = `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixturePath.replaceAll("\\", "/"))}`;
@@ -70,6 +75,7 @@ async function ensureRealAcpSession(input: { cwd: string; spawnCwd?: string }) {
     permissionMode: "approve-all",
     nonInteractivePermissions: "deny",
     onAgentStderr: (chunk: string) => stderrChunks.push(chunk),
+    onAgentSpawn: input.onAgentSpawn,
   };
   const runtime = createAcpRuntime(runtimeOptions);
 
@@ -86,6 +92,23 @@ async function ensureRealAcpSession(input: { cwd: string; spawnCwd?: string }) {
     return { resolved: true as const, stderr: stderrChunks.join("") };
   } catch (err) {
     return { resolved: false as const, error: err as NodeJS.ErrnoException & { cause?: NodeJS.ErrnoException }, stderr: stderrChunks.join("") };
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (isProcessAlive(pid)) {
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for ACP agent ${pid} to exit`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
 
@@ -123,4 +146,28 @@ it("spawnCwd redirects the host spawn to a host-valid dir while the advertised s
   // ...while the in-sandbox data path (the advertised `session/new` cwd) is
   // unchanged — still `remoteCwd`.
   expect(outcome.stderr).toContain(`SESSION_NEW_CWD=${remoteCwd}`);
+});
+
+it("kills the ACP agent when process identity persistence rejects", async () => {
+  const hostCwd = await makeTempDir("paperclip-acpx-spawn-persistence-");
+  let spawnedPid: number | null = null;
+
+  const outcome = await ensureRealAcpSession({
+    cwd: hostCwd,
+    onAgentSpawn: async ({ pid }) => {
+      spawnedPid = pid;
+      throw new Error("process identity persistence failed");
+    },
+  });
+
+  expect(outcome.resolved).toBe(false);
+  if (outcome.resolved) return;
+  expect(outcome.error.message).toContain("process identity persistence failed");
+  expect(spawnedPid).not.toBeNull();
+
+  try {
+    await waitForProcessExit(spawnedPid!);
+  } finally {
+    if (isProcessAlive(spawnedPid!)) process.kill(spawnedPid!, "SIGKILL");
+  }
 });

@@ -1,4 +1,27 @@
-export type { Company } from "./company.js";
+export { decisionEffectTargetIssueIds } from "./decision.js";
+export {
+  NATIVE_FINALIZATION_SCHEMA,
+  type NativeFinalizationResult,
+  type NativeFinalizationResultV1,
+  type NativeReportedWorkDisposition,
+  type NativeRuntimeMode,
+  type NativeRunTerminalState,
+} from "./native-finalization.js";
+export type {
+  ConnectionAvailabilityState,
+  ConnectionSearchResultItem,
+  ConnectionsSearchResult,
+  ConnectionRequestResult,
+  ConnectionIntentSetupOptions,
+  ConnectionIntentSetupConnection,
+  CompleteConnectionIntentInput,
+  DeclineConnectionIntentInput,
+} from "./connection-intent.js";
+export type {
+  Company,
+  InteractionResolverGovernance,
+  InteractionResolverKindGovernance,
+} from "./company.js";
 export type {
   GenerateSummarySlotRequest,
   GenerateSummarySlotResponse,
@@ -19,13 +42,27 @@ export type {
   AttentionItem,
   AttentionItemDetail,
   AttentionItemDismissal,
+  AttentionFeedQuery,
   AttentionProjectRef,
+  AttentionQueueRef,
+  AttentionResolverAudience,
   AttentionSeverity,
+  AttentionSortMode,
   AttentionSourceKind,
   AttentionSubject,
   AttentionSubjectKind,
+  AttentionTriageAttribution,
   AttentionWorkspaceRef,
 } from "./attention.js";
+export { ATTENTION_SOURCE_KINDS } from "./attention.js";
+export type {
+  DecisionQueue,
+  DecisionQueueItem,
+  DecisionQueueSeedRule,
+  DecisionQueueSeedRuleSignal,
+  DecisionTriage,
+  DecisionTriageDecideBy,
+} from "./decision-queue.js";
 export type {
   DecisionTrainingExample,
   DecisionTrainingNotesHistoryEntry,
@@ -38,6 +75,7 @@ export { DECISION_TRAINING_RETENTION_POLICY } from "./decision-training.js";
 export type {
   Environment,
   EnvironmentDeleteBlastRadius,
+  EnvironmentDeleteReusableLeaseHolder,
   EnvironmentDeleteBlockedReason,
   EnvironmentLease,
   EnvironmentProbeResult,
@@ -70,8 +108,6 @@ export type {
   ManagedExperimentalFeatureKey,
   ManagedSettingMetadata,
   BackupRetentionPolicy,
-  IssueGraphLivenessAutoRecoveryPreview,
-  IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "./instance.js";
 export type {
   SmokeLabServiceStatus,
@@ -93,9 +129,6 @@ export {
   WEEKLY_RETENTION_PRESETS,
   MONTHLY_RETENTION_PRESETS,
   DEFAULT_BACKUP_RETENTION,
-  DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
-  MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
-  MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   PAPERCLIP_CLOUD_MANAGED_BY,
 } from "./instance.js";
 export {
@@ -110,6 +143,8 @@ export {
   type LowTrustOutputPromotionTarget,
   type LowTrustBoundary,
   type LowTrustReviewPresetPolicy,
+  type AssignmentAuthorizationPolicy,
+  type ProtectedAgentAuthorizationPolicy,
   type TrustAuthorizationPolicy,
 } from "../trust-policy.js";
 export type {
@@ -141,6 +176,8 @@ export type {
   CompanySkillForkReassignment,
   CompanySkillForkResult,
   CompanySkillForkPrecheckResult,
+  CompanySkillRenameRequest,
+  CompanySkillRenameResult,
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillAuditSeverity,
@@ -153,6 +190,9 @@ export type {
   CompanySkillImportRequest,
   CompanySkillImportResult,
   CompanySkillProjectScanRequest,
+  CompanySkillProjectBrowseRequest,
+  CompanySkillProjectBrowseEntry,
+  CompanySkillProjectBrowseResult,
   CompanySkillProjectScanCandidateStatus,
   CompanySkillProjectScanCandidate,
   CompanySkillProjectScanSkipped,
@@ -225,6 +265,7 @@ export type {
 } from "./teams-catalog.js";
 export type {
   AgentSkillSyncMode,
+  AgentSkillAssignmentMode,
   AgentSkillState,
   AgentSkillOrigin,
   AgentDesiredSkillEntry,
@@ -238,8 +279,8 @@ export type {
   AgentChainOfCommandEntry,
   AgentDetail,
   ClearAgentErrorResponse,
-  AgentModelProfileConfig,
   AgentPermissions,
+  AgentPublicIdentity,
   AgentRuntimeConfig,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,
@@ -251,6 +292,30 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterAuthSignal,
+  AdapterAuthSignalResponse,
+  AdapterAuthSessionStatus,
+  AdapterAuthSessionInternalStatus,
+  AdapterAuthSessionFailure,
+  AdapterAuthSessionResponse,
+  AdapterAuthSessionPrompt,
+  AdapterAuthSessionOwnerResponse,
+  CodexAccountBindingClaim,
+  StartAdapterAuthSessionRequest,
+  AdapterAuthPanelMode,
+  ClaudeSetupTokenSessionPrompt,
+  ClaudeSetupTokenSessionResponse,
+  ClaudeSetupTokenSessionOwnerResponse,
+  SubmitBrowserCodeRequest,
+  ClaudeSetupTokenCompletionResponse,
+  SetupTokenTransportAdvisory,
+  SetupTokenTransportAdvisoryCode,
+} from "./agent.js";
+export {
+  ADAPTER_AUTH_SESSION_STATUSES,
+  ADAPTER_AUTH_SESSION_INTERNAL_STATUSES,
+  ADAPTER_AUTH_PANEL_MODES,
+  SETUP_TOKEN_TRANSPORT_ADVISORY_CODE,
 } from "./agent.js";
 export type {
   AgentEligibilityAgent,
@@ -274,6 +339,8 @@ export type {
   DocumentAnnotationThread,
   DocumentAnnotationThreadWithComments,
   PlanReviewContext,
+  DocumentReviewContext,
+  DocumentReviewContextDocument,
   PlanReviewContextAuthor,
   PlanReviewContextComment,
   PlanReviewContextThread,
@@ -285,7 +352,22 @@ export type {
   DocumentTextRange,
   UpdateDocumentAnnotationThreadRequest,
 } from "./document-annotation.js";
-export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
+export type {
+  Project,
+  ProjectRepository,
+  ProjectRepositoryOptions,
+  ProjectAccessMember,
+  ProjectAccessSubjectType,
+  ProjectDiscoverySummary,
+  ProjectDiscoveryPage,
+  ProjectBudgetSummary,
+  ProjectCodebase,
+  ProjectCodebaseOrigin,
+  ProjectGoalRef,
+  ProjectManagedByPlugin,
+  ProjectVisibility,
+  ProjectWorkspace,
+} from "./project.js";
 export type {
   CompanySearchCountType,
   CompanySearchExtractIssueResult,
@@ -326,6 +408,7 @@ export type {
   ExecutionWorkspaceCloseLinkedIssue,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceCloseReadinessState,
+  ExecutionWorkspaceDeliveryState,
   WorkspaceOverviewItem,
   WorkspaceOverviewLinkedIssue,
   WorkspaceOverviewPrimaryService,
@@ -339,10 +422,9 @@ export type {
   WorkspaceRuntimeDesiredState,
   WorkspaceRealizationRecord,
   WorkspaceRealizationRequest,
-  WorkspaceRealizationSyncStrategy,
-  WorkspaceRealizationTransport,
   ExecutionWorkspaceStrategyType,
   ExecutionWorkspaceMode,
+  SharedWorkspaceConcurrency,
   ExecutionWorkspaceProviderType,
   ExecutionWorkspaceStatus,
   ExecutionWorkspaceStrategy,
@@ -355,7 +437,20 @@ export type {
   WorkspaceOperationPhase,
   WorkspaceOperationStatus,
 } from "./workspace-operation.js";
+export { WORKSPACE_READINESS_STATES } from "./workspace-readiness.js";
 export type {
+  WorkspaceLoginHandoffTicketResponse,
+  WorkspaceReadiness,
+  WorkspaceReadinessProbeResult,
+  WorkspaceReadinessState,
+  WorkspaceSeedReadinessState,
+} from "./workspace-readiness.js";
+export type {
+  NormalizedWorkspaceFileAvailabilityQuery,
+  WorkspaceFileAvailabilityQuery,
+  WorkspaceFileAvailabilityRequest,
+  WorkspaceFileAvailabilityResponse,
+  WorkspaceFileAvailabilityResult,
   WorkspaceFileContent,
   WorkspaceFileContentEncoding,
   WorkspaceFileListDirectoryItem,
@@ -376,8 +471,12 @@ export type {
   ToolAccessDecisionInput,
   ToolAccessReasonCode,
   ToolAccessSelector,
+  ConnectToolAppAuthChallenge,
   ConnectToolAppResult,
+  ToolAppMetadataPreflightAttempt,
+  ToolAppMetadataPreflightResult,
   FinishToolAppResult,
+  ToolOAuthClientRegistrationSource,
   ToolOAuthStartResult,
   ToolTrustRuleArgumentFilters,
   ToolTrustRuleBatchApprovalConfig,
@@ -403,6 +502,8 @@ export type {
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
   ToolConnectionInstallTargetType,
+  ToolConnectionRemovalResult,
+  ToolConnectionRemovalSummary,
   ConnectionTokenAttribution,
   ConnectionRecoverableErrorCode,
   ConnectionRecoverableErrorPayload,
@@ -420,13 +521,29 @@ export type {
   ToolConnection,
   ToolConnectionHealthStatus,
   ToolConnectionAuthKind,
+  ToolConnectionCredentialSource,
+  ToolConnectionCredentialPolicy,
   ToolConnectionOwnership,
+  ToolConnectionPurpose,
   ToolConnectionTransport,
   ToolConnectionStatus,
   ToolConnectionKind,
+  VercelConnectCredentialReference,
+  VercelConnectCredentialSummary,
+  VercelConnectGrantReference,
+  VercelConnectGrantSummary,
+  VercelConnectPrincipalMode,
+  ConnectionAudienceMember,
   ConnectionGrant,
+  ConnectionGrantCapabilities,
+  ConnectionGrantDelegation,
   ConnectionGrantKind,
+  ConnectionGrantMember,
+  ConnectionGrantMemberSubjectType,
+  ConnectionGrantsResponse,
   ConnectionGrantStatus,
+  ToolConnectionCapabilities,
+  ToolConnectionCreateCapabilities,
   ToolCredentialSecretRef,
   ToolInvocation,
   ToolInvocationApprovalState,
@@ -504,8 +621,10 @@ export type {
   ToolConnectionTestToolAccess,
   ToolConnectionAccessSummary,
   ToolConnectionTestAgent,
+  ToolConnectionTestAgentAccessResponse,
   ToolConnectionTestAgentsResponse,
   ToolConnectionTestCallResult,
+  ToolUpstreamPending,
   ToolConnectionTestCallStatus,
   ToolConnectionTestCallStatusPhase,
 } from "./tool-access.js";
@@ -517,6 +636,9 @@ export type {
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
   AttachmentArtifactWorkProductMetadata,
+  PullRequestWorkProductState,
+  PullRequestWorkProductMetadata,
+  CommitWorkProductMetadata,
 } from "./work-product.js";
 export type {
   CompanyArtifact,
@@ -540,6 +662,8 @@ export type {
 export type {
   CompactIssue,
   Issue,
+  IssueChangeReceiptEntry,
+  IssueChanges,
   IssueWorkMode,
   IssueAssigneeAdapterOverrides,
   IssueBlockerDiagnosticFlag,
@@ -555,9 +679,23 @@ export type {
   IssueSubtreeDiagnosticNode,
   IssueSubtreeDiagnosticEdge,
   IssueSubtreeDiagnosticsResponse,
+  IssueVisibility,
+  IssuePrivacyConstraints,
+  IssueAccessGrant,
+  IssueAccessGrantAgentVisibility,
+  IssueAccessGrantSubjectType,
+  IssueAccessGrantSource,
+  IssueLockedStub,
   IssueBlockerAttention,
+  IssueBlockerAttentionIssueSummary,
   IssueBlockerAttentionReason,
   IssueBlockerAttentionState,
+  IssueReviewAttention,
+  IssueReviewAttentionPath,
+  IssueReviewAttentionPathKind,
+  IssueReviewAttentionState,
+  StalledReviewDecisionAction,
+  StalledReviewDecisionResponse,
   IssueInboxAttentionKind,
   IssueBlockedInboxAction,
   IssueBlockedInboxAttention,
@@ -569,8 +707,6 @@ export type {
   IssueBlockedInboxReason,
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
-  IssueProductivityReview,
-  IssueProductivityReviewTrigger,
   IssueRecoveryAction,
   SuccessfulRunHandoffState,
   SuccessfulRunHandoffStateKind,
@@ -593,6 +729,11 @@ export type {
   IssueReviewRequest,
   IssueExecutionDecision,
   IssueComment,
+  IssueQueuedCommentEntry,
+  IssueQueuedCommentProtocol,
+  IssueQueuedCommentQueue,
+  IssueQueuedCommentQueueState,
+  IssueQueuedCommentSteeringDisposition,
   IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
   IssueCommentMetadataSection,
@@ -611,6 +752,9 @@ export type {
   SuggestTasksResult,
   AskUserQuestionsQuestionOption,
   AskUserQuestionsQuestion,
+  PaperclipQuestionSetOption,
+  PaperclipQuestionSetQuestion,
+  PaperclipQuestionSetPayload,
   AskUserQuestionsPayload,
   AskUserQuestionsAnswer,
   AskUserQuestionsResult,
@@ -621,6 +765,12 @@ export type {
   RequestConfirmationResult,
   RequestConfirmationToolActionPayload,
   RequestConfirmationToolActionResult,
+  RequestConfirmationConnectionAuthorizationPayload,
+  ConnectionIntentPhase,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
+  RequestConfirmationSecretProposalPayload,
+  RequestConfirmationSecretProposalResult,
   RequestCheckboxConfirmationOption,
   RequestCheckboxConfirmationPayload,
   RequestCheckboxConfirmationResult,
@@ -641,6 +791,7 @@ export type {
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestItemVerdictsInteraction,
+  ConnectionIntentInteraction,
   IssueThreadInteraction,
   IssueThreadInteractionPayload,
   IssueThreadInteractionResult,
@@ -661,6 +812,7 @@ export type {
 export type {
   IssueTreeControlPreview,
   IssueTreeHold,
+  ReleaseIssueTreeHoldResponse,
   IssueTreeHoldMember,
   IssueTreeHoldReleasePolicy,
   IssueTreePreviewAgent,
@@ -718,6 +870,13 @@ export type {
   SecretProviderDescriptor,
   SecretStatus,
   SecretVersionStatus,
+  SecretProposalKind,
+  SecretProposalStatus,
+  SecretProposalAgentRef,
+  SecretProposalIssueRef,
+  SecretProposalView,
+  ApproveSecretProposalInput,
+  RejectSecretProposalInput,
 } from "./secrets.js";
 export type {
   Routine,
@@ -732,6 +891,7 @@ export type {
   RoutineRevisionSnapshot,
   RoutineRevision,
   RoutineTrigger,
+  RoutineWebhookDelivery,
   RoutineRun,
   RoutineTriggerSecretMaterial,
   RoutineDetail,
@@ -739,10 +899,11 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
+export type { CostEvent, CostSummary, IssueCostSummary, CostByUser, CostByUserReport, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   AgentWakeupResponse,
+  ChatFailedRunRetryResponse,
   AgentWakeupSkipped,
   GitWorktreeBranchAncestryVerdict,
   GitWorktreeBranchIncoherenceEvidence,
@@ -750,6 +911,17 @@ export type {
   HeartbeatRun,
   HeartbeatRunEvent,
   HeartbeatRunStatusPhase,
+  ProviderTraceDebugRequest,
+  ProviderTraceDirection,
+  ProviderTraceDisposition,
+  ProviderTraceFieldMapping,
+  ProviderTraceFieldMappingAction,
+  ProviderTraceFrame,
+  ProviderTraceInterpretation,
+  ProviderTraceMetadata,
+  ProviderTraceStatus,
+  RunPresentationDecision,
+  RunPresentationSource,
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
@@ -790,6 +962,25 @@ export type {
 export { RESOURCE_MEMBERSHIP_STATES } from "./resource-memberships.js";
 export type { InboxDismissal, InboxDismissalKind } from "./inbox-dismissal.js";
 export type {
+  DecisionEffectStaleness,
+  DecisionOptionStyle,
+  DecisionInput,
+  CommentOnIssueDecisionEffect,
+  CreateIssueDecisionEffect,
+  UpdateIssueStatusDecisionEffect,
+  AssignIssueDecisionEffect,
+  CancelIssueTreeDecisionEffect,
+  ResolveBlockerDecisionEffect,
+  DecisionEffect,
+  DecisionOption,
+  DecisionStatsCounts,
+  DecisionChosenOptionCount,
+  DecisionRuleKeyStats,
+  DecisionStatsResponse,
+  AttentionArchiveManifestEntry,
+  AttentionArchiveTargetSnapshot,
+} from "./decision.js";
+export type {
   AccessUserProfile,
   CompanyMemberRecord,
   CompanyMembersResponse,
@@ -814,6 +1005,9 @@ export type {
   CompanyPortabilityFileEntry,
   CompanyPortabilityCompanyManifestEntry,
   CompanyPortabilitySidebarOrder,
+  CompanyPortabilityLabelManifestEntry,
+  CompanyPortabilityBlobManifestEntry,
+  CompanyPortabilityEmbeddedAssetManifestEntry,
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilitySkillManifestEntry,
   CompanyPortabilityProjectManifestEntry,
@@ -821,6 +1015,10 @@ export type {
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
   CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueCommentManifestEntry,
+  CompanyPortabilityIssueDocumentManifestEntry,
+  CompanyPortabilityIssueWorkProductManifestEntry,
+  CompanyPortabilityIssueMonitorManifestEntry,
+  CompanyPortabilityIssueAttachmentManifestEntry,
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityExportResult,
@@ -846,6 +1044,7 @@ export type {
   PluginWebhookDeclaration,
   PluginToolDeclaration,
   PluginEnvironmentDriverDeclaration,
+  SandboxProviderCapabilities,
   PluginEnvironmentTemplateConfigBinding,
   PluginManagedAgentDeclaration,
   PluginManagedProjectDeclaration,
@@ -889,3 +1088,13 @@ export type {
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
 export * from "./app-definition.js";
+export * from "./chat-channels.js";
+export * from "./chat-github.js";
+
+export * from "./email.js";
+
+export type { AgentInstructionErrorCode, AgentInstructionErrorDetails, AgentInstructionSource, AgentInstructionRevision, AgentInstructionSnapshot, AgentInstructionCommitReceipt, AgentInstructionHistory, AgentInstructionDiff } from "./agent.js";
+
+export type { AgentInstructionCandidate } from "./agent.js";
+
+export * from "./skill-source.js";

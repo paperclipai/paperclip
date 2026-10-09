@@ -62,6 +62,12 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(),
+    decide: vi.fn(async (input: { action: string }) => ({
+      allowed: ["project:read", "issue:read"].includes(input.action),
+      action: input.action,
+      reason: ["project:read", "issue:read"].includes(input.action) ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: ["project:read", "issue:read"].includes(input.action) ? "Allowed by test default." : "Missing permission.",
+    })),
     hasPermission: vi.fn(),
   }),
   agentService: () => ({
@@ -98,6 +104,15 @@ vi.mock("../services/index.js", () => ({
   workProductService: () => ({}),
 }));
 
+vi.mock("../services/activity-log.js", async () => ({
+  ...await vi.importActual<typeof import("../services/activity-log.js")>("../services/activity-log.js"),
+  persistActivity: async (db: unknown, input: unknown) => {
+    await mockLogActivity(db, input);
+    return { activity: { id: "activity" }, publication: null };
+  },
+  publishActivity: vi.fn(),
+}));
+
 vi.mock("../services/environments.js", () => ({
   environmentService: () => mockEnvironmentService,
 }));
@@ -131,7 +146,7 @@ let issueServer: Server | null = null;
 
 function createProjectApp() {
   projectServer ??= buildApp((expressApp) => {
-    expressApp.use("/api", projectRoutes({} as any));
+    expressApp.use("/api", projectRoutes({ transaction: async (effect: (tx: unknown) => unknown) => effect({}) } as any));
   }).listen(0);
   return projectServer;
 }
@@ -155,7 +170,7 @@ async function closeServer(server: Server | null) {
   });
 }
 
-describe.sequential("execution environment route guards", () => {
+describe("execution environment route guards", () => {
   afterAll(async () => {
     await closeServer(projectServer);
     await closeServer(issueServer);
@@ -179,7 +194,6 @@ describe.sequential("execution environment route guards", () => {
     mockCompanyService.getById.mockReset();
     mockCompanyService.getById.mockResolvedValue({
       id: "company-1",
-      attachmentMaxBytes: 10 * 1024 * 1024,
     });
     mockEnvironmentService.getById.mockReset();
     mockIssueReferenceService.deleteDocumentSource.mockClear();

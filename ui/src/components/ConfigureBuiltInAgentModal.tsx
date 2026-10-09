@@ -22,6 +22,7 @@ import {
   builtInAgentsApi,
   type BuiltInAgentState,
 } from "@/api/builtInAgents";
+import { adapterCuratesModelOrder } from "../lib/model-utils";
 
 /** Adapters whose config completeness is keyed on a non-empty `model`. */
 function isModelBasedAdapter(adapterType: string): boolean {
@@ -158,7 +159,7 @@ export function ConfigureBuiltInAgentModal({
         <div className="space-y-4">
           <InlineBanner tone="info" compact>
             Creates <strong>{definition.displayName}</strong> in your roster, badged{" "}
-            <strong>Built-in</strong>. Companies that require hire approval will queue this for the
+            <strong>Built-in</strong>. Organizations that require hire approval will queue this for the
             board.
           </InlineBanner>
 
@@ -184,6 +185,7 @@ export function ConfigureBuiltInAgentModal({
               allowDefault={adapterType !== "opencode_local"}
               required
               groupByProvider={false}
+              preserveOrder={adapterCuratesModelOrder(adapterType)}
               creatable
             />
           )}

@@ -84,6 +84,14 @@ function parseProviderConfig(
   return Object.keys(providers).length > 0 ? providers : null;
 }
 
+function parseConfiguredModelRef(raw: unknown): { provider: string; model: string } | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0 || slash === trimmed.length - 1) return null;
+  return { provider: trimmed.slice(0, slash), model: trimmed.slice(slash + 1) };
+}
+
 async function readJsonObject(filepath: string): Promise<Record<string, unknown>> {
   try {
     const raw = await fs.readFile(filepath, "utf8");
@@ -141,11 +149,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   }
 
   const existingConfig = await readJsonObject(runtimeConfigPath);
-  const existingPermission = isPlainObject(existingConfig.permission)
-    ? existingConfig.permission
-    : {};
   const notes = [
-    "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+    "Injected runtime OpenCode config with permission=allow for all tools and connections.",
   ];
 
   // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
@@ -162,7 +167,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     notes,
   );
   const existingProvider = isPlainObject(existingConfig.provider) ? existingConfig.provider : {};
-  const nextProvider = gatewayProviders
+  let nextProvider = gatewayProviders
     ? { ...existingProvider, ...gatewayProviders }
     : existingProvider;
   if (gatewayProviders) {
@@ -171,12 +176,35 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     );
   }
 
+  // Register the configured model on its provider's models map. OpenCode resolves
+  // `--model provider/model` only when the model id exists in that map, so ids the
+  // models.dev catalog does not carry — OpenRouter routing variants such as
+  // `openai/gpt-oss-120b:nitro`, or models newer than the bundled catalog — are
+  // otherwise rejected with "Model not found" even though the provider serves them.
+  // An empty entry deep-merges with catalog metadata, so this is a no-op for models
+  // the catalog already knows, and we never clobber an explicit definition from the
+  // user config or PAPERCLIP_OPENCODE_PROVIDERS.
+  const configuredModel = parseConfiguredModelRef(input.config.model);
+  if (configuredModel) {
+    const providerEntry = isPlainObject(nextProvider[configuredModel.provider])
+      ? { ...(nextProvider[configuredModel.provider] as Record<string, unknown>) }
+      : {};
+    const providerModels = isPlainObject(providerEntry.models)
+      ? { ...(providerEntry.models as Record<string, unknown>) }
+      : {};
+    if (!isPlainObject(providerModels[configuredModel.model])) {
+      providerModels[configuredModel.model] = {};
+      providerEntry.models = providerModels;
+      nextProvider = { ...nextProvider, [configuredModel.provider]: providerEntry };
+      notes.push(
+        `Registered configured model ${configuredModel.provider}/${configuredModel.model} in the runtime OpenCode config.`,
+      );
+    }
+  }
+
   const nextConfig: Record<string, unknown> = {
     ...existingConfig,
-    permission: {
-      ...existingPermission,
-      external_directory: "allow",
-    },
+    permission: "allow",
   };
   if (Object.keys(nextProvider).length > 0) {
     nextConfig.provider = nextProvider;
@@ -205,4 +233,24 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });
     },
   };
+}
+
+/** Managed credentials must never leave host-only homes in a remote process. */
+export function prepareManagedOpenCodeRemoteHomes(input: {
+  env: Record<string, string>;
+  config: Record<string, unknown>;
+  runtimeRootDir: string | null | undefined;
+  runId: string;
+  configDir?: string;
+}): void {
+  if (!input.config.managedAiConnection) return;
+  if (!input.runtimeRootDir) throw new Error("Managed OpenCode authentication requires an isolated remote runtime directory.");
+  const home = path.posix.join(input.runtimeRootDir, "managed-auth", input.runId);
+  Object.assign(input.env, {
+    HOME: home,
+    XDG_CONFIG_HOME: input.configDir ?? path.posix.join(home, "config"),
+    XDG_DATA_HOME: path.posix.join(home, "data"),
+    XDG_CACHE_HOME: path.posix.join(home, "cache"),
+    XDG_STATE_HOME: path.posix.join(home, "state"),
+  });
 }

@@ -19,9 +19,11 @@ import {
   secretAccessEvents,
 } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET, type AgentApiKeyScope } from "@paperclipai/shared";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { secretRoutes } from "../routes/secrets.js";
 import { secretService } from "../services/secrets.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -196,6 +198,11 @@ describeEmbeddedPostgres("agent secret routes", () => {
     expect(fetched.status).toBe(200);
     expect(fetched.headers["cache-control"]).toBe("no-store");
     expect(fetched.body).toEqual({ key: "env_only_key", value: "env-secret-value", version: 1 });
+    const [registeredRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
+    expect(JSON.stringify(registeredRun.contextSnapshot)).not.toContain("env-secret-value");
+    expect(registeredRun.contextSnapshot).toMatchObject({
+      paperclipSecretRedactions: [expect.objectContaining({ fingerprintSha256: expect.any(String), material: expect.any(Object) })],
+    });
     expect(await db.select().from(secretAccessEvents)).toEqual([
       expect.objectContaining({ secretId: envSecret.id, outcome: "success", consumerType: "agent_api" }),
     ]);
@@ -212,12 +219,52 @@ describeEmbeddedPostgres("agent secret routes", () => {
 
     const denied = await request(createApp(fixture)).post("/api/agents/me/secrets/unbound_key/value");
     expect(denied.status).toBe(403);
-    expect(await db.select().from(secretAccessEvents)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ secretId: unboundSecret.id, outcome: "failure", errorCode: "binding_missing" }),
+    expect(await db.select().from(secretAccessEvents)).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ secretId: unboundSecret.id }),
     ]));
-    expect(await db.select().from(activityLog)).toEqual(expect.arrayContaining([
+    expect(await db.select().from(activityLog)).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ action: "secret.value.read", entityId: unboundSecret.id }),
     ]));
+  });
+
+  it("fails closed when run redaction registration cannot be persisted", async () => {
+    const fixture = await seedAgentRun();
+    await expect(createRunSecretRedactionRegistry(db).register(fixture.companyId, randomUUID(), "must-not-return"))
+      .rejects.toThrow("Heartbeat run redaction registration failed");
+  });
+
+  it("deduplicates concurrent redaction registrations for the same run and value", async () => {
+    const fixture = await seedAgentRun();
+    const registry = createRunSecretRedactionRegistry(db);
+
+    await Promise.all([
+      registry.register(fixture.companyId, fixture.heartbeatRunId, "duplicate-secret"),
+      registry.register(fixture.companyId, fixture.heartbeatRunId, "duplicate-secret"),
+    ]);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
+    expect(run.contextSnapshot).toMatchObject({
+      paperclipSecretRedactions: [expect.objectContaining({ fingerprintSha256: expect.any(String) })],
+    });
+    expect((run.contextSnapshot as { paperclipSecretRedactions: unknown[] }).paperclipSecretRedactions).toHaveLength(1);
+  });
+
+  it("redacts batched runs from projected registries and enforces company scope", async () => {
+    const first = await seedAgentRun();
+    const foreign = await seedAgentRun();
+    const registry = createRunSecretRedactionRegistry(db);
+    await registry.register(first.companyId, first.heartbeatRunId, "first-secret-value");
+    await registry.register(foreign.companyId, foreign.heartbeatRunId, "foreign-secret-value");
+    const runs = [
+      { id: first.heartbeatRunId, text: "first-secret-value foreign-secret-value", createdAt: new Date() },
+      { id: foreign.heartbeatRunId, text: "foreign-secret-value", createdAt: new Date() },
+    ];
+    const redacted = await registry.redactForRuns(first.companyId, runs);
+    expect(redacted[0].text).toBe(`${REDACTED_EVENT_VALUE} foreign-secret-value`);
+    expect(redacted[0].createdAt).toEqual(runs[0].createdAt);
+    expect(redacted[1].text).toBe("foreign-secret-value");
+    expect(await registry.redactForRun(first.companyId, first.heartbeatRunId, runs[0].text))
+      .toBe(redacted[0].text);
   });
 
   it("denies low-trust, task-bridge, and skill-test callers on both routes", async () => {

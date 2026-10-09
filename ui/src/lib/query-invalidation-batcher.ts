@@ -1,3 +1,4 @@
+import { getPageVisibility } from "./page-visibility";
 import type { InvalidateQueryFilters, QueryClient } from "@tanstack/react-query";
 
 /**
@@ -62,7 +63,9 @@ export function createInvalidationBatcher(
     const filtersList = [...pending.values()];
     pending.clear();
     try {
-      await Promise.all(filtersList.map((filters) => queryClient.invalidateQueries(filters)));
+      await Promise.all(filtersList.map((filters) => queryClient.invalidateQueries(
+        getPageVisibility().visible ? filters : { ...filters, refetchType: "none" },
+      )));
     } finally {
       deferred?.resolve();
     }

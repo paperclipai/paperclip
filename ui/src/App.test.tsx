@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudAccessGate } from "./components/CloudAccessGate";
+import { queryKeys } from "./lib/queryKeys";
 import appSource from "./App.tsx?raw";
 
 const mockHealthApi = vi.hoisted(() => ({
@@ -19,6 +20,11 @@ const mockAuthApi = vi.hoisted(() => ({
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
   claimBootstrapAdmin: vi.fn(),
+}));
+const beginCloudSignInMock = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/cloud-sign-in", () => ({
+  beginCloudSignIn: (url: string) => beginCloudSignInMock(url),
+  clearCloudSignInAttempt: vi.fn(),
 }));
 
 vi.mock("./api/health", () => ({
@@ -43,29 +49,30 @@ vi.mock("@/lib/router", () => ({
   useParams: () => ({}),
 }));
 
-async function flushReact() {
-  await Promise.resolve();
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
-}
-
+/**
+ * Waits on the condition, not on a fixed number of turns. A hand-rolled retry
+ * loop is ample on an idle machine and not when the suite runs many workers in
+ * parallel: it gives up after N turns and reports a failure on behaviour that
+ * works. `vi.waitFor` retries against a time budget, so a loaded worker gets
+ * more turns instead.
+ *
+ * Same replacement as #11499 and #11521, which fixed the shorter-budget
+ * instances of this in the routing tests.
+ */
 async function waitForText(container: HTMLElement, text: string) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (container.textContent?.includes(text)) return;
-    await flushReact();
-  }
-  expect(container.textContent).toContain(text);
+  await vi.waitFor(() => expect(container.textContent).toContain(text));
 }
 
-function renderGate(container: HTMLElement) {
+function renderGate(container: HTMLElement, allowMembershipRequest = false, client?: QueryClient) {
   const root = createRoot(container);
-  const queryClient = new QueryClient({
+  const queryClient = client ?? new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 
   flushSync(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <CloudAccessGate />
+        <CloudAccessGate allowMembershipRequest={allowMembershipRequest} />
       </QueryClientProvider>,
     );
   });
@@ -99,6 +106,43 @@ describe("CloudAccessGate", () => {
     vi.clearAllMocks();
   });
 
+  it("renews a missing Cloud instance session without opening local auth", async () => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated", cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: "https://my-staging.paperclip.app", stackSlug: "team" } });
+    mockAuthApi.getSession.mockResolvedValue(null);
+    beginCloudSignInMock.mockReturnValue(true);
+    const root = renderGate(container);
+    await vi.waitFor(() => expect(beginCloudSignInMock).toHaveBeenCalledTimes(1));
+    expect(beginCloudSignInMock).toHaveBeenCalledWith("https://my-staging.paperclip.app/v1/stacks/team/entry-redirect?returnTo=%2Finstance%2Fsettings%2Fgeneral");
+    expect(container.textContent).not.toContain("Navigate:/auth");
+    expect(container.textContent).not.toContain("Outlet content");
+    unmountRoot(root);
+  });
+
+  it("does not mistake a session service failure for a signed-out user", async () => {
+    mockAuthApi.getSession.mockRejectedValue(new Error("Session service unavailable"));
+    const root = renderGate(container);
+    await waitForText(container, "Unable to load Paperclip");
+    expect(container.querySelector("button")?.textContent).toBe("Try again");
+    expect(container.textContent).not.toContain("Outlet content");
+    expect(container.textContent).not.toContain("Navigate:/auth");
+    expect(beginCloudSignInMock).not.toHaveBeenCalled();
+    unmountRoot(root);
+  });
+
+  it.each([undefined, { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: "https://my.paperclip.app", stackSlug: "team" }])(
+    "does not require a session in local trusted mode, including with Cloud metadata %j", async (cloud) => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "local_trusted", cloud });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await client.fetchQuery({
+      queryKey: queryKeys.auth.session,
+      queryFn: () => Promise.reject(new Error("Session service unavailable")),
+    }).catch(() => {});
+    const root = renderGate(container, false, client);
+    await waitForText(container, "Outlet content");
+    expect(beginCloudSignInMock).not.toHaveBeenCalled();
+    unmountRoot(root);
+  });
+
   it("shows a no-access message for signed-in users without org access", async () => {
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
@@ -114,11 +158,46 @@ describe("CloudAccessGate", () => {
     });
 
     const root = renderGate(container);
-    await waitForText(container, "No company access");
+    await waitForText(container, "No organization access");
 
-    expect(container.textContent).toContain("No company access");
+    expect(container.textContent).toContain("No organization access");
     expect(container.textContent).not.toContain("Outlet content");
 
+    unmountRoot(root);
+  });
+
+  it("admits signed-in nonmembers only for the private invitation landing page", async () => {
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "invitee" } });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ isInstanceAdmin: false, companyIds: [] });
+    const root = renderGate(container, true);
+    await waitForText(container, "Outlet content");
+    unmountRoot(root);
+  });
+
+  it("still requires sign-in for the invitation landing page", async () => {
+    mockAuthApi.getSession.mockResolvedValue(null);
+    const root = renderGate(container, true);
+    await waitForText(container, "Navigate:/auth?next=");
+    expect(container.textContent).not.toContain("Outlet content");
+    unmountRoot(root);
+  });
+
+  it("still blocks invitation pages while cloud bootstrap is pending", async () => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated", deploymentExposure: "public", bootstrapStatus: "bootstrap_pending" });
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "invitee" } });
+    const root = renderGate(container, true);
+    await waitForText(container, "This Paperclip is waiting on its first admin");
+    expect(container.textContent).not.toContain("Outlet content");
+    unmountRoot(root);
+  });
+
+  it("keeps invitation pages closed when cloud access checks fail", async () => {
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "invitee" } });
+    mockAccessApi.getCurrentBoardAccess.mockRejectedValueOnce(new Error("Access check unavailable"));
+    const root = renderGate(container, true);
+    await waitForText(container, "Unable to load Paperclip");
+    expect(container.querySelector("button")?.textContent).toBe("Try again");
+    expect(container.textContent).not.toContain("Outlet content");
     unmountRoot(root);
   });
 
@@ -140,7 +219,7 @@ describe("CloudAccessGate", () => {
     await waitForText(container, "Outlet content");
 
     expect(container.textContent).toContain("Outlet content");
-    expect(container.textContent).not.toContain("No company access");
+    expect(container.textContent).not.toContain("No organization access");
 
     unmountRoot(root);
   });
@@ -160,7 +239,7 @@ describe("CloudAccessGate", () => {
 
     expect(container.textContent).toContain("Finish setting up this Paperclip");
     expect(container.textContent).toContain("Sign in / Create account");
-    expect(container.textContent).toContain("pnpm paperclipai auth bootstrap-ceo");
+    expect(container.textContent).toContain("npx paperclipai auth bootstrap-ceo");
     expect(mockAccessApi.getCurrentBoardAccess).not.toHaveBeenCalled();
 
     unmountRoot(root);
@@ -240,5 +319,47 @@ describe("Skill Studio routes", () => {
     expect(detailIndexes).toHaveLength(2);
     expect(createIndexes[0]).toBeLessThan(detailIndexes[0]!);
     expect(createIndexes[1]).toBeLessThan(detailIndexes[1]!);
+  });
+});
+
+describe("Apps routes", () => {
+  it("uses one connector landing page and redirects retired browse, connections, and audit URLs", () => {
+    expect(appSource).toContain('<Route path="apps" element={<Browse />} />');
+    expect(appSource).toContain('<Route path="apps/browse" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/connections" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/advanced/audit" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/advanced/run-your-own" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).not.toContain('import { Connections }');
+    expect(appSource).toContain('<Route path="apps/byo" element={<AppsConnect byoOnly />} />');
+    expect(appSource).toContain('path="apps/vercel-connect"');
+    expect(appSource).toContain('<AppsConnectEntryRoute credentialSource="vercel_connect" />');
+    expect(appSource).toContain('<AppsConnect credentialSource={credentialSource} />');
+    expect(appSource).toContain('<Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/advanced/gateways" element={<GatewaysList />} />');
+  });
+
+  it("redirects legacy Rules and Health links to the remaining developer surfaces", () => {
+    expect(appSource).toContain('if (tab === "runtime" || tab === "audit") return "/apps";');
+    expect(appSource).toContain('if (tab === "policies") return "/apps/advanced/profiles";');
+  });
+});
+
+describe("Retired settings routes", () => {
+  it("redirects the removed heartbeats page to the settings root instead of dropping the route", () => {
+    expect(appSource).toContain(
+      '<Route path="company/settings/instance/heartbeats" element={<Navigate to="/company/settings" replace />} />',
+    );
+    expect(appSource).not.toContain("<InstanceSettings");
+    expect(appSource).not.toContain('"./pages/InstanceSettings"');
+  });
+});
+
+describe("Decisions routes", () => {
+  it("does not register decision-training views", () => {
+    expect(appSource).not.toContain('path="decisions/training"');
+    expect(appSource).not.toContain('path="decisions/training/:id"');
+    expect(appSource).not.toContain('path="training"');
+    expect(appSource).not.toContain('path="training/:id"');
   });
 });

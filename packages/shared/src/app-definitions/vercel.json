@@ -8,7 +8,8 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=vercel.com&sz=128"
+    "logoUrl": "/brands/apps/vercel.svg",
+    "darkLogoUrl": "/brands/apps/vercel-dark.svg"
   },
   "urlPatterns": [
     "https://mcp.vercel.com/*"
@@ -24,7 +25,10 @@
       ],
       "whenToUse": "Use the provider-hosted connection for the quickest setup.",
       "defaults": {
-        "serverUrl": "https://mcp.vercel.com/mcp"
+        "serverUrl": "https://mcp.vercel.com/mcp",
+        "scopesHint": [
+          "openid"
+        ]
       },
       "guidanceMd": "Connect the Vercel team and projects agents should operate.",
       "riskTier": "S3",
@@ -34,5 +38,9 @@
         "environment"
       ]
     }
-  ]
+  ],
+  "availability": {
+    "available": false,
+    "reason": "Vercel currently reviews and approves MCP clients."
+  }
 }

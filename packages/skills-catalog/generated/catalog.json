@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-23T19:56:45.849Z",
+  "generatedAt": "2026-10-06T01:21:47.421Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -102,11 +102,46 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 11837,
-          "sha256": "86d6e382c32c626213b46c010cc7fc1ec460821a8c777cfa5b8e86fa9d6a86b2"
+          "sizeBytes": 12028,
+          "sha256": "083d5fa8dc43c3ce7747e89c1afb6f6f42d0603a31808bffc5f8e56735f2d865"
         }
       ],
-      "contentHash": "sha256:1c7a82cd9638a1d845b238032da3ff4ad80c5b6a87dca46082f501fa4583db55"
+      "contentHash": "sha256:f2592d81f616628a3eba92636616424f2eed82ec22bb504240a58f6be115e407"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:status-card-query",
+      "key": "paperclipai/bundled/paperclip-operations/status-card-query",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "status-card-query",
+      "name": "status-card-query",
+      "description": "Create and maintain agent-authored Paperclip status cards, or compile a prose interest prompt into bounded CompanySearchQuery objects and write the first summary from the assigned Summarizer run.",
+      "path": "catalog/bundled/paperclip-operations/status-card-query",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "general",
+        "manager"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "status",
+        "search",
+        "reporting",
+        "operations"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 6368,
+          "sha256": "0c6140f51d503cbadc98723ce54c0def48e7e31ea159b0935b8ad6369291498a"
+        }
+      ],
+      "contentHash": "sha256:2b6e53bf8491f027afdbd6961ad84f677cfd385a0a6a73616ea84111ca8886ed"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:summarize-status",
@@ -137,11 +172,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 8682,
-          "sha256": "c5f459ced4e97e6ae33c3ffbe7b3fb7d4c1fe7bfb0121187f0c2f9000a670b37"
+          "sizeBytes": 8877,
+          "sha256": "4cb3d177f5d16e3cc2052d2f80e7fb245ab95e79c1e947abdc84cd4ee3d8c61e"
         }
       ],
-      "contentHash": "sha256:32d2f231a35fc3a658b244f13dd726b2f2bc642db6d3512559fdf9a2b680838d"
+      "contentHash": "sha256:3e49ee2b8d83d1371fb0f59197bb96c46b64f722540405f46d4a5a756fbe1b89"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:task-planning",
@@ -150,7 +185,7 @@
       "category": "paperclip-operations",
       "slug": "task-planning",
       "name": "task-planning",
-      "description": "Turn a Paperclip issue or request into a structured implementation plan with child task graph, blockers, owners, and acceptance criteria, then save it as the issue `plan` document.",
+      "description": "Write or revise a useful Paperclip plan with a clear outcome and verification. Use when a plan is requested or uncertainty needs resolving before execution.",
       "path": "catalog/bundled/paperclip-operations/task-planning",
       "entrypoint": "SKILL.md",
       "trustLevel": "markdown_only",
@@ -172,11 +207,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4938,
-          "sha256": "9c52a44a30ec8d306119da51bf298e9e3e6c382a9a9559ffd3054bf5e0c75f36"
+          "sizeBytes": 1517,
+          "sha256": "48d6501d6ef481d5b19d0e0cd1507436d1cee1acf155e5038e1f0b2f0230d9e1"
         }
       ],
-      "contentHash": "sha256:487c3116eead89fef4f71c984329c41836bd69951b7ef9ed8736c69435e02438"
+      "contentHash": "sha256:a1724bde58be85c445590aeaa2f5f2f1de2bee24fe62f07fa3b579c6e4b28e6d"
     },
     {
       "id": "paperclipai:bundled:product:paperclip-capsules",
@@ -449,6 +484,42 @@
         }
       ],
       "contentHash": "sha256:efe8ea89b552df95222609867c9c75f1b40e16f457d34e7e4a124f54daa33efa"
+    },
+    {
+      "id": "paperclipai:optional:content:simplified-english",
+      "key": "paperclipai/optional/content/simplified-english",
+      "kind": "optional",
+      "category": "content",
+      "slug": "simplified-english",
+      "name": "simplified-english",
+      "description": "Write user-facing comments, plans, and documents in ASD-STE100 Simplified Technical English — short, unambiguous sentences with approved words and one meaning each — so readers understand them the first time.",
+      "path": "catalog/optional/content/simplified-english",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "product",
+        "writer",
+        "devrel"
+      ],
+      "requires": [],
+      "tags": [
+        "writing",
+        "communication",
+        "clarity",
+        "style"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 1578,
+          "sha256": "a0f7385599873910e2fabf400346016a07dacbc7ece27c0e3616ae8fd94ebfbb"
+        }
+      ],
+      "contentHash": "sha256:642321f40d51e0125df05c6fbace49aeb07ec30392058756909c259c9c5eac6a"
     },
     {
       "id": "paperclipai:optional:finance:ramp",
@@ -1042,6 +1113,53 @@
         "path": "skills/last30days",
         "url": "https://github.com/mvanhorn/last30days-skill/tree/v3.3.0/skills/last30days"
       }
+    },
+    {
+      "id": "paperclipai:optional:software-development:prepare-mcp-integration",
+      "key": "paperclipai/optional/software-development/prepare-mcp-integration",
+      "kind": "optional",
+      "category": "software-development",
+      "slug": "prepare-mcp-integration",
+      "name": "prepare-mcp-integration",
+      "description": "Prepare MCP/vendor integrations through cited research, a content PR, exact-revision human approval, and one governed Paperclip connector PR per approved connection. Use for new integration research and delivery; not for ad hoc connector coding that bypasses the playbooks.",
+      "path": "catalog/optional/software-development/prepare-mcp-integration",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "product-manager",
+        "researcher"
+      ],
+      "requires": [
+        "git",
+        "gh",
+        "curl"
+      ],
+      "tags": [
+        "mcp",
+        "integrations",
+        "connectors",
+        "research",
+        "github",
+        "human-approval"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 12409,
+          "sha256": "5278d288a0cbfe10fdda4ef3d99cf61e6ed068f4b6c1282406b0e001c9f45253"
+        },
+        {
+          "path": "examples/notion-mcp-research-gate.md",
+          "kind": "markdown",
+          "sizeBytes": 1900,
+          "sha256": "944b13ac67c06c65643eb236e856f1479106749861535648d29334f84cf1b50b"
+        }
+      ],
+      "contentHash": "sha256:84f2a28d7d004393719684f2b435e5ee01ddc58591e0dfeb73d72c7605db7f49"
     }
   ]
 }

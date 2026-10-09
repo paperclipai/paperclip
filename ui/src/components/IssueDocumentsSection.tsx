@@ -15,6 +15,7 @@ import { useLocation } from "@/lib/router";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { deriveDocumentRevisionState } from "../lib/document-revisions";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
@@ -148,7 +149,7 @@ function downloadDocumentFile(key: string, body: string) {
 function getRevisionActor(
   revision: DocumentRevision,
   maps: {
-    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
     userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   },
 ): DocumentFrameHeaderRevisionActor {
@@ -158,6 +159,7 @@ function getRevisionActor(
       kind: "agent",
       name: agent?.name ?? revision.createdByAgentId.slice(0, 8),
       agentIcon: agent?.icon ?? null,
+      agent: agent ?? { id: revision.createdByAgentId },
     };
   }
   if (revision.createdByUserId) {
@@ -274,7 +276,7 @@ export function IssueDocumentsSection({
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
   extraActions?: ReactNode;
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   /**
    * Seed which document annotation panels are open on first render. Mostly useful
@@ -690,7 +692,7 @@ export function IssueDocumentsSection({
 
   const copyDocumentBody = useCallback(async (key: string, body: string) => {
     try {
-      await navigator.clipboard.writeText(body);
+      await copyTextToClipboard(body);
       setCopiedDocumentKey(key);
       if (copiedDocumentTimerRef.current) {
         clearTimeout(copiedDocumentTimerRef.current);

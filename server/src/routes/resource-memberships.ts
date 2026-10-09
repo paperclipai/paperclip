@@ -1,6 +1,9 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { updateResourceMembershipSchema } from "@paperclipai/shared";
+import {
+  updateDocumentResourceMembershipSchema,
+  updateResourceMembershipSchema,
+} from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { getActorInfo } from "./authz.js";
 import { logActivity, resourceMembershipService } from "../services/index.js";
@@ -19,7 +22,7 @@ async function logMembershipChange(
   input: {
     companyId: string;
     userId: string;
-    resourceType: "project" | "agent";
+    resourceType: "project" | "agent" | "document";
     resourceId: string;
     state: "joined" | "left";
     starredAt: Date | null;
@@ -116,6 +119,38 @@ export function resourceMembershipRoutes(db: Db) {
           userId,
           resourceType: "agent",
           resourceId: agentId,
+          state: result.state,
+          starredAt: result.starredAt,
+          changeKind: result.changeKind,
+          policySource: result.policySource,
+        });
+      }
+      const { changed: _changed, changeKind: _changeKind, policySource: _policySource, ...response } = result;
+      res.json(response);
+    },
+  );
+
+  router.put(
+    "/companies/:companyId/resource-memberships/me/documents/:documentId",
+    validate(updateDocumentResourceMembershipSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const documentId = req.params.documentId as string;
+      const userId = requireBoardUserId(req, res);
+      if (!userId) return;
+      const result = await svc.updateDocument({
+        companyId,
+        documentId,
+        userId,
+        starred: req.body.starred,
+        actor: req.actor,
+      });
+      if (result.changed && result.changeKind) {
+        await logMembershipChange(db, req, {
+          companyId,
+          userId,
+          resourceType: "document",
+          resourceId: documentId,
           state: result.state,
           starredAt: result.starredAt,
           changeKind: result.changeKind,

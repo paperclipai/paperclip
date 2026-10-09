@@ -51,7 +51,9 @@ import type {
   UserSecretCoverageSummary,
   UserSecretDefinition,
 } from "@paperclipai/shared";
+import { hidesCompanySection } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
+import { useHiddenSettings } from "../hooks/useHiddenSettings";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import {
@@ -106,10 +108,12 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { useCopyAction } from "../lib/use-copy-action";
 import { PageTabBar } from "../components/PageTabBar";
 import { AgentSelect } from "../components/AgentMultiSelect";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
 import { MyUserSecretsTab } from "./secrets/MyUserSecretsTab";
+import { ProposalsTab } from "./secrets/ProposalsTab";
 import { SecretPathName } from "./secrets/SecretPathName";
 import {
   buildSecretPathBreadcrumbs,
@@ -127,9 +131,12 @@ import {
 import type { MyUserSecretEntry } from "../api/secrets";
 
 type CreateMode = "managed" | "external";
+// "value" writes a new secret value (for external references: through to the
+// provider); "reference" re-points an external reference without writing.
+type RotateMode = "value" | "reference";
 type SecretValueProvider = "company" | "user";
 type ProvidedByFilter = "all" | SecretValueProvider;
-type SecretsTab = "secrets" | "my-secrets" | "vaults";
+type SecretsTab = "secrets" | "my-secrets" | "vaults" | "proposals";
 type SecretsViewMode = "folders" | "flat";
 
 const SECRETS_VIEW_MODE_STORAGE_KEY = "paperclip.secrets.viewMode";
@@ -341,9 +348,12 @@ function modeLabel(managedMode: SecretManagedMode) {
   return managedMode === "paperclip_managed" ? "Paperclip-managed" : "Linked external";
 }
 
-function modeDescription(managedMode: SecretManagedMode) {
-  return managedMode === "paperclip_managed"
-    ? "Paperclip owns create and rotation writes for this provider secret."
+function modeDescription(managedMode: SecretManagedMode, canWriteExternalValue = false) {
+  if (managedMode === "paperclip_managed") {
+    return "Paperclip owns create and rotation writes for this provider secret.";
+  }
+  return canWriteExternalValue
+    ? "Paperclip resolves this provider reference and can write new values to it via Update value."
     : "Paperclip resolves this provider reference but does not rotate the provider value.";
 }
 
@@ -645,13 +655,39 @@ export function Secrets() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const [activeTab, setActiveTab] = useState<SecretsTab>("secrets");
+  // Operator-hidden sub-tabs (UI-only; the secrets APIs stay live for agents).
+  const { hidden: hiddenSettings } = useHiddenSettings();
+  const hideVaultsTab = hidesCompanySection(hiddenSettings, "company.secrets.vaults");
+  const hideProposalsTab = hidesCompanySection(hiddenSettings, "company.secrets.proposals");
+  useEffect(() => {
+    if ((activeTab === "vaults" && hideVaultsTab) || (activeTab === "proposals" && hideProposalsTab)) {
+      setActiveTab("secrets");
+    }
+  }, [activeTab, hideVaultsTab, hideProposalsTab]);
   const [secretDetailTab, setSecretDetailTab] = useState("details");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<SecretStatus | "all">("active");
   const [providerFilter, setProviderFilter] = useState<SecretProvider | "all">("all");
   const [providedByFilter, setProvidedByFilter] = useState<ProvidedByFilter>("all");
-  const [selectedSecretId, setSelectedSecretId] = useState<string | null>(null);
-  const [selectedDefinitionId, setSelectedDefinitionId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // The detail sheet is deep-linkable: `?secret=<id>` /
+  // `?definition=<id>` are the source of truth for the current selection, so
+  // every open secret has a shareable URL and Back closes the sheet.
+  const selectedSecretId = searchParams.get("secret");
+  const selectedDefinitionId = searchParams.get("definition");
+  const setDetailSelection = useCallback(
+    (secretId: string | null, definitionId: string | null = null) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (secretId) next.set("secret", secretId);
+        else next.delete("secret");
+        if (definitionId) next.set("definition", definitionId);
+        else next.delete("definition");
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
   const [usageDialogSecretId, setUsageDialogSecretId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -674,6 +710,7 @@ export function Secrets() {
   });
   const [createError, setCreateError] = useState<unknown>(null);
   const [rotateOpen, setRotateOpen] = useState(false);
+  const [rotateMode, setRotateMode] = useState<RotateMode>("value");
   const [rotateValue, setRotateValue] = useState("");
   const [rotateExternalRef, setRotateExternalRef] = useState("");
   const [rotateProviderConfigId, setRotateProviderConfigId] = useState("");
@@ -749,8 +786,17 @@ export function Secrets() {
     retry: false,
   });
 
+  const proposalsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
+      : ["secret-proposals", "__disabled__"],
+    queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
+    enabled: Boolean(selectedCompanyId) && !hideProposalsTab,
+  });
+
   const secrets = secretsQuery.data ?? EMPTY_SECRETS;
   const userDefinitions = userDefinitionsQuery.data ?? EMPTY_USER_SECRET_DEFINITIONS;
+  const pendingProposalCount = proposalsQuery.data?.length ?? 0;
   const myUserSecrets = myUserSecretsQuery.data ?? EMPTY_MY_USER_SECRETS;
   const providers = providersQuery.data ?? EMPTY_SECRET_PROVIDERS;
   const providerConfigs = providerConfigsQuery.data ?? EMPTY_PROVIDER_CONFIGS;
@@ -868,7 +914,6 @@ export function Secrets() {
   // Folders are derived purely from slash-delimited secret names; there is no
   // server-side folder record. `?path=` holds the normalized current folder
   // and is only meaningful on the main Secrets tab (inert on the others).
-  const [searchParams, setSearchParams] = useSearchParams();
   const pathParam = normalizeSecretPath(searchParams.get("path") ?? "");
   const folderPath = activeTab === "secrets" ? pathParam : "";
   const searching = search.trim().length > 0;
@@ -1094,12 +1139,10 @@ export function Secrets() {
       });
       setCreateError(null);
       if (result.kind === "company") {
-        setSelectedSecretId(result.item.id);
-        setSelectedDefinitionId(null);
+        setDetailSelection(result.item.id);
         invalidateAll([result.item.id]);
       } else {
-        setSelectedDefinitionId(result.item.id);
-        setSelectedSecretId(null);
+        setDetailSelection(null, result.item.id);
         invalidateAll([result.item.id]);
       }
     },
@@ -1111,7 +1154,7 @@ export function Secrets() {
   const rotateMutation = useMutation({
     mutationFn: () => {
       if (!selectedSecret) throw new Error("Select a secret first");
-      if (selectedSecret.managedMode === "external_reference") {
+      if (selectedSecret.managedMode === "external_reference" && rotateMode === "reference") {
         return secretsApi.rotate(selectedSecret.id, {
           externalRef: rotateExternalRef.trim() || selectedSecret.externalRef || undefined,
           providerConfigId: rotateProviderConfigId || null,
@@ -1183,7 +1226,7 @@ export function Secrets() {
     onSuccess: (_response, id) => {
       pushToast({ title: "Secret deleted", tone: "info" });
       setDeleteConfirm(null);
-      if (selectedSecretId === id) setSelectedSecretId(null);
+      if (selectedSecretId === id) setDetailSelection(null);
       invalidateAll([id]);
     },
     onError: (error) => {
@@ -1201,7 +1244,7 @@ export function Secrets() {
     onSuccess: (_response, definition) => {
       pushToast({ title: "User-provided secret removed", body: definition.name, tone: "info" });
       setDefinitionDeleteConfirm(null);
-      if (selectedDefinitionId === definition.id) setSelectedDefinitionId(null);
+      if (selectedDefinitionId === definition.id) setDetailSelection(null);
       invalidateAll([definition.id]);
     },
     onError: (error) => {
@@ -1409,25 +1452,54 @@ export function Secrets() {
 
   function openCompanySecret(secret: CompanySecret) {
     setSecretDetailTab("details");
-    setSelectedSecretId(secret.id);
-    setSelectedDefinitionId(null);
+    setDetailSelection(secret.id);
   }
 
   function openUserDefinition(definition: UserSecretDefinition) {
     setSecretDetailTab("details");
-    setSelectedDefinitionId(definition.id);
-    setSelectedSecretId(null);
+    setDetailSelection(null, definition.id);
+  }
+
+  function secretSupportsExternalValueWrite(secret: CompanySecret) {
+    return (
+      secret.managedMode === "external_reference" &&
+      Boolean(secret.externalRef) &&
+      Boolean(providers.find((provider) => provider.id === secret.provider)?.supportsExternalValueWrites)
+    );
+  }
+
+  function rotateActionLabel(secret: CompanySecret) {
+    return secret.managedMode === "external_reference" && !secretSupportsExternalValueWrite(secret)
+      ? "Update reference"
+      : "Update value";
   }
 
   function openRotateSecret(secret: CompanySecret) {
     openCompanySecret(secret);
     setRotateOpen(true);
+    setRotateMode(
+      secret.managedMode === "external_reference" && !secretSupportsExternalValueWrite(secret)
+        ? "reference"
+        : "value",
+    );
     setRotateValue("");
     setRotateExternalRef("");
     setRotateProviderConfigId(
       secret.providerConfigId ?? getDefaultProviderConfigId(providerConfigs, secret.provider),
     );
     setRotateError(null);
+  }
+
+  function copyDetailLink() {
+    void copyTextToClipboard(window.location.href)
+      .then(() => pushToast({ title: "Link copied", body: "Deep link to this secret", tone: "success" }))
+      .catch((error) =>
+        pushToast({
+          title: "Copy failed",
+          body: error instanceof Error ? error.message : "Unable to copy link",
+          tone: "error",
+        }),
+      );
   }
 
   function copySecretKey(key: string) {
@@ -1472,7 +1544,7 @@ export function Secrets() {
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => openRotateSecret(row.secret)}>
                 <RefreshCw className="h-4 w-4" />
-                {row.secret.managedMode === "external_reference" ? "Update reference" : "Update value"}
+                {rotateActionLabel(row.secret)}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -1727,13 +1799,13 @@ export function Secrets() {
 
   if (!selectedCompanyId) {
     return (
-      <div className="p-6 text-sm text-muted-foreground">Select a company to manage secrets.</div>
+      <div className="p-6 text-sm text-muted-foreground">Select an organization to manage secrets.</div>
     );
   }
 
   return (
     <TooltipProvider>
-    <div className="flex h-full min-h-0 flex-col gap-4">
+    <div className="flex max-w-6xl flex-col gap-4">
       <div className="flex items-center gap-2">
         <KeyRound className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Secrets</h1>
@@ -1742,20 +1814,40 @@ export function Secrets() {
       <Tabs
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as SecretsTab)}
-        className="flex min-h-0 flex-1 flex-col gap-4"
+        className="flex flex-col gap-4"
       >
         <PageTabBar
           items={[
             { value: "secrets", label: "Secrets" },
             { value: "my-secrets", label: "My secrets" },
-            { value: "vaults", label: "Provider vaults" },
+            ...(hideVaultsTab ? [] : [{ value: "vaults", label: "Provider vaults" }]),
+            ...(hideProposalsTab
+              ? []
+              : [
+                  {
+                    value: "proposals",
+                    label: (
+                      <span className="inline-flex items-center gap-1.5">
+                        Proposals
+                        {pendingProposalCount > 0 ? (
+                          <Badge
+                            variant="outline"
+                            className="h-4 min-w-4 justify-center rounded-full border-amber-500/40 bg-amber-500/10 px-1 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
+                          >
+                            {pendingProposalCount}
+                          </Badge>
+                        ) : null}
+                      </span>
+                    ),
+                  },
+                ]),
           ]}
           align="start"
           value={activeTab}
           onValueChange={(value) => setActiveTab(value as SecretsTab)}
         />
 
-        <TabsContent value="secrets" className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+        <TabsContent value="secrets" className="flex flex-col gap-3">
           <SecretsHowToUse />
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative w-48 sm:w-64 md:w-80">
@@ -1808,7 +1900,7 @@ export function Secrets() {
             <ImportFromVaultButton
               providerConfigs={providerConfigs}
               onClick={() => openImportFromVault()}
-              onManageVaults={() => setActiveTab("vaults")}
+              onManageVaults={hideVaultsTab ? undefined : () => setActiveTab("vaults")}
               className="ml-auto"
             />
             {showFolderView ? (
@@ -1860,7 +1952,7 @@ export function Secrets() {
               </Button>
             </div>
           ) : null}
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div>
             {secretsQuery.isError || userDefinitionsQuery.isError ? (
               <div className="text-sm text-destructive flex items-center gap-2 py-4">
                 <AlertCircle className="h-4 w-4" /> Failed to load secrets:{" "}
@@ -1882,7 +1974,7 @@ export function Secrets() {
               !(showFolderView && folderPath) ? (
               <EmptyState
                 icon={KeyRound}
-                message="No secrets yet. Create a shared company secret or one that each user supplies."
+                message="No secrets yet. Create a shared organization secret or one that each user supplies."
                 action="New secret"
                 onAction={openCreateSecret}
               />
@@ -2000,7 +2092,7 @@ export function Secrets() {
                             <div className="mt-1">
                               {row.kind === "company" ? (
                                 <MetaChip>
-                                  <ShieldCheck className="h-3 w-3" /> Company
+                                  <ShieldCheck className="h-3 w-3" /> Organization
                                 </MetaChip>
                               ) : (
                                 <UserSecretChip label="Each user" />
@@ -2065,7 +2157,7 @@ export function Secrets() {
                           {row.kind === "company" ? (
                             <>
                               <MetaChip>
-                                <ShieldCheck className="h-3 w-3" /> Company
+                                <ShieldCheck className="h-3 w-3" /> Organization
                               </MetaChip>
                               <SecretProviderIndicator
                                 secret={row.secret}
@@ -2107,11 +2199,12 @@ export function Secrets() {
         </TabsContent>
         <TabsContent
           value="my-secrets"
-          className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden"
+          className="flex flex-col gap-3"
         >
           <MyUserSecretsTab companyId={selectedCompanyId} />
         </TabsContent>
-        <TabsContent value="vaults" className="min-h-0 flex-1 overflow-y-auto">
+        {!hideVaultsTab && (
+        <TabsContent value="vaults">
           <ProviderVaultsTab
             providers={providers}
             providerConfigs={providerConfigs}
@@ -2134,15 +2227,20 @@ export function Secrets() {
             }
           />
         </TabsContent>
+        )}
+        {!hideProposalsTab && (
+        <TabsContent value="proposals">
+          {selectedCompanyId ? (
+            <ProposalsTab companyId={selectedCompanyId} providerConfigs={providerConfigs} />
+          ) : null}
+        </TabsContent>
+        )}
       </Tabs>
 
       <Sheet
         open={Boolean(selectedSecret || selectedDefinition)}
         onOpenChange={(open) => {
-          if (!open) {
-            setSelectedSecretId(null);
-            setSelectedDefinitionId(null);
-          }
+          if (!open && (selectedSecret || selectedDefinition)) setDetailSelection(null);
         }}
       >
         <SheetContent className="w-full sm:max-w-xl flex flex-col gap-0">
@@ -2175,7 +2273,7 @@ export function Secrets() {
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   <MetaChip>
-                    <ShieldCheck className="h-3 w-3" /> Company
+                    <ShieldCheck className="h-3 w-3" /> Organization
                   </MetaChip>
                   <MetaChip>{modeLabel(selectedSecret.managedMode)}</MetaChip>
                   <MetaChip>{providerLabel(providers, selectedSecret.provider)}</MetaChip>
@@ -2188,7 +2286,10 @@ export function Secrets() {
                   onClick={() => openRotateSecret(selectedSecret)}
                 >
                   <RefreshCw className="h-3.5 w-3.5 mr-1" />
-                  {selectedSecret.managedMode === "external_reference" ? "Update reference" : "Update value"}
+                  {rotateActionLabel(selectedSecret)}
+                </Button>
+                <Button variant="outline" size="sm" onClick={copyDetailLink}>
+                  <Link2 className="h-3.5 w-3.5 mr-1" /> Copy link
                 </Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -2454,11 +2555,15 @@ export function Secrets() {
           providerConfigs={providerConfigs}
           existingSecrets={secrets}
           initialProviderConfigId={importInitialVaultId}
-          onManageVaults={() => {
-            setImportOpen(false);
-            setImportInitialVaultId(null);
-            setActiveTab("vaults");
-          }}
+          onManageVaults={
+            hideVaultsTab
+              ? undefined
+              : () => {
+                  setImportOpen(false);
+                  setImportInitialVaultId(null);
+                  setActiveTab("vaults");
+                }
+          }
           onImportComplete={() => {
             void secretsQuery.refetch();
           }}
@@ -2500,12 +2605,12 @@ export function Secrets() {
                   }}
                 >
                   <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="company">Company</TabsTrigger>
+                    <TabsTrigger value="company">Organization</TabsTrigger>
                     <TabsTrigger value="user">Each user</TabsTrigger>
                   </TabsList>
                 </Tabs>
                 <p className="text-(length:--text-micro) text-muted-foreground">
-                  Company stores one shared value. Each user lets every member supply their own value under My secrets.
+                  Organization stores one shared value. Each user lets every member supply their own value under My secrets.
                 </p>
               </div>
             ) : null}
@@ -2964,14 +3069,26 @@ export function Secrets() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {selectedSecret?.managedMode === "external_reference" ? "Update external reference" : "Update secret value"}
+              {selectedSecret?.managedMode === "external_reference" && rotateMode === "reference"
+                ? "Update external reference"
+                : "Update secret value"}
             </DialogTitle>
             <DialogDescription>
-              {selectedSecret?.managedMode === "external_reference"
-                ? "Creates a new Paperclip metadata version that points at an existing provider secret. Paperclip does not write a new provider value."
-                : "Creates a new provider-backed version. Consumers pinned to latest pick up the new value on the next run."}
+              {selectedSecret?.managedMode !== "external_reference"
+                ? "Creates a new provider-backed version. Consumers pinned to latest pick up the new value on the next run."
+                : rotateMode === "reference"
+                  ? "Creates a new Paperclip metadata version that points at an existing provider secret. Paperclip does not write a new provider value."
+                  : "Writes a new version of the referenced provider secret. The new value becomes current for every consumer of that secret, in and outside Paperclip."}
             </DialogDescription>
           </DialogHeader>
+          {selectedSecret && secretSupportsExternalValueWrite(selectedSecret) ? (
+            <Tabs value={rotateMode} onValueChange={(value) => setRotateMode(value as RotateMode)}>
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="value">Write new value</TabsTrigger>
+                <TabsTrigger value="reference">Change reference</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          ) : null}
           <div>
             <label className="text-xs font-medium" htmlFor="rotate-secret-vault">Provider vault</label>
             <select
@@ -3000,7 +3117,7 @@ export function Secrets() {
               </p>
             )}
           </div>
-          {selectedSecret?.managedMode === "external_reference" ? (
+          {selectedSecret?.managedMode === "external_reference" && rotateMode === "reference" ? (
             <div>
               <label className="text-xs font-medium" htmlFor="rotate-ref">External reference</label>
               <Input
@@ -3025,6 +3142,11 @@ export function Secrets() {
                 className="font-mono text-xs"
                 placeholder="Paste the new value"
               />
+              {selectedSecret?.managedMode === "external_reference" ? (
+                <p className="mt-1 text-(length:--text-micro) text-muted-foreground">
+                  Written to <code className="font-mono">{selectedSecret.externalRef}</code> in the provider.
+                </p>
+              ) : null}
             </div>
           )}
           {rotateError ? <p className="text-xs text-destructive">{rotateError}</p> : null}
@@ -3040,13 +3162,15 @@ export function Secrets() {
               disabled={
                 rotateMutation.isPending ||
                 Boolean(rotateProviderBlockReason) ||
-                (selectedSecret?.managedMode === "external_reference"
+                (selectedSecret?.managedMode === "external_reference" && rotateMode === "reference"
                   ? !rotateExternalRef.trim() && !selectedSecret?.externalRef
                   : !rotateValue)
               }
             >
               {rotateMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              {selectedSecret?.managedMode === "external_reference" ? "Update reference" : "Update value"}
+              {selectedSecret?.managedMode === "external_reference" && rotateMode === "reference"
+                ? "Update reference"
+                : "Update value"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3082,7 +3206,7 @@ export function Secrets() {
           <DialogHeader>
             <DialogTitle>Delete user-provided secret</DialogTitle>
             <DialogDescription>
-              Permanently removes <strong>{definitionDeleteConfirm?.name}</strong> for the whole company.
+              Permanently removes <strong>{definitionDeleteConfirm?.name}</strong> for the whole organization.
               Existing member values become unreferenced and active bindings must be remapped.
             </DialogDescription>
           </DialogHeader>
@@ -3251,7 +3375,7 @@ function SecretsFiltersPopover({
               <div className="space-y-0.5">
                 {[
                   { value: "all" as const, label: "All sources" },
-                  { value: "company" as const, label: "Company" },
+                  { value: "company" as const, label: "Organization" },
                   { value: "user" as const, label: "Each user" },
                 ].map((option) => (
                   <label key={option.value} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 hover:bg-accent/50">
@@ -3345,7 +3469,8 @@ function ProviderVaultInlineWarning({ config }: { config: CompanySecretProviderC
 interface ImportFromVaultButtonProps {
   providerConfigs: CompanySecretProviderConfig[];
   onClick: () => void;
-  onManageVaults: () => void;
+  /** Absent when the operator hides the Provider vaults tab. */
+  onManageVaults?: () => void;
   className?: string;
 }
 
@@ -3365,6 +3490,7 @@ function ImportFromVaultButton({
   if (awsConfigs.length === 0) return null;
 
   if (eligible.length === 0) {
+    if (!onManageVaults) return null;
     return (
       <Button
         variant="ghost"
@@ -3485,7 +3611,7 @@ export function ProviderVaultsTab({
               <div className="rounded-md border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
                 {isComingSoonFamily
                   ? "Not yet supported."
-                  : "No company-specific vaults yet. Secrets can still use the deployment default provider settings."}
+                  : "No organization-specific vaults yet. Secrets can still use the deployment default provider settings."}
               </div>
             ) : (
               <div className="space-y-3">
@@ -3791,6 +3917,19 @@ function AwsProviderVaultDiscoveryPanel({
   );
 }
 
+/**
+ * Copy the safe error payload out of a failure panel. People copy this to paste
+ * into a bug report, so the button has to confirm the clipboard took it.
+ */
+function CopyDetailsButton({ text }: { text: string }) {
+  const { copied, failed, copy } = useCopyAction();
+  return (
+    <Button type="button" variant="ghost" size="sm" onClick={() => void copy(text)}>
+      {copied ? "Copied" : failed ? "Copy failed" : "Copy"}
+    </Button>
+  );
+}
+
 function AwsProviderVaultDiscoveryError({
   form,
   error,
@@ -3815,10 +3954,6 @@ function AwsProviderVaultDiscoveryError({
     safeAlternative: details?.safeAlternative,
   };
   const detailsText = JSON.stringify(safeDetails, null, 2);
-
-  const copyDetails = () => {
-    void navigator.clipboard?.writeText(detailsText);
-  };
 
   return (
     <div
@@ -3867,9 +4002,7 @@ function AwsProviderVaultDiscoveryError({
           <div className="rounded-md border border-destructive/20 bg-background/70 p-2 text-foreground">
             <div className="mb-1 flex items-center justify-between gap-2">
               <span className="font-medium text-muted-foreground">Safe request/error details</span>
-              <Button type="button" variant="ghost" size="sm" onClick={copyDetails}>
-                Copy
-              </Button>
+              <CopyDetailsButton text={detailsText} />
             </div>
             <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed">
               {detailsText}
@@ -3962,14 +4095,7 @@ function SecretCreateError({
           <div className="rounded-md border border-destructive/20 bg-background/70 p-2 text-foreground">
             <div className="mb-1 flex items-center justify-between gap-2">
               <span className="font-medium text-muted-foreground">Safe request/error details</span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => void navigator.clipboard?.writeText(detailsText)}
-              >
-                Copy
-              </Button>
+              <CopyDetailsButton text={detailsText} />
             </div>
             <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed">
               {detailsText}
@@ -4519,7 +4645,7 @@ function SecretDetailsTab({
       <DetailRow label="Description">
         <span>{secret.description ?? <span className="text-muted-foreground">—</span>}</span>
       </DetailRow>
-      <DetailRow label="Provided by">Company</DetailRow>
+      <DetailRow label="Provided by">Organization</DetailRow>
       <DetailRow label="Custody">{modeLabel(secret.managedMode)}</DetailRow>
       <DetailRow label="Provider">{providerLabel(providers, secret.provider)}</DetailRow>
       <DetailRow label="Provider vault">{providerVaultLabel(providerConfigs, secret.providerConfigId)}</DetailRow>
@@ -4546,7 +4672,14 @@ function SecretDetailsTab({
       <DetailRow label="Last rotated">{formatRelative(secret.lastRotatedAt)}</DetailRow>
       <DetailRow label="Last resolved">{formatRelative(secret.lastResolvedAt)}</DetailRow>
       <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-(length:--text-micro) text-amber-700 dark:text-amber-300">
-        {modeDescription(secret.managedMode)} Paperclip never re-displays stored values.
+        {modeDescription(
+          secret.managedMode,
+          Boolean(
+            secret.externalRef &&
+              providers.find((provider) => provider.id === secret.provider)?.supportsExternalValueWrites,
+          ),
+        )}{" "}
+        Paperclip never re-displays stored values.
       </div>
     </dl>
   );

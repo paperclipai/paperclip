@@ -15,7 +15,7 @@ Reference: `doc/plugins/PLUGIN_SPEC.md`
 | Import | Purpose |
 |--------|--------|
 | `@paperclipai/plugin-sdk` | Worker entry: `definePlugin`, `runWorker`, context types, protocol helpers |
-| `@paperclipai/plugin-sdk/ui` | UI entry: `usePluginData`, `usePluginAction`, `usePluginStream`, `useHostContext`, `useHostNavigation`, slot prop types |
+| `@paperclipai/plugin-sdk/ui` | UI entry: hooks, host navigation, HTTP-safe clipboard copy, shared components, and slot prop types |
 | `@paperclipai/plugin-sdk/ui/hooks` | Hooks only |
 | `@paperclipai/plugin-sdk/ui/types` | UI types and slot prop interfaces |
 | `@paperclipai/plugin-sdk/testing` | `createTestHarness` for unit/integration tests |
@@ -214,6 +214,7 @@ Slot types describe where a component mounts. Most values also exist as launcher
 | `settingsPage` | Global | — |
 | `dashboardWidget` | Global | — |
 | `globalToolbarButton` | Global | — |
+| `appShellOverlay` (slot only) | Signed-in application shell | — |
 | `detailTab` | Entity | `project`, `issue`, `agent`, `goal`, `run` |
 | `taskDetailView` | Entity | (task/issue context) |
 | `commentAnnotation` | Entity | `comment` |
@@ -764,6 +765,16 @@ The host provides selected shared UI components through `@paperclipai/plugin-sdk
 Plugins can also use normal React components, their own CSS, or small design
 primitives inside the plugin package.
 
+Use `copyTextToClipboard` for every plugin copy action. The host selects the
+modern Clipboard API in secure contexts and a compatible fallback in plain-HTTP
+deployments.
+
+```tsx
+import { copyTextToClipboard } from "@paperclipai/plugin-sdk/ui";
+
+await copyTextToClipboard("text to copy");
+```
+
 Use the shared components when the plugin needs to look and behave like a native
 Paperclip surface:
 
@@ -1287,3 +1298,10 @@ const server = await startPluginDevServer({ rootDir: process.cwd() });
 Dev server endpoints:
 - `GET /__paperclip__/health` returns `{ ok, rootDir, uiDir }`
 - `GET /__paperclip__/events` streams `reload` SSE events on UI build changes
+
+### Persistent application shell contributions
+
+An `appShellOverlay` slot uses `ui.action.register` and the standard
+`PluginWidgetProps` context. It survives navigation and unmounts on account or
+company changes, sign-out and onboarding. Plugins own panel accessibility and
+request cleanup. See [the distribution and lifecycle contract](../../../doc/plugins/DISTRIBUTION-PLUGINS.md).

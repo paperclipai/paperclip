@@ -82,6 +82,12 @@ export {
   parseMessage,
   JsonRpcParseError,
   JsonRpcCallError,
+  LOGIN_PTY_OUTPUT_NOTIFICATION,
+  LOGIN_PTY_EXIT_NOTIFICATION,
+  DUPLEX_CHANNEL_DATA_NOTIFICATION,
+  DUPLEX_CHANNEL_EXIT_NOTIFICATION,
+  encodeChannelBytes,
+  decodeChannelBytes,
   _resetIdCounter,
 } from "./protocol.js";
 
@@ -177,12 +183,16 @@ export type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentTerminationReceipt,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentRunnerIngressEndpointParams,
+  PluginEnvironmentRunnerIngressEndpoint,
   PluginSyncFileMapping,
+  PluginPostUploadCommand,
   PluginSyncOperation,
   PluginEnvironmentSyncInParams,
   PluginEnvironmentSyncOutParams,
@@ -228,6 +238,7 @@ export type {
   PluginLocalFolderListing,
   PluginLocalFoldersClient,
   PluginEventsClient,
+  ResourceLifecycleEvent,
   PluginJobsClient,
   PluginLaunchersClient,
   PluginHttpClient,
@@ -281,7 +292,12 @@ export type {
   PluginMetricsClient,
   PluginTelemetryClient,
   PluginLogger,
+  PluginTracer,
+  PluginSpan,
 } from "./types.js";
+
+// Tracer no-op default (a value, so it re-exports here, not in the type block).
+export { NOOP_PLUGIN_TRACER, NOOP_PLUGIN_SPAN } from "./types.js";
 
 // Supporting types for context clients
 export type {
@@ -376,6 +392,12 @@ export type {
   PluginApiRouteMethod,
   PluginEventType,
   PluginBridgeErrorCode,
+  ConnectionIntentInteraction,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
+  ConnectionIntentSetupOptions,
+  ConnectionRequestResult,
+  ConnectionsSearchResult,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -427,3 +449,10 @@ export {
   MEMBERSHIP_STATUSES,
   PRINCIPAL_TYPES,
 } from "@paperclipai/shared";
+
+export { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError } from "./environment-creation-cleanup.js";
+export type { PluginEnvironmentCreationCleanup } from "./environment-creation-cleanup.js";
+export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, withEnvironmentSyncTransferStep, recordEnvironmentSyncError } from "./environment-sync-error.js";
+export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
+
+export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
@@ -15,11 +15,13 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
+import { parseFrontmatterMarkdown } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
+import { removeRuntimeSkillCache } from "../services/runtime-skill-cache.js";
 import { folderService } from "../services/folders.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -61,6 +63,9 @@ describeEmbeddedPostgres("companySkillService.list", () => {
   }, 20_000);
 
   afterEach(async () => {
+    for (const skill of await db.select().from(companySkills)) {
+      await removeRuntimeSkillCache(path.join(paperclipHome!, "instances", "default", "skills", skill.companyId), skill.id);
+    }
     await db.delete(agents);
     await db.delete(companySkills);
     await db.delete(projectWorkspaces);
@@ -81,6 +86,362 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       await fs.rm(paperclipHome, { recursive: true, force: true });
     }
     await tempDb?.cleanup();
+  });
+
+  async function createPinnedRuntimeFixture() {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Cache tests", issuePrefix: `T${companyId.slice(0, 6)}` });
+    await db.insert(companySkills).values({
+      id: skillId, companyId, key: `company/${companyId}/cached`, slug: "cached", name: "Cached",
+      markdown: "# Installed skill", sourceType: "github", sourceLocator: "https://github.com/acme/cache",
+      sourceRef: "a".repeat(40), trustLevel: "markdown_only", compatibility: "compatible",
+      metadata: { owner: "acme", repo: "cache", repoSkillDir: ".", trackingRef: "main" },
+      fileInventory: [{ path: "SKILL.md", kind: "skill" },
+        ...Array.from({ length: 20 }, (_, index) => ({ path: `references/${index}.md`, kind: "reference" as const }))],
+    });
+    return { companyId, skillId, key: `company/${companyId}/cached` };
+  }
+
+  it("refreshes once, reuses pinned runtime contents across service instances, and ignores cosmetic changes", async () => {
+    const { companyId, skillId, key } = await createPinnedRuntimeFixture();
+    const upstream = vi.fn(async (url: string | URL) => new Response(String(url)));
+    vi.stubGlobal("fetch", upstream);
+    const select = vi.spyOn(db, "select");
+    try {
+      const cold = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === key)!;
+      expect(cold.sourceStatus).toBe("available");
+      expect(select.mock.calls.filter(([fields]) => fields && Object.keys(fields).length === 1 && fields.id === companies.id)).toHaveLength(1);
+      expect(upstream).toHaveBeenCalledTimes(21);
+      expect(new Set(upstream.mock.calls.map(([url]) => String(url))).size).toBe(21);
+      const before = await fs.stat(path.join(cold.source, "SKILL.md"));
+      upstream.mockClear();
+      upstream.mockRejectedValue(new Error("Upstream outage"));
+      await db.update(companySkills).set({ name: "New display label", updatedAt: new Date(), metadata: { owner: "acme", repo: "cache", repoSkillDir: ".", trackingRef: "main", starred: true } }).where(eq(companySkills.id, skillId));
+      const warm = (await companySkillService(db).listRuntimeSkillEntries(companyId)).find((entry) => entry.key === key)!;
+      expect(warm).toEqual(cold);
+      expect(upstream).not.toHaveBeenCalled();
+      expect((await fs.stat(path.join(warm.source, "SKILL.md"))).mtimeMs).toBe(before.mtimeMs);
+      const readOnly = (await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false })).find((entry) => entry.key === key)!;
+      expect(readOnly).toEqual(warm);
+      await db.update(companySkills).set({ sourceRef: "b".repeat(40) }).where(eq(companySkills.id, skillId));
+      expect((await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false })).find((entry) => entry.key === key)!.sourceStatus).toBe("missing");
+      expect(upstream).not.toHaveBeenCalled();
+      // An unavailable newly installed revision must never use the older cache.
+      expect((await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === key)!.sourceStatus).toBe("missing");
+      expect(await fs.readFile(path.join(cold.source, "references/0.md"), "utf8")).toContain("a".repeat(40));
+      upstream.mockImplementation(async (url) => new Response(String(url)));
+      const next = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === key)!;
+      expect(next.sourceStatus).toBe("available");
+      expect(next.source).not.toBe(cold.source);
+      expect(await fs.readFile(path.join(next.source, "references/0.md"), "utf8")).toContain("b".repeat(40));
+      expect(await fs.readFile(path.join(cold.source, "references/0.md"), "utf8")).toContain("a".repeat(40));
+    } finally { select.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
+  it("deduplicates runtime downloads for twenty concurrent service callers and isolates companies", async () => {
+    const first = await createPinnedRuntimeFixture();
+    const second = await createPinnedRuntimeFixture();
+    const upstream = vi.fn(async (url: string | URL) => new Response(String(url)));
+    vi.stubGlobal("fetch", upstream);
+    try {
+      const batches = await Promise.all(Array.from({ length: 20 }, () => companySkillService(db).listRuntimeSkillEntries(first.companyId)));
+      const sources = batches.map((entries) => entries.find((entry) => entry.key === first.key)!);
+      expect(sources.every((entry) => entry.sourceStatus === "available")).toBe(true);
+      expect(new Set(sources.map((entry) => entry.source)).size).toBe(1);
+      expect(upstream).toHaveBeenCalledTimes(21);
+      const other = (await svc.listRuntimeSkillEntries(second.companyId)).find((entry) => entry.key === second.key)!;
+      expect(other.source).not.toBe(sources[0].source);
+      expect(upstream).toHaveBeenCalledTimes(42);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("keeps upstream changes dormant until explicit update and refreshes supporting-only changes", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Update cache", issuePrefix: `T${companyId.slice(0, 6)}` });
+    let revision = "a".repeat(40);
+    const markdown = "---\nname: cached\ndescription: A fixture\n---\n# Unchanged skill\n";
+    const upstream = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/commits/")) return Response.json({ sha: revision });
+      if (url.includes("/git/trees/")) return Response.json({ tree: [{ path: "cached/SKILL.md", type: "blob" }, { path: "cached/reference.md", type: "blob" }] });
+      if (url.endsWith("/SKILL.md")) return new Response(markdown);
+      if (url.endsWith("/reference.md")) return new Response(url.includes("a".repeat(40)) ? "old supporting file" : "new supporting file");
+      return Response.json({ default_branch: "main" });
+    });
+    vi.stubGlobal("fetch", upstream);
+    try {
+      const imported = await svc.importFromSource(companyId, "https://github.com/acme/cache");
+      const skill = imported.imported[0];
+      expect(skill.sourceRef).toBe(revision);
+      const old = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)!;
+      revision = "b".repeat(40);
+      upstream.mockClear();
+      expect((await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)).toEqual(old);
+      expect(upstream).not.toHaveBeenCalled();
+      const updated = await svc.installUpdate(companyId, skill.id);
+      expect(updated?.sourceRef).toBe(revision);
+      expect(updated?.markdown).toBe(markdown);
+      const next = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)!;
+      expect(next.source).not.toBe(old.source);
+      expect(await fs.readFile(path.join(next.source, "reference.md"), "utf8")).toBe("new supporting file");
+      expect(await fs.readFile(path.join(old.source, "reference.md"), "utf8")).toBe("old supporting file");
+      const lockFailure = vi.spyOn(fs, "link").mockRejectedValueOnce(new Error("Publication lock unavailable"));
+      try {
+        await expect(svc.deleteSkill(companyId, skill.id)).rejects.toThrow("Publication lock unavailable");
+        expect(await svc.getById(companyId, skill.id)).not.toBeNull();
+      } finally { lockFailure.mockRestore(); }
+      await svc.deleteSkill(companyId, skill.id);
+      await expect(fs.stat(path.dirname(path.dirname(next.source)))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("observes edits to a direct local source on the next preparation", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Local cache", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const skill = await svc.createLocalSkill(companyId, { name: "Local source", slug: "local-source" });
+    const first = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)!;
+    await fs.appendFile(path.join(first.source, "SKILL.md"), "\nNew local instructions\n");
+    const next = (await svc.listRuntimeSkillEntries(companyId)).find((entry) => entry.key === skill.key)!;
+    expect(next.source).toBe(first.source);
+    expect(await fs.readFile(path.join(next.source, "SKILL.md"), "utf8")).toContain("New local instructions");
+  });
+
+  it("serializes same-slug creates and preserves the winner's files", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Concurrent creates", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const first = companySkillService(db);
+    const second = companySkillService(db);
+    const results = await Promise.allSettled([
+      first.createLocalSkill(companyId, { name: "First", slug: "same-slug", markdown: "# first\n" }),
+      second.createLocalSkill(companyId, { name: "Second", slug: "same-slug", markdown: "# second\n" }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const skill = await svc.getByKey(companyId, `company/${companyId}/same-slug`);
+    expect(skill).toBeTruthy();
+    expect(await fs.readFile(path.join(skill!.sourceLocator!, "SKILL.md"), "utf8"))
+      .toMatch(/^# (first|second)\n$/);
+    expect(await db.select().from(companySkillVersions).where(eq(companySkillVersions.companySkillId, skill!.id)))
+      .toHaveLength(1);
+  });
+
+  it("recovers an identical create after the outer transaction rolls back", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Rollback retry", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const input = { name: "Retryable", slug: "retryable", markdown: "# durable bytes\n" };
+    await expect(db.transaction(async (tx) => {
+      await companySkillService(tx as any).createLocalSkill(companyId, input);
+      throw new Error("simulate outer rollback");
+    })).rejects.toThrow("simulate outer rollback");
+
+    const retried = await svc.createLocalSkill(companyId, input);
+    expect(await fs.readFile(path.join(retried.sourceLocator!, "SKILL.md"), "utf8")).toBe(input.markdown);
+    expect(await db.select().from(companySkills).where(eq(companySkills.companyId, companyId))).toHaveLength(1);
+    expect(await db.select().from(companySkillVersions).where(eq(companySkillVersions.companySkillId, retried.id))).toHaveLength(1);
+  });
+
+  it("reuses a deleted managed skill name with different instructions", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Recreate skills", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const original = await svc.createLocalSkill(companyId, { name: "Recreate", slug: "recreate", markdown: "# Old instructions\n" });
+    await svc.deleteSkill(companyId, original.id);
+    const replacement = await svc.createLocalSkill(companyId, { name: "Recreate", slug: "recreate", markdown: "# New instructions\n" });
+    expect(replacement.id).not.toBe(original.id);
+    expect(await fs.readFile(path.join(replacement.sourceLocator!, "SKILL.md"), "utf8")).toBe("# New instructions\n");
+    expect(await svc.deleteSkill(companyId, original.id)).toBeNull();
+    expect(await fs.readFile(path.join(replacement.sourceLocator!, "SKILL.md"), "utf8")).toBe("# New instructions\n");
+  });
+
+  it.each(["save", "delete", "rename"] as const)("rejects a stale file %s after the skill is replaced", async (operation) => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Stale editor", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const original = await svc.createLocalSkill(companyId, { name: "Editor", slug: "stale-editor", markdown: "# Old\n" });
+    await svc.updateFile(companyId, original.id, "notes.md", "Original notes");
+    let replacement: typeof original | undefined;
+    let intercepted = false;
+    // Pause the editor after it reads the old identity, then complete a delete
+    // and recreate before allowing that stale request to continue.
+    const staleDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "select") return (columns: any) => {
+          const selection = target.select(columns);
+          if (!columns?.markdown) return selection;
+          const from = selection.from.bind(selection);
+          selection.from = ((...args: any[]) => {
+            const query = (from as any)(...args);
+            const where = query.where.bind(query);
+            query.where = (...conditions: any[]) => {
+              const filtered = where(...conditions);
+              const then = filtered.then.bind(filtered);
+              filtered.then = (resolve: any, reject: any) => then(async (rows: any[]) => {
+                if (!intercepted && rows.some((row) => row.id === original.id)) {
+                  intercepted = true;
+                  await svc.deleteSkill(companyId, original.id);
+                  replacement = await svc.createLocalSkill(companyId, { name: "Replacement", slug: original.slug, markdown: "# Replacement\n" });
+                  await svc.updateFile(companyId, replacement.id, "notes.md", "Replacement notes");
+                }
+                return rows;
+              }).then(resolve, reject);
+              return filtered;
+            };
+            return query;
+          }) as typeof selection.from;
+          return selection;
+        };
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const editor = companySkillService(staleDb);
+    const movedReplacementPaths: unknown[] = [];
+    const rename = fs.rename.bind(fs);
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+      if (replacement && source === replacement.sourceLocator) movedReplacementPaths.push(source);
+      return rename(source, target);
+    });
+    try {
+      const pending = operation === "save"
+        ? editor.updateFile(companyId, original.id, "notes.md", "Stale overwrite")
+        : operation === "rename"
+          ? editor.renameSkill(companyId, original.id, { name: "Renamed", slug: "renamed-editor" })
+          : editor.deleteFile(companyId, original.id, { path: "notes.md", target: "file" });
+      await expect(pending).rejects.toMatchObject({ status: 404 });
+    } finally { renameSpy.mockRestore(); }
+    expect(movedReplacementPaths).toEqual([]);
+    expect(intercepted).toBe(true);
+    expect(replacement).toBeDefined();
+    expect(await fs.readFile(path.join(replacement!.sourceLocator!, "notes.md"), "utf8")).toBe("Replacement notes");
+    expect(await svc.getById(companyId, replacement!.id)).not.toBeNull();
+  });
+
+  it("restores managed source files when the deletion transaction fails", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Delete rollback", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const original = await svc.createLocalSkill(companyId, { name: "Retained", slug: "retained", markdown: "# Keep these instructions\n" });
+    const failingDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "transaction") return (callback: (tx: any) => Promise<unknown>) => target.transaction(async (tx) => callback(new Proxy(tx, {
+          get(transaction, key, transactionReceiver) {
+            if (key === "delete") return () => { throw new Error("Deletion write failed"); };
+            return Reflect.get(transaction, key, transactionReceiver);
+          },
+        })));
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    await expect(companySkillService(failingDb).deleteSkill(companyId, original.id)).rejects.toThrow("Deletion write failed");
+    expect(await svc.getById(companyId, original.id)).not.toBeNull();
+    expect(await fs.readFile(path.join(original.sourceLocator!, "SKILL.md"), "utf8")).toBe("# Keep these instructions\n");
+  });
+
+  it("serializes duplicate deletes with recreation without removing new files", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Delete concurrency", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const original = await svc.createLocalSkill(companyId, { name: "Concurrent", slug: "concurrent-delete", markdown: "# Old\n" });
+    let release!: () => void;
+    let staged!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const ready = new Promise<void>((resolve) => { staged = resolve; });
+    const rename = fs.rename.bind(fs);
+    const pause = vi.spyOn(fs, "rename").mockImplementation(async (source, target) => {
+      await rename(source, target);
+      if (source === original.sourceLocator) {
+        staged();
+        await gate;
+      }
+    });
+    try {
+      const deletion = svc.deleteSkill(companyId, original.id);
+      await ready;
+      const duplicate = svc.deleteSkill(companyId, original.id);
+      const creation = svc.createLocalSkill(companyId, { name: "Replacement", slug: original.slug, markdown: "# Replacement\n" });
+      release();
+      const [, repeatedDelete, replacement] = await Promise.all([deletion, duplicate, creation]);
+      expect(repeatedDelete).toBeNull();
+      expect(await fs.readFile(path.join(replacement.sourceLocator!, "SKILL.md"), "utf8")).toBe("# Replacement\n");
+    } finally {
+      release();
+      pause.mockRestore();
+    }
+  });
+
+  it("does not remove imported local source files when deleting a skill", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Imported source", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const source = await createManagedSkillDir(companyId, "paperclip-imported-skill-");
+    const markdown = "---\nname: external\ndescription: User-owned instructions.\n---\n# Keep this file\n";
+    await fs.writeFile(path.join(source, "SKILL.md"), markdown);
+    const imported = await svc.importFromSource(companyId, source);
+    await svc.deleteSkill(companyId, imported.imported[0]!.id);
+    expect(await fs.readFile(path.join(source, "SKILL.md"), "utf8")).toBe(markdown);
+  });
+
+  it("rejects a differing retry after rollback without changing durable bytes", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Rollback conflict", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const original = { name: "Original", slug: "rollback-conflict", markdown: "# original bytes\n" };
+    await expect(db.transaction(async (tx) => {
+      await companySkillService(tx as any).createLocalSkill(companyId, original);
+      throw new Error("simulate outer rollback");
+    })).rejects.toThrow("simulate outer rollback");
+
+    await expect(svc.createLocalSkill(companyId, {
+      name: "Different",
+      slug: original.slug,
+      markdown: "# changed bytes\n",
+    })).rejects.toMatchObject({ status: 409 });
+    const managedRoot = path.join(paperclipHome!, "instances", "default", "skills", companyId);
+    expect(await fs.readFile(path.join(managedRoot, original.slug, "SKILL.md"), "utf8")).toBe(original.markdown);
+    expect(await db.select().from(companySkills).where(eq(companySkills.companyId, companyId))).toHaveLength(0);
+  });
+
+  it("does not adopt an unrelated preexisting managed directory", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Existing directory", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const managedRoot = path.join(paperclipHome!, "instances", "default", "skills", companyId);
+    const skillDir = path.join(managedRoot, "occupied");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "# unrelated\n", "utf8");
+
+    await expect(svc.createLocalSkill(companyId, {
+      name: "Requested",
+      slug: "occupied",
+      markdown: "# requested\n",
+    })).rejects.toMatchObject({ status: 409 });
+    expect(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf8")).toBe("# unrelated\n");
+    expect(await db.select().from(companySkills).where(eq(companySkills.companyId, companyId))).toHaveLength(0);
+  });
+
+  it("observes supporting-only local file saves across runtime preparations and service restarts", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Local supporting files", issuePrefix: `T${companyId.slice(0, 6)}` });
+    const skill = await svc.createLocalSkill(companyId, { name: "Local references", slug: "local-references" });
+    const source = skill.sourceLocator!;
+    await fs.writeFile(path.join(source, "reference.md"), "Original supporting file");
+    await db.update(companySkills).set({
+      fileInventory: [...skill.fileInventory, { path: "reference.md", kind: "reference" }],
+    }).where(eq(companySkills.id, skill.id));
+    const prepare = async () => (await companySkillService(db).listRuntimeSkillEntries(companyId))
+      .find((entry) => entry.key === skill.key)!;
+    const first = await prepare();
+    expect(first.sourceStatus).toBe("available");
+    expect(await fs.readFile(path.join(first.source, "reference.md"), "utf8")).toBe("Original supporting file");
+
+    await svc.updateFile(companyId, skill.id, "reference.md", "Edited supporting file");
+    expect((await svc.getById(companyId, skill.id))?.markdown).toBe(skill.markdown);
+    const next = await prepare();
+    expect(next.sourceStatus).toBe("available");
+    expect(await fs.readFile(path.join(next.source, "reference.md"), "utf8")).toBe("Edited supporting file");
+
+    await fs.writeFile(path.join(source, "reference.md"), "Direct filesystem edit");
+    const onDisk = await prepare();
+    expect(await fs.readFile(path.join(onDisk.source, "reference.md"), "utf8")).toBe("Direct filesystem edit");
+    // Mutable local sources never enter the immutable revision-cache fast path.
+    expect(first.source).toBe(source);
+    expect(next.source).toBe(source);
+    expect(onDisk.source).toBe(source);
+    await fs.unlink(path.join(source, "SKILL.md"));
+    expect(await prepare()).toBeUndefined();
   });
 
   it("lists skills without exposing markdown content", async () => {
@@ -331,6 +692,101 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const refreshedSkill = refreshedList.find((skill) => skill.id === bundledSkill.id);
 
     expect(refreshedSkill?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
+  });
+
+  it("makes the onboarding skill resolvable and available to agent runtimes", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Onboarding",
+      issuePrefix: `T${companyId.slice(0, 6)}`,
+    });
+    const key = "paperclipai/paperclip/first-task";
+    // Assignment resolves before the company has ever opened its skill library.
+    expect(await svc.resolveRequestedSkillEntries(companyId, [key])).toEqual({
+      resolved: [{ key, versionId: null }],
+      unresolved: [],
+    });
+    const entries = await svc.listRuntimeSkillEntries(companyId);
+    const entry = entries.find((skill) => skill.key === key);
+    expect(entry).toMatchObject({ runtimeName: "first-task", sourceStatus: "available" });
+    if (!entry) throw new Error("Expected first-task runtime skill");
+    const markdown = await fs.readFile(path.join(entry.source, "SKILL.md"), "utf8");
+    expect(parseFrontmatterMarkdown(markdown).frontmatter.name).toBe("first-task");
+    expect(markdown).toContain("`interview` →");
+    expect(markdown).toContain("`task` →");
+    expect(markdown).toBe(await fs.readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8"));
+    expect(markdown).not.toContain("{{");
+    // Repeated inventory refreshes do not install duplicate skill rows.
+    const refreshed = await svc.list(companyId);
+    expect(refreshed.filter((skill) => skill.key === key)).toHaveLength(1);
+  });
+
+  it("seeds bundled skill releases idempotently and materializes the frozen champion snapshot", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const initialList = await svc.list(companyId);
+    await svc.list(companyId);
+    const paperclipSkill = initialList.find((skill) => skill.key === "paperclipai/paperclip/paperclip");
+    expect(paperclipSkill).toBeDefined();
+    if (!paperclipSkill) throw new Error("Expected bundled Paperclip skill");
+
+    const versions = await svc.listVersions(companyId, paperclipSkill.id);
+    expect(versions.map((version) => version.releaseId).sort()).toEqual(["v0", "v7-roster"]);
+    expect(versions).toHaveLength(2);
+    const storedSkill = await db
+      .select({ currentVersionId: companySkills.currentVersionId })
+      .from(companySkills)
+      .where(eq(companySkills.id, paperclipSkill.id))
+      .then((rows) => rows[0]);
+    expect(storedSkill?.currentVersionId).toBeNull();
+
+    const champion = versions.find((version) => version.releaseId === "v7-roster");
+    expect(champion).toMatchObject({
+      releaseName: "V7 — Roster champion",
+      releasedAt: new Date("2026-07-21T00:00:00.000Z"),
+    });
+    if (!champion) throw new Error("Expected seeded v7-roster release");
+    const championHashes = Object.fromEntries(champion.fileInventory.map((entry) => [
+      entry.path,
+      createHash("sha256").update(entry.content).digest("hex"),
+    ]));
+    expect(championHashes).toMatchObject({
+      "SKILL.md": "53ab290489684cbf116fdd1406a95f6b6f53c9c36358b1bf8bfeae481e253575",
+      "references/cases.md": "3b821f59064a7761091020a14819a8d787131f24029748563d6c0e1be7e6eaec",
+      "references/workflows.md": "69747bd6e05f7e3673d1e67b07ff295df1869c05e1fd029804d5fa9177db92cd",
+    });
+    expect(championHashes).not.toHaveProperty("EDITS.md");
+
+    const runtimeEntries = await svc.listRuntimeSkillEntries(companyId, {
+      versionSelections: new Map([[paperclipSkill.key, champion.id]]),
+    });
+    const materialized = runtimeEntries.find((entry) => entry.key === paperclipSkill.key);
+    expect(materialized).toMatchObject({ versionId: champion.id, sourceStatus: "available" });
+    if (!materialized) throw new Error("Expected materialized release entry");
+    const materializedHashes: Record<string, string> = {};
+    async function walk(root: string, current = root): Promise<void> {
+      for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+        const absolutePath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          await walk(root, absolutePath);
+          continue;
+        }
+        const relativePath = path.relative(root, absolutePath).split(path.sep).join("/");
+        materializedHashes[relativePath] = createHash("sha256")
+          .update(await fs.readFile(absolutePath))
+          .digest("hex");
+      }
+    }
+    await walk(materialized.source);
+    expect(materializedHashes).toEqual(championHashes);
+    expect(materializedHashes).not.toHaveProperty("EDITS.md");
   });
 
   it("repairs a squatted bundled root during bundled-skill list refresh", async () => {
@@ -1537,6 +1993,72 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     ]);
   });
 
+  it("defaults package conflicts to skip and reports skip, rename, and explicit replace outcomes", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const original = await svc.createLocalSkill(companyId, {
+      name: "Conflict Skill",
+      slug: "conflict-skill",
+      markdown: "---\nname: Conflict Skill\n---\n\n# Original\n",
+    });
+    const packageFiles = {
+      "skills/conflict-skill/SKILL.md": [
+        "---",
+        "name: Imported Conflict Skill",
+        "slug: conflict-skill",
+        "description: Incoming package version",
+        "---",
+        "",
+        "# Imported",
+        "",
+      ].join("\n"),
+    };
+
+    const skipped = await svc.importPackageFiles(companyId, packageFiles);
+    expect(skipped).toEqual([
+      expect.objectContaining({
+        action: "skipped",
+        originalSlug: "conflict-skill",
+        skill: expect.objectContaining({ id: original.id, name: "Conflict Skill" }),
+      }),
+    ]);
+    await expect(svc.getById(companyId, original.id)).resolves.toMatchObject({
+      name: "Conflict Skill",
+      markdown: expect.stringContaining("# Original"),
+    });
+
+    const renamed = await svc.importPackageFiles(companyId, packageFiles, { onConflict: "rename" });
+    expect(renamed).toEqual([
+      expect.objectContaining({
+        action: "renamed",
+        originalSlug: "conflict-skill",
+        skill: expect.objectContaining({
+          name: "Imported Conflict Skill",
+          slug: "conflict-skill-2",
+        }),
+      }),
+    ]);
+    expect((await svc.list(companyId)).filter((skill) => skill.slug.startsWith("conflict-skill"))).toHaveLength(2);
+
+    const replaced = await svc.importPackageFiles(companyId, packageFiles, { onConflict: "replace" });
+    expect(replaced).toEqual([
+      expect.objectContaining({
+        action: "replaced",
+        originalSlug: "conflict-skill",
+        skill: expect.objectContaining({ id: original.id, name: "Imported Conflict Skill" }),
+      }),
+    ]);
+    await expect(svc.getById(companyId, original.id)).resolves.toMatchObject({
+      name: "Imported Conflict Skill",
+      markdown: expect.stringContaining("# Imported"),
+    });
+  });
+
   it("rejects executable external package skills before persistence", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
@@ -1778,6 +2300,66 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     );
   });
 
+  it("surfaces a failed runtime materialization as a missing entry instead of dropping the skill", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const skillKey = `company/${companyId}/broken-coach`;
+    const missingSkillDir = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-broken-skill-")), "gone");
+    cleanupDirs.add(path.dirname(missingSkillDir));
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    // The inventory lists no SKILL.md and the on-disk source is gone, so the
+    // runtime materializer has no SKILL.md to write and throws. The entry must
+    // still appear, flagged missing with the real cause, so snapshots and the
+    // UI can show the skill as broken instead of silently dropping it.
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: skillKey,
+      slug: "broken-coach",
+      name: "Broken Coach",
+      description: null,
+      markdown: "# Broken Coach\n",
+      sourceType: "local_path",
+      sourceLocator: missingSkillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "notes.md", kind: "reference" }],
+      metadata: { sourceKind: "local_path" },
+    });
+    // An agent must reference the skill: inventory reconciliation deletes
+    // unused local-path skills whose source directory is gone, and this test
+    // is about the used-but-unmaterializable path.
+    await db.insert(agents).values({
+      id: randomUUID(),
+      companyId,
+      name: "Runner",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {
+        paperclipSkillSync: {
+          desiredSkills: [skillKey],
+        },
+      },
+    });
+
+    const entries = await svc.listRuntimeSkillEntries(companyId);
+    const entry = entries.find((candidate) => candidate.key === skillKey);
+
+    expect(entry).toMatchObject({
+      key: skillKey,
+      sourceStatus: "missing",
+      missingDetail: expect.stringContaining("Failed to materialize skill files"),
+    });
+    expect(entry!.missingDetail).toContain("stored SKILL.md copy is missing");
+  });
+
   it("falls back to stored markdown when reading SKILL.md from a missing local source", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();
@@ -1988,6 +2570,66 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await svc.updateFile(companyId, skill.id, "SKILL.md", editedMarkdown, { type: "user", userId: "board" });
     versions = await svc.listVersions(companyId, skill.id);
     expect(versions).toHaveLength(2);
+  });
+
+  it("browses project folders and imports a selected non-standard skill", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-browse-"));
+    cleanupDirs.add(workspaceDir);
+    const skillDir = path.join(workspaceDir, "content", "teams", "editorial");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "---\nname: Editorial\n---\n", "utf8");
+    await fs.writeFile(path.join(workspaceDir, "content", "README.md"), "# Content\n", "utf8");
+    await fs.writeFile(path.join(workspaceDir, "content", "skill.md"), "# Not a valid skill filename\n", "utf8");
+    for (let entryIndex = 0; entryIndex < 251; entryIndex += 1) {
+      await fs.symlink(skillDir, path.join(workspaceDir, `ignored-${String(entryIndex).padStart(3, "0")}`));
+    }
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Skills Project" });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: workspaceDir,
+      isPrimary: true,
+    });
+
+    const root = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId });
+    expect(root.entries).toEqual([expect.objectContaining({ name: "content", kind: "directory", isSkill: false })]);
+    expect(root.truncated).toBe(false);
+
+    const content = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId, path: "content" });
+    expect(content).toMatchObject({ path: "content", parentPath: "." });
+    expect(content.entries).toEqual([
+      expect.objectContaining({ name: "teams", kind: "directory", isSkill: false }),
+      expect.objectContaining({ name: "README.md", kind: "file", isSkill: false }),
+      expect.objectContaining({ name: "skill.md", kind: "file", isSkill: false }),
+    ]);
+
+    const teams = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId, path: "content/teams" });
+    expect(teams.entries).toEqual([
+      expect.objectContaining({
+        name: "editorial",
+        path: "content/teams/editorial",
+        kind: "directory",
+        isSkill: true,
+      }),
+    ]);
+
+    const imported = await svc.scanProjectWorkspaces(companyId, {
+      projectIds: [projectId],
+      mode: "import",
+      selection: [{ workspaceId, path: "content/teams/editorial" }],
+    });
+    expect(imported.imported).toEqual([expect.objectContaining({ name: "Editorial" })]);
   });
 
   it("previews project workspace skill candidates without importing them", async () => {
@@ -2221,7 +2863,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       expect.objectContaining({
         slug: "shared-skill-project",
         key: expect.stringMatching(/^local\/[a-f0-9]+\/shared-skill-project$/),
-        sourceLocator: skillDir,
+        sourceLocator: await fs.realpath(skillDir),
       }),
     ]);
   });
@@ -2276,7 +2918,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(result.imported[0]).toMatchObject({
       name: "Selected Skill",
       sourceType: "local_path",
-      sourceLocator: selectedSkillDir,
+      sourceLocator: await fs.realpath(selectedSkillDir),
       metadata: expect.objectContaining({ sourceKind: "project_scan", workspaceId, projectId }),
     });
     expect(result.candidates).toEqual([
@@ -2298,7 +2940,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const persisted = await db.select().from(companySkills).where(eq(companySkills.companyId, companyId));
     const projectScanSkills = persisted.filter((skill) => skill.metadata?.sourceKind === "project_scan");
     expect(projectScanSkills).toHaveLength(1);
-    expect(projectScanSkills[0]?.sourceLocator).toBe(selectedSkillDir);
+    expect(projectScanSkills[0]?.sourceLocator).toBe(await fs.realpath(selectedSkillDir));
   });
 
   it("treats out-of-scope workspace selections as unmatched without leaking workspace metadata", async () => {
@@ -2374,7 +3016,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(result.imported[0]).toMatchObject({
       name: "Selected Skill",
       sourceType: "local_path",
-      sourceLocator: selectedSkillDir,
+      sourceLocator: await fs.realpath(selectedSkillDir),
       metadata: expect.objectContaining({ sourceKind: "project_scan", workspaceId, projectId }),
     });
     expect(result.candidates).toEqual([
@@ -2409,7 +3051,9 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const outsideSkillFile = path.join(outsideDir, "outside-skill.md");
     await fs.mkdir(linkedSkillDir, { recursive: true });
     await fs.writeFile(outsideSkillFile, "---\nname: Outside Skill\n---\n", "utf8");
+    await fs.writeFile(path.join(outsideDir, "SKILL.md"), "---\nname: Outside Directory Skill\n---\n", "utf8");
     await fs.symlink(outsideSkillFile, path.join(linkedSkillDir, "SKILL.md"));
+    await fs.symlink(outsideDir, path.join(workspaceDir, "linked-directory"));
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -2429,7 +3073,10 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const result = await svc.scanProjectWorkspaces(companyId, {
       mode: "import",
       workspaceIds: [workspaceId],
-      selection: [{ workspaceId, path: ".codex/skills/linked-skill" }],
+      selection: [
+        { workspaceId, path: ".codex/skills/linked-skill" },
+        { workspaceId, path: "linked-directory" },
+      ],
     });
 
     expect(result.imported).toEqual([]);
@@ -2440,13 +3087,18 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         reason: expect.stringContaining("symbolic link"),
       }),
     ]);
-    expect(result.skipped).toEqual([
+    expect(result.skipped).toEqual(expect.arrayContaining([
       expect.objectContaining({
         workspaceId,
-        path: linkedSkillDir,
+        path: await fs.realpath(linkedSkillDir),
         reason: expect.stringContaining("symbolic link"),
       }),
-    ]);
+      expect.objectContaining({
+        workspaceId,
+        path: "linked-directory",
+        reason: expect.stringContaining("was not rediscovered"),
+      }),
+    ]));
     expect(result.candidates[0]?.reason).not.toContain(workspaceDir);
     expect(result.candidates[0]?.reason).not.toContain(outsideDir);
     expect(result.skipped[0]?.reason).not.toContain(workspaceDir);
@@ -2456,7 +3108,6 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const persisted = await db.select().from(companySkills).where(eq(companySkills.companyId, companyId));
     expect(persisted.filter((skill) => skill.metadata?.sourceKind === "project_scan")).toEqual([]);
   });
-
   it("files new project imports without moving them back on re-import", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -2512,4 +3163,307 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
   });
 
+  async function seedCompany(companyId: string) {
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+  }
+
+  function runtimeSkillName(key: string, slug: string) {
+    if (key.startsWith("paperclipai/paperclip/")) return slug;
+    return `${slug}--${createHash("sha256").update(key).digest("hex").slice(0, 10)}`;
+  }
+
+  it("renames a Paperclip-managed skill, moving the directory and rewriting SKILL.md frontmatter", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(
+      companyId,
+      { name: "Prepare PR", slug: "prepare-pr", description: "Prep pull requests" },
+      { type: "user", userId: "board" },
+    );
+    const oldDir = skill.sourceLocator!;
+    const managedRoot = path.dirname(oldDir);
+
+    const result = await svc.renameSkill(companyId, skill.id, { name: "Ship PR", slug: "ship-pr" });
+
+    expect(result).toMatchObject({
+      previousName: "Prepare PR",
+      previousSlug: "prepare-pr",
+      previousKey: `company/${companyId}/prepare-pr`,
+      reassignments: [],
+      skill: {
+        id: skill.id,
+        name: "Ship PR",
+        slug: "ship-pr",
+        key: `company/${companyId}/ship-pr`,
+      },
+    });
+
+    const newDir = path.join(managedRoot, "ship-pr");
+    expect(result.skill.sourceLocator).toBe(newDir);
+    await expect(fs.stat(oldDir)).rejects.toMatchObject({ code: "ENOENT" });
+    const renamedMarkdown = await fs.readFile(path.join(newDir, "SKILL.md"), "utf8");
+    expect(renamedMarkdown).toContain("name: Ship PR");
+    expect(renamedMarkdown).not.toContain("name: Prepare PR");
+
+    // Description and version history are preserved.
+    const persisted = await svc.getById(companyId, skill.id);
+    expect(persisted).toMatchObject({ description: "Prep pull requests" });
+    expect(persisted?.markdown).toBe(renamedMarkdown);
+    const versions = await svc.listVersions(companyId, skill.id);
+    expect(versions).toHaveLength(1);
+  });
+
+  it("quotes YAML-special names while keeping stored and on-disk markdown synchronized", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(companyId, { name: "Prepare PR", slug: "prepare-pr" });
+
+    const result = await svc.renameSkill(companyId, skill.id, { name: "Ship: PR #1", slug: "ship-pr" });
+    const markdown = await fs.readFile(path.join(result.skill.sourceLocator!, "SKILL.md"), "utf8");
+    const persisted = await svc.getById(companyId, skill.id);
+
+    expect(markdown).toContain('name: "Ship: PR #1"');
+    expect(parseFrontmatterMarkdown(markdown).frontmatter.name).toBe("Ship: PR #1");
+    expect(persisted?.markdown).toBe(markdown);
+  });
+
+  it("supports a name-only rename that keeps the slug/key and directory", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(
+      companyId,
+      { name: "Prepare PR", slug: "prepare-pr" },
+      { type: "user", userId: "board" },
+    );
+    const dir = skill.sourceLocator!;
+
+    // Keeping the slug requires passing it explicitly: an omitted slug is
+    // re-derived from the new name.
+    const result = await svc.renameSkill(companyId, skill.id, { name: "Prepare Pull Request", slug: "prepare-pr" });
+    expect(result.skill).toMatchObject({
+      name: "Prepare Pull Request",
+      slug: "prepare-pr",
+      key: `company/${companyId}/prepare-pr`,
+      sourceLocator: dir,
+    });
+    const markdown = await fs.readFile(path.join(dir, "SKILL.md"), "utf8");
+    expect(markdown).toContain("name: Prepare Pull Request");
+  });
+
+  it("returns the unchanged skill for a normalized no-op rename", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(
+      companyId,
+      { name: "Prepare PR", slug: "prepare-pr" },
+      { type: "user", userId: "board" },
+    );
+
+    const result = await svc.renameSkill(companyId, skill.id, { name: "Prepare PR", slug: "Prepare-PR" });
+    expect(result).toMatchObject({
+      reassignments: [],
+      skill: { id: skill.id, slug: "prepare-pr", key: `company/${companyId}/prepare-pr` },
+    });
+  });
+
+  it("rejects a rename whose slug conflicts with another skill", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const source = await svc.createLocalSkill(companyId, { name: "Source", slug: "source" });
+    await svc.createLocalSkill(companyId, { name: "Taken", slug: "taken" });
+
+    await expect(svc.renameSkill(companyId, source.id, { name: "Taken", slug: "taken" })).rejects.toMatchObject({
+      status: 409,
+      details: { conflict: "slug", slug: "taken" },
+    });
+  });
+
+  it("rejects a rename whose derived key conflicts with another skill", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const source = await svc.createLocalSkill(companyId, { name: "Source", slug: "source" });
+    // A sibling whose key already matches the derived target key but whose slug
+    // differs, so only the key-conflict branch fires. It needs a real on-disk
+    // source so inventory reconciliation does not prune it before the check.
+    const squatterDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-key-squatter-"));
+    cleanupDirs.add(squatterDir);
+    await fs.writeFile(path.join(squatterDir, "SKILL.md"), "---\nname: Key Squatter\n---\n# Key Squatter\n", "utf8");
+    await db.insert(companySkills).values({
+      id: randomUUID(),
+      companyId,
+      key: `company/${companyId}/renamed`,
+      slug: "different-slug",
+      name: "Key Squatter",
+      description: null,
+      markdown: "# Key Squatter\n",
+      sourceType: "local_path",
+      sourceLocator: squatterDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "managed_local" },
+    });
+
+    await expect(svc.renameSkill(companyId, source.id, { name: "Renamed", slug: "renamed" })).rejects.toMatchObject({
+      status: 409,
+      details: { conflict: "key", key: `company/${companyId}/renamed` },
+    });
+  });
+
+  it("rejects renaming non Paperclip-managed skill sources with 422", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+
+    const unmanagedDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-unmanaged-skill-"));
+    cleanupDirs.add(unmanagedDir);
+    await fs.writeFile(path.join(unmanagedDir, "SKILL.md"), "---\nname: Unmanaged\n---\n# Unmanaged\n", "utf8");
+
+    const rows = [
+      {
+        slug: "github-skill",
+        sourceType: "github" as const,
+        sourceLocator: "https://github.com/acme/github-skill",
+        metadata: { sourceKind: "github", owner: "acme", repo: "github-skill" },
+      },
+      {
+        slug: "url-skill",
+        sourceType: "url" as const,
+        sourceLocator: "https://example.com/url.md",
+        metadata: { sourceKind: "url" },
+      },
+      {
+        slug: "skills-sh-skill",
+        sourceType: "skills_sh" as const,
+        sourceLocator: "https://github.com/acme/skills-sh-skill",
+        metadata: { sourceKind: "skills_sh", owner: "acme", repo: "skills-sh-skill" },
+      },
+      {
+        slug: "catalog-skill",
+        sourceType: "catalog" as const,
+        sourceLocator: null,
+        metadata: { sourceKind: "catalog" },
+      },
+      {
+        slug: "project-scan-skill",
+        sourceType: "local_path" as const,
+        sourceLocator: unmanagedDir,
+        metadata: { sourceKind: "project_scan" },
+      },
+      {
+        slug: "unmanaged-local-skill",
+        sourceType: "local_path" as const,
+        sourceLocator: unmanagedDir,
+        metadata: { sourceKind: "local_path" },
+      },
+    ];
+    const inserted = rows.map((row) => ({ id: randomUUID(), ...row }));
+    await db.insert(companySkills).values(inserted.map((row) => ({
+      id: row.id,
+      companyId,
+      key: `company/${companyId}/${row.slug}`,
+      slug: row.slug,
+      name: row.slug,
+      description: null,
+      markdown: `# ${row.slug}\n`,
+      sourceType: row.sourceType,
+      sourceLocator: row.sourceLocator,
+      trustLevel: "markdown_only" as const,
+      compatibility: "compatible" as const,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" as const }],
+      metadata: row.metadata,
+    })));
+
+    for (const row of inserted) {
+      await expect(svc.renameSkill(companyId, row.id, { name: "Renamed" })).rejects.toMatchObject({
+        status: 422,
+      });
+    }
+  });
+
+  it("rewrites agent desired-skill keys on rename while preserving version pins", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(companyId, { name: "Shared", slug: "shared" });
+    const pinnedVersionId = randomUUID();
+
+    const pinnedAgentId = randomUUID();
+    const looseAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: pinnedAgentId,
+        companyId,
+        name: "Pinned",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {
+          paperclipSkillSync: {
+            desiredSkills: [{ key: `company/${companyId}/shared`, versionId: pinnedVersionId }],
+          },
+        },
+      },
+      {
+        id: looseAgentId,
+        companyId,
+        name: "Loose",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {
+          paperclipSkillSync: { desiredSkills: [`company/${companyId}/shared`] },
+        },
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {
+          paperclipSkillSync: { desiredSkills: [`company/${companyId}/unrelated`] },
+        },
+      },
+    ]);
+
+    const result = await svc.renameSkill(companyId, skill.id, { name: "Shared Renamed", slug: "shared-renamed" });
+    expect(result.reassignments).toEqual(
+      expect.arrayContaining([
+        { agentId: pinnedAgentId, previousSkillKey: `company/${companyId}/shared`, nextSkillKey: `company/${companyId}/shared-renamed` },
+        { agentId: looseAgentId, previousSkillKey: `company/${companyId}/shared`, nextSkillKey: `company/${companyId}/shared-renamed` },
+      ]),
+    );
+    expect(result.reassignments).toHaveLength(2);
+
+    const after = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    const pinned = after.find((agent) => agent.id === pinnedAgentId)!.adapterConfig as Record<string, any>;
+    const loose = after.find((agent) => agent.id === looseAgentId)!.adapterConfig as Record<string, any>;
+    const other = after.find((agent) => agent.id === otherAgentId)!.adapterConfig as Record<string, any>;
+    expect(pinned.paperclipSkillSync.desiredSkills).toEqual([
+      { key: `company/${companyId}/shared-renamed`, versionId: pinnedVersionId },
+    ]);
+    expect(loose.paperclipSkillSync.desiredSkills).toEqual([`company/${companyId}/shared-renamed`]);
+    expect(other.paperclipSkillSync.desiredSkills).toEqual([`company/${companyId}/unrelated`]);
+  });
+
+  it("removes the old runtime materialization when the key/slug changes", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(companyId, { name: "Runtime Skill", slug: "runtime-skill" });
+    const managedRoot = path.dirname(skill.sourceLocator!);
+    const oldRuntimeDir = path.join(managedRoot, "__runtime__", runtimeSkillName(skill.key, skill.slug));
+    await fs.mkdir(oldRuntimeDir, { recursive: true });
+    await fs.writeFile(path.join(oldRuntimeDir, "SKILL.md"), "# stale\n", "utf8");
+
+    const revisionCacheRoot = path.join(managedRoot, "__runtime_cache_v1__", skill.id);
+    await fs.mkdir(revisionCacheRoot, { recursive: true });
+    await fs.writeFile(path.join(revisionCacheRoot, "old-cache"), "stale");
+    await svc.renameSkill(companyId, skill.id, { name: "Runtime Skill", slug: "runtime-renamed" });
+    await expect(fs.stat(revisionCacheRoot)).rejects.toMatchObject({ code: "ENOENT" });
+
+    await expect(fs.stat(oldRuntimeDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 });

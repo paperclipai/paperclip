@@ -21,6 +21,11 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
+  canUser: vi.fn(),
+}));
+
+const mockAgentActionAuditService = vi.hoisted(() => ({
+  list: vi.fn(),
 }));
 
 vi.mock("../services/activity.js", () => ({
@@ -35,6 +40,18 @@ vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   issueService: () => mockIssueService,
   heartbeatService: () => mockHeartbeatService,
+}));
+
+vi.mock("../services/authorization.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/authorization.js")>();
+  return {
+    ...actual,
+    issueReadSqlCondition: vi.fn(async () => ({}) as any),
+  };
+});
+
+vi.mock("../services/agent-action-audit.js", () => ({
+  agentActionAuditService: () => mockAgentActionAuditService,
 }));
 
 async function createApp(
@@ -92,18 +109,109 @@ async function requestApp(
   }
 }
 
-describe.sequential("activity routes", () => {
+describe("activity routes", () => {
   beforeEach(() => {
     for (const mock of Object.values(mockActivityService)) mock.mockReset();
     for (const mock of Object.values(mockHeartbeatService)) mock.mockReset();
     for (const mock of Object.values(mockIssueService)) mock.mockReset();
     mockAccessService.decide.mockReset();
+    mockAccessService.canUser.mockReset();
+    mockAgentActionAuditService.list.mockReset();
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       action: "company_scope:read",
       reason: "allow_test",
       explanation: "Allowed by test mock.",
     });
+    mockAccessService.canUser.mockResolvedValue(false);
+  });
+
+  it("returns redacted all-actors rows to a basic company reader", async () => {
+    mockAgentActionAuditService.list.mockResolvedValue({
+      items: [{
+        id: "activity-1",
+        companyId: "company-1",
+        actorType: "plugin",
+        actorId: "plugin-1",
+        action: "plugin.synced",
+        entityType: "company",
+        entityId: "company-1",
+        agentId: "agent-1",
+        runId: "run-1",
+        responsibleUserId: "user-2",
+        details: { privateAttribution: true },
+        createdAt: "2026-08-04T00:00:00.000Z",
+        entity: { issue: null, comment: null, document: null },
+      }],
+      nextCursor: null,
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/audit/agent-actions?actorScope=all");
+
+    expect(res.status).toBe(200);
+    expect(mockAgentActionAuditService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      actorScope: "all",
+      limit: 50,
+    });
+    expect(res.body.items[0]).toMatchObject({
+      actorType: "plugin",
+      actorId: "plugin-1",
+      action: "plugin.synced",
+      entityType: "company",
+      entityId: "company-1",
+      createdAt: "2026-08-04T00:00:00.000Z",
+      agentId: null,
+      runId: null,
+      responsibleUserId: null,
+      details: null,
+    });
+    expect(res.body.accessTier).toBe("basic");
+  });
+
+  it("rejects attribution filters for a basic all-actors reader", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/audit/agent-actions?actorScope=all&runId=00000000-0000-4000-8000-000000000001");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("audit:view_agent_actions");
+    expect(mockAgentActionAuditService.list).not.toHaveBeenCalled();
+  });
+
+  it("keeps attribution for a permitted all-actors reader", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAgentActionAuditService.list.mockResolvedValue({
+      items: [{
+        id: "activity-1",
+        agentId: "agent-1",
+        runId: "run-1",
+        responsibleUserId: "user-2",
+        details: { attribution: true },
+      }],
+      nextCursor: null,
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/audit/agent-actions?actorScope=all&actorType=system");
+
+    expect(res.status).toBe(200);
+    expect(mockAgentActionAuditService.list).toHaveBeenCalledWith({
+      companyId: "company-1",
+      actorScope: "all",
+      actorType: "system",
+      limit: 50,
+    });
+    expect(res.body.items[0]).toMatchObject({
+      agentId: "agent-1",
+      runId: "run-1",
+      responsibleUserId: "user-2",
+      details: { attribution: true },
+    });
+    expect(res.body.accessTier).toBe("full");
   });
 
   it("limits company activity lists by default", async () => {
@@ -119,6 +227,7 @@ describe.sequential("activity routes", () => {
       entityType: undefined,
       entityId: undefined,
       limit: 100,
+      readCondition: expect.anything(),
     });
   });
 
@@ -137,6 +246,7 @@ describe.sequential("activity routes", () => {
       entityType: "issue",
       entityId: undefined,
       limit: 500,
+      readCondition: expect.anything(),
     });
   });
 
@@ -175,6 +285,26 @@ describe.sequential("activity routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockActivityService.create).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { id: "issue-uuid-1", companyId: "company-2" }])(
+    "does not start run reads or retries for a missing or cross-company task", async (issue) => {
+      mockIssueService.getByIdentifier.mockResolvedValue(issue);
+      const app = await createApp();
+      const res = await request(app).get("/api/issues/TEST-1/runs");
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: "Issue not found" });
+      expect(mockActivityService.runsForIssue).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not start run reads or retries when task read authorization is denied", async () => {
+    mockIssueService.getByIdentifier.mockResolvedValue({ id: "issue-uuid-1", companyId: "company-1" });
+    mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "denied", explanation: "Denied by test policy." });
+    const app = await createApp();
+    const res = await request(app).get("/api/issues/TEST-1/runs");
+    expect(res.status).toBe(403);
+    expect(mockActivityService.runsForIssue).not.toHaveBeenCalled();
   });
 
   it("returns 200 [] (not 404) when listing issues for another company's run, preserving API contract and the cross-tenant oracle", async () => {

@@ -1,4 +1,43 @@
 export {
+  connectionsSearchInputSchema,
+  connectionRequestInputSchema,
+  completeConnectionIntentSchema,
+  declineConnectionIntentSchema,
+  type ConnectionsSearchInput,
+  type ConnectionRequestInput,
+  type CompleteConnectionIntent,
+  type DeclineConnectionIntent,
+} from "./connection-intent.js";
+
+export {
+  nativeFinalizationResultSchema,
+  nativeFinalizationResultV1Schema,
+  nativeReportedWorkDispositionSchema,
+  type NativeFinalizationResultInput,
+} from "./native-finalization.js";
+
+export {
+  decisionEffectStalenessSchema,
+  decisionOptionStyleSchema,
+  commentOnIssueDecisionEffectSchema,
+  createIssueDecisionEffectSchema,
+  updateIssueStatusDecisionEffectSchema,
+  assignIssueDecisionEffectSchema,
+  cancelIssueTreeDecisionEffectSchema,
+  resolveBlockerDecisionEffectSchema,
+  decisionEffectSchema,
+  decisionInputSchema,
+  decisionOptionSchema,
+  decisionOptionsSchema,
+  decisionInputsSchema,
+  decisionSpecSchema,
+  type DecisionEffectInput,
+  type DecisionOptionInput,
+  type DecisionInputInput,
+  type DecisionSpecInput,
+} from "./decision.js";
+
+export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
@@ -9,11 +48,9 @@ export {
   managedSettingMetadataSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
-  issueGraphLivenessAutoRecoveryRequestSchema,
   type InstanceExperimentalSettings,
   type PatchInstanceExperimentalSettings,
   type PatchInstanceSettings,
-  type IssueGraphLivenessAutoRecoveryRequest,
 } from "./instance.js";
 
 export {
@@ -38,6 +75,7 @@ export {
 
 export {
   createCompanySchema,
+  interactionResolverGovernanceSchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
   type CreateCompany,
@@ -67,6 +105,7 @@ export {
   startEnvironmentCustomImageSetupSessionSchema,
   finishEnvironmentCustomImageSetupSessionSchema,
   cancelEnvironmentCustomImageSetupSessionSchema,
+  relinkEnvironmentCustomImageTemplateSchema,
   createEnvironmentCustomImageTerminalSessionTokenSchema,
   environmentCustomImageTerminalSessionTokenSchema,
   type EnvironmentCustomImageSetupConnectionSummary,
@@ -75,6 +114,7 @@ export {
   type StartEnvironmentCustomImageSetupSession,
   type FinishEnvironmentCustomImageSetupSession,
   type CancelEnvironmentCustomImageSetupSession,
+  type RelinkEnvironmentCustomImageTemplate,
   type CreateEnvironmentCustomImageTerminalSessionToken,
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./environment-custom-images.js";
@@ -93,7 +133,9 @@ export {
 } from "./sidebar-preferences.js";
 export {
   resourceMembershipStateSchema,
+  updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
+  type UpdateDocumentResourceMembership,
   type UpdateResourceMembership,
 } from "./resource-memberships.js";
 export {
@@ -108,6 +150,8 @@ export {
   type SummarySlotScopeSelectorInput,
   type WriteSummarySlotInput,
 } from "./summary-slot.js";
+
+export * from "./status-card.js";
 
 export {
   externalObjectStatusCategorySchema,
@@ -152,12 +196,17 @@ export {
   companySkillForkReassignmentSchema,
   companySkillForkResultSchema,
   companySkillForkPrecheckResultSchema,
+  companySkillRenameSchema,
+  companySkillRenameResultSchema,
   companySkillUpdateSchema,
   companySkillUpdateStatusSchema,
   companySkillAuditFindingSchema,
   companySkillAuditResultSchema,
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
+  companySkillProjectBrowseRequestSchema,
+  companySkillProjectBrowseEntrySchema,
+  companySkillProjectBrowseResultSchema,
   companySkillProjectScanSkippedSchema,
   companySkillProjectScanConflictSchema,
   companySkillProjectScanResultSchema,
@@ -191,6 +240,7 @@ export {
   type CompanySkillImport,
   type CompanySkillListQuery,
   type CompanySkillProjectScan,
+  type CompanySkillProjectBrowse,
   type CompanySkillCreate,
   type CompanySkillFileUpdate,
   type CompanySkillTestInputCreate,
@@ -203,6 +253,7 @@ export {
   type CompanySkillCommentCreate,
   type CompanySkillCommentUpdate,
   type CompanySkillFork,
+  type CompanySkillRename,
   type CatalogSkillListQuery,
   type CompanySkillInstallCatalog,
   type CompanySkillInstallUpdate,
@@ -249,6 +300,7 @@ export {
 export {
   agentSkillStateSchema,
   agentSkillSyncModeSchema,
+  agentSkillAssignmentModeSchema,
   agentDesiredSkillEntrySchema,
   agentDesiredSkillSelectionSchema,
   agentSkillEntrySchema,
@@ -280,6 +332,8 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  assignmentAuthorizationPolicySchema,
+  protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
   sourceTrustArtifactKindSchema,
   sourceTrustMetadataSchema,
@@ -333,14 +387,17 @@ export {
 } from "./agent.js";
 
 export {
+  projectDiscoverySchema,
   createProjectSchema,
   updateProjectSchema,
+  addProjectAccessMemberSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
   projectExecutionWorkspacePolicySchema,
   projectWorkspaceRuntimeConfigSchema,
   type CreateProject,
   type UpdateProject,
+  type AddProjectAccessMember,
   type CreateProjectWorkspace,
   type UpdateProjectWorkspace,
   type ProjectExecutionWorkspacePolicy,
@@ -363,6 +420,8 @@ export {
 
 export {
   createIssueSchema,
+  setIssueTitleSchema,
+  type SetIssueTitle,
   createIssueInputSchema,
   createChildIssueSchema,
   createAcceptedPlanDecompositionSchema,
@@ -374,10 +433,13 @@ export {
   issueBlockedInboxSeveritySchema,
   issueBlockedInboxStateSchema,
   updateIssueSchema,
+  stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
+  issueExecutionMonitorPolicySchema,
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
   resolveIssueRecoveryActionSchema,
+  retryWorkspaceExportSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
@@ -389,13 +451,21 @@ export {
   addIssueCommentSchema,
   issueThreadInteractionStatusSchema,
   issueThreadInteractionKindSchema,
+  issueThreadInteractionCanonicalResolverPolicySchema,
+  issueThreadInteractionResolverPolicySchema,
+  issueThreadInteractionResolverPolicyProvenanceSchema,
+  issueThreadInteractionEffectiveResolverPolicySourceSchema,
   issueThreadInteractionContinuationPolicySchema,
+  connectionIntentPhaseSchema,
+  connectionIntentPayloadSchema,
+  connectionIntentResultSchema,
   suggestedTaskDraftSchema,
   suggestTasksPayloadSchema,
   suggestTasksResultCreatedTaskSchema,
   suggestTasksResultSchema,
   askUserQuestionsQuestionOptionSchema,
   askUserQuestionsQuestionSchema,
+  paperclipQuestionSetPayloadSchema,
   askUserQuestionsPayloadSchema,
   askUserQuestionsAnswerSchema,
   askUserQuestionsResultSchema,
@@ -405,6 +475,8 @@ export {
   requestConfirmationPayloadSchema,
   requestConfirmationResumeFailureSchema,
   requestConfirmationResultSchema,
+  requestConfirmationSecretProposalPayloadSchema,
+  requestConfirmationSecretProposalResultSchema,
   requestCheckboxConfirmationOptionSchema,
   requestCheckboxConfirmationPayloadSchema,
   requestCheckboxConfirmationResultSchema,
@@ -415,8 +487,12 @@ export {
   requestItemVerdictsResultSchema,
   createIssueThreadInteractionSchema,
   acceptIssueThreadInteractionSchema,
+  resolveConfirmationFromCommentSchema,
+  type ResolveConfirmationFromComment,
   rejectIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
+  skipIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   linkIssueApprovalSchema,
@@ -431,15 +507,19 @@ export {
   type CreateAcceptedPlanDecomposition,
   type CreateIssueLabel,
   type UpdateIssue,
+  type StalledReviewDecision,
   type IssueExecutionWorkspaceSettings,
   type IssueRecoveryActionReadModel,
   type ResolveIssueRecoveryAction,
   type CheckoutIssue,
   type AddIssueComment,
   type CreateIssueThreadInteraction,
+  type CreateIssueThreadInteractionInput,
   type AcceptIssueThreadInteraction,
   type RejectIssueThreadInteraction,
   type CancelIssueThreadInteraction,
+  type SkipIssueThreadInteraction,
+  type WithdrawIssueThreadInteraction,
   type RespondIssueThreadInteraction,
   type SubmitIssueThreadInteractionVerdicts,
   type LinkIssueApproval,
@@ -510,6 +590,7 @@ export {
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
+  executionWorkspaceDeliveryStateSchema,
   executionWorkspaceStatusSchema,
   executionWorkspaceCloseActionKindSchema,
   executionWorkspaceCloseActionSchema,
@@ -523,7 +604,11 @@ export {
 } from "./execution-workspace.js";
 
 export {
+  normalizedWorkspaceFileAvailabilityQuerySchema,
   resolvedWorkspaceResourceSchema,
+  workspaceFileAvailabilityRequestSchema,
+  workspaceFileAvailabilityResponseSchema,
+  workspaceFileAvailabilityResultSchema,
   workspaceFileListModeSchema,
   workspaceFileListQuerySchema,
   workspaceFileContentSchema,
@@ -533,6 +618,7 @@ export {
   workspaceFileResourceQuerySchema,
   workspaceFileSelectorSchema,
   workspaceFileWorkspaceKindSchema,
+  type WorkspaceFileAvailabilityRequestInput,
   type WorkspaceFileListQuery,
   type WorkspaceFileResourceQuery,
 } from "./workspace-file-resource.js";
@@ -543,6 +629,11 @@ export {
   type CreateGoal,
   type UpdateGoal,
 } from "./goal.js";
+
+export {
+  applyOnboardingSeedSchema,
+  type ApplyOnboardingSeed,
+} from "./onboarding-seed.js";
 
 export {
   createApprovalSchema,
@@ -623,7 +714,7 @@ export {
 } from "./routine.js";
 
 export {
-  createCostEventSchema,
+  createCostEventSchema, createServiceCostEventSchema,
   updateBudgetSchema,
   type CreateCostEvent,
   type UpdateBudget,
@@ -635,7 +726,10 @@ export {
 } from "./finance.js";
 
 export {
+  ASSET_NAMESPACE_MAX_LENGTH,
+  ASSET_NAMESPACE_RULE,
   createAssetImageMetadataSchema,
+  sanitizeAssetNamespace,
   type CreateAssetImageMetadata,
 } from "./asset.js";
 
@@ -707,6 +801,7 @@ export {
   pluginWebhookDeclarationSchema,
   pluginToolDeclarationSchema,
   pluginEnvironmentDriverDeclarationSchema,
+  sandboxProviderCapabilitiesSchema,
   pluginUiSlotDeclarationSchema,
   pluginLauncherActionDeclarationSchema,
   pluginLauncherRenderDeclarationSchema,
@@ -728,6 +823,7 @@ export {
   type PluginWebhookDeclarationInput,
   type PluginToolDeclarationInput,
   type PluginEnvironmentDriverDeclarationInput,
+  type SandboxProviderCapabilitiesInput,
   type PluginUiSlotDeclarationInput,
   type PluginLauncherActionDeclarationInput,
   type PluginLauncherRenderDeclarationInput,
@@ -758,6 +854,7 @@ export {
   toolConnectionHealthStatusSchema,
   toolConnectionKindSchema,
   toolConnectionStatusSchema,
+  toolConnectionPurposeSchema,
   toolConnectionTransportSchema,
   toolCredentialSecretRefSchema,
   toolCredentialPlacementSchema,
@@ -797,6 +894,8 @@ export {
   connectionTokenScopeSchema,
   connectionTokenSubjectSchema,
   startConnectionAuthorizationSchema,
+  createConnectionGrantDelegationSchema,
+  replaceConnectionGrantMembersSchema,
   createToolTrustRuleFromActionRequestSchema,
   revokeToolTrustRuleSchema,
   toolPolicyTestRequestSchema,
@@ -804,8 +903,15 @@ export {
   mcpConnectionCredentialRefSchema,
   createToolApplicationSchema,
   connectToolAppSchema,
+  GENERIC_MCP_AUTH_MODES,
+  genericMcpAuthModeSchema,
+  genericMcpOAuthClientSchema,
+  type GenericMcpAuthMode,
+  type GenericMcpOAuthClient,
   reconnectToolAppSchema,
   finishToolAppSchema,
+  finalizeOAuthAccessSchema,
+  startToolOAuthSchema,
   updateToolApplicationSchema,
   createToolConnectionSchema,
   createToolMcpGatewaySchema,
@@ -839,6 +945,8 @@ export {
   type ReconnectToolApp,
   type CreateToolApplication,
   type FinishToolApp,
+  type FinalizeOAuthAccess,
+  type StartToolOAuth,
   type UpdateToolApplication,
   type CreateToolConnection,
   type CreateToolMcpGateway,
@@ -869,9 +977,21 @@ export {
   type UnbindToolProfileBinding,
   type UpsertToolCatalogEntry,
   type ConnectionTokenRequestInput,
+  type CreateConnectionGrantDelegation,
+  type ReplaceConnectionGrantMembersInput,
   type ToolPolicyTestRequestInput,
   type CreateToolTrustRuleFromActionRequest,
   type RevokeToolTrustRule,
 } from "./tool-access.js";
 export * from "./skill-policy.js";
+export * from "./provider-trace.js";
 export * from "./app-definition.js";
+export * from "./chat-channels.js";
+export * from "./chat-github.js";
+
+export * from "./email.js";
+
+export { restoreAgentInstructionSchema } from "./agent.js";
+
+export * from "./skill-source.js";
+export * from "./agent-commentary.js";
