@@ -156,6 +156,8 @@ export interface CompanySkillCategoryCount {
 }
 
 export interface CompanySkillVersion {
+  repositorySnapshotId?: string | null;
+  repositorySkillPath?: string | null;
   id: string;
   companyId: string;
   companySkillId: string;

@@ -135,7 +135,7 @@ opens the standard setup in Apps. Completing or cancelling setup returns you to
 the importer with your draft retained; the repository list refreshes automatically.
 Use the refresh button beside the repository count to reload accessible repositories.
 
-The searchable tree starts with every discovered skill package checked, including
+The searchable tree starts with every valid discovered skill package checked, including
 hidden and deeply nested directories. Each package shows its name and file count;
 expand it to see the files included with it. Folder checkboxes select descendant
 packages. A package checkbox selects that whole directory, stopping at nested
@@ -154,11 +154,10 @@ content. Existing sources gain inspection metadata on their next successful refr
 resource paths that are missing or outside the package, including files belonging to
 nested skills. This is a best-effort check, not a complete dependency analysis;
 references do not cause external files to be imported automatically. Fix the source
-or leave the package unchecked if it needs those files. Declared requirements are
+or choose **Keep repository files together** to include shared files and sibling skills. Missing files still need to be fixed in the source. Declared requirements are
 shown separately from these warnings and from content-audit notices.
 
-Validation errors appear beside affected skills; eligible selections import and
-skipped skills are reported. These skills become available in the current company's
+Validation errors appear beside affected skills. Fix the source or deselect invalid skills before importing. A repository package with invalid content cannot be imported partially. These skills become available in the current company's
 library and agent skill picker. Files are limited to 1 MiB each and a scan to 100 MiB
 of expanded skill content, counting repeated file copies. A scan supports up to
 1,000 skill packages and 10,000 package files. The repository path index includes
@@ -166,6 +165,45 @@ directories and is limited to 100,000 paths, with paths up to 4,096 characters a
 64 levels deep. Discovery retains audited manifests without retaining every
 package's contents. Importing never runs scripts, hooks, dependency installation,
 or builds.
+
+### Keep repository files together
+
+Use this option for skills that share agents, scripts, policies, or sibling skills.
+Paperclip saves the complete repository at the scanned commit. **Choose skills**
+controls which entrypoints appear in the company library; unselected helper skills
+remain available as supporting files. Add the imported skills to an agent to use
+that repository in its runtime. **Included repository files** shows exactly what
+will be copied, including root license and credit files.
+
+Repository packages support regular files up to 1 MiB each, 9,990 files, and
+61 MiB of content. Symlinks, submodules, invalid skill entrypoints, and blocked
+content prevent the entire package from being published. A failed refresh retains
+all previously installed versions. Changes to shared files create a new version
+for each selected entrypoint; pinned versions retain their original repository.
+
+Authors can optionally add `paperclip.skills.json` at the repository root:
+
+```json
+{
+  "version": 1,
+  "skills": ["skills/review/SKILL.md", "skills/research/SKILL.md"],
+  "requirements": "Requires Python 3.11, Git, and GitHub access for code reviews."
+}
+```
+
+The listed paths are the default selection on a new import. They do not remove
+other files or prevent users from selecting other entrypoints. Without this file,
+all valid discovered skills are selected by default. The manifest only supplies
+declarative metadata: it never runs setup commands. Dependencies, credentials,
+subagent tools, and scheduled jobs still need to be configured in the agent's environment.
+
+At runtime, each selected skill contains a generated discovery `SKILL.md` that
+points to the untouched original in `.paperclip-repository/`. Relative references
+resolve from that original directory. Original file bytes and executable flags
+are preserved; discovery policy in `agents/openai.yaml` is also copied beside the
+entrypoint. Existing adapters copy this self-contained package to their runtime.
+Multiple enabled entrypoints currently repeat the repository files in the runtime,
+while the company database stores each immutable repository snapshot once.
 
 Repeated scans resolve the branch's current commit and reuse the caller's cached
 snapshot when it is unchanged. Each server process allows one active scan per

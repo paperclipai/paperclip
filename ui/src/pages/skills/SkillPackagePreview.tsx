@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ExternalLink, FileImage, AlertTriangle } from 'lucide-react';
-import type { SkillSourceDiscoveryRequest } from '@paperclipai/shared';
+import type { SkillSourceDiscoveryRequest, SkillRepositoryPackage } from '@paperclipai/shared';
 import { skillSourcesApi } from '@/api/skillSources';
 import { queryKeys } from '@/lib/queryKeys';
 import { FileTree, buildFileTree, collectAllPaths } from '@/components/FileTree';
@@ -10,29 +10,30 @@ import { Button } from '@/components/ui/button';
 import { Link } from '@/lib/router';
 import type { SkillTreeCandidate } from './SkillSourceTree';
 
-export function SkillPackagePreview({ companyId, repository, commitSha, skill, initialFile, onClose }: {
+export function SkillPackagePreview({ companyId, repository, commitSha, skill, initialFile, repositoryPackage, onClose }: {
   companyId: string; repository: SkillSourceDiscoveryRequest; commitSha: string | null;
-  skill: SkillTreeCandidate; initialFile?: string; onClose: () => void;
+  repositoryPackage?: SkillRepositoryPackage; skill: SkillTreeCandidate; initialFile?: string; onClose: () => void;
 }) {
-  const inspection = skill.inspection;
-  const [filePath, setFilePath] = useState(initialFile ?? 'SKILL.md');
+  const inspection = repositoryPackage ? { ...repositoryPackage, references: [] } : skill.inspection;
+  const [filePath, setFilePath] = useState(initialFile ?? (repositoryPackage ? skill.path : 'SKILL.md'));
   const nodes = buildFileTree(Object.fromEntries((inspection?.files ?? []).map(file => [file.path, null]))).sort((a, b) => Number(b.name === 'SKILL.md') - Number(a.name === 'SKILL.md'));
   const [collapsed, setCollapsed] = useState(new Set<string>());
   const expanded = new Set([...collectAllPaths(nodes, 'dir')].filter(path => !collapsed.has(path)));
   const file = inspection?.files.find(file => file.path === filePath);
+  const root = skill.path.includes('/') ? skill.path.slice(0, skill.path.lastIndexOf('/')) : '';
+  const repositoryFilePath = repositoryPackage ? filePath : filePath === 'SKILL.md' ? skill.path : [root, filePath].filter(Boolean).join('/');
   const preview = useQuery({
-    queryKey: queryKeys.skillSources.preview(companyId, repository.repositoryUrl, repository.connectionId ?? null, commitSha, skill.path, filePath),
-    queryFn: () => skillSourcesApi.preview(companyId, { ...repository, commitSha: commitSha!, skillPath: skill.path, filePath }),
+    queryKey: [...queryKeys.skillSources.preview(companyId, repository.repositoryUrl, repository.connectionId ?? null, commitSha, skill.path, filePath), repository.packageMode ?? 'skills'],
+    queryFn: () => skillSourcesApi.preview(companyId, { ...repository, commitSha: commitSha!, skillPath: skill.path, filePath: repository.packageMode === 'repository' ? repositoryFilePath : filePath }),
     enabled: Boolean(commitSha && file && !skill.error), retry: false, staleTime: 5 * 60_000, refetchOnWindowFocus: false,
   });
-  const root = skill.path.includes('/') ? skill.path.slice(0, skill.path.lastIndexOf('/')) : '';
-  const githubPath = filePath === 'SKILL.md' ? skill.path : [root, filePath].filter(Boolean).join('/');
+  const githubPath = repositoryPackage ? filePath : filePath === 'SKILL.md' ? skill.path : [root, filePath].filter(Boolean).join('/');
   const githubUrl = commitSha ? `${repository.repositoryUrl}/blob/${commitSha}/${githubPath.split('/').map(encodeURIComponent).join('/')}` : repository.repositoryUrl;
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
     <DialogContent className="flex max-h-(--sz-calc-18) flex-col overflow-y-auto p-4 sm:max-w-4xl sm:p-6">
       <DialogHeader>
-        <DialogTitle>{skill.name}</DialogTitle>
-        <DialogDescription className="break-all font-mono text-xs">{root || 'Repository root'}/ · {inspection?.files.length ?? skill.fileCount ?? '?'} files{commitSha ? ` · ${commitSha.slice(0, 8)}` : ''}</DialogDescription>
+        <DialogTitle>{repositoryPackage ? 'Included repository files' : skill.name}</DialogTitle>
+        <DialogDescription className="break-all font-mono text-xs">{repositoryPackage ? 'Repository root' : root || 'Repository root'}/ · {inspection?.files.length ?? skill.fileCount ?? '?'} files{commitSha ? ` · ${commitSha.slice(0, 8)}` : ''}</DialogDescription>
       </DialogHeader>
       {!inspection && <p role="status" className="text-sm text-muted-foreground">Refresh this source to inspect its complete package contents.</p>}
       {skill.error && <p role="alert" className="text-sm text-destructive">{skill.error}</p>}
@@ -43,7 +44,7 @@ export function SkillPackagePreview({ companyId, repository, commitSha, skill, i
       </section>}
       {Boolean(inspection?.references.length) && <section className="rounded-md border border-border p-3 text-sm" aria-label="Package reference warnings">
         <h3 className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4" />Check references</h3>
-        <p className="mt-1 text-xs text-muted-foreground">These referenced paths are not included. If the skill needs them, fix the source or leave this skill unchecked.</p>
+        <p className="mt-1 text-xs text-muted-foreground">These paths are unavailable. For shared files in this repository, select “Keep repository files together” in the import dialog. Missing files need to be added to the source.</p>
         <ul className="mt-2 space-y-2">
           {inspection!.references.map(reference => <li key={`${reference.fromPath}:${reference.resolvedPath}`} className="break-all text-xs">
             <span className="font-mono">{reference.target}</span> · {reference.kind === 'outside_package' ? 'Outside this package' : 'Not found'}

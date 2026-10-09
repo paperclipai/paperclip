@@ -1,5 +1,15 @@
 import type { CompanySkill } from './company-skill.js';
 
+export type SkillSourcePackageMode = 'skills' | 'repository';
+export interface SkillRepositoryPackage {
+  files: SkillPackageFile[];
+  requirements: string | null;
+  /** Author-declared public entrypoints; omitted when no manifest exists. */
+  skillPaths?: string[];
+  error: string | null;
+  warnings: string[];
+}
+
 /** Metadata from an audited, immutable repository scan; file contents are fetched on demand. */
 export interface SkillPackageInspection {
   /** Commit of this manifest, retained when a package disappears on a later refresh. */
@@ -48,6 +58,8 @@ export interface SkillSourceEntry {
 export interface SkillSource {
   id: string;
   companyId: string;
+  packageMode?: SkillSourcePackageMode;
+  repositoryPackage?: SkillRepositoryPackage | null;
   repositoryId: string | null;
   repositoryUrl: string;
   fullName: string;
@@ -63,6 +75,7 @@ export interface SkillSource {
   entries: SkillSourceEntry[];
 }
 export interface SkillSourceDiscoveryRequest {
+  packageMode?: SkillSourcePackageMode;
   repositoryUrl: string;
   trackingRef?: string;
   connectionId?: string | null;
@@ -77,6 +90,8 @@ export interface SkillSourceCandidate {
   warnings: string[];
 }
 export interface SkillSourceDiscovery {
+  packageMode?: SkillSourcePackageMode;
+  repositoryPackage?: SkillRepositoryPackage | null;
   /** Caller-authorized connection actually used; omitted by older servers. */
   connectionId?: string | null;
   repositoryId: string;
@@ -113,6 +128,7 @@ export interface SkillSourceCreateRequest extends SkillSourceDiscoveryRequest {
   excludedFolders?: string[];
 }
 export interface SkillSourceSelectionRequest {
+  packageMode?: SkillSourcePackageMode;
   revision: number;
   selectedPaths: string[];
   excludedFolders: string[];

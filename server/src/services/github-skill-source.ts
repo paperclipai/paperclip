@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { repositoryPackageInspection } from './skill-repository-package.js';
 import type { CompanySkillVersionFileInventoryEntry, SkillSourceCandidate, SkillSourceDiscovery, SkillSourcePreviewRequest, SkillSourceFilePreview, SkillSourceScanUpdate, SkillSourceScanProgress } from '@paperclipai/shared';
 import { parseFrontmatterMarkdown, parseGitHubSkillRepositoryUrl } from '@paperclipai/shared';
 import { notFound, unprocessable } from '../errors.js';
@@ -15,7 +16,7 @@ export interface GitHubRead {
   readonly connectionId?: string | null;
 }
 export type DiscoveredSkill = SkillSourceCandidate & { files: CompanySkillVersionFileInventoryEntry[] };
-export type ScannedSkillSource = SkillSourceDiscovery & { skills: DiscoveredSkill[]; defaultBranch: string };
+export type ScannedSkillSource = SkillSourceDiscovery & { skills: DiscoveredSkill[]; defaultBranch: string; repositoryFiles?: CompanySkillVersionFileInventoryEntry[] };
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_SCAN_BYTES = 100 * 1024 * 1024;
 const MAX_SCAN_PACKAGES = 1_000;
@@ -34,7 +35,7 @@ export interface SkillScanOptions {
   retainFiles?: boolean;
 }
 
-type SkillScanInput = { repositoryUrl: string; trackingRef?: string; commitSha?: string; onlySkillPath?: string };
+type SkillScanInput = { packageMode?: 'skills' | 'repository'; repositoryUrl: string; trackingRef?: string; commitSha?: string; onlySkillPath?: string };
 
 export function scanGitHubSkills(input: SkillScanInput, providerRead: GitHubRead, options: SkillScanOptions = {}): Promise<ScannedSkillSource> {
   const scan = () => scanRepository(input, providerRead, options);
@@ -91,7 +92,7 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
       siblings.push(root);
       rootsByDirectory.set(dir, siblings);
     }
-    const selectedRoots = roots.filter(root => !input.onlySkillPath || root.path === input.onlySkillPath).sort((a, b) => a.path.localeCompare(b.path));
+    const selectedRoots = roots.filter(root => input.packageMode === 'repository' || !input.onlySkillPath || root.path === input.onlySkillPath).sort((a, b) => a.path.localeCompare(b.path));
     if (selectedRoots.length > MAX_SCAN_PACKAGES) throw unprocessable('Repository exceeds the 1,000 skill package scan limit.');
     // Assign each file to its nearest package root once, including hidden and
     // nested directories. Memoized ancestors avoid a full-tree pass per skill.
@@ -179,7 +180,43 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
       progress.checkedSkills++;
       await report();
     }
-    return { connectionId: providerRead.connectionId ?? null, repositoryId: String(repo.id), repositoryUrl: `https://github.com/${repo.full_name.toLowerCase()}`, fullName: repo.full_name, trackingRef, commitSha: commit.sha,
+    let repositoryFiles: CompanySkillVersionFileInventoryEntry[] | undefined;
+    let repositoryPackage: ReturnType<typeof repositoryPackageInspection> | undefined;
+    if (input.packageMode === 'repository') {
+      const inventory = entries.filter(entry => entry.type !== 'tree');
+      if (inventory.length > 9_990) throw unprocessable('Repository package exceeds the 9,990 file limit.');
+      repositoryFiles = [];
+      let packageError: string | null = skills.find(skill => skill.error)?.error ?? null;
+      totalBytes = 0;
+      Object.assign(progress, { currentPath: null, checkedFiles: 0, totalFiles: inventory.length });
+      for (const entry of inventory) {
+        options.signal?.throwIfAborted();
+        if (!['100644', '100755'].includes(entry.mode) || entry.type !== 'blob') {
+          packageError ??= `Unsupported symlink or submodule: ${entry.path}`; continue;
+        }
+        const bytes = await readBlob(entry);
+        if (!bytes) { packageError ??= `File exceeds the 1 MB limit: ${entry.path}`; continue; }
+        if (totalBytes > 61 * 1024 * 1024) throw unprocessable('Repository package exceeds the 61 MB runtime limit.');
+        const kind = entry.mode === '100755' || bytes.subarray(0, 2).toString() === '#!'
+          ? 'script' : classifyInventoryKind(entry.path);
+        repositoryFiles.push(snapshotFile(entry.path, kind, bytes, entry.mode === '100755'));
+        progress.currentPath = entry.path;
+        progress.checkedFiles++;
+        await report();
+      }
+      const findings = await auditSkillSnapshot(repositoryFiles, false);
+      packageError ??= findings.filter(f => f.severity === 'error').map(f => `${f.path}: ${f.message}`).join(' ') || null;
+      repositoryPackage = repositoryPackageInspection(repositoryFiles, roots.map(root => root.path),
+        [...new Set(findings.filter(f => f.severity === 'warning' && f.code !== 'broken_internal_link').map(f => f.message))], packageError);
+      const included = indexSkillPackagePaths(repositoryFiles.map(file => file.path));
+      for (const skill of skills) {
+        skill.error = repositoryPackage.error ?? skill.error;
+        if (skill.inspection) skill.inspection.references = skill.inspection.references.filter(ref => !included.has(ref.resolvedPath));
+      }
+    }
+    return { ...(input.packageMode ? { packageMode: input.packageMode } : {}), ...(repositoryPackage ? { repositoryPackage } : {}),
+      ...(repositoryFiles && options.retainFiles !== false ? { repositoryFiles } : {}),
+      connectionId: providerRead.connectionId ?? null, repositoryId: String(repo.id), repositoryUrl: `https://github.com/${repo.full_name.toLowerCase()}`, fullName: repo.full_name, trackingRef, commitSha: commit.sha,
       defaultBranch: repo.default_branch, candidates: skills.map(({ files: _files, ...candidate }) => candidate), warnings, skills };
   } finally { await snapshot.release(); }
 }
@@ -191,8 +228,8 @@ export async function previewGitHubSkillFile(input: SkillSourcePreviewRequest, r
   const skill = scan.skills.find(candidate => candidate.path === input.skillPath);
   if (!skill) throw notFound('Skill package not found at this commit.');
   if (skill.error) throw unprocessable(`Preview unavailable: ${skill.error}`);
-  const file = skill.files.find(file => file.path === input.filePath);
-  const manifest = skill.inspection?.files.find(file => file.path === input.filePath);
+  const file = (input.packageMode === 'repository' ? scan.repositoryFiles : skill.files)?.find(file => file.path === input.filePath);
+  const manifest = (input.packageMode === 'repository' ? scan.repositoryPackage?.files : skill.inspection?.files)?.find(file => file.path === input.filePath);
   if (!file || !manifest) throw notFound('File is not included in this skill package.');
   const bytes = skillFileBytes(file);
   const limit = 64 * 1024;

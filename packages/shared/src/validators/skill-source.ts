@@ -4,6 +4,7 @@ const repositoryUrl = z.string().trim().max(2048).refine(value => parseGitHubSki
 const repoPath = z.string().max(4096).refine(value => !value.startsWith('/') && !value.includes('\\') && !value.includes('\0') && !value.split('/').some(part => part === '..' || part === '.'), 'Invalid repository path');
 export const skillSourceDiscoverySchema = z.object({
   repositoryUrl,
+  packageMode: z.enum(['skills', 'repository']).optional(),
   trackingRef: z.string().trim().min(1).max(255).optional(),
   connectionId: z.string().uuid().nullable().optional(),
 });
@@ -18,6 +19,7 @@ export const skillSourceCreateSchema = skillSourceDiscoverySchema.extend({
   excludedFolders: z.array(repoPath).max(10000).default([]),
 });
 export const skillSourceSelectionSchema = z.object({
+  packageMode: z.enum(['skills', 'repository']).optional(),
   revision: z.number().int().nonnegative(),
   selectedPaths: z.array(repoPath).max(10000),
   excludedFolders: z.array(repoPath).max(10000),

@@ -1,5 +1,5 @@
 import { parseGitHubSkillRepositoryUrl } from "@paperclipai/shared";
-import type { AgentDesiredSkillEntry, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, CompanySkill, SkillSource, SkillPackageInspection, SkillSourceCandidate, SkillSourceEntry, SkillSourceRefreshResult } from "@paperclipai/shared";
+import type { AgentDesiredSkillEntry, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, CompanySkill, SkillSource, SkillPackageInspection, SkillSourceCandidate, SkillSourceEntry, SkillSourceRefreshResult, SkillRepositoryPackage } from "@paperclipai/shared";
 import { companySkillsApi } from "@/api/companySkills";
 import { agentsApi } from "@/api/agents";
 import { foldersApi } from "@/api/folders";
@@ -37,6 +37,26 @@ export const candidates: SkillSourceCandidate[] = [
   { path: "experimental/deploy/SKILL.md", name: "Deploy preview", description: null, error: "Missing required description in SKILL.md frontmatter." },
 ].map(candidate => ({ ...candidate, inspection: inspection(candidate.path), fileCount: Object.keys(packageContents[candidate.path]!).length, warnings: [] }));
 
+export const repositoryContents: Record<string, string | null> = Object.fromEntries(
+  Object.entries(packageContents).filter(([root]) => !root.startsWith('experimental/')).flatMap(([root, files]) =>
+    Object.entries(files).map(([file, content]) => [root.replace(/SKILL.md$/, '') + file, content])),
+);
+Object.assign(repositoryContents, {
+  '.agents/skills/shared/policy.md': '# Shared policy\n\nCheck company boundaries before changing access.',
+  '.agents/skills/review/security/references/threat-model.md': '# Threat model\n\nReview caller authorization.',
+  'NOTICE.md': 'Example upstream credits are preserved with this repository.',
+  'paperclip.skills.json': JSON.stringify({ version: 1, skills: ['.agents/skills/review/SKILL.md', 'skills/research/SKILL.md'], requirements: 'Python 3.11 and Git. Configure GitHub access for agents that review pull requests.' }, null, 2),
+});
+export function repositoryFixture(blocked = false): SkillRepositoryPackage {
+  return { files: Object.entries(repositoryContents).map(([path, content]) => ({ path, kind: path.endsWith('SKILL.md') ? 'skill' : 'reference', encoding: content === null ? 'base64' : 'utf8', sizeBytes: content?.length ?? 2048, executable: path.endsWith('.py') })),
+    skillPaths: ['.agents/skills/review/SKILL.md', 'skills/research/SKILL.md'], requirements: 'Python 3.11 and Git. Configure GitHub access for agents that review pull requests.',
+    error: blocked ? 'Unsupported symlink or submodule: shared/tools' : null, warnings: [] };
+}
+export function repositoryCandidates(blocked = false): SkillSourceCandidate[] {
+  return candidates.filter(candidate => !candidate.error).map(candidate => ({ ...candidate, error: repositoryFixture(blocked).error,
+    inspection: candidate.inspection ? { ...candidate.inspection, references: [] } : undefined }));
+}
+
 export function sourceFixture(): SkillSource {
   return {
     id: SOURCE_ID, companyId: COMPANY_ID, repositoryId: "123456",
@@ -69,7 +89,7 @@ export function importedSkill(source: SkillSource, entry: SkillSourceEntry): Com
 export type RepositoryScenario = 'single' | 'multiple' | 'none' | 'empty' | 'partial-error' | 'error' | 'loading';
 
 /** Scoped API fixtures keep the production page interactive without contacting GitHub. */
-export function installFixtures(empty: boolean, needsConnection: boolean, options: { journey?: boolean; refreshed?: boolean; assigned?: boolean; repositories?: RepositoryScenario; scan?: "live" | "large" | "interrupted"; saving?: boolean } = {}) {
+export function installFixtures(empty: boolean, needsConnection: boolean, options: { packageScenario?: 'ready' | 'blocked'; journey?: boolean; refreshed?: boolean; assigned?: boolean; repositories?: RepositoryScenario; scan?: "live" | "large" | "interrupted"; saving?: boolean } = {}) {
   const fixtureController = new AbortController();
   const wait = (ms: number, signal = fixtureController.signal) => new Promise<void>((resolve, reject) => {
     signal.throwIfAborted();
@@ -82,7 +102,7 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
   const originalSkills = { ...companySkillsApi };
   const originalAgents = { ...agentsApi };
   const originalFolders = { ...foldersApi };
-  const discoveryCandidates = options.journey ? candidates.filter(candidate => !candidate.path.includes('/security/')) : candidates;
+  const discoveryCandidates = options.packageScenario ? repositoryCandidates() : options.journey ? candidates.filter(candidate => !candidate.path.includes('/security/')) : candidates;
   const assigned = new Map<string, AgentDesiredSkillEntry[]>();
   const demoAgents = storybookAgents.slice(0, 3).map(agent => ({ ...agent, adapterType: 'codex_local' }));
   if (options.journey && sources[0]) {
@@ -188,7 +208,8 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
     if (!parsed) throw new Error('Enter an HTTPS GitHub repository or branch URL.');
     return {
       repositoryId: '123456', repositoryUrl: parsed.repositoryUrl, fullName: parsed.fullName,
-      trackingRef: input.trackingRef || parsed.trackingRef || 'main', commitSha: COMMIT, candidates: discoveryCandidates, warnings: [],
+      trackingRef: input.trackingRef || parsed.trackingRef || 'main', commitSha: COMMIT, candidates: input.packageMode === 'repository' && options.packageScenario ? repositoryCandidates(options.packageScenario === 'blocked') : discoveryCandidates, warnings: [],
+      packageMode: input.packageMode, ...(input.packageMode === 'repository' ? { repositoryPackage: repositoryFixture(options.packageScenario === 'blocked') } : {}),
     };
   };
   skillSourcesApi.discoverStream = async (companyId, input, onProgress, signal) => {
@@ -231,14 +252,14 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
     return result;
   };
   skillSourcesApi.preview = async (_companyId, input) => {
-    const file = inspection(input.skillPath).files.find(file => file.path === input.filePath);
+    const file = (input.packageMode === 'repository' ? repositoryFixture().files : inspection(input.skillPath).files).find(file => file.path === input.filePath);
     if (!file) throw new Error('File is not included in this package.');
-    return { file, content: packageContents[input.skillPath]![input.filePath]!, truncated: false, commitSha: input.commitSha };
+    return { file, content: input.packageMode === 'repository' ? repositoryContents[input.filePath]! : packageContents[input.skillPath]![input.filePath]!, truncated: false, commitSha: input.commitSha };
   };
   skillSourcesApi.create = async (_companyId, input) => {
     if (options.saving) await wait(3600000);
     const source = sourceFixture();
-    Object.assign(source, { id: `source-${sources.length + 1}`, repositoryUrl: input.repositoryUrl, fullName: input.repositoryUrl.replace("https://github.com/", ""), trackingRef: input.trackingRef || "main", connectionId: input.connectionId ?? null });
+    Object.assign(source, { id: `source-${sources.length + 1}`, packageMode: input.packageMode, repositoryPackage: input.packageMode === 'repository' ? repositoryFixture() : null, repositoryUrl: input.repositoryUrl, fullName: input.repositoryUrl.replace("https://github.com/", ""), trackingRef: input.trackingRef || "main", connectionId: input.connectionId ?? null });
     source.entries = source.entries.filter(entry => discoveryCandidates.some(candidate => candidate.path === entry.path)).map(entry => ({ ...entry, sourceId: source.id, skillId: null }));
     sources.push(source);
     return save(source, input.selectedPaths, input.excludedFolders ?? []);
@@ -246,6 +267,8 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
   skillSourcesApi.select = async (_companyId, id, input) => {
     const source = sources.find(item => item.id === id)!;
     source.connectionId = input.connectionId ?? null;
+    source.packageMode = input.packageMode ?? source.packageMode;
+    source.repositoryPackage = source.packageMode === 'repository' ? repositoryFixture() : null;
     return save(source, input.selectedPaths, input.excludedFolders);
   };
   skillSourcesApi.refresh = async (_companyId, id) => {
