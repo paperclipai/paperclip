@@ -12418,14 +12418,19 @@ export function issueRoutes(
           deduplicationReason = reason;
         },
       };
-      const createAcceptedIssue = (data: typeof createInput) => db.transaction(async tx => {
+      const createAcceptedIssue = (data: typeof createInput) => {
+        if (actor.actorType !== "user" || isOnboardingFirstTask || !data.assigneeAgentId || ["backlog", "done", "cancelled"].includes(data.status ?? "")) {
+          return svc.create(companyId, data);
+        }
+        return db.transaction(async tx => {
         const created = await svc.create(companyId, data, tx);
         if (!deduplicationReason && !isOnboardingFirstTask && actor.actorType === "user" && created.assigneeAgentId && !["backlog", "done", "cancelled"].includes(created.status)) {
           await enqueueFastResponse(tx as unknown as Db, { companyId, issueId: created.id, agentId: created.assigneeAgentId,
             responsibleUserId: actor.actorId, sourceKey: `issue:${created.id}`, acceptedAt: new Date(created.createdAt) });
         }
         return created;
-      });
+        });
+      };
       let issue: Awaited<ReturnType<typeof svc.create>>;
       try {
         issue = await createAcceptedIssue(createInput);
@@ -15130,7 +15135,7 @@ export function issueRoutes(
         const commentReferenceSummaryBefore =
           updateReferenceSummaryAfter ??
           (await issueReferencesSvc.listIssueReferenceSummary(issue.id));
-        comment ??= await db.transaction(async tx => {
+        const addCommentAndReceipt = async (tx: Db) => {
           const saved = await svc.addComment(
           id,
           commentBody,
@@ -15153,7 +15158,10 @@ export function issueRoutes(
             sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt),
           });
           return saved;
-        });
+        };
+        comment ??= actor.actorType === "user" && issue.assigneeAgentId && !["backlog", "done", "cancelled"].includes(issue.status)
+          ? await db.transaction(tx => addCommentAndReceipt(tx as unknown as Db))
+          : await addCommentAndReceipt(db);
         await issueReferencesSvc.syncComment(comment.id);
         await externalObjectsSvc.syncCommentSafely(comment.id);
         if (
@@ -18475,6 +18483,7 @@ export function issueRoutes(
       // comment is inserted would leave an orphan comment without the corresponding state change.
       let comment: Awaited<ReturnType<typeof svc.addComment>>;
       let goalCommentSteered = false;
+      let fastResponseEnqueued = false;
       if (shouldAutoApproveReviewComment) {
         const transition = applyIssueExecutionPolicyTransition({
           issue: currentIssue,
@@ -18651,17 +18660,19 @@ export function issueRoutes(
             commentOptions,
             dbOrTx,
           );
-        comment = await db.transaction(async tx => {
+        const needsFastResponse = actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status);
+        comment = needsFastResponse ? await db.transaction(async tx => {
           const saved = await add(tx as unknown as Db);
           if (actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
             await enqueueFastResponse(tx as unknown as Db, { companyId: currentIssue.companyId, issueId: currentIssue.id, agentId: currentIssue.assigneeAgentId,
               responsibleUserId: actor.actorId, sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt) });
+            fastResponseEnqueued = true;
           }
           return saved;
-        });
+        }) : await add();
       }
 
-      if (actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
+      if (!fastResponseEnqueued && actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
         await db.transaction(tx => enqueueFastResponse(tx as unknown as Db, { companyId: currentIssue.companyId, issueId: currentIssue.id, agentId: currentIssue.assigneeAgentId,
           responsibleUserId: actor.actorId, sourceCommentId: comment.id, sourceKey: `comment:${comment.id}`, acceptedAt: new Date(comment.createdAt) }))
           .catch(() => logger.warn({ issueId: currentIssue.id }, "fast response admission unavailable"));

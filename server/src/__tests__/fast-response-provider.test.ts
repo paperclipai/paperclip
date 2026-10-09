@@ -85,6 +85,16 @@ const connections: AiConnectionMetadata[] = [
   })),
 ];
 describe("fast response provider", () => {
+  it("rejects copied JSON output while retaining the provider charge", async () => {
+    const body = chatResponse();
+    body.choices[0].message.content = '{"message":"I’ll check the border."}';
+    const result = await runFastResponseProvider(input({ provider: "openrouter", method: "api_key" }), {
+      fetch: vi.fn(async () => response(body)),
+    });
+    expect(result.errorCode).toBe("invalid_output");
+    expect(result.text).toBeUndefined();
+    expect(result.receipt.costStatus).toBe("reported");
+  });
   it("bounds unicode input and drops old context first", () => {
     const prompt = fastResponsePrompt({
       agentName: "Alex",

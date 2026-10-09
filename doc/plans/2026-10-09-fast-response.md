@@ -20,15 +20,17 @@ Isolated checkout `codex/fast-response`, app at `http://127.0.0.1:3109`, cloned 
 - Live task `DOT-302`: initial acknowledgement admitted in 1.013 seconds, 261 input / 38 output tokens, reported cost 0.006195 cents. Subsequent human turns also received receipts.
 - The dedicated OpenCode/OpenRouter agent subsequently produced a substantive recommendation in the same task. Its real run succeeded. The receipt did not complete the task; final task status remained in progress because the agent did not mark it done.
 - Provider and service tests cover duplicate workers, provenance/no fabricated run, unchanged task status, unanswered-turn protection, reply/cancel/delete/reassign/edit/revoke races, expiry, unknown billing and fixed sample isolation.
-- Full build passed after rebasing onto master, including the final UI refinements. Repository typecheck passed before the rebase; a fresh check is running. The full test run was stopped after setup timeouts and failures in workspace-runtime/execution-workspace suites; it is not green evidence.
+- Full build passed after rebasing onto master, including the final UI refinements. Repository typecheck passed after the rebase; server typecheck also passed after review fixes. The full test run was stopped after setup timeouts and failures in workspace-runtime/execution-workspace suites; it is not green evidence.
 - All 40 provider contracts passed. Slack/GitHub shared intake/outbox contracts and the email reply-only outbox contract passed. Token gates passed after rebase. The regenerated migration follows master migration 0322 and passes migration safety checks.
 - Final review corrected accepted/queued wording: a run serving the current turn does not count as older work. Email uses the same state check.
 
+- The post-rebase focused provider/service/UI run passed all 62 tests. Review regressions now cover receipt labeling in native session handoff, model catalogs isolated from host CLI configuration, route transaction boundaries, Costs navigation, and email migration probe rollback.
+- A final OpenRouter sample exposed copied JSON output. The prompt now explicitly requests plain text and structured output is rejected while retaining charges. The corrected live sample returned a contextual acknowledgement in 1.374 seconds, 246 input / 22 output tokens, reported cost 0.0035600 cents.
+
 ## Verification still required
 
-- Final focused regression rerun and post-rebase typecheck. The previous service run had two test timeouts under concurrent build load; these require a clean rerun.
 - Live Slack bot creation and conversation; browser login completed. A narrow callback relay is prepared. Cloudflare tunneling was rejected by automatic approval review; explicit user authorization is pending.
 - Live GitHub test journey in `paperclipai/paperclip-permissions-smoke-20260926-pap57-fee7428e`.
-- Review and remaining repository checks. The isolated app also encountered an unrelated startup recovery error in a copied historical run (`in_progress issues require an assignee`); preserve its live evidence while repairing startup.
+- Latest-head CI and automated review. Copied historical run recovery failed during live testing; execution in the cloned workspace is now disarmed, and the app health endpoint reports startup ready.
 
 No credentials or prompt bodies belong in this record.
