@@ -6449,6 +6449,12 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
 
 it("reopens Pi after a completed turn within its cold admission budget during warm attachment", async () => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-pi-warm-admission-"));
+  const providerNode = process.platform === "linux" ? join(root, "node") : process.execPath;
+  if (process.platform === "linux") {
+    await cp(process.execPath, providerNode, { dereference: true });
+    await chmod(providerNode, 0o500);
+    expect((await stat(providerNode)).mode & 0o777).toBe(0o500);
+  }
   const cliRoot = join(root, "dist/cli");
   await mkdir(cliRoot, { recursive: true });
   const sidecarPath = join(cliRoot, "acpx-runtime-sidecar.cjs");
@@ -6459,7 +6465,7 @@ it("reopens Pi after a completed turn within its cold admission budget during wa
   const bundle = createCapabilityRunnerdCodexTransport({
     provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", acpxPermissionMode: "deny-all",
     runnerBinary: defaultCapabilityRunnerdBinary(), stateDirectory: root, runnerFilesystemRoot: root,
-    providerNodeCommand: process.execPath, providerNodeCommandSha256: digest(process.execPath),
+    providerNodeCommand: providerNode, providerNodeCommandSha256: digest(providerNode),
     acpxSidecarPath: sidecarPath, acpxSidecarSha256: digest(sidecarPath),
     providerPackAuthorityDigest: `sha256:${"d".repeat(64)}`,
     lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
