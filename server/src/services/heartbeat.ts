@@ -413,6 +413,7 @@ import {
   completionContracts,
   heartbeatRunEvents,
   heartbeatRuns,
+  environmentLeases,
   issueComments,
   issues,
   nativeRunFinalizations,
