@@ -1030,7 +1030,7 @@ fn provider_death_expires_input_and_commits_failure_without_querying_the_dead_pr
     let mut config = acpx_config(&directory, mode);
     let mut payload = prepare_payload_with_mode(&directory, "codex", mode);
     let identity: Value = serde_json::from_str(include_str!(
-        "../../../../test/fixtures/copilot-profile-v37-identity.json"
+        "../../../../test/fixtures/copilot-profile-v38-identity.json"
     ))
     .unwrap();
     let digest = identity["commandDigest"].as_str().unwrap();
