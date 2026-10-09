@@ -100,6 +100,44 @@ export type FastResponseExternalAuthorization = (
   request: Request,
 ) => Promise<FastResponsePromptInput>;
 
+/** A run created for this turn is not older work that this turn is waiting on. */
+export async function fastResponseTurnQueued(
+  db: Db,
+  request: Pick<
+    Request,
+    "companyId" | "agentId" | "issueId" | "sourceCommentId" | "acceptedAt"
+  >,
+) {
+  if (!request.agentId) return false;
+  const runs = await db
+    .select({
+      status: heartbeatRuns.status,
+      createdAt: heartbeatRuns.createdAt,
+      context: heartbeatRuns.contextSnapshot,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, request.companyId),
+        eq(heartbeatRuns.agentId, request.agentId),
+        inArray(heartbeatRuns.status, ["queued", "running"]),
+      ),
+    );
+  return runs.some((run) => {
+    const sourceCommentId =
+      run.context?.wakeCommentId ?? run.context?.commentId;
+    const ownsTurn =
+      run.context?.issueId === request.issueId &&
+      (request.sourceCommentId
+        ? sourceCommentId === request.sourceCommentId
+        : run.createdAt >= request.acceptedAt);
+    return (
+      run.status === "queued" ||
+      (!ownsTurn && run.createdAt < request.acceptedAt)
+    );
+  });
+}
+
 /** Board chat streams without a heartbeat run; fence its receipt when real text begins. */
 export async function supersedeFastResponse(
   db: Db,
@@ -708,7 +746,7 @@ export function fastResponseService(
             "",
           title: selected.issue?.title,
           recent: recent.reverse().map((c) => c.body),
-          queued: Boolean(selected.issue?.executionRunId),
+          queued: await fastResponseTurnQueued(db, request),
         });
       } else
         prompt = fastResponsePrompt({
@@ -886,16 +924,14 @@ export function fastResponseService(
             )
             .returning();
           if (!claimed) return null;
-          await tx
-            .insert(budgetReservations)
-            .values({
-              companyId: request.companyId,
-              fastResponseRequestId: request.id,
-              agentId: request.agentId,
-              projectId: current.issue?.projectId,
-              amountCents: unitsToCents(amount),
-              providerStartedAt: claimed.startedAt,
-            });
+          await tx.insert(budgetReservations).values({
+            companyId: request.companyId,
+            fastResponseRequestId: request.id,
+            agentId: request.agentId,
+            projectId: current.issue?.projectId,
+            amountCents: unitsToCents(amount),
+            providerStartedAt: claimed.startedAt,
+          });
           return claimed;
         },
       );
@@ -989,17 +1025,15 @@ export function fastResponseService(
               safe.text,
             ))
           )
-            await tx
-              .insert(chatPublications)
-              .values({
-                companyId: request.companyId,
-                issueId: request.issueId!,
-                endpointId: request.endpointId,
-                conversationId: request.conversationId,
-                commentId: comment.id,
-                idempotencyKey: `fast-response:${request.id}`,
-                payload: safe,
-              });
+            await tx.insert(chatPublications).values({
+              companyId: request.companyId,
+              issueId: request.issueId!,
+              endpointId: request.endpointId,
+              conversationId: request.conversationId,
+              commentId: comment.id,
+              idempotencyKey: `fast-response:${request.id}`,
+              payload: safe,
+            });
           await tx
             .update(fastResponseRequests)
             .set({

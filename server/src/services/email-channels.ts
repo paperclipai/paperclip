@@ -1,6 +1,6 @@
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
-import { fastResponseService, enqueueFastResponse, fastResponseSourceCurrent } from "./fast-responses.js";
+import { fastResponseService, enqueueFastResponse, fastResponseSourceCurrent, fastResponseTurnQueued } from "./fast-responses.js";
 import { fastResponseRequests } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -1468,7 +1468,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     const [message] = await tx.select().from(emailMessages).where(and(eq(emailMessages.companyId, request.companyId), eq(emailMessages.endpointId, request.endpointId!), eq(emailMessages.providerMessageId, link.providerMessageId)));
     if (!message || message.automatic || message.direction !== "inbound") throw forbidden();
     const [agent] = await tx.select({ name: agents.name }).from(agents).where(and(eq(agents.companyId, request.companyId), eq(agents.id, request.agentId!)));
-    return { agentName: agent?.name ?? "Assistant", message: message.text, queued: false };
+    return { agentName: agent?.name ?? "Assistant", message: message.text, queued: await fastResponseTurnQueued(tx, request) };
   }
   async function publishFastResponse(tx: Db, request: typeof fastResponseRequests.$inferSelect, commentId: string, text: string) {
     await authorizeFastResponse(tx, request);

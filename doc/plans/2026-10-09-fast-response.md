@@ -20,13 +20,15 @@ Isolated checkout `codex/fast-response`, app at `http://127.0.0.1:3109`, cloned 
 - Live task `DOT-302`: initial acknowledgement admitted in 1.013 seconds, 261 input / 38 output tokens, reported cost 0.006195 cents. Subsequent human turns also received receipts.
 - The dedicated OpenCode/OpenRouter agent subsequently produced a substantive recommendation in the same task. Its real run succeeded. The receipt did not complete the task; final task status remained in progress because the agent did not mark it done.
 - Provider and service tests cover duplicate workers, provenance/no fabricated run, unchanged task status, unanswered-turn protection, reply/cancel/delete/reassign/edit/revoke races, expiry, unknown billing and fixed sample isolation.
-- Full build passed before final UI refinements. Full typecheck initially found two redundant bot comparisons; they were fixed and the final repository typecheck passed. The full test run was stopped after setup timeouts and failures in workspace-runtime/execution-workspace suites; it is not green evidence.
+- Full build passed after rebasing onto master, including the final UI refinements. Repository typecheck passed before the rebase; a fresh check is running. The full test run was stopped after setup timeouts and failures in workspace-runtime/execution-workspace suites; it is not green evidence.
+- All 40 provider contracts passed. Slack/GitHub shared intake/outbox contracts and the email reply-only outbox contract passed. Token gates passed after rebase. The regenerated migration follows master migration 0322 and passes migration safety checks.
+- Final review corrected accepted/queued wording: a run serving the current turn does not count as older work. Email uses the same state check.
 
 ## Verification still required
 
-- Final email/budget tests and build gate. Stream/reset/sponsorship tests, 40 provider contracts, Slack/GitHub contracts, token gates and repository typecheck passed.
+- Final focused regression rerun and post-rebase typecheck. The previous service run had two test timeouts under concurrent build load; these require a clean rerun.
 - Live Slack bot creation and conversation; browser login completed. A narrow callback relay is prepared. Cloudflare tunneling was rejected by automatic approval review; explicit user authorization is pending.
 - Live GitHub test journey in `paperclipai/paperclip-permissions-smoke-20260926-pap57-fee7428e`.
-- Final migration ordering against master, review and repository checks.
+- Review and remaining repository checks. The isolated app also encountered an unrelated startup recovery error in a copied historical run (`in_progress issues require an assignee`); preserve its live evidence while repairing startup.
 
 No credentials or prompt bodies belong in this record.

@@ -26,6 +26,7 @@ import { aiConnectionService } from "../services/ai-connections.js";
 import {
   enqueueFastResponse,
   supersedeFastResponse,
+  fastResponseTurnQueued,
   fastResponseService,
 } from "../services/fast-responses.js";
 import {
@@ -64,32 +65,26 @@ async function fixture() {
   const companyId = randomUUID(),
     agentId = randomUUID(),
     issueId = randomUUID();
-  await db
-    .insert(companies)
-    .values({
-      id: companyId,
-      name: "Fast response tests",
-      issuePrefix: `FR${++sequence}`,
-    });
-  await db
-    .insert(agents)
-    .values({
-      id: agentId,
+  await db.insert(companies).values({
+    id: companyId,
+    name: "Fast response tests",
+    issuePrefix: `FR${++sequence}`,
+  });
+  await db.insert(agents).values({
+    id: agentId,
+    companyId,
+    name: "Alex",
+    adapterType: "codex_local",
+  });
+  await db.insert(companyMemberships).values(
+    ["alice", "bob"].map((principalId) => ({
       companyId,
-      name: "Alex",
-      adapterType: "codex_local",
-    });
-  await db
-    .insert(companyMemberships)
-    .values(
-      ["alice", "bob"].map((principalId) => ({
-        companyId,
-        principalId,
-        principalType: "user",
-        status: "active",
-        membershipRole: "owner",
-      })),
-    );
+      principalId,
+      principalType: "user",
+      status: "active",
+      membershipRole: "owner",
+    })),
+  );
   const binding = await aiConnectionService(db).save(
     companyId,
     "alice",
@@ -114,15 +109,13 @@ async function fixture() {
     allowSponsored: true,
   };
   await service.configure(companyId, "alice", config);
-  await db
-    .insert(issues)
-    .values({
-      id: issueId,
-      companyId,
-      title: "Settings panel",
-      status: "in_progress",
-      assigneeAgentId: agentId,
-    });
+  await db.insert(issues).values({
+    id: issueId,
+    companyId,
+    title: "Settings panel",
+    status: "in_progress",
+    assigneeAgentId: agentId,
+  });
   const [comment] = await db
     .insert(issueComments)
     .values({
@@ -166,6 +159,36 @@ async function fixture() {
   };
 }
 describe("fast response accepted turns", () => {
+  it("distinguishes the current turn's running agent from older or queued work", async () => {
+    const f = await fixture();
+    expect(await fastResponseTurnQueued(db, f.source)).toBe(false);
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: f.companyId,
+        agentId: f.agentId,
+        status: "running",
+        contextSnapshot: { issueId: f.issueId, wakeCommentId: f.comment.id },
+        createdAt: new Date(f.source.acceptedAt.getTime() - 1),
+      })
+      .returning();
+    expect(await fastResponseTurnQueued(db, f.source)).toBe(false);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: { issueId: f.issueId, wakeCommentId: randomUUID() },
+      })
+      .where(eq(heartbeatRuns.id, run.id));
+    expect(await fastResponseTurnQueued(db, f.source)).toBe(true);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "queued",
+        createdAt: new Date(f.source.acceptedAt.getTime() + 1),
+      })
+      .where(eq(heartbeatRuns.id, run.id));
+    expect(await fastResponseTurnQueued(db, f.source)).toBe(true);
+  });
   it("starts disabled, and disabled turns have no request or cost", async () => {
     const f = await fixture();
     await db
@@ -291,33 +314,29 @@ describe("fast response accepted turns", () => {
               },
             })
             .returning();
-          await db
-            .insert(heartbeatRunEvents)
-            .values({
-              companyId: f.companyId,
-              agentId: f.agentId,
-              runId: run.id,
-              seq: 1,
-              eventType: "item.delta",
-              payload: {
-                prpEvent: {
-                  payload: {
-                    kind: "agentMessage",
-                    text: "Here is the recommendation",
-                  },
+          await db.insert(heartbeatRunEvents).values({
+            companyId: f.companyId,
+            agentId: f.agentId,
+            runId: run.id,
+            seq: 1,
+            eventType: "item.delta",
+            payload: {
+              prpEvent: {
+                payload: {
+                  kind: "agentMessage",
+                  text: "Here is the recommendation",
                 },
               },
-            });
+            },
+          });
         }
         if (change === "reply")
-          await db
-            .insert(issueComments)
-            .values({
-              companyId: f.companyId,
-              issueId: f.issueId,
-              authorAgentId: f.agentId,
-              body: "I fixed the border.",
-            });
+          await db.insert(issueComments).values({
+            companyId: f.companyId,
+            issueId: f.issueId,
+            authorAgentId: f.agentId,
+            body: "I fixed the border.",
+          });
         if (change === "cancel")
           await db
             .update(issues)
@@ -363,14 +382,12 @@ describe("fast response accepted turns", () => {
   it("does not call a provider for expired or denied linked-user turns", async () => {
     const f = await fixture(),
       row = await f.enqueue();
-    await db
-      .insert(connectionGrantMembers)
-      .values({
-        companyId: f.companyId,
-        grantId: f.binding.grantId,
-        subjectType: "user",
-        subjectId: "bob",
-      });
+    await db.insert(connectionGrantMembers).values({
+      companyId: f.companyId,
+      grantId: f.binding.grantId,
+      subjectType: "user",
+      subjectId: "bob",
+    });
     expect(await f.service.process(row)).toMatchObject({
       status: "unavailable",
     });
@@ -426,13 +443,11 @@ describe("fast response accepted turns", () => {
       .select()
       .from(fastResponseRequests)
       .where(eq(fastResponseRequests.companyId, f.companyId));
-    const authorizeExternal = vi
-      .fn()
-      .mockResolvedValue({
-        agentName: "Alex",
-        message: "Review this border",
-        queued: true,
-      });
+    const authorizeExternal = vi.fn().mockResolvedValue({
+      agentName: "Alex",
+      message: "Review this border",
+      queued: true,
+    });
     const service = fastResponseService(db, {
       provider: f.provider,
       authorizeExternal,
@@ -489,18 +504,61 @@ describe("fast response accepted turns", () => {
   });
   it("honors the company reservation budget before dispatch", async () => {
     const f = await fixture();
-    await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId, windowKind: "calendar_month_utc", amount: 1, reservationCents: "2", notifyEnabled: false });
+    await db
+      .insert(budgetPolicies)
+      .values({
+        companyId: f.companyId,
+        scopeType: "company",
+        scopeId: f.companyId,
+        windowKind: "calendar_month_utc",
+        amount: 1,
+        reservationCents: "2",
+        notifyEnabled: false,
+      });
     const row = await f.enqueue();
-    expect(await f.service.process(row)).toMatchObject({ status: "unavailable" });
+    expect(await f.service.process(row)).toMatchObject({
+      status: "unavailable",
+    });
     expect(f.provider).not.toHaveBeenCalled();
-    expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(0);
+    expect(
+      await db
+        .select()
+        .from(costEvents)
+        .where(eq(costEvents.companyId, f.companyId)),
+    ).toHaveLength(0);
   });
   it("releases the reservation after a known provider rejection", async () => {
-    const f = await fixture(), row = await f.enqueue();
-    f.provider.mockResolvedValueOnce({ errorCode: "provider_auth_failed", noProviderWork: true, receipt: { inputTokens: 0, outputTokens: 0, costCents: "0", costStatus: "estimated", providerRequestId: null, pricingProvenance: { source: "unknown" } } });
+    const f = await fixture(),
+      row = await f.enqueue();
+    f.provider.mockResolvedValueOnce({
+      errorCode: "provider_auth_failed",
+      noProviderWork: true,
+      receipt: {
+        inputTokens: 0,
+        outputTokens: 0,
+        costCents: "0",
+        costStatus: "estimated",
+        providerRequestId: null,
+        pricingProvenance: { source: "unknown" },
+      },
+    });
     await f.service.process(row);
-    expect((await db.select().from(budgetReservations).where(eq(budgetReservations.fastResponseRequestId, row.id)))[0].state).toBe("released");
-    expect((await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId)))[0].costCents).toBe(0);
+    expect(
+      (
+        await db
+          .select()
+          .from(budgetReservations)
+          .where(eq(budgetReservations.fastResponseRequestId, row.id))
+      )[0].state,
+    ).toBe("released");
+    expect(
+      (
+        await db
+          .select()
+          .from(costEvents)
+          .where(eq(costEvents.companyId, f.companyId))
+      )[0].costCents,
+    ).toBe(0);
   });
   it("tests the fixed sample without posting a conversation message", async () => {
     const f = await fixture();
