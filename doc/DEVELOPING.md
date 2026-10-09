@@ -557,6 +557,18 @@ or dependency postinstall script is required. This also works when installation
 scripts are disabled. The published server declares the same pinned dependency
 as the source Runner package.
 
+For native OpenCode and Cursor on Daytona, a complete installed Paperclip release
+also selects its packaged Linux daemon and provider-pack identity automatically.
+Use the matching Paperclip Daytona image: the controller verifies the image's
+pack manifest, executable hashes, bridge tree, and pinned versions before launch.
+The controller's operating system does not determine the remote daemon target.
+
+A plain Daytona sandbox image does not contain this provider pack. Custom images
+and source-development launchers must supply a verified Linux provider pack and
+daemon through the existing remote artifact overrides; see
+[the remote E2E setup](../tests/runner-e2e/README.md#match-the-local-controller-package-to-the-daytona-image).
+An explicit override remains authoritative and fails closed if invalid.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:

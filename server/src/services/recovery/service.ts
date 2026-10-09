@@ -3453,6 +3453,7 @@ export function recoveryService(
       // provider already did. Only execution reconciliation can clear this hold.
       if (requiresExecutionReconciliation(action.cause)
         || isNativeWorkspaceExportRepairCause(action.cause)
+        || action.cause === "native_workspace_finalization_owner_unverified"
         || action.cause === "native_workspace_sync_out_unsafe_archive") {
         // A queued wake or healthy child does not export this accepted result.
         // Only its native finalizer or an explicit board disposition can settle it.

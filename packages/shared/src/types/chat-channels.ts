@@ -158,6 +158,7 @@ export interface ChatEndpointBehaviorPolicy {
   /** Defaults to queue and is not exposed in the initial settings UI. */
   concurrency: ChatConcurrencyPolicy;
   allowDirectMessages: boolean;
+  requireAtMention: boolean;
   allowGroupChats: boolean;
   allowUnlinkedPeople: boolean;
 }
@@ -264,6 +265,7 @@ export interface ChatEndpoint {
   botAvatarUrl?: string | null;
   photonAllocation?: "dedicated" | "shared";
   allowDirectMessages: boolean;
+  requireAtMention: boolean;
   allowGroupChats: boolean;
   allowUnlinkedPeople: boolean;
   replyMode: "subscribed";
@@ -512,6 +514,7 @@ export interface UpdateChatEndpointInput {
   slackApp?: SlackAppConfiguration;
   communicationInstructions?: string;
   allowDirectMessages?: boolean;
+  requireAtMention?: boolean;
   allowGroupChats?: boolean;
   allowUnlinkedPeople?: boolean;
 }

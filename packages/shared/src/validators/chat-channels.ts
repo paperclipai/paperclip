@@ -92,6 +92,7 @@ export const updateChatEndpointSchema = z
     slackApp: slackAppConfigurationSchema.optional(),
     slackSetupMethod: z.enum(["automatic", "manual", "existing"]).optional(),
     allowDirectMessages: z.boolean().optional(),
+    requireAtMention: z.boolean().optional(),
     allowGroupChats: z.boolean().optional(),
     allowUnlinkedPeople: z.boolean().optional(),
   })

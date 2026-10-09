@@ -558,6 +558,17 @@ function Settings({
               updateEndpoint.mutate({ allowDirectMessages })
             }
           />
+          {endpoint.provider === "slack" && (
+            <SettingToggle
+              label="Require at-mention"
+              detail="Only respond to messages that @mention this bot, including thread replies and direct messages. Direct messages must also be allowed above."
+              checked={endpoint.requireAtMention ?? false}
+              pending={updateEndpoint.isPending}
+              onChange={(requireAtMention) =>
+                updateEndpoint.mutate({ requireAtMention })
+              }
+            />
+          )}
           {endpoint.provider === "microsoft-teams" && (
             <SettingToggle
               label="Allow group chats"

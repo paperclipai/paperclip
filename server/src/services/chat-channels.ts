@@ -5840,6 +5840,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       communicationInstructions: endpoint.communicationInstructions,
       ...(endpoint.provider === "imessage-photon" && endpoint.botExternalId ? { photonAllocation: endpoint.botExternalId.startsWith("photon-project:") ? "shared" as const : "dedicated" as const } : {}),
       allowDirectMessages: endpoint.allowDirectMessages,
+      requireAtMention: endpoint.requireAtMention,
       allowGroupChats: endpoint.allowGroupChats,
       allowUnlinkedPeople: endpoint.allowUnlinkedPeople,
       replyMode: "subscribed",
@@ -6023,6 +6024,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         // destination toggle. Keep it closed until the operator explicitly
         // enables that surface, even when this process is running against a
         // database created before the column default was hardened.
+        requireAtMention: input.provider === "slack",
         allowGroupChats: input.provider !== "microsoft-teams",
         allowUnlinkedPeople: !["slack", "imessage-photon"].includes(input.provider),
         capabilities: CAPABILITIES[input.provider],
@@ -6105,6 +6107,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         }
         if (input.allowDirectMessages !== undefined)
           values.allowDirectMessages = input.allowDirectMessages;
+        if (input.requireAtMention !== undefined) {
+          if (existing.endpoint.provider !== "slack")
+            throw unprocessable("Require at-mention only applies to Slack connections");
+          values.requireAtMention = input.requireAtMention;
+        }
         if (input.allowGroupChats && existing.endpoint.provider === "imessage-photon" && (!existing.endpoint.botExternalId || existing.endpoint.botExternalId.startsWith("photon-project:")))
           throw unprocessable("Photon shared channels support direct messages only; groups require a dedicated channel");
         if (input.allowGroupChats !== undefined)
@@ -14134,6 +14141,24 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       );
   }
 
+  async function authorizeInboundWorkStart(
+    tx: DbOrTransaction,
+    action: typeof chatActions.$inferSelect,
+  ) {
+    const current = await authorizeInboundWakeup(tx, action);
+    if (
+      current.endpoint.provider === "slack" &&
+      current.endpoint.requireAtMention &&
+      current.delivery.normalizedEvent.trigger !== "mention" &&
+      (current.delivery.normalizedEvent.message as { mentionedBot?: boolean } | undefined)?.mentionedBot !== true
+    ) {
+      throw forbidden("Message did not @mention the bot", {
+        code: "chat_action_authorization_changed",
+      });
+    }
+    return current;
+  }
+
   async function processInboundWakeup(deliveryId: string): Promise<boolean> {
     const now = new Date();
     const candidate = await db
@@ -14248,7 +14273,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         requestedByActorId: String(claimed.payload.requestedByActorId),
         requestedAt: claimed.createdAt,
         authorize: async (tx) => {
-          const current = await authorizeInboundWakeup(tx, claimed);
+          const current = await authorizeInboundWorkStart(tx, claimed);
           if (current.delivery.state !== "processed")
             throw new Error("chat_inbound_wakeup_acceptance_not_committed");
         },
@@ -14267,7 +14292,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         return true;
       }
       const context = await db.transaction((tx) =>
-        authorizeInboundWakeup(tx, claimed),
+        authorizeInboundWorkStart(tx, claimed),
       );
       if (context.delivery.state !== "processed")
         throw new Error("chat_inbound_wakeup_acceptance_not_committed");
@@ -14677,6 +14702,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           status: chatEndpoints.status,
           setup: chatEndpoints.setup,
           allowDirectMessages: chatEndpoints.allowDirectMessages,
+          requireAtMention: chatEndpoints.requireAtMention,
           allowGroupChats: chatEndpoints.allowGroupChats,
           botUsername: chatEndpoints.botUsername,
         })
@@ -14841,6 +14867,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           resource.availability === "available" &&
           currentEndpoint.allowGroupChats;
       }
+      const mentionRequired =
+        endpoint.provider === "slack" &&
+        currentEndpoint.requireAtMention &&
+        trigger !== "mention" &&
+        message.isMention !== true;
       // GitHub sends the same comment to every installed App. Subscribed
       // conversations are a fallback for unaddressed replies, not permission
       // to wake every bot when the person names a different connected App.
@@ -14856,9 +14887,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           companyId: endpoint.companyId,
           botUsername: currentEndpoint.botUsername,
         }, message.text));
-      const accepting = endpointAccepting && destinationAccepting && !githubAddressedElsewhere;
+      const accepting = endpointAccepting && destinationAccepting && !githubAddressedElsewhere && !mentionRequired;
       const redactDestinationDelivery =
-        githubAddressedElsewhere || (!accepting && thread.isDM) ||
+        githubAddressedElsewhere || mentionRequired || (!accepting && thread.isDM) ||
+
         (!thread.isDM &&
           (endpoint.provider === "microsoft-teams" ||
             endpoint.provider === "telegram" ||
@@ -14871,6 +14903,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           : "Connection is not active"
         : githubAddressedElsewhere
           ? "GitHub message explicitly mentions a different connected bot"
+          : mentionRequired
+            ? "Message did not @mention the bot"
           : endpoint.provider === "telegram" && !thread.isDM && !addressed
             ? "Message did not address the agent"
             : "Destination is not enabled in Paperclip";
@@ -16262,8 +16296,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         const destinationStillAllowed = thread.isDM
           ? currentEndpoint.allowDirectMessages
           : nonDirectDestinationAllowed(currentEndpoint, currentResource);
+        const mentionStillAllowed =
+          currentEndpoint.provider !== "slack" ||
+          !currentEndpoint.requireAtMention ||
+          trigger === "mention" ||
+          message.isMention === true;
         if (
           !endpointStillAllowed ||
+          !mentionStillAllowed ||
           !destinationStillAllowed ||
           !currentPrincipalAuthorization.allowed
         ) {
@@ -16276,15 +16316,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               principalId: null,
               nextAttemptAt: null,
               processedAt: filteredAt,
-              redactedError: endpointStillAllowed
-                ? destinationStillAllowed
-                  ? currentPrincipalAuthorization.linkedDenied
-                    ? "Linked Paperclip account is not currently permitted"
-                    : currentEndpoint.allowUnlinkedPeople
-                      ? "Endpoint sponsor can no longer authorize external guests"
-                      : "External identity must be linked to a Paperclip account"
-                  : "Destination is not enabled in Paperclip"
-                : "Connection is not active",
+              redactedError: !mentionStillAllowed
+                ? "Message did not @mention the bot"
+                : endpointStillAllowed
+                  ? destinationStillAllowed
+                    ? currentPrincipalAuthorization.linkedDenied
+                      ? "Linked Paperclip account is not currently permitted"
+                      : currentEndpoint.allowUnlinkedPeople
+                        ? "Endpoint sponsor can no longer authorize external guests"
+                        : "External identity must be linked to a Paperclip account"
+                    : "Destination is not enabled in Paperclip"
+                  : "Connection is not active",
               updatedAt: filteredAt,
             })
             .where(

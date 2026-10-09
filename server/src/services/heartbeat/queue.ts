@@ -41,6 +41,7 @@ import { claimQueuedNativeReviewRun } from "../native-runtime/native-review-disp
 import { adapterExecutionControls } from "../adapter-execution-control.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import {
+  slackMentionAllowsRunStart,
   assertDurableChatWakeupReceipt,
   assertDurableChatWakeupRequest,
   authorizeFailedChatRunRetryWake,
@@ -162,7 +163,7 @@ import type { issueTreeControlService } from "../issue-tree-control.js";
 import type { budgetService } from "../budgets.js";
 import type { instanceSettingsService } from "../instance-settings.js";
 import type { createRunDispatch } from "../../modules/run-dispatch/index.js";
-import type { createWakeQueue } from "../../modules/wake-queue/index.js";
+import type { PostCommitEffect as WakeQueuePostCommitEffect, createWakeQueue } from "../../modules/wake-queue/index.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type HeartbeatRunState = ReturnType<typeof createHeartbeatRunState>;
@@ -196,7 +197,8 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   filterZombieCoalesceTarget: <T extends { id: string; status: string }>(run: T | null, live: { has(id: string): boolean }) => T | null;
   getSchedulingSuppression: () => Promise<{ suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | "task_drain" | null }>;
   executeRun: (runId: string) => Promise<void>;
-  releaseIssueExecutionAndPromote: (run: Pick<HeartbeatRun, "id" | "companyId">, options?: { suppressImmediateRecovery?: boolean }) => Promise<unknown>;
+  releaseIssueExecutionAndPromote: (run: Pick<HeartbeatRun, "id" | "companyId">, options?: { suppressImmediateRecovery?: boolean; deferredPostCommitEffects?: WakeQueuePostCommitEffect[] }) => Promise<unknown>;
+  applyWakeQueuePostCommitEffects: (effects: WakeQueuePostCommitEffect[]) => Promise<void>;
   publishRunLifecyclePluginEvent: (run: HeartbeatRun) => void;
   cancelRunInternal: (runId: string, reason?: string, options?: { errorCode?: string }) => Promise<unknown>;
   cancelActiveForAgentInternal: (agentId: string, reason: string) => Promise<unknown>;
@@ -343,6 +345,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     setWakeupStatus,
     appendRunEvent,
     releaseIssueExecutionAndPromote,
+    applyWakeQueuePostCommitEffects,
     issuesSvc,
     options,
     publishRunLifecyclePluginEvent,
@@ -933,8 +936,34 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
+    deferredPostCommitEffects?: WakeQueuePostCommitEffect[],
   ) {
     if (run.status !== "queued") return run;
+    // Claim is the first execution boundary. startedAt survives same-run
+    // retries; restart recovery may also enter executeRun already running.
+    // Neither may reinterpret an admitted, already-started message as new work.
+    if (!run.startedAt && !(await slackMentionAllowsRunStart(db, run))) {
+      const now = new Date();
+      const reason = "Message did not @mention the bot";
+      // This runs under the agent start lock. Do not use cancelRunInternal,
+      // which recursively starts the next run and reacquires that lock.
+      const cancelled = await setRunStatus(run.id, "cancelled", {
+        finishedAt: now,
+        error: reason,
+        errorCode: "chat_mention_required",
+      });
+      if (cancelled) {
+        await setWakeupStatus(run.wakeupRequestId, "skipped", { finishedAt: now, error: reason });
+        await appendRunEvent(cancelled, {
+          eventType: "lifecycle", stream: "system", level: "warn", message: reason,
+        });
+        await releaseIssueExecutionAndPromote(cancelled, {
+          suppressImmediateRecovery: true, deferredPostCommitEffects,
+        });
+      }
+      return null;
+    }
+
     const agent = await getAgent(run.agentId);
     if (!agent) {
       await cancelRunInternal(
@@ -1873,6 +1902,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // Cancelled after the start lock is released: cancelRunInternal promotes the
     // agent's next queued run, which takes this same lock.
     const rejectedClaims: Array<{ run: typeof heartbeatRuns.$inferSelect; err: HttpError }> = [];
+    const deferredPostCommitEffects: WakeQueuePostCommitEffect[] = [];
     let cancellationReason: string | undefined;
 
     return withAgentStartLock(agentId, async () => {
@@ -1984,7 +2014,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (claimedRuns.length >= availableSlots) break;
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
-          claimed = await claimQueuedRun(queuedRun, companyAgents);
+          claimed = await claimQueuedRun(queuedRun, companyAgents, deferredPostCommitEffects);
         } catch (err) {
           if (isPermanentClaimRejection(err)) {
             rejectedClaims.push({ run: queuedRun, err });
@@ -2021,8 +2051,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }
       return claimedRuns;
     }).finally(async () => {
-      if (cancellationReason) await cancelActiveForAgentInternal(agentId, cancellationReason);
-      await cancelRejectedQueuedRuns(rejectedClaims);
+      // Dispatch promoted inputs after the agent start lock is released.
+      try {
+        await applyWakeQueuePostCommitEffects(deferredPostCommitEffects);
+      } finally {
+        if (cancellationReason) await cancelActiveForAgentInternal(agentId, cancellationReason);
+        await cancelRejectedQueuedRuns(rejectedClaims);
+      }
     });
   }
 

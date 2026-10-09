@@ -684,7 +684,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
 
   async function releaseIssueExecutionAndPromote(
     run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: { suppressImmediateRecovery?: boolean; deferredPostCommitEffects?: WakeQueuePostCommitEffect[] } = {},
   ) {
     try {
       const source = await getRun(run.id);
@@ -696,7 +696,11 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         // while continuation classification blocks periodic generic retries.
         suppressImmediateRecovery: options.suppressImmediateRecovery || isAiAuthenticationBlocked(source),
       });
-      await applyWakeQueuePostCommitEffects(postCommitEffects);
+      if (options.deferredPostCommitEffects) {
+        options.deferredPostCommitEffects.push(...postCommitEffects);
+      } else {
+        await applyWakeQueuePostCommitEffects(postCommitEffects);
+      }
       const completed = await getRun(run.id);
       const issueId = readNonEmptyString(completed?.contextSnapshot?.issueId)
         ?? readNonEmptyString(completed?.contextSnapshot?.taskId) ?? completed?.nativeIssueId;

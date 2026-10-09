@@ -17,6 +17,7 @@ import { CONFIGURATION_INCOMPLETE_FAILURE_CODE } from "./run-preparation.js";
 import { WORKSPACE_VALIDATION_FAILURE_CODE } from "./workspaces.js";
 import { boundHeartbeatRunEventPayloadForStorage } from "./run-log.js";
 import { preserveWorkspaceRestoreRecoveryMetadata } from "../workspace-restore-recovery-state.js";
+import { pendingNativeWorkspaceFinalizationCondition } from "../native-runtime/native-workspace-finalization-state.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import {
   nativeRetryCancellationCommitCondition,
@@ -45,6 +46,7 @@ import {
   inArray,
   isNull,
   ne,
+  not,
   notInArray,
   or,
   sql,
@@ -1092,11 +1094,12 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     // fromStatuses can name a terminal status as its own source (for example,
     // an idempotent "still failed" patch), so the write below is not always a
     // genuine transition. Read the pre-write status to tell the two apart.
-    const previousStatus = await db
-      .select()
+    const previous = await db
+      .select({ run: heartbeatRuns, rowVersion: sql<string>`${heartbeatRuns}.xmin::text` })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
+    const previousStatus = previous?.run ?? null;
 
     if (previousStatus && (status === "cancelled" || status === "interrupted")) {
       patch = { ...patch, resultJson: cancellationResultJson(previousStatus, status, patch?.resultJson, patch?.errorCode, patch?.error) };
@@ -1151,6 +1154,19 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
               and(
                 eq(heartbeatRuns.id, runId),
                 inArray(heartbeatRuns.status, fromStatuses),
+                // A result can commit after the orphan candidate was read.
+                // Reject that stale process-loss transition before reporting,
+                // issue promotion, or release of the unfinished source lease.
+                ...(status === "failed" && patch?.errorCode === "process_lost"
+                  ? [
+                    not(pendingNativeWorkspaceFinalizationCondition(db)),
+                    // Result publication locks and updates this heartbeat in
+                    // its transaction. If this UPDATE waited behind it, the
+                    // joined tables can still use the older statement snapshot;
+                    // the exact tuple fence also rejects that blocked writer.
+                    sql`${heartbeatRuns}.xmin::text = ${previous?.rowVersion ?? null}`,
+                  ]
+                  : []),
                 ...(cancellationCondition ? [cancellationCondition] : []),
                 ...(isHeartbeatRunTerminalStatus(status)
                   ? [nativeRunnerOwnershipNotHeldCondition()]

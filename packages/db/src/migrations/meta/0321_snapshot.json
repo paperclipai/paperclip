@@ -1,5 +1,5 @@
 {
-  "id": "b981ec48-e5ea-4c48-a1df-944f95a844af",
+  "id": "3a76c99a-51c4-41d7-b7e2-12b55d8c7d08",
   "prevId": "d6277736-9c05-4304-8d16-52dc0d2fbaef",
   "version": "7",
   "dialect": "postgresql",
@@ -9546,6 +9546,13 @@
           "notNull": true,
           "default": true
         },
+        "require_at_mention": {
+          "name": "require_at_mention",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "allow_group_chats": {
           "name": "allow_group_chats",
           "type": "boolean",
@@ -11448,31 +11455,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
-        },
-        "owner_type": {
-          "name": "owner_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'personal'"
-        },
-        "owner_login": {
-          "name": "owner_login",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "app_name": {
-          "name": "app_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "handoff": {
-          "name": "handoff",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "status": {
           "name": "status",

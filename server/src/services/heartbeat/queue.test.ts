@@ -48,6 +48,7 @@ function callbacks(db: Db) {
     filterZombieCoalesceTarget: <T extends { id: string; status: string }>(run: T | null) => run,
     getSchedulingSuppression: vi.fn(async () => ({ suppressed: false, reason: null } as Awaited<ReturnType<HeartbeatQueueDependencies["getSchedulingSuppression"]>>)),
     executeRun: vi.fn(async () => undefined),
+    applyWakeQueuePostCommitEffects: vi.fn(async () => undefined),
     releaseIssueExecutionAndPromote: vi.fn(async () => undefined),
     publishRunLifecyclePluginEvent: vi.fn(),
     cancelRunInternal: vi.fn(async () => undefined),
