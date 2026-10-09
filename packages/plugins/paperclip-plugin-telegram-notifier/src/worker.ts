@@ -1605,7 +1605,7 @@ async function handleCallbackQuery(
  * first one and is used only for replies to chats that are not tied to a
  * company yet.
  */
-interface BotGroup {
+export interface BotGroup {
   botId: string;
   config: PluginConfig;
   configs: Map<string, PluginConfig>;
@@ -1649,23 +1649,55 @@ export async function collectBotGroups(ctx: PluginContext): Promise<BotGroup[]> 
 }
 
 /**
- * Pick the config an update is handled with. A chat paired to a company
- * that uses a different bot is ignored, so one company's bot never reads or
- * acts on another company's data.
+ * The company an update belongs to: the company its chat is paired to, else
+ * the target of a live handshake. `null` means no company yet (an unpaired
+ * chat with no handshake); `undefined` means the update has no chat.
  */
-export function configForUpdate(
+function companyForUpdate(
   state: PairingState,
   update: TelegramUpdate,
-  group: BotGroup,
-): PluginConfig | undefined {
+): string | null | undefined {
   const chat = update.message?.chat ?? update.callback_query?.message?.chat;
   if (!chat) return undefined;
   const paired = findCompanyForChat(state, String(chat.id));
-  if (paired) return group.configs.get(paired.companyId);
+  if (paired) return paired.companyId;
   if (state.pairing && !isHandshakeExpired(state.pairing)) {
-    return group.configs.get(state.pairing.targetCompanyId);
+    return state.pairing.targetCompanyId;
   }
-  return group.config;
+  return null;
+}
+
+/**
+ * Pick the config an update is handled with. A chat paired to a company
+ * that uses a different bot is ignored, so one company's bot never reads or
+ * acts on another company's data. A company that joined this bot after the
+ * poll started (for example, it started pairing during the long-poll loop)
+ * is loaded on demand, so its first message is not dropped.
+ */
+export async function resolveUpdateConfig(
+  ctx: PluginContext,
+  state: PairingState,
+  update: TelegramUpdate,
+  group: BotGroup,
+): Promise<PluginConfig | undefined> {
+  const companyId = companyForUpdate(state, update);
+  if (companyId === undefined) return undefined;
+  if (companyId === null) return group.config;
+  const known = group.configs.get(companyId);
+  if (known) return known;
+  try {
+    const config = await loadConfig(ctx, companyId);
+    if (config.botToken && botIdFromToken(config.botToken) === group.botId) {
+      group.configs.set(companyId, config);
+      return config;
+    }
+  } catch (err) {
+    ctx.logger.debug("telegram-notifier: no readable config for company", {
+      companyId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return undefined;
 }
 
 async function runPollUpdates(
@@ -1721,7 +1753,12 @@ async function pollBot(ctx: PluginContext, group: BotGroup): Promise<void> {
     for (const update of updates) {
       if (update.update_id > newest) newest = update.update_id;
       try {
-        const config = configForUpdate(await readPairing(ctx), update, group);
+        const config = await resolveUpdateConfig(
+          ctx,
+          await readPairing(ctx),
+          update,
+          group,
+        );
         if (!config) continue;
         if (update.message) {
           await handleMessage(ctx, config, update.message);

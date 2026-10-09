@@ -12,7 +12,7 @@ import manifest from "./manifest.js";
 import { readPairing, setApprovalConfig, setPairedChat } from "./pairing.js";
 import type { PairingState, TelegramUpdate } from "./types.js";
 import { applyConfigPatch } from "./ui/config-patch.js";
-import plugin, { configForUpdate, postTelegramReplyComment } from "./worker.js";
+import plugin, { postTelegramReplyComment, resolveUpdateConfig } from "./worker.js";
 
 const TOKEN_A = "111111:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const TOKEN_B = "222222:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
@@ -139,15 +139,15 @@ describe("poll job with company-scoped config", () => {
   });
 });
 
-describe("configForUpdate", () => {
-  const group = {
-    botId: "111111",
-    config: { botToken: TOKEN_A },
-    configs: new Map([["company-a", { botToken: TOKEN_A, silent: true }]]),
-  };
+describe("resolveUpdateConfig", () => {
   const update = (chatId: number): TelegramUpdate => ({
     update_id: 1,
     message: { message_id: 1, chat: { id: chatId, type: "private" }, date: 0, text: "/inbox" },
+  });
+  const groupA = () => ({
+    botId: "111111",
+    config: { botToken: TOKEN_A },
+    configs: new Map([["company-a", { botToken: TOKEN_A, silent: true }]]),
   });
   const pairedState: PairingState = {
     pairedByCompany: {
@@ -156,15 +156,37 @@ describe("configForUpdate", () => {
     },
   };
 
-  it("uses the config of the company the chat is paired to", () => {
-    expect(configForUpdate(pairedState, update(100), group)).toEqual({
+  it("uses the config of the company the chat is paired to", async () => {
+    const { harness } = await setup({ "company-b": { botToken: TOKEN_B } });
+    expect(await resolveUpdateConfig(harness.ctx, pairedState, update(100), groupA())).toEqual({
       botToken: TOKEN_A,
       silent: true,
     });
   });
 
-  it("ignores a chat paired to a company that uses another bot", () => {
-    expect(configForUpdate(pairedState, update(200), group)).toBeUndefined();
+  it("ignores a chat paired to a company that uses another bot", async () => {
+    const { harness } = await setup({ "company-b": { botToken: TOKEN_B } });
+    expect(
+      await resolveUpdateConfig(harness.ctx, pairedState, update(200), groupA()),
+    ).toBeUndefined();
+  });
+
+  it("loads a company that started pairing on this bot after the poll began", async () => {
+    const { harness } = await setup({ "company-c": { botToken: TOKEN_A } });
+    const group = groupA();
+    const handshakeState: PairingState = {
+      ...pairedState,
+      pairing: {
+        stage: "awaiting_chat",
+        targetCompanyId: "company-c",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    };
+
+    const config = await resolveUpdateConfig(harness.ctx, handshakeState, update(300), group);
+
+    expect(config?.botToken).toBe(TOKEN_A);
+    expect(group.configs.has("company-c")).toBe(true);
   });
 });
 
