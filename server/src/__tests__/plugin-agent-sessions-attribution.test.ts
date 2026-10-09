@@ -12,6 +12,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  projectAccessMembers,
   projects,
 } from "@paperclipai/db";
 import type { PluginCapability } from "@paperclipai/shared";
@@ -90,6 +91,7 @@ describeEmbeddedPostgres("plugin agent session sends: user and project attributi
     await deleteHeartbeatRunsWithDependents();
     await db.delete(agentWakeupRequests);
     await db.delete(agentTaskSessions);
+    await db.delete(projectAccessMembers);
     await db.delete(projects);
     await db.delete(companyMemberships);
     await db.delete(agents);
@@ -168,6 +170,15 @@ describeEmbeddedPostgres("plugin agent session sends: user and project attributi
       ...overrides,
     });
     return projectId;
+  }
+
+  async function grantProjectAccess(
+    companyId: string,
+    projectId: string,
+    subjectType: "agent" | "user",
+    subjectId: string,
+  ) {
+    await db.insert(projectAccessMembers).values({ companyId, projectId, subjectType, subjectId });
   }
 
   function pluginHost(
@@ -401,6 +412,91 @@ describeEmbeddedPostgres("plugin agent session sends: user and project attributi
 
     await expect(host.send({ sessionId: session.sessionId, companyId, projectId })).rejects.toThrow("Project not found");
     await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
+  });
+
+  // A private project admits only its access members. A project-scoped send
+  // binds the project's workspace to the run and streams the run's output
+  // back to the plugin, so the session agent must be an access member and,
+  // when the send is attributed, so must the user — the same intersection the
+  // host applies to an agent acting on behalf of a user.
+  describe("private projects", () => {
+    const attributedCapabilities: PluginCapability[] = [
+      "agent.sessions.create",
+      "agent.sessions.send",
+      "agent.sessions.send_human_attributed",
+    ];
+
+    it("allows a send when the session agent is an access member", async () => {
+      const { companyId, agentId } = await seedCompany();
+      const projectId = await addProject(companyId, { visibility: "private" });
+      await grantProjectAccess(companyId, projectId, "agent", agentId);
+      const host = pluginHost();
+      const session = await host.createSession(companyId, agentId);
+
+      const { runId } = await host.send({ sessionId: session.sessionId, companyId, projectId });
+
+      const { run } = await runAndWakeup(runId);
+      expect(run.contextSnapshot).toMatchObject({ projectId });
+    });
+
+    it("allows an attributed send when both the agent and the user are access members", async () => {
+      const { companyId, agentId } = await seedCompany();
+      const actorUserId = await addMember(companyId);
+      const projectId = await addProject(companyId, { visibility: "private" });
+      await grantProjectAccess(companyId, projectId, "agent", agentId);
+      await grantProjectAccess(companyId, projectId, "user", actorUserId);
+      const host = pluginHost(attributedCapabilities);
+      const session = await host.createSession(companyId, agentId);
+
+      const { runId } = await host.send({ sessionId: session.sessionId, companyId, actorUserId, projectId });
+
+      const { run } = await runAndWakeup(runId);
+      expect(run).toMatchObject({ responsibleUserId: actorUserId, contextSnapshot: expect.objectContaining({ projectId }) });
+    });
+
+    it("refuses a send when the session agent is not an access member", async () => {
+      const { companyId, agentId } = await seedCompany();
+      const actorUserId = await addMember(companyId);
+      const projectId = await addProject(companyId, { visibility: "private" });
+      // The user's access does not stand in for the agent's.
+      await grantProjectAccess(companyId, projectId, "user", actorUserId);
+      const host = pluginHost(attributedCapabilities);
+      const session = await host.createSession(companyId, agentId);
+
+      await expect(host.send({ sessionId: session.sessionId, companyId, projectId }))
+        .rejects.toThrow("Project not found");
+      await expect(host.send({ sessionId: session.sessionId, companyId, actorUserId, projectId }))
+        .rejects.toThrow("Project not found");
+      await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
+      await expect(sessionWakeActivity()).resolves.toHaveLength(0);
+    });
+
+    it("refuses an attributed send when the user is not an access member", async () => {
+      const { companyId, agentId } = await seedCompany();
+      const actorUserId = await addMember(companyId);
+      const projectId = await addProject(companyId, { visibility: "private" });
+      await grantProjectAccess(companyId, projectId, "agent", agentId);
+      const host = pluginHost(attributedCapabilities);
+      const session = await host.createSession(companyId, agentId);
+
+      await expect(host.send({ sessionId: session.sessionId, companyId, actorUserId, projectId }))
+        .rejects.toThrow("Project not found");
+      await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
+      await expect(sessionWakeActivity()).resolves.toHaveLength(0);
+    });
+
+    it("leaves an open project without access members unaffected", async () => {
+      const { companyId, agentId } = await seedCompany();
+      const actorUserId = await addMember(companyId);
+      const projectId = await addProject(companyId, { visibility: "open" });
+      const host = pluginHost(attributedCapabilities);
+      const session = await host.createSession(companyId, agentId);
+
+      const { runId } = await host.send({ sessionId: session.sessionId, companyId, actorUserId, projectId });
+
+      const { run } = await runAndWakeup(runId);
+      expect(run.contextSnapshot).toMatchObject({ projectId });
+    });
   });
 
   it("still refuses another plugin's session when attribution fields are passed", async () => {

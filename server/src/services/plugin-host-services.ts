@@ -81,6 +81,7 @@ import { accessService } from "./access.js";
 import {
   authorizationService,
   canActorReadIssuePrivacy,
+  canActorReadProjectPrivacy,
   issuePrivacyMode,
   issueReadSqlCondition,
   type AuthorizationActor,
@@ -3522,7 +3523,20 @@ export function buildHostServices(
         }
         const projectId = params.projectId ?? null;
         if (projectId) {
-          requireInCompany("Project", await projects.getById(projectId), companyId);
+          const project = requireInCompany("Project", await projects.getById(projectId), companyId);
+          // A project-scoped run binds the project's workspace and streams its
+          // output back to the plugin, so a private project must admit the
+          // session agent and, for an attributed send, the user too. This is
+          // the host's agent-on-behalf-of-user intersection. A refusal reads
+          // as "not found" so it does not reveal the private project.
+          if (issuePrivacyMode() === "enforce") {
+            const allowed = await canActorReadProjectPrivacy(
+              db,
+              { type: "agent", agentId: session.agentId, companyId, onBehalfOfUserId: actorUserId },
+              { id: project.id, companyId: project.companyId, visibility: project.visibility },
+            );
+            if (!allowed) throw new Error("Project not found");
+          }
         }
 
         const run = await heartbeat.wakeup(session.agentId, {
