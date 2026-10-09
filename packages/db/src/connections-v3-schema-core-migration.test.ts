@@ -55,6 +55,9 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     // Managed-account observations are later consumers of the same connection key.
     await sql`DROP TABLE IF EXISTS "tool_connection_app_syncs"`;
     await sql`DROP TABLE IF EXISTS "tool_connection_app_snapshots"`;
+    // Subscription reporting adds a later grant binding; rewind the empty
+    // fixture table before recreating grants, preserving production FK checks.
+    await sql`DROP TABLE IF EXISTS "ai_subscription_connections"`;
     await sql`DROP TABLE IF EXISTS "connection_grants"`;
     await sql`DROP INDEX IF EXISTS "tool_connections_company_uid_uq"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_company_id_uq"`;

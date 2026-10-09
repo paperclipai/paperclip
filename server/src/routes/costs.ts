@@ -1,4 +1,9 @@
 import { importProviderDailyCosts } from "../services/provider-billing-import.js";
+import { subscriptionPriceSchema, mergeSubscriptionsSchema } from "@paperclipai/shared";
+import { subscriptionService } from "../services/subscriptions.js";
+import { subscriptionCostReport } from "../services/subscription-report.js";
+import { refreshCompanySubscriptions } from "../services/subscription-refresh.js";
+import { canManageAiConnections } from "./ai-connections.js";
 import { importProviderCostsSchema } from "@paperclipai/shared";
 import { accountingIntegrityService } from "../services/accounting-integrity.js";
 import { billingReconciliationService } from "../services/billing-reconciliation.js";
@@ -78,6 +83,44 @@ export function costRoutes(
   const agents = agentService(db);
   const issues = issueService(db);
   const access = accessService(db);
+
+  async function subscriptionActor(req: Parameters<typeof assertCompanyAccess>[0], companyId: string) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    return { userId: getActorInfo(req).actorId, canManage: await canManageAiConnections(db, req, companyId),
+      readOnly: req.actor.memberships?.some(member => member.companyId === companyId && member.membershipRole === "viewer") ?? false };
+  }
+
+  router.get("/companies/:companyId/costs/subscriptions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const actor = await subscriptionActor(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    res.json(await subscriptionCostReport(db, companyId, actor, parseCostDateRange(req.query)));
+  });
+  router.post("/companies/:companyId/costs/subscriptions/refresh", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const actor = await subscriptionActor(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    if (actor.readOnly) throw forbidden("Viewers cannot refresh subscription accounts");
+    void refreshCompanySubscriptions(db, companyId, actor.userId);
+    res.status(202).json({ status: "accepted" });
+  });
+  router.patch("/companies/:companyId/costs/subscriptions/:subscriptionId", validate(subscriptionPriceSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const actor = await subscriptionActor(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const id = z.string().uuid().safeParse(req.params.subscriptionId);
+    if (!id.success) throw badRequest("Invalid subscription ID");
+    res.json(await subscriptionService(db).updatePrice(companyId, id.data, req.body, actor));
+  });
+  router.post("/companies/:companyId/costs/subscriptions/:subscriptionId/link", validate(mergeSubscriptionsSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const actor = await subscriptionActor(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const id = z.string().uuid().safeParse(req.params.subscriptionId);
+    if (!id.success) throw badRequest("Invalid subscription ID");
+    res.json(await subscriptionService(db).merge(companyId, id.data, req.body.targetId, req.body.expectedRevision, req.body.targetRevision, actor));
+  });
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);

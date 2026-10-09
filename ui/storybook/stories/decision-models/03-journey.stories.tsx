@@ -40,6 +40,13 @@ function Journey({ alreadyConfigured = false }: { alreadyConfigured?: boolean })
       const costBase = `/api/companies/${companyId}/costs/`;
       if (url.pathname.startsWith(costBase)) {
         const report = url.pathname.slice(costBase.length);
+        if (report === "subscriptions") {
+          const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costCents: "0", eventCount: 0, estimatedEventCount: 0, unpricedEventCount: 0 };
+          return Response.json({ canRefresh: false, asOf: new Date().toISOString(), accounts: [], monthlyTotals: [],
+            activeCount: 0, unknownPriceCount: 0, unidentifiedAccountCount: 0,
+            api: { ...usage, costCents: String(history.length * Number(entry.costCents)), eventCount: history.length, estimatedEventCount: history.length },
+            subscription: usage, unknown: usage, unattributedSubscription: usage });
+        }
         if (report === "summary") return Response.json({ companyId, eventCount: history.length, pendingRunCount: 0,
           unpricedEventCount: 0, estimatedEventCount: history.length, pricingComplete: true,
           spendCents: history.length * Number(entry.costCents), budgetCents: 0, utilizationPercent: 0 });

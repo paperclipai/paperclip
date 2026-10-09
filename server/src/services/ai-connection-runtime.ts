@@ -12,6 +12,8 @@ import {
 } from "@paperclipai/shared";
 import { managedProviderRouting } from "./ai-provider-routing.js";
 import { aiConnectionService } from "./ai-connections.js";
+import { subscriptionService } from "./subscriptions.js";
+import { refreshSubscriptionConnection } from "./subscription-refresh.js";
 import { secretService } from "./secrets.js";
 import { decideCodexAuthMerge, withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -354,6 +356,16 @@ export async function prepareManagedAiRuntime(
       if (projected.hermesConfig) await writeFile(path.join(providerHome, "config.yaml"), projected.hermesConfig, { mode: 0o600 });
       if (projected.codexConfig) await writeFile(path.join(providerHome, "config.toml"), 'cli_auth_credentials_store = "file"\n' + projected.codexConfig, { mode: 0o600 });
     }
+    const attribution = { ...selection.attribution } as typeof selection.attribution & { subscriptionId?: string };
+    if (attribution.method === "subscription") {
+      const subscription = {
+        companyId: input.companyId, connectionId: selection.connection.id, grantId: selection.grant.id,
+        provider: selection.attribution.provider, name: selection.connection.name,
+        ownerUserId: selection.grant.subjectUserId, credential: value,
+      };
+      attribution.subscriptionId = await subscriptionService(db).register(subscription);
+      void refreshSubscriptionConnection(db, subscription, attribution.subscriptionId);
+    }
     const generation = createHash("sha256")
       .update(value)
       .digest("hex")
@@ -367,9 +379,9 @@ export async function prepareManagedAiRuntime(
         ...projected?.config,
         ...(routing ? { managedAiRouting: routing } : {}),
         env,
-        managedAiConnection: { ...selection.attribution, identity, sessionIdentity },
+        managedAiConnection: { ...attribution, identity, sessionIdentity },
       },
-      attribution: selection.attribution,
+      attribution,
       accountName: selection.connection.name,
       accountOwnerUserId: selection.grant.subjectUserId,
       identity,

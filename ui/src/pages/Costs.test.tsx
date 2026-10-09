@@ -28,6 +28,8 @@ const costsApiMocks = vi.hoisted(() => ({
   windowSpend: vi.fn(),
   quotaWindows: vi.fn(),
 }));
+const subscriptionsMocks = vi.hoisted(() => ({ report: vi.fn(), refresh: vi.fn(), update: vi.fn(), link: vi.fn() }));
+vi.mock("../api/subscriptions", () => ({ subscriptionsApi: subscriptionsMocks }));
 
 vi.mock("../api/budgets", () => ({
   budgetsApi: {
@@ -63,6 +65,8 @@ describe("Shared Costs surfaces", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costCents: "0", eventCount: 0, estimatedEventCount: 0, unpricedEventCount: 0 };
+    subscriptionsMocks.report.mockResolvedValue({ canRefresh: false, asOf: "2026-10-08T00:00:00Z", accounts: [], monthlyTotals: [], activeCount: 0, unknownPriceCount: 0, unidentifiedAccountCount: 0, api: usage, subscription: usage, unknown: usage, unattributedSubscription: usage });
     decisionHistoryMock.mockResolvedValue([]);
     costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
     container = document.createElement("div");
@@ -90,6 +94,24 @@ describe("Shared Costs surfaces", () => {
     }] }} />));
     expect(container.querySelector("tbody tr td:last-child")?.textContent).toContain(costCents > 0 ? "$1.25" : "—");
     expect(container.textContent).toContain("1 unpriced charge");
+  });
+
+  it.each(surfaces)("labels other and unknown billing accurately on the %s surface", async (_name, props) => {
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 600, budgetCents: 0, pricingComplete: true });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    const report = await subscriptionsMocks.report();
+    subscriptionsMocks.report.mockResolvedValue({ ...report, unknown: { ...report.unknown,
+      inputTokens: 100, cachedInputTokens: 40, outputTokens: 10, costCents: "600", eventCount: 3,
+    } });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs {...props} /></QueryClientProvider></MemoryRouter>));
+    await act(async () => vi.waitFor(() => expect(container.textContent).toContain(
+      "150 tokens have other or unknown billing types, with $6.00 in recorded charges. They remain in the inference ledger.",
+    )));
+    expect(container.textContent).not.toContain("tokens have an unknown billing type");
   });
 
   it("renders a focused Budgets section without duplicate Costs chrome or spend queries", async () => {
@@ -212,6 +234,56 @@ describe("Shared Costs surfaces", () => {
     queryClient.clear();
   });
 
+  it("retries failed account discovery without discarding the last subscription report", async () => {
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 0, budgetCents: 0, pricingComplete: true });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    const report = await subscriptionsMocks.report();
+    subscriptionsMocks.report.mockResolvedValue({ ...report, canRefresh: true, activeCount: 1, monthlyTotals: [{ currency: "USD", amountCents: "2000", estimatedCount: 1 }] });
+    subscriptionsMocks.refresh.mockRejectedValueOnce(new Error("private connection error")).mockResolvedValue({});
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs /></QueryClientProvider></MemoryRouter>));
+    const retry = () => [...container.querySelectorAll("button")].find(button => button.textContent === "Retry account check");
+    await act(async () => { await vi.waitFor(() => expect(retry()).toBeDefined()); });
+    expect(container.textContent).toContain("$20.00/month");
+    expect(container.textContent).not.toContain("private connection error");
+    await act(async () => retry()!.click());
+    await act(async () => { await vi.waitFor(() => expect(retry()).toBeUndefined()); });
+    expect(subscriptionsMocks.refresh).toHaveBeenCalledTimes(2);
+    expect(subscriptionsMocks.refresh).toHaveBeenLastCalledWith("company-1");
+    expect(container.textContent).toContain("$20.00/month");
+    queryClient.clear();
+  });
+
+  it("keeps monthly subscription fees through date changes and failed background reloads", async () => {
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 200, budgetCents: 0, pricingComplete: true });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    const report = await subscriptionsMocks.report();
+    subscriptionsMocks.report.mockResolvedValue({ ...report, activeCount: 1, monthlyTotals: [{ currency: "USD", amountCents: "2000", estimatedCount: 1 }], api: { ...report.api, costCents: "200" } });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs /></QueryClientProvider></MemoryRouter>));
+    const card = (label: string) => [...container.querySelectorAll("div")].find(node => node.textContent === label)?.closest('[data-slot="card"]');
+    await act(async () => { await vi.waitFor(() => expect(card("Subscriptions")?.textContent).toContain("$20.00/month")); });
+    expect(card("API spend")?.textContent).toContain("$2.00");
+    subscriptionsMocks.report.mockResolvedValue({ ...report, activeCount: 1, monthlyTotals: [{ currency: "USD", amountCents: "2000", estimatedCount: 1 }], api: { ...report.api, costCents: "300" } });
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "All Time")!.click());
+    await act(async () => { await vi.waitFor(() => expect(card("API spend")?.textContent).toContain("$3.00")); });
+    expect(card("Subscriptions")?.textContent).toContain("$20.00/month");
+    expect(subscriptionsMocks.report).toHaveBeenLastCalledWith("company-1", undefined, undefined);
+    subscriptionsMocks.report.mockRejectedValue(new Error("private provider failure"));
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["cost-subscriptions"] }); });
+    await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Showing the last loaded API and subscription usage")); });
+    expect(card("API spend")?.textContent).toContain("$3.00");
+    expect(card("Subscriptions")?.textContent).toContain("$20.00/month");
+    expect(container.textContent).not.toContain("private provider failure");
+    queryClient.clear();
+  });
+
   it("compares monthly budgets only with month-to-date spend", async () => {
     for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
     costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
@@ -224,6 +296,8 @@ describe("Shared Costs surfaces", () => {
     await act(async () => { await vi.waitFor(() => expect(budgetCard()?.textContent).toContain("20%")); });
     expect(budgetCard()?.textContent).toContain("$2.00 of $10.00 this month");
     costsApiMocks.summary.mockResolvedValue({ spendCents: 12000, budgetCents: 1000, utilizationPercent: 1200, pricingComplete: true });
+    const subscriptionReport = await subscriptionsMocks.report();
+    subscriptionsMocks.report.mockResolvedValue({ ...subscriptionReport, api: { ...subscriptionReport.api, costCents: "12000" } });
     await act(async () => [...container.querySelectorAll("button")].find(b => b.textContent === "All Time")!.click());
     await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("$120.00")); });
     expect(budgetCard()?.textContent).toContain("$10.00");
@@ -281,7 +355,7 @@ describe("Shared Costs surfaces", () => {
     expect(notice.querySelector(".text-destructive")).toBeNull();
     expect(notice.classList.contains("text-destructive")).toBe(false);
     expect(notice.textContent).toContain("1 run is awaiting cost data.");
-    expect(notice.previousElementSibling?.textContent).toContain("Inference spend");
+    expect(notice.previousElementSibling?.textContent).toContain("API spend");
     expect(container.textContent).toContain("Finance headline totals are USD only");
     costsApiMocks.summary.mockResolvedValue({ spendCents: 12.4, budgetCents: 0, pricingComplete: false, unpricedEventCount: 10, pendingRunCount: 0 });
     await act(async () => { await queryClient.invalidateQueries(); });
@@ -296,12 +370,17 @@ describe("Shared Costs surfaces", () => {
     await vi.waitFor(() => expect(container.contains(notice)).toBe(false));
   });
 
-  it.each(surfaces)("labels each agent and expanded model independently on the %s page", async (_name, props) => {
+  it.each(surfaces)("labels each agent, project, and expanded model independently on the %s page", async (_name, props) => {
     for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
     costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
     costsApiMocks.summary.mockResolvedValue({ spendCents: 600, budgetCents: 0, pricingComplete: true, estimatedEventCount: 3 });
     costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
     const base = { costCents: 200, inputTokens: 10, cachedInputTokens: 5, outputTokens: 2, apiRunCount: 2, subscriptionRunCount: 0, eventCount: 2 };
+    costsApiMocks.byProject.mockResolvedValue([
+      { ...base, projectId: "estimated-project", projectName: "Estimated project", estimatedEventCount: 2 },
+      { ...base, projectId: "mixed-project", projectName: "Mixed project", estimatedEventCount: 1 },
+      { ...base, projectId: "reported-project", projectName: "Reported project", estimatedEventCount: 0 },
+    ]);
     costsApiMocks.byAgent.mockResolvedValue([
       { ...base, agentId: "codie", agentName: "Codie", estimatedEventCount: 2 },
       { ...base, agentId: "mixed", agentName: "Mixed", estimatedEventCount: 1 },
@@ -326,6 +405,11 @@ describe("Shared Costs surfaces", () => {
     expect(card("Mixed").textContent).toContain("Partially estimated");
     expect(card("Reported").textContent).not.toMatch(/Estimated|Partially estimated/);
     expect(card("Legacy").textContent).not.toMatch(/Estimated|Partially estimated/);
+    const projectBadge = (name: string) => [...container.querySelectorAll("span")]
+      .find(element => element.textContent === name)!.parentElement!.querySelector('[data-slot="badge"]');
+    expect(projectBadge("Estimated project")?.textContent).toBe("Estimated");
+    expect(projectBadge("Mixed project")?.textContent).toBe("Partially estimated");
+    expect(projectBadge("Reported project")).toBeNull();
     await act(async () => card("Mixed").querySelector<HTMLElement>(".cursor-pointer")!.click());
     const breakdown = card("Mixed").querySelector(".border-l")!;
     expect(breakdown.textContent).toContain("gpt-6-astra");

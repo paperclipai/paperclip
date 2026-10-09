@@ -63,7 +63,7 @@ class ProbeFailure extends Error {
   constructor(readonly code: NonNullable<AiConnectionUsage["errorCode"]>) { super(code); }
 }
 
-async function readUsage(url: string, headers: Record<string, string>, request: typeof fetch): Promise<ObjectValue> {
+export async function readUsage(url: string, headers: Record<string, string>, request: typeof fetch): Promise<ObjectValue> {
   // Fixed origins, no redirects, and a deadline covering headers AND response bytes.
   const response = await request(url, {
     headers, redirect: "error", signal: AbortSignal.timeout(15000),
